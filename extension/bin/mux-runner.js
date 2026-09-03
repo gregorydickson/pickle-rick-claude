@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults } from '../types/index.js';
+import { PromiseTokens, hasToken, VALID_STEPS, Defaults, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
@@ -5811,7 +5811,7 @@ function probeTreeDirty(workingDir) {
  *
  * AP-EXT-ITER198-01: the ELIGIBILITY gate and the rung's own EXECUTOR must answer
  * "which file is the plan, and which is its review" the same way. `newestExecutablePlanFile`
- * settled that with `isPlanReviewArtifact` (AP-EXT-ITER58-01) — the `<prefix>.md` /
+ * settled that with `matchesArtifactPrefix` (AP-EXT-ITER58-01) — the `<prefix>.md` /
  * `<prefix>_*` contract rule `findMissingPrefixes` uses — while this assessor kept the
  * pre-fix shape: a bare `plan_*.md` scan that counts the REVIEW as a plan, and an exact
  * `'plan_review.md'` name that cannot see the suffixed review the same contract permits.
@@ -5824,10 +5824,8 @@ export function assessRecoveryEvidence(sessionDir, workingDir, ticketId) {
     let planApproved = false;
     try {
         const entries = fs.readdirSync(path.join(sessionDir, ticketId));
-        planArtifactExists = entries.some(f => /^plan_.*\.md$/.test(f) && !isPlanReviewArtifact(f));
-        // Lexicographic last mirrors `newestExecutablePlanFile`'s tie-break, so a dated
-        // `plan_review_<date>.md` (which sorts after the bare `plan_review.md`) wins.
-        const reviewFile = entries.filter(f => isPlanReviewArtifact(f)).sort().at(-1);
+        planArtifactExists = entries.some(f => /^plan_.*\.md$/.test(f) && !matchesArtifactPrefix(f, 'plan_review'));
+        const reviewFile = newestArtifactFile(entries, 'plan_review');
         if (reviewFile) {
             const review = fs.readFileSync(path.join(sessionDir, ticketId, reviewFile), 'utf-8');
             planApproved = /\bAPPROVED\b/.test(review);
@@ -6094,15 +6092,6 @@ function readConvergedPlanPhases(ticketDir) {
     return phases.length === 0 ? null : phases;
 }
 /**
- * AP-EXT-ITER58-01: the plan REVIEW is not a plan candidate. `plan_review` is a gated artifact
- * prefix in its own right (`PHASE_ARTIFACT_PREFIX`), and the same `<prefix>.md` / `<prefix>_*`
- * rule `findMissingPrefixes` matches it by ALSO makes it match `plan_*.md`, so it is excluded
- * here by that contract prefix — one rule over the candidate SET, not a per-file list.
- */
-function isPlanReviewArtifact(file) {
-    return file === 'plan_review.md' || file.startsWith('plan_review_');
-}
-/**
  * AP-EXT-ITER7-01: the ticket dir's plan artifact, PREFERRING one that actually parses as a
  * plan. Both converged-plan readers used a bare lexicographic `.sort().pop()` over
  * `plan_*.md`, and `plan_review.md` is not an incidental sibling — the artifact contract
@@ -6119,7 +6108,7 @@ function isPlanReviewArtifact(file) {
 function newestExecutablePlanFile(ticketDir) {
     let candidates;
     try {
-        candidates = fs.readdirSync(ticketDir).filter(f => /^plan_.*\.md$/.test(f) && !isPlanReviewArtifact(f));
+        candidates = fs.readdirSync(ticketDir).filter(f => /^plan_.*\.md$/.test(f) && !matchesArtifactPrefix(f, 'plan_review'));
     }
     catch {
         return null;
@@ -8840,11 +8829,18 @@ export function checkPartialLifecycleExit(sessionDir, statePath, ticketId) {
     const requiredPrefixes = requiredTierArtifactPrefixes(tier);
     const artifactsMissing = findMissingPrefixes(files, requiredPrefixes);
     if (TIER_LIFECYCLE[tier].includes('research_review')) {
-        if (!files.includes('research_review.md'))
+        // AP-EXT-ITER199-01: `artifactsMissing` above already asked whether the research
+        // review exists, under the artifact contract's `<prefix>.md` / `<prefix>_*` rule.
+        // This gate must ask the SAME question of the SAME file or the two halves of one
+        // function disagree: a suffixed review counts as PRESENT for `artifactsMissing`
+        // while an exact-name lookup reads it as absent, and a genuinely dead worker
+        // leaves here unclassified — no `worker_silent_death`, no recovery policy.
+        const reviewFile = newestArtifactFile(files, 'research_review');
+        if (!reviewFile)
             return null;
         let reviewContent;
         try {
-            reviewContent = fs.readFileSync(path.join(ticketDir, 'research_review.md'), 'utf-8');
+            reviewContent = fs.readFileSync(path.join(ticketDir, reviewFile), 'utf-8');
         }
         catch {
             return null;
@@ -9545,8 +9541,10 @@ export function claimWorkerProducedEverythingButCommit(input) {
     }
 }
 /**
- * R-WSE-3: Emit a stderr breadcrumb when a ticket has status Failed
- * but its research_review.md ends in APPROVED.
+ * R-WSE-3: Emit a stderr breadcrumb when a ticket has status Failed but its research
+ * review ends in APPROVED. AP-EXT-ITER199-01: the review is located by the artifact
+ * contract rule, not by an exact name, so this reads the same file the R-WSE-2 gate
+ * above reads — a suffixed review must not silently cost the breadcrumb.
  */
 export function checkFailedAfterResearchApproved(sessionDir, ticketId) {
     let status;
@@ -9561,7 +9559,10 @@ export function checkFailedAfterResearchApproved(sessionDir, ticketId) {
     const ticketDir = path.join(sessionDir, ticketId);
     let reviewContent;
     try {
-        reviewContent = fs.readFileSync(path.join(ticketDir, 'research_review.md'), 'utf-8');
+        const reviewFile = newestArtifactFile(fs.readdirSync(ticketDir), 'research_review');
+        if (!reviewFile)
+            return;
+        reviewContent = fs.readFileSync(path.join(ticketDir, reviewFile), 'utf-8');
     }
     catch {
         return;

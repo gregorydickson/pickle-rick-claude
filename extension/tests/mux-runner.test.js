@@ -5263,7 +5263,7 @@ test('AP-EXT-ITER49-01: an unmeasurable tree with an APPROVED plan still reaches
 // disagreed about which file is the plan and which is the plan REVIEW.
 //
 // `newestExecutablePlanFile` — the reader the rung actually runs — excludes the
-// review from the plan candidates through `isPlanReviewArtifact`, the artifact
+// review from the plan candidates through `matchesArtifactPrefix`, the artifact
 // contract's `<prefix>.md` / `<prefix>_*` rule (AP-EXT-ITER58-01). The gate that
 // decides whether that reader is ever called kept the pre-fix shape: a bare
 // `plan_*.md` scan (which the review's own name satisfies) plus an exact
@@ -5279,7 +5279,7 @@ test('AP-EXT-ITER49-01: an unmeasurable tree with an APPROVED plan still reaches
 //     the executor would have run. ATTESTED: 1 of 54 live plan-review artifacts
 //     is named `plan_review_<date>.md`.
 //
-// The fix is subtraction: one predicate, `isPlanReviewArtifact`, decides both.
+// The fix is subtraction: one predicate, `matchesArtifactPrefix`, decides both.
 // ---------------------------------------------------------------------------
 
 test('AP-EXT-ITER198-01: a DATE-SUFFIXED plan review still reaches the converged-plan rung', async () => {

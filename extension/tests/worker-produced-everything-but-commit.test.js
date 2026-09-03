@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   advanceOrExitOnLadderExhaustion,
+  checkFailedAfterResearchApproved,
   checkPartialLifecycleExit,
   claimWorkerProducedEverythingButCommit,
   commitAndContinueDoneFlip,
@@ -66,7 +67,7 @@ function makeSession(prefix) {
  * A ticket dir with frontmatter + every gated artifact its tier requires (unless
  * `omitPrefix` names one to leave out) + a session log.
  */
-function makeTicket(sessionDir, ticketId, { tier = 'large', status = 'Failed', omitPrefix = null, extraFiles = {}, frontmatter = {} } = {}) {
+function makeTicket(sessionDir, ticketId, { tier = 'large', status = 'Failed', omitPrefix = null, datedPrefixes = [], extraFiles = {}, frontmatter = {} } = {}) {
   const ticketDir = path.join(sessionDir, ticketId);
   mkdirSync(ticketDir, { recursive: true });
   const extraFm = Object.entries(frontmatter).map(([k, v]) => `${k}: ${v}\n`).join('');
@@ -74,12 +75,20 @@ function makeTicket(sessionDir, ticketId, { tier = 'large', status = 'Failed', o
     path.join(ticketDir, `rick_ticket_${ticketId}.md`),
     `---\nid: ${ticketId}\nstatus: ${status}\ncomplexity_tier: ${tier}\norder: 1\n${extraFm}---\n# ${ticketId}\n`,
   );
+  // AP-EXT-ITER199-01: `omitPrefix` takes one prefix OR a list, and `datedPrefixes` names
+  // the reviews written in their `<prefix>_<date>.md` form. Before this the helper could
+  // only ever produce BARE review names, so every case it fed asserted over the one shape
+  // the artifact contract does NOT require — the uniform fixture that hid this defect.
+  const omitted = new Set(omitPrefix == null ? [] : (Array.isArray(omitPrefix) ? omitPrefix : [omitPrefix]));
+  const dated = new Set(datedPrefixes);
   for (const prefix of requiredTierArtifactPrefixes(tier)) {
-    if (prefix === omitPrefix) {
+    if (omitted.has(prefix)) {
       continue;
     }
-    // research_review / plan_review are bare `<prefix>.md`; the rest take a `_<date>` suffix.
-    const name = prefix.endsWith('_review') ? `${prefix}.md` : `${prefix}_2026-07-11.md`;
+    // research_review / plan_review are bare `<prefix>.md` unless `datedPrefixes` names
+    // them; the rest take a `_<date>` suffix. Both forms satisfy `findMissingPrefixes`.
+    const bare = prefix.endsWith('_review') && !dated.has(prefix);
+    const name = bare ? `${prefix}.md` : `${prefix}_2026-07-11.md`;
     writeFileSync(path.join(ticketDir, name), `${prefix} body\n`);
   }
   for (const [name, content] of Object.entries(extraFiles)) {
@@ -1991,4 +2000,183 @@ test('AP-EXT-ITER146-01 control: no brief means no worker and no claimed remedia
   );
 
   fx.cleanup();
+});
+
+// ═══════════ AP-EXT-ITER199-01 — one function, two definitions of one file ═══════════
+//
+// `checkPartialLifecycleExit` computed `artifactsMissing` from `findMissingPrefixes`
+// (the artifact contract: `<prefix>.md` OR any `<prefix>_*`) and then gated the R-WSE-2
+// classification on `files.includes('research_review.md')` — an exact name the same
+// contract does not require. The two halves of ONE function therefore disagreed about
+// whether the research review exists: a `research_review_<date>.md` counted as PRESENT
+// for `artifactsMissing` and as ABSENT for the gate, so the function returned null and a
+// genuinely dead worker was never classified — no `worker_silent_death` event, and
+// `applySilentDeathRecoveryPolicy` (respawn / hold / archive) never ran at all.
+//
+// ATTESTED shape: 1 of 54 live `plan_review` artifacts on this box is written
+// `plan_review_2026-08-29.md` — the identical contract, the identical suffixed form,
+// from the same worker prompt. The fixture helper above could not produce that form
+// until this pass, which is exactly why 9 test files over this function never saw it.
+//
+// The fix is subtraction: `matchesArtifactPrefix` / `newestArtifactFile` in
+// `types/index.ts` are the ONE rule, and every reader here asks it.
+
+test('AP-EXT-ITER199-01: a DATE-SUFFIXED research review still classifies a silently-dead worker', () => {
+  const { sessionDir, statePath } = makeSession('ap199-dated-sess-');
+  try {
+    const id = 'ap199dat';
+    makeTicket(sessionDir, id, {
+      tier: 'large',
+      status: 'Failed',
+      // `plan_review.md` satisfies the `plan_` prefix too (AP-EXT-ITER58-01's shape),
+      // so BOTH must go for the plan artifact to actually read as missing.
+      omitPrefix: ['plan', 'plan_review'],
+      datedPrefixes: ['research_review'],
+      extraFiles: {
+        'research_review_2026-07-11.md': 'Verdict: APPROVED',
+        'worker_session_4242.log': '',
+      },
+    });
+
+    // Precondition, measured off disk rather than asserted into existence: the artifact
+    // contract counts the suffixed review PRESENT, which is what makes the exact-name
+    // gate's disagreement with it a defect and not a difference of opinion.
+    const files = readdirSync(path.join(sessionDir, id));
+    assert.equal(files.includes('research_review.md'), false, 'no bare review exists on this fixture');
+    assert.ok(
+      !requiredTierArtifactPrefixes('large').filter(
+        (p) => !files.some((f) => f === `${p}.md` || f.startsWith(`${p}_`)),
+      ).includes('research_review'),
+      'the contract must read the suffixed review as PRESENT — otherwise there is no disagreement',
+    );
+
+    const plExit = checkPartialLifecycleExit(sessionDir, statePath, id);
+
+    assert.notEqual(
+      plExit, null,
+      'a dead worker whose review satisfies the artifact contract must still be classified',
+    );
+    assert.deepEqual(plExit.artifactsMissing, ['plan', 'plan_review']);
+    assert.equal(plExit.subClass, 'log_empty');
+    assert.equal(
+      readActivity(statePath, 'worker_silent_death').length, 1,
+      'the classification exists so that THIS event fires and the recovery policy runs',
+    );
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER199-01: the BARE review name reaches the identical verdict (no behavior traded away)', () => {
+  const { sessionDir, statePath } = makeSession('ap199-bare-sess-');
+  try {
+    const id = 'ap199bar';
+    makeTicket(sessionDir, id, {
+      tier: 'large',
+      status: 'Failed',
+      // `plan_review.md` satisfies the `plan_` prefix too (AP-EXT-ITER58-01's shape),
+      // so BOTH must go for the plan artifact to actually read as missing.
+      omitPrefix: ['plan', 'plan_review'],
+      extraFiles: {
+        'research_review.md': 'Verdict: APPROVED',
+        'worker_session_4242.log': '',
+      },
+    });
+
+    const plExit = checkPartialLifecycleExit(sessionDir, statePath, id);
+
+    assert.notEqual(plExit, null, 'the shape that always worked must keep working');
+    assert.deepEqual(plExit.artifactsMissing, ['plan', 'plan_review']);
+    assert.equal(plExit.subClass, 'log_empty');
+    assert.equal(readActivity(statePath, 'worker_silent_death').length, 1);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER199-01: with both review forms present the NEWEST is the one read', () => {
+  const { sessionDir, statePath } = makeSession('ap199-tie-sess-');
+  try {
+    const id = 'ap199tie';
+    // The bare review says NEEDS REVISION, the dated one says APPROVED. Only a reader
+    // that takes the lexicographic-last artifact — the tie-break every other reader of
+    // these files uses — sees APPROVED and proceeds. Reading the bare name, or taking
+    // `.at(0)`, returns null here; the assertion below can only pass one way.
+    makeTicket(sessionDir, id, {
+      tier: 'large',
+      status: 'Failed',
+      // `plan_review.md` satisfies the `plan_` prefix too (AP-EXT-ITER58-01's shape),
+      // so BOTH must go for the plan artifact to actually read as missing.
+      omitPrefix: ['plan', 'plan_review'],
+      extraFiles: {
+        'research_review.md': 'Verdict: NEEDS REVISION',
+        'research_review_2026-07-11.md': 'Verdict: APPROVED',
+        'worker_session_4242.log': '',
+      },
+    });
+
+    const plExit = checkPartialLifecycleExit(sessionDir, statePath, id);
+
+    assert.notEqual(plExit, null, 'the newest review is APPROVED, so the gate must open');
+    assert.equal(plExit.subClass, 'log_empty');
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER199-01: an unapproved newest review still withholds the classification', () => {
+  const { sessionDir, statePath } = makeSession('ap199-unap-sess-');
+  try {
+    const id = 'ap199una';
+    // The mirror image of the tie-break case, so "newest wins" cannot degrade into
+    // "any APPROVED review anywhere wins" — the R-WSE-2 precondition (don't flag a
+    // worker still iterating on research) has to survive the widened name rule.
+    makeTicket(sessionDir, id, {
+      tier: 'large',
+      status: 'Failed',
+      // `plan_review.md` satisfies the `plan_` prefix too (AP-EXT-ITER58-01's shape),
+      // so BOTH must go for the plan artifact to actually read as missing.
+      omitPrefix: ['plan', 'plan_review'],
+      extraFiles: {
+        'research_review.md': 'Verdict: APPROVED',
+        'research_review_2026-07-11.md': 'Verdict: NEEDS REVISION',
+        'worker_session_4242.log': '',
+      },
+    });
+
+    assert.equal(
+      checkPartialLifecycleExit(sessionDir, statePath, id), null,
+      'the newest review is not APPROVED, so the research gate must stay closed',
+    );
+    assert.equal(readActivity(statePath, 'worker_silent_death').length, 0);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER199-01: the R-WSE-3 breadcrumb also reads the review by contract, not by name', () => {
+  const { sessionDir } = makeSession('ap199-wse3-sess-');
+  const realWrite = process.stderr.write.bind(process.stderr);
+  const lines = [];
+  try {
+    const id = 'ap199wse';
+    makeTicket(sessionDir, id, {
+      tier: 'large',
+      status: 'Failed',
+      datedPrefixes: ['research_review'],
+      extraFiles: { 'research_review_2026-07-11.md': 'Verdict: APPROVED' },
+    });
+
+    process.stderr.write = (chunk) => { lines.push(String(chunk)); return true; };
+    checkFailedAfterResearchApproved(sessionDir, id);
+    process.stderr.write = realWrite;
+
+    assert.equal(
+      lines.filter((l) => l.includes('failed AFTER research APPROVED')).length, 1,
+      'a suffixed review must not silently cost the operator this breadcrumb',
+    );
+  } finally {
+    process.stderr.write = realWrite;
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
 });

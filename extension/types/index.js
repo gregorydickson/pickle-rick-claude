@@ -204,13 +204,33 @@ export const ARTIFACT_PREFIXES = {
     review: ['review_scope', 'review_findings', 'spec_conformance'],
 };
 /**
+ * AP-EXT-ITER199-01: THE artifact-name contract rule, in one place. A gated lifecycle
+ * artifact for `prefix` is the bare `${prefix}.md` OR any `${prefix}_*` sibling
+ * (`research_2026-04-18.md`, `plan_review_2026-08-29.md`) — the same rule
+ * `findMissingPrefixes` counts a prefix PRESENT by. Every reader that must answer
+ * "is this file the <prefix> artifact?" asks HERE, so a gate and the reader it gates
+ * cannot answer it differently. Hand-written exact-name literals are the failure mode
+ * this exists to delete.
+ */
+export function matchesArtifactPrefix(file, prefix) {
+    return file === `${prefix}.md` || file.startsWith(`${prefix}_`);
+}
+/**
+ * The newest artifact matching `prefix` under that same rule, or null when `files`
+ * holds none. Lexicographic-last is the tie-break the other readers of these artifacts
+ * use, and a dated `${prefix}_<date>.md` sorts after the bare `${prefix}.md` (`_` > `.`),
+ * so the suffixed artifact wins. Pure — caller does readdir.
+ */
+export function newestArtifactFile(files, prefix) {
+    return files.filter(f => matchesArtifactPrefix(f, prefix)).sort().at(-1) ?? null;
+}
+/**
  * True when `files` contains at least one lifecycle artifact for `role`.
- * Matches exact `${prefix}.md` (e.g. `review_scope.md`) or `${prefix}_*.md`
- * (e.g. `research_2026-04-18.md`, `plan_review.md`). Pure — caller does readdir.
+ * Pure — caller does readdir.
  */
 export function hasLifecycleArtifact(files, role) {
     const prefixes = ARTIFACT_PREFIXES[role];
-    return files.some(f => prefixes.some(p => f === `${p}.md` || f.startsWith(`${p}_`)));
+    return files.some(f => prefixes.some(p => matchesArtifactPrefix(f, p)));
 }
 // ---------------------------------------------------------------------------
 // Activity Events
