@@ -394,17 +394,22 @@ test('AP-EXT-ITER103-01(c): a C-quoted in-scope path is still ff-reattached (the
 // while permanently disabling every legitimate rollback.
 
 /**
- * A `git` on PATH that faithfully delegates, except `merge-base` exits `code`.
- * Delegation restores the CALLER's PATH rather than resolving git's absolute
- * path with a `which` subprocess — no extra spawn, and no self-recursion (the
- * shim dir is not on the restored PATH).
+ * A `git` on PATH that faithfully delegates, except any invocation carrying
+ * `matchArg` exits `code`. Delegation restores the CALLER's PATH rather than
+ * resolving git's absolute path with a `which` subprocess — no extra spawn, and
+ * no self-recursion (the shim dir is not on the restored PATH).
+ *
+ * `matchArg` is parameterized rather than forked into a second shim helper:
+ * every probe this file drives is "one git subcommand cannot answer", and one
+ * knob keeps that a single shape. Default `merge-base` preserves every caller
+ * written before AP-EXT-ITER206-01.
  */
-function makeGitShim(code) {
+function makeGitShim(code, matchArg = 'merge-base') {
   const dir = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-gitshim-'));
   const callerPath = process.env.PATH ?? '';
   writeFileSync(
     path.join(dir, 'git'),
-    `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = "merge-base" ]; then\n    echo "fatal: simulated probe failure" >&2\n    exit ${code}\n  fi\ndone\nPATH='${callerPath}' exec git "$@"\n`,
+    `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = "${matchArg}" ]; then\n    echo "fatal: simulated probe failure" >&2\n    exit ${code}\n  fi\ndone\nPATH='${callerPath}' exec git "$@"\n`,
     { mode: 0o755 },
   );
   return dir;
@@ -700,5 +705,93 @@ test('AP-EXT-ITER203-01: an unanswerable ancestry probe does not deactivate a se
     rmSync(shim128, { recursive: true, force: true });
     if (sessionTmp) rmSync(sessionTmp.tmp, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+
+// AP-EXT-ITER206-01 — the fsck-discovery WINDOW FENCE and an unanswerable commit-time probe.
+//
+// `resolveOrphanSha`'s discovery path (no explicit completion_commit) filters
+// `git fsck` dangling tips to the ITERATION WINDOW so a foreign orphan — an older
+// session's work, an abandoned experiment — is never adopted as this ticket's
+// completion commit. The fence asked `gitCommitEpoch` (`git show -s --format=%ct`,
+// 5,000 ms), which returns null on an unresolvable sha, a spawn failure OR its own
+// timeout, and the pre-fix filter skipped ITSELF on null (`if (epochSec !== null)`),
+// admitting the very tip it could not place. The same probe was then asked a SECOND
+// time by the recency ranking under the opposite policy (`?? 0`).
+//
+// Measured pre-fix on the fixture below: an out-of-window orphan that IS a
+// fast-forward of HEAD was reattached — HEAD moved onto it and the run reported
+// `ff_reattached` — i.e. HEAD mutated onto unproven evidence and a false success.
+//
+// Both directions are pinned. Without the negative control, excluding every tip
+// unconditionally would pass the fail-closed case while permanently disabling
+// fsck discovery.
+test('AP-EXT-ITER206-01: an unresolvable commit time cannot pass the fsck window fence', () => {
+  const shimEpoch = makeGitShim(128, '--format=%ct');
+  const runDiscovery = (repo, iterationStartMs) => {
+    const sessionTmp = makeSessionDir(repo);
+    const ticketId = 'apiter206';
+    mkdirSync(path.join(sessionTmp.sessionDir, ticketId), { recursive: true });
+    writeFileSync(
+      path.join(sessionTmp.sessionDir, ticketId, `rick_ticket_${ticketId}.md`),
+      ['---', `id: ${ticketId}`, 'title: window fence', 'status: "Done"', '---', '# t'].join('\n'),
+    );
+    return { sessionTmp, ticketId, iterationStartMs };
+  };
+
+  // ---- fail-closed: out-of-window orphan, epoch probe cannot answer ----
+  let repo = initRepo();
+  let sessionTmp;
+  try {
+    const START = commit(repo, 'base.txt', 'base');
+    const ORPHAN = commit(repo, 'work.txt', 'foreign work'); // descendant => ff-only WOULD succeed
+    git(['reset', '--hard', START], repo);
+    const headBefore = git(['rev-parse', 'HEAD'], repo);
+    const ctx = runDiscovery(repo);
+    sessionTmp = ctx.sessionTmp;
+
+    // Window starts an hour in the FUTURE, so the orphan (committed ~now) is
+    // out-of-window: ground truth is "must NOT be reattached", with or without
+    // a working epoch probe.
+    const result = withPath(shimEpoch, () => detectAndRecoverHeadRegression({
+      ticketId: ctx.ticketId, workingDir: repo, startCommit: START,
+      completionCommitSha: null, sessionDir: sessionTmp.sessionDir,
+      statePath: sessionTmp.statePath, iteration: 1,
+      iterationStartMs: Date.now() + 3_600_000, log: () => {},
+    }));
+
+    assert.equal(result.recovered, false, 'an unplaceable tip must not be adopted as the orphan');
+    assert.notEqual(result.action, 'ff_reattached', 'no reattach may be reported for an unproven tip');
+    assert.equal(git(['rev-parse', 'HEAD'], repo), headBefore, 'HEAD must not move');
+    assert.notEqual(git(['rev-parse', 'HEAD'], repo), ORPHAN, 'HEAD must not land on the out-of-window orphan');
+  } finally {
+    if (sessionTmp) rmSync(sessionTmp.tmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+
+  // ---- negative control: in-window orphan, real git — discovery still reattaches ----
+  repo = initRepo();
+  sessionTmp = undefined;
+  try {
+    const START = commit(repo, 'base.txt', 'base');
+    const ORPHAN = commit(repo, 'work.txt', 'this iteration\'s work');
+    git(['reset', '--hard', START], repo);
+    const ctx = runDiscovery(repo);
+    sessionTmp = ctx.sessionTmp;
+
+    const result = detectAndRecoverHeadRegression({
+      ticketId: ctx.ticketId, workingDir: repo, startCommit: START,
+      completionCommitSha: null, sessionDir: sessionTmp.sessionDir,
+      statePath: sessionTmp.statePath, iteration: 1,
+      iterationStartMs: Date.now() - 5_000, log: () => {},
+    });
+
+    assert.equal(result.recovered, true, 'negative control: a provably in-window orphan must still be recovered');
+    assert.equal(git(['rev-parse', 'HEAD'], repo), ORPHAN, 'negative control: HEAD reattaches to the in-window orphan');
+  } finally {
+    if (sessionTmp) rmSync(sessionTmp.tmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(shimEpoch, { recursive: true, force: true });
   }
 });

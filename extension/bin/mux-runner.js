@@ -2706,16 +2706,25 @@ function resolveOrphanSha(input) {
         return null;
     const allowed = readScopeAllowedPaths(sessionDir);
     const nowMs = Date.now();
-    const filtered = tips.filter((tip) => {
+    // AP-EXT-ITER206-01: ONE epoch resolution per tip. The window fence and the
+    // recency ranking are the SAME measurement, and asking it twice let the two
+    // sites disagree about an unanswerable probe — the fence skipped itself
+    // (`epochSec !== null`, tip admitted) while the ranking scored it `?? 0`.
+    const scored = tips.map((tip) => ({ tip, epoch: gitCommitEpoch(workingDir, tip) }));
+    const windowActive = iterationStartMs !== null && iterationStartMs !== undefined;
+    const filtered = scored.filter(({ tip, epoch }) => {
         // Window filter: commit timestamp within [iterationStartMs - skew, now + skew].
-        if (iterationStartMs !== null && iterationStartMs !== undefined) {
-            const epochSec = gitCommitEpoch(workingDir, tip);
-            if (epochSec !== null) {
-                const commitMs = epochSec * 1000;
-                if (commitMs < iterationStartMs - SKEW_MS || commitMs > nowMs + SKEW_MS) {
-                    log(`[head-regression] fsck tip ${tip.slice(0, 8)} outside iteration window — skipping`);
-                    return false;
-                }
+        // An unanswerable commit time cannot be PROVEN in-window, and the fence exists
+        // to keep foreign work out, so an unproven tip is excluded — never admitted.
+        if (windowActive) {
+            if (epoch === null) {
+                log(`[head-regression] fsck tip ${tip.slice(0, 8)} commit time unresolvable — skipping`);
+                return false;
+            }
+            const commitMs = epoch * 1000;
+            if (commitMs < iterationStartMs - SKEW_MS || commitMs > nowMs + SKEW_MS) {
+                log(`[head-regression] fsck tip ${tip.slice(0, 8)} outside iteration window — skipping`);
+                return false;
             }
         }
         // Scope filter: touched paths ⊆ allowed_paths (unscoped session → all pass).
@@ -2733,11 +2742,11 @@ function resolveOrphanSha(input) {
     if (filtered.length === 0)
         return null;
     if (filtered.length === 1)
-        return { sha: filtered[0], discovered: true };
-    // Multiple in-window tips: prefer the most recent commit time.
-    const ranked = filtered
-        .map((tip) => ({ tip, epoch: gitCommitEpoch(workingDir, tip) ?? 0 }))
-        .sort((a, b) => b.epoch - a.epoch);
+        return { sha: filtered[0].tip, discovered: true };
+    // Multiple in-window tips: prefer the most recent commit time. Every survivor of
+    // an ACTIVE window carries a resolved epoch by construction; with no window the
+    // order is only as good as the epochs git could give.
+    const ranked = [...filtered].sort((a, b) => (b.epoch ?? 0) - (a.epoch ?? 0));
     log(`[head-regression] multiple fsck tips found, using most recent: ${ranked[0].tip.slice(0, 8)}`);
     return { sha: ranked[0].tip, discovered: true };
 }
