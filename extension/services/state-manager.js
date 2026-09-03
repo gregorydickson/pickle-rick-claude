@@ -1113,14 +1113,25 @@ export class StateManager {
         this.lockHandles.delete(lp);
         releaseLockFile(lp, held);
     }
+    /**
+     * Positive proof of death and NOTHING else — the rule `reclaimDeadLock` states for every other
+     * lock in the system, which this fifth lock re-derived and diverged from.
+     *
+     * An age arm here evicts a LIVE holder: `transaction` takes this lock across
+     * `applyTicketFileWrites`, and a restructure legitimately holds while it rewrites every ticket in
+     * the session (see `reclaimDeadRestructureLock`, which refuses an age verdict for exactly that
+     * reason). Any age window expires mid-transaction, the contender steals a live holder's lock, and
+     * both write `state.json` from their own snapshot — the lost update this file exists to prevent.
+     * `assertOnDiskSchemaNotNewer` cannot see it: neither writer changes `schema_version`.
+     *
+     * A non-integer pid is not proof either — it defers at `isProcessAlive`, which answers
+     * positive-death-only; testing it here would rebuild the survivor-list defect one member over.
+     * `opts.staleLockTimeoutMs` therefore no longer governs this verdict.
+     */
     isStaleLockSnapshot(snapshot) {
         try {
             const lock = JSON.parse(snapshot.payload);
-            const lockPid = Number(lock.pid);
-            const lockTs = Number(lock.ts);
-            if (!Number.isFinite(lockPid) || !Number.isFinite(lockTs))
-                return true;
-            return !isProcessAlive(lockPid) || (Date.now() - lockTs > this.opts.staleLockTimeoutMs);
+            return !isProcessAlive(Number(lock.pid));
         }
         catch {
             // Corrupt JSON — safe to steal

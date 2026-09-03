@@ -32,7 +32,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { acquireLockFile, inspectLockFile, isDeadPidPayload, isProcessAlive, stealLockFile, withLock } from '../../services/state-manager.js';
+import { StateManager, acquireLockFile, inspectLockFile, isDeadPidPayload, isProcessAlive, stealLockFile, withLock } from '../../services/state-manager.js';
 import { applyCourseCorrectionRestructure } from '../../services/transaction-ticket-ops.js';
 import { spawnGateRemediatorMain } from '../../bin/spawn-gate-remediator.js';
 import { LockError } from '../../types/index.js';
@@ -290,6 +290,46 @@ test('StateManager: concurrent state writers behind a dead holder lose no update
   const iteration = JSON.parse(fs.readFileSync(statePath, 'utf-8')).iteration;
   assert.equal(iteration, contenders,
     `expected ${contenders} serialized updates, saw ${iteration} — two processes held the state lock at once`);
+});
+
+// AP-EXT-ITER192-01. Every other lock in this file has a "LIVE holder is never stolen" case; the
+// state.json lock — the highest-value one — did not, and that gap is exactly where an age-based
+// steal arm survived. `StateManager.acquireLock` wrote a `{pid,ts}` payload and its private
+// `isStaleLockSnapshot` read `ts`, so a holder older than `staleLockTimeoutMs` (30s by default) was
+// judged stale WHETHER OR NOT IT WAS ALIVE. `transaction` holds this lock across
+// `applyTicketFileWrites`, i.e. for as long as a restructure takes to rewrite every ticket in the
+// session — the very duration `reclaimDeadRestructureLock` refuses an age verdict over. The steal
+// then puts two writers in the critical section and one silently erases the other's `state.json`.
+//
+// The pre-existing dead-holder case above plants a FRESH `ts`, so it goes green on the death arm
+// alone and never noticed the age arm; this case plants a LIVE pid with a STALE `ts`, which only the
+// age arm can act on. Both must hold: reclaim a dead holder at any age, never a live one at any age.
+test('AP-EXT-ITER192-01: a LIVE state holder is never stolen, however old its lock is', () => {
+  const dir = tmpDir();
+  const statePath = path.join(dir, 'state.json');
+  const lp = `${statePath}.lock`;
+
+  try {
+    fs.writeFileSync(statePath, JSON.stringify({ schema_version: 5, iteration: 0, active: true }));
+
+    // Our own pid is alive, and the lock is far older than the 30s default window.
+    const payload = JSON.stringify({ pid: process.pid, ts: Date.now() - 120_000 });
+    fs.writeFileSync(lp, payload);
+
+    const sm = new StateManager({ maxLockRetries: 1, baseLockDelayMs: 5, lockJitter: false });
+
+    assert.throws(
+      () => sm.update(statePath, (s) => { s.iteration = 99; }),
+      (err) => err instanceof LockError && err.code === 'LOCK_FAILED',
+      'a live state holder must survive: the steal verdict is proof of death, never age',
+    );
+
+    assert.equal(fs.readFileSync(lp, 'utf-8'), payload, 'live holder’s lock must be untouched');
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf-8')).iteration, 0,
+      'the contender must not have entered the critical section and written state.json');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- the gate lock: the third lock, which had no steal path at all ---------------------------
