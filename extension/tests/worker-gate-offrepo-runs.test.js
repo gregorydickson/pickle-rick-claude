@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as ts from 'typescript';
 
 import { runWorkerGate } from '../bin/spawn-morty.js';
 import { isAdvisoryWorkerGateVerdict } from '../bin/mux-runner.js';
@@ -387,11 +388,82 @@ test('isAdvisoryWorkerGateVerdict: a TARGET-repo red is advisory, pickle-rick re
 // AC-OFFREPO-2 / repo-agnostic invariant — no new package-manager matrix.
 // ---------------------------------------------------------------------------
 
+// Read the gate-path sources with the LANGUAGE's own parser. Both halves of
+// the one-home invariant below are grammar, and both were hand-rolled lexical
+// guesses that measured wrong in BOTH directions (see the test's own comments).
+// `ts` draws the code/prose line by construction, so no comment stripper —
+// itself an enumeration of lexical contexts — is needed or wanted.
+//
+// NOTE: a second copy of the readers in tests/tsc-gate.test.js. Hoisting them
+// into a shared test helper is the right home; see AP-EXT-ITER174-01.
+const parseSource = (source, fileName) =>
+  ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+
+// One `{ imported, local }` per binding of `specifier`, across every import
+// statement naming it. Splitting one import into two, reflowing it, indenting
+// it, aliasing it and quote style are all legal refactors that must not red a
+// pin about WHERE a name comes from.
+function namedImportsOf(sourceFile, specifier) {
+  const bindings = [];
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    if (!ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    if (statement.moduleSpecifier.text !== specifier) continue;
+    const named = statement.importClause?.namedBindings;
+    if (!named || !ts.isNamedImports(named)) continue;
+    for (const element of named.elements) {
+      bindings.push({
+        imported: (element.propertyName ?? element.name).text,
+        local: element.name.text,
+      });
+    }
+  }
+  return bindings;
+}
+
+// True only for a real call of `local` as an identifier callee. A mention of
+// `local(` in a comment, string or template literal is not a call site.
+// RESIDUE, stated rather than claimed away: a call reached through a namespace
+// import (`gate.loadGateCommands()`) has a property-access callee and reads
+// false here. `namedImportsOf` above would not have bound the local either, so
+// the pair fails CLOSED on that form — a false RED, never a false green.
+function callsIdentifier(sourceFile, local) {
+  let called = false;
+  const visit = (node) => {
+    if (called) return;
+    if (ts.isCallExpression(node)
+        && ts.isIdentifier(node.expression)
+        && node.expression.text === local) {
+      called = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return called;
+}
+
+// The source with its comments removed — exactly, by the parser, rather than by
+// a regex that approximates it. Every leaf token's text in source order, so a
+// name spelled across a concatenation or inside a template still reads as one
+// run of code text, and prose reads as nothing.
+function codeText(sourceFile) {
+  let out = '';
+  const visit = (node) => {
+    let leaf = true;
+    ts.forEachChild(node, (child) => { leaf = false; visit(child); });
+    if (leaf) out += node.getText(sourceFile);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return out;
+}
+
 test('no per-stack adapter matrix: the gate path declares no package-manager name list', () => {
-  const sources = [
-    fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8'),
-    fs.readFileSync(new URL('../src/bin/mux-runner.ts', import.meta.url), 'utf8'),
-  ].join('\n');
+  const gatePath = [
+    ['spawn-morty.ts', fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8')],
+    ['mux-runner.ts', fs.readFileSync(new URL('../src/bin/mux-runner.ts', import.meta.url), 'utf8')],
+  ].map(([name, source]) => ({ name, source, ast: parseSource(source, name) }));
+  const sources = gatePath.map((file) => file.source).join('\n');
 
   // A literal array/set enumerating package managers is the adapter matrix this
   // invariant forbids: `detectProjectType`'s return type and the shared
@@ -402,27 +474,114 @@ test('no per-stack adapter matrix: the gate path declares no package-manager nam
     'no literal package-manager list may be introduced on the gate path',
   );
 
-  // The command map must be READ through the ONE loader that owns it.
-  //
-  // Do NOT assert this by grepping the filename: both files name
-  // `gate-commands.json` in PROSE only, so that grep is satisfied by a comment and
-  // would stay green with every real reader deleted (the AP-EXT-ITER15-01
-  // self-matching-anchor mode). Pin the import — after the collapse the guarantee
-  // is compile-time, which is what the invariant actually is.
-  const spawnMorty = fs.readFileSync(new URL('../src/bin/spawn-morty.ts', import.meta.url), 'utf8');
-  const stripComments = (src) => src.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-
-  assert.match(
-    stripComments(spawnMorty),
-    /import \{[^}]*\bloadGateCommands\b[^}]*\} from '\.\.\/services\/convergence-gate\.js'/,
-    'the off-repo gate must consume the shared command map through its one loader',
+  // The command map must be CONSUMED through the ONE loader that owns it — the
+  // binding must come from the gate service AND be called. Asserting only the
+  // import statement is not the invariant: an import kept for show while a
+  // private fork takes over the call sites reads clean to it. MEASURED before
+  // this collapse: a `loadGateCommandsPrivately()` re-deriving the map's path
+  // from a variable-held filename, with the shared import left in place, was
+  // GREEN 12/12 — the exact second reader the assertion below forbids.
+  const [spawnMorty] = gatePath;
+  const loader = namedImportsOf(spawnMorty.ast, '../services/convergence-gate.js')
+    .find((binding) => binding.imported === 'loadGateCommands');
+  assert.ok(
+    loader,
+    'the off-repo gate must bind loadGateCommands from the shared gate service',
+  );
+  assert.ok(
+    callsIdentifier(spawnMorty.ast, loader.local),
+    'the off-repo gate must CALL the shared loader, not just import it',
   );
 
   // A second reader re-derives the module-relative path by hand, so the two
-  // silently disagree the moment either file changes depth.
-  assert.equal(
-    /readFileSync\([^)]*gate-commands\.json/.test(stripComments(sources)),
-    false,
-    'no second reader of the command map may be declared on the gate path',
+  // silently disagree the moment either file changes depth. Do NOT assert this
+  // by grepping the raw source: both files name `gate-commands.json` in PROSE,
+  // so a bare grep counts the comment (the AP-EXT-ITER15-01 self-matching-anchor
+  // mode). Do not grep one `readFileSync(...)` spelling either — that names ONE
+  // way to spell a read, and a filename held in a const walks past it. Spelling
+  // the map's name in CODE AT ALL is the re-derivation.
+  for (const file of gatePath) {
+    assert.equal(
+      codeText(file.ast).includes('gate-commands'), false,
+      `${file.name} must not re-derive the command map's path — read it through loadGateCommands`,
+    );
+  }
+});
+
+test('AP-EXT-ITER173-02 the gate-path source readers are comment-blind and refactor-tolerant', () => {
+  // The regression this holds: the import half was `assert.match(source,
+  // /import \{[^}]*loadGateCommands[^}]*\} from '...'/)`, which demanded single
+  // quotes on a single line — changing ONLY the quote style on
+  // spawn-morty.ts:48, a refactor altering nothing the pin asserts, measured
+  // 11 pass / 1 fail. Pin the readers themselves so they cannot re-fork a
+  // lexical guess.
+  const importForms = [
+    ['indented', "  import { loadGateCommands } from '../services/convergence-gate.js';"],
+    ['double-quoted', 'import { loadGateCommands } from "../services/convergence-gate.js";'],
+    ['reflowed', "import {\n  loadGateCommands,\n} from '../services/convergence-gate.js';"],
+    ['no semicolon', "import { loadGateCommands } from '../services/convergence-gate.js'"],
+    ['beside other bindings', "import { detectProjectType, loadGateCommands } from '../services/convergence-gate.js';"],
+  ];
+  for (const [label, form] of importForms) {
+    assert.deepEqual(
+      namedImportsOf(parseSource(form, 'f.ts'), '../services/convergence-gate.js')
+        .map((binding) => binding.imported)
+        .filter((imported) => imported === 'loadGateCommands'),
+      ['loadGateCommands'],
+      `a ${label} import must still bind loadGateCommands`,
+    );
+  }
+  assert.deepEqual(
+    namedImportsOf(
+      parseSource("import { loadGateCommands as load } from '../services/convergence-gate.js';", 'f.ts'),
+      '../services/convergence-gate.js',
+    ),
+    [{ imported: 'loadGateCommands', local: 'load' }],
+    'an alias must report the imported name and the local separately',
   );
+  assert.deepEqual(
+    namedImportsOf(parseSource("import { loadGateCommands } from './other.js';", 'f.ts'), '../services/convergence-gate.js'),
+    [],
+    'a different specifier must bind nothing',
+  );
+
+  // The call-site half: prose naming the call form is not a call.
+  const forged = (body) => parseSource(`import { load } from './m.js';\n${body}\n`, 'f.ts');
+  const notCalls = [
+    ['line comment', '// load() reads the shared map'],
+    ['block comment', '/* load() reads the shared map */'],
+    ['jsdoc', '/** the map is read by `load()`. */'],
+    ['string literal', "const s = 'load()';"],
+    ['template literal', 'const s = `load()`;'],
+    ['bare reference, never invoked', 'export const f = [load];'],
+  ];
+  for (const [label, body] of notCalls) {
+    assert.equal(callsIdentifier(forged(body), 'load'), false,
+      `a ${label} must not answer the call-site check`);
+  }
+  assert.equal(callsIdentifier(forged('export const y = load();'), 'load'), true,
+    'a real call must still satisfy the call-site check');
+
+  // The path-spelling half: prose is not a re-derivation, and every way of
+  // spelling the name in code is. The variable-held and concatenated forms are
+  // what the `readFileSync(...gate-commands.json)` grep walked past.
+  const spells = (body) => codeText(parseSource(body, 'f.ts')).includes('gate-commands');
+  const prose = [
+    ['line comment', '// gate-commands.json is the table\nexport const x = 1;'],
+    ['block comment', '/* gate-commands.json is the table */\nexport const x = 1;'],
+    ['jsdoc', '/** reads `data/gate-commands.json`. */\nexport const x = 1;'],
+  ];
+  for (const [label, body] of prose) {
+    assert.equal(spells(body), false, `a ${label} must not read as a re-derivation`);
+  }
+  const code = [
+    ['inline read', "export const p = readFileSync('gate-commands.json');"],
+    ['variable-held filename', "const F = 'gate-commands.json';\nexport const p = readFileSync(join(d, F));"],
+    ['concatenated', "export const F = 'gate-commands' + '.json';"],
+    ['template with substitution', 'export const p = `${d}/gate-commands.json`;'],
+    ['template without substitution', 'export const p = `data/gate-commands.json`;'],
+  ];
+  for (const [label, body] of code) {
+    assert.equal(spells(body), true, `a ${label} must read as a re-derivation`);
+  }
 });
