@@ -672,6 +672,15 @@ export function execAnchorIndex(tokens, name) {
  *
  * `$` needs no entry: splitting on `(` already strips `$(` down to a lone `$`
  * segment, which is not an executable token in any detector.
+ *
+ * AP-EXT-ITER187-01 CORRECTS the second half of that claim. It holds only while
+ * the `$(` STANDS ALONE. Glued to a word it leaves the `$` behind ON that word —
+ * `git reset$(true) --hard` segments to `git reset$`, and `reset$` is the
+ * executable token no detector matches, so all six prohibited verbs approved.
+ * The residue is not removable here (a lone `$` really is inert, and `(` must
+ * stay a boundary for the grouped form ITER19-01 closed); it is answered one
+ * level up, by `elideExpansions` reading the command a second time with every
+ * expansion contributing the empty string.
  */
 const SHELL_SEGMENT_SEPARATORS = new Set([
     '&&', '||', '|', '&', ';', '\n',
@@ -999,6 +1008,133 @@ function pushWordBoundaryTokens(word, tokens) {
     flush();
 }
 /**
+ * Index just past the balanced `open`/`close` pair beginning at `text[start]`,
+ * or `text.length` when it never closes. Depth-counted so a nested substitution
+ * (`$(git $(id) reset)`) or a nested parameter expansion (`${a:-${b}}`) ends at
+ * ITS OWN close, not at the first one.
+ */
+function balancedSpanEnd(text, start, open, close) {
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+        if (text[i] === open)
+            depth++;
+        else if (text[i] === close && --depth === 0)
+            return i + 1;
+    }
+    return text.length;
+}
+/**
+ * Index just past the EXPANSION beginning at `text[start]`, or -1 when none
+ * begins there.
+ *
+ * Read as bash's grammar, not as a catalog of expansion names: a `$` takes a
+ * braced body, a parenthesised body, a parameter-name run, or — failing all
+ * three — the single character that names a special parameter (`$?`, `$@`,
+ * `$*`, `$$`, `$!`, `$-`). Spelling those out would be the enumerated-set shape
+ * this module has paid for repeatedly; asking what FOLLOWS the `$` needs no
+ * list and cannot omit a member. `$'…'` and `$"…"` are excluded because they
+ * are QUOTING constructs, not expansions — the tokenizer already decodes them
+ * (`ANSI_C_QUOTED_SPAN`, `LOCALE_QUOTED_SPAN`), and consuming their opening
+ * quote here would leave an unbalanced one behind.
+ *
+ * A `$` that names nothing — at end of input, or before whitespace — is a
+ * LITERAL dollar to bash (`git reset$ --hard` really runs the subcommand
+ * `reset$`), so it is not an expansion and is refused. That refusal is the one
+ * that matters: whitespace is the only character whose removal could JOIN two
+ * words, and joining them would manufacture a gated verb out of two words bash
+ * keeps apart (`git rese$ t --hard`).
+ */
+function expansionSpanEnd(text, start) {
+    const ch = text[start];
+    if (ch === '`') {
+        const close = text.indexOf('`', start + 1);
+        return close === -1 ? text.length : close + 1;
+    }
+    if (ch !== '$')
+        return -1;
+    const next = text[start + 1];
+    if (next === undefined || /\s/.test(next))
+        return -1;
+    if (next === '\'' || next === '"')
+        return -1;
+    if (next === '{')
+        return balancedSpanEnd(text, start + 1, '{', '}');
+    if (next === '(')
+        return balancedSpanEnd(text, start + 1, '(', ')');
+    if (!PARAMETER_NAME_CHAR_RE.test(next))
+        return start + 2;
+    let i = start + 1;
+    while (i < text.length && PARAMETER_NAME_CHAR_RE.test(text[i]))
+        i++;
+    return i;
+}
+/**
+ * AP-EXT-ITER187-01: the reading of the command in which EVERY expansion
+ * contributes the EMPTY string.
+ *
+ * An expansion GLUED to a literal is a word bash may produce two ways, and only
+ * one of them was ever read. `$(true)`, `` `true` ``, `$UNSET` and `${UNSET}`
+ * all expand to nothing, so `git reset$(true) --hard`, `git re$(true)set --hard`
+ * and `git reset$EMPTY --hard` are the commands `git reset --hard` — measured in
+ * a scratch repo, the staged file was really destroyed — yet the shipped
+ * handler APPROVED all of them for a worker: 36 of 36 glued forms across all six
+ * `PROHIBITED_GIT_VERBS_SIMPLE` verbs, plus `--amend`/`--prune`, while the bare
+ * twins blocked. The two halves fail for one reason but by different routes:
+ * `$(`/`` ` `` are SEGMENT SEPARATORS, so the split ran through the middle of
+ * the word and left `reset$` (or an orphan `set`) behind, while `$NAME` is no
+ * separator at all and simply stayed glued.
+ *
+ * Elision is therefore taken on the RAW command, before any splitting — one
+ * uniform additional reading, the same widening `expandShellCommandStrings`
+ * already applies to a `-c` payload and `expandWord` to a brace list. It needs
+ * no table of which expansions can be empty, because at the scanner's remove
+ * every expansion can. QUOTING is honoured — a single-quoted span and an
+ * escaped character are copied verbatim, since bash expands neither — and a
+ * single-quoted `-c` payload is still elided one level down, where
+ * `splitShellSegments` sees it unquoted.
+ *
+ * The one reading bash will NOT produce is a word-carrying expansion read as
+ * empty (`${x:-git} reset` also offers the bare `reset`). That is deliberate:
+ * separating the forms that can be empty (`$NAME`, `${x-git}`, `${x:+y}`) from
+ * the one that cannot means naming bash's expansion OPERATORS, the enumerated
+ * shape this module has paid for repeatedly — and `parameterExpansionWords`
+ * already recovers the substituted word from the same text, so the elided twin
+ * is a spare segment carrying no anchor. It can only over-block, this module's
+ * established direction.
+ *
+ * Strictly ADDITIVE — the un-elided segments are always kept — so no command
+ * that blocked before can stop blocking now. The residual the `expandWord`
+ * docblock records is unchanged: a value-CARRYING `$NAME` (`G=git; $G reset`)
+ * still spells nothing and still needs assignment tracking.
+ */
+function elideExpansions(command) {
+    let out = '';
+    let i = 0;
+    while (i < command.length) {
+        const ch = command[i];
+        if (ch === '\\') {
+            out += command.slice(i, i + 2);
+            i += 2;
+            continue;
+        }
+        if (ch === '\'') {
+            const close = command.indexOf('\'', i + 1);
+            const end = close === -1 ? command.length : close + 1;
+            out += command.slice(i, end);
+            i = end;
+            continue;
+        }
+        const end = expansionSpanEnd(command, i);
+        if (end === -1) {
+            out += ch;
+            i++;
+            continue;
+        }
+        i = end;
+    }
+    return out;
+}
+/**
  * THE shell segmenter for the hooks subsystem. Splits a command into segments
  * at every operator where bash starts a new command — the control operators
  * `&&`, `||`, `|`, `&`, `;`, an unquoted newline (a top-level command
@@ -1065,7 +1201,15 @@ export function splitShellSegments(command, depth = 0) {
     }
     if (current.length > 0)
         segments.push(current.join(' '));
-    return expandShellCommandStrings(segments.length > 0 ? segments : [command], depth);
+    const own = expandShellCommandStrings(segments.length > 0 ? segments : [command], depth);
+    // AP-EXT-ITER187-01: append the empty-expansion reading of the SAME command.
+    // Taken on the raw string because `$(`/`` ` `` are separators — by the time the
+    // segments above exist the glued word has already been cut in half. The elided
+    // text carries no `$` and no backtick, so its own elision is the identity and the
+    // recursion terminates in one step; `depth` is passed through unchanged so the
+    // command-string budget is spent on real nesting only.
+    const elided = elideExpansions(command);
+    return elided === command ? own : [...own, ...splitShellSegments(elided, depth)];
 }
 /**
  * Returns the command-string payload of a `bash -c '<cmd>'` segment, or null

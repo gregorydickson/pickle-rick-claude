@@ -4798,9 +4798,14 @@ test('AP-EXT-ITER143-01: expansion offers the word bash substitutes, and keeps t
   // The candidates are extra TOKENS in the same segment — every detector reads
   // its anchor position-free — and the ORIGINAL word is always kept, so the
   // expansion is a strict widening and cannot lose a pre-fix block.
-  assert.deepEqual(splitShellSegments('${x:-git} reset'), ['${x:-git} x:-git -git git reset']);
-  // A body of pure name characters carries no substitutable word beyond itself.
-  assert.deepEqual(splitShellSegments('echo ${HOME}'), ['echo ${HOME} HOME']);
+  // The trailing `reset` is the AP-EXT-ITER187-01 empty-expansion twin: a
+  // word-carrying body is read as empty too, because telling the forms that
+  // can be empty from the one that cannot means naming bash's operators.
+  assert.deepEqual(splitShellSegments('${x:-git} reset'), ['${x:-git} x:-git -git git reset', 'reset']);
+  // A body of pure name characters carries no substitutable word beyond itself;
+  // the bare `echo` is the AP-EXT-ITER187-01 reading in which `${HOME}` — which
+  // really can be empty — contributes nothing.
+  assert.deepEqual(splitShellSegments('echo ${HOME}'), ['echo ${HOME} HOME', 'echo']);
   // No `${` at all: byte-identical to the pre-fix reading.
   assert.deepEqual(splitShellSegments('git status && ls'), ['git status', 'ls']);
   assert.deepEqual(splitShellSegments('git {reset,--hard}'), ['git reset --hard']);
@@ -4825,6 +4830,130 @@ test('AP-EXT-ITER143-01: the expansion budget is spent in CHARACTERS, so a padde
   // Overflow falls back to the surviving candidates; nothing is ever REMOVED,
   // so an overflow cannot lose a block a non-expanding scanner already had.
   assert.ok(segments[0].startsWith(padded));
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER187-01 — an expansion GLUED to a literal hid the literal
+//
+// `$(true)`, `` `true` ``, `$UNSET` and `${UNSET}` all expand to NOTHING, so
+// `git reset$(true) --hard` is the command `git reset --hard` — shim-verified in
+// a scratch repo, the staged file was really destroyed. The shipped handler
+// APPROVED 36 of 36 glued forms across all six PROHIBITED_GIT_VERBS_SIMPLE
+// verbs (plus `--amend` / `--prune`) while every bare twin blocked.
+//
+// Two routes, one cause: `$(` and a backtick are SEGMENT SEPARATORS, so the
+// split ran through the middle of the word and left `reset$` (or an orphan
+// `set`) behind; `$NAME` is no separator at all and simply stayed glued.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER187-01: an expansion glued to a git verb blocks like its literal twin', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const run = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  const tails = {
+    reset: ' --hard', switch: ' main', stash: '', rebase: ' -i main', pull: '', push: ' origin main',
+  };
+  // Every prohibited verb x every glue position x every empty-expansion form.
+  // Derived, not enumerated: the verb list is the gate's own, so a verb added
+  // to the Git Boundary Rules is covered here the day it lands.
+  for (const verb of ['reset', 'switch', 'stash', 'rebase', 'pull', 'push']) {
+    for (const glue of [
+      (v) => `${v}$(true)`,
+      (v) => `$(true)${v}`,
+      (v) => `${v.slice(0, 2)}$(true)${v.slice(2)}`,
+      (v) => `${v.slice(0, 2)}\`true\`${v.slice(2)}`,
+      (v) => `${v}$EMPTY`,
+      (v) => `${v}\${EMPTY}`,
+      (v) => `${v.slice(0, 2)}$(echo $(true))${v.slice(2)}`,
+    ]) {
+      const command = `git ${glue(verb)}${tails[verb]}`;
+      const result = run(command);
+      assert.equal(result.decision, 'block', `must block: ${command}`);
+      assert.match(result.reason, /R-WSRC-GR/);
+    }
+  }
+  // The two gating FLAGS are the same word question one position to the right.
+  assert.equal(run('git commit --amend$(true) -m x').decision, 'block');
+  assert.equal(run('git $(true)commit --amend -m x').decision, 'block');
+  assert.equal(run('git fetch --prune`true`').decision, 'block');
+  // A command string re-parsed as code is elided one level down, quoted or not.
+  assert.equal(run('bash -c "git re$(true)set --hard"').decision, 'block');
+  assert.equal(run("bash -c 'git re$(true)set --hard'").decision, 'block');
+  assert.equal(run('eval "git reset$(true) --hard"').decision, 'block');
+  // Same reading, so the sibling gates that share `splitShellSegments` see the
+  // glued word too — the elision is taken once, before any detector runs.
+  assert.equal(run('bash install$(true).sh').decision, 'block');
+  assert.equal(run('bas`x`h install.sh').decision, 'block');
+  assert.equal(run('tee$(true) /tmp/pickle-test/state.json').decision, 'block');
+  assert.equal(run('sed -i$EMPTY "" s/a/b/ pickle_settings.json').decision, 'block');
+});
+
+test('AP-EXT-ITER187-01: the empty-expansion reading does not over-block real worker commands', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const run = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  // Non-tautology: the literal twins still block AND ordinary commands that
+  // carry expansions still approve — a fix that blocked everything would pass
+  // the test above and fail here.
+  assert.equal(run('git reset --hard').decision, 'block');
+  for (const command of [
+    'git status --short',
+    'git add -u',
+    'git commit -m "$(cat msg.txt)"',
+    'git log --oneline -n $COUNT',
+    'echo "${HOME}/bin"',
+    'cd ${DIR:-extension} && npm test',
+    'git diff --cached > /tmp/$$.patch',
+    // A `$` naming nothing is a LITERAL dollar to bash — `git rese$ t --hard`
+    // really runs the subcommand `rese$`. Whitespace is the only character
+    // whose removal could JOIN two words into a gated verb, so the elision
+    // refuses it; without that refusal this line blocks.
+    'git rese$ t --hard',
+    'git reset$ --hard',
+    'echo cost $ 5',
+  ]) {
+    assert.equal(run(command).decision, 'approve', `must approve: ${command}`);
+  }
+});
+
+test('AP-EXT-ITER187-01: elision is additive, quote-faithful and cheap', () => {
+  // ADDITIVE: the un-elided segments are still there, so no command that
+  // blocked before this reading existed can stop blocking now.
+  assert.deepEqual(
+    splitShellSegments('git reset$(true) --hard'),
+    ['git reset$', 'true', '--hard', 'git reset --hard'],
+  );
+  assert.deepEqual(
+    splitShellSegments('git re$(true)set --hard'),
+    ['git re$', 'true', 'set --hard', 'git reset --hard'],
+  );
+  assert.deepEqual(
+    splitShellSegments('git reset$EMPTY --hard'),
+    ['git reset$EMPTY --hard', 'git reset --hard'],
+  );
+  // No expansion at all: byte-identical to the pre-fix reading, no extra pass.
+  assert.deepEqual(splitShellSegments('git status && ls'), ['git status', 'ls']);
+  // QUOTE-FAITHFUL: bash expands nothing inside single quotes and nothing after
+  // a backslash, so neither yields a second reading — this never manufactures a
+  // command bash cannot produce. `$'…'` is ANSI-C QUOTING, not an expansion, so
+  // consuming its opening quote (and unbalancing the rest) is refused too.
+  for (const command of ["echo 'a $(b) c'", 'echo \\$HOME', "git $'\\x72eset' --hard", 'git rese$ t --hard']) {
+    assert.deepEqual(splitShellSegments(command), [command], `no second reading: ${command}`);
+  }
+  // A special parameter takes exactly the one character that names it — no
+  // table of `$?`/`$@`/`$*`/`$$`/`$!`/`$-`, which is the enumerated-set shape.
+  assert.deepEqual(splitShellSegments('echo $?'), ['echo $?', 'echo']);
+  // CHEAP: elision is one linear pass and its output carries no `$` and no
+  // backtick, so the recursion terminates after exactly one step.
+  const started = Date.now();
+  const segments = splitShellSegments(`git ${'$(x)'.repeat(20000)}reset --hard`);
+  const elapsed = Date.now() - started;
+  assert.ok(segments.includes('git reset --hard'));
+  assert.ok(elapsed < 2000, `pathological expansion run must stay cheap, took ${elapsed}ms`);
 });
 
 // ---------------------------------------------------------------------------
