@@ -1097,7 +1097,27 @@ it('AP-EXT-ITER27-01 the exec-token prelude has ONE home (no private tsc-gate co
       false,
       `${name} must consume shell-exec.ts:ENV_ASSIGNMENT_RE, not re-type the literal`,
     );
-    assert.match(source, new RegExp(`${helper}[\\s\\S]*from '\\.\\./shell-exec\\.js'`));
+    // Same collapse as AP-EXT-ITER12-01 above, and for the same two reasons.
+    // The span from the helper's name to the specifier proved a file ORDER, not
+    // an import BINDING: a re-fork whose `from '../forked-shell-exec.js'` line
+    // sat ABOVE the surviving shell-exec.js import measured GREEN 45/45 for
+    // both handlers. It also demanded one exact quote style, so it false-RED on
+    // a refactor that changed nothing it was pinning. Read the statement.
+    const sharedImports = namedImportsOf(source, '../shell-exec.js');
+    const prelude = sharedImports.find((binding) => binding.imported === helper);
+    assert.ok(
+      prelude,
+      `${name} must bind ${helper} in its '../shell-exec.js' import `
+      + `(bound there: ${sharedImports.map((binding) => binding.imported).join(', ') || 'nothing'})`,
+    );
+    // ...and be the prelude the file actually runs. An import kept for show
+    // while a privately-named fork takes over the call sites reads clean to the
+    // name check above, which can only ever recognise names someone listed.
+    assert.match(
+      source,
+      new RegExp(`\\b${prelude.local}\\s*\\(`),
+      `${name} must CALL the shared ${helper}, not just import it`,
+    );
   }
 });
 
