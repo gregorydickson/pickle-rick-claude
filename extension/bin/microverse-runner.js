@@ -4147,9 +4147,8 @@ export async function handleRateLimitExit(state, ctx, exitResult) {
     return ctx.rateLimitExitReason ?? 'continue';
 }
 async function handleMetricMode(state, baseline, ctx, iterLogFile) {
-    ctx.postIterSha = _deps.getHeadSha(ctx.workingDir);
-    if (ctx.postIterSha === ctx.preIterSha)
-        autoRescueDirtyTree(ctx);
+    // The postIterSha capture and the dirty-tree rescue run in `handleIterationOutcome`, ahead of
+    // the mode dispatch (AP-EXT-ITER184-01) — both modes share the one seam.
     if (ctx.postIterSha === ctx.preIterSha) {
         const noCommitExit = await handleNoCommitStall(state, ctx, iterLogFile) ?? 'continue';
         emitMicroverseWastedIter(ctx, 'no_commit');
@@ -4343,6 +4342,15 @@ export async function handleIterationOutcome(state, baseline, ctx, outcome) {
     const errorOrStopExit = await handleIterationErrorOrStop(state, ctx, outcome, exitResult, stallClassification);
     if (errorOrStopExit)
         return errorOrStopExit;
+    // AP-EXT-ITER184-01: the dirty-tree rescue belongs to the ITERATION, not to one convergence
+    // mode. It lived inside `handleMetricMode`, so a worker-managed iteration that authored a
+    // complete fix and exited before committing left it on the floor: no auto-commit, no salvage
+    // anchor for the un-attributable remainder, and no gate — `runPerIterationGateHook` reads
+    // `preIterSha !== HEAD` and skips. Hoisted ahead of the dispatch so BOTH modes rescue at the
+    // same point and the rescued commit is visible to everything downstream of it.
+    ctx.postIterSha = _deps.getHeadSha(ctx.workingDir);
+    if (ctx.postIterSha === ctx.preIterSha)
+        autoRescueDirtyTree(ctx);
     if (state.convergence_mode === 'worker')
         return await handleWorkerMode(state, ctx) ?? 'continue';
     return await handleMetricMode(state, baseline, ctx, iterLogFile);

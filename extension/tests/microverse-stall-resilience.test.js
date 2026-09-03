@@ -13,6 +13,7 @@ import {
   buildMicroverseHandoff,
   autoRescueDirtyTree,
   classifyNoCommitExit,
+  handleIterationOutcome,
   handleNoCommitStall,
 } from '../bin/microverse-runner.js';
 import { createMicroverseState } from '../services/microverse-state.js';
@@ -526,5 +527,126 @@ test('AP-EXT-ITER119-01 control: ownable dirt leaves the classifier verdict stan
     _deps.sleep = originalSleep;
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// AP-EXT-ITER184-01: the dirty-tree rescue belonged to ONE convergence mode, not to the iteration.
+//
+// Every case above runs the METRIC-mode sequence. `autoRescueDirtyTree` had exactly one production
+// call site and it was inside `handleMetricMode`, so a WORKER-managed iteration (the mode
+// anatomy-park and szechuan-sauce run in) never rescued anything: a worker that authored a
+// complete fix and exited before committing left it on the floor — no auto-commit, no salvage
+// anchor for the un-attributable remainder, and no gate, because `runPerIterationGateHook` reads
+// `preIterSha !== HEAD` and skips. Measured on session 2026-09-01-6a67c80b: 17 of 69 iterations
+// ended with HEAD unmoved, and iteration 67 left a complete staged fix that only survived because
+// the NEXT worker noticed it by hand.
+//
+// These cases drive the REAL dispatcher (`handleIterationOutcome`, worker mode) against a real git
+// repo, because the defect lives in the seam between the dispatcher and the mode handlers.
+function workerModeSession(dir) {
+  const sessionDir = tmpDir('pickle-mrs-worker-');
+  fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({
+    subsystems: ['alpha'], current_index: 0, pass_counts: { alpha: 1 }, stall_counts: { alpha: 0 },
+  }));
+  const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+  state.status = 'iterating';
+  state.convergence_mode = 'worker';
+  state.convergence_file = 'anatomy-park.json';
+  state.current_subsystem = 'alpha';
+  const ctx = {
+    sessionDir,
+    extensionRoot: path.resolve(sessionDir, '..'),
+    statePath: path.join(sessionDir, 'state.json'),
+    workingDir: dir,
+    startTime: Date.now(),
+    preIterSha: git(dir, ['rev-parse', 'HEAD']),
+    iteration: 1,
+    consecutiveRateLimits: 0,
+    enableFailureClassification: false,
+    rateLimitWaitMinutes: 60,
+    maxRateLimitRetries: 3,
+    cgSettings: {
+      enabled_convergence_files: ['anatomy-park.json'],
+      regression_warning_threshold: 5,
+      remediator_timeout_s: 600,
+      baseline_max_age_iterations: 30,
+      baseline_max_age_seconds: 14_400,
+    },
+    currentRunnerState: { active: true, working_dir: dir, backend: 'claude', session_dir: sessionDir },
+    log: () => {},
+  };
+  return { sessionDir, state, ctx };
+}
+
+async function runWorkerModeIteration(dir) {
+  const { sessionDir, state, ctx } = workerModeSession(dir);
+  const original = {
+    sleep: _deps.sleep,
+    collectTickets: _deps.collectTickets,
+    runWorkerManagedIteration: _deps.runWorkerManagedIteration,
+  };
+  let headAtWorkerHandoff = null;
+  try {
+    _deps.sleep = async () => {};
+    _deps.collectTickets = () => [];
+    _deps.runWorkerManagedIteration = async (opts) => {
+      headAtWorkerHandoff = git(dir, ['rev-parse', 'HEAD']);
+      return { currentMv: opts.currentMv, converged: false, reason: 'still iterating' };
+    };
+    const result = await handleIterationOutcome(state, { raw: '0', score: 0 }, ctx, {
+      completion: 'task_completed', timedOut: false, exitCode: 0, wallSeconds: 30,
+    });
+    return { result, headAtWorkerHandoff, preIterSha: ctx.preIterSha };
+  } finally {
+    _deps.sleep = original.sleep;
+    _deps.collectTickets = original.collectTickets;
+    _deps.runWorkerManagedIteration = original.runWorkerManagedIteration;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER184-01: a worker-managed iteration rescues the complete fix its worker left uncommitted', async () => {
+  const { dir } = initRepo();
+  try {
+    // The shape measured in the field: an in-scope source edit, authored and never committed.
+    fs.writeFileSync(path.join(dir, 'fix.ts'), 'export const fixed = true;\n');
+
+    const { result, headAtWorkerHandoff, preIterSha } = await runWorkerModeIteration(dir);
+
+    assert.equal(result, 'continue', 'the rescue must not change the iteration disposition');
+    const head = git(dir, ['rev-parse', 'HEAD']);
+    assert.notEqual(
+      head,
+      preIterSha,
+      'worker mode must auto-commit attributable dirt — leaving it on the floor disowns a complete fix',
+    );
+    assert.match(
+      git(dir, ['show', '--name-only', '--format=', 'HEAD']),
+      /fix\.ts/,
+      'the rescued commit must carry the file the worker authored',
+    );
+    assert.equal(git(dir, ['status', '--porcelain']).trim(), '', 'the tree is clean after the rescue');
+    assert.equal(
+      headAtWorkerHandoff,
+      head,
+      'the rescue must run BEFORE the worker-managed iteration, so its per-iteration gate sees the rescued commit instead of reporting no_commits',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ANTI-OVER-TRIGGER CONTROL. Hoisting the rescue must not fabricate a commit on a clean tree —
+// a zero-commit iteration that genuinely produced nothing stays a zero-commit iteration.
+test('AP-EXT-ITER184-01 control: a clean worker-managed iteration commits nothing', async () => {
+  const { dir, baseline } = initRepo();
+  try {
+    const { result, headAtWorkerHandoff } = await runWorkerModeIteration(dir);
+
+    assert.equal(result, 'continue');
+    assert.equal(git(dir, ['rev-parse', 'HEAD']), baseline, 'no dirt, no commit');
+    assert.equal(headAtWorkerHandoff, baseline, 'the worker still sees the unmoved HEAD');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
