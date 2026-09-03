@@ -6,10 +6,72 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as ts from 'typescript';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../hooks/handlers/config-protection.js');
+
+/**
+ * Blank every COMMENT in `source` to same-width whitespace, leaving code and
+ * every string/template/regex literal byte-for-byte where it was.
+ *
+ * The pins below ask "is this SHAPE in the code" by slicing a span out of a
+ * source file and grepping it. Read raw, both halves of that question answer to
+ * comment text: a `doesNotMatch` needle can be satisfied by prose, and — the
+ * shape MEASURED live on this tree (AP-EXT-ITER180-02) — a span whose END
+ * delimiter is a comment PHRASE truncates above the code it was cut to cover.
+ * A `WRITE_COMMANDS.has(` set-membership read, the exact bypass AP-EXT-ITER73-02
+ * forbids, sat inside `findWriteTargetInScope` and read GREEN 25/0 behind one
+ * comment carrying `Write-aware config gate`, where the bare control RED.
+ *
+ * Keeping exactly the leaf-token spans needs no enumeration of the lexical
+ * contexts a marker can hide inside. JSDoc is the one comment the parser returns
+ * as a node rather than as trivia, so it is skipped explicitly.
+ *
+ * DELIBERATE duplication: fourth copy, shared home fence-blocked (no
+ * `tests/helpers/` file for it is inside this branch's scope.json), see
+ * AP-EXT-ITER174-01 and the twin docblocks in tsc-gate.test.js and
+ * zero-diff-completion-arm.test.js.
+ */
+function codeMask(source, fileName) {
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const isJsDoc = (node) => node.kind >= ts.SyntaxKind.FirstJSDocNode
+    && node.kind <= ts.SyntaxKind.LastJSDocNode;
+  // Indexed by UTF-16 code UNIT, which is what `getStart`/`getEnd` count.
+  const out = new Array(source.length);
+  for (let i = 0; i < source.length; i += 1) out[i] = source[i] === '\n' ? '\n' : ' ';
+
+  const keep = (node) => {
+    if (isJsDoc(node)) return;
+    const children = node.getChildren(sourceFile);
+    if (children.length === 0) {
+      for (let i = node.getStart(sourceFile); i < node.getEnd(); i += 1) out[i] = source[i];
+      return;
+    }
+    children.forEach(keep);
+  };
+  keep(sourceFile);
+
+  return out.join('');
+}
+
+/**
+ * The ONE way a pin in this file reads a source file. Every question asked below
+ * is a question about CODE, so no pin reaches for the raw bytes — routing them
+ * all through here is what stops the next pin being born comment-blind.
+ */
+function readCode(file) {
+  return codeMask(fs.readFileSync(file, 'utf8'), file);
+}
+
+/**
+ * This file's own bytes, for the pin below that parses this file. Argument-less
+ * by construction, so it can never become a second reader of anything else.
+ */
+function readSelf() {
+  return fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+}
 
 function writeExtensionSentinel(extensionDir) {
   const sentinelDir = path.join(extensionDir, 'extension', 'bin');
@@ -1288,13 +1350,12 @@ test('AP-EXT-ITER73-02: execNamesIn reads fixed-width patterns and rejects elidi
 });
 
 test('AP-EXT-ITER73-02: Pass 2 asks execNamesIn, never a literal set-membership read', () => {
-  const handler = fs.readFileSync(
+  const handler = readCode(
     path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'),
-    'utf-8',
   );
   const body = handler.slice(
     handler.indexOf('function findWriteTargetInScope'),
-    handler.indexOf('Write-aware config gate'),
+    handler.indexOf('function bashWritesProtectedConfig'),
   );
   assert.ok(body.length > 0, 'findWriteTargetInScope body must be locatable');
   assert.match(body, /execNamesIn\(tokens\[i\]\.value, WRITE_COMMANDS\)/);
@@ -1409,9 +1470,8 @@ test('AP-EXT-ITER93-07: shellWordWitness fills only SINGLE-POSITION wildcards', 
 });
 
 test('AP-EXT-ITER93-07: isInPlaceFlag asks a witness, and the fill machinery has ONE home', () => {
-  const handler = fs.readFileSync(
+  const handler = readCode(
     path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'),
-    'utf-8',
   );
   const body = handler.slice(
     handler.indexOf('function isInPlaceFlag'),
@@ -1430,9 +1490,8 @@ test('AP-EXT-ITER93-07: isInPlaceFlag asks a witness, and the fill machinery has
   // The position-splitting and fillability rule stays in shell-exec.ts: the
   // interpreter shape reaches it through the same primitive, so a future caller
   // cannot fork "which construct stands for one position".
-  const shellExec = fs.readFileSync(
+  const shellExec = readCode(
     path.resolve(__dirname, '../src/hooks/shell-exec.ts'),
-    'utf-8',
   );
   assert.equal(
     (shellExec.match(/SINGLE_POSITION_WILDCARD_RE\.test\(/g) ?? []).length,
@@ -1582,9 +1641,8 @@ test('AP-EXT-ITER73-04: a near-miss runtime-root sibling still approves', () => 
 // Structural pin (PATTERN_SHAPE): both arms must read through the ONE shared
 // reader. A re-inlined literal compare is exactly how this bypass existed.
 test('AP-EXT-ITER73-04: both write-destination arms read through the shared reader', () => {
-  const handler = fs.readFileSync(
+  const handler = readCode(
     path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'),
-    'utf-8',
   );
   const basenameFn = handler.slice(
     handler.indexOf('function matchProtectedStateBasename'),
@@ -1602,7 +1660,7 @@ test('AP-EXT-ITER73-04: both write-destination arms read through the shared read
 
   const rootFn = handler.slice(
     handler.indexOf('function isInsideRuntimeRoot'),
-    handler.indexOf('/** Tool-input file_path match'),
+    handler.indexOf('function detectProtectedWriteTarget'),
   );
   assert.ok(rootFn.length > 0, 'isInsideRuntimeRoot body must be locatable');
   // AP-EXT-ITER96-02 moved this arm off `execNameIs` — whose `patternNamesACommand`
@@ -1780,9 +1838,8 @@ for (const [label, command] of [
 // path domain layers no bound on it. A private copy here is how the three
 // domains drifted apart in the first place.
 test('AP-EXT-ITER96-02: the expansion read is shared, and the path domain adds no bound', () => {
-  const shellExec = fs.readFileSync(
+  const shellExec = readCode(
     path.resolve(__dirname, '../src/hooks/shell-exec.ts'),
-    'utf-8',
   );
   const readerStart = shellExec.indexOf('export function wordExpandsTo');
   const reader = shellExec.slice(readerStart, shellExec.indexOf('\n}\n', readerStart));
@@ -1905,9 +1962,8 @@ test('AP-EXT-ITER97-01: the collapse is a pure subtraction — one `.*` per run'
 });
 
 test('AP-EXT-ITER97-01: the collapse lives in the `*` arm, not a whole-pattern pre-pass', () => {
-  const shellExec = fs.readFileSync(
+  const shellExec = readCode(
     path.resolve(__dirname, '../src/hooks/shell-exec.ts'),
-    'utf-8',
   );
   const start = shellExec.indexOf('export function shellPatternToRegex');
   const body = shellExec.slice(start, shellExec.indexOf('\n}\n', start));
@@ -1916,4 +1972,146 @@ test('AP-EXT-ITER97-01: the collapse lives in the `*` arm, not a whole-pattern p
   // A pre-pass over the whole pattern would also collapse a `**` inside a brace
   // or bracket BODY, where the star is a literal — that is the regression.
   assert.doesNotMatch(body, /pattern\s*=\s*pattern\.replace/);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER180-02: a pin asking whether a SHAPE is in the code must read
+// code, not bytes.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER180-02: codeMask blanks comments by grammar, and moves nothing', () => {
+  // The mutation matrix that proved the fix. Regress codeMask in EITHER
+  // direction and this reds: under-blank leaves this file's own trap-door prose
+  // able to answer the pins above, over-blank hides the code they exist to see.
+  for (const [name, source, mustBeVisible] of [
+    ['line marker inside a string', "const u = 'https://x.dev'; const bad = WRITE_COMMANDS.has(x);", true],
+    ['block opener inside a string', "const u = '/* not a comment'; const bad = WRITE_COMMANDS.has(x);", true],
+    ['block opener inside a regex literal', 'const re = /[/*]/; const bad = WRITE_COMMANDS.has(x);', true],
+    ['marker inside a template', 'const t = `see // here`; const bad = WRITE_COMMANDS.has(x);', true],
+    ['a REAL line comment', '// never WRITE_COMMANDS.has(x) here', false],
+    ['a REAL block comment', '/* never WRITE_COMMANDS.has(x) here */', false],
+    ['a REAL JSDoc block', '/** never WRITE_COMMANDS.has(x) here */', false],
+  ]) {
+    const masked = codeMask(source, 'probe.ts');
+    assert.equal(
+      masked.includes('WRITE_COMMANDS.has('), mustBeVisible,
+      `${name}: expected ${mustBeVisible ? 'VISIBLE' : 'BLANKED'} in ${JSON.stringify(masked)}`,
+    );
+    assert.equal(masked.length, source.length, `${name}: codeMask must not move a character`);
+  }
+  // Position-preserving is load-bearing: every pin above cuts its span with
+  // `indexOf` offsets taken from the SAME string it then greps. An astral
+  // character is two UTF-16 code units but one code point, so a code-POINT walk
+  // shifts the newline and every span after it.
+  const astral = "const e = '\u{1F600}'; // c\nconst bad = WRITE_COMMANDS.has(x);";
+  assert.equal(
+    codeMask(astral, 'probe.ts'),
+    "const e = '\u{1F600}';     \nconst bad = WRITE_COMMANDS.has(x);",
+    'must index by UTF-16 code unit',
+  );
+});
+
+test('AP-EXT-ITER180-02: the span delimiters this file cuts on are CODE, and every read is masked', () => {
+  // Half one — the delimiters. MEASURED live on this tree before the fix: the
+  // AP-EXT-ITER73-02 pin cut `findWriteTargetInScope` at the comment PHRASE
+  // `Write-aware config gate`, so a `WRITE_COMMANDS.has(` set-membership read —
+  // the exact bypass that pin forbids — sat inside the function and the file
+  // read GREEN 296/0 behind one comment carrying that phrase, where the same
+  // edit without the comment RED. A delimiter that survives masking is a
+  // delimiter no comment can forge, so this asks the masked source, not the raw
+  // bytes: an `indexOf` argument that cannot be found in masked code is a
+  // comment phrase, whatever it looks like at the call site.
+  const self = ts.createSourceFile(
+    'self.js', readSelf(), ts.ScriptTarget.Latest, true,
+  );
+  const sources = {
+    handler: readCode(path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts')),
+    shellExec: readCode(path.resolve(__dirname, '../src/hooks/shell-exec.ts')),
+  };
+  const commentDelimiters = [];
+  const rawReads = [];
+  const maskCallers = [];
+  const spanOf = (name) => {
+    let span = null;
+    const find = (node) => {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
+        span = { start: node.getStart(self), end: node.getEnd() };
+      }
+      ts.forEachChild(node, find);
+    };
+    find(self);
+    assert.ok(span, `${name} must remain a declared reader in this file`);
+    return span;
+  };
+  const readCodeSpan = spanOf('readCode');
+  const readerSpans = [readCodeSpan, spanOf('readActivityEvents'), spanOf('readSelf')];
+  const lineOf = (node) => self.getLineAndCharacterOfPosition(node.getStart(self)).line + 1;
+
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression.getText(self);
+      const inAReader = readerSpans.some(
+        (s) => node.getStart(self) >= s.start && node.getEnd() <= s.end,
+      );
+      if (callee.endsWith('readFileSync') && !inAReader) {
+        rawReads.push(`${lineOf(node)}: readFileSync(${node.arguments[0]?.getText(self) ?? ''})`);
+      }
+      // Deliberately NOT `inAReader`: `readActivityEvents` reads runtime output,
+      // never repo source, so a codeMask call inside it would be a SECOND masked
+      // path — the shape a read would take to look masked while routing around
+      // `readCode`.
+      const inMasked = node.getStart(self) >= readCodeSpan.start
+        && node.getEnd() <= readCodeSpan.end;
+      if (callee === 'codeMask' && !inMasked) maskCallers.push(node);
+      // `.indexOf('literal')` on a source string is how every span here is cut.
+      const isIndexOf = ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'indexOf';
+      const receiver = isIndexOf ? node.expression.expression.getText(self) : null;
+      const [needle] = node.arguments;
+      if (receiver && receiver in sources && needle && ts.isStringLiteral(needle)) {
+        if (!sources[receiver].includes(needle.text)) {
+          commentDelimiters.push(`${lineOf(node)}: ${receiver}.indexOf(${JSON.stringify(needle.text)})`);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(self);
+
+  assert.deepEqual(
+    commentDelimiters, [],
+    'every span delimiter must be findable in MASKED source — one that is not is a '
+      + 'comment phrase, and a comment can be moved, duplicated or deleted above the '
+      + 'code the span was cut to cover',
+  );
+  // Half two — the reads. A delimiter fix alone lasts until the next pin is
+  // born raw, which is how this file grew six raw readers while two masked ones
+  // sat in sibling test files.
+  assert.deepEqual(
+    rawReads, [],
+    'every readFileSync must sit inside a declared reader (readCode, readActivityEvents, readSelf)',
+  );
+  const anchorSpan = (() => {
+    let span = null;
+    self.forEachChild((node) => {
+      // The test's own TITLE, not its text: a node's text includes its comments,
+      // so matching the phrase anywhere would let a comment in some other test
+      // claim to be the anchor and empty this clause out.
+      if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return;
+      const [title] = node.expression.arguments;
+      if (!title || !ts.isStringLiteral(title)) return;
+      if (title.text.includes('codeMask blanks comments by grammar')) {
+        span = { start: node.getStart(self), end: node.getEnd() };
+      }
+    });
+    assert.ok(span, 'the codeMask anchor test must remain in this file');
+    return span;
+  })();
+  const stray = maskCallers
+    .filter((node) => node.getStart(self) < anchorSpan.start || node.getEnd() > anchorSpan.end)
+    .map((node) => `${lineOf(node)}: ${node.getText(self).split('\n')[0]}`);
+  assert.deepEqual(
+    stray, [], 'codeMask has exactly two callers: readCode, and the anchor test that proves it',
+  );
+  assert.ok(maskCallers.length > 0, 'the anchor test must still exercise codeMask');
 });
