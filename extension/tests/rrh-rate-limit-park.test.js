@@ -224,35 +224,38 @@ test('B2: resume re-spawns ≤1 worker for the SAME ticket/phase with iteration 
 });
 
 /**
- * Every `logActivity(...)` object-literal argument in `src` that names `<eventName>`,
- * brace-matched so each is read whole. Discovery is by BRACE MATCH, never by a
- * `logActivity({ event: '<name>'` text needle: that needle is formatting-sensitive,
- * so reflowing one emitter across lines silently drops it from coverage (measured).
- * Scoping to the literal is the point: a span assertion joining the event name to a
- * field name is satisfied by any later occurrence of that field anywhere in the file.
+ * Every object literal in `src` that NAMES `<eventName>`, brace-matched so each is read
+ * whole. Discovery anchors on the EVENT NAME, never on the `logActivity(` call that emits
+ * it: a call-anchored census has to decide what an argument looks like, and this file
+ * already builds 3 events as a `const` first and passes the variable, every one of which
+ * the old `src[open] !== '{'` arm silently skipped. Refactoring an emitter to that shape
+ * AND stripping the field measured GREEN 23/23 (AP-EXT-ITER168-01). The event name is the
+ * one token a refactor of the call site cannot move, so it is the only sound anchor.
+ * Scoping to the enclosing literal is still the point: a span assertion joining the event
+ * name to a field name is satisfied by any later occurrence of that field anywhere.
  */
 function activityEmitterLiterals(eventName) {
-  const CALL = 'logActivity(';
-  const carriesEvent = new RegExp(`event:\\s*'${eventName}'`);
+  const names = new RegExp(`event:\\s*'${eventName}'`, 'g');
   const literals = [];
-  for (let from = 0; ; ) {
-    const at = src.indexOf(CALL, from);
-    if (at === -1) break;
-    const open = at + CALL.length;
-    from = open;
-    if (src[open] !== '{') continue; // not an object-literal argument
+  for (let m = names.exec(src); m; m = names.exec(src)) {
+    // Walk back to the '{' that opens the literal holding this key, then match it forward.
     let depth = 0;
+    let open = -1;
+    for (let i = m.index; i >= 0; i -= 1) {
+      if (src[i] === '}') depth += 1;
+      else if (src[i] === '{' && (depth -= 1) < 0) { open = i; break; }
+    }
+    assert.notEqual(open, -1, `${eventName} at offset ${m.index} must sit inside an object literal`);
     let end = -1;
+    depth = 0;
     for (let i = open; i < src.length; i += 1) {
       if (src[i] === '{') depth += 1;
       else if (src[i] === '}' && (depth -= 1) === 0) { end = i; break; }
     }
-    assert.notEqual(end, -1, `logActivity object literal at offset ${at} must be closed`);
-    const literal = src.slice(open, end + 1);
-    if (carriesEvent.test(literal)) literals.push(literal);
-    from = end;
+    assert.notEqual(end, -1, `object literal at offset ${open} must be closed`);
+    literals.push(src.slice(open, end + 1));
   }
-  assert.ok(literals.length > 0, `${eventName} must have at least one logActivity emitter`);
+  assert.ok(literals.length > 0, `${eventName} must have at least one emitter`);
   return literals;
 }
 
@@ -267,11 +270,13 @@ function assertEveryEmitterCarries(eventName, field) {
 
 test('B2: rate_limit_resume carries parked_minutes (source emitter check)', () => {
   // Scoped to each emitter's own object literal, and applied to EVERY emitter of the
-  // event. The prior form `/event: 'rate_limit_wait'[\s\S]*?reset_at/` spanned the
-  // whole file: `reset_at` occurs 21 times in mux-runner.ts, so it stayed GREEN with
-  // the field stripped from BOTH emitters (measured). Its neighbour only looked sound
-  // because `parked_minutes` happens to occur nowhere else -- and even it saw only the
-  // FIRST of the two emitters (also measured).
+  // event. Two earlier forms went vacuous here, both at the DISCOVERY step, not the
+  // assertion: `/event: 'rate_limit_wait'[\s\S]*?reset_at/` spanned the whole file
+  // (`reset_at` occurs 21x in mux-runner.ts, so it stayed GREEN with the field stripped
+  // from BOTH emitters), and its `logActivity(`-anchored successor skipped any emitter
+  // passed as a variable -- 3 such calls are already live in that file, and refactoring
+  // one rate_limit_wait emitter to that shape while stripping `reset_at` also measured
+  // GREEN. Anchoring on the event name removes the call-shape question entirely.
   assertEveryEmitterCarries('rate_limit_resume', 'parked_minutes');
   assertEveryEmitterCarries('rate_limit_wait', 'reset_at');
 });
