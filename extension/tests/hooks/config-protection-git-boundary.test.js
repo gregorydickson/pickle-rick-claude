@@ -4957,6 +4957,118 @@ test('AP-EXT-ITER187-01: elision is additive, quote-faithful and cheap', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER188-01 — a LITERAL apostrophe switched the ITER187-01 reading off
+//
+// `elideExpansions` shipped with its OWN quote reader that knew `'` and `\` and
+// not `"`. Inside `"…"` a `'` is an ordinary literal to bash — the apostrophe in
+// `git commit -m "don't"` — but that reader took it as a span opener and copied
+// verbatim to the next `'`, or, when there is none, to the END of the command.
+// `elided === command` then held and the second reading was never taken.
+//
+// Measured against the shipped handler: 8 of 9 gates re-opened behind ONE
+// apostrophe, and the R-WACT commit classification with them. Not adversarial —
+// 4549 of 13073 real worker commands carry a literal apostrophe inside `"…"`,
+// and 311 of the 4681 expansion-carrying ones had their elision suppressed.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER188-01: a literal apostrophe does not switch the elision off', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const run = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  // Each prefix puts a `'` bash reads as a LITERAL in front of the glued verb.
+  // The third has NO closing apostrophe at all, which is what let the private
+  // reader swallow the whole rest of the command.
+  const prefixes = [
+    'git commit -m "don\'t" && ',
+    'echo "worker\'s log" && ',
+    'echo "unclosed \' quote" && ',
+    'echo "a\'b" | cat && ',
+  ];
+  for (const prefix of prefixes) {
+    for (const glued of [
+      'git reset$(true) --hard',
+      'git re$(true)set --hard',
+      'git reset$EMPTY --hard',
+      'git push${EMPTY} origin main',
+      'git re$(echo $(true))set --hard',
+      'git commit$(true) --amend -m x',
+    ]) {
+      const result = run(prefix + glued);
+      assert.equal(result.decision, 'block', `must block: ${prefix + glued}`);
+    }
+    // The sibling gates share the same reading, so they recover together.
+    assert.equal(run(`${prefix}bash install$(true).sh`).decision, 'block');
+    assert.equal(run(`${prefix}tee$(true) /tmp/pickle-test/state.json`).decision, 'block');
+  }
+});
+
+test('AP-EXT-ITER188-01: bash expands inside "…" and not inside \'…\'', () => {
+  // A DOUBLE-quoted span is consumed whole — so a `'` inside it is a literal and
+  // opens nothing — and its contents are still elided, because bash expands
+  // there. Both halves in one assertion: the apostrophe survives, the expansion
+  // does not.
+  // The `(` is inside quotes, so it is no separator: one segment each reading.
+  assert.deepEqual(
+    splitShellSegments('echo "don\'t $(x) stop"'),
+    ['echo "don\'t $(x) stop"', 'echo "don\'t  stop"'],
+  );
+  // A real single-quoted span still suppresses elision, and so does a backslash
+  // escape and an ANSI-C span — this is what stops the reading manufacturing a
+  // command bash cannot produce. Regression direction: a fix that simply
+  // deleted the private single-quote arm would red every line here.
+  for (const command of [
+    "echo 'a $(b) c'",
+    'echo \\$HOME',
+    "git $'\\x72eset' --hard",
+    "echo 'don\\'\\''t $(x)'",
+  ]) {
+    assert.deepEqual(splitShellSegments(command), [command], `no second reading: ${command}`);
+  }
+  // An expansion may SPAN whitespace, so the walk cannot be per-word: cutting
+  // `$(echo $(true))` at the blank leaves an unbalanced `$(echo` that elides to
+  // end-of-part and destroys the verb (measured — this exact shape reddened the
+  // ITER187-01 matrix during the fix).
+  assert.ok(splitShellSegments('git re$(echo $(true))set --hard').includes('git reset --hard'));
+  assert.ok(splitShellSegments('git reset$(a "b c")  --hard').includes('git reset --hard'));
+});
+
+test('AP-EXT-ITER188-01: one grammar feeds every reader of bash\'s quoting forms', () => {
+  const code = readCode(SHELL_EXEC_TS);
+  // The two elision readers are BUILT from the same declared span constants as
+  // WORD_PART_SOURCE, so a fifth quoting form cannot be declared in one reader
+  // and missed by the other — the private-copy drift ITER12-01 and ITER66-01
+  // each collapsed. Pinning the DERIVATION, not a spelling of the forms.
+  const literal = code.match(/const LITERAL_PART_RE = new RegExp\(\s*`([^`]*)`,\s*'y',?\s*\)/);
+  assert.ok(literal, 'LITERAL_PART_RE must stay one derived RegExp');
+  assert.deepEqual(
+    literal[1].match(/\$\{[A-Z_]+\}/g),
+    ['${UNQUOTED_ESCAPE}', '${ANSI_C_QUOTED_SPAN}', '${SINGLE_QUOTED_SPAN}'],
+  );
+  const expanding = code.match(/const EXPANDING_QUOTED_SPAN_RE = new RegExp\(\s*`([^`]*)`,\s*'y',?\s*\)/);
+  assert.ok(expanding, 'EXPANDING_QUOTED_SPAN_RE must stay one derived RegExp');
+  assert.deepEqual(
+    expanding[1].match(/\$\{[A-Z_]+\}/g),
+    ['${LOCALE_QUOTED_SPAN}', '${DOUBLE_QUOTED_SPAN}'],
+  );
+  // Together they must name every span WORD_PART_SOURCE does, so no form is
+  // declared in the grammar and unreachable from the elision walk.
+  const grammar = code.match(/const WORD_PART_SOURCE =\s*([\s\S]*?);\n/);
+  assert.ok(grammar, 'WORD_PART_SOURCE must stay one declaration');
+  const named = new Set([...literal[1].match(/\$\{[A-Z_]+\}/g), ...expanding[1].match(/\$\{[A-Z_]+\}/g)]);
+  for (const form of grammar[1].match(/\$\{[A-Z_]+\}/g)) {
+    if (form === '${UNQUOTED_RUN}') continue; // not a span: the ordinary run
+    assert.ok(named.has(form), `${form} is declared in the grammar but no elision reader consumes it`);
+  }
+  // And the private reader is GONE: elideExpansions must not test a quote
+  // character itself, which is the shape that made `'` a phantom span opener.
+  const walk = code.slice(code.indexOf('function elideExpansions('), code.indexOf('function elideExpansionsInText('));
+  assert.equal(walk.match(/'\\\\''|=== *'\\''/g), null, 'elideExpansions must not re-read quotes itself');
+  assert.ok(walk.includes('LITERAL_PART_RE') && walk.includes('EXPANDING_QUOTED_SPAN_RE'));
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER180-01 — every source-text pin in this file read RAW BYTES
 //
 // Nineteen read sites, and each one asked a question about CODE of a string

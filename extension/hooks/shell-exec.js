@@ -122,6 +122,33 @@ const TOKEN_SCAN_RE = new RegExp(`(?:${WORD_PART_SOURCE})+`, 'g');
 const WORD_PART_RE = new RegExp(WORD_PART_SOURCE, 'g');
 const SEGMENT_SCAN_RE = new RegExp(`\\n|(?:${WORD_PART_SOURCE})+`, 'g');
 /**
+ * The word parts split by whether bash EXPANDS inside them, for the readers
+ * that must decide that — today `elideExpansions`. Both are built from the SAME
+ * declared span constants as `WORD_PART_SOURCE`, so the grammar has one home
+ * and a fifth quoting form cannot be declared in one reader and missed by the
+ * other. Sticky, so a scan can ask "does a part begin HERE" without slicing.
+ *
+ * The split IS bash's rule, not a list: expansion happens inside a span opened
+ * by `"` (`"…"`, `$"…"`) and never inside one opened by `'` (`'…'`, `$'…'`) nor
+ * after a backslash. `UNQUOTED_ESCAPE` stays FIRST for the same reason it is
+ * first in `WORD_PART_SOURCE` — `\"` must be an escaped literal quote before
+ * any span pattern can read that `"` as a delimiter.
+ *
+ * AP-EXT-ITER188-01: `elideExpansions` shipped with a PRIVATE quote reader that
+ * knew `'` and `\` and not `"`, so the apostrophe in `git commit -m "don't"` —
+ * an ordinary literal to bash — opened a phantom span that ran to the next `'`
+ * or, when there is none, to the END of the command. Every expansion after it
+ * was copied verbatim and the AP-EXT-ITER187-01 reading was never taken at all.
+ */
+const LITERAL_PART_RE = new RegExp(`${UNQUOTED_ESCAPE}|${ANSI_C_QUOTED_SPAN}|${SINGLE_QUOTED_SPAN}`, 'y');
+const EXPANDING_QUOTED_SPAN_RE = new RegExp(`${LOCALE_QUOTED_SPAN}|${DOUBLE_QUOTED_SPAN}`, 'y');
+/** The sticky match at exactly `index`, or null when the pattern is not there. */
+function matchAt(sticky, text, index) {
+    sticky.lastIndex = index;
+    const match = sticky.exec(text);
+    return match === null ? null : match[0];
+}
+/**
  * Inside a double-quoted bash span a backslash escapes ONLY `"`, `\`, `$`, and
  * a backtick; before anything else it stays literal (`"a\nb"` really is `a\nb`).
  * Unescaping exactly that set turns a `-c` payload back into the command the
@@ -1088,8 +1115,10 @@ function expansionSpanEnd(text, start) {
  * uniform additional reading, the same widening `expandShellCommandStrings`
  * already applies to a `-c` payload and `expandWord` to a brace list. It needs
  * no table of which expansions can be empty, because at the scanner's remove
- * every expansion can. QUOTING is honoured — a single-quoted span and an
- * escaped character are copied verbatim, since bash expands neither — and a
+ * every expansion can. QUOTING is honoured by asking the ONE declared word-part
+ * grammar which parts bash expands (`partExpands`) rather than re-reading the
+ * quotes here — the private re-read is what AP-EXT-ITER188-01 removed, after a
+ * literal apostrophe inside `"…"` suppressed this whole reading. A
  * single-quoted `-c` payload is still elided one level down, where
  * `splitShellSegments` sees it unquoted.
  *
@@ -1111,22 +1140,50 @@ function elideExpansions(command) {
     let out = '';
     let i = 0;
     while (i < command.length) {
-        const ch = command[i];
-        if (ch === '\\') {
-            out += command.slice(i, i + 2);
-            i += 2;
+        const literal = matchAt(LITERAL_PART_RE, command, i);
+        if (literal !== null) {
+            out += literal;
+            i += literal.length;
             continue;
         }
-        if (ch === '\'') {
-            const close = command.indexOf('\'', i + 1);
-            const end = close === -1 ? command.length : close + 1;
-            out += command.slice(i, end);
-            i = end;
+        const expanding = matchAt(EXPANDING_QUOTED_SPAN_RE, command, i);
+        if (expanding !== null) {
+            out += elideExpansionsInText(expanding);
+            i += expanding.length;
             continue;
         }
         const end = expansionSpanEnd(command, i);
         if (end === -1) {
-            out += ch;
+            out += command[i];
+            i++;
+            continue;
+        }
+        i = end;
+    }
+    return out;
+}
+/**
+ * The empty-expansion reading of a run bash WILL expand — the walk above minus
+ * its quoting arms, for the INSIDE of a double-quoted span.
+ *
+ * The backslash pass-through is not a duplicate of `LITERAL_PART_RE`: inside
+ * `"…"` the grammar hands the span over whole, and `\$` is still bash's literal
+ * dollar there (`"cost \$5 and $(date)"` is `cost $5 and <date>`). At top level
+ * it is unreachable — `UNQUOTED_ESCAPE` is the first alternative of
+ * `LITERAL_PART_RE`, so every `\<char>` has already been consumed.
+ */
+function elideExpansionsInText(text) {
+    let out = '';
+    let i = 0;
+    while (i < text.length) {
+        if (text[i] === '\\') {
+            out += text.slice(i, i + 2);
+            i += 2;
+            continue;
+        }
+        const end = expansionSpanEnd(text, i);
+        if (end === -1) {
+            out += text[i];
             i++;
             continue;
         }
