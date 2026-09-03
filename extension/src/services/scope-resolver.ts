@@ -840,14 +840,23 @@ function findImporters(name: string, repoRoot: string, timeoutMs: number): strin
   // aliased imports (`{ foo as bar }`) are NOT matched: `\bfoo\b\s*[,}]`
   // requires , or } after foo — ` as` does not satisfy this (documented miss).
   const pattern = `import\\s+${name}\\b|import[^{;]*\\{[^}]*\\b${name}\\b\\s*[,}]`;
-  // `null` from _runRgImportWalk means rg failed/missing — the ONLY case the
-  // grep fallback exists for. A successful rg that found zero importers returns
-  // `[]`, which is the authoritative answer: rg honors .gitignore + the
-  // `*.{ts,…}` glob, so falling through to `grep -rl … .` (which does NOT honor
-  // .gitignore) would both double the subprocess count and pull ignored
-  // importers (node_modules/, dist/) into the one-hop set.
+  // The WHOLE rg -> git grep -> grep degrade ladder lives here, once. `null` from a
+  // tier means it did not answer (failed/missing/timed out) — the ONLY case the next
+  // tier exists for. A successful run that found zero importers returns `[]`, which is
+  // the authoritative answer: rg and git grep both honor .gitignore, so falling through
+  // to `grep -rl … .` (which does NOT) would both double the subprocess count and pull
+  // ignored importers (node_modules/, dist/) into the one-hop set.
+  //
+  // Degrading is keyed on "did this tier answer", NEVER on WHY it did not. Splitting the
+  // ladder so that one failure code (ENOENT) reached git grep while every other one
+  // (a timeout, an unreadable dir, `--no-unicode` unrecognized by rg < 13) jumped
+  // straight to the gitignore-blind last resort made the SAME unusable-rg host resolve
+  // two different fences — measured: a gitignored importer entered the one-hop set on
+  // the rg-exit-2 path and not on the rg-ENOENT path.
   const rgMatches = _runRgImportWalk(pattern, repoRoot, timeoutMs);
   if (rgMatches !== null) return rgMatches;
+  const gitGrepMatches = _runGitGrepImportWalk(pattern, repoRoot, timeoutMs);
+  if (gitGrepMatches !== null) return gitGrepMatches;
   return _runGrepImportWalk(pattern, repoRoot, timeoutMs);
 }
 
@@ -909,19 +918,17 @@ function _runRgImportWalk(pattern: string, root: string, timeoutMs: number): str
       .filter((f) => f.length > 0)
       .map((f) => toPosix(f.replace(/^\.\//, '')));
   }
-  // rg.error is checked (via errorCode below) BEFORE rg.status/rg.stdout are
-  // consumed any further — a missing rg binary (ENOENT) is a runner-image gap,
-  // not a scope-resolution failure, so it degrades through git grep (which
-  // still honors .gitignore) before falling to the gitignore-blind grep -rl
-  // last resort. This is report-only (AC-6): never throw, never a non-zero
-  // exit, never an exit_reason — the worst case still returns the same
-  // empty-but-successful shape used for "no matches" (see HS-8 above).
+  // Every non-answer returns `null`; `findImporters` owns the degrade ladder and
+  // routes ALL of them through git grep (which still honors .gitignore) before the
+  // gitignore-blind grep -rl last resort. errorCode only picks the warning wording —
+  // a missing rg (ENOENT) and an rg too old for `--no-unicode` (exit 2) are the same
+  // runner-image gap, and must not resolve different fences. This is report-only
+  // (AC-6): never throw, never a non-zero exit, never an exit_reason — the worst case
+  // still returns the same empty-but-successful shape used for "no matches" (see HS-8).
   const errorCode = (rg.error as NodeJS.ErrnoException | undefined)?.code;
   if (errorCode === 'ENOENT') {
     console.warn('scope-resolver import walk: rg missing (ENOENT) — degrading to git grep, then grep');
-    const gitGrepMatches = _runGitGrepImportWalk(pattern, root, timeoutMs);
-    if (gitGrepMatches !== null) { return gitGrepMatches; }
-    return _runGrepImportWalk(pattern, root, timeoutMs);
+    return null;
   }
   console.warn(`scope-resolver import walk: rg ${errorCode === 'ETIMEDOUT' ? 'timeout' : 'fail'} status=${rg.status ?? 'null'} signal=${rg.signal ?? 'null'} error=${errorCode ?? 'none'}`);
   return null;

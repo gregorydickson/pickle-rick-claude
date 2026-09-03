@@ -43,6 +43,19 @@ const RG_EMPTY_SUCCESS_SCRIPT = `#!/bin/sh
 exit 1
 `;
 
+// rg present but too old for `--no-unicode` (added to the walk for the rg 14.x
+// alternation defect; unrecognized by rg < 13, which exits 2). "Ran and failed",
+// NOT "absent" — the failure code the split degrade ladder routed differently.
+const RG_UNUSABLE_SCRIPT = `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--no-unicode" ]; then
+    echo "error: Found argument '--no-unicode' which wasn't expected" >&2
+    exit 2
+  fi
+done
+exit 2
+`;
+
 function makeRepo() {
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'scope-import-walk-')));
     fs.writeFileSync(path.join(repo, 'a.ts'), 'export function foo() {}\n');
@@ -97,8 +110,12 @@ function runTimedComputeOneHop(repo, scripts) {
     };
 }
 
+// Anchored on the emitted `import walk: <tool> ` prefix, NOT a bare `\btool\b`:
+// the ladder emits both `walk: git grep fail …` and `walk: grep fail …`, and a
+// bare word-boundary match on 'grep' cannot tell the middle tier from the last
+// resort — it reports the git grep tier's warning as the grep tier's.
 function hasWarning(warnings, tool, category) {
-    const pattern = new RegExp(`\\b${tool}\\b[^\\n]*\\b${category}\\b`);
+    const pattern = new RegExp(`import walk: ${tool} [^\\n]*\\b${category}\\b`);
     return warnings.some((line) => pattern.test(line));
 }
 
@@ -157,11 +174,19 @@ function resolveRealBinary(name) {
 // regardless of what is actually installed on the host. This is required
 // because `rg` is genuinely present on some dev hosts, so a prepend-style
 // PATH (used by the .mjs/.cjs parity test above) cannot guarantee ENOENT.
-function withRealBinariesOnPath(names, fn) {
+// `scripts` writes executable shims into the SAME exclusive-PATH dir, so a tool can
+// be present-but-broken (a shim) while its siblings are the real binaries — the
+// only way to reproduce an rg that runs and fails rather than one that is absent.
+function withRealBinariesOnPath(names, fn, scripts = {}) {
     const shimDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'scope-real-bin-')));
     try {
         for (const name of names) {
             fs.symlinkSync(resolveRealBinary(name), path.join(shimDir, name));
+        }
+        for (const [tool, script] of Object.entries(scripts)) {
+            const shimPath = path.join(shimDir, tool);
+            fs.writeFileSync(shimPath, script);
+            fs.chmodSync(shimPath, 0o755);
         }
         return fn(shimDir);
     } finally {
@@ -171,7 +196,10 @@ function withRealBinariesOnPath(names, fn) {
 
 // A real (not shimmed) git repo fixture, staged (not committed — `git grep`
 // reads tracked/staged content) with a seed export file and one importer.
-function makeGitRepo() {
+// `ignoredImporter` adds a THIRD importer under a .gitignore'd directory: rg and
+// git grep both skip it, `grep -rl … .` does not, so its presence in the one-hop
+// set identifies which tier answered.
+function makeGitRepo({ ignoredImporter = false } = {}) {
     const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'scope-import-walk-git-')));
     const git = resolveRealBinary('git');
     const run = (args) => {
@@ -180,6 +208,11 @@ function makeGitRepo() {
     };
     fs.writeFileSync(path.join(repo, 'a.ts'), 'export function foo() {}\n');
     fs.writeFileSync(path.join(repo, 'b.ts'), "import { foo } from './a';\n");
+    if (ignoredImporter) {
+        fs.writeFileSync(path.join(repo, '.gitignore'), 'ignored/\n');
+        fs.mkdirSync(path.join(repo, 'ignored'));
+        fs.writeFileSync(path.join(repo, 'ignored', 'vendor.ts'), "import { foo } from '../a';\n");
+    }
     run(['init', '-q']);
     run(['add', '-A']);
     return repo;
@@ -209,9 +242,12 @@ process.stdout.write(JSON.stringify({ result, warnings }));
 
 test('computeOneHop import walks', async (t) => {
     await t.test('rg fails and grep recovers', () => {
+        // Exclusive shim PATH: git is absent too, so the git grep tier cannot
+        // answer and the last-resort grep supplies the importers.
         const output = runInRepo({ rg: FAIL_SCRIPT(2), grep: SUCCESS_SCRIPT });
         assert.deepStrictEqual(output.result, ['a.ts', 'b.ts']);
         assert.equal(hasFailureWarning(output.warnings, 'rg'), true);
+        assert.equal(hasFailureWarning(output.warnings, 'git grep'), true);
         assert.equal(hasFailureWarning(output.warnings, 'grep'), false);
     });
 
@@ -229,10 +265,15 @@ test('computeOneHop import walks', async (t) => {
         // SIGKILL'd by the parent timeout (`timeout`) under heavy load — both
         // are valid non-success categories, and the warning count contract
         // (one per tool) holds for either.
+        // THREE tiers now report: rg, the git grep tier (git is absent from the
+        // exclusive shim PATH), and the last-resort grep. One warning per tier.
         const failureCount =
             warningCategoryCount(output.warnings, 'fail') +
             warningCategoryCount(output.warnings, 'timeout');
-        assert.equal(failureCount, 2);
+        assert.equal(failureCount, 3);
+        for (const tool of ['rg', 'git grep', 'grep']) {
+            assert.equal(hasFailureWarning(output.warnings, tool), true, `no non-success warning for ${tool}`);
+        }
     });
 
     await t.test('rg success with zero matches does NOT fall through to grep', () => {
@@ -320,6 +361,48 @@ process.stdout.write(JSON.stringify({ result }));
             // grep already satisfied the walk, so no "grep fail"/"grep
             // timeout" warning should appear.
             assert.equal(hasFailureWarning(output.warnings, 'grep'), false);
+        } finally {
+            cleanup(repo);
+        }
+    });
+
+    await t.test('rg present but UNUSABLE (exit 2) degrades through git grep, exactly like ENOENT', () => {
+        // The ladder degrades on "rg did not answer", never on WHY. An rg older than
+        // 13 rejects `--no-unicode` (added for the rg 14.x alternation defect) and
+        // exits 2 — present, unusable, the same runner-image gap as ENOENT. Routing
+        // that code straight to the gitignore-blind `grep -rl … .` last resort made
+        // the ignored importer enter the one-hop set, so one unusable-rg host
+        // resolved two different fences depending on the failure code.
+        const repo = makeGitRepo({ ignoredImporter: true });
+        try {
+            const output = withRealBinariesOnPath(['git', 'grep'],
+                (shimDir) => runComputeOneHopWithPathOverride(repo, shimDir),
+                { rg: RG_UNUSABLE_SCRIPT });
+            assert.deepStrictEqual(output.result, ['a.ts', 'b.ts']);
+            assert.equal(hasFailureWarning(output.warnings, 'rg'), true);
+            // git grep answered, so the last resort was never reached.
+            assert.equal(hasFailureWarning(output.warnings, 'git grep'), false);
+            assert.equal(hasFailureWarning(output.warnings, 'grep'), false);
+        } finally {
+            cleanup(repo);
+        }
+    });
+
+    await t.test('the ENOENT and exit-2 rg failures resolve the SAME one-hop set', () => {
+        // The differential the split ladder failed: identical host capability (rg
+        // unusable, real git + grep present), two failure codes, one fence.
+        const repo = makeGitRepo({ ignoredImporter: true });
+        try {
+            const viaEnoent = withRealBinariesOnPath(['git', 'grep'],
+                (shimDir) => runComputeOneHopWithPathOverride(repo, shimDir));
+            const viaExit2 = withRealBinariesOnPath(['git', 'grep'],
+                (shimDir) => runComputeOneHopWithPathOverride(repo, shimDir),
+                { rg: RG_UNUSABLE_SCRIPT });
+            assert.deepStrictEqual(viaExit2.result, viaEnoent.result);
+            assert.ok(
+                !viaExit2.result.includes('ignored/vendor.ts'),
+                `gitignored importer must never enter the one-hop set, got ${JSON.stringify(viaExit2.result)}`,
+            );
         } finally {
             cleanup(repo);
         }
