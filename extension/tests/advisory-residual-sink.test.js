@@ -16,6 +16,7 @@ import {
   scanSkipFlagEvents,
   scanRefusedRecoveredCounts,
   buildSkipFlagBudgetReport,
+  scanSessionFiles,
   SKIP_FLAG_BUDGETS,
 } from '../services/metrics-utils.js';
 import { findResiduals } from './__helpers__/activity-sink.js';
@@ -270,5 +271,105 @@ test('AP-EXT-ITER10-01: the sibling refused-and-recovered scanner reads the same
     assert.equal(counts.total, 3);
   } finally {
     fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER193-01 — the SESSION-transcript half of the AP-EXT-ITER10-01
+// invariant. `aceb54d7` retired the activity-dir size cap and made every
+// activity-file drop announce itself; the session-transcript reader
+// (`scanSessionFiles` -> `loadSessionFileData`) kept the pre-fix shape the trap
+// door's own PATTERN_SHAPE names — "a `.size >` threshold gating a
+// `readFileSync` in a jsonl scan loop, skipping silently". Removing that cap
+// reds an out-of-scope pin (`tests/metrics.test.js`, "skips files over 50MB"),
+// so the DROP is preserved here on purpose and only the SILENCE is fixed: the
+// under-count must announce itself.
+// ---------------------------------------------------------------------------
+
+const SESSION_FILE_CAP_BYTES = 50 * 1024 * 1024;
+
+function captureStderr(fn) {
+  const chunks = [];
+  const original = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => {
+    chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
+    return typeof rest[rest.length - 1] === 'function' ? rest[rest.length - 1]() ?? true : true;
+  };
+  try {
+    return { value: fn(), stderr: chunks.join('') };
+  } finally {
+    process.stderr.write = original;
+  }
+}
+
+function makeProjectsDir() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-session-scan-'));
+  return { root, cacheFile: path.join(root, 'metrics-cache.json') };
+}
+
+function assistantLine(ts, input, output) {
+  return JSON.stringify({
+    type: 'assistant',
+    timestamp: ts,
+    message: { usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+  });
+}
+
+/**
+ * A session transcript whose FIRST line is real, countable usage and whose size
+ * is then pushed past the cap with a sparse tail (no bytes written, no disk
+ * burned). The real first line is load-bearing in BOTH mutation directions: drop
+ * the cap and the slug appears in the result, so a fix that stops dropping is
+ * caught too.
+ */
+function writeOversizedSessionFile(root, slug, dayKey) {
+  const slugDir = path.join(root, slug);
+  fs.mkdirSync(slugDir, { recursive: true });
+  const filePath = path.join(slugDir, 'session.jsonl');
+  fs.writeFileSync(filePath, `${assistantLine(isoAtLocalNoon(dayKey), 111, 222)}\n`);
+  fs.truncateSync(filePath, SESSION_FILE_CAP_BYTES + 1024);
+  assert.ok(fs.statSync(filePath).size > SESSION_FILE_CAP_BYTES, 'fixture must exceed the 50 MB cap');
+  return filePath;
+}
+
+test('AP-EXT-ITER193-01: an oversized session transcript is dropped LOUDLY, never as a silent zero', () => {
+  const { root, cacheFile } = makeProjectsDir();
+  try {
+    const day = todayKey();
+    const filePath = writeOversizedSessionFile(root, 'oversized-project', day);
+
+    const { value: result, stderr } = captureStderr(() => scanSessionFiles(root, day, day, cacheFile));
+
+    assert.ok(
+      !result.has('oversized-project'),
+      'behavior unchanged: the over-cap file is still skipped (tests/metrics.test.js pins this)',
+    );
+    assert.match(
+      stderr,
+      /\[metrics\] session scan skipped /,
+      'the drop must announce itself — an under-count that says nothing is a false verdict, not a measurement',
+    );
+    assert.ok(stderr.includes(filePath), 'the diagnostic must name the file that left the totals');
+    assert.match(stderr, /exceeds the 52428800-byte cap/, 'the diagnostic must state why the file was dropped');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER193-01: anti-vacuity — a countable session transcript is counted and stays silent', () => {
+  const { root, cacheFile } = makeProjectsDir();
+  try {
+    const day = todayKey();
+    const slugDir = path.join(root, 'normal-project');
+    fs.mkdirSync(slugDir, { recursive: true });
+    fs.writeFileSync(path.join(slugDir, 'session.jsonl'), `${assistantLine(isoAtLocalNoon(day), 111, 222)}\n`);
+
+    const { value: result, stderr } = captureStderr(() => scanSessionFiles(root, day, day, cacheFile));
+
+    assert.equal(result.get('normal-project').get(day).input, 111, 'the in-window transcript is counted');
+    assert.equal(result.get('normal-project').get(day).output, 222);
+    assert.equal(stderr, '', 'a file that was read must produce no drop diagnostic');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

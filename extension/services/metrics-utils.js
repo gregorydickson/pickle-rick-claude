@@ -265,16 +265,29 @@ function readSlugJsonlFiles(slugDir) {
         return null;
     }
 }
+/**
+ * AP-EXT-ITER193-01: the ONE announce-and-drop for every reason a session
+ * transcript leaves the token totals. `aceb54d7` established the invariant on the
+ * activity half (`forEachActivityEventInWindow` reports each file it cannot read)
+ * and left this half silent, so `/pickle-metrics` could publish an under-count
+ * that reads exactly like a quiet day. Three drop causes share one exit so the
+ * family cannot re-fork into a silent fourth.
+ */
+function dropSessionFile(filePath, reason) {
+    process.stderr.write(`[metrics] session scan skipped ${filePath}: ${reason}\n`);
+    return null;
+}
 function loadSessionFileData(filePath, cache) {
     let fstat;
     try {
         fstat = fs.statSync(filePath);
     }
-    catch {
-        return null;
+    catch (err) {
+        return dropSessionFile(filePath, `stat failed: ${safeErrorMessage(err)}`);
     }
-    if (fstat.size > MAX_FILE_BYTES)
-        return null;
+    if (fstat.size > MAX_FILE_BYTES) {
+        return dropSessionFile(filePath, `size ${fstat.size} exceeds the ${MAX_FILE_BYTES}-byte cap`);
+    }
     const cached = cache.files[filePath];
     if (cached && cached.mtime === fstat.mtimeMs && cached.size === fstat.size) {
         return { fileData: cached.data, changed: false };
@@ -284,8 +297,8 @@ function loadSessionFileData(filePath, cache) {
         cache.files[filePath] = { mtime: fstat.mtimeMs, size: fstat.size, data: fileData };
         return { fileData, changed: true };
     }
-    catch {
-        return null;
+    catch (err) {
+        return dropSessionFile(filePath, `read failed: ${safeErrorMessage(err)}`);
     }
 }
 function mergeFileDataIntoResult(result, slug, fileData, since, until) {
