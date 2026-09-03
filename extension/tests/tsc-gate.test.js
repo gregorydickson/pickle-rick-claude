@@ -701,27 +701,44 @@ function readCode(file) {
 }
 
 /**
+ * This file's own bytes, for the pin below that parses this file. Argument-less
+ * by construction, so it can never become a second reader of anything else.
+ */
+function readSelf() {
+  return fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+}
+
+/**
+ * The materialized staged tree's seeded entry, whose EXACT bytes are the
+ * assertion — masking would destroy them. Builds its own path from the
+ * destination root, so it cannot be pointed at a repo source.
+ */
+function readMaterializedEntry(destination) {
+  return fs.readFileSync(path.join(destination, 'src', 'entry.ts'), 'utf8');
+}
+
+/**
+ * The replay patch fixture, read raw because the assertion is over its literal
+ * diff text. Argument-less, so it reads that one fixture and nothing else.
+ */
+function readReplayPatch() {
+  return fs.readFileSync(REPLAY_PATCH, 'utf8');
+}
+
+/**
  * The routing half of AP-EXT-ITER178-01, and the half a reader test cannot
  * cover: `codeMask` was already correct and already in this file when the
  * AP-EXT-ITER93-02 and AP-EXT-ITER104-01 pins were written against raw bytes
  * beside it. A correct reader nobody is obliged to use guarantees nothing, so
- * the invariant is that a source path can only be read HERE.
+ * the invariant is routing: a file can only be read inside a DECLARED reader.
  *
- * Read as grammar, not as a grep: the offender is a `readFileSync` call whose
- * path argument resolves a `.ts` file against this file's own location, and
- * only its position relative to `readCode` decides. A fixture the test just
- * wrote is read from a runtime-rooted path and is deliberately NOT covered —
- * those assertions are about exact bytes, which masking would destroy.
- *
- * Honest limit: a read whose argument is a VARIABLE (the AP-EXT-ITER113-01
- * directory walk holds one) is invisible here, because a name says nothing
- * about what it holds. The second clause is what covers that direction — such a
- * read can only route around `readCode` by forking a second masked reader, and
- * there is exactly one place a `codeMask` call may live.
+ * Read as grammar, not as a grep: the offender is a `readFileSync` call sitting
+ * outside every DECLARED reader. Position is the whole rule — nothing here
+ * inspects the path argument, because a path argument can be spelled around.
  */
-it('AP-EXT-ITER178-01 no pin reads a source file outside the ONE masked reader', () => {
+it('AP-EXT-ITER178-01 no pin reads a source file outside the declared readers', () => {
   const selfPath = fileURLToPath(import.meta.url);
-  const self = parseHandler(fs.readFileSync(selfPath, 'utf8'), selfPath);
+  const self = parseHandler(readSelf(), selfPath);
   const spanOf = (name) => {
     let span = null;
     const find = (node) => {
@@ -734,7 +751,24 @@ it('AP-EXT-ITER178-01 no pin reads a source file outside the ONE masked reader',
     assert.ok(span, `${name} must remain a single named function`);
     return span;
   };
-  const readerSpan = spanOf('readCode');
+  // The declared readers. Every `readFileSync` in this file must sit inside one
+  // of them, so the rule needs no test of what the path ARGUMENT looks like.
+  // The `_TS`/`__dirname` text test this replaces could only see a path written
+  // literally at the read site. MEASURED (AP-EXT-ITER181-02): a bare
+  // `readFileSync(HANDLER_TS)` RED, while the same repo-source read via a
+  // one-line `const p = HANDLER_TS` alias read GREEN. Five reads in this file
+  // were exempt by that blindness rather than by design. Membership of a span
+  // cannot be spelled around.
+  //
+  // Every reader either takes no path at all or builds its own, so admitting a
+  // reader here is not admitting a general escape hatch. `spanOf` throws on a
+  // missing name, so deleting a reader reds this rather than quietly shrinking
+  // the set it checks.
+  const readerSpans = [
+    'readCode', 'readState', 'readActivityEvents',
+    'readSelf', 'readMaterializedEntry', 'readReplayPatch',
+  ].map(spanOf);
+  const [maskedReaderSpan] = readerSpans;
   const lineOf = (node) => self.getLineAndCharacterOfPosition(node.getStart(self)).line + 1;
 
   const rawSourceReads = [];
@@ -742,20 +776,19 @@ it('AP-EXT-ITER178-01 no pin reads a source file outside the ONE masked reader',
   const visit = (node) => {
     if (ts.isCallExpression(node)) {
       const callee = node.expression.getText(self);
-      const inReader = node.getStart(self) >= readerSpan.start && node.getEnd() <= readerSpan.end;
-      if (callee.endsWith('readFileSync') && !inReader) {
+      const inAReader = readerSpans.some(
+        (s) => node.getStart(self) >= s.start && node.getEnd() <= s.end,
+      );
+      if (callee.endsWith('readFileSync') && !inAReader) {
         const target = node.arguments[0]?.getText(self) ?? '';
-        // A path this file resolves against its OWN location is a repo file
-        // under review; a path rooted at a runtime variable is a fixture the
-        // test just wrote, whose exact bytes are the assertion and which must
-        // NOT be masked. `_TS` names the shared constants, all of which are
-        // `path.resolve(__dirname, …)`. The compiled mirror counts too: a pin
-        // over `hooks/**.js` reads the same code past the same comments.
-        const repoSource = /_TS\b/.test(target)
-          || (target.includes('__dirname') && /\.[cm]?[tj]s['"`]/.test(target));
-        if (repoSource) rawSourceReads.push(`${lineOf(node)}: readFileSync(${target})`);
+        rawSourceReads.push(`${lineOf(node)}: readFileSync(${target})`);
       }
-      if (callee === 'codeMask' && !inReader) maskCallers.push(node);
+      // Deliberately NOT `inAReader`: the second clause below names exactly two
+      // permitted `codeMask` callers, so a fork hiding inside one of the other
+      // five readers must still surface here.
+      const inMaskedReader = node.getStart(self) >= maskedReaderSpan.start
+        && node.getEnd() <= maskedReaderSpan.end;
+      if (callee === 'codeMask' && !inMaskedReader) maskCallers.push(node);
     }
     ts.forEachChild(node, visit);
   };
@@ -763,7 +796,8 @@ it('AP-EXT-ITER178-01 no pin reads a source file outside the ONE masked reader',
 
   assert.deepEqual(
     rawSourceReads, [],
-    'a source-text pin must read through readCode, not raw readFileSync bytes',
+    'every readFileSync must sit inside a declared reader (readCode, readState, '
+      + 'readActivityEvents, readSelf, readMaterializedEntry, readReplayPatch)',
   );
   // Second clause, and the one that covers a read this cannot see: the only
   // other place allowed to call `codeMask` is its own anchor test, which feeds
@@ -1082,7 +1116,7 @@ it('AP-EXT-ITER52-01 the staged-tree materialization runs a git-VALID checkout-i
       `git ${args.join(' ')} must be accepted by real git; stderr: ${materialized.stderr}`,
     );
     assert.equal(
-      fs.readFileSync(path.join(destination, 'src', 'entry.ts'), 'utf8'),
+      readMaterializedEntry(destination),
       'export const seedValue = 0;\n',
     );
   } finally {
@@ -1121,7 +1155,7 @@ it('blocks broken staged added files and keeps the full replay patch fixture whi
 
     git(['rm', '-f', 'src/staged-addition.ts'], repoRoot);
 
-    const patchText = fs.readFileSync(REPLAY_PATCH, 'utf8');
+    const patchText = readReplayPatch();
     assert.match(patchText, /From 7d44f22d/i);
     const replayImport = patchText.match(/^\+import \{ .*resolveJudgeBackend.*getMicroverseSettings.*$/m);
     assert.ok(replayImport, 'replay patch keeps the broken import hunk');
