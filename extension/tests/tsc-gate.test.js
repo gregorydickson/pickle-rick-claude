@@ -625,6 +625,30 @@ it('AP-EXT-ITER18-01 the glued-operator split is DERIVED from the separator set'
     'glued-operator split must not hardcode a single separator character');
 });
 
+// A named-import clause cannot contain `}` — the brace pair that opens the
+// clause is closed by the LANGUAGE, and the specifier belongs to that same
+// statement. So this is an exact statement reader, not a span between two
+// needles that any later line in the file can answer. Returns one
+// `{ imported, local }` per binding of `specifier`, across every import
+// statement naming it (splitting one import into two is a legal refactor and
+// must not red this pin). Quote style and the trailing semicolon are
+// tolerated for the same reason: narrowing a span makes everything left in
+// it load-bearing, and neither carries any of the meaning being asserted.
+const NAMED_IMPORT_STATEMENT_RE = /^import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]\s*;?/gm;
+
+function namedImportsOf(source, specifier) {
+  const bindings = [];
+  for (const [, clause, from] of source.matchAll(NAMED_IMPORT_STATEMENT_RE)) {
+    if (from !== specifier) continue;
+    for (const entry of clause.split(',')) {
+      const [imported, local] = entry.trim().split(/\s+as\s+/);
+      if (!imported) continue;
+      bindings.push({ imported: imported.trim(), local: (local ?? imported).trim() });
+    }
+  }
+  return bindings;
+}
+
 it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)', async () => {
   const hooksDir = path.resolve(__dirname, '../src/hooks');
   const shellExec = fs.readFileSync(path.join(hooksDir, 'shell-exec.ts'), 'utf8');
@@ -641,7 +665,25 @@ it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)
       false,
       `${name} must consume shell-exec.ts:splitShellSegments, not define its own`,
     );
-    assert.match(source, /splitShellSegments[\s\S]*from '\.\.\/shell-exec\.js'/);
+    // The binding must live INSIDE the shell-exec.js import statement. Asserting
+    // only that the symbol appears somewhere ahead of that specifier was
+    // satisfied by a re-fork whose `from '../forked-shell-exec.js'` line sat
+    // above the surviving siblings' import — the exact regression named above.
+    const shared = namedImportsOf(source, '../shell-exec.js');
+    const segmenter = shared.find((binding) => binding.imported === 'splitShellSegments');
+    assert.ok(
+      segmenter,
+      `${name} must bind splitShellSegments in its '../shell-exec.js' import `
+      + `(bound there: ${shared.map((binding) => binding.imported).join(', ') || 'nothing'})`,
+    );
+    // ...and be the segmenter the file actually runs. An import kept for show
+    // while a privately-named fork takes over the call sites reads clean to the
+    // name check above, which can only ever recognise names someone listed.
+    assert.match(
+      source,
+      new RegExp(`\\b${segmenter.local}\\s*\\(`),
+      `${name} must CALL the shared segmenter, not just import it`,
+    );
   }
 });
 
