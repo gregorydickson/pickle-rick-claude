@@ -4171,6 +4171,24 @@ export function evaluateCpuLivenessWatchdog(input) {
 /** C6 default CPU-seconds floor: <5s accrued over the window with no mtime advance is a stall. */
 const DEFAULT_CPU_LIVENESS_FLOOR_SECONDS = 5;
 /**
+ * AP-EXT-ITER201-01: must the C6 liveness window be re-anchored this pass?
+ *
+ * The anchored quantities — cumulative CPU-seconds and the artifact mtime at first
+ * observation — belong to ONE worker PROCESS, but `resolveCurrentWorkerPid` reports the
+ * newest `worker_session_<pid>.log` and one ticket spans many spawns (4 distinct pids in
+ * a single live ticket dir). Anchoring on the ticket alone let `nowCpuSeconds -
+ * anchorCpuSeconds` subtract two unrelated processes' CPU times, which fails BOTH ways:
+ * a bigger prior process clamps the delta to 0 and force-salvages a healthy worker, a
+ * smaller one reads `cpu_active` forever and blinds the watchdog to the hang it exists
+ * to catch. The pid is the whole identity; the ticket term only catches a pid-less
+ * hand-off, and the null-sample term subsumes what used to be a separate lazy seed.
+ */
+export function shouldReanchorCpuLiveness(input) {
+    return (input.ticketId !== input.anchorTicketId ||
+        input.workerPid !== input.anchorPid ||
+        (input.workerPid != null && input.anchorCpuSeconds == null));
+}
+/**
  * C6 CPU sampler: read a process's accumulated CPU-time (seconds) via
  * `ps -o time= -p <pid>`. Returns null on a dead/absent pid or any ps error. The
  * `[[DD-]HH:]MM:SS` ps TIME format is parsed to whole seconds. Injectable at the
@@ -10441,10 +10459,12 @@ async function runMuxRunnerMain() {
     // (below) always refreshes it before the watchdog reads it each pass.
     // eslint-disable-next-line no-useless-assignment -- declaration-required seed; refreshed at iteration_start before any read
     let lastProgressEpoch = muxNow();
-    // C6 (B-MRSW) CPU/artifact-liveness watchdog window anchors. Seeded per-ticket on
-    // first observation; the delta is only evaluated once the window reaches the
-    // idle-stall threshold. NOT persisted to state.json — pure loop-local liveness truth.
+    // C6 (B-MRSW) CPU/artifact-liveness watchdog window anchors. Seeded per OBSERVED
+    // WORKER PID (not per ticket — one ticket spans many worker pids); the delta is only
+    // evaluated once the window reaches the idle-stall threshold. NOT persisted to
+    // state.json — pure loop-local liveness truth.
     let cpuLivenessTicketId = null;
+    let cpuLivenessAnchorPid = null;
     let cpuLivenessAnchorEpoch = 0;
     let cpuLivenessAnchorCpuSeconds = null;
     let cpuLivenessAnchorMtimeMs = 0;
@@ -11140,25 +11160,38 @@ async function runMuxRunnerMain() {
         // — route to the C7 conformance-present salvage. Best-effort; never crash the loop.
         try {
             const cpuTicket = state.current_ticket ?? null;
-            // Re-anchor the window whenever the active ticket changes (per-ticket liveness).
-            if (cpuTicket !== cpuLivenessTicketId) {
+            const cpuWorkerPid = cpuTicket ? resolveCurrentWorkerPid(sessionDir, cpuTicket) : null;
+            // Re-anchor whenever the OBSERVED WORKER changes, not merely the ticket. The
+            // anchored quantities are ONE process's cumulative CPU-seconds and the artifact
+            // mtime at that process's first observation, but `resolveCurrentWorkerPid` returns
+            // the newest `worker_session_<pid>.log` and a single ticket spans many spawns (4
+            // distinct pids in one live ticket dir over 71 min). Anchoring on the ticket made
+            // `nowCpuSeconds - anchorCpuSeconds` subtract two unrelated processes' CPU times:
+            // `cpu(P1) > cpu(Pn)` clamps to 0 and force-salvages a healthy worker, `cpu(P1) <
+            // cpu(Pn)` reads `cpu_active` forever and blinds the watchdog to the hang it exists
+            // to catch. One identity — the pid — replaces the ticket key AND the separate lazy
+            // seed: an anchor whose CPU sample failed while a pid exists simply re-anchors.
+            if (shouldReanchorCpuLiveness({
+                ticketId: cpuTicket,
+                workerPid: cpuWorkerPid,
+                anchorTicketId: cpuLivenessTicketId,
+                anchorPid: cpuLivenessAnchorPid,
+                anchorCpuSeconds: cpuLivenessAnchorCpuSeconds,
+            })) {
                 cpuLivenessTicketId = cpuTicket;
+                cpuLivenessAnchorPid = cpuWorkerPid;
                 cpuLivenessAnchorEpoch = cpuTicket ? muxNow() : 0;
-                cpuLivenessAnchorCpuSeconds = cpuTicket ? sampleWorkerCpuSeconds(resolveCurrentWorkerPid(sessionDir, cpuTicket) ?? -1) : null;
+                cpuLivenessAnchorCpuSeconds = cpuWorkerPid != null ? sampleWorkerCpuSeconds(cpuWorkerPid) : null;
                 cpuLivenessAnchorMtimeMs = cpuTicket ? latestTicketArtifactMtimeMs(sessionDir, cpuTicket) : 0;
             }
             else if (cpuTicket) {
                 const windowSeconds = Math.floor((muxNow() - cpuLivenessAnchorEpoch) / 1000);
-                const workerPid = resolveCurrentWorkerPid(sessionDir, cpuTicket);
+                const workerPid = cpuWorkerPid;
                 const nowCpuSeconds = workerPid != null ? sampleWorkerCpuSeconds(workerPid) : null;
                 const nowMtimeMs = latestTicketArtifactMtimeMs(sessionDir, cpuTicket);
-                // Only evaluate a full window; seed the CPU anchor lazily if the first sample failed.
-                if (cpuLivenessAnchorCpuSeconds == null && nowCpuSeconds != null) {
-                    cpuLivenessAnchorCpuSeconds = nowCpuSeconds;
-                    cpuLivenessAnchorEpoch = muxNow();
-                    cpuLivenessAnchorMtimeMs = nowMtimeMs;
-                }
-                else if (windowSeconds >= idleStallThresholdSeconds && cpuLivenessAnchorCpuSeconds != null && nowCpuSeconds != null) {
+                // Only evaluate a full window; the anchor above guarantees both samples are the
+                // SAME pid, so the delta is one process's accrual over the window.
+                if (windowSeconds >= idleStallThresholdSeconds && cpuLivenessAnchorCpuSeconds != null && nowCpuSeconds != null) {
                     const cpuDecision = evaluateCpuLivenessWatchdog({
                         active: state.active === true,
                         workerAlive: workerPid != null && isProcessAlive(workerPid),
@@ -11225,6 +11258,7 @@ async function runMuxRunnerMain() {
                         stallCount = 0;
                         lastProgressEpoch = muxNow();
                         cpuLivenessTicketId = null;
+                        cpuLivenessAnchorPid = null;
                         cpuLivenessAnchorCpuSeconds = null;
                         continue;
                     }

@@ -15,7 +15,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -25,6 +25,7 @@ import {
   gradeConformanceComplete,
   parsePsCpuTimeToSeconds,
   resolveCurrentWorkerPid,
+  shouldReanchorCpuLiveness,
 } from '../bin/mux-runner.js';
 // R-DSPW: imported from state-manager.js, never re-inlined — the same seam
 // mux-runner.ts itself imports through (see the R-CIFB-A trap door).
@@ -326,4 +327,188 @@ test('R-DSPW: a dead pid recorded in the worker_session log is classified dead, 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// --- AP-EXT-ITER201-01: the liveness window is anchored to the WORKER PID ------------
+//
+// The C6 anchor used to be keyed on the TICKET, but the quantities it anchors —
+// cumulative CPU-seconds and the artifact mtime at first observation — belong to one
+// PROCESS. `resolveCurrentWorkerPid` reports the newest `worker_session_<pid>.log`, and
+// one ticket spans many spawns (4 distinct pids in a single live ticket dir over 71
+// min), so a ticket-keyed anchor made `nowCpuSeconds - anchorCpuSeconds` subtract two
+// unrelated processes' CPU times. These drive the real disk -> resolveCurrentWorkerPid
+// -> anchor path, not the predicate in isolation.
+
+/** Two spawns in ONE ticket dir, with explicit mtimes so the newest pid is deterministic. */
+function writeTwoWorkerSessions(sessionDir, ticketId, firstPid, secondPid) {
+  const ticketDir = path.join(sessionDir, ticketId);
+  mkdirSync(ticketDir, { recursive: true });
+  const first = path.join(ticketDir, `worker_session_${firstPid}.log`);
+  const second = path.join(ticketDir, `worker_session_${secondPid}.log`);
+  writeFileSync(first, 'spawn 1\n');
+  writeFileSync(second, 'spawn 2\n');
+  const now = Date.now() / 1000;
+  utimesSync(first, now - 600, now - 600);
+  utimesSync(second, now, now);
+  return ticketDir;
+}
+
+test('AP-EXT-ITER201-01: a second spawn on the SAME ticket moves the resolved pid and forces a re-anchor', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'rrh-cpu-anchor-pid-'));
+  try {
+    const sessionDir = path.join(root, 'sessions', '2026-09-03-test');
+    const ticketId = 'anch0001';
+    // 2 pids, one ticket — the shape measured live in sessions/2026-08-31-fa2fdee6/5209a55d.
+    writeTwoWorkerSessions(sessionDir, ticketId, 66081, 99113);
+
+    const resolvedPid = resolveCurrentWorkerPid(sessionDir, ticketId);
+    assert.equal(resolvedPid, 99113, 'the newest worker_session log must win — the pid the watchdog samples');
+
+    // The anchor was taken while spawn 1 was newest; the ticket has NOT changed.
+    const reanchor = shouldReanchorCpuLiveness({
+      ticketId,
+      workerPid: resolvedPid,
+      anchorTicketId: ticketId,
+      anchorPid: 66081,
+      anchorCpuSeconds: 300,
+    });
+    assert.equal(
+      reanchor,
+      true,
+      'an unchanged ticket with a NEW worker pid must re-anchor; keying on the ticket alone '
+        + 'left the anchor on pid 66081 and made the delta cpu(99113) - cpu(66081)',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER201-01: the SAME pid on the same ticket does NOT re-anchor (the window must be able to mature)', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'rrh-cpu-anchor-same-'));
+  try {
+    const sessionDir = path.join(root, 'sessions', '2026-09-03-test');
+    const ticketId = 'anch0002';
+    const ticketDir = path.join(sessionDir, ticketId);
+    mkdirSync(ticketDir, { recursive: true });
+    writeFileSync(path.join(ticketDir, 'worker_session_4242.log'), 'orphan\n');
+
+    const resolvedPid = resolveCurrentWorkerPid(sessionDir, ticketId);
+    assert.equal(resolvedPid, 4242);
+
+    // The orphaned-worker case C6 exists for: pid stable across passes, so the window
+    // accumulates. Over-triggering here would reset the window every pass and the
+    // watchdog could never reach the idle-stall threshold.
+    assert.equal(
+      shouldReanchorCpuLiveness({
+        ticketId,
+        workerPid: resolvedPid,
+        anchorTicketId: ticketId,
+        anchorPid: resolvedPid,
+        anchorCpuSeconds: 0.4,
+      }),
+      false,
+      'a stable pid with a seeded anchor must keep its window',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER201-01: a stable pid whose CPU sample never landed re-anchors (the old lazy seed, collapsed)', () => {
+  assert.equal(
+    shouldReanchorCpuLiveness({
+      ticketId: 'anch0003',
+      workerPid: 777,
+      anchorTicketId: 'anch0003',
+      anchorPid: 777,
+      anchorCpuSeconds: null,
+    }),
+    true,
+    'an unseeded window must retry its CPU sample — the separate lazy-seed branch folded into this term',
+  );
+});
+
+test('AP-EXT-ITER201-01: no worker pid yet is NOT a re-anchor — there is nothing to sample', () => {
+  assert.equal(
+    shouldReanchorCpuLiveness({
+      ticketId: 'anch0004',
+      workerPid: null,
+      anchorTicketId: 'anch0004',
+      anchorPid: null,
+      anchorCpuSeconds: null,
+    }),
+    false,
+    'a pid-less pass must not churn the anchor',
+  );
+});
+
+test('AP-EXT-ITER201-01: a ticket hand-off still re-anchors (the original key is subsumed, not dropped)', () => {
+  assert.equal(
+    shouldReanchorCpuLiveness({
+      ticketId: 'anch0006',
+      workerPid: null,
+      anchorTicketId: 'anch0005',
+      anchorPid: null,
+      anchorCpuSeconds: null,
+    }),
+    true,
+    'a new ticket with no pid yet must still reset the window',
+  );
+});
+
+test('AP-EXT-ITER201-01: a cross-process delta force-salvages a healthy worker (why the pid identity matters)', () => {
+  // Concrete consequence of the pre-fix anchor: spawn 1 accrued 300 CPU-seconds, the
+  // live spawn 2 has accrued 10. `nowCpuSeconds - anchorCpuSeconds` = -290, clamped to
+  // 0 by the decision -> below the 5s floor -> cpu_stall on a worker that is working.
+  // artifactMtimeAdvanced stays false through the Implement phase, which writes none of
+  // the research|plan|conformance|code_review artifacts the mtime signal matches, so
+  // the short-circuit does not mask it.
+  const crossProcess = evaluateCpuLivenessWatchdog({
+    ...CLEAN,
+    cpuSecondsDelta: 10 - 300,
+    artifactMtimeAdvanced: false,
+  });
+  assert.equal(crossProcess.cpuSecondsDelta, 0, 'a negative cross-process delta clamps to 0');
+  assert.equal(crossProcess.stalled, true);
+  assert.equal(crossProcess.reason, 'cpu_stall', 'the healthy worker is misread as wedged');
+
+  // Same worker, same window, anchored on its OWN earlier sample: 10 - 2 = 8 >= 5.
+  const sameProcess = evaluateCpuLivenessWatchdog({
+    ...CLEAN,
+    cpuSecondsDelta: 10 - 2,
+    artifactMtimeAdvanced: false,
+  });
+  assert.equal(sameProcess.stalled, false);
+  assert.equal(sameProcess.reason, 'cpu_active', 'a within-process delta reads the worker as alive');
+});
+
+test('AP-EXT-ITER201-01: the wired anchor resolves the pid ONCE and both samples share it', () => {
+  const anchorBlocks = enclosingBlocksOf(src, 'shouldReanchorCpuLiveness({');
+  anchorBlocks.forEach((block, i) => {
+    const where = `anchor block ${i + 1}/${anchorBlocks.length}`;
+    // One resolve per pass, reused by the anchor arm AND the sample arm — two independent
+    // resolveCurrentWorkerPid calls could straddle a spawn and re-open the mismatch.
+    assert.equal(
+      (block.match(/resolveCurrentWorkerPid\(/g) ?? []).length,
+      1,
+      `${where}: the worker pid must be resolved exactly once per pass and shared`,
+    );
+    assert.ok(
+      /anchorPid:\s*cpuLivenessAnchorPid/.test(block),
+      `${where}: the live anchor pid must be fed to the re-anchor decision`,
+    );
+    assert.ok(
+      /cpuLivenessAnchorPid\s*=\s*cpuWorkerPid/.test(block),
+      `${where}: re-anchoring must record the pid the CPU sample was taken from`,
+    );
+    assert.ok(
+      /cpuLivenessAnchorCpuSeconds\s*=\s*cpuWorkerPid\s*!=\s*null\s*\?\s*sampleWorkerCpuSeconds\(\s*cpuWorkerPid\s*\)/.test(block),
+      `${where}: the anchor CPU sample must come from the SAME resolved pid`,
+    );
+    assert.ok(
+      /const\s+nowCpuSeconds\s*=\s*workerPid\s*!=\s*null\s*\?\s*sampleWorkerCpuSeconds\(\s*workerPid\s*\)/.test(block)
+        && /const\s+workerPid\s*=\s*cpuWorkerPid/.test(block),
+      `${where}: the window sample must reuse the same resolved pid, not re-resolve it`,
+    );
+  });
 });
