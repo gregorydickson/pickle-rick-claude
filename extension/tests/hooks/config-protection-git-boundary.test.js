@@ -6,11 +6,95 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as ts from 'typescript';
 import { execAnchorIndex, execName, execNameIs, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
 import { mkFixtureTmpDir } from '../helpers/fixture-tmpdir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HANDLER = path.resolve(__dirname, '../../hooks/handlers/config-protection.js');
+const CONFIG_PROTECTION_TS = path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts');
+const SHELL_EXEC_TS = path.resolve(__dirname, '../../src/hooks/shell-exec.ts');
+
+/**
+ * The file's code with every comment blanked out - by the parser, and without
+ * moving a character, so an index taken from this text addresses the same byte
+ * in the file and every slice delimiter below still resolves.
+ *
+ * Every source-text pin in this file asks a question about CODE, and each one
+ * was answerable by PROSE in BOTH directions. Measured on the shipped tree
+ * (AP-EXT-ITER180-01): the `break` that AP-EXT-ITER54-02's shape pin exists to
+ * forbid read GREEN with one comment naming the slice's end delimiter, and a
+ * correct file RED behind one documentation comment quoting an operand-taking
+ * node option.
+ *
+ * Keeping exactly the leaf-token spans needs no enumeration of the lexical
+ * contexts a marker can hide inside - a hand-rolled comment regex reads a
+ * marker inside a string, template or regex literal as a real one. JSDoc is the
+ * one comment the parser returns as a node rather than as trivia, so it is
+ * skipped explicitly.
+ *
+ * DELIBERATE duplication: fourth copy. A shared home under `extension/tests`
+ * would be a NEW file and `scope.json` allowed_paths is a strict snapshot with
+ * no directory entries, so no importable home exists. See AP-EXT-ITER174-01.
+ */
+function codeMask(source, fileName) {
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const isJsDoc = (node) => node.kind >= ts.SyntaxKind.FirstJSDocNode
+    && node.kind <= ts.SyntaxKind.LastJSDocNode;
+  // Indexed by UTF-16 code UNIT, which is what `getStart`/`getEnd` count.
+  const out = new Array(source.length);
+  for (let i = 0; i < source.length; i += 1) out[i] = source[i] === '\n' ? '\n' : ' ';
+
+  const keep = (node) => {
+    if (isJsDoc(node)) return;
+    const children = node.getChildren(sourceFile);
+    if (children.length === 0) {
+      for (let i = node.getStart(sourceFile); i < node.getEnd(); i += 1) out[i] = source[i];
+      return;
+    }
+    children.forEach(keep);
+  };
+  keep(sourceFile);
+
+  return out.join('');
+}
+
+/**
+ * The ONE way a pin asks a question about DOCUMENTATION rather than about code.
+ * `readCode` blanks every comment, so a pin that asserts a docblock SURVIVED
+ * cannot use it - and reaching for raw bytes here would re-open exactly what
+ * `readCode` closes. This reader is structurally incapable of answering a code
+ * question: it returns the JSDoc span and nothing else, so it can never become
+ * the escape hatch a second raw read would be.
+ */
+function docCommentOf(file, name) {
+  const source = fs.readFileSync(file, 'utf8');
+  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  let text = null;
+  sourceFile.forEachChild((node) => {
+    if (node.name?.text !== name) return;
+    const docs = node.jsDoc ?? [];
+    if (docs.length > 0) text = docs.map((d) => source.slice(d.getStart(sourceFile), d.getEnd())).join('\n');
+  });
+  return text;
+}
+
+const CODE_CACHE = new Map();
+
+/**
+ * The ONE way a pin in this file reads a source file. Routing every read here
+ * is what stops the next pin being born comment-blind; a correct reader nobody
+ * is obliged to use guarantees nothing (AP-EXT-ITER178-01). Cached because this
+ * is a fast-tier file with 19 read sites over 5 source files.
+ */
+function readCode(file) {
+  let masked = CODE_CACHE.get(file);
+  if (masked === undefined) {
+    masked = codeMask(fs.readFileSync(file, 'utf8'), file);
+    CODE_CACHE.set(file, masked);
+  }
+  return masked;
+}
 
 function writeExtensionSentinel(extensionDir) {
   const sentinelDir = path.join(extensionDir, 'extension', 'bin');
@@ -857,10 +941,7 @@ test('AP-EXT-ITER54-02: `node --test` over non-expensive files stays approved wi
 // operand-taking-option table, the AP-EXT-ITER18-01/ITER19-01 incomplete-set
 // shape — reintroduces AP-EXT-ITER54-02 one option name at a time.
 test('AP-EXT-ITER54-02: extractNodeTestPathsFromSegment collects all candidates, no operand table', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
-    'utf-8',
-  );
+  const source = readCode(CONFIG_PROTECTION_TS);
   const body = source.slice(
     source.indexOf('function extractNodeTestPathsFromSegment'),
     source.indexOf('function extractNodeTestPaths('),
@@ -1996,7 +2077,7 @@ test('AP-EXT-ITER63-02: parseFirstShellWord stays deleted from the hooks tree', 
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) { walk(full); continue; }
       if (!entry.name.endsWith('.ts')) continue;
-      if (fs.readFileSync(full, 'utf8').includes('parseFirstShellWord')) offenders.push(full);
+      if (readCode(full).includes('parseFirstShellWord')) offenders.push(full);
     }
   };
   walk(hooksSrc);
@@ -2189,10 +2270,7 @@ test('AP-EXT-ITER64-01: quoting a token never changes the anchor decision', () =
 // — not the behavior alone, which a re-typed variant would satisfy on the day it
 // is written and drift from afterwards.
 test('AP-EXT-ITER64-01: execAnchorIndex reads no positional exec index', () => {
-  const shellExec = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
-    'utf8',
-  );
+  const shellExec = readCode(SHELL_EXEC_TS);
   const body = shellExec.match(
     /export function execAnchorIndex\([\s\S]*?\n\}/,
   );
@@ -2211,10 +2289,7 @@ test('AP-EXT-ITER64-01: execAnchorIndex reads no positional exec index', () => {
   // POSIX command prefix stands at the positional exec index. The pin now runs in
   // the direction the measurement supports — Pass 2 carries NO quoting arm and
   // reads NO exec index, exactly like execAnchorIndex above.
-  const configProtection = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
-    'utf8',
-  );
+  const configProtection = readCode(CONFIG_PROTECTION_TS);
   const pass2 = configProtection.match(
     /function findWriteTargetInScope<T>\([\s\S]*?\n\}/,
   );
@@ -2265,10 +2340,7 @@ test('AP-EXT-ITER64-01: execAnchorIndex reads no positional exec index', () => {
 // ---------------------------------------------------------------------------
 
 test('AP-EXT-ITER74-01: shell-exec.ts names no exec-index arm, live or quoted', () => {
-  const shellExecSrc = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
-    'utf8',
-  );
+  const shellExecSrc = readCode(SHELL_EXEC_TS);
 
   assert.equal(
     (shellExecSrc.match(/execIndex/g) || []).length,
@@ -2291,13 +2363,11 @@ test('AP-EXT-ITER74-01: shell-exec.ts names no exec-index arm, live or quoted', 
   // asymmetric, and only the exec one is safe to make quoting-blind. A rewrite
   // that deleted the false claim AND this rationale would invite the opposite
   // error — collapsing Pass 1 too, which re-opens AP-EXT-ITER51-01.
-  const anchorDoc = shellExecSrc.match(
-    /\/\*\*(?:(?!\*\/)[\s\S])*?\*\/\s*export function execAnchorIndex/,
-  );
+  const anchorDoc = docCommentOf(SHELL_EXEC_TS, 'execAnchorIndex');
   assert.ok(anchorDoc, 'execAnchorIndex must keep its docblock');
-  assert.match(anchorDoc[0], /AP-EXT-ITER64-02/);
-  assert.match(anchorDoc[0], /AP-EXT-ITER51-01/);
-  assert.match(anchorDoc[0], /asymmetric/);
+  assert.match(anchorDoc, /AP-EXT-ITER64-02/);
+  assert.match(anchorDoc, /AP-EXT-ITER51-01/);
+  assert.match(anchorDoc, /asymmetric/);
 });
 
 // ---------------------------------------------------------------------------
@@ -2433,10 +2503,7 @@ test('AP-EXT-ITER63-05: node inside a quoted argument, and npm entry points, sta
 // above pass on the day a re-typed positional variant is written and drift from
 // it afterwards; the ABSENCE of the prelude call from this body is the invariant.
 test('AP-EXT-ITER63-05: extractNodeTestPathsFromSegment reads no positional exec index', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
-    'utf8',
-  );
+  const source = readCode(CONFIG_PROTECTION_TS);
   const body = source.slice(
     source.indexOf('function extractNodeTestPathsFromSegment'),
     source.indexOf('function extractNodeTestPaths('),
@@ -2567,10 +2634,7 @@ for (const [label, command] of ITER63_04_APPROVED) {
 }
 
 test('AP-EXT-ITER63-04: segmentInvokesInstallSh anchors the wrapper, not a position', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'),
-    'utf8',
-  );
+  const source = readCode(CONFIG_PROTECTION_TS);
   const body = source.slice(
     source.indexOf('function segmentInvokesInstallSh'),
     source.indexOf('function isBashInvokingInstallSh'),
@@ -2796,10 +2860,7 @@ test('AP-EXT-ITER66-01: a $-introduced span is quoted, so its content is data', 
 // be satisfied by a special case bolted onto one detector, which is the shape
 // this module has had to remove nine times.
 test('AP-EXT-ITER66-01: the word grammar declares all four bash quoting forms', () => {
-  const shellExec = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
-    'utf8',
-  );
+  const shellExec = readCode(SHELL_EXEC_TS);
   const alternation = shellExec.match(/const WORD_PART_SOURCE =[\s\S]*?;\n/);
   assert.ok(alternation, 'WORD_PART_SOURCE must remain a single declaration');
   for (const span of [
@@ -3131,10 +3192,7 @@ test('AP-EXT-ITER70-01: splitShellSegments surfaces the eval payload as its own 
 // no-positional-read assertions are unchanged — they are what the ITER70-01
 // invariant actually said.
 test('AP-EXT-ITER70-01: wordToCodeBuiltinPayload anchors and joins, with no positional read', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
-    'utf-8',
-  );
+  const source = readCode(SHELL_EXEC_TS);
   const body = source.match(/function wordToCodeBuiltinPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/)?.[1];
   assert.ok(body, 'wordToCodeBuiltinPayload must remain a single named function');
   assert.match(body, /execAnchorIndex\(tokens, builtin\)/);
@@ -3312,10 +3370,7 @@ test('AP-EXT-ITER70-02: splitShellSegments surfaces the here-string operand as i
 // equality compare against the literal `<<<` (which loses the glued form) and
 // never a consumer/name test (which needs a list).
 test('AP-EXT-ITER70-02: hereStringPayload matches the operator by shape, not by equality', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
-    'utf-8',
-  );
+  const source = readCode(SHELL_EXEC_TS);
   const body = source.match(/function hereStringPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/)?.[1];
   assert.ok(body, 'hereStringPayload must remain a single named function');
   assert.match(body, /HERE_STRING_OPERATOR_RE\.test\(token\.value\)/);
@@ -3480,10 +3535,7 @@ test('AP-EXT-ITER71-01: splitShellSegments surfaces a trap handler as its own se
 // this array — not in a fourth function beside it, which is the fork this fix
 // exists to prevent.
 test('AP-EXT-ITER71-01: the word-to-code builtins are one declared set, not two extractors', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
-    'utf-8',
-  );
+  const source = readCode(SHELL_EXEC_TS);
   assert.match(source, /const WORD_TO_CODE_BUILTINS = \['eval', 'trap'\] as const;/);
   assert.doesNotMatch(source, /function evalBuiltinPayload|function trapBuiltinPayload/);
   // expandShellCommandStrings declares exactly the three word-to-code CONSTRUCTS.
@@ -3694,10 +3746,7 @@ test('AP-EXT-ITER72-01: an escaped separator is data, not a segment boundary', (
 // The grammar itself, so a detector-level regression cannot be mistaken for a
 // tokenizer one — and so the fix stays list-free.
 test('AP-EXT-ITER72-01: the escape is declared in the word grammar, with no command table', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'),
-    'utf-8',
-  );
+  const source = readCode(SHELL_EXEC_TS);
   // The escape is a first-class word part, tried BEFORE every quoted span so
   // `\"` cannot be read as a span opener.
   assert.match(source, /const UNQUOTED_ESCAPE = /);
@@ -3821,8 +3870,8 @@ test('AP-EXT-ITER73-01: execNameIs reads a pattern, and an all-wildcard word nam
 // can throw `Range out of order`, and that SyntaxError reaches the entrypoint
 // catch, which approves (AP-EXT-ITER5-01).
 test('AP-EXT-ITER73-01: one glob translator, and its bracket arm stays constructible', () => {
-  const shellExec = fs.readFileSync(path.resolve(__dirname, '../../src/hooks/shell-exec.ts'), 'utf-8');
-  const handler = fs.readFileSync(path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'), 'utf-8');
+  const shellExec = readCode(SHELL_EXEC_TS);
+  const handler = readCode(CONFIG_PROTECTION_TS);
   assert.match(shellExec, /export function shellPatternToRegex\(/);
   assert.doesNotMatch(handler, /function shellPatternToRegex\(/);
   assert.match(handler, /shellPatternToRegex,/);
@@ -3963,7 +4012,7 @@ test('AP-EXT-ITER93-01: a word that is both wrapper-shaped and script-shaped sti
 });
 
 test('AP-EXT-ITER93-01: the shape has one declaration and the fill is bounded', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../../src/hooks/shell-exec.ts'), 'utf-8');
+  const source = readCode(SHELL_EXEC_TS);
   // ONE uniform test: the predicate asks the shape of the witness, with no
   // separate literal arm to drift from the pattern arm.
   const body = source.slice(
@@ -4084,9 +4133,7 @@ test('AP-EXT-ITER93-02: the verb pattern read does not over-block real git usage
 // The seam itself, so a detector-level regression cannot be mistaken for a
 // compare-level one, and so the ordering invariant stays mechanically pinned.
 test('AP-EXT-ITER93-02: the verb read is one pattern-aware set read, prohibited-first', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'), 'utf-8',
-  );
+  const source = readCode(CONFIG_PROTECTION_TS);
   const body = source.slice(
     source.indexOf('function findGitVerb('),
     source.indexOf('export function detectProhibitedGitVerb('),
@@ -4208,9 +4255,7 @@ test('AP-EXT-ITER93-05: the node flag pattern read does not over-block a fast-ti
 // returns FALSE (path-mode is ALLOWED), so widening it is the under-block
 // direction — the same reason `NEGATIVE_GIT_SUBCOMMANDS` stays literal.
 test('AP-EXT-ITER93-05: gating flags read through execNameIs, the FALSE arm stays literal', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/handlers/config-protection.ts'), 'utf-8',
-  );
+  const source = readCode(CONFIG_PROTECTION_TS);
   assert.match(source, /afterVerb\.some\(t => execNameIs\(t, '--amend'\)\)/);
   assert.match(source, /afterVerb\.some\(t => execNameIs\(t, '--prune'\)\)/);
   assert.match(source, /if \(execNameIs\(t, '--test'\)\) \{ foundTestFlag = true; continue; \}/);
@@ -4219,7 +4264,7 @@ test('AP-EXT-ITER93-05: gating flags read through execNameIs, the FALSE arm stay
   assert.doesNotMatch(source, /t === '--test'/);
   const checkout = source.slice(
     source.indexOf('function isCheckoutRefOperation('),
-    source.indexOf('R-WSRC-GR: Detects prohibited git verbs'),
+    source.indexOf('function findGitVerb('),
   );
   assert.ok(checkout.length > 0, 'isCheckoutRefOperation must remain a single named function');
   assert.match(checkout, /t === '--'/);
@@ -4329,9 +4374,7 @@ test('AP-EXT-ITER93-06: expansion produces the words bash produces', () => {
 // only as whole words. Pinning both halves keeps a future edit from collapsing
 // the distinction back.
 test('AP-EXT-ITER93-06: braces are declared separators but not GLUED ones', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../../src/hooks/shell-exec.ts'), 'utf-8',
-  );
+  const source = readCode(SHELL_EXEC_TS);
   assert.match(source, /op !== '\\n' && op !== '\{' && op !== '\}'/);
   assert.match(source, /'\(', '\)', '\{', '\}', '`',/);
   // AP-EXT-ITER143-01 renamed the flush seam to `expandWord` (brace expansion,
@@ -4576,7 +4619,7 @@ test('AP-EXT-ITER93-03: the command-string flag is read as a shape, bounded to o
 });
 
 test('AP-EXT-ITER93-03: the flag shape has one declaration and asks the shared witness', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../../src/hooks/shell-exec.ts'), 'utf-8');
+  const source = readCode(SHELL_EXEC_TS);
   // ONE declaration: the regex is BUILT from the character the witness fills
   // with, so the shape and the fill cannot drift into disagreeing.
   assert.match(
@@ -4774,4 +4817,150 @@ test('AP-EXT-ITER143-01: the expansion budget is spent in CHARACTERS, so a padde
   // Overflow falls back to the surviving candidates; nothing is ever REMOVED,
   // so an overflow cannot lose a block a non-expanding scanner already had.
   assert.ok(segments[0].startsWith(padded));
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER180-01 — every source-text pin in this file read RAW BYTES
+//
+// Nineteen read sites, and each one asked a question about CODE of a string
+// that still held every comment. MEASURED on the shipped tree, both directions,
+// against the AP-EXT-ITER54-02 shape pin: the `break` it exists to forbid read
+// GREEN (555 pass / 0 fail) behind ONE comment naming the slice's end
+// delimiter, and a CORRECT file read RED behind ONE documentation comment
+// quoting `'--test-concurrency'`. A pin answerable by prose is not a pin.
+//
+// The fix is not "add a reader" — a correct reader nobody is obliged to use
+// guarantees nothing (AP-EXT-ITER178-01). It is `readCode`, the ONE masked
+// reader, plus `docCommentOf` for the one question that is genuinely ABOUT a
+// comment, plus the anchor below that forbids reaching past either.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER180-01 codeMask blanks comments by grammar, and moves nothing', () => {
+  // Regress codeMask in EITHER direction and this reds: under-blank hides a
+  // violation from the pins above, over-blank lets this file's own trap-door
+  // prose answer them.
+  for (const [name, source, mustBeVisible] of [
+    ['line marker inside a string', "const u = 'https://x.dev'; const bad = t.quoted;", true],
+    ['block opener inside a string', "const u = '/* not a comment'; const bad = t.quoted;", true],
+    ['block opener inside a regex literal', 'const re = /[/*]/; const bad = t.quoted;', true],
+    ['marker inside a template', 'const s = `see // here`; const bad = t.quoted;', true],
+    ['a REAL line comment', '// never read t.quoted here', false],
+    ['a REAL block comment', '/* never read t.quoted here */', false],
+    ['a REAL JSDoc block', '/** never read t.quoted here */', false],
+  ]) {
+    const masked = codeMask(source, 'probe.ts');
+    assert.equal(
+      masked.includes('t.quoted'), mustBeVisible,
+      `${name}: expected ${mustBeVisible ? 'VISIBLE' : 'BLANKED'} in ${JSON.stringify(masked)}`,
+    );
+    assert.equal(masked.length, source.length, `${name}: codeMask must not move a character`);
+  }
+  // Position-preserving is load-bearing: every `source.indexOf('function …')`
+  // delimiter above takes an offset from the masked text and slices the same
+  // text, so a shifted index silently re-cuts every span. An astral character
+  // is two UTF-16 code units but one code point, so a code-POINT walk moves the
+  // newline and everything after it.
+  const astral = "const e = '\u{1F600}'; // c\nconst bad = t.quoted;";
+  assert.equal(
+    codeMask(astral, 'probe.ts'),
+    "const e = '\u{1F600}';     \nconst bad = t.quoted;",
+    'must index by UTF-16 code unit',
+  );
+});
+
+/**
+ * The routing half, and the half a reader test cannot cover: `readCode` being
+ * correct says nothing about whether the next pin USES it. Read as grammar, not
+ * as a grep — the offender is a `readFileSync` whose path argument names a repo
+ * source file, and only its position relative to the two named readers decides.
+ *
+ * Two readers, because there are two kinds of question. `readCode` answers
+ * questions about CODE and blanks every comment; `docCommentOf` answers the one
+ * question about DOCUMENTATION and can return nothing BUT a JSDoc span, so it
+ * is structurally incapable of becoming the escape hatch a third raw read would
+ * be. Anything else reading a repo source is reaching past both.
+ *
+ * Honest limit: a read whose argument is a VARIABLE (the ITER63-02 hooks-tree
+ * walk holds one) is invisible to the first clause, because a name says nothing
+ * about what it holds. The second clause is what covers that direction — such a
+ * read can only route around `readCode` while still looking masked by forking a
+ * second `codeMask` call site, and there is exactly one place such a call may
+ * live. Positional, not a count: a hand-kept caller count admits the N+1th
+ * caller by construction.
+ */
+test('AP-EXT-ITER180-01 no pin reads a source file outside the two named readers', () => {
+  const selfPath = fileURLToPath(import.meta.url);
+  const selfSource = fs.readFileSync(selfPath, 'utf8');
+  const self = ts.createSourceFile(selfPath, selfSource, ts.ScriptTarget.Latest, true);
+  const spanOf = (name) => {
+    let span = null;
+    const find = (node) => {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === name) {
+        span = { start: node.getStart(self), end: node.getEnd() };
+      }
+      ts.forEachChild(node, find);
+    };
+    find(self);
+    assert.ok(span, `${name} must remain a single named function`);
+    return span;
+  };
+  const readerSpans = [spanOf('readCode'), spanOf('docCommentOf')];
+  const inAReader = (node) => readerSpans.some(
+    (s) => node.getStart(self) >= s.start && node.getEnd() <= s.end,
+  );
+  const lineOf = (node) => self.getLineAndCharacterOfPosition(node.getStart(self)).line + 1;
+
+  const rawSourceReads = [];
+  const maskCallers = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression.getText(self);
+      if (callee.endsWith('readFileSync') && !inAReader(node)) {
+        const target = node.arguments[0]?.getText(self) ?? '';
+        // A path this file resolves against its OWN location is a repo file
+        // under review; a path rooted at a runtime variable is a fixture the
+        // test just wrote, whose exact bytes are the assertion and which must
+        // NOT be masked. `_TS` names the shared constants, both of which are
+        // `path.resolve(__dirname, …)`.
+        const repoSource = /_TS\b/.test(target)
+          || (target.includes('__dirname') && /\.[cm]?[tj]s['"`]/.test(target));
+        if (repoSource) rawSourceReads.push(`${lineOf(node)}: readFileSync(${target})`);
+      }
+      if (callee === 'codeMask' && !inAReader(node)) maskCallers.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(self);
+
+  assert.deepEqual(
+    rawSourceReads, [],
+    'a source-text pin must read through readCode (or docCommentOf), not raw readFileSync bytes',
+  );
+  // Second clause, and the one that covers a read the first cannot see: the
+  // only other place allowed to call `codeMask` is its own anchor test, which
+  // feeds it hand-built probe strings and never a file.
+  const anchorSpan = (() => {
+    let span = null;
+    self.forEachChild((node) => {
+      // The test's own TITLE, not its text: a node's text includes its
+      // comments, so matching the phrase anywhere would let a comment in some
+      // other test claim to be the anchor and empty this clause out.
+      if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return;
+      const [title] = node.expression.arguments;
+      if (!title || !ts.isStringLiteral(title)) return;
+      if (title.text.includes('codeMask blanks comments by grammar')) {
+        span = { start: node.getStart(self), end: node.getEnd() };
+      }
+    });
+    assert.ok(span, 'the codeMask anchor test must remain in this file');
+    return span;
+  })();
+  const strayMaskCallers = maskCallers
+    .filter((node) => node.getStart(self) < anchorSpan.start || node.getEnd() > anchorSpan.end)
+    .map((node) => `${lineOf(node)}: ${node.getText(self).split('\n')[0]}`);
+  assert.deepEqual(
+    strayMaskCallers, [],
+    'codeMask has exactly two callers: readCode, and the anchor test that proves it',
+  );
+  assert.ok(maskCallers.length > 0, 'the anchor test must still exercise codeMask');
 });
