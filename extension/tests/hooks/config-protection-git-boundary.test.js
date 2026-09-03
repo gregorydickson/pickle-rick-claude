@@ -96,6 +96,14 @@ function readCode(file) {
   return masked;
 }
 
+/**
+ * This file's own bytes, for the pin below that parses this file. Argument-less
+ * by construction, so it can never become a second reader of anything else.
+ */
+function readSelf() {
+  return fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+}
+
 function writeExtensionSentinel(extensionDir) {
   const sentinelDir = path.join(extensionDir, 'extension', 'bin');
   fs.mkdirSync(sentinelDir, { recursive: true });
@@ -4888,9 +4896,9 @@ test('AP-EXT-ITER180-01 codeMask blanks comments by grammar, and moves nothing',
  * live. Positional, not a count: a hand-kept caller count admits the N+1th
  * caller by construction.
  */
-test('AP-EXT-ITER180-01 no pin reads a source file outside the two named readers', () => {
+test('AP-EXT-ITER180-01 no pin reads a source file outside the declared readers', () => {
   const selfPath = fileURLToPath(import.meta.url);
-  const selfSource = fs.readFileSync(selfPath, 'utf8');
+  const selfSource = readSelf();
   const self = ts.createSourceFile(selfPath, selfSource, ts.ScriptTarget.Latest, true);
   const spanOf = (name) => {
     let span = null;
@@ -4904,7 +4912,19 @@ test('AP-EXT-ITER180-01 no pin reads a source file outside the two named readers
     assert.ok(span, `${name} must remain a single named function`);
     return span;
   };
-  const readerSpans = [spanOf('readCode'), spanOf('docCommentOf')];
+  // The declared readers. Every `readFileSync` in this file must sit inside one
+  // of them, so the rule needs no test of what the path ARGUMENT looks like.
+  // The two name/text tests this replaces asked whether the argument read `_TS`
+  // or `__dirname`, and so could only see a path written literally at the read
+  // site: `full` in the hooks-tree walk is built at runtime
+  // (`hooksSrc` -> `walk(dir)` -> `path.join(dir, entry.name)`) and matched
+  // neither. Measured (AP-EXT-ITER181-01): raw bytes there read GREEN while a
+  // `_TS` control RED, and one comment naming the forbidden symbol then falsely
+  // REDDENED AP-EXT-ITER63-02. Membership of a span cannot be spelled around.
+  //
+  // `spanOf` throws on a missing name, so deleting a reader reds this rather
+  // than quietly shrinking the set it checks.
+  const readerSpans = ['readCode', 'docCommentOf', 'readActivityEvents', 'readSelf'].map(spanOf);
   const inAReader = (node) => readerSpans.some(
     (s) => node.getStart(self) >= s.start && node.getEnd() <= s.end,
   );
@@ -4917,14 +4937,7 @@ test('AP-EXT-ITER180-01 no pin reads a source file outside the two named readers
       const callee = node.expression.getText(self);
       if (callee.endsWith('readFileSync') && !inAReader(node)) {
         const target = node.arguments[0]?.getText(self) ?? '';
-        // A path this file resolves against its OWN location is a repo file
-        // under review; a path rooted at a runtime variable is a fixture the
-        // test just wrote, whose exact bytes are the assertion and which must
-        // NOT be masked. `_TS` names the shared constants, both of which are
-        // `path.resolve(__dirname, …)`.
-        const repoSource = /_TS\b/.test(target)
-          || (target.includes('__dirname') && /\.[cm]?[tj]s['"`]/.test(target));
-        if (repoSource) rawSourceReads.push(`${lineOf(node)}: readFileSync(${target})`);
+        rawSourceReads.push(`${lineOf(node)}: readFileSync(${target})`);
       }
       if (callee === 'codeMask' && !inAReader(node)) maskCallers.push(node);
     }
@@ -4934,7 +4947,7 @@ test('AP-EXT-ITER180-01 no pin reads a source file outside the two named readers
 
   assert.deepEqual(
     rawSourceReads, [],
-    'a source-text pin must read through readCode (or docCommentOf), not raw readFileSync bytes',
+    'every readFileSync must sit inside a declared reader (readCode, docCommentOf, readActivityEvents, readSelf)',
   );
   // Second clause, and the one that covers a read the first cannot see: the
   // only other place allowed to call `codeMask` is its own anchor test, which
