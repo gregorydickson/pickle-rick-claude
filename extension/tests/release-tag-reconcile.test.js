@@ -306,19 +306,33 @@ function shellFunctionBody(src, name) {
 }
 
 /**
- * The single logical statement assigning `<name>=` inside a shell body, with
- * backslash continuations joined, so a multi-line command substitution is read whole.
+ * EVERY logical statement assigning `<name>=` inside a shell body, with backslash
+ * continuations joined so a multi-line command substitution is read whole.
+ *
+ * All of them, not one of them: whichever assignment's value survives, it came from
+ * SOME assignment, so an invariant about that value has to hold for every one. Reading
+ * only the first is what AP-EXT-ITER167-02 measured -- a decorative assignment that
+ * satisfies the pin followed by a real one that overwrites it stayed green. Reading only
+ * the last is the same bet with the opposite index, and a branch defeats it just as
+ * quietly. Discovery matches the assignment token after start-of-line, whitespace or `;`
+ * so `local x=` / `export x=` are seen without enumerating the declaration keywords;
+ * comment lines are dropped so prose naming the variable is not read as code.
  */
-function shellAssignment(body, name) {
-    const lines = body.split('\n');
-    const start = lines.findIndex((l) => new RegExp(`^\\s*${name}=`).test(l));
-    assert.notEqual(start, -1, `${name} must be assigned`);
-    const statement = [];
-    for (let i = start; i < lines.length; i += 1) {
-        statement.push(lines[i]);
-        if (!lines[i].trimEnd().endsWith('\\')) break;
+function shellAssignments(body, name) {
+    const lines = body.split('\n').filter((l) => !/^\s*#/.test(l));
+    const assigns = new RegExp(`(^|[\\s;])${name}=`);
+    const statements = [];
+    for (let i = 0; i < lines.length; i += 1) {
+        if (!assigns.test(lines[i])) continue;
+        const statement = [];
+        for (let j = i; j < lines.length; j += 1) {
+            statement.push(lines[j]);
+            if (!lines[j].trimEnd().endsWith('\\')) break;
+        }
+        statements.push(statement.join('\n'));
     }
-    return statement.join('\n');
+    assert.ok(statements.length > 0, `${name} must be assigned`);
+    return statements;
 }
 
 test('AP-EXT-ITER65-01: list_tag_shas_from_listing is the ONE place the ^{} peel rule lives', () => {
@@ -334,11 +348,13 @@ test('AP-EXT-ITER65-01: list_tag_shas_from_listing is the ONE place the ^{} peel
     // so it stayed green when the peel rule was re-derived inline inside
     // resolve_tag_sha -- the exact drift this test names (measured, both with and
     // without a behaviour change).
-    assert.match(
-        shellAssignment(shellFunctionBody(shared, 'resolve_tag_sha'), 'actual_sha'),
-        /list_tag_shas_from_listing/,
-        'resolve_tag_sha must assign actual_sha FROM the shared parser, not re-derive the peel',
-    );
+    for (const statement of shellAssignments(shellFunctionBody(shared, 'resolve_tag_sha'), 'actual_sha')) {
+        assert.match(
+            statement,
+            /list_tag_shas_from_listing/,
+            `every actual_sha assignment in resolve_tag_sha must come FROM the shared parser, not re-derive the peel; offending statement:\n${statement}`,
+        );
+    }
     assert.match(reconcile, /list_tag_shas_from_listing "\$listing"/, 'the auditor must read shas from its own listing');
     assert.doesNotMatch(reconcile, /resolve_tag_sha /, 'the auditor must not re-query per tag');
 
@@ -349,4 +365,50 @@ test('AP-EXT-ITER65-01: list_tag_shas_from_listing is the ONE place the ^{} peel
         .filter((l) => !/^\s*#/.test(l))
         .join('\n');
     assert.doesNotMatch(reconcileCode, /\^\{\}/, 'the peel rule must not be duplicated into the auditor');
+});
+
+// AP-EXT-ITER167-02 regression. This helper used to return the FIRST `<name>=`
+// statement and stop, singular in name and in reach. A decorative assignment
+// through the shared parser followed by a real one that overwrote it with an
+// inline peel therefore left the pin above GREEN -- measured 10/10 against the
+// exact drift that pin names. It must see EVERY assignment, however spelled, and
+// must fail loud rather than vacuously when it sees none.
+test('AP-EXT-ITER167-02: shellAssignments reads every assignment, not just the first', () => {
+    const drifted = [
+        '  local ls_remote_output actual_sha',
+        '  actual_sha="$(list_tag_shas_from_listing "$ls_remote_output" \\',
+        '    | awk -F\'\\t\' -v want="$tag" \'$1 == want { print $2; exit }\')"',
+        '  # actual_sha= is re-derived below; prose naming it must not read as code',
+        '  actual_sha="$(printf \'%s\\n\' "$ls_remote_output" \\',
+        '    | awk -v want="refs/tags/$tag^{}" \'$2 == want { print $1; exit }\')"',
+    ].join('\n');
+
+    const statements = shellAssignments(drifted, 'actual_sha');
+
+    assert.equal(
+        statements.length,
+        2,
+        `both assignments must be seen, not just the first:\n${statements.join('\n--- next ---\n')}`,
+    );
+    assert.match(statements[0], /list_tag_shas_from_listing/);
+    assert.doesNotMatch(
+        statements[1],
+        /list_tag_shas_from_listing/,
+        'the OVERWRITING assignment is the drift; it is the one that must not be invisible',
+    );
+    assert.ok(
+        statements.every((s) => s.includes('awk')),
+        'a backslash-continued statement must be read whole, not just its first line',
+    );
+
+    assert.equal(
+        shellAssignments('  local actual_sha="$(peel)"', 'actual_sha').length,
+        1,
+        'a `local x=` declaration is an assignment; discovery must not require the name in column 0',
+    );
+    assert.throws(
+        () => shellAssignments('  printf \'%s\' "$actual_sha"', 'actual_sha'),
+        /actual_sha must be assigned/,
+        'a body with no assignment must fail loud, never return an empty set that passes every check vacuously',
+    );
 });
