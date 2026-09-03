@@ -223,9 +223,38 @@ test('B2: resume re-spawns ≤1 worker for the SAME ticket/phase with iteration 
   assert.equal(result.consecutiveRateLimits, 0);
 });
 
+/** Index of the innermost '{' enclosing `at`, or -1 at module scope. */
+function enclosingBraceOf(at) {
+  let depth = 0;
+  for (let i = at; i >= 0; i -= 1) {
+    if (src[i] === '}') depth += 1;
+    else if (src[i] === '{' && (depth -= 1) < 0) return i;
+  }
+  return -1;
+}
+
+/** The '}' closing the block that opens at `open`. */
+function closingBraceOf(open) {
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}' && (depth -= 1) === 0) return i;
+  }
+  return -1;
+}
+
+/** The identifier immediately preceding `at`, whitespace skipped ('' if there is none). */
+function wordBefore(at) {
+  let i = at - 1;
+  while (i >= 0 && /\s/.test(src[i])) i -= 1;
+  let end = i + 1;
+  while (i >= 0 && /[\w$]/.test(src[i])) i -= 1;
+  return src.slice(i + 1, end);
+}
+
 /**
- * Every object literal in `src` that NAMES `<eventName>`, brace-matched so each is read
- * whole. Discovery anchors on the EVENT NAME, never on the `logActivity(` call that emits
+ * Every site in `src` that NAMES `<eventName>`, as `{ index, literal }` with the naming
+ * literal brace-matched so each is read whole. ONE discovery, two projections. Discovery anchors on the EVENT NAME, never on the `logActivity(` call that emits
  * it: a call-anchored census has to decide what an argument looks like, and this file
  * already builds 3 events as a `const` first and passes the variable, every one of which
  * the old `src[open] !== '{'` arm silently skipped. Refactoring an emitter to that shape
@@ -234,29 +263,79 @@ test('B2: resume re-spawns ≤1 worker for the SAME ticket/phase with iteration 
  * Scoping to the enclosing literal is still the point: a span assertion joining the event
  * name to a field name is satisfied by any later occurrence of that field anywhere.
  */
-function activityEmitterLiterals(eventName) {
+function emitterSites(eventName) {
   const names = new RegExp(`event:\\s*'${eventName}'`, 'g');
-  const literals = [];
+  const sites = [];
   for (let m = names.exec(src); m; m = names.exec(src)) {
-    // Walk back to the '{' that opens the literal holding this key, then match it forward.
-    let depth = 0;
-    let open = -1;
-    for (let i = m.index; i >= 0; i -= 1) {
-      if (src[i] === '}') depth += 1;
-      else if (src[i] === '{' && (depth -= 1) < 0) { open = i; break; }
-    }
+    const open = enclosingBraceOf(m.index);
     assert.notEqual(open, -1, `${eventName} at offset ${m.index} must sit inside an object literal`);
-    let end = -1;
-    depth = 0;
-    for (let i = open; i < src.length; i += 1) {
-      if (src[i] === '{') depth += 1;
-      else if (src[i] === '}' && (depth -= 1) === 0) { end = i; break; }
-    }
+    const end = closingBraceOf(open);
     assert.notEqual(end, -1, `object literal at offset ${open} must be closed`);
-    literals.push(src.slice(open, end + 1));
+    sites.push({ index: m.index, literal: src.slice(open, end + 1) });
   }
-  assert.ok(literals.length > 0, `${eventName} must have at least one emitter`);
-  return literals;
+  assert.ok(sites.length > 0, `${eventName} must have at least one emitter`);
+  return sites;
+}
+
+function activityEmitterLiterals(eventName) {
+  return emitterSites(eventName).map((site) => site.literal);
+}
+
+/**
+ * Every brace-matched block enclosing a CALL to `fn`. Declarations are excluded by the
+ * token before the name, not by a hand-listed set of call sites: the discovery set then
+ * grows and shrinks with the code, so consolidating two cycles into one leaves the pin
+ * checking one block rather than reddening on a pinned count.
+ */
+function blocksCalling(fn) {
+  const blocks = [];
+  for (let at = src.indexOf(`${fn}(`); at !== -1; at = src.indexOf(`${fn}(`, at + 1)) {
+    if (wordBefore(at) === 'function') continue;
+    const open = enclosingBraceOf(at);
+    assert.notEqual(open, -1, `the call to ${fn} at offset ${at} must sit inside a block`);
+    const end = closingBraceOf(open);
+    assert.notEqual(end, -1, `the block opening at offset ${open} must be closed`);
+    blocks.push(src.slice(open, end + 1));
+  }
+  assert.ok(blocks.length > 0, `mux-runner.ts must call ${fn}`);
+  return blocks;
+}
+
+/**
+ * The `if (...)` condition of the statement block DIRECTLY enclosing the emitter at `at`,
+ * whitespace-stripped -- or null when that block is not an `if` block. Two walk-backs: the
+ * first leaves the emitter's own object literal, the second lands on the statement block
+ * holding the call. Bounded by the LANGUAGE (brace/paren depth), never by a hand-picked end
+ * needle or a magic character count.
+ */
+function guardingIfCondition(at) {
+  const literalOpen = enclosingBraceOf(at);
+  if (literalOpen === -1) return null;
+  const blockOpen = enclosingBraceOf(literalOpen - 1);
+  if (blockOpen === -1) return null;
+  let i = blockOpen - 1;
+  while (i >= 0 && /\s/.test(src[i])) i -= 1;
+  if (src[i] !== ')') return null;
+  const rparen = i;
+  let depth = 0;
+  for (; i >= 0; i -= 1) {
+    if (src[i] === ')') depth += 1;
+    else if (src[i] === '(' && (depth -= 1) === 0) break;
+  }
+  if (i < 0 || wordBefore(i) !== 'if') return null;
+  return src.slice(i + 1, rparen).replace(/\s+/g, '');
+}
+
+/** ONE check applied to EVERY emitter of the event -- the guard must GATE the emission. */
+function assertEveryEmitterGuardedBy(eventName, conditionShape) {
+  const sites = emitterSites(eventName);
+  sites.forEach((site, i) => {
+    const where = `${eventName} emitter ${i + 1}/${sites.length}`;
+    const condition = guardingIfCondition(site.index);
+    assert.notEqual(condition, null, `${where} must sit directly inside an if block`);
+    assert.match(condition, conditionShape,
+      `${where} must be gated by ${conditionShape}, got if (${condition})`);
+  });
 }
 
 /** ONE check applied to EVERY emitter of the event -- not one assert per emitter. */
@@ -392,8 +471,20 @@ test('B5: no reset_at → fall back to now + configured min_wait + emit rate_lim
   const result = await processRateLimitCycle(h.getState(), h.ctx);
   // It waits (parks for the configured min wait), then continues — never spawn-burns.
   assert.equal(result.kind, 'continue');
-  // Source: the no-reset fallback emits rate_limited_without_reset_at.
-  assert.match(src, /!rlAction\.hasResetsAt[\s\S]*?event: 'rate_limited_without_reset_at'/);
+  // Source: the no-reset fallback emits rate_limited_without_reset_at, and the guard must
+  // GATE it. The old span `/!rlAction\.hasResetsAt[\s\S]*?event: '...'/` asserted only file
+  // ORDER: hoisting the emitter out of the guard, so it fires on EVERY 429 including the ones
+  // that DO carry a reset_at, measured GREEN 23/23 (AP-EXT-ITER167-01). It also read only the
+  // first of the two guard spellings live in mux-runner.ts, so the whole
+  // `!decision.rlAction.hasResetsAt` site was unpinned. Both halves of the biconditional,
+  // each over a discovery set the language defines rather than a hand-listed one:
+  // every rate-limit cycle carries the breadcrumb ...
+  blocksCalling('decideRateLimitCycle').forEach((block, i, all) => {
+    assert.ok(block.includes("event: 'rate_limited_without_reset_at'"),
+      `rate-limit cycle ${i + 1}/${all.length} must emit rate_limited_without_reset_at`);
+  });
+  // ... and every breadcrumb is gated by the absence of a reset_at, nothing else.
+  assertEveryEmitterGuardedBy('rate_limited_without_reset_at', /^!(?:[\w$]+\.)*rlAction\.hasResetsAt$/);
 });
 
 // ---------------------------------------------------------------------------
