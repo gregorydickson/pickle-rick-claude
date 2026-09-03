@@ -25,7 +25,7 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -39,8 +39,12 @@ const dataRoot = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-dataroot-'));
 process.env.PICKLE_DATA_ROOT = dataRoot;
 after(() => rmSync(dataRoot, { recursive: true, force: true }));
 
-const { detectAndRecoverHeadRegression, isFailedTicketTerminalExcludable, wouldResetOrphanCommit } =
-  await import('../bin/mux-runner.js');
+const {
+  checkHeadPinMismatch,
+  detectAndRecoverHeadRegression,
+  isFailedTicketTerminalExcludable,
+  wouldResetOrphanCommit,
+} = await import('../bin/mux-runner.js');
 
 function makeSessionDir(workingDir) {
   const tmp = mkdtempSync(path.join(tmpdir(), 'pickle-scsg-session-'));
@@ -611,6 +615,90 @@ test('AP-EXT-ITER202-02(b): an unanswerable probe does not collapse the >1-tip a
   } finally {
     rmSync(shim128, { recursive: true, force: true });
     if (sessionTmp) rmSync(sessionTmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+
+// --- AP-EXT-ITER203-01 -------------------------------------------------------
+// The third site of the AP-EXT-ITER202-01/-02 family, found by that pass's
+// Phase 2.5 replay. `hasHeadDrifted` (private; reached here through the exported
+// `checkHeadPinMismatch`) decides drift on a DETACHED-HEAD session — the arm
+// `setup.ts` selects whenever `getHeadBranch` finds no branch — by asking whether
+// the observed HEAD descends from `pinned_sha`. It re-derived the same
+// `git merge-base --is-ancestor` probe inline and reduced it with `r.status !== 0`,
+// so 128 (unresolvable ref), a spawn failure and the probe's own 5s timeout all
+// read as "drifted".
+//
+// This caller's true-branch is the most destructive of the three in the family:
+// it stamps `working_tree_modified_externally` and calls `safeDeactivate`, ending
+// the run. A pipeline that stops produces no output, so an unprovable probe must
+// never be what stops it — unknown is NOT drift here.
+//
+// Driven through the PATH shim rather than source text: the fixture's HEAD is a
+// TRUE descendant of the pinned sha (it advanced normally, nothing external
+// happened), so `false` is the only correct verdict in every case, and the
+// negative control keeps "return false always" from passing.
+
+test('AP-EXT-ITER203-01: an unanswerable ancestry probe does not deactivate a session whose HEAD merely advanced', () => {
+  const repo = initRepo();
+  const shim128 = makeGitShim(128);
+  let sessionTmp;
+  try {
+    const PINNED = commit(repo, 'base.txt', 'session start');
+    git(['checkout', '-q', '--detach'], repo); // detached HEAD => pinned_branch === null
+    const ADVANCED = commit(repo, 'work.txt', 'pipeline-internal commit');
+
+    // Fixture precondition: HEAD advanced normally. There is no drift to find.
+    assert.notEqual(PINNED, ADVANCED, 'fixture precondition: HEAD moved');
+    git(['merge-base', '--is-ancestor', PINNED, ADVANCED], repo); // throws if not a descendant
+
+    const probe = (pathDir) => {
+      sessionTmp = makeSessionDir(repo);
+      const state = {
+        ...JSON.parse(readFileSync(sessionTmp.statePath, 'utf-8')),
+        pinned_branch: null,
+        pinned_sha: PINNED,
+      };
+      writeFileSync(sessionTmp.statePath, JSON.stringify(state));
+      const mismatch = pathDir
+        ? withPath(pathDir, () => checkHeadPinMismatch(state, repo, sessionTmp.sessionDir, sessionTmp.statePath, () => {}))
+        : checkHeadPinMismatch(state, repo, sessionTmp.sessionDir, sessionTmp.statePath, () => {});
+      const after = JSON.parse(readFileSync(sessionTmp.statePath, 'utf-8'));
+      return { mismatch, active: after.active, exitReason: after.exit_reason };
+    };
+
+    // Control: with a working probe the descent is provable and nothing halts.
+    const control = probe(null);
+    assert.equal(control.mismatch, false, 'control: a resolvable probe must see no drift');
+    assert.equal(control.active, true, 'control: the session stays active');
+
+    // The probe errors (exit 128). Pre-fix: mismatch true, session deactivated.
+    const unanswerable = probe(shim128);
+    assert.equal(unanswerable.mismatch, false, 'a probe exiting 128 proves nothing — it must not read as external drift');
+    assert.equal(unanswerable.active, true, 'an unprovable probe must not deactivate a live session');
+    assert.equal(unanswerable.exitReason, undefined, 'no exit_reason may be stamped on an unanswerable probe');
+
+    // Negative control: a genuinely divergent HEAD IS drift and must still halt.
+    // Without this, "return false always" passes every case above.
+    git(['checkout', '-q', '--detach', PINNED], repo);
+    const DIVERGENT = commit(repo, 'other.txt', 'external divergent commit');
+    sessionTmp = makeSessionDir(repo);
+    const divergentState = {
+      ...JSON.parse(readFileSync(sessionTmp.statePath, 'utf-8')),
+      pinned_branch: null,
+      pinned_sha: ADVANCED, // HEAD is now DIVERGENT, which does not descend from it
+    };
+    writeFileSync(sessionTmp.statePath, JSON.stringify(divergentState));
+    assert.equal(git(['rev-parse', 'HEAD'], repo), DIVERGENT, 'fixture precondition: HEAD is the divergent commit');
+    assert.equal(
+      checkHeadPinMismatch(divergentState, repo, sessionTmp.sessionDir, sessionTmp.statePath, () => {}),
+      true,
+      'negative control: a PROVABLY non-descendant HEAD is real drift and must still be caught',
+    );
+  } finally {
+    rmSync(shim128, { recursive: true, force: true });
+    if (sessionTmp) rmSync(sessionTmp.tmp, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
   }
 });

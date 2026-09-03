@@ -8148,14 +8148,27 @@ function observeCurrentHead(workingDir) {
     const sha = (r.stdout || '').trim();
     return sha ? { branch: getHeadBranch(workingDir), sha } : null;
 }
-/** Returns true if the HEAD has drifted externally relative to the pinned state. */
+/**
+ * Returns true if the HEAD has drifted externally relative to the pinned state.
+ *
+ * AP-EXT-ITER203-01: on a detached-HEAD session (`pinned_branch === null`, which
+ * `setup.ts` stores whenever `getHeadBranch` finds no branch) drift is decided by
+ * ancestry: HEAD that DESCENDS from `pinnedSha` advanced normally. This used to
+ * re-derive the `merge-base --is-ancestor` probe inline and reduce it with
+ * `r.status !== 0`, folding the probe's whole error space — 128 for an
+ * unresolvable ref, a null status from a spawn error or the 5s timeout — into
+ * "drifted". Measured through a PATH shim: a HEAD that had advanced to a true
+ * descendant was reported as external drift, and `checkHeadPinMismatch` stamped
+ * `working_tree_modified_externally` and DEACTIVATED the session — a halt bought
+ * with a probe that answered nothing. It now routes through the one tri-state
+ * `isHeadAtOrBelowCommit`, and names its direction for unknown: only a PROVEN
+ * non-ancestor (`false`) is drift, because this caller's true-branch halts the
+ * pipeline and an unprovable answer must never be the thing that stops a run.
+ */
 function hasHeadDrifted(pinnedBranch, pinnedSha, observed, workingDir) {
     if (pinnedBranch !== null)
         return observed.branch !== pinnedBranch;
-    if (observed.sha === pinnedSha)
-        return false;
-    const r = spawnSync('git', ['-C', workingDir, 'merge-base', '--is-ancestor', pinnedSha, observed.sha], { encoding: 'utf-8', timeout: 5000 });
-    return r.status !== 0;
+    return isHeadAtOrBelowCommit(pinnedSha, observed.sha, workingDir) === false;
 }
 /**
  * R-PIWG-1: Before each ticket selection, verify HEAD hasn't been switched externally.
