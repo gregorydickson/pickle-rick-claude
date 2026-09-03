@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
 
 const it = test;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -625,29 +626,132 @@ it('AP-EXT-ITER18-01 the glued-operator split is DERIVED from the separator set'
     'glued-operator split must not hardcode a single separator character');
 });
 
-// A named-import clause cannot contain `}` — the brace pair that opens the
-// clause is closed by the LANGUAGE, and the specifier belongs to that same
-// statement. So this is an exact statement reader, not a span between two
-// needles that any later line in the file can answer. Returns one
-// `{ imported, local }` per binding of `specifier`, across every import
-// statement naming it (splitting one import into two is a legal refactor and
-// must not red this pin). Quote style and the trailing semicolon are
-// tolerated for the same reason: narrowing a span makes everything left in
-// it load-bearing, and neither carries any of the meaning being asserted.
-const NAMED_IMPORT_STATEMENT_RE = /^import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]\s*;?/gm;
+// Read these handlers with the LANGUAGE's own parser, not with a lexical
+// guess. Both facts these pins assert — which specifier a name is bound in,
+// and whether the file CALLS that binding — are grammar, and every regex
+// spelling of them measured wrong in both directions: the call-site needle was
+// a whole-FILE grep, so PROSE answered it (forking `isGitCommitCommand` onto a
+// private segmenter and de-backticking the existing `splitShellSegments`
+// mention at tsc-gate.ts:129 measured GREEN 45/45 — the exact decorative-import
+// regression these pins exist to catch), while the import reader assumed
+// column 0, a value import and one quote style, so legal refactors false-RED.
+// A comment stripper would only trade one enumeration of lexical contexts for
+// another; `ts` excludes comments, strings and template literals by
+// construction, and interpolates no identifier into a pattern.
+function parseHandler(source, fileName) {
+  return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+}
 
-function namedImportsOf(source, specifier) {
+// Returns one `{ imported, local }` per binding of `specifier`, across every
+// import statement naming it — splitting one import into two, reflowing it,
+// indenting it and aliasing are all legal refactors that must not red a pin
+// about WHERE a name comes from.
+function namedImportsOf(sourceFile, specifier) {
   const bindings = [];
-  for (const [, clause, from] of source.matchAll(NAMED_IMPORT_STATEMENT_RE)) {
-    if (from !== specifier) continue;
-    for (const entry of clause.split(',')) {
-      const [imported, local] = entry.trim().split(/\s+as\s+/);
-      if (!imported) continue;
-      bindings.push({ imported: imported.trim(), local: (local ?? imported).trim() });
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    if (!ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    if (statement.moduleSpecifier.text !== specifier) continue;
+    const named = statement.importClause?.namedBindings;
+    if (!named || !ts.isNamedImports(named)) continue;
+    for (const element of named.elements) {
+      bindings.push({
+        imported: (element.propertyName ?? element.name).text,
+        local: element.name.text,
+      });
     }
   }
   return bindings;
 }
+
+// True only for a real call of `local` as an identifier callee. A mention of
+// `local(` in a comment, string or template literal is not a call site and
+// cannot answer this.
+function callsIdentifier(sourceFile, local) {
+  let called = false;
+  const visit = (node) => {
+    if (called) return;
+    if (ts.isCallExpression(node)
+        && ts.isIdentifier(node.expression)
+        && node.expression.text === local) {
+      called = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return called;
+}
+
+it('AP-EXT-ITER173-01 the one-home readers are comment-blind and refactor-tolerant', async () => {
+  // The regression this holds: both one-home pins asked `assert.match(source,
+  // /\blocal\s*\(/)` over the WHOLE handler file, so a comment naming the call
+  // form answered "the file CALLS the shared helper". Measured before the fix:
+  // forking `isGitCommitCommand` onto a private segmenter and de-backticking
+  // the existing `splitShellSegments` mention at tsc-gate.ts:129 left this file
+  // 45/45 GREEN. Pin the unified reader itself, so the two pins cannot re-fork
+  // their own lexical guess.
+  const forged = (mention) => parseHandler(
+    `import { helper } from './m.js';\n${mention}\nexport const x = 1;\n`,
+    'forged.ts',
+  );
+  const notCalls = [
+    ['line comment', '// helper(tokens) is the shared prelude'],
+    ['block comment', '/* helper(tokens) is the shared prelude */'],
+    ['jsdoc', '/** PLUS each helper(x) segment. */'],
+    ['string literal', "const s = 'helper(tokens)';"],
+    ['template literal', 'const s = `helper(tokens)`;'],
+    ['bare reference, never invoked', 'export const f = [helper];'],
+  ];
+  for (const [label, mention] of notCalls) {
+    assert.equal(
+      callsIdentifier(forged(mention), 'helper'),
+      false,
+      `a ${label} must not answer the call-site check`,
+    );
+  }
+  assert.equal(callsIdentifier(forged('export const y = helper(1);'), 'helper'), true,
+    'a real call must still satisfy the call-site check');
+
+  // The identifier is no longer interpolated into a pattern, so a name that
+  // would have been regex metacharacters reads as itself rather than as an
+  // anchor that never matches.
+  assert.equal(
+    callsIdentifier(parseHandler('const $fn = () => 1;\nexport const z = $fn();\n', 'f.ts'), '$fn'),
+    true,
+    'a $-leading local must not be read as a regex anchor',
+  );
+
+  // ...and the import reader reads the GRAMMAR, so column 0, quote style,
+  // type-only form, reflow and aliasing are all tolerated. Each of these was
+  // read as ABSENT by the `^import\s*\{` spelling, which false-REDs a pin
+  // about where a name comes from on a refactor that changes nothing it pins.
+  const importForms = [
+    ['indented', "  import { splitShellSegments } from '../shell-exec.js';"],
+    ['double-quoted', 'import { splitShellSegments } from "../shell-exec.js";'],
+    ['type-only', "import type { splitShellSegments } from '../shell-exec.js';"],
+    ['reflowed', "import {\n  splitShellSegments,\n} from '../shell-exec.js';"],
+    ['no semicolon', "import { splitShellSegments } from '../shell-exec.js'"],
+  ];
+  for (const [label, form] of importForms) {
+    const bindings = namedImportsOf(parseHandler(form, 'f.ts'), '../shell-exec.js');
+    assert.deepEqual(
+      bindings.map((binding) => binding.imported),
+      ['splitShellSegments'],
+      `a ${label} import must still bind splitShellSegments`,
+    );
+  }
+  const aliased = namedImportsOf(
+    parseHandler("import { splitShellSegments as seg } from '../shell-exec.js';", 'f.ts'),
+    '../shell-exec.js',
+  );
+  assert.deepEqual(aliased, [{ imported: 'splitShellSegments', local: 'seg' }],
+    'an alias must report the imported name and the local separately');
+  assert.deepEqual(
+    namedImportsOf(parseHandler("import { a } from './other.js';", 'f.ts'), '../shell-exec.js'),
+    [],
+    'a different specifier must bind nothing');
+});
 
 it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)', async () => {
   const hooksDir = path.resolve(__dirname, '../src/hooks');
@@ -669,7 +773,8 @@ it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)
     // only that the symbol appears somewhere ahead of that specifier was
     // satisfied by a re-fork whose `from '../forked-shell-exec.js'` line sat
     // above the surviving siblings' import — the exact regression named above.
-    const shared = namedImportsOf(source, '../shell-exec.js');
+    const ast = parseHandler(source, name);
+    const shared = namedImportsOf(ast, '../shell-exec.js');
     const segmenter = shared.find((binding) => binding.imported === 'splitShellSegments');
     assert.ok(
       segmenter,
@@ -679,9 +784,8 @@ it('AP-EXT-ITER12-01 the hooks segmenter has ONE home (no private tsc-gate copy)
     // ...and be the segmenter the file actually runs. An import kept for show
     // while a privately-named fork takes over the call sites reads clean to the
     // name check above, which can only ever recognise names someone listed.
-    assert.match(
-      source,
-      new RegExp(`\\b${segmenter.local}\\s*\\(`),
+    assert.ok(
+      callsIdentifier(ast, segmenter.local),
       `${name} must CALL the shared segmenter, not just import it`,
     );
   }
@@ -1103,7 +1207,8 @@ it('AP-EXT-ITER27-01 the exec-token prelude has ONE home (no private tsc-gate co
     // sat ABOVE the surviving shell-exec.js import measured GREEN 45/45 for
     // both handlers. It also demanded one exact quote style, so it false-RED on
     // a refactor that changed nothing it was pinning. Read the statement.
-    const sharedImports = namedImportsOf(source, '../shell-exec.js');
+    const ast = parseHandler(source, name);
+    const sharedImports = namedImportsOf(ast, '../shell-exec.js');
     const prelude = sharedImports.find((binding) => binding.imported === helper);
     assert.ok(
       prelude,
@@ -1113,9 +1218,8 @@ it('AP-EXT-ITER27-01 the exec-token prelude has ONE home (no private tsc-gate co
     // ...and be the prelude the file actually runs. An import kept for show
     // while a privately-named fork takes over the call sites reads clean to the
     // name check above, which can only ever recognise names someone listed.
-    assert.match(
-      source,
-      new RegExp(`\\b${prelude.local}\\s*\\(`),
+    assert.ok(
+      callsIdentifier(ast, prelude.local),
       `${name} must CALL the shared ${helper}, not just import it`,
     );
   }
