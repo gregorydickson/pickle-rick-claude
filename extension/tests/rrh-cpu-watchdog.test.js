@@ -187,38 +187,79 @@ test('parsePsCpuTimeToSeconds: MM:SS / HH:MM:SS / DD-HH:MM:SS', () => {
 
 // --- Wiring: the main loop wires the CPU watchdog + routes a trip to the C7 salvage ---
 
+/**
+ * Every brace-matched block that ENCLOSES an occurrence of `needle`.
+ *
+ * `src.slice(src.indexOf(needle))` runs to END OF FILE, so any sibling further down
+ * mux-runner.ts's main loop answers for the code the pin names: 72001 of the file's
+ * chars satisfied the old span, and deleting this block's own AC-2 working_dir
+ * fail-safe -- exactly what the pin below is titled for -- measured GREEN, because
+ * `if (!state.working_dir)` occurs again downstream. Two subtractions close that:
+ * the span is bounded by the LANGUAGE (brace depth), not a hand-picked end needle,
+ * and every call site is checked rather than whichever one happens to be first.
+ */
+function enclosingBlocksOf(source, needle) {
+  const blocks = [];
+  for (let at = source.indexOf(needle); at !== -1; at = source.indexOf(needle, at + 1)) {
+    let depth = 0;
+    let open = -1;
+    for (let i = at; i >= 0; i -= 1) {
+      if (source[i] === '}') depth += 1;
+      else if (source[i] === '{' && (depth -= 1) < 0) { open = i; break; }
+    }
+    assert.notEqual(open, -1, `${needle} at offset ${at} must sit inside a block`);
+    let end = -1;
+    depth = 0;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1;
+      else if (source[i] === '}' && (depth -= 1) === 0) { end = i; break; }
+    }
+    assert.notEqual(end, -1, `the block opening at offset ${open} must be closed`);
+    blocks.push(source.slice(open, end + 1));
+  }
+  assert.ok(blocks.length > 0, `mux-runner.ts must contain ${needle}`);
+  return blocks;
+}
+
+/** ONE check applied to EVERY watchdog call site -- not one assert against the first. */
+function forEachCpuTripBlock(check) {
+  const blocks = enclosingBlocksOf(src, 'evaluateCpuLivenessWatchdog({');
+  blocks.forEach((block, i) => check(block, `cpu watchdog block ${i + 1}/${blocks.length}`));
+}
+
 test('wiring: mux-runner main loop calls evaluateCpuLivenessWatchdog and routes a cpu_stall to the salvage', () => {
-  assert.ok(src.includes('evaluateCpuLivenessWatchdog({'), 'main loop must call evaluateCpuLivenessWatchdog');
-  // The CPU-trip block emits the idle-stall event tagged liveness:'cpu' (no new event type).
-  assert.ok(src.includes("liveness: 'cpu'"), 'CPU trip must tag the activity event liveness:cpu');
-  // The trip must grade =conformance and route to the existing C7 committer.
-  const tripSlice = src.slice(src.indexOf('evaluateCpuLivenessWatchdog({'));
-  assert.ok(
-    /gradeConformanceComplete\(sessionDir, cpuTicket\)/.test(tripSlice) &&
-      /routeExitPathSalvage\(/.test(tripSlice),
-    'a cpu_stall trip must grade =conformance then call the C7 salvage committer',
-  );
-  // INCOMPLETE set must NOT auto-commit (the else branch logs and waits).
-  assert.ok(
-    /not auto-committing/.test(tripSlice),
-    'an INCOMPLETE conformance set must not be auto-committed',
-  );
-  // Self-recovery resets trackers, identical to the idle-stall path.
-  assert.ok(
-    /findNextPendingTicketId\(sessionDir\)/.test(tripSlice) &&
-      /lastStateIteration = -1/.test(tripSlice) &&
-      /stallCount = 0/.test(tripSlice),
-    'self-recovery must re-evaluate the current ticket and reset stall trackers',
-  );
+  forEachCpuTripBlock((tripSlice, where) => {
+    // The CPU-trip block emits the idle-stall event tagged liveness:'cpu' (no new event type).
+    assert.ok(/liveness:\s*'cpu'/.test(tripSlice), `${where}: CPU trip must tag the activity event liveness:cpu`);
+    // The trip must grade =conformance and route to the existing C7 committer.
+    assert.ok(
+      /gradeConformanceComplete\(\s*sessionDir,\s*cpuTicket\s*\)/.test(tripSlice) &&
+        /routeExitPathSalvage\s*\(/.test(tripSlice),
+      `${where}: a cpu_stall trip must grade =conformance then call the C7 salvage committer`,
+    );
+    // INCOMPLETE set must NOT auto-commit (the else branch logs and waits).
+    assert.ok(
+      /not auto-committing/.test(tripSlice),
+      `${where}: an INCOMPLETE conformance set must not be auto-committed`,
+    );
+    // Self-recovery resets trackers, identical to the idle-stall path.
+    assert.ok(
+      /findNextPendingTicketId\(\s*sessionDir\s*\)/.test(tripSlice) &&
+        /lastStateIteration\s*=\s*-1/.test(tripSlice) &&
+        /stallCount\s*=\s*0/.test(tripSlice),
+      `${where}: self-recovery must re-evaluate the current ticket and reset stall trackers`,
+    );
+  });
 });
 
 test('wiring: the CPU-stall commit honors the AC-2 working_dir fail-safe (never process.cwd())', () => {
-  const tripSlice = src.slice(src.indexOf('evaluateCpuLivenessWatchdog({'));
-  assert.ok(
-    /if \(!state\.working_dir\)/.test(tripSlice) &&
-      /state_working_dir_missing/.test(tripSlice),
-    'a missing working_dir must halt the git-mutating commit, not fall back to process.cwd()',
-  );
+  forEachCpuTripBlock((tripSlice, where) => {
+    assert.ok(
+      /if\s*\(\s*!state\.working_dir\s*\)/.test(tripSlice) &&
+        /state_working_dir_missing/.test(tripSlice),
+      `${where}: a missing working_dir must halt the git-mutating commit, not fall back to process.cwd()`,
+    );
+  });
 });
 
 // --- D5 (R-DSPW): a live worker is never classified dead ---------------------------

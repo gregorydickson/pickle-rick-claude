@@ -170,13 +170,56 @@ test('L2: idle_stall_unrecoverable is a failure exit', () => {
   assert.equal(isFailureExit('idle_stall_unrecoverable'), true);
 });
 
+/**
+ * Every brace-matched block that ENCLOSES an occurrence of `needle`.
+ *
+ * `src.slice(src.indexOf(needle))` runs to END OF FILE, so a sibling further down
+ * mux-runner.ts's main loop answers for the code the pin names: deleting this
+ * watchdog's whole `idle_stall_unrecoverable` escalation -- exactly what the pin
+ * below is titled for -- measured GREEN, because the main loop records that same
+ * exit reason again downstream. Two subtractions close that: the span is bounded by
+ * the LANGUAGE (brace depth), not a hand-picked end needle, and every call site is
+ * checked rather than whichever one happens to be first.
+ */
+function enclosingBlocksOf(source, needle) {
+  const blocks = [];
+  for (let at = source.indexOf(needle); at !== -1; at = source.indexOf(needle, at + 1)) {
+    let depth = 0;
+    let open = -1;
+    for (let i = at; i >= 0; i -= 1) {
+      if (source[i] === '}') depth += 1;
+      else if (source[i] === '{' && (depth -= 1) < 0) { open = i; break; }
+    }
+    assert.notEqual(open, -1, `${needle} at offset ${at} must sit inside a block`);
+    let end = -1;
+    depth = 0;
+    for (let i = open; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1;
+      else if (source[i] === '}' && (depth -= 1) === 0) { end = i; break; }
+    }
+    assert.notEqual(end, -1, `the block opening at offset ${open} must be closed`);
+    blocks.push(source.slice(open, end + 1));
+  }
+  assert.ok(blocks.length > 0, `mux-runner.ts must contain ${needle}`);
+  return blocks;
+}
+
 test('L2: wiring — main loop increments a recovery counter, caps it, and escalates to idle_stall_unrecoverable', () => {
-  const slice = src.slice(src.indexOf('evaluateMuxIdleStallWatchdog({'));
-  assert.ok(/idleStallRecoveryCount/.test(slice), 'loop must track a consecutive idle-stall recovery counter');
-  assert.ok(/evaluateIdleStallRecoveryCap\(/.test(slice), 'loop must consult evaluateIdleStallRecoveryCap');
-  assert.ok(/recordExitReason\(statePath, 'idle_stall_unrecoverable'\)/.test(slice), 'over-cap escalates with idle_stall_unrecoverable');
+  const blocks = enclosingBlocksOf(src, 'evaluateMuxIdleStallWatchdog({');
+  blocks.forEach((slice, i) => {
+    const where = `idle-stall watchdog block ${i + 1}/${blocks.length}`;
+    assert.ok(/idleStallRecoveryCount/.test(slice), `${where}: loop must track a consecutive idle-stall recovery counter`);
+    assert.ok(/evaluateIdleStallRecoveryCap\s*\(/.test(slice), `${where}: loop must consult evaluateIdleStallRecoveryCap`);
+    assert.ok(/recordExitReason\(\s*statePath,\s*'idle_stall_unrecoverable'\s*\)/.test(slice), `${where}: over-cap escalates with idle_stall_unrecoverable`);
+  });
   // Counter resets on genuine progress (exit-commit committed or iteration-advance).
-  assert.ok(/idleStallRecoveryCount = 0/.test(src), 'counter must reset on real progress');
+  // Asserted against the source with every watchdog block REMOVED, so a block's own
+  // post-recovery reset cannot stand in for the progress-site resets this pins -- and
+  // as a RE-assignment, so `let idleStallRecoveryCount = 0` (the declaration, also
+  // outside the block) cannot either. Both stand-ins measured GREEN before this.
+  const outsideWatchdog = blocks.reduce((rest, block) => rest.split(block).join(''), src);
+  assert.ok(/(?<!\b(?:let|const|var)\s+)idleStallRecoveryCount\s*=\s*0/.test(outsideWatchdog),
+    'counter must be RE-assigned to 0 on real progress OUTSIDE the idle-stall watchdog block');
 });
 
 // ---------------------------------------------------------------------------
