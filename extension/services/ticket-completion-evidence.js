@@ -406,11 +406,13 @@ function scanGitLog(args) {
  * baseline SHA nor a borrowed one, since both are reachable commits. `inferred`
  * is a stamped field like `completion_commit`, so it reports the hard reason.
  *
- * Returns null ONLY when the field is absent — that is the caller's signal to
- * fall through to the git-log scan arm. A present-but-unusable field
- * short-circuits via `absent()` (the scan would fail for the same reason).
+ * Returns null when the field is absent OR present-but-unresolvable — both are
+ * the caller's signal to fall through to the git-log scan arm. ONE rule for a
+ * stamped field that git cannot resolve, shared with the explicit arm
+ * (AP-EXT-ITER195-01): a stamp is a CLAIM, and a claim git cannot confirm is not
+ * a verdict about any OTHER attribution path.
  */
-function readInferredArm(ctx, content, absent) {
+function readInferredArm(ctx, content) {
     const inferredField = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit_inferred'));
     if (!inferredField)
         return null;
@@ -423,18 +425,28 @@ function readInferredArm(ctx, content, absent) {
     const probed = probeShaOverLadder(inferredField, ctx);
     if (probed)
         return { ...probed, via: 'inferred' };
-    // R-AFCC-STAGE: field present but git can't verify (non-repo workingDir or a
-    // dropped commit). A stored-but-unverifiable SHA is not evidence the gate can
-    // act on → absent.
-    return absent();
+    // AP-EXT-ITER195-01 / R-AICF parity: null — fall through to the scan arm,
+    // exactly as the unreachable EXPLICIT field does. The prior `absent()` return
+    // short-circuited on the theory that "the scan would fail for the same
+    // reason", which is false: the stamp failed because THAT sha is unresolvable,
+    // while the scan asks an independent question (does a commit carry this
+    // ticket's `Pickle-Ticket` trailer?). A stale/hallucinated inferred stamp
+    // therefore made real, correctly-trailered, shipped work permanently
+    // unattributable.
+    // R-AFCC-STAGE: unchanged — a non-repo workingDir is still a legitimate state
+    // and a stored-but-currently-unverifiable SHA is still not evidence the gate
+    // can act on. The scan cannot answer there either, so `readEvidence` ends at
+    // the same `absent()`; only the case where the scan CAN answer is different.
+    process.stderr.write(`[ticket-completion-evidence] inferred sha ${inferredField} unreachable — falling through to scan attribution (R-AICF)\n`);
+    return null;
 }
 /**
  * Reads completion evidence for a ticket and returns a 2-state EvidenceKind
  * (B-DURA T70):
  *   - committed: explicit completion_commit (git-reachable), git-verified
  *     completion_commit_inferred field, or a git-log scan hit.
- *   - absent: no field/scan match, an explicit SHA that is not git-reachable, a
- *     baseline SHA (R-CXOR-2), or a stored-but-unverifiable inferred SHA.
+ *   - absent: no field/scan match, a stamped SHA (explicit OR inferred) that is
+ *     not git-reachable AND no scan hit either, or a baseline SHA (R-CXOR-2).
  */
 export function readEvidence(ctx) {
     const tPath = resolveTicketPath(ctx);
@@ -472,7 +484,7 @@ export function readEvidence(ctx) {
         absentReason: unreachableExplicit ? 'unreachable_explicit_unattributable' : 'no_evidence',
     });
     // --- Inferred field (completion_commit_inferred) ---
-    const inferred = readInferredArm(ctx, content, absent);
+    const inferred = readInferredArm(ctx, content);
     if (inferred)
         return inferred;
     // --- Git log scan (WS-2 Pickle-Ticket trailer) ---

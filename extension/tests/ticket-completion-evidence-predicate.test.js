@@ -149,6 +149,65 @@ test('R-AICF: readEvidence — unreachable explicit sha with NO attributable com
   }
 });
 
+// ── AP-EXT-ITER195-01: the INFERRED arm obeys the same R-AICF fall-through ───
+// The explicit arm above falls through to the scan when its stamp is
+// unresolvable. Its stamped-field sibling used to return absent() instead, on
+// the theory that "the scan would fail for the same reason" — false, since the
+// scan asks an independent question (does a commit carry this ticket's
+// Pickle-Ticket trailer?). One stale inferred stamp therefore made real,
+// correctly-trailered, shipped work permanently unattributable.
+
+test('AP-EXT-ITER195-01: readEvidence — unresolvable INFERRED sha + real trailer-attributed commit → committed via scan', () => {
+  const root = mkTmp('pickle-aicf-inferred-');
+  try {
+    initGitRepo(root);
+    const declared = 'src/circuit-store.ts';
+    const realSha = commitFileWithTrailer(root, declared, 'Add Reducto Redis circuit store', 'c46045a6');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'c46045a6', { completionCommitInferred: HALLUCINATED_SHA, declaredFiles: [declared] });
+
+    const ev = readEvidence({ sessionDir, ticketId: 'c46045a6', workingDir: root });
+    assert.equal(ev.kind, 'committed', 'unresolvable inferred sha must fall through to the scan branches (R-AICF parity)');
+    assert.equal(ev.sha, realSha, 'scan fallback must attribute the real trailer-stamped commit');
+    assert.equal(ev.via, 'scan');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER195-01: readEvidence — unresolvable INFERRED sha with NO attributable commit stays absent', () => {
+  const root = mkTmp('pickle-aicf-inf-unattr-');
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'cccc3333', { completionCommitInferred: HALLUCINATED_SHA });
+
+    const ev = readEvidence({ sessionDir, ticketId: 'cccc3333', workingDir: root });
+    assert.equal(ev.kind, 'absent', 'no stamp resolves and no trailered commit exists → absent');
+    assert.equal(ev.absentReason, 'no_evidence');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER195-01: a baseline-rejected INFERRED sha stays HARD-absent — the fall-through never launders a rejection', () => {
+  const root = mkTmp('pickle-aicf-inf-base-');
+  try {
+    initGitRepo(root);
+    const baseline = head(root);
+    // A real trailered commit exists — it must NOT rescue a baseline-stamped inferred field.
+    commitFileWithTrailer(root, 'x.txt', 'real work', 'dddd4444');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'dddd4444', { completionCommitInferred: baseline });
+
+    const ev = readEvidence({ sessionDir, ticketId: 'dddd4444', workingDir: root, startCommit: baseline });
+    assert.equal(ev.kind, 'absent', 'baseline inferred sha must stay hard-absent (R-CXOR-2)');
+    assert.equal(ev.absentReason, 'baseline_sha');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('R-AICF: baseline-rejected explicit sha stays HARD-absent — no scan fallback even with an attributable commit', () => {
   const root = mkTmp('pickle-1seam-base-');
   try {
@@ -1346,12 +1405,23 @@ test('AP-EXT-ITER123-01: a definite not-exists on the primary rung is still FINA
     writeTicket(f.sessionDir, 'finl0123', { completionCommitInferred: HALLUCINATED_SHA });
 
     // The sha exists in NO repo on the ladder. Widening the arm must not invent
-    // evidence — absent is still the answer, and it is the stamped-field reason.
+    // evidence: no rung may accept the hallucinated stamp itself.
+    //
+    // AP-EXT-ITER195-01 re-anchored the assertion from `kind === 'absent'` onto
+    // the ARM. `mkLadderFixture` gives this ticket a real `Pickle-Ticket`-trailered
+    // delivery commit, so the old expectation held only because an unresolvable
+    // inferred stamp short-circuited the scan — the very defect that made shipped,
+    // correctly-trailered work permanently unattributable. The ladder teeth are
+    // unchanged and now cannot be satisfied by the short-circuit: the stamp must
+    // not be accepted, and the accept that DOES land must come from the scan.
+    // The genuinely-unattributable control lives in the AP-EXT-ITER195-01 block.
     const ev = readEvidence({
       sessionDir: f.sessionDir, ticketId: 'finl0123', workingDir: f.root, fallbackDir: f.root,
     });
-    assert.equal(ev.kind, 'absent', 'an unresolvable sha is absent on every rung');
-    assert.equal(ev.sha, undefined);
+    assert.notEqual(ev.via, 'inferred', 'no rung may accept an unresolvable stamped sha');
+    assert.notEqual(ev.sha, HALLUCINATED_SHA, 'the hallucinated sha must never become evidence');
+    assert.equal(ev.sha, f.sha, 'attribution falls through to the real trailered commit');
+    assert.equal(ev.via, 'scan');
   } finally {
     f.cleanup();
   }
