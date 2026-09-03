@@ -7770,6 +7770,22 @@ function countBoundedEscapeAttempts(
  * `In Progress` ticket is eligible — `Todo` never started (the manager simply has
  * not picked it up), and `Done`/`Skipped` are already terminal. The count is read
  * from the persisted ledger so a resumed session honors the same cap.
+ *
+ * `cap > 0` is the DISABLE arm, and it is the same word its two sibling caps in the
+ * `hardening` block already speak. All three are resolved by the one
+ * `resolveNonNegativeIntField`, which admits `0` for every field, and for both siblings
+ * `0` means the feature does not fire: `silent_death_respawn_cap: 0` fails `prior < cap`
+ * so no respawn is ever attempted, `failed_flip_suppression_cap: 0` passes `prior >= cap`
+ * so nothing is ever suppressed. Here the comparison is `priorCount >= cap` against a
+ * count that STARTS at 0, so `cap: 0` was vacuously true on the first evaluation and
+ * inverted the polarity — the one field in the family where `0` meant "fire maximally"
+ * rather than "do not fire". An operator disabling the escape by the analogy the block
+ * itself teaches got every In Progress ticket salvaged-then-Skipped on its first
+ * no-progress relaunch, with zero relaunches actually attempted.
+ *
+ * Expressed as a conjunct of the existing decision rather than a new early return: the
+ * invariant is one predicate ("a charge was recorded AND the cap is armed"), not a new
+ * case to enumerate.
  */
 export function evaluateBoundedEscape(
   state: State,
@@ -7785,7 +7801,7 @@ export function evaluateBoundedEscape(
     status = (getTicketStatus(sessionDir, ticketId) ?? '').toLowerCase().replace(/["']/g, '').trim();
   } catch { /* unreadable frontmatter → not escape-eligible */ }
   const priorCount = countBoundedEscapeAttempts(state.recovery_attempts, ticketId);
-  const escape = status === 'in progress' && priorCount >= cap;
+  const escape = cap > 0 && status === 'in progress' && priorCount >= cap;
   return { escape, ticketId, priorCount, cap };
 }
 

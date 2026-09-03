@@ -6152,3 +6152,62 @@ test('AP-EXT-ITER161-01: an out-of-scope commit is not this ticket\'s progress',
         + 'not evidence of this ticket\'s work — "HEAD moved" alone must never clear a charge',
     );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER194-01: `bounded_terminal_escape_cap: 0` must DISABLE the escape, not
+// arm it maximally.
+//
+// The `hardening` block carries three per-ticket caps and resolves all of them through
+// the one `resolveNonNegativeIntField`, which admits `0` for every field. For both
+// siblings `0` means "the feature does not fire": `silent_death_respawn_cap: 0` fails
+// `prior < cap` so no respawn is attempted, `failed_flip_suppression_cap: 0` passes
+// `prior >= cap` so nothing is suppressed — and CLAUDE.md documents each as "0 disables".
+// The bounded escape compared `priorCount >= cap` against a count that STARTS at 0, so
+// `cap: 0` was vacuously true on the FIRST evaluation. Measured on the compiled runtime
+// before the fix: `evaluateBoundedEscape(state, dir, 0)` on an In Progress ticket with an
+// EMPTY ledger returned `escape: true`, which routes to `executeBoundedEscape` —
+// salvage-then-`markTicketSkipped`. An operator disabling the escape by the analogy the
+// block itself teaches got every In Progress ticket forced terminal on its first
+// no-progress relaunch, with zero relaunches actually attempted.
+//
+// Both directions are asserted: `0` must not fire, and an armed cap must still fire — a
+// fix that merely stopped escaping would delete AC-A4.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER194-01: bounded_terminal_escape_cap 0 disables the escape instead of firing it on pass one', async () => {
+    const { evaluateBoundedEscape } = await import('../bin/mux-runner.js');
+    const fixture = seedBoundedEscapeFixture();
+    const state = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8'));
+
+    assert.deepEqual(
+        state.recovery_attempts, [],
+        'precondition: the ticket has NO recorded no-progress charge, so nothing has earned a terminal flip',
+    );
+    const verdict = evaluateBoundedEscape(state, fixture.root, 0);
+    assert.equal(
+        verdict.escape, false,
+        '`0` is the disable value its two sibling hardening caps already use — it must not force an '
+        + 'In Progress ticket terminal before a single no-progress relaunch has been charged',
+    );
+    assert.equal(verdict.priorCount, 0, 'the vacuous comparison was priorCount(0) >= cap(0)');
+});
+
+test('AP-EXT-ITER194-01 control: an armed cap still escapes at the charge it was given (AC-A4 preserved)', async () => {
+    const { evaluateBoundedEscape, recordBoundedEscapeAttempt } = await import('../bin/mux-runner.js');
+    const fixture = seedBoundedEscapeFixture();
+
+    // One real sterile relaunch: no artifact written, so the charge lands.
+    recordBoundedEscapeAttempt(fixture.statePath, fixture.ticket, 1, () => {}, {
+        sessionDir: fixture.root,
+        iterationStartMs: Date.now(),
+    });
+    const state = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8'));
+    assert.equal(
+        state.recovery_attempts.filter(a => a.strategy === 'bounded_terminal_escape').length, 1,
+        'precondition: exactly one no-progress charge is on the ledger',
+    );
+    assert.equal(
+        evaluateBoundedEscape(state, fixture.root, 1).escape, true,
+        'the cap-armed path is untouched: a sterile ticket at its cap is exactly what AC-A4 forces terminal',
+    );
+});
