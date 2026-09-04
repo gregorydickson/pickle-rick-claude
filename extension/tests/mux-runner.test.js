@@ -6300,3 +6300,150 @@ test('AP-EXT-ITER194-01 control: an armed cap still escapes at the charge it was
         'the cap-armed path is untouched: a sterile ticket at its cap is exactly what AC-A4 forces terminal',
     );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER207-01 — the scope fence had THREE states and was read as two.
+//
+// `readScopeAllowedPaths` returned `string[] | null`, collapsing "no scope.json"
+// (fence not applicable) with "scope.json present but unreadable / malformed /
+// empty" (fence applicable and UNRESOLVABLE). Four readers then re-derived the
+// distinction with the same `!allowed || allowed.length === 0` truthiness, whose
+// no-answer branch ADMITS: the two evidence arms `return true` (any commit counts
+// as this ticket's scoped work) and `resolveOrphanSha` skipped its scope filter
+// entirely. A truncated scope.json therefore turned another ticket's out-of-fence
+// commit into this ticket's evidence — the Failed flip was SUPPRESSED and the
+// silent-death respawn HELD, both on work the ticket never did.
+//
+// The negative control is the last row: a genuinely UNSCOPED session must keep
+// counting any window commit, so "refuse whenever the fence is not resolved"
+// is not a fix — the three states must be distinguished, not merged the other way.
+// ---------------------------------------------------------------------------
+
+function seedForeignWindowCommitFixture(root, scopeJsonContent) {
+  const repoDir = seedRecoveryEvidenceRepo(root);
+  const git = (args) => {
+    const r = spawnSync('git', args, { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 });
+    assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`);
+    return (r.stdout || '').trim();
+  };
+  const preSha = git(['rev-parse', 'HEAD']);
+  // The ONLY commit in the iteration window touches a path OUTSIDE the fence.
+  fs.mkdirSync(path.join(repoDir, 'foreign'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, 'foreign', 'x.ts'), 'foreign\n');
+  git(['add', 'foreign/x.ts']);
+  git(['commit', '-m', 'foreign work', '--no-gpg-sign']);
+
+  const sessionDir = path.join(root, 'session');
+  fs.mkdirSync(path.join(sessionDir, 'tkt00001'), { recursive: true });
+  fs.writeFileSync(
+    path.join(sessionDir, 'state.json'),
+    JSON.stringify({ schema_version: 5, working_dir: repoDir, recovery_attempts: [], activity: [] }),
+  );
+  fs.writeFileSync(
+    path.join(sessionDir, 'tkt00001', 'rick_ticket_tkt00001.md'),
+    '---\nid: tkt00001\nstatus: In Progress\n---\n\n# Ticket\n',
+  );
+  if (scopeJsonContent !== null) {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), scopeJsonContent);
+  }
+  return { repoDir, sessionDir, preSha };
+}
+
+const AP207_RESOLVABLE_SCOPE = JSON.stringify({ version: 1, allowed_paths: ['seed.txt'] });
+const AP207_UNRESOLVABLE_FENCES = [
+  ['truncated mid-write', '{"version":1,"allowed_paths":["se'],
+  ['allowed_paths: []', JSON.stringify({ version: 1, allowed_paths: [] })],
+  ['allowed_paths: not an array', JSON.stringify({ version: 1, allowed_paths: 'seed.txt' })],
+];
+
+async function ap207Verdicts(root, scopeJsonContent) {
+  const { applySilentDeathRecoveryPolicy, evaluateFailedFlipSuppression } =
+    await import('../bin/mux-runner.js');
+  const { sessionDir, repoDir, preSha } = seedForeignWindowCommitFixture(root, scopeJsonContent);
+  const windowStartMs = Date.now() - 60_000;
+  const silentDeath = applySilentDeathRecoveryPolicy({
+    sessionDir,
+    statePath: path.join(sessionDir, 'state.json'),
+    ticketId: 'tkt00001',
+    workingDir: repoDir,
+    iteration: 3,
+    classification: { subClass: 'silent_death' },
+    preIterSha: preSha,
+    iterationStartMs: windowStartMs,
+    settings: {
+      silent_death_respawn_cap: 1,
+      failed_flip_suppression_cap: 2,
+      breaker_recovery_grace_seconds: 30,
+      bounded_terminal_escape_cap: 3,
+    },
+    archive: () => null,
+    log: () => {},
+  });
+  const failedFlip = evaluateFailedFlipSuppression({
+    sessionDir,
+    statePath: path.join(sessionDir, 'state.json'),
+    ticketId: 'tkt00001',
+    workingDir: repoDir,
+    preSha,
+    iterationStartMs: windowStartMs,
+    cap: 2,
+    log: () => {},
+  });
+  return { silentDeath, failedFlip };
+}
+
+test('AP-EXT-ITER207-01: an UNRESOLVABLE scope fence does not admit a foreign out-of-fence commit as this ticket\'s evidence', async () => {
+  const controlRoot = makeTmpRoot();
+  try {
+    const control = await ap207Verdicts(controlRoot, AP207_RESOLVABLE_SCOPE);
+    assert.equal(control.failedFlip.action, 'proceed',
+      'control: with a RESOLVABLE fence the out-of-fence commit is not evidence');
+    assert.equal(control.silentDeath.action, 'respawn',
+      'control: with a RESOLVABLE fence the out-of-fence commit is not attributable work');
+
+    for (const [label, content] of AP207_UNRESOLVABLE_FENCES) {
+      const root = makeTmpRoot();
+      try {
+        const v = await ap207Verdicts(root, content);
+        assert.equal(v.failedFlip.action, 'proceed',
+          `scope.json ${label}: an unresolvable fence must not suppress the honest Failed flip`);
+        assert.equal(v.silentDeath.action, 'respawn',
+          `scope.json ${label}: an unresolvable fence must not hold on unproven work`);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    fs.rmSync(controlRoot, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER207-01: a genuinely UNSCOPED session still counts any window commit (negative control)', async () => {
+  const root = makeTmpRoot();
+  try {
+    const v = await ap207Verdicts(root, null);
+    assert.equal(v.failedFlip.action, 'suppress',
+      'no scope.json at all: there is no fence to fall outside of, so the commit is evidence');
+    assert.equal(v.silentDeath.evidence, 'scoped_commit',
+      'no scope.json at all: the window commit is still attributable work');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER207-01: classifyNoProgressFailureReason reads an UNREADABLE scope.json as scope_unresolvable', async () => {
+  const { classifyNoProgressFailureReason } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  try {
+    const sessionDir = path.join(root, 'session');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    // Present-but-unparseable is a fence we cannot resolve, not the absence of one.
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), '{"allowed_paths":["se');
+    assert.equal(classifyNoProgressFailureReason(sessionDir), 'scope_unresolvable');
+    // Absent scope.json remains the honest no-progress default.
+    fs.rmSync(path.join(sessionDir, 'scope.json'));
+    assert.equal(classifyNoProgressFailureReason(sessionDir), 'no_progress_timeout');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

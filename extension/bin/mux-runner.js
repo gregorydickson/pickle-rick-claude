@@ -1417,10 +1417,11 @@ function isOversizedNoProgressFailed(sessionDir, ticketId) {
  * ladder-exhaustion flip, replacing the single misleading `oversized_no_progress`
  * literal. Branches on the available in-runtime signal:
  *
- *  - `scope_unresolvable` when a scope.json exists but resolves to an EMPTY
- *    allowed-paths fence (the ticket has no resolvable region to edit, so the stall
- *    is a scope-fence ambiguity, NOT genuine oversize). This is the case that most
- *    often masks an out-of-fence compile-RED behind the legacy label.
+ *  - `scope_unresolvable` when a scope.json exists but does not resolve to a
+ *    non-empty allowed-paths fence — empty, malformed, or unreadable (the ticket
+ *    has no resolvable region to edit, so the stall is a scope-fence ambiguity,
+ *    NOT genuine oversize). This is the case that most often masks an out-of-fence
+ *    compile-RED behind the legacy label.
  *  - `no_progress_timeout` otherwise — genuine no-progress within the spawn/poll
  *    budget (the honest default; preserves prior semantics for unscoped sessions and
  *    well-fenced tickets that simply ran out of progress).
@@ -1432,13 +1433,10 @@ function isOversizedNoProgressFailed(sessionDir, ticketId) {
  */
 export function classifyNoProgressFailureReason(sessionDir) {
     try {
-        const scopePath = path.join(sessionDir, 'scope.json');
-        if (fs.existsSync(scopePath)) {
-            const allowed = readScopeAllowedPaths(sessionDir);
-            // scope.json present but unresolvable/empty fence → scope-fence ambiguity.
-            if (allowed !== null && allowed.length === 0)
-                return 'scope_unresolvable';
-        }
+        // scope.json present but unresolvable (unreadable, malformed, or an empty
+        // fence) → scope-fence ambiguity. A genuinely unscoped session is not ambiguous.
+        if (readScopeAllowedPaths(sessionDir).kind === 'unresolvable')
+            return 'scope_unresolvable';
     }
     catch { /* fall through to the honest no-progress default */ }
     return 'no_progress_timeout';
@@ -2704,7 +2702,15 @@ function resolveOrphanSha(input) {
     const tips = resolveFsckDanglingTips(workingDir);
     if (tips.length === 0)
         return null;
-    const allowed = readScopeAllowedPaths(sessionDir);
+    // AP-EXT-ITER207-01: an fsck tip is adoptable only when its touched paths can be
+    // PROVEN inside the fence. A fence that exists but will not resolve proves nothing,
+    // so discovery finds nothing — an unreadable scope.json is never a free pass past
+    // the scope filter. Same policy as the window fence directly below.
+    const fence = readScopeAllowedPaths(sessionDir);
+    if (fence.kind === 'unresolvable') {
+        log('[head-regression] scope fence present but unresolvable — refusing fsck discovery');
+        return null;
+    }
     const nowMs = Date.now();
     // AP-EXT-ITER206-01: ONE epoch resolution per tip. The window fence and the
     // recency ranking are the SAME measurement, and asking it twice let the two
@@ -2728,11 +2734,11 @@ function resolveOrphanSha(input) {
             }
         }
         // Scope filter: touched paths ⊆ allowed_paths (unscoped session → all pass).
-        if (allowed && allowed.length > 0) {
+        if (fence.kind === 'scoped') {
             const touched = listRangeTouchedPaths(workingDir, `HEAD..${tip}`);
             if (touched === null)
                 return false;
-            if (touched.some((f) => !isWithinAllowedPaths(f, allowed))) {
+            if (touched.some((f) => !isWithinAllowedPaths(f, fence.allowed))) {
                 log(`[head-regression] fsck tip ${tip.slice(0, 8)} touches out-of-scope paths — skipping`);
                 return false;
             }
@@ -5701,12 +5707,14 @@ function attributeBoundaryHeadMoved(sessionDir, ticketId, workingDir) {
  * Unscoped session (no scope.json) → no-op. Best-effort.
  */
 function preStashOutOfAllowlistResidue(sessionDir, workingDir, ticketId, log) {
-    const allowed = readScopeAllowedPaths(sessionDir);
-    if (!allowed || allowed.length === 0)
+    // Only a RESOLVED fence names what is out of scope; with no fence, or one we
+    // cannot read, there is nothing provably-foreign to pre-stash (no-op, as before).
+    const fence = readScopeAllowedPaths(sessionDir);
+    if (fence.kind !== 'scoped')
         return;
     try {
         const dirty = listWorkingTreeDirtyPaths(workingDir);
-        const outOfScope = dirty.filter((f) => !isWithinAllowedPaths(f, allowed));
+        const outOfScope = dirty.filter((f) => !isWithinAllowedPaths(f, fence.allowed));
         // Only owned-but-out-of-scope source residue needs pre-stashing; the exit
         // committer already routes session-dir-foreign residue to the salvage ref.
         if (outOfScope.length === 0)
@@ -8985,16 +8993,22 @@ function silentDeathGit(args, cwd, input) {
         return null;
     }
 }
-/** Read `allowed_paths` from the session-root scope.json; null when unscoped/unreadable. */
+/** Read the `allowed_paths` fence from the session-root scope.json. */
 function readScopeAllowedPaths(sessionDir) {
+    const scopePath = path.join(sessionDir, 'scope.json');
     try {
-        const scope = readRecoverableJsonObject(path.join(sessionDir, 'scope.json'));
-        if (!scope || !Array.isArray(scope.allowed_paths))
-            return null;
-        return scope.allowed_paths.filter((p) => typeof p === 'string' && p.length > 0);
+        const scope = readRecoverableJsonObject(scopePath);
+        // Nothing readable: only an ABSENT scope.json is an unscoped session. A file
+        // that exists and will not parse is a fence we cannot resolve, not no fence.
+        if (!scope)
+            return fs.existsSync(scopePath) ? { kind: 'unresolvable' } : { kind: 'unscoped' };
+        if (!Array.isArray(scope.allowed_paths))
+            return { kind: 'unresolvable' };
+        const allowed = scope.allowed_paths.filter((p) => typeof p === 'string' && p.length > 0);
+        return allowed.length > 0 ? { kind: 'scoped', allowed } : { kind: 'unresolvable' };
     }
     catch {
-        return null;
+        return { kind: 'unresolvable' };
     }
 }
 function isWithinAllowedPaths(file, allowed) {
@@ -9069,10 +9083,13 @@ function hasScopedIterationWindowCommit(input) {
         return false;
     if (touched.length === 0)
         return false;
-    const allowed = readScopeAllowedPaths(input.sessionDir);
-    if (!allowed || allowed.length === 0)
-        return true;
-    return touched.every((f) => isWithinAllowedPaths(f, allowed));
+    // An unscoped session has no fence to fall outside of, so any window commit
+    // counts. An UNRESOLVABLE fence cannot prove the commit is this ticket's work,
+    // and unproven work is not evidence.
+    const fence = readScopeAllowedPaths(input.sessionDir);
+    if (fence.kind !== 'scoped')
+        return fence.kind === 'unscoped';
+    return touched.every((f) => isWithinAllowedPaths(f, fence.allowed));
 }
 /**
  * Salvage probe 3: did this ticket write a lifecycle artifact at or after `sinceMs`?
@@ -9285,10 +9302,13 @@ function hasTicketScopedCommitEvidence(input) {
         return false;
     if (touched.length === 0)
         return false;
-    const allowed = readScopeAllowedPaths(input.sessionDir);
-    if (!allowed || allowed.length === 0)
-        return true;
-    return touched.every((f) => isWithinAllowedPaths(f, allowed));
+    // An unscoped session has no fence to fall outside of, so any window commit
+    // counts. An UNRESOLVABLE fence cannot prove the commit is this ticket's work,
+    // and unproven work is not evidence.
+    const fence = readScopeAllowedPaths(input.sessionDir);
+    if (fence.kind !== 'scoped')
+        return fence.kind === 'unscoped';
+    return touched.every((f) => isWithinAllowedPaths(f, fence.allowed));
 }
 /**
  * B-RRH C3 evidence arm (c): a SIGTERM-interrupted-but-COMMITTED ticket.
