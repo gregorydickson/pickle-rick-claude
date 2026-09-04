@@ -74,6 +74,33 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🧭 NEXT DISPATCH — [[B-ARGMAX]]: the fix-forward rung is dead on Linux, silently (2026-09-04)
+
+`prds/p1-b-argmax-the-fix-forward-rung-is-dead-on-linux.md` — **P1.** Takes dispatch ahead of
+[[B-CIGREEN]] because it is bundle-caused, it reds the release gate now, and it blocks B-CIGREEN's own
+goal of a green verdict on a tag.
+
+**Measured in a local Linux repro (`ci-repro.sh --runner-release 24.04`, exit=1, same 2 tests as CI,
+noise baseline 0) — do not re-derive:** Linux caps a single argv string at `MAX_ARG_STRLEN` = 131072
+bytes; macOS has no per-argument cap. `spawnRecoveryRemediatorWorker` passes the whole remediation
+brief as ONE argv element via `-p`, and that brief embeds `extension/CLAUDE.md` verbatim — **268854
+bytes**, over by 137782. Threshold measured in the CI image: 131000 B execs, **131072 B is E2BIG**.
+So on every Linux host the fix-forward rung has never once spawned its fixer worker.
+
+**Ruled out, do not re-measure:** brief-prep is fine (`STATUS=0`, valid `BRIEF_PATH=` on Linux); PATH
+and the recording shim are fine (bare-name `claude` spawns and runs on Linux).
+
+**Root 2 is why nobody knew.** `spawnRecoveryRemediatorWorker` ends `return r.status === 0`, so an
+E2BIG (`status: null`, `error.code: 'E2BIG'`) is indistinguishable from a worker that ran and failed —
+`r.error` and `r.stderr` are both discarded, with no log line. The sibling `r.status !== 0` branch in
+`spawnRecoveryRemediator` drops stderr too, while the no-brief branch beside it logs. `failed` vs
+`empty` vs `measured` collapsed to one state, in the observability path of the thing that broke.
+
+**Non-goal, stated because it is the tempting fix:** do NOT shrink `extension/CLAUDE.md` under the cap.
+That is the enumerated-set shape — it buys one release and schedules the next bypass.
+
+---
+
 ## 🧭 NEXT DISPATCH — [[B-CIGREEN]]: the release workflow has never been green on a tag (2026-08-27)
 
 `prds/p1-b-cigreen-the-release-workflow-has-never-been-green.md` — **P1.** Fourteen consecutive release
