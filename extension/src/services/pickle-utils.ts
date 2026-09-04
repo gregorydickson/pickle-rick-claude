@@ -1383,7 +1383,21 @@ export function collectTickets(sessionDir: string): TicketInfo[] {
         for (const file of files) {
           if (!file.startsWith('rick_ticket_') || !file.endsWith('.md')) continue;
           const parsed = parseTicketFrontmatter(path.join(subDir, file));
-          if (parsed) tickets.push(parsed);
+          if (!parsed) continue;
+          // R-TIDNULL: `id` is LLM-authored frontmatter, so it can be absent; the id
+          // is ALSO structurally encoded in the canonical path this walk just took
+          // (`<sessionDir>/<id>/rick_ticket_<id>.md`, the same path `ticketFilePath`
+          // builds). Resolve it HERE, once, rather than leaving a null for every
+          // downstream reader to re-derive a policy for: their shared `!t.id` skip
+          // idiom inverts under a universal quantifier, so the same "ignore it" that
+          // means "don't select this ticket" in a selector means "the roster is
+          // finished" in `evaluateEpicCompletion`/`noRunnableTicketsRemain` — and an
+          // unrun ticket then exits the epic `success`. Derive ONLY on an exact
+          // canonical-name match, which proves `ticketFilePath(sessionDir, id)`
+          // resolves back to the file just parsed; a non-canonical file (an archived
+          // or misfiled copy) keeps `id: null` and stays out of the roster's reach.
+          const canonical = file === `rick_ticket_${entry.name}.md`;
+          tickets.push(parsed.id || !canonical ? parsed : { ...parsed, id: entry.name });
         }
       } catch {
         /* skip */

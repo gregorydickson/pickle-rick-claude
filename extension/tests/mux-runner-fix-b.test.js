@@ -32,7 +32,10 @@ import {
   evaluateIdleStallRecoveryCap,
   noRunnableTicketsRemain,
   isFailureExit,
+  evaluateEpicCompletion,
+  findFirstPendingTicket,
 } from '../bin/mux-runner.js';
+import { collectTickets } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_SRC = path.resolve(__dirname, '../src/bin/mux-runner.ts');
@@ -373,4 +376,128 @@ test('L6 (W4a): the recovery-adapter doc comment enumerates every routed seam', 
     'comment must enumerate closer-handoff, codex-no-progress, wmw-auto-skip');
   assert.ok(/timeout_repeat/.test(src) && /idle_stall_unrecoverable/.test(src),
     'comment must enumerate the W4a additions timeout_repeat + idle_stall_unrecoverable');
+});
+
+// ---------------------------------------------------------------------------
+// R-TIDNULL — a ticket whose LLM-authored frontmatter omits the `id:` line is
+// still a real, unfinished ticket. `collectTickets` used to hand it downstream
+// as `id: null`, and every reader's shared `!t.id` skip idiom INVERTS under a
+// universal quantifier: the same "ignore it" that means "don't select this
+// ticket" in a selector means "the roster is finished" in
+// evaluateEpicCompletion (drops it from BOTH pendingIds and totalCount) and in
+// noRunnableTicketsRemain (`.every()` short-circuits true). A manager
+// EPIC_COMPLETED over an unrun Todo ticket therefore returned `genuine` and the
+// run exited `success`. Fixed at the producer: the id is structurally encoded
+// in the canonical path collectTickets already walked.
+// ---------------------------------------------------------------------------
+
+/** Ticket file with full control over the frontmatter id line and the filename. */
+function writeTicketRaw(sessionDir, dirName, fileName, frontmatterLines) {
+  const ticketDir = path.join(sessionDir, dirName);
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(ticketDir, fileName),
+    ['---', ...frontmatterLines, '---', '# Body'].join('\n'),
+  );
+}
+
+/** The full data flow: roster → epic-completion verdict, as processTaskCompleted runs it. */
+function epicVerdict(sessionDir, currentTicket) {
+  return evaluateEpicCompletion({
+    tickets: collectTickets(sessionDir),
+    currentTicket,
+    priorFalseCount: 0,
+    priorFalseTicket: null,
+  });
+}
+
+test('R-TIDNULL: an id-less canonical ticket keeps the epic from completing (no success over unrun work)', () => {
+  const sessionDir = makeTmp('fixb-tidnull-idless-');
+  try {
+    writeTicket(sessionDir, 'aaaa1111', 'Done', 1);
+    // Same ticket as the control below, minus the one `id:` line.
+    writeTicketRaw(sessionDir, 'bbbb2222', 'rick_ticket_bbbb2222.md',
+      ['title: "real unrun work"', 'status: "Todo"', 'order: 2']);
+
+    assert.deepEqual(
+      collectTickets(sessionDir).map(t => t.id), ['aaaa1111', 'bbbb2222'],
+      'the id must be resolved from the canonical path, not handed downstream as null',
+    );
+    const decision = epicVerdict(sessionDir, 'aaaa1111');
+    assert.notEqual(decision.kind, 'genuine',
+      'EPIC_COMPLETED over an unrun Todo ticket must NOT be accepted as genuine (that exits `success`)');
+    assert.equal(decision.totalCount, 2, 'the unrun ticket must be counted in totalCount, not erased from it');
+    assert.equal(noRunnableTicketsRemain(sessionDir), false,
+      'a roster holding an unrun Todo ticket is not exhausted (AP-EXT-ITER207-02)');
+    assert.equal(findFirstPendingTicket(sessionDir)?.id, 'bbbb2222',
+      'the ticket must become selectable so its work actually runs');
+  } finally {
+    cleanup(sessionDir);
+  }
+});
+
+test('R-TIDNULL: control — the same roster with the id line present behaves identically', () => {
+  // Pins that the fix reproduces the WITH-id behaviour exactly rather than
+  // inventing a new one; the two tests differ only by that single line.
+  const sessionDir = makeTmp('fixb-tidnull-control-');
+  try {
+    writeTicket(sessionDir, 'aaaa1111', 'Done', 1);
+    writeTicketRaw(sessionDir, 'bbbb2222', 'rick_ticket_bbbb2222.md',
+      ['id: "bbbb2222"', 'title: "real unrun work"', 'status: "Todo"', 'order: 2']);
+
+    const decision = epicVerdict(sessionDir, 'aaaa1111');
+    assert.notEqual(decision.kind, 'genuine');
+    assert.equal(decision.totalCount, 2);
+    assert.equal(noRunnableTicketsRemain(sessionDir), false);
+    assert.equal(findFirstPendingTicket(sessionDir)?.id, 'bbbb2222');
+  } finally {
+    cleanup(sessionDir);
+  }
+});
+
+test('R-TIDNULL: a genuinely finished roster still completes (fix does not over-trigger)', () => {
+  // Negative control for the other mutation direction: resolving ids must not
+  // make every roster look unfinished. All-Done + EPIC_COMPLETED stays genuine.
+  const sessionDir = makeTmp('fixb-tidnull-genuine-');
+  try {
+    writeTicket(sessionDir, 'aaaa1111', 'Done', 1);
+    writeTicketRaw(sessionDir, 'bbbb2222', 'rick_ticket_bbbb2222.md',
+      ['title: "finished, still no id line"', 'status: "Done"', 'order: 2']);
+
+    const decision = epicVerdict(sessionDir, 'aaaa1111');
+    assert.equal(decision.kind, 'genuine', 'an all-Done roster must still complete');
+    assert.equal(decision.doneCount, 2, 'the id-less Done ticket must be COUNTED as done, not skipped');
+    assert.equal(decision.totalCount, 2);
+  } finally {
+    cleanup(sessionDir);
+  }
+});
+
+test('R-TIDNULL: a NON-canonical ticket file is not given a phantom id from its directory', () => {
+  // The derivation is gated on an exact `rick_ticket_<dir>.md` match, which is
+  // what proves ticketFilePath(sessionDir, id) resolves back to the parsed file.
+  // An archived/misfiled copy must NOT be promoted into the roster under its
+  // containing directory's name.
+  const sessionDir = makeTmp('fixb-tidnull-noncanonical-');
+  try {
+    writeTicketRaw(sessionDir, 'archive', 'rick_ticket_cccc3333.md',
+      ['title: "archived copy"', 'status: "Todo"', 'order: 1']);
+    assert.deepEqual(collectTickets(sessionDir).map(t => t.id), [null],
+      'a file that is not at <dir>/rick_ticket_<dir>.md must keep id null');
+  } finally {
+    cleanup(sessionDir);
+  }
+});
+
+test('R-TIDNULL: a canonical file whose frontmatter id disagrees with its directory keeps the frontmatter id', () => {
+  // Behaviour-preservation pin: the fix fills in an ABSENT id only. It must
+  // never override an id the author actually wrote, however inconsistent.
+  const sessionDir = makeTmp('fixb-tidnull-disagree-');
+  try {
+    writeTicketRaw(sessionDir, 'dddd4444', 'rick_ticket_dddd4444.md',
+      ['id: "SOMETHING_ELSE"', 'status: "Todo"', 'order: 1']);
+    assert.deepEqual(collectTickets(sessionDir).map(t => t.id), ['SOMETHING_ELSE']);
+  } finally {
+    cleanup(sessionDir);
+  }
 });
