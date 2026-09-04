@@ -2078,11 +2078,16 @@ test('B-ARGMAX AC-3: a fixer worker the kernel never exec\'d is reported as a sp
   assert.equal(existsSync(fx.markerPath), false, 'precondition: the worker must never have run');
   assert.equal(remediated, false, 'a spawn that never happened has remediated nothing — disposition is unchanged');
 
-  const neverRan = fx.logs.filter((m) => m.includes('fixer-worker') && m.includes('NEVER EXECUTED'));
-  assert.equal(neverRan.length, 1, `the fixer-worker seam must name the never-exec disposition; logs: ${JSON.stringify(fx.logs)}`);
+  const noStatus = fx.logs.filter((m) => m.includes('fixer-worker') && m.includes('NO EXIT STATUS'));
+  assert.equal(noStatus.length, 1, `the fixer-worker seam must name the no-exit-status disposition; logs: ${JSON.stringify(fx.logs)}`);
   // AC-3: `r.error`'s CODE is the whole diagnostic value — `E2BIG` vs `ENOENT` vs `ENOBUFS`
-  // are three different operator actions, and the pre-fix code logged none of them.
-  assert.match(neverRan[0], /error code=ENOENT/, 'the never-exec report must carry r.error.code');
+  // vs `ETIMEDOUT` are four different operator actions, and the pre-fix code logged none.
+  assert.match(noStatus[0], /error code=ENOENT/, 'the report must carry r.error.code');
+  // `status === null` covers two physically different events, and `signal` is what separates
+  // them: `none` means the kernel refused to exec (this case, and the Linux E2BIG), whereas a
+  // child killed mid-run by the timeout or the maxBuffer cap names the signal that killed it.
+  // Without this the arm could not honestly claim the exec never happened.
+  assert.match(noStatus[0], /signal=none/, 'a kernel that refused to exec leaves no signal');
 
   // ...and it must NOT be dressed up as a child that ran. This is the collapse itself.
   assert.equal(
@@ -2115,9 +2120,9 @@ test('B-ARGMAX AC-3 NEGATIVE CONTROL: a fixer worker that genuinely exits 1 is n
   );
 
   assert.equal(
-    fx.logs.some((m) => m.includes('NEVER EXECUTED')),
+    fx.logs.some((m) => m.includes('NO EXIT STATUS')),
     false,
-    'a worker that ran must never be blamed on a spawn failure',
+    'a worker that ran and exited must never be blamed on a spawn failure',
   );
 
   fx.cleanup();
@@ -2146,7 +2151,7 @@ test('B-ARGMAX AC-4: brief-prep exiting non-zero reports the child\'s stderr, ma
   );
 
   assert.equal(
-    fx.logs.some((m) => m.includes('NEVER EXECUTED')),
+    fx.logs.some((m) => m.includes('NO EXIT STATUS')),
     false,
     'brief-prep ran and exited — that is not a spawn failure',
   );

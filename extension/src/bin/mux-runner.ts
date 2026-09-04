@@ -7086,18 +7086,29 @@ export function assessRecoveryEvidence(sessionDir: string, workingDir: string, t
 }
 
 /**
- * B-ARGMAX AC-3: what ONE remediator `spawnSync` actually did. `spawnSync` reports a child
- * the kernel NEVER EXECUTED as `status === null` with the reason in `error.code` (`E2BIG`,
- * `ENOENT`, `ENOBUFS`, `ETIMEDOUT`) — a shape that is neither `0` nor a non-zero exit, and
- * that both seams of this rung previously folded into the same `false` a worker that ran and
- * failed produces. `errorCode` and `stderr` are SEPARATE fields on purpose: a never-exec'd
- * child emits no stderr of its own (measured: `stderr` is `undefined`, not `''`), so a
- * non-empty `stderr` is itself the evidence that the child RAN.
+ * B-ARGMAX AC-3: what ONE remediator `spawnSync` actually did. A child that produced no exit
+ * status at all comes back as `status === null` with the reason in `error.code`, and both
+ * seams of this rung previously folded that into the same `false` a worker that ran and
+ * failed produces.
+ *
+ * The third arm is `no_exit_status`, NOT "never executed", because `status === null` covers
+ * two physically different events and only the code tells them apart: the kernel refused to
+ * exec (`E2BIG` — the Linux failure this bundle exists for — or `ENOENT`), or the child ran
+ * and was KILLED before it could exit (`ETIMEDOUT`, and the `ENOBUFS` that AP-EXT-ITER95-01
+ * documents as reachable at the seam-A call). Naming the arm after only the first would make
+ * the log lie in the second. They are deliberately ONE arm rather than two: `errorCode` and
+ * `signal` already separate them for a reader, so a fourth case would buy nothing the report
+ * does not already carry. Neither is a completed non-remediation, which is the distinction
+ * that matters to the ladder.
+ *
+ * `errorCode` and `stderr` are SEPARATE fields on purpose: a child the kernel never exec'd
+ * emits no stderr of its own (measured: `stderr` is `undefined`, not `''`), so a non-empty
+ * `stderr` is itself evidence that the child RAN.
  */
 type RemediatorSpawnOutcome =
   | { kind: 'ok' }
   | { kind: 'exited'; exitCode: number; stderr: string }
-  | { kind: 'never_executed'; errorCode: string; errorMessage: string; stderr: string };
+  | { kind: 'no_exit_status'; errorCode: string; errorMessage: string; signal: string | null; stderr: string };
 
 /** Which of the rung's two `spawnSync` calls an outcome came from. */
 type RemediatorSpawnStage = 'brief-prep' | 'fixer-worker';
@@ -7110,15 +7121,19 @@ type RemediatorSpawnStage = 'brief-prep' | 'fixer-worker';
  */
 function classifyRemediatorSpawn(r: {
   status: number | null;
+  signal?: NodeJS.Signals | null;
   stderr?: string | null;
-  error?: (Error & { code?: string }) | undefined;
+  error?: Error & { code?: string };
 }): RemediatorSpawnOutcome {
   const stderr = (r.stderr ?? '').trim();
   if (r.status === null) {
     return {
-      kind: 'never_executed',
+      kind: 'no_exit_status',
       errorCode: r.error?.code ?? 'unknown',
       errorMessage: r.error ? safeErrorMessage(r.error) : 'no error reported',
+      // The field that separates the two events inside this arm: a kernel that refused to
+      // exec leaves `signal` null, a child killed mid-run names the signal that killed it.
+      signal: r.signal ?? null,
       stderr,
     };
   }
@@ -7152,8 +7167,8 @@ function formatRemediatorSpawnOutcome(
       return null;
     case 'exited':
       return `${where} ran and exited ${outcome.exitCode}; stderr: ${describeRemediatorStderr(outcome.stderr)}`;
-    case 'never_executed':
-      return `${where} NEVER EXECUTED (no exit status, so this is not a completed non-remediation): error code=${outcome.errorCode} (${outcome.errorMessage}); stderr: ${describeRemediatorStderr(outcome.stderr)}`;
+    case 'no_exit_status':
+      return `${where} produced NO EXIT STATUS — the kernel never exec'd it, or it was killed before exiting — so this is NOT a completed non-remediation: error code=${outcome.errorCode} (${outcome.errorMessage}); signal=${outcome.signal ?? 'none'}; stderr: ${describeRemediatorStderr(outcome.stderr)}`;
   }
 }
 
@@ -7274,9 +7289,10 @@ export function buildRemediatorWorkerInvocation(
  *
  * B-ARGMAX AC-3: returns the classified `RemediatorSpawnOutcome`, not a boolean. The old
  * `return r.status === 0` discarded `r.error` and `r.stderr` and logged nothing, so the
- * Linux `E2BIG` that made this exec never happen at all was reported to the ladder as a
- * fixer worker that ran and declined to fix anything. The caller maps `ok` back to the
- * boolean the ladder reads, so the DISPOSITION is unchanged.
+ * Linux `E2BIG` that made this exec never happen at all — and equally the `ENOBUFS` the
+ * paragraph above describes — was reported to the ladder as a fixer worker that ran and
+ * declined to fix anything. The caller maps `ok` back to the boolean the ladder reads, so
+ * the DISPOSITION is unchanged.
  */
 function spawnRecoveryRemediatorWorker(
   input: AttemptRecoveryBeforeTerminalInput,

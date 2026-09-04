@@ -5949,9 +5949,12 @@ function classifyRemediatorSpawn(r) {
     const stderr = (r.stderr ?? '').trim();
     if (r.status === null) {
         return {
-            kind: 'never_executed',
+            kind: 'no_exit_status',
             errorCode: r.error?.code ?? 'unknown',
             errorMessage: r.error ? safeErrorMessage(r.error) : 'no error reported',
+            // The field that separates the two events inside this arm: a kernel that refused to
+            // exec leaves `signal` null, a child killed mid-run names the signal that killed it.
+            signal: r.signal ?? null,
             stderr,
         };
     }
@@ -5981,8 +5984,8 @@ function formatRemediatorSpawnOutcome(stage, ticketId, outcome) {
             return null;
         case 'exited':
             return `${where} ran and exited ${outcome.exitCode}; stderr: ${describeRemediatorStderr(outcome.stderr)}`;
-        case 'never_executed':
-            return `${where} NEVER EXECUTED (no exit status, so this is not a completed non-remediation): error code=${outcome.errorCode} (${outcome.errorMessage}); stderr: ${describeRemediatorStderr(outcome.stderr)}`;
+        case 'no_exit_status':
+            return `${where} produced NO EXIT STATUS — the kernel never exec'd it, or it was killed before exiting — so this is NOT a completed non-remediation: error code=${outcome.errorCode} (${outcome.errorMessage}); signal=${outcome.signal ?? 'none'}; stderr: ${describeRemediatorStderr(outcome.stderr)}`;
     }
 }
 /**
@@ -6097,9 +6100,10 @@ export function buildRemediatorWorkerInvocation(backend, briefPath, addDirs) {
  *
  * B-ARGMAX AC-3: returns the classified `RemediatorSpawnOutcome`, not a boolean. The old
  * `return r.status === 0` discarded `r.error` and `r.stderr` and logged nothing, so the
- * Linux `E2BIG` that made this exec never happen at all was reported to the ladder as a
- * fixer worker that ran and declined to fix anything. The caller maps `ok` back to the
- * boolean the ladder reads, so the DISPOSITION is unchanged.
+ * Linux `E2BIG` that made this exec never happen at all — and equally the `ENOBUFS` the
+ * paragraph above describes — was reported to the ladder as a fixer worker that ran and
+ * declined to fix anything. The caller maps `ok` back to the boolean the ladder reads, so
+ * the DISPOSITION is unchanged.
  */
 function spawnRecoveryRemediatorWorker(input, briefPath) {
     const { backend } = resolveBackendFromStateFileWithSource(input.statePath);
