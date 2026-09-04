@@ -316,14 +316,38 @@ describe('extension/CLAUDE.md touched trap-door entries', () => {
 // AP-EXT-ITER8-01 (`isDesignSafeBranch`, false at birth) and AP-EXT-ITER56-02
 // (`emitAdvisoryWorkerGateResidual`, deleted by 1889d5bf); `audit-trap-door-enforcement.sh`
 // resolves ENFORCE refs only and is blind to it by construction.
-const anchorCatalogs = [
-  'extension/CLAUDE.md',
-  'extension/src/bin/CLAUDE.md',
-  'extension/src/hooks/CLAUDE.md',
-  'extension/src/lib/CLAUDE.md',
-  'extension/src/services/CLAUDE.md',
-  'extension/src/types/CLAUDE.md',
-];
+//
+// AP-BIN-ITER1-01: the catalog set is DISCOVERED, never hand-listed — the same two-roots-one-rule
+// walk as `discoverCatalogs` in `extension/scripts/audit-trap-door-enforcement.sh`. The six-entry
+// literal it replaces was the incomplete-set shape: `9e89e360` widened the SHELL walk to reach
+// repo-root `bin/CLAUDE.md` and this sibling list was never widened with it, so the one catalog
+// anatomy-park writes outside `extension/src/` was judged by no oracle at all — the shell arm has
+// no scoped-anchor counterpart, so a PATTERN_SHAPE scoping a call to a function that never makes
+// it shipped inert there. Deriving the set means a new subsystem catalog cannot ship unswept.
+function discoverAnchorCatalogs() {
+  const catalogs = ['extension/CLAUDE.md'];
+
+  for (const [root, skipDir] of [['extension/src', null], ['', 'extension']]) {
+    let entries;
+    try {
+      entries = fs.readdirSync(path.join(repoRoot, root), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || entry.name === skipDir) continue;
+      const candidate = path.posix.join(root, entry.name, 'CLAUDE.md');
+      if (fs.existsSync(path.join(repoRoot, candidate)) && !catalogs.includes(candidate)) {
+        catalogs.push(candidate);
+      }
+    }
+  }
+
+  return catalogs;
+}
+
+const anchorCatalogs = discoverAnchorCatalogs();
 
 /**
  * An identifier carrying an internal case hump (>= 2 chars before it), or SCREAMING_SNAKE with
@@ -383,6 +407,13 @@ const anchorAbsenceAllowlist = new Map([
   ['extension/CLAUDE.md::parseFirstShellWord', 'negative: entry asserts zero occurrences in src/hooks/'],
   ['extension/src/hooks/CLAUDE.md::parseFirstShellWord', 'negative: entry says an anchor naming it is stale and matches nothing'],
   ['extension/src/bin/CLAUDE.md::runIt', 'meta: illustrative snippet of an unparseable method shape, not a symbol'],
+  // AP-BIN-ITER1-01: surfaced the moment the catalog set stopped being hand-listed and the sweep
+  // reached repo-root bin/CLAUDE.md. Three are fragments the tokenizer lifts out of a larger span
+  // (two regex groups and a filename); the fourth is a local a still-OPEN entry PRESCRIBES.
+  ['bin/CLAUDE.md::VarFolder', 'artifact: alternation branch inside a PATTERN_SHAPE regex, not a symbol'],
+  ['bin/CLAUDE.md::RUNTIME_ARTIFACT_PATH', 'artifact: optional-group tail inside a PATTERN_SHAPE regex; the live symbol is DEFAULT_RUNTIME_ARTIFACT_PATH'],
+  ['bin/CLAUDE.md::resolveSubsystems', 'artifact: fragment of the test FILENAME the entry names; the live symbol is discoverSubsystems'],
+  ['bin/CLAUDE.md::auditExisted', 'meta: local the OPEN AP-BIN-ITER14-01 fix would introduce; both of its files are outside this branch scope fence'],
 ]);
 
 /**
@@ -1067,6 +1098,83 @@ describe('trap-door catalog anchor scope (repo)', () => {
       violations,
       [],
       'a PATTERN_SHAPE scopes a call to a function whose body does not contain it — the anchor reports a phantom violation on sight AND is inert against the regression it names. Re-scope it to the function that really makes the call, or add it to scopedAnchorAllowlist if the entry is denying the anchor rather than asserting it',
+    );
+  });
+});
+
+/**
+ * AP-BIN-ITER1-01 — every trap-door catalog on disk is inside the anchor sweep.
+ *
+ * `anchorCatalogs` used to be a six-entry literal. `9e89e360` widened the SHELL walk in
+ * `extension/scripts/audit-trap-door-enforcement.sh` to reach repo-root `bin/CLAUDE.md`; this
+ * sibling list was never widened with it, so `bin/` — the one subsystem `discoverSubsystems`
+ * enumerates outside `extension/src/` — sat outside BOTH repo sweeps above. Measured: a
+ * PATTERN_SHAPE scoping `logActivity(` to `getActivityDir` (a call that function does not make)
+ * reds the scope sweep from `extension/CLAUDE.md` and is invisible from `bin/CLAUDE.md`, and the
+ * shell arm has no scoped-anchor counterpart at all, so nothing judged it.
+ *
+ * The oracle is the git INDEX, not the `readdirSync` walk under test — a pin that re-ran the same
+ * walk would agree with itself no matter what the walk omitted. Containment, not equality, so an
+ * untracked catalog mid-authoring cannot red a gate; the regression this exists to catch is a
+ * catalog PRESENT on disk and ABSENT from the sweep, which containment states exactly.
+ */
+describe('AP-BIN-ITER1-01 anchor sweep catalog coverage (repo)', () => {
+  // The two roots the sweep walks, expressed as a predicate over repo-relative paths so the
+  // oracle needs no list of its own.
+  function isSweptCatalog(file) {
+    if (path.basename(file) !== 'CLAUDE.md') return false;
+    const parts = file.split('/');
+    if (file === 'extension/CLAUDE.md') return true;
+    // `extension/src/<subsystem>/CLAUDE.md` — four segments, not three.
+    if (parts.length === 4 && parts[0] === 'extension' && parts[1] === 'src') return true;
+    // `<subsystem>/CLAUDE.md` at the repo root. The root CLAUDE.md itself is one segment and is
+    // deliberately out: neither walk descends into it, and it carries no trap-door catalog.
+    return parts.length === 2 && parts[0] !== 'extension';
+  }
+
+  function trackedCatalogs() {
+    const listing = execFileSync('git', ['ls-files', '-z', '--', '*CLAUDE.md'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: ANCHOR_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return listing.split('\0').filter(Boolean).filter(isSweptCatalog);
+  }
+
+  test('AP-BIN-ITER1-01: no catalog tracked in a swept root is missing from anchorCatalogs', () => {
+    const expected = trackedCatalogs();
+    // An empty oracle is the vacuous pass this whole block exists to prevent.
+    assert.ok(
+      expected.length >= 7,
+      `git ls-files found only ${expected.length} swept catalogs — the oracle matched almost nothing, which reads clean for the wrong reason`,
+    );
+
+    const missing = expected.filter(catalog => !anchorCatalogs.includes(catalog));
+    assert.deepEqual(
+      missing,
+      [],
+      'a CLAUDE.md carrying trap doors sits in a swept root but outside anchorCatalogs, so no oracle reads its anchors — derive the catalog set from the two roots instead of re-listing it by hand',
+    );
+  });
+
+  // Negative control: the exact literal that shipped. Without it the assertion above could pass
+  // against a hand-list that merely happened to be complete today, and would say nothing about
+  // the shape that let `bin/CLAUDE.md` ship unswept in the first place.
+  test('the oracle can see the hand-list that shipped (negative control)', () => {
+    const shippedHandList = [
+      'extension/CLAUDE.md',
+      'extension/src/bin/CLAUDE.md',
+      'extension/src/hooks/CLAUDE.md',
+      'extension/src/lib/CLAUDE.md',
+      'extension/src/services/CLAUDE.md',
+      'extension/src/types/CLAUDE.md',
+    ];
+
+    const missing = trackedCatalogs().filter(catalog => !shippedHandList.includes(catalog));
+    assert.ok(
+      missing.includes('bin/CLAUDE.md'),
+      `the oracle did not flag bin/CLAUDE.md against the pre-fix hand-list — it cannot see the regression it pins (flagged: ${JSON.stringify(missing)})`,
     );
   });
 });
