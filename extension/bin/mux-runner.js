@@ -2587,7 +2587,7 @@ function readHeadCommit(workingDir) {
  * runs `git reset --hard`, so it needs the third state to fail closed. Callers
  * pick their own direction for `null`; nobody gets it silently.
  */
-function isHeadAtOrBelowCommit(headSha, refSha, workingDir) {
+export function isHeadAtOrBelowCommit(headSha, refSha, workingDir) {
     if (headSha === refSha)
         return true;
     const r = spawnSync('git', ['-C', workingDir, 'merge-base', '--is-ancestor', headSha, refSha], { encoding: 'utf-8', timeout: 5000 });

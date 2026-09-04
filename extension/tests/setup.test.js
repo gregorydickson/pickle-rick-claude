@@ -1939,6 +1939,140 @@ test('setup --resume: a TARGET-repo RED is advisory — reattached, flipped Done
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER210-01 — the reverse ancestry probe is NEGATED, so its error space
+// must not read as "strictly descends".
+//
+// `shaDescendsFromHead` asks two questions: is HEAD an ancestor of the stamped sha
+// (forward), and is the stamped sha an ancestor of HEAD (reverse). Only the reverse
+// answer separates a REAL orphan from a stamp that just names HEAD, and the caller
+// NEGATES it. The pre-fix probe reduced `merge-base --is-ancestor` to a bare boolean,
+// so an unprovable answer — 128 for an unresolvable ref, a null status from a spawn
+// failure or the 5s timeout — inverted to "yes, it strictly descends" and authorized
+// exactly the vacuous `merge --ff-only HEAD` no-op the reverse probe exists to reject.
+//
+// Driven through a PATH shim that fails the Nth `--is-ancestor` invocation, not through
+// source text: these cases fail against the pre-fix runtime and cannot be satisfied by a
+// comment. The forward-probe case is the control that the error space was ALREADY handled
+// in the un-negated direction, and the real-orphan case is the control that the fix did
+// not degrade the guard into refuse-all.
+// ---------------------------------------------------------------------------
+
+/**
+ * A `git` on PATH that faithfully delegates, except the `nth` invocation carrying
+ * `--is-ancestor` exits 128 ("could not answer"). The counter lives in a file because
+ * every probe is a separate short-lived process. Delegation restores the CALLER's PATH
+ * rather than resolving git's absolute path, so the shim cannot re-enter itself.
+ */
+function makeCountingAncestorShim(nth) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-resume-ancestor-shim-'));
+    const counter = path.join(dir, 'count');
+    fs.writeFileSync(counter, '0');
+    fs.writeFileSync(
+        path.join(dir, 'git'),
+        `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = "--is-ancestor" ]; then\n` +
+            `    n=$(cat '${counter}' 2>/dev/null || echo 0)\n    n=$((n+1))\n    echo "$n" > '${counter}'\n` +
+            `    if [ "$n" = "${nth}" ]; then\n      echo "fatal: simulated unanswerable probe" >&2\n      exit 128\n    fi\n` +
+            `    break\n  fi\ndone\nPATH='${process.env.PATH ?? ''}' exec git "$@"\n`,
+        { mode: 0o755 },
+    );
+    return { dir, ancestorProbes: () => parseInt(fs.readFileSync(counter, 'utf-8').trim(), 10) };
+}
+
+test('AP-EXT-ITER210-01: an unanswerable REVERSE ancestry probe must not manufacture a Done flip out of a no-op', () => {
+    withResumeFixture('pickle-resume-revprobe', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa66revp';
+        // completion_commit names HEAD: nothing was reset, nothing is orphaned. The stamp is
+        // SHORT — the shape workers and codex actually write — because `isHeadAtOrBelowCommit`
+        // short-circuits identical STRINGS without spawning git at all. A full-sha stamp would
+        // never reach the probe the shim exists to break, and this case would pin nothing.
+        const { sessionPath, ticketDir } = seedResumableSession(dataRoot, repo, ticketId, base.slice(0, 8));
+        const shim = makeCountingAncestorShim(2); // 2 = the reverse probe
+
+        try {
+            runSetupWithEnv(['--resume', sessionPath], {
+                PICKLE_DATA_ROOT: dataRoot,
+                PICKLE_ORPHAN_REAP: 'off',
+                PATH: `${shim.dir}:${process.env.PATH ?? ''}`,
+            });
+
+            assert.equal(
+                shim.ancestorProbes(),
+                2,
+                'the fixture must actually REACH both ancestry probes — a run that never probes would pass this ' +
+                    'case vacuously and pin nothing',
+            );
+            assert.notEqual(
+                readTicketStatus(ticketDir, ticketId),
+                'Done',
+                'the ONE probe that separates a real orphan from a stamp naming HEAD could not answer, and it is ' +
+                    'consumed NEGATED — an unproven answer must refuse, never authorize a terminal Done flip over ' +
+                    'a vacuous ff-only no-op',
+            );
+            assert.equal(git('rev-parse', 'HEAD'), base, 'HEAD must not move when nothing was orphaned');
+        } finally {
+            fs.rmSync(shim.dir, { recursive: true, force: true });
+        }
+    });
+});
+
+test('AP-EXT-ITER210-01: an unanswerable FORWARD ancestry probe also refuses (the un-negated direction)', () => {
+    withResumeFixture('pickle-resume-fwdprobe', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa77fwdp';
+        fs.writeFileSync(path.join(repo, 'b.txt'), 'worker work\n');
+        git('add', '-A');
+        git('commit', '-q', '-m', 'worker commit');
+        const orphan = git('rev-parse', 'HEAD');
+        git('reset', '--hard', '-q', base); // a REAL orphan, so only the shim can refuse it
+
+        const { sessionPath, ticketDir } = seedResumableSession(dataRoot, repo, ticketId, orphan);
+        const shim = makeCountingAncestorShim(1); // 1 = the forward probe
+
+        try {
+            runSetupWithEnv(['--resume', sessionPath], {
+                PICKLE_DATA_ROOT: dataRoot,
+                PICKLE_ORPHAN_REAP: 'off',
+                PATH: `${shim.dir}:${process.env.PATH ?? ''}`,
+            });
+
+            assert.equal(shim.ancestorProbes(), 1, 'the forward refusal must short-circuit before the reverse probe');
+            assert.notEqual(readTicketStatus(ticketDir, ticketId), 'Done', 'an unprovable forward probe refuses too');
+            assert.equal(git('rev-parse', 'HEAD'), base, 'no reattach is attempted on an unproven probe');
+        } finally {
+            fs.rmSync(shim.dir, { recursive: true, force: true });
+        }
+    });
+});
+
+test('AP-EXT-ITER210-01: with both probes answerable, a REAL orphan still reattaches (not refuse-all)', () => {
+    withResumeFixture('pickle-resume-shimctl', ({ dataRoot, repo, git, base }) => {
+        const ticketId = 'aa88ctl0';
+        fs.writeFileSync(path.join(repo, 'b.txt'), 'worker work\n');
+        git('add', '-A');
+        git('commit', '-q', '-m', 'worker commit');
+        const orphan = git('rev-parse', 'HEAD');
+        git('reset', '--hard', '-q', base);
+
+        const { sessionPath, ticketDir } = seedResumableSession(dataRoot, repo, ticketId, orphan);
+        // Same shim, same delegation path, but no invocation is ever failed — a guard that
+        // refused unconditionally would satisfy both cases above and strand every real orphan.
+        const shim = makeCountingAncestorShim(0);
+
+        try {
+            runSetupWithEnv(['--resume', sessionPath], {
+                PICKLE_DATA_ROOT: dataRoot,
+                PICKLE_ORPHAN_REAP: 'off',
+                PATH: `${shim.dir}:${process.env.PATH ?? ''}`,
+            });
+
+            assert.equal(git('rev-parse', 'HEAD'), orphan, 'a genuinely orphaned commit must still be ff-reattached');
+            assert.equal(readTicketStatus(ticketDir, ticketId), 'Done', 'the real recovery path must survive the fix');
+        } finally {
+            fs.rmSync(shim.dir, { recursive: true, force: true });
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER10-01 — `pickle-recover --reactivate` must SURVIVE the next read.
 //
 // NOTE ON THE HOST: these cases belong beside the other reactivate cases in

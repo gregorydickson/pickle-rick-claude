@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, markTicketWithStatus as writeTicketStatus } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
-import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail } from './mux-runner.js';
+import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
 import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
@@ -1156,20 +1156,6 @@ function readTicketCompletionCommit(sessionRoot, ticketId) {
         return null;
     }
 }
-/** True iff `a` is an ancestor of `b`. Git counts a commit as its own ancestor. */
-function isAncestor(workingDir, a, b) {
-    try {
-        execFileSync('git', ['merge-base', '--is-ancestor', a, b], {
-            cwd: workingDir,
-            stdio: ['ignore', 'ignore', 'ignore'],
-            timeout: 5000,
-        });
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
 /**
  * True iff `sha` STRICTLY ff-descends from HEAD — i.e. an orphan really exists.
  * Git counts a commit as its own ancestor, so the forward probe alone also accepts
@@ -1178,11 +1164,20 @@ function isAncestor(workingDir, a, b) {
  * date" (exit 0) and reads back as a successful reattach, manufacturing a Done flip
  * out of a no-op. The reverse probe rejects it. Both SHAs are resolved by git, so a
  * short frontmatter stamp compares correctly against a full HEAD.
+ *
+ * AP-EXT-ITER210-01: both probes route through the ONE tri-state
+ * `isHeadAtOrBelowCommit` and BOTH require a proven answer. The prior form reduced a
+ * private `merge-base --is-ancestor` to a bare boolean, which is safe only while the
+ * false-branch is inert — and the reverse probe NEGATES it, so an unprovable answer
+ * (128, a spawn error, the 5s timeout) became "strictly descends" and authorized the
+ * very no-op reattach the reverse probe exists to reject.
  */
 function shaDescendsFromHead(workingDir, currentHead, sha) {
-    if (!isAncestor(workingDir, currentHead, sha))
-        return false; // divergent — never force-reattach (SAFETY)
-    return !isAncestor(workingDir, sha, currentHead); // equal ⇒ nothing orphaned, nothing to recover
+    // Divergent, or unprovable — never force-reattach (SAFETY).
+    if (isHeadAtOrBelowCommit(currentHead, sha, workingDir) !== true)
+        return false;
+    // Equal ⇒ nothing orphaned, nothing to recover. Only a PROVEN `false` is descent.
+    return isHeadAtOrBelowCommit(sha, currentHead, workingDir) === false;
 }
 /**
  * The three sequential guards on the resume-reattach Done flip (R-WDTF-TO WS-2, R-CWGE +
