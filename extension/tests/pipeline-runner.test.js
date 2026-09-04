@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as url from 'node:url';
 import {
   isTestFile,
   discoverSubsystems,
@@ -34,6 +35,7 @@ import {
   readPersistedAllowedPaths,
   finalizePhaseSuccess,
   resetInterruptedTicketWorkForRelaunch,
+  runRelaunchSelfHeal,
   main,
 } from '../bin/pipeline-runner.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
@@ -3849,6 +3851,141 @@ describe('AP-EXT-ITER98-01 untracked-directory collapse', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // AP-EXT-ITER209-01: the relaunch reset is destructive (`git checkout --` over tracked
+  // edits, `fs.unlinkSync` over untracked files) and ran BEFORE any archive, over the same
+  // blocking-path set `quarantineCrashedTicketFilesOrFatal` would have archived. These
+  // exercise the real flow on a real repo: archive first, and never destroy what the
+  // archive could not capture.
+  test('AP-EXT-ITER209-01 relaunch self-heal archives the interrupted work BEFORE destroying it', () => {
+    const dir = tmpDir();
+    const sessionDir = tmpDir();
+    try {
+      initRepo(dir);
+      fs.writeFileSync(path.join(dir, 'README.md'), '# seed\nworker edit that was never committed\n');
+      fs.writeFileSync(path.join(dir, 'brand-new.ts'), 'export const rescueMe = 42;\n');
+
+      const logs = [];
+      runRelaunchSelfHeal({ workingDir: dir, sessionDir, scope: { exemptSegments: ['prds', 'docs'] }, log: (m) => logs.push(m) });
+
+      // The destruction still happens — the launch must proceed.
+      assert.equal(fs.existsSync(path.join(dir, 'brand-new.ts')), false, 'the untracked worker file is still removed');
+      assert.doesNotThrow(() => assertCleanWorkingTree(dir, { exemptSegments: ['prds', 'docs'] }));
+
+      // ...but a patch that can restore it now exists, which it did not before.
+      const patches = fs.readdirSync(sessionDir).filter((f) => /^pre_reset_diff_\d+\.patch$/.test(f));
+      assert.equal(patches.length, 1, `exactly one pre-reset patch must be written; got ${JSON.stringify(fs.readdirSync(sessionDir))}`);
+      const patch = fs.readFileSync(path.join(sessionDir, patches[0]), 'utf-8');
+      assert.ok(patch.includes('rescueMe = 42'), 'the untracked worker file must be recoverable from the patch');
+      assert.ok(patch.includes('worker edit that was never committed'), 'the tracked worker edit must be recoverable from the patch');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER209-01 a TRUNCATED pre-reset archive skips the destruction instead of losing the work', () => {
+    const dir = tmpDir();
+    const sessionDir = tmpDir();
+    try {
+      initRepo(dir);
+      fs.writeFileSync(path.join(dir, 'brand-new.ts'), `export const rescueMe = '${'x'.repeat(4096)}';\n`);
+
+      const logs = [];
+      // byteCap below the untracked file's size is what `collectUntrackedDiffs` truncates on.
+      runRelaunchSelfHeal({
+        workingDir: dir, sessionDir, scope: { exemptSegments: ['prds', 'docs'] },
+        byteCap: 16, log: (m) => logs.push(m),
+      });
+
+      assert.equal(
+        fs.existsSync(path.join(dir, 'brand-new.ts')), true,
+        'an unarchivable file must NOT be unlinked — that is the R-RRH C8 invariant',
+      );
+      assert.ok(
+        logs.some((m) => /TRUNCATED/.test(m) && /skipping the destructive reset/.test(m)),
+        `the refusal must be logged; got: ${logs.join(' | ')}`,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER209-01 a THROWING archive skips the destruction and never propagates', () => {
+    const dir = tmpDir();
+    try {
+      initRepo(dir);
+      fs.writeFileSync(path.join(dir, 'brand-new.ts'), 'export const rescueMe = 42;\n');
+
+      const logs = [];
+      let resetCalls = 0;
+      assert.doesNotThrow(() => runRelaunchSelfHeal({
+        workingDir: dir, sessionDir: dir, scope: { exemptSegments: ['prds', 'docs'] },
+        log: (m) => logs.push(m),
+        archive: () => { throw new Error('disk full'); },
+        reset: () => { resetCalls += 1; },
+      }));
+
+      assert.equal(resetCalls, 0, 'a failed archive must not be followed by the destructive reset');
+      assert.equal(fs.existsSync(path.join(dir, 'brand-new.ts')), true);
+      assert.ok(logs.some((m) => /archive FAILED/.test(m) && /disk full/.test(m)), `got: ${logs.join(' | ')}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER209-01 a clean archive result still runs the reset (no new refusal branch)', () => {
+    const dir = tmpDir();
+    const calls = [];
+    try {
+      initRepo(dir);
+      runRelaunchSelfHeal({
+        workingDir: dir, sessionDir: dir, scope: undefined, log: () => {},
+        archive: () => null,
+        reset: (wd, scope) => { calls.push([wd, scope]); },
+      });
+      assert.deepEqual(calls, [[dir, undefined]], 'a null archive result means "nothing dirty", not "unprotected"');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER209-01 preparePipelineWorkingTree routes the relaunch self-heal through the archive', () => {
+    // M4 of the mutation set survived without this: the fix is inert if the orchestrator
+    // calls the raw destructive reset again. `preparePipelineWorkingTree` is not exported,
+    // so the wire is pinned by brace-matching its COMPILED body and asserting on identifiers
+    // (whitespace/reflow tolerant), never on a formatted call expression.
+    const js = fs.readFileSync(
+      path.join(path.dirname(url.fileURLToPath(import.meta.url)), '..', 'bin', 'pipeline-runner.js'),
+      'utf-8',
+    );
+    const start = js.indexOf('function preparePipelineWorkingTree');
+    assert.notEqual(start, -1, 'preparePipelineWorkingTree must exist in the compiled runner');
+    const open = js.indexOf('{', start);
+    let depth = 0;
+    let end = -1;
+    for (let i = open; i < js.length; i++) {
+      if (js[i] === '{') depth += 1;
+      else if (js[i] === '}') { depth -= 1; if (depth === 0) { end = i; break; } }
+    }
+    assert.ok(end > open, 'the function body must be brace-balanced');
+    const body = js.slice(open, end + 1);
+    assert.ok(body.length > 100 && body.length < 4000, `implausible body span (${body.length} bytes) — the extraction drifted`);
+
+    assert.ok(
+      /\brunRelaunchSelfHeal\b/.test(body),
+      'the relaunch branch must go through runRelaunchSelfHeal (archive-then-destroy)',
+    );
+    assert.ok(
+      !/\bresetInterruptedTicketWorkForRelaunch\b/.test(body),
+      'the orchestrator must NOT call the unarchived destructive reset directly — that is AP-EXT-ITER209-01',
+    );
+    assert.ok(
+      /\bquarantineCrashedTicketFilesOrFatal\b/.test(body) && /\bassertCleanWorkingTree\b/.test(body),
+      'the two later self-heals must still run — the span is the right function',
+    );
   });
 
   test('a new untracked directory holding only exempt-segment content does not block the launch', () => {

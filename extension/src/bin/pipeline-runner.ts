@@ -563,6 +563,61 @@ export function resetInterruptedTicketWorkForRelaunch(
   log(`[relaunch-reset] Done: ${trackedPaths.length} tracked restored, ${untrackedPaths.length} untracked removed`);
 }
 
+/**
+ * AP-EXT-ITER209-01: R-RRH C8's "never destroy an unarchived tree" invariant governs
+ * BOTH launch self-heals, not only the quarantine that states it.
+ *
+ * `resetInterruptedTicketWorkForRelaunch` runs FIRST and resolves its victims with the
+ * SAME `allowedDirtyPathsForLaunch(workingDir, scope)` call `classifyDirtyTreeBranch`
+ * uses, so it destroys exactly the set `quarantineCrashedTicketFilesOrFatal` would have
+ * archived — `git checkout --` over tracked edits and `fs.unlinkSync` over untracked
+ * files, neither recoverable, with no patch written anywhere. By the time the quarantine
+ * archives, that tree is already empty and `archiveBeforeDestructive` returns null, so
+ * its FATAL-on-truncation guard could not fire at a relaunch boundary — the one
+ * situation R-RRH C8 exists for.
+ *
+ * Hoisting the archive ABOVE the reset adds NO abort condition: an archive that throws
+ * or truncates SKIPS the destructive reset and returns, leaving the dirty tree for the
+ * quarantine and `assertCleanWorkingTree` to dispose of. Nothing here throws; the
+ * uncommitted work survives on every branch.
+ */
+export function runRelaunchSelfHeal(args: {
+  workingDir: string;
+  sessionDir: string;
+  scope: DirtyResolverScope | undefined;
+  log: (msg: string) => void;
+  /** Byte cap forwarded to the archive primitive (injectable for tests). */
+  byteCap?: number;
+  /** Injectable archive seam (defaults to the real `archiveBeforeDestructive`). */
+  archive?: (cwd: string, sessionDir: string, ticketDir: string | null, byteCap?: number) => ArchiveResult | null;
+  /** Injectable destructive seam (defaults to the real path-scoped relaunch reset). */
+  reset?: (workingDir: string, scope: DirtyResolverScope | undefined, log: (msg: string) => void) => void;
+}): void {
+  const archive = args.archive ?? ((cwd, sd, ticketDir, byteCap) =>
+    archiveBeforeDestructive({ cwd, sessionDir: sd, ticketDir, reason: 'pre_reset' }, byteCap ?? ARCHIVE_UNTRACKED_BYTE_CAP));
+  const reset = args.reset ?? resetInterruptedTicketWorkForRelaunch;
+
+  let archived: ArchiveResult | null;
+  try {
+    archived = archive(args.workingDir, args.sessionDir, null, args.byteCap);
+  } catch (err) {
+    args.log(
+      `[relaunch-reset] pre-reset archive FAILED (${safeErrorMessage(err)}) — skipping the destructive reset; ` +
+      `the interrupted worker's uncommitted changes are left in place`,
+    );
+    return;
+  }
+  if (archived?.filesTruncated === true) {
+    args.log(
+      `[relaunch-reset] pre-reset archive TRUNCATED over ${archived.files.length} dirty path(s) ` +
+      `(${archived.patchPath} is incomplete) — skipping the destructive reset; ` +
+      `the interrupted worker's uncommitted changes are left in place`,
+    );
+    return;
+  }
+  reset(args.workingDir, args.scope, args.log);
+}
+
 // ---------------------------------------------------------------------------
 // R-RRH C8: Dirty-tree relaunch self-heals the crashed ticket's files
 // (truncation-safe).
@@ -3658,7 +3713,7 @@ function preparePipelineWorkingTree(
   };
   const relaunchCount = typeof state.manager_relaunch_count === 'number' ? state.manager_relaunch_count : 0;
   if (relaunchCount > 0) {
-    resetInterruptedTicketWorkForRelaunch(workingDir, dirtyScope, log);
+    runRelaunchSelfHeal({ workingDir, sessionDir, scope: dirtyScope, log });
   }
   // R-RRH C8: a cold manager crash mid-implement strands the in-flight ticket's
   // non-gate-passing source files. Self-heal the crashed ticket's files (archive
