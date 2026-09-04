@@ -336,7 +336,13 @@ function readBackendSpawnSource() {
 const BOUND_CALL = 'boundInvocationArgs(selectJudgeInvocation(backend, opts))';
 
 test('B-ARGMAX argv-ceiling sweep passes over the real backend spawn service and reports its count', () => {
-  const result = runArgvCeilingSweep(readBackendSpawnSource());
+  // No override and no copy: the point of this case is the count line the arm prints over the
+  // REAL tree, so the swept population is a visible number rather than a silent pass.
+  const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+    cwd: EXTENSION_ROOT,
+    encoding: 'utf8',
+    timeout: 120000,
+  });
 
   assert.equal(result.status, 0, `stderr: ${result.stderr}`);
   assert.match(result.stdout, /B-ARGMAX argv-ceiling verified \(\d+ exported invocation builder\(s\) bounded\)/);
