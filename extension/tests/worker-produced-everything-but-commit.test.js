@@ -1891,14 +1891,20 @@ test('AP-EXT-ITER7-01/58-01: between two real plans the parsed-phase rank still 
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 
-/** A `claude` shim on PATH that records its argv to `markerPath` and exits `exitCode`. */
-function writeRecordingBackendShim(dir, markerPath, exitCode) {
+/**
+ * A `claude` shim on PATH that records its argv to `markerPath` and exits `exitCode`.
+ * `stderrText` (default `''` — the pre-B-ARGMAX behaviour, so the three original cases are
+ * unaffected) makes the shim emit real stderr, which is what lets a pin distinguish "the
+ * child ran and complained" from "the child never existed".
+ */
+function writeRecordingBackendShim(dir, markerPath, exitCode, stderrText = '') {
   const binDir = path.join(dir, 'recorderbin');
   mkdirSync(binDir, { recursive: true });
   const recorderPath = path.join(dir, 'record-invocation.mjs');
   writeFileSync(recorderPath, [
     "import fs from 'node:fs';",
     `fs.writeFileSync(${JSON.stringify(markerPath)}, JSON.stringify(process.argv.slice(2)));`,
+    ...(stderrText ? [`fs.writeSync(2, ${JSON.stringify(stderrText)});`] : []),
     `process.exitCode = ${exitCode};`,
     '',
   ].join('\n'));
@@ -1908,7 +1914,31 @@ function writeRecordingBackendShim(dir, markerPath, exitCode) {
   return binDir;
 }
 
-function makeRecoveryRemediatorFixture(prefix, { exitCode = 0, extensionRoot = REPO_ROOT } = {}) {
+/**
+ * REPLACES `PATH` with `dir` for the duration of `fn`, rather than PREPENDING to it the way
+ * `withShimOnPath` does. B-ARGMAX AC-3 needs a spawn the kernel genuinely never executes, and
+ * merely omitting the shim does not produce one: `execvp` keeps searching `PATH` past a
+ * missing or non-executable entry, so a real `claude` further along would be run instead.
+ * Measured: with `PATH` set to a single empty dir, `spawn-gate-remediator.js` still exits 0
+ * and prints `BRIEF_PATH=` (it makes no PATH-dependent subprocess call of its own), so this
+ * starves step 2 alone.
+ */
+function withOnlyPathDir(dir, fn) {
+  const prior = process.env.PATH;
+  process.env.PATH = dir;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = prior;
+  }
+}
+
+function makeRecoveryRemediatorFixture(prefix, {
+  exitCode = 0,
+  extensionRoot = REPO_ROOT,
+  stderrText = '',
+  isolatePath = false,
+} = {}) {
   const { repo } = makeRepo(`${prefix}-repo-`);
   const { sessionDir, statePath } = makeSession(`${prefix}-session-`);
   writeFileSync(statePath, JSON.stringify({
@@ -1918,11 +1948,18 @@ function makeRecoveryRemediatorFixture(prefix, { exitCode = 0, extensionRoot = R
   const failingFile = path.join(repo, 'failing-spec.js');
   writeFileSync(failingFile, "assert.equal(1, 2); // AP-EXT-ITER146-01 fixture\n");
   const markerPath = path.join(sessionDir, 'worker-invocation.json');
-  const binDir = writeRecordingBackendShim(sessionDir, markerPath, exitCode);
+  const binDir = writeRecordingBackendShim(sessionDir, markerPath, exitCode, stderrText);
+  // `isolatePath` swaps the shim dir for an EMPTY dir that is the whole of PATH, so the
+  // fixer-worker spawn cannot resolve `claude` at all and the kernel never execs it.
+  const emptyBinDir = path.join(sessionDir, 'emptybin');
+  mkdirSync(emptyBinDir, { recursive: true });
+  const withPath = isolatePath
+    ? (fn) => withOnlyPathDir(emptyBinDir, fn)
+    : (fn) => withShimOnPath(binDir, fn);
   const logs = [];
   return {
     repo, sessionDir, statePath, markerPath, failingFile, logs,
-    call: () => withShimOnPath(binDir, () => spawnRecoveryRemediator(
+    call: () => withPath(() => spawnRecoveryRemediator(
       {
         sessionDir, statePath, extensionRoot, workingDir: repo,
         ticketId: 'ap146a01', iteration: 3, flags: null, log: (m) => logs.push(m),
@@ -2008,6 +2045,113 @@ test('AP-EXT-ITER146-01 control: no brief means no worker and no claimed remedia
     'the lockout arm must report the missing brief, not a generic spawn failure',
   );
 
+  fx.cleanup();
+});
+
+// --- B-ARGMAX AC-3 / AC-4: a never-exec'd spawn is not a worker that ran and failed ---
+//
+// Both seams of this rung derived their whole verdict from `spawnSync`'s `status`, which is
+// `null` when the kernel refused to exec at all — the Linux `E2BIG` that made this rung dead
+// on Linux, but also `ENOENT`, `ENOBUFS` and `ETIMEDOUT`. `r.error` and `r.stderr` were both
+// discarded, and of the rung's four exits exactly one (`!briefPath`) said anything at all. So
+// CI could observe that the rung did nothing and could not observe WHY: "the fixer worker ran
+// and did not fix it" and "the fixer worker was never started" were the same `false`.
+//
+// The three cases below are one triangle: a spawn that never ran, a spawn that ran and failed,
+// and a FIRST-seam spawn that ran and failed. The middle one is load-bearing — without it the
+// fix is trivially greened by reporting every non-remediation as a spawn failure, which is the
+// same collapse arriving from the other side.
+//
+// Disposition is unchanged in all three: every one of them returns `false`, exactly as before.
+// This is a REPORTING fix; the ladder still walks on and nothing here can halt it.
+
+test('B-ARGMAX AC-3: a fixer worker the kernel never exec\'d is reported as a spawn failure, not a completed non-remediation', () => {
+  // PATH is REPLACED by an empty dir (not merely missing the shim — `execvp` searches on past
+  // a missing entry and a real `claude` lives further along PATH here). Brief-prep still
+  // succeeds: it makes no PATH-dependent subprocess call, so only step 2 is starved. That
+  // yields `status: null` + `error.code: 'ENOENT'` — the same union arm as the `E2BIG` this
+  // bundle exists for, which cannot be provoked portably on darwin.
+  const fx = makeRecoveryRemediatorFixture('ap-iter146-neverexec', { isolatePath: true });
+
+  const remediated = fx.call();
+
+  assert.equal(existsSync(fx.markerPath), false, 'precondition: the worker must never have run');
+  assert.equal(remediated, false, 'a spawn that never happened has remediated nothing — disposition is unchanged');
+
+  const neverRan = fx.logs.filter((m) => m.includes('fixer-worker') && m.includes('NEVER EXECUTED'));
+  assert.equal(neverRan.length, 1, `the fixer-worker seam must name the never-exec disposition; logs: ${JSON.stringify(fx.logs)}`);
+  // AC-3: `r.error`'s CODE is the whole diagnostic value — `E2BIG` vs `ENOENT` vs `ENOBUFS`
+  // are three different operator actions, and the pre-fix code logged none of them.
+  assert.match(neverRan[0], /error code=ENOENT/, 'the never-exec report must carry r.error.code');
+
+  // ...and it must NOT be dressed up as a child that ran. This is the collapse itself.
+  assert.equal(
+    fx.logs.some((m) => m.includes('fixer-worker') && m.includes('ran and exited')),
+    false,
+    'a spawn with status === null must not be reported as a completed non-remediation',
+  );
+
+  fx.cleanup();
+});
+
+test('B-ARGMAX AC-3 NEGATIVE CONTROL: a fixer worker that genuinely exits 1 is not reported as a spawn failure', () => {
+  // The control the ticket requires. Without it, classifying EVERYTHING as a spawn failure
+  // greens the case above — so this is the assertion that gives that one its meaning.
+  const WORKER_STDERR = 'ap146-worker-stderr-marker: the fixer worker ran and refused the edit';
+  const fx = makeRecoveryRemediatorFixture('ap-iter146-ranfailed', { exitCode: 1, stderrText: WORKER_STDERR });
+
+  const remediated = fx.call();
+
+  assert.ok(existsSync(fx.markerPath), 'precondition: the worker really did run');
+  assert.equal(remediated, false, 'a worker that exits 1 has still remediated nothing');
+
+  const ranAndFailed = fx.logs.filter((m) => m.includes('fixer-worker') && m.includes('ran and exited 1'));
+  assert.equal(ranAndFailed.length, 1, `a worker that ran must be reported as having run; logs: ${JSON.stringify(fx.logs)}`);
+  // AC-3's other half: a non-empty stderr is logged. It is also the evidence that the child
+  // ran at all — a never-exec'd child produces no stderr of its own.
+  assert.ok(
+    ranAndFailed[0].includes(WORKER_STDERR),
+    `the report must carry the child's stderr, not discard it; got: ${ranAndFailed[0]}`,
+  );
+
+  assert.equal(
+    fx.logs.some((m) => m.includes('NEVER EXECUTED')),
+    false,
+    'a worker that ran must never be blamed on a spawn failure',
+  );
+
+  fx.cleanup();
+});
+
+test('B-ARGMAX AC-4: brief-prep exiting non-zero reports the child\'s stderr, matching its sibling no-brief branch', () => {
+  // Seam B's `if (r.status !== 0) return false` was silent, five lines above a `!briefPath`
+  // branch that DOES log. `extensionRoot` points at an empty dir, so `spawn-gate-remediator.js`
+  // is absent and `node` really exits 1 with a real module-resolution error on stderr — the
+  // exact evidence the rung used to drop on the floor.
+  const emptyRoot = mkdtempSync(path.join(os.tmpdir(), 'ap-iter146-noroot-'));
+  const fx = makeRecoveryRemediatorFixture('ap-iter146-briefprep', { extensionRoot: emptyRoot });
+
+  const remediated = fx.call();
+
+  assert.equal(remediated, false, 'brief-prep failing means nothing was remediated');
+  assert.equal(existsSync(fx.markerPath), false, 'a failed brief-prep must not spawn a fixer worker');
+
+  const briefPrep = fx.logs.filter((m) => m.includes('brief-prep') && m.includes('ran and exited 1'));
+  assert.equal(briefPrep.length, 1, `the brief-prep seam must report its failure; logs: ${JSON.stringify(fx.logs)}`);
+  // The child's own stderr, verbatim enough to name the missing module. Asserting on the
+  // PATH rather than on node's phrasing keeps this off a version-dependent message.
+  assert.ok(
+    briefPrep[0].includes('spawn-gate-remediator.js'),
+    `the report must carry the child's stderr, not discard it; got: ${briefPrep[0]}`,
+  );
+
+  assert.equal(
+    fx.logs.some((m) => m.includes('NEVER EXECUTED')),
+    false,
+    'brief-prep ran and exited — that is not a spawn failure',
+  );
+
+  rmSync(emptyRoot, { recursive: true, force: true });
   fx.cleanup();
 });
 

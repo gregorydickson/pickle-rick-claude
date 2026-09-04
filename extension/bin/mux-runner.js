@@ -5940,12 +5940,59 @@ export function assessRecoveryEvidence(sessionDir, workingDir, ticketId) {
     };
 }
 /**
+ * The single classifier both seams use. `status === null` is checked FIRST because that —
+ * not the exit code — is the discriminant that separates "the kernel refused to exec" from
+ * "the child ran". Structural parameter type so it accepts a `SpawnSyncReturns<string>`
+ * without importing the generic.
+ */
+function classifyRemediatorSpawn(r) {
+    const stderr = (r.stderr ?? '').trim();
+    if (r.status === null) {
+        return {
+            kind: 'never_executed',
+            errorCode: r.error?.code ?? 'unknown',
+            errorMessage: r.error ? safeErrorMessage(r.error) : 'no error reported',
+            stderr,
+        };
+    }
+    if (r.status === 0)
+        return { kind: 'ok' };
+    return { kind: 'exited', exitCode: r.status, stderr };
+}
+/** Tail-truncated so a 64MB-capped coding-agent stderr cannot become one log line. */
+function describeRemediatorStderr(stderr) {
+    if (stderr === '')
+        return '<empty>';
+    return stderr.length > 2000 ? `...${stderr.slice(-2000)}` : stderr;
+}
+/**
+ * B-ARGMAX AC-3/AC-4: the ONLY place either seam's report text is written, so the log a
+ * reader sees is DERIVED from the classification rather than written beside it — a mutant
+ * that misclassifies necessarily also misreports, and cannot keep an honest-looking log
+ * while returning the wrong arm. The `switch` carries no `default`: under
+ * `strict` the declared `string | null` return makes tsc fail with TS2366 if an arm is
+ * dropped, which is the enforcement the ticket asks for in place of a sentinel string the
+ * tests would have to grep. `null` means "nothing to report" and is returned only for `ok`.
+ */
+function formatRemediatorSpawnOutcome(stage, ticketId, outcome) {
+    const where = `fix-forward-trivial: ${stage} for ${ticketId}`;
+    switch (outcome.kind) {
+        case 'ok':
+            return null;
+        case 'exited':
+            return `${where} ran and exited ${outcome.exitCode}; stderr: ${describeRemediatorStderr(outcome.stderr)}`;
+        case 'never_executed':
+            return `${where} NEVER EXECUTED (no exit status, so this is not a completed non-remediation): error code=${outcome.errorCode} (${outcome.errorMessage}); stderr: ${describeRemediatorStderr(outcome.stderr)}`;
+    }
+}
+/**
  * fix-forward-trivial spawner: run the EXISTING gate remediator — the same TWO-step path
  * finalize-gate uses — feeding it the armed gate's failures. Step 1 is
  * `spawn-gate-remediator.js`, which only AUTHORS a brief and prints `BRIEF_PATH=`; step 2
  * hands that brief to a fixer worker, which is the step that actually edits code. Returns
- * true iff the fixer worker exited 0. Bounded to one invocation per ladder call by the
- * controller (INV-FIX-FORWARD-BOUND).
+ * true iff the fixer worker exited 0 — the ladder contract (`RecoveryDeps.spawnRemediator`)
+ * is a boolean, so B-ARGMAX AC-3/AC-4 widened what this REPORTS, never what it returns.
+ * Bounded to one invocation per ladder call by the controller (INV-FIX-FORWARD-BOUND).
  *
  * Exported for the AP-EXT-ITER146-01 regression case: every ladder test scripts
  * `RecoveryDeps.spawnRemediator` as a boolean fake, so a spec reaching this adapter through
@@ -5982,7 +6029,14 @@ export function spawnRecoveryRemediator(input, gateFailures) {
             '--session-root', input.sessionDir,
             '--reason', 'per-iteration',
         ], { cwd: input.workingDir, encoding: 'utf-8', timeout: resolveWorkerTestGateTimeoutMs(input.extensionRoot) });
-        if (r.status !== 0)
+        // B-ARGMAX AC-4: this branch used to `return false` in silence, five lines above a
+        // sibling `!briefPath` branch that DOES name its outcome. Both now report through the
+        // same formatter, so brief-prep's stderr and a never-exec'd brief-prep are visible.
+        const briefPrep = classifyRemediatorSpawn(r);
+        const briefPrepReport = formatRemediatorSpawnOutcome('brief-prep', input.ticketId, briefPrep);
+        if (briefPrepReport !== null)
+            input.log(briefPrepReport);
+        if (briefPrep.kind !== 'ok')
             return false;
         // Brief-prep exits 0 for a CONCURRENT-LOCKOUT too, printing `LOCKOUT_PATH=` and no
         // brief. No brief means no remediation was attempted — the same disposition
@@ -5996,7 +6050,14 @@ export function spawnRecoveryRemediator(input, gateFailures) {
             input.log(`fix-forward-trivial: no BRIEF_PATH from brief-prep for ${input.ticketId}`);
             return false;
         }
-        return spawnRecoveryRemediatorWorker(input, briefPath);
+        // The rung's verdict is still the WORKER's exit code, byte-identical to before; only
+        // the reporting is new. A `never_executed` worker is `false` AND says so, instead of
+        // being indistinguishable from a worker that ran and failed to fix anything.
+        const worker = spawnRecoveryRemediatorWorker(input, briefPath);
+        const workerReport = formatRemediatorSpawnOutcome('fixer-worker', input.ticketId, worker);
+        if (workerReport !== null)
+            input.log(workerReport);
+        return worker.kind === 'ok';
     }
     catch (err) {
         input.log(`fix-forward-trivial: remediator spawn failed for ${input.ticketId}: ${safeErrorMessage(err)}`);
@@ -6033,6 +6094,12 @@ export function buildRemediatorWorkerInvocation(backend, briefPath, addDirs) {
  * CLI streaming its whole tool trace, and past `spawnSync`'s 1MB DEFAULT Node SIGTERMs the
  * child and reports `status === null`/`ENOBUFS`, which reads as a failed remediation over a
  * worker that finished its edits.
+ *
+ * B-ARGMAX AC-3: returns the classified `RemediatorSpawnOutcome`, not a boolean. The old
+ * `return r.status === 0` discarded `r.error` and `r.stderr` and logged nothing, so the
+ * Linux `E2BIG` that made this exec never happen at all was reported to the ladder as a
+ * fixer worker that ran and declined to fix anything. The caller maps `ok` back to the
+ * boolean the ladder reads, so the DISPOSITION is unchanged.
  */
 function spawnRecoveryRemediatorWorker(input, briefPath) {
     const { backend } = resolveBackendFromStateFileWithSource(input.statePath);
@@ -6049,7 +6116,7 @@ function spawnRecoveryRemediatorWorker(input, briefPath) {
         timeout: CONVERGED_PLAN_VERIFY_TIMEOUT_MS,
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
-    return r.status === 0;
+    return classifyRemediatorSpawn(r);
 }
 /** Resolve the W4a discriminant, defaulting backend from persisted state when absent. */
 function resolveRecoveryDiscriminant(input) {
