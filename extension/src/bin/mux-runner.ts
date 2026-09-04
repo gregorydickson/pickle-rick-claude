@@ -9,7 +9,7 @@ import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, FA
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
-import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv } from '../services/backend-spawn.js';
+import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv, type SpawnInvocation } from '../services/backend-spawn.js';
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
 import { readTicketWorkerGateTestsVerdict } from './setup.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
@@ -7144,11 +7144,37 @@ export function spawnRecoveryRemediator(
       input.log(`fix-forward-trivial: no BRIEF_PATH from brief-prep for ${input.ticketId}`);
       return false;
     }
-    return spawnRecoveryRemediatorWorker(input, fs.readFileSync(briefPath, 'utf-8'));
+    return spawnRecoveryRemediatorWorker(input, briefPath);
   } catch (err) {
     input.log(`fix-forward-trivial: remediator spawn failed for ${input.ticketId}: ${safeErrorMessage(err)}`);
     return false;
   }
+}
+
+/**
+ * B-ARGMAX AC-1: build the fix-forward remediator worker's manager invocation from an
+ * ON-DISK brief PATH, never from the brief's content. Linux caps a single argv element at
+ * `MAX_ARG_STRLEN` (131072 bytes); the brief embeds `extension/CLAUDE.md` verbatim
+ * (268854 bytes measured 2026-09-04), so handing the whole brief to `buildManagerInvocation`
+ * as `opts.prompt` — which every backend arm pushes as ONE argv element — made the exec
+ * never happen on Linux (`status: null`, `error.code: 'E2BIG'`). The brief is already
+ * written to `<sessionDir>/gate/...` before this is called, and `addDirs` already grants the
+ * worker `input.sessionDir`, so a short prompt referencing `briefPath` costs nothing new to
+ * provision and is backend-agnostic (stdin semantics differ across the seven backend CLIs
+ * this builder supports; a path reference needs none of that plumbing). Pure — no file I/O,
+ * no spawning — so it is unit-testable without a subprocess.
+ */
+export function buildRemediatorWorkerInvocation(
+  backend: Backend,
+  briefPath: string,
+  addDirs: string[],
+): SpawnInvocation {
+  const prompt = `Read the remediation brief at ${briefPath} and carry out its instructions exactly. The brief describes gate failures to fix and the trap-door context needed to fix them safely.`;
+  return buildManagerInvocation(backend, {
+    prompt,
+    addDirs,
+    noSessionPersistence: true,
+  });
 }
 
 /**
@@ -7163,14 +7189,10 @@ export function spawnRecoveryRemediator(
  */
 function spawnRecoveryRemediatorWorker(
   input: AttemptRecoveryBeforeTerminalInput,
-  briefContent: string,
+  briefPath: string,
 ): boolean {
   const { backend } = resolveBackendFromStateFileWithSource(input.statePath);
-  const invocation = buildManagerInvocation(backend, {
-    prompt: briefContent,
-    addDirs: [input.workingDir, input.sessionDir],
-    noSessionPersistence: true,
-  });
+  const invocation = buildRemediatorWorkerInvocation(backend, briefPath, [input.workingDir, input.sessionDir]);
   const r = spawnSync(invocation.cmd, invocation.args, {
     cwd: input.workingDir,
     env: {

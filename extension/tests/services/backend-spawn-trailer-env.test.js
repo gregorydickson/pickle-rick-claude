@@ -18,7 +18,7 @@ import {
   __resetBackendWarnings,
 } from '../../services/backend-spawn.js';
 import { buildWorkerSpawnEnv } from '../../bin/spawn-morty.js';
-import { createIterationSpawnEnv } from '../../bin/mux-runner.js';
+import { createIterationSpawnEnv, buildRemediatorWorkerInvocation } from '../../bin/mux-runner.js';
 
 const GIT_TIMEOUT_MS = 10_000;
 
@@ -561,5 +561,47 @@ test('AP-EXT-ITER147-01: the session stamp has no runtime reader, and its prose 
       `stamp now has ${readers.length} reader(s) — drop the DIAGNOSTIC ONLY wording and `
         + `describe what reads it:\n${readers.join('\n')}`,
     );
+  }
+});
+
+// --- B-ARGMAX AC-1: the fix-forward remediator worker invocation never embeds an oversized
+// prompt. Linux caps a single argv element at MAX_ARG_STRLEN (131072 bytes); the remediation
+// brief embeds extension/CLAUDE.md verbatim (268854 bytes measured 2026-09-04), so handing the
+// whole brief to buildManagerInvocation as opts.prompt made the exec never happen on Linux
+// (status: null, error.code: 'E2BIG'). buildRemediatorWorkerInvocation fixes this by building a
+// short prompt that REFERENCES the brief's on-disk path instead of embedding its content.
+
+test('buildRemediatorWorkerInvocation: no argv element exceeds Linux MAX_ARG_STRLEN even for an oversized brief (AC-1, B-ARGMAX)', () => {
+  const LINUX_MAX_ARG_STRLEN = 131072;
+  const sessionDir = mkTmpDir('argmax-brief-session-');
+  const workingDir = mkTmpDir('argmax-brief-working-');
+  try {
+    const gateDir = path.join(sessionDir, 'gate');
+    fs.mkdirSync(gateDir, { recursive: true });
+    const briefPath = path.join(gateDir, 'remediation_brief.md');
+    // Oversized on purpose — bigger than the real extension/CLAUDE.md (268854 bytes) so the
+    // case cannot pass by accident on a smaller catalog.
+    const oversizedBrief = '# Remediation Brief\n' + 'x'.repeat(300000);
+    assert.ok(Buffer.byteLength(oversizedBrief, 'utf-8') > LINUX_MAX_ARG_STRLEN, 'fixture brief must exceed the cap');
+    fs.writeFileSync(briefPath, oversizedBrief, 'utf-8');
+
+    const invocation = buildRemediatorWorkerInvocation('claude', briefPath, [workingDir, sessionDir]);
+
+    for (const arg of invocation.args) {
+      assert.ok(
+        Buffer.byteLength(arg, 'utf-8') <= LINUX_MAX_ARG_STRLEN,
+        `argv element exceeds MAX_ARG_STRLEN (${Buffer.byteLength(arg, 'utf-8')} bytes): ${arg.slice(0, 80)}...`,
+      );
+    }
+
+    // Non-vacuity: the reference mechanism must actually wire the path in, not merely be
+    // short by accident (e.g. an empty or truncated prompt would also pass the loop above).
+    assert.ok(
+      invocation.args.some((a) => a.includes(briefPath)),
+      'no argv element references the on-disk brief path',
+    );
+  } finally {
+    cleanDir(sessionDir);
+    cleanDir(workingDir);
   }
 });

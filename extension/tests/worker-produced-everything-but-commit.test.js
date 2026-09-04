@@ -1947,12 +1947,21 @@ test('AP-EXT-ITER146-01: the fix-forward rung drives a fixer worker over the aut
 
   // ...and it must be driven over the BRIEF, not an empty or synthetic prompt. Without this the
   // marker could be satisfied by any spawn at all.
+  //
+  // B-ARGMAX AC-1: the prompt REFERENCES the brief's on-disk path rather than embedding its
+  // content (Linux caps a single argv element at MAX_ARG_STRLEN, and the brief embeds
+  // extension/CLAUDE.md verbatim, routinely far past that cap) — so this asserts the prompt
+  // names an addressable path, then reads the brief FILE at that path to confirm the worker
+  // has real access to the authored content, not that the content sits inline in argv.
   const argv = JSON.parse(readFileSync(fx.markerPath, 'utf8'));
   const prompt = argv[argv.indexOf('-p') + 1];
-  assert.match(prompt, /# Gate Remediation Brief/, 'the worker must receive the authored brief as its prompt');
+  const briefPathMatch = prompt.match(/Read the remediation brief at (\S+)/);
+  assert.ok(briefPathMatch, 'the worker prompt must reference the on-disk brief path, not embed its content');
+  const referencedBrief = readFileSync(briefPathMatch[1], 'utf8');
+  assert.match(referencedBrief, /# Gate Remediation Brief/, 'the referenced file must be the authored gate remediation brief');
   assert.ok(
-    prompt.includes(fx.failingFile),
-    'the brief handed to the worker must name the failing file from the armed gate',
+    referencedBrief.includes(fx.failingFile),
+    'the brief file the worker is pointed at must name the failing file from the armed gate',
   );
 
   assert.equal(remediated, true, 'a fixer worker that exits 0 is a completed remediation');
