@@ -2084,7 +2084,7 @@ test('B-ARGMAX AC-3: a fixer worker the kernel never exec\'d is reported as a sp
   // vs `ETIMEDOUT` are four different operator actions, and the pre-fix code logged none.
   assert.match(noStatus[0], /error code=ENOENT/, 'the report must carry r.error.code');
   // `status === null` covers two physically different events, and `signal` is what separates
-  // them: `none` means the kernel refused to exec (this case, and the Linux E2BIG), whereas a
+  // them: `none` means the kernel refused to exec at all — this case, and the Linux E2BIG — whereas a
   // child killed mid-run by the timeout or the maxBuffer cap names the signal that killed it.
   // Without this the arm could not honestly claim the exec never happened.
   assert.match(noStatus[0], /signal=none/, 'a kernel that refused to exec leaves no signal');
