@@ -560,12 +560,64 @@ export function buildWorkerMcpConfig(sessionDir, workingDir, settings, snapshotE
         return fallback;
     }
 }
+/**
+ * Linux refuses a single argument to the execve system call at or above MAX ARG STRLEN — 32 pages,
+ * 131072 bytes — independently of the much larger total argument-list limit. macOS has no
+ * per-argument cap at all, so an oversized prompt runs fine there while on Linux the kernel
+ * refuses to start the process: the spawn returns a null status carrying an E2BIG error and the
+ * child never runs. Measured in the B-ARGMAX CI repro: 131000 bytes accepted, 131072 refused.
+ *
+ * The ceiling sits 1 KiB under the refusal point so the flags and add-dir paths sharing the
+ * argument list cannot push a just-legal element over.
+ */
+export const MAX_ARGV_ELEMENT_BYTES = 131072 - 1024;
+/**
+ * Fit ONE argv element under MAX_ARGV_ELEMENT_BYTES. A no-op at or under the ceiling, so every
+ * ordinary invocation is byte-identical to what it was before this existed.
+ *
+ * Above the ceiling the alternative is not a smaller prompt — it is no process at all, reported
+ * to the caller as an ordinary negative. So this truncates rather than refusing, and says so in
+ * two places: in the returned text, because an agent must know its instructions are incomplete,
+ * and on stderr with the original byte count, because an operator must be able to attribute it.
+ * It never throws and never exits — a degraded spawn still spawns.
+ */
+function boundArgvElement(value, label) {
+    const size = Buffer.byteLength(value, 'utf8');
+    if (size <= MAX_ARGV_ELEMENT_BYTES)
+        return value;
+    const notice = `\n\n[pickle-rick] TRUNCATED at ${MAX_ARGV_ELEMENT_BYTES} bytes (original ${size}). This text is incomplete — re-read the source material from the working directory rather than relying on it.\n`;
+    const budget = MAX_ARGV_ELEMENT_BYTES - Buffer.byteLength(notice, 'utf8');
+    // Slicing a UTF-8 buffer mid-codepoint decodes to a trailing replacement character; drop it
+    // rather than hand the agent mojibake.
+    const head = Buffer.from(value, 'utf8').subarray(0, budget).toString('utf8').replace(/\uFFFD+$/, '');
+    process.stderr.write(`[backend-spawn] argv element bounded: ${label} was ${size} bytes, over the ${MAX_ARGV_ELEMENT_BYTES}-byte single-argument ceiling\n`);
+    return head + notice;
+}
+/**
+ * The single enforcement point for MAX_ARGV_ELEMENT_BYTES, applied at the three exported
+ * dispatchers because every per-backend builder in this file is module-private and reachable
+ * only through one of them.
+ *
+ * It maps the bound over EVERY element rather than over the prompt element. Which element carries
+ * caller content differs per backend — a -p value, a -q value, a value after the bare separator, a
+ * system-prompt value, and one arm that concatenates two of them — and any list of those is one
+ * backend away from being incomplete. A uniform map needs no such list.
+ */
+function boundInvocationArgs(invocation) {
+    return {
+        ...invocation,
+        args: invocation.args.map((arg, index) => boundArgvElement(arg, `${invocation.cmd} argv[${index}]`)),
+    };
+}
 export function buildWorkerInvocation(backend, opts) {
     // R-WSRC-4: one sandbox assertion for EVERY worker arm, at the dispatcher.
     // It used to sit inside `buildClaudeWorkerInvocation`, so the codex arm —
     // which spawns `codex exec --dangerously-bypass-approvals-and-sandbox` and
     // appends the same `--add-dir` list — was never checked.
     assertAddDirsUnderTmpdirIfTestMode(opts.addDirs);
+    return boundInvocationArgs(selectWorkerInvocation(backend, opts));
+}
+function selectWorkerInvocation(backend, opts) {
     if (backend === 'codex')
         return buildCodexInvocation(opts.prompt, opts.addDirs, opts.model, opts.effort);
     if (backend === 'hermes')
@@ -581,6 +633,9 @@ export function buildWorkerInvocation(backend, opts) {
     return buildClaudeWorkerInvocation(opts);
 }
 export function buildManagerInvocation(backend, opts) {
+    return boundInvocationArgs(selectManagerInvocation(backend, opts));
+}
+function selectManagerInvocation(backend, opts) {
     // AP-EXT-ITER9-01 OPEN GAP: this dispatcher carries the SAME `--add-dir
     // <workingDir>` under the same bypass-permissions flags and takes NO R-WSRC-4
     // assertion. Adding it here is correct and was built + reverted this pass: it
@@ -780,6 +835,9 @@ function buildHermesWorkerInvocation(opts) {
  * user prompt; the read-only sandbox replaces the tool allowlist.
  */
 export function buildJudgeInvocation(backend, opts) {
+    return boundInvocationArgs(selectJudgeInvocation(backend, opts));
+}
+function selectJudgeInvocation(backend, opts) {
     if (backend === 'codex')
         return buildCodexJudgeInvocation(opts);
     if (backend === 'deepseek')

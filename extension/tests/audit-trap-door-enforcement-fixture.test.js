@@ -305,3 +305,72 @@ test('AP-EXT-ITER153-01 a live string-valued name spelled in several files still
       `stderr: ${result.stderr}`
   );
 });
+
+// B-ARGMAX AC-5 — the argv-ceiling sweep arm.
+//
+// The arm asserts that every exported invocation builder in the backend spawn service routes its
+// result through the seam that bounds each argv element. These cases exist because an arm that
+// only ever passes proves nothing: each one mutates the service into a shape the invariant
+// forbids and requires the audit to red. Driven over a COPY via the path override, so the real
+// source is never written to.
+function runArgvCeilingSweep(sourceText) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'argv-ceiling-'));
+  try {
+    const fixturePath = path.join(tmpDir, 'backend-spawn.ts');
+    fs.writeFileSync(fixturePath, sourceText);
+    return spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+      cwd: EXTENSION_ROOT,
+      encoding: 'utf8',
+      timeout: 120000,
+      env: { ...process.env, BACKEND_SPAWN_PATH_OVERRIDE: fixturePath },
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function readBackendSpawnSource() {
+  return fs.readFileSync(path.join(EXTENSION_ROOT, 'src', 'services', 'backend-spawn.ts'), 'utf8');
+}
+
+const BOUND_CALL = 'boundInvocationArgs(selectJudgeInvocation(backend, opts))';
+
+test('B-ARGMAX argv-ceiling sweep passes over the real backend spawn service and reports its count', () => {
+  const result = runArgvCeilingSweep(readBackendSpawnSource());
+
+  assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+  assert.match(result.stdout, /B-ARGMAX argv-ceiling verified \(\d+ exported invocation builder\(s\) bounded\)/);
+});
+
+test('B-ARGMAX argv-ceiling sweep fails when one exported builder drops the bound', () => {
+  const source = readBackendSpawnSource();
+  assert.ok(source.includes(BOUND_CALL), 'fixture premise: the judge dispatcher applies the bound');
+  const mutated = source.replace(BOUND_CALL, 'selectJudgeInvocation(backend, opts)');
+  assert.notEqual(mutated, source, 'mutation must change the source');
+
+  const result = runArgvCeilingSweep(mutated);
+
+  assert.notEqual(result.status, 0, `audit should fail; stdout: ${result.stdout}`);
+  assert.match(result.stderr, /buildJudgeInvocation .* without applying the argv ceiling/);
+});
+
+test('B-ARGMAX argv-ceiling sweep is not satisfied by a comment naming the seam helper', () => {
+  const source = readBackendSpawnSource();
+  const mutated = source.replace(
+    BOUND_CALL,
+    'selectJudgeInvocation(backend, opts); // boundInvocationArgs( is applied somewhere else',
+  );
+  assert.notEqual(mutated, source, 'mutation must change the source');
+
+  const result = runArgvCeilingSweep(mutated);
+
+  assert.notEqual(result.status, 0, `a comment must not satisfy the pin; stdout: ${result.stdout}`);
+  assert.match(result.stderr, /buildJudgeInvocation .* without applying the argv ceiling/);
+});
+
+test('B-ARGMAX argv-ceiling sweep fails rather than reporting a clean sweep over zero builders', () => {
+  const result = runArgvCeilingSweep('export const unrelated = 1;\n');
+
+  assert.notEqual(result.status, 0, `audit should fail; stdout: ${result.stdout}`);
+  assert.match(result.stderr, /found zero exported invocation builders/);
+});

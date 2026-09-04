@@ -1249,4 +1249,80 @@ then
   audit_exit_code=1
 fi
 
+# B-ARGMAX AC-5 — no unbounded caller-supplied content in a single argv element.
+#
+# Linux refuses one argument to the execve system call at or above 32 pages (131072 bytes) while
+# macOS has no per-argument cap, so an oversized prompt is a silent Linux-only no-exec: null
+# status, E2BIG, and the caller reads an ordinary negative. The fix is a ceiling applied at the
+# backend spawn service's exported dispatchers, which are a choke point because every per-backend
+# builder there is module-private.
+#
+# THE SHAPE, NOT A NAME LIST: this arm keys on "exported function whose name is a build-Invocation
+# builder", so a new backend arm added tomorrow is swept the day it is exported. Naming the
+# builders individually would scope the invariant to today's set and hide the next sibling — the
+# exact failure this bundle exists to close.
+#
+# It also fails when the file declares ZERO such builders, so a rename or a moved file reds here
+# instead of reporting a clean sweep over nothing.
+BACKEND_SPAWN_PATH="${BACKEND_SPAWN_PATH_OVERRIDE:-$EXTENSION_ROOT/src/services/backend-spawn.ts}"
+
+if ! node - "$BACKEND_SPAWN_PATH" <<'NODE'
+const fs = require('fs');
+
+const [, , spawnPath] = process.argv;
+
+let text;
+try {
+  text = fs.readFileSync(spawnPath, 'utf8');
+} catch (err) {
+  process.stderr.write(`B-ARGMAX argv-ceiling sweep: cannot read ${spawnPath} (${err.message})\n`);
+  process.exit(1);
+}
+
+const lines = text.split('\n');
+const declPattern = /^export function (build\w*Invocation)\s*\(/;
+const builders = [];
+
+lines.forEach((line, index) => {
+  const match = line.match(declPattern);
+  if (!match) return;
+  let end = lines.length;
+  for (let i = index + 1; i < lines.length; i += 1) {
+    if (lines[i] === '}') { end = i; break; }
+  }
+  builders.push({ name: match[1], line: index + 1, body: lines.slice(index, end + 1).join('\n') });
+});
+
+if (builders.length === 0) {
+  process.stderr.write(
+    'B-ARGMAX argv-ceiling sweep: found zero exported invocation builders — the sweep would check nothing\n'
+  );
+  process.exit(1);
+}
+
+// Strip comments before the existence check. A backticked mention of the seam helper inside a
+// docblock would otherwise satisfy the pin while the call itself was deleted — a green that proves
+// only that someone WROTE the name, which is the failure class this catalog already records twice.
+const stripComments = (body) => body.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+
+const unbounded = builders.filter((builder) => !stripComments(builder.body).includes('boundInvocationArgs('));
+
+for (const builder of unbounded) {
+  process.stderr.write(
+    `B-ARGMAX argv-ceiling sweep: ${builder.name} (line ${builder.line}) returns an invocation without applying the argv ceiling — route it through boundInvocationArgs so no single argument can exceed MAX_ARGV_ELEMENT_BYTES\n`
+  );
+}
+
+if (unbounded.length > 0) {
+  process.exit(1);
+}
+
+console.log(
+  `audit-trap-door-enforcement: B-ARGMAX argv-ceiling verified (${builders.length} exported invocation builder(s) bounded)`
+);
+NODE
+then
+  audit_exit_code=1
+fi
+
 exit "$audit_exit_code"
