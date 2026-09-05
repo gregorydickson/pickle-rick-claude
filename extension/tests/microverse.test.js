@@ -283,12 +283,21 @@ test('boundRemediationPrompt output survives a real execve argument', () => {
 
 // The four assertions above prove the HELPER bounds a brief. Not one of them observes the
 // exec boundary, so removing boundRemediationPrompt from the single callsite that matters —
-// the buildWorkerInvocation prompt in src/bin/microverse-runner.ts — leaves every one of them
-// green. Measured 2026-09-05: with that call replaced by the raw brief, this file still ran
-// 198/198 on macOS, while Linux CI went red exactly as it did in release run 33060047943
-// (both remediation tests `success: false` at 7-10ms, i.e. execve refused the argument list
-// before any child existed). A helper nobody is required to call is not a bound. So pin the
-// WIRE: let the spawned binary report the argv it really received, and bound that.
+// the buildWorkerInvocation prompt in src/bin/microverse-runner.ts — left every one of them
+// green: measured 2026-09-05, that mutation still ran this file 198/198. A helper nobody is
+// required to call is not a bound, so pin the WIRE instead: let the spawned binary report the
+// argv it really received, and bound that.
+//
+// This budget is the reason release run 33060047943 went red on Linux and not on macOS. Both
+// remediation tests returned `success: false` in 7-10ms — too fast for any child to have been
+// spawned — because at that sha the brief reached execve whole (>= 211929 bytes, since it
+// embeds extension/CLAUDE.md verbatim) and Linux caps ONE argument at MAX_ARG_STRLEN.
+//
+// Scope of this pin, stated so it is not over-read: since 2026-09-04 boundArgvElement bounds
+// every argv element at the spawn dispatchers (MAX_ARGV_ELEMENT_BYTES, backend-spawn.ts), so
+// deleting boundRemediationPrompt today would be caught there before it reached execve — the
+// mutation above fails on this budget, at 130048 bytes, not on the platform limit. What is
+// pinned here is the microverse-specific 96 KiB budget, which nothing else checked.
 test('runRemediatorForIteration bounds the prompt it hands to execve, not just in the helper', async () => {
     const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-argv-session-'));
     const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-argv-work-'));
