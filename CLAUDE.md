@@ -94,125 +94,61 @@ one is a new way for reliability and quality to both reach zero.
 
 The pipeline is the product: it fixes its own bugs. **Default: author a PRD/ticket → `/pickle-pipeline` (or `/pickle-tmux`).** Hand-decomposing a PRD into tickets is planning (fine); hand-*building* the fix code is not. A bug we won't dogfood is one we don't trust the tool to survive — fix that.
 
-## 🚫 NEVER hand-build. ALWAYS run a pipeline. (operator-set 2026-08-04 — BINDING, no exceptions)
+## 🚫 NEVER hand-build. ALWAYS run a pipeline. (operator-set, BINDING, no exceptions)
 
-**There is no hand-build exception. Not for the salvage path, not for the completion-evidence path, not for the Done-flip path, not for "just this once because it's load-bearing."** Every code fix in this repo is built by `/pickle-pipeline` (or `/pickle-tmux`). The prior "NARROW R-PSRB exception" is **DELETED** — it was a reflex dressed as a rule, and it kept the tool from being tested exactly where it was weakest.
+Every code fix in this repo is built by `/pickle-pipeline` (or `/pickle-tmux`). No exception for the
+salvage path, the completion-evidence path, the Done-flip path, or "just this once because it's
+load-bearing." A bundle we refuse to dogfood is a bundle whose fix we cannot claim the tool survives.
 
-**⛔ CORRECTION 2026-09-05 (operator-set): there is NO self-modifying-bundle category. Forget it.**
-This section used to claim a "R-PSRB catch-22" — that a bundle editing the salvage / completion-evidence
-/ Done-flip path is specially hazardous because the deployed pre-fix runtime applies that same logic to
-the worker building the fix — and prescribed ATTENDED runs for those bundles. **That reasoning is
-self-refuting, and the paragraph below it always said why:** a running pipeline executes **deployed JS**,
-not your source diff, which lands only at `install.sh`. Source and runtime are ISOLATED.
+**Source and the deployed runtime are ISOLATED.** Workers edit source; the pipeline executes deployed
+JS; a source diff lands only at `install.sh`. So a worker editing `mux-runner.ts` cannot change the
+runtime executing it, and **a defect in the deployed build affects EVERY bundle identically** — the one
+fixing it and the one fixing something unrelated alike. There is no self-modifying-bundle category.
+**Posture is never chosen by subject matter**; all bundles run the same way.
 
-**We work on source code, not deployed code.** A worker editing `mux-runner.ts` cannot change the
-runtime executing it, whatever that file happens to contain. So the subject matter of a bundle has no
-bearing on its exposure: **a defect in the deployed runtime affects EVERY bundle identically** — the one
-fixing it and the one fixing something unrelated alike. There is no reflexive coupling to be attended
-for, and "salvage-path bundles run attended" had no mechanism behind it.
+## 📐 COMPOSE HUGE BUNDLES — the review phases are a FIXED toll (operator-set, BINDING for dispatch)
 
-**What follows.** Posture is never chosen by subject matter. When the deployed runtime carries a known
-defect, the responses are: DEPLOY the fix (`install.sh`), or know the recovery and apply it when it
-bites. Neither is a reason to shrink a bundle, reorder its tickets, or treat one root as special.
+**Dozens of tickets per bundle. A 5-ticket bundle is a MINIMUM, not a target.**
 
-**Why the exception had to go:** a bundle we refuse to dogfood is a bundle whose fix we cannot claim the tool survives. Hand-building the recovery path means the recovery path is the one code in the system never exercised by the system. Every stalled run that hand-build "avoided" was a defect report we chose not to collect.
+`PICKLE` is linear at ~22–25 min/ticket. `ANATOMY-PARK` + `SZECHUAN-SAUCE` are a near-fixed ~300-minute
+toll: they review the accumulated diff **by SUBSYSTEM, not per ticket**. So a 2-ticket bundle spends
+~85% of its wall clock on review overhead against ~60% for an 8-ticket one, and the toll is paid per
+BUNDLE. Draining 20 findings costs almost what draining 4 costs. There is **no ticket-count ceiling**.
 
-**What is still true (and is NOT a hand-build licence):** spawn-gate / routing / phase-exit / scope-fence / refinement / feature edits are pipeline-safe because a running pipeline executes **deployed JS**, not your source diff (which lands only at `install.sh`). **All** bundles run the same way — the isolation above is uniform, so there is no second category.
+- **Compose by SHARED FILE / SUBSYSTEM SURFACE, not by priority tier.** The toll scales with subsystem
+  COUNT; same-surface tickets ride one review free. Priority orders the queue; surface composes it.
+- **Never split or reorder a bundle to de-risk a deployed-runtime defect.** Source and the deployed
+  runtime are isolated, so a known defect hits every bundle equally and no roster shape changes it —
+  and a fix is live only after `install.sh`, not when its commit lands. Deploy the fix, or know the
+  recovery.
+- **Composing a possibly-stale row is CHEAP.** If a premise proves already-fixed, declare
+  `zero_diff_intent: already-satisfied` in frontmatter up front and close on evidence. Never shrink a
+  bundle to avoid stale rows — that buys another ~300-minute toll.
+- **Mixing fixes with new functionality is SOUND** — per-ticket commits keep structural/behavioural
+  separation where it belongs.
+- **Watch `iteration`, not roster size.** Iteration count is the risk predictor; raise the pickle
+  iteration cap when composing large.
 
-(`prds/CLAUDE.md` → "Self-modifying-recovery bundles" is superseded by the correction above.)
+Standing vehicle: `prds/p1-b-megadrain-forty-open-items-by-root.md` — compose INTO it by root.
+Measured per-session durations: `prds/MASTER_PLAN.md` → "BUNDLE SIZING".
 
-## 📐 COMPOSE THE LARGEST BUNDLE THE SURFACE ALLOWS — the review phases are a FIXED toll (operator-set, BINDING for dispatch)
+## 🗓 RELEASE CADENCE — ship every FEW DAYS, not every bundle (operator-set, BINDING)
 
-**Compose HUGE bundles — dozens of tickets, many fixes at once. Stop dispatching 2–3 ticket bundles;
-a 5-ticket bundle is a MINIMUM, not a target.** (Operator-set 2026-09-05: *"given the tax of our review
-cycles we should do huge bundles with many fixes."*) This is a dispatch-composition rule; it does not
-alter the PRIME DIRECTIVE or the ratchet order above.
+**A completed bundle is NOT a reason to release.** Bundles accumulate on the branch and ship together
+every couple of days. Not releasing after a green bundle is the NORMAL state — never report it as a
+blocker or a pending decision.
 
-**The review toll is paid PER BUNDLE and the release ritual PER RELEASE — neither scales with ticket
-count.** So the correct question when composing is never "is this too many?" but "what else shares this
-surface and can ride the same review?" A bundle that drains 20 findings costs almost exactly what a
-bundle draining 4 costs. `prds/p1-b-megadrain-forty-open-items-by-root.md` is the standing vehicle for
-this: compose into it by ROOT rather than filing another small bundle.
+Measured tax: gate ~34 min + a properly-run soak ~30 min + bump/deploy/push/tag/verify ~5–10 min ≈
+**70 min blocking**, plus ~70 min CI on the tag. Paid per RELEASE, not per bundle.
 
-**Never split or reorder a bundle to de-risk a deployed-runtime defect.** Source and runtime are
-isolated (see above), so a known defect in the deployed JS hits every bundle equally and no roster shape
-changes that. Ordering the fix first does not help either — the fix is live only after `install.sh`, not
-when its commit lands. Deploy the fix, or know the recovery; never carve a root into its own bundle.
-
-**Composing a stale row is CHEAP; splitting to avoid stale rows is EXPENSIVE.** When a candidate's
-premise turns out already-fixed, declare `zero_diff_intent: already-satisfied` in the ticket
-frontmatter up front and close it on evidence — B-DRAIN13 closed two of thirteen that way, each with a
-full lifecycle. Never shrink a bundle because some members *might* be stale; that trades a cheap
-in-bundle close for another ~300-minute review toll.
-
-**Why — measured across 9 recorded sessions, not argued.** `PICKLE` is roughly **linear at 22–25
-min/ticket**. `ANATOMY-PARK` + `SZECHUAN-SAUCE` are a **near-fixed ~300-minute toll**, because they
-review the accumulated diff **by SUBSYSTEM, not per ticket**. Citadel is noise.
-
-| bundle size | share of wall clock spent on review overhead |
-|---|---|
-| 2 tickets | **~85%** |
-| 8 tickets | **~60%** |
-
-Draining 8 tickets as four small bundles costs ≈**1400** minutes of pipeline time; as one bundle,
-≈**480**. A small bundle pays the expensive phase again to review work that could have been reviewed once.
-
-**There is NO known ticket-count ceiling.** The old "cap at 6–7" was **RETRACTED 2026-08-26**: it rested
-on a `hit iteration cap` log line that was a mislabel (an ABSENT `priorExitReason` rendering as a
-specific cause), and a ticket-count ceiling was never measured. Do not reintroduce one.
-
-**Reliability does NOT degrade with size — size is not the risk predictor.** 8 of 9 recorded sessions
-converged; **both** 8-ticket bundles converged, and the only `stalled_below_target` was a **3-ticket**
-bundle. Do not justify a small bundle on safety grounds; the evidence does not support it.
-
-**The real risk is ITERATION COUNT, not ticket count.** More tickets ⇒ more iterations ⇒ more exposure
-to the iteration/budget cap, and a bundle that exhausts it reports the phase incomplete and ADVANCES —
-a careless reader sees a finished pipeline and never learns a ticket was never built. Watch `iteration`,
-not roster size, and raise the pickle iteration cap in the same breath when composing large.
-
-**Composition rules (priority order):**
-1. **Compose by SHARED FILE / SUBSYSTEM SURFACE, not by priority tier.** The toll scales with subsystem
-   COUNT, so tickets touching the same files ride one review for free; a bundle sprawling across new
-   subsystems pays more. Priority orders the queue; **surface composes the bundle.** This is the real
-   bound on "as many as possible" — more tickets is free only while the surface stays put.
-2. **Mixing fixes with new functionality is SOUND.** Each ticket gets its own commit, so the
-   structural-vs-behavioral separation is preserved at commit granularity, where it belongs.
-3. **Prefer bundles that RETIRE a standing gate exception** — a permanent "ignore these N inherited
-   failures" carve-out is a standing permission to read red as green.
-
-Full measured tables + per-session durations: `prds/MASTER_PLAN.md` → "BUNDLE SIZING".
-
-## 🗓 RELEASE CADENCE — ship every FEW DAYS, not every bundle (operator-set 2026-09-05, BINDING)
-
-**A completed bundle is NOT a reason to release.** Releasing carries a large, measured time tax, so
-bundles accumulate on the branch and ship together every couple of days. Not releasing after a green
-bundle is the NORMAL state — it is policy, not a blocker, and it must never be reported as one.
-
-**The tax, measured on this host 2026-09-05 (three consecutive runs, not estimated):**
-
-| step | wall clock |
-|---|---|
-| full release gate (`&&` chain) | **33m51s · 34m24s · 34m22s** — call it ~34 min |
-| deploy-lifecycle soak, run properly | **~30 min** (1803s) — it SELF-SKIPS in the chain, so it is extra |
-| bump · deploy · push · tag · verify | ~5–10 min |
-| **blocking local total** | **~70 min** |
-| CI on the tag (async, but gates the verdict) | **66–71 min** green · 19–24 min red |
-
-That is well over an hour of blocking measurement per release, and it is paid **per release, not per
-bundle** — which is exactly why batching bundles is cheap and releasing often is not. The same
-arithmetic as the bundle-sizing directive above: a fixed toll amortises over more work.
-
-**Rules:**
 1. **Default: do not release.** Land the bundle, push the branch, keep draining. Release when several
-   bundles have accumulated, when a fix must reach users, or when the operator asks.
+   bundles have accumulated, a fix must reach users, or the operator asks.
 2. **The soak is NOT optional at release time.** It self-skips with `refuses to mutate $HOME
-   settings.json` and a 16-second "pass" is not a 1800s soak. Run it with `PICKLE_INSTALL_ROOT` set to
-   a non-`$HOME` path, or record the leg as UNRUN. Never report an unrun leg as green.
-3. **A degraded run still does not auto-release** (see B-NOSTOP-GATES above). Cadence and honesty are
-   separate constraints; this section relaxes neither.
-4. **Batching does not mean batching the GATE.** Keep the branch continuously green — run the gate per
-   bundle if you like, since that cost is already sunk in the bundle — but spend the release ritual
-   (soak + bump + tag + verify + CI) only when actually shipping.
+   settings.json`; a 16-second pass is not an 1800s soak. Set `PICKLE_INSTALL_ROOT` to a non-`$HOME`
+   path or record the leg UNRUN. Never report an unrun leg as green.
+3. **A degraded run still does not auto-release** (see B-NOSTOP-GATES). Cadence does not relax honesty.
+4. **Batching releases ≠ batching the GATE.** Keep the branch green per bundle; spend the release
+   ritual only when shipping.
 
 ## ⛔ Worker Forbidden Ops (R-WSRC)
 
