@@ -576,6 +576,14 @@ test('no test in the repo spawns a binary the workflows do not provision', async
   // the scan would report nothing because it scanned nothing.
   assert.ok(files.length > 100, `expected the real test corpus, got ${files.length} files`);
 
+  // This walk INCLUDES tests/fixtures/**, and that is deliberate, not an oversight.
+  // audit-subprocess-heavy-tests.sh skips fixtures (its find(1) prunes them) because
+  // they are intentional violators for its OTHER checks. But they are real tests:
+  // 7 of them carry `@tier: integration` and the runner's recursive discovery does
+  // execute them in CI (measured via `--tier integration --dry-run`). A fixture that
+  // spawned an unprovisioned binary would therefore ENOENT in CI for real, so
+  // covering them here is the property, and a red from one would be true.
+
   const findings = files.flatMap(f => mod.scanFile(f, EXTENSION_ROOT, matchers));
   assert.deepEqual(
     findings.map(f => `${f.rel}:${f.lineNo} spawns ${f.tool}`),

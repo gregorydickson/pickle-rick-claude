@@ -94,6 +94,26 @@ function installOperands(afterVerb) {
     .filter((t) => t.length > 0 && !t.startsWith('-'));
 }
 
+// What ONE step block declares as provisioned. Returns [] for a step that does not
+// install, which is precisely what keeps source 2 scoped: a backticked tool in a
+// non-installing step is not a declaration, and treating it as one would silently
+// mark a candidate provisioned on the strength of unrelated prose.
+function provisionedByBlock(block) {
+  INSTALL_CMD.lastIndex = 0;
+  const tokens = [];
+  let installs = false;
+  let install;
+  while ((install = INSTALL_CMD.exec(block)) !== null) {
+    installs = true; // the VERB is the trigger, even if it names no operand
+    tokens.push(...installOperands(block.slice(install.index + install[0].length)));
+  }
+  if (!installs) { return []; }
+  BACKTICKED.lastIndex = 0;
+  let tick;
+  while ((tick = BACKTICKED.exec(block)) !== null) { tokens.push(tick[1]); }
+  return tokens;
+}
+
 // The set of things `.github/workflows/*.yml` installs, derived per run — never stored.
 //
 // Two token sources are unioned, because a package name is NOT a binary name:
@@ -128,23 +148,11 @@ export function deriveProvisionedTools(workflowsDir) {
     } catch {
       continue;
     }
-    // Split into step blocks on the YAML sequence dash. A step's `name:`, its
-    // comments and its `run:` all land in the same chunk, which is what lets
-    // source 2 stay scoped to the step that does the installing.
-    for (const block of content.split(/^\s*-\s+/m)) {
-      INSTALL_CMD.lastIndex = 0;
-      let install;
-      let installs = false;
-      while ((install = INSTALL_CMD.exec(block)) !== null) {
-        installs = true;
-        for (const pkg of installOperands(block.slice(install.index + install[0].length))) {
-          provisioned.add(pkg);
-        }
-      }
-      if (!installs) { continue; }
-      BACKTICKED.lastIndex = 0;
-      let tick;
-      while ((tick = BACKTICKED.exec(block)) !== null) provisioned.add(tick[1]);
+    // Split into step blocks on the YAML sequence dash, so a step's `name:`, its
+    // comments and its `run:` all land in one chunk — that adjacency is what lets
+    // provisionedByBlock keep source 2 scoped to the step that does the installing.
+    for (const token of content.split(/^\s*-\s+/m).flatMap(provisionedByBlock)) {
+      provisioned.add(token);
     }
   }
   return provisioned;
