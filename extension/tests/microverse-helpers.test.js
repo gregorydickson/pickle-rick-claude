@@ -536,3 +536,74 @@ test('AP-EXT-ITER4-01 control: normalizing identity does not change any generate
     'module:v1:rule:layering',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER7-01 — the ±5 line-drift window is a RANGE, so a cluster of
+// violations in one file all match the same prior entry. The lookup used to
+// leave the match in place, so every one of them inherited that entry's `id`
+// and the ledger persisted N records under ONE identity. Identity is the whole
+// mechanism: `compareMetricSetOps` diffs judge-reported id SETS, so a shared id
+// makes fixing one of the two unreportable as `resolved` and a real improvement
+// reads `held` — the false stall R-SLLJ exists to prevent.
+//
+// Drive the REAL parser (AP-EXT-ITER4-01's rule): a hand-written violation can
+// carry a `rule` key, and production never emits one.
+// ---------------------------------------------------------------------------
+
+/** A judge payload carrying several violations at once, in the shape `buildJudgePrompt` demands. */
+function judgeOutputAtLines(...lines) {
+  return JSON.stringify({
+    score: lines.length,
+    violations: lines.map((line, i) => ({
+      id: `v${i}`, path: 'src/foo.ts', line, severity: 'high', description: `violation at ${line}`,
+    })),
+    resolved: [], new: lines.map((_, i) => `v${i}`), remaining: [],
+  });
+}
+
+test('AP-EXT-ITER7-01: two violations inside one prior entry’s ±5 window keep DISTINCT ids', () => {
+  const state = createMicroverseState(AP_ITER4_OPTS);
+  state.violation_ledger = [];
+
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(10)), 1);
+  assert.equal(state.violation_ledger.length, 1);
+  const carriedId = state.violation_ledger[0].id;
+
+  // Both 11 and 13 sit within +/-5 of the prior entry at line 10.
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(11, 13)), 2);
+
+  assert.equal(state.violation_ledger.length, 2, 'both violations must be tracked');
+  const ids = state.violation_ledger.map((e) => e.id);
+  assert.equal(
+    new Set(ids).size, 2,
+    'a prior entry backs at most ONE violation — two entries sharing an id make the set-ops diff blind',
+  );
+  assert.equal(ids[0], carriedId, 'the first match still reuses the prior identity (line drift preserved)');
+  assert.equal(state.violation_ledger[0].first_seen_iter, 1, 'the reusing entry carries its age');
+
+  // The unmatched violation takes the id its own location generates, not a borrowed one.
+  assert.equal(
+    ids[1],
+    generateViolationId({ id: 'v1', path: 'src/foo.ts', line: 13, severity: 'high', description: 'd' }),
+    'the unmatched violation takes its OWN derived id',
+  );
+  assert.equal(state.violation_ledger[1].first_seen_iter, 2, 'it is new this pass, not aged');
+});
+
+test('AP-EXT-ITER7-01 control: two prior entries still back two drifted violations each', () => {
+  const state = createMicroverseState(AP_ITER4_OPTS);
+  state.violation_ledger = [];
+
+  // Two distinct violations far enough apart to take separate ids.
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(10, 40)), 1);
+  const [idA, idB] = state.violation_ledger.map((e) => e.id);
+  assert.notEqual(idA, idB);
+
+  // Each drifts within its own window; claiming a match must not starve the second.
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(12, 43)), 2);
+  assert.deepEqual(
+    state.violation_ledger.map((e) => e.id), [idA, idB],
+    'consuming the first match must not break the second reuse',
+  );
+  assert.deepEqual(state.violation_ledger.map((e) => e.first_seen_iter), [1, 1]);
+});

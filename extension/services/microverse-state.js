@@ -484,15 +484,24 @@ export function updateViolationLedger(state, judgeResult, iter) {
     if (!Array.isArray(judgeResult.violations)) {
         throw new Error('updateViolationLedger: judgeResult.violations must be an array');
     }
-    const priorLedger = state.violation_ledger ?? [];
+    // AP-EXT-ITER7-01: a prior entry backs AT MOST ONE current violation. The ±5 line-drift
+    // window is a range, so a cluster of violations in one file all match the same prior entry;
+    // an unconsumed lookup handed every one of them that entry's `id` and the ledger persisted
+    // N records under a single identity. Identity IS the mechanism here — `compareMetricSetOps`
+    // diffs judge-reported id SETS, so two violations sharing an id make fixing one of them
+    // unreportable as `resolved` and a real improvement reads `held`, the false stall the whole
+    // R-SLLJ family exists to prevent. Claiming the match removes that state rather than
+    // guarding it downstream: no dedupe pass, no extra branch, same complexity.
+    const unclaimedPrior = [...(state.violation_ledger ?? [])];
     const nextLedger = [];
     for (const violation of judgeResult.violations) {
         const identity = violationIdentity(violation);
-        const existing = priorLedger.find((e) => {
+        const matchIndex = unclaimedPrior.findIndex((e) => {
             const prior = violationIdentity(e);
             return prior.path === identity.path && prior.rule === identity.rule &&
                 Math.abs(prior.line - identity.line) <= 5;
         });
+        const existing = matchIndex >= 0 ? unclaimedPrior.splice(matchIndex, 1)[0] : undefined;
         if (existing) {
             nextLedger.push({
                 ...existing,
