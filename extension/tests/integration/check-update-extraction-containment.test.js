@@ -20,6 +20,16 @@
 // `-P` is the opposite: it is what makes the guard testable at all. Never "clean up" the create
 // flag, and never add the flag to the extract side.
 //
+// ✅ RE-VERIFIED 2026-09-05 (ticket 8d95bc5a) — the two failure names this file produced in the
+// beta.20 release-workflow run (`33060047943`, published 2026-08-27T09:45:57Z) predate the
+// 030299ef fixture fix above (landed 2026-08-27T16:26:51Z, ~6.7h later): beta.20 ran the
+// pre-`-P` fixture this file's own header already explains. Re-measured on the current HEAD via
+// `extension/scripts/ci-repro.sh` (Ubuntu 24.04.4, GNU tar 1.35, Node 22.23.2 — matching
+// `ubuntu-latest` + this repo's Node 22 CI major): 4/4 pass, twice, zero fail/cancelled. Neither
+// too weak (GNU tar still refuses to write the escaping member outside the extract dir and exits
+// non-zero) nor too strict (the contained `..`-prefixed member still passes) — `check-update.ts`
+// is unchanged and correct; see the trap door above.
+//
 // Every tarball here carries a VALID installable payload (`extension/package.json` +
 // `install.sh` sharing one root), so `resolveInstallablePayloadRoot` accepts it. That matters:
 // it proves these cases reach the extractor rather than dying at the payload-shape guard.
