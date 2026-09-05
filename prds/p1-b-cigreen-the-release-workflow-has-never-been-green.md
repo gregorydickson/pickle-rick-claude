@@ -118,7 +118,19 @@ classified 12 `.unref()` sites and ref'd those that were the sole settle path; t
 sites it declined or a shape it did not cover. Name which. **Do not blanket-ref** — a heartbeat holding
 the loop open forever is a new hang, and that warning is why the last pass classified rather than swept.
 
-## ROOT F — [[B-ONEABORT]] residual: 3 abort conditions, target 1 (1 ticket)
+## ~~ROOT F — [[B-ONEABORT]] residual: 3 abort conditions, target 1~~ — ✅ CLOSED, DO NOT SCOPE
+
+> **Re-derived at HEAD `e4edb6f9` 2026-09-05 (babysitter).** `MICROVERSE_FATAL_REASONS`
+> (`src/types/index.ts:1515`) is now **exactly one member**: `['session_state_corrupted']`. That IS
+> B-ONEABORT's stated target, so this root is satisfied — closed by [[B-FRESHWIN]] ticket `0d579ec5`
+> (`4eee6dbf` withheld the verdict instead of ending the run; `6d7be42a`/`43269175` collapsed
+> `dispatchHaltAction` to one disposition at one exit). Per the drain-queue overlap rule the EARLIER
+> bundle owns shared work, so B-CIGREEN is recomposed to its remaining five roots.
+> **Field evidence, not just the constant:** this same day szechuan-sauce exited
+> `baseline_unmeasurable_unrecoverable` and the pipeline still reported `4/4 phases, 403m 24s` —
+> a measurement verdict that parks and reports rather than halting, exactly as B-NOSTOP-GATES requires.
+> The paragraph below is the pre-fix premise, retained for the record.
+
 
 `MICROVERSE_FATAL_REASONS` is `['judge_cli_missing', 'session_state_corrupted',
 'baseline_unmeasurable_unrecoverable']`. B-ONEABORT's target was **exactly one**: terminate only when

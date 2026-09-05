@@ -74,6 +74,23 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🧭 NEXT DISPATCH — [[B-CIGREEN]]: close the last reds between HEAD and a green release verdict (2026-09-05)
+
+`prds/p1-b-cigreen-the-release-workflow-has-never-been-green.md` — **P1.** Unblocked: [[B-FRESHWIN]]
+shipped the fs-clock fix and the local gate now measures `flake-budget OK failures=0 budget=2
+`runs_completed=5 runs_requested=5 tests=9294` — the random-gate problem that made a green verdict
+uncertifiable is gone on the authoring axis.
+
+**RECOMPOSED to FIVE roots (A–E).** Root F is struck: `MICROVERSE_FATAL_REASONS` re-derived at HEAD is
+`['session_state_corrupted']`, one member, B-ONEABORT's target — closed by B-FRESHWIN `0d579ec5`.
+Per the overlap rule the earlier bundle owns it.
+
+**Verify-first before scoping each remaining root:** the beta.20 serial-tier reds this PRD was written
+against are ~2 weeks and three bundles old. Re-measure each against HEAD rather than trusting the
+trigger table; two roots in this plan have already dissolved that way this week.
+
+---
+
 ## 🧭 NEXT DISPATCH — [[B-FRESHWIN]]: CI is a coin flip on one test (2026-09-05)
 
 `prds/p1-b-freshwin-the-progress-window-race-and-two-verified-p1-roots.md` — **P1.** Takes dispatch
