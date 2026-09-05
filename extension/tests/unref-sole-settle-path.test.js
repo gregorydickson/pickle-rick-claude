@@ -78,16 +78,61 @@ function collectSourceFiles(dir) {
   return out;
 }
 
+const isTimerCall = (node) =>
+  ts.isCallExpression(node) && ts.isIdentifier(node.expression) && TIMER_FNS.has(node.expression.text);
+
 /**
- * Timers whose callback settles an ENCLOSING `new Promise` executor.
+ * The settler name this timer callback reaches, or null. Both spellings count: the settler passed
+ * DIRECTLY (`setTimeout(resolve, ms)` — the shape that stranded PC-4) and a call in the body
+ * (`setTimeout(() => resolve(v), ms)`).
+ */
+function settlerReachedBy(callback, inScope) {
+  if (!callback || inScope.size === 0) { return null; }
+  if (ts.isIdentifier(callback)) { return inScope.has(callback.text) ? callback.text : null; }
+
+  let settles = null;
+  (function scanBody(n) {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && inScope.has(n.expression.text)) {
+      settles = n.expression.text;
+    }
+    ts.forEachChild(n, scanBody);
+  })(callback);
+  return settles;
+}
+
+/** Unref'd either by chaining onto the call, or via the name the timer is bound to. */
+function isUnrefd(node, unrefdNames) {
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.name.text === 'unref') { return true; }
+
+  const boundTo = ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name) ? parent.name.text
+    : ts.isBinaryExpression(parent) && ts.isIdentifier(parent.left) ? parent.left.text
+      : null;
+  return boundTo !== null && unrefdNames.has(boundTo);
+}
+
+/**
+ * Timers whose callback settles an ENCLOSING `new Promise` executor, each tagged with whether it
+ * is unref'd. Matching is `settlerReachedBy` (which callback shapes count) and `isUnrefd` (which
+ * unref spellings count); both are documented above.
  *
- * Both callback spellings count, because both occur in the sites this guard exists for:
- * `setTimeout(() => resolve(v), ms)` (codegraph-service.ts, microverse-runner.ts) and
- * `setTimeout(resolve, ms)` — the settler passed DIRECTLY, which is the exact shape of the
- * `sleep()` helper that stranded PC-4.
+ * KNOWN LIMITS — this matcher UNDER-detects, and the gaps are named so the next reader does not
+ * read the test title as broader than the check. Both are deliberate: closing either one turns a
+ * currently-unflagged site into a reported violation in a file outside ticket c75ba623's fence,
+ * so widening belongs in a bundle scoped to adjudicate it, not here.
+ *   1. SETTLE-THROUGH-A-LOCAL-HELPER is invisible. Only DIRECT calls to the executor's own
+ *      parameters count, so `const settle = r => resolve(r); setTimeout(() => settle(x), ms)`
+ *      does not match. Live example: `src/services/codegraph-query-runner.ts:190`, an unref'd
+ *      timer settling via `settle()` — absent from this scan's census. (Believed benign there:
+ *      a live child-process handle holds the loop open so the timer still fires. But it is
+ *      unflagged because it was never examined, NOT because that argument was checked.)
+ *   2. PROPERTY-RECEIVER `unref` is invisible. `collectUnrefs` requires an identifier receiver,
+ *      so `this.timer.unref()` is not collected — e.g. `src/bin/mux-runner.ts:4389`, `:4530`.
+ *      Neither is a settling timer per `settlerReachedBy` today, so nothing is missed at present.
  *
- * A timer counts as unref'd if it is chained (`setTimeout(...).unref()`, incl. `?.()`) or if the
- * name it is bound to is unref'd anywhere in the same file.
+ * The bias throughout is toward a FALSE RED, never a false green: `unrefdNames` is file-global
+ * and ignores shadowing, so a reused timer name over-flags rather than under-flags. An over-flag
+ * gets investigated; an under-flag ships.
  */
 function findSettlingTimers(file) {
   const text = fs.readFileSync(file, 'utf-8');
@@ -117,37 +162,14 @@ function findSettlingTimers(file) {
       }
     }
 
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && TIMER_FNS.has(node.expression.text)) {
-      const callback = node.arguments?.[0];
-      if (callback && inScope.size > 0) {
-        let settles = null;
-        if (ts.isIdentifier(callback) && inScope.has(callback.text)) {
-          settles = callback.text;
-        } else {
-          (function scanBody(n) {
-            if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && inScope.has(n.expression.text)) {
-              settles = n.expression.text;
-            }
-            ts.forEachChild(n, scanBody);
-          })(callback);
-        }
-
-        if (settles) {
-          const parent = node.parent;
-          let unrefd = ts.isPropertyAccessExpression(parent) && parent.name.text === 'unref';
-          let boundTo = null;
-          if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) boundTo = parent.name.text;
-          else if (ts.isBinaryExpression(parent) && ts.isIdentifier(parent.left)) boundTo = parent.left.text;
-          if (!unrefd && boundTo !== null && unrefdNames.has(boundTo)) unrefd = true;
-
-          found.push({
-            file: path.relative(SRC_ROOT, file),
-            line: src.getLineAndCharacterOfPosition(node.getStart(src)).line + 1,
-            settles,
-            unrefd,
-          });
-        }
-      }
+    const settles = isTimerCall(node) ? settlerReachedBy(node.arguments?.[0], inScope) : null;
+    if (settles) {
+      found.push({
+        file: path.relative(SRC_ROOT, file),
+        line: src.getLineAndCharacterOfPosition(node.getStart(src)).line + 1,
+        settles,
+        unrefd: isUnrefd(node, unrefdNames),
+      });
     }
 
     ts.forEachChild(node, n => visit(n, inScope));
