@@ -480,6 +480,38 @@ export function generateViolationId(violation) {
     }
     return crypto.createHash('sha1').update(`${vPath}:${line}:${rule}`).digest('hex').slice(0, 8);
 }
+/**
+ * AP-EXT-ITER9-01: a ledger id is an IDENTITY, so it must be unique inside the ledger —
+ * mint it against the ids already taken, never from the identity alone.
+ *
+ * `generateViolationId` hashes `path:line:rule`, and `rule` is absent on every violation
+ * this system produces (AP-EXT-ITER4-01: `buildJudgePrompt`'s schema names none), so the
+ * identity is effectively `path:line` and TWO findings the judge reports on ONE line of one
+ * file hash to the SAME id — on the first pass, with an empty prior ledger and no line drift
+ * involved. Reuse compounds it rather than causing it: a claimed entry keeps the id minted
+ * from its FIRST-seen line while adopting the current one, so a later violation arriving at
+ * that original line mints the same hash again.
+ *
+ * The id is the only handle the judge is given (`buildJudgePrompt`: "Re-report a prior
+ * violation under its EXISTING id verbatim") and `compareMetricSetOps` diffs id SETS, so two
+ * violations under one id make fixing ONE of them unreportable as `resolved` — the id is
+ * still `remaining` for the other, `resolved` and `new` are both empty, and a real
+ * improvement classifies `held`. That is the R-SLLJ false stall AP-EXT-ITER7-01 closed on the
+ * reuse half; this closes the mint half, which that fix left open.
+ *
+ * Deterministic and stable: the base hash is returned untouched whenever it is free, so an
+ * uncollided id is exactly what it was before, and the suffixed form is re-claimed by the
+ * ±5 reuse lookup on the next pass like any other entry.
+ */
+function mintUniqueViolationId(violation, taken) {
+    const base = generateViolationId(violation);
+    if (!taken.has(base))
+        return base;
+    let n = 2;
+    while (taken.has(`${base}-${n}`))
+        n += 1;
+    return `${base}-${n}`;
+}
 export function updateViolationLedger(state, judgeResult, iter) {
     if (!Array.isArray(judgeResult.violations)) {
         throw new Error('updateViolationLedger: judgeResult.violations must be an array');
@@ -493,6 +525,10 @@ export function updateViolationLedger(state, judgeResult, iter) {
     // R-SLLJ family exists to prevent. Claiming the match removes that state rather than
     // guarding it downstream: no dedupe pass, no extra branch, same complexity.
     const unclaimedPrior = [...(state.violation_ledger ?? [])];
+    // AP-EXT-ITER9-01: the ledger's id space. Seeded from the prior ledger (every id a claim can
+    // carry forward is already in it) and grown as this pass mints, so no minted id can land on
+    // one another record in the SAME ledger already answers to.
+    const takenIds = new Set(unclaimedPrior.map((e) => e.id));
     const nextLedger = [];
     for (const violation of judgeResult.violations) {
         const identity = violationIdentity(violation);
@@ -512,8 +548,10 @@ export function updateViolationLedger(state, judgeResult, iter) {
             });
         }
         else {
+            const mintedId = mintUniqueViolationId(violation, takenIds);
+            takenIds.add(mintedId);
             nextLedger.push({
-                id: generateViolationId(violation),
+                id: mintedId,
                 ...identity,
                 first_seen_iter: iter,
                 last_seen_iter: iter,

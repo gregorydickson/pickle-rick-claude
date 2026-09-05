@@ -607,3 +607,73 @@ test('AP-EXT-ITER7-01 control: two prior entries still back two drifted violatio
   );
   assert.deepEqual(state.violation_ledger.map((e) => e.first_seen_iter), [1, 1]);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER9-01 — the MINT half of the same one-id-per-record invariant.
+//
+// AP-EXT-ITER7-01 stopped one prior entry from backing two violations. The id a
+// NEW entry mints was left derived from `path:line:rule` alone, and `rule` is
+// absent on every violation production emits — so two findings the judge reports
+// on ONE line of one file still landed under a single id, on the FIRST pass, with
+// no prior ledger and no drift. Same downstream mechanism, same false stall.
+//
+// Drive the REAL parser (AP-EXT-ITER4-01's rule): a hand-written violation can
+// carry a `rule` key, and production never emits one.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER9-01: two violations on the SAME line keep DISTINCT ids on a virgin ledger', () => {
+  const state = createMicroverseState(AP_ITER4_OPTS);
+  state.violation_ledger = [];
+
+  // No prior ledger, no drift, no reuse branch — the mint is the only path taken.
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(10, 10)), 1);
+
+  assert.equal(state.violation_ledger.length, 2, 'both violations must be tracked');
+  const ids = state.violation_ledger.map((e) => e.id);
+  assert.equal(
+    new Set(ids).size, 2,
+    'one record, one id — two entries sharing an id make the set-ops diff blind to fixing either',
+  );
+  assert.equal(
+    ids[0],
+    generateViolationId({ id: 'v0', path: 'src/foo.ts', line: 10, severity: 'high', description: 'd' }),
+    'the uncollided id is the bare derived hash — the mint must not churn ids it did not have to',
+  );
+});
+
+test('AP-EXT-ITER9-01: a reused entry’s id is not re-minted for a violation at its ORIGINAL line', () => {
+  const state = createMicroverseState(AP_ITER4_OPTS);
+  state.violation_ledger = [];
+
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(10)), 1);
+  const carriedId = state.violation_ledger[0].id;
+
+  // The entry drifts 10 -> 12 and keeps the id minted from line 10; a second
+  // violation then arrives AT line 10 and would re-derive that same hash.
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(12, 10)), 2);
+
+  const ids = state.violation_ledger.map((e) => e.id);
+  assert.equal(new Set(ids).size, 2, 'the drifted entry and the line-10 arrival must not share an id');
+  assert.equal(ids[0], carriedId, 'the claim still carries the prior identity through the drift');
+  assert.equal(state.violation_ledger[0].first_seen_iter, 1, 'the reusing entry keeps its age');
+  assert.notEqual(ids[1], carriedId, 'the new violation must not answer to the reused entry’s id');
+  assert.equal(state.violation_ledger[1].first_seen_iter, 2, 'it is new this pass, not aged');
+});
+
+test('AP-EXT-ITER9-01 control: a disambiguated id is re-claimed next pass, never re-minted', () => {
+  const state = createMicroverseState(AP_ITER4_OPTS);
+  state.violation_ledger = [];
+
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(10, 10)), 1);
+  const firstPass = state.violation_ledger.map((e) => e.id);
+
+  // Same two violations, unchanged. A mint that ran again every pass would churn
+  // the ids and reset `first_seen_iter`, making a persistent violation read as new.
+  updateViolationLedger(state, parseLlmJudgeOutput(judgeOutputAtLines(10, 10)), 2);
+
+  assert.deepEqual(state.violation_ledger.map((e) => e.id), firstPass, 'ids are stable across passes');
+  assert.deepEqual(
+    state.violation_ledger.map((e) => e.first_seen_iter), [1, 1],
+    'both entries keep their age — the disambiguated id is a real, claimable identity',
+  );
+});
