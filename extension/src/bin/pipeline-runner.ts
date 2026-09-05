@@ -4921,30 +4921,31 @@ async function dispatchHaltAction(
     return runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, log);
   }
   // AC-CF-15: crash-floor halts skip the abort-path gate entirely — the toolchain
-  // cannot run, so the gate is guaranteed red and its telemetry misattributes cause.
-  if (isCrashFloorPickleHalt(runtime, rawPhase)) {
-    return { action: 'break' };
-  }
+  // cannot run, so the gate is guaranteed red and its telemetry misattributes cause. This is a
+  // narrowing of when the GATE runs, never of whether the pipeline halts, so it guards the gate
+  // rather than owning a second break — one disposition, one exit.
   // AC-RPGT-6: best-effort typecheck+lint gate on abort path — network-free, never masks
   // the original abort reason.
-  try {
-    const abortGate = await runGate({
-      workingDir: runtime.workingDir,
-      mode: 'strict',
-      scope: 'full',
-      checks: ['typecheck', 'lint'],
-    });
-    if (abortGate.status === 'red') {
-      try {
-        logActivity({
-          event: 'tsc_gate_failed',
-          source: 'pickle',
-          reason: `[R-RPGT] abort-path gate: tsc/lint RED on phase ${rawPhase} exit`,
-          gate_payload: { failure_kind: 'compile_error' },
-        } as never);
-      } catch { /* swallow emit failure */ }
-    }
-  } catch { /* gate error never masks original abort reason */ }
+  if (!isCrashFloorPickleHalt(runtime, rawPhase)) {
+    try {
+      const abortGate = await runGate({
+        workingDir: runtime.workingDir,
+        mode: 'strict',
+        scope: 'full',
+        checks: ['typecheck', 'lint'],
+      });
+      if (abortGate.status === 'red') {
+        try {
+          logActivity({
+            event: 'tsc_gate_failed',
+            source: 'pickle',
+            reason: `[R-RPGT] abort-path gate: tsc/lint RED on phase ${rawPhase} exit`,
+            gate_payload: { failure_kind: 'compile_error' },
+          } as never);
+        } catch { /* swallow emit failure */ }
+      }
+    } catch { /* gate error never masks original abort reason */ }
+  }
   return { action: 'break' };
 }
 
