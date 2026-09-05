@@ -796,7 +796,8 @@ test('PC-7: SIGTERM reaps an analyst grandchild, not just the claude process', {
     fs.mkdirSync(sessionDir, { recursive: true });
     writeState(sessionDir, { worker_timeout_seconds: 60 });
 
-    fs.writeFileSync(path.join(dir, 'test-prd.md'), '# Test PRD\n\nTest content.\n');
+    const prdPath = path.join(dir, 'test-prd.md');
+    fs.writeFileSync(prdPath, '# Test PRD\n\nTest content.\n');
     const extRoot = path.join(dir, 'ext');
     fs.mkdirSync(extRoot, { recursive: true });
 
@@ -823,7 +824,7 @@ test('PC-7: SIGTERM reaps an analyst grandchild, not just the claude process', {
       process.execPath,
       [
         SPAWN_REFINEMENT_BIN,
-        '--prd', path.join(dir, 'test-prd.md'),
+        '--prd', prdPath,
         '--session-dir', sessionDir,
         '--cycles', '1',
         '--timeout', '60',
