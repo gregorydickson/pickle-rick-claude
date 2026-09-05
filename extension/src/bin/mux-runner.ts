@@ -10591,9 +10591,51 @@ export function recordWorkerArtifactProgress(
 /** Silent-death sub-classes (90574654). `log_empty` → `worker_silent_death`; `log_truncated` → existing `worker_partial_lifecycle_exit`. */
 export type SilentDeathSubClass = 'log_empty' | 'log_truncated';
 
+/**
+ * B-LOGEV: what the session log actually told us about the worker.
+ *
+ * An EMPTY log is an ABSENCE OF MEASUREMENT, not evidence of an absent worker. On the one
+ * clean hands-off run ever recorded, 35 of 43 logs were 0 bytes while 11 of 15 tickets held
+ * a full lifecycle artifact set — the logs were empty; the workers were not. Reading size 0
+ * as "produced nothing" is the `failed`-vs-`empty` collapse this codebase names as its
+ * dominant defect class.
+ *
+ *  - `measured` — the log carried bytes; the sub-class is read from its content, as before.
+ *  - `empty`    — no measurement was taken AND independent evidence says the ticket worked
+ *                 inside the iteration window. NOT sufficient for `worker_silent_death` or
+ *                 `worker_produced_nothing`; the ordinary `worker_partial_lifecycle_exit`
+ *                 still reports the exit honestly.
+ *  - `failed`   — no measurement was taken and no work corroborates the worker, which IS
+ *                 positive evidence it died.
+ *
+ * `subClass` is a PROJECTION of this, not a second axis: `subClass === 'log_empty'` iff
+ * `measurement === 'failed'`. There is deliberately no fourth `SilentDeathSubClass` —
+ * `log_empty` is the mechanism under indictment, so it is corroborated, not multiplied.
+ */
+export type WorkerLogMeasurement = 'measured' | 'empty' | 'failed';
+
+/**
+ * The iteration window an empty log is corroborated against. Named (not an inline object
+ * type) because `tests/worker-partial-lifecycle-exit-schema-conformance.test.js:68` locates
+ * `checkPartialLifecycleExit` with `/export function checkPartialLifecycleExit\b[^{]*\{/`
+ * and brace-walks the body — a `{` in the signature would corrupt that walk.
+ *
+ * Both halves travel together, mirroring `recordBoundedEscapeAttempt`'s `commitWindow`, so a
+ * caller cannot supply half a window. Omitting the window entirely is NOT evidence of work.
+ */
+export interface IterationWorkWindow {
+  workingDir: string;
+  /** Pre-iteration HEAD — base of the `preIterSha..HEAD` commit window. */
+  preIterSha: string | null;
+  /** Epoch ms the iteration began — freshness window for lifecycle artifacts. */
+  iterationStartMs?: number;
+}
+
 export interface PartialLifecycleExitClassification {
   /** `null` → graceful exit (terminal promise token present); not a silent-death shape, no recovery policy. */
   subClass: SilentDeathSubClass | null;
+  /** B-LOGEV: which of the three log states produced `subClass`. `'failed'` iff `subClass === 'log_empty'`. */
+  measurement: WorkerLogMeasurement;
   artifactsMissing: string[];
   sessionLogSize: number;
   logPath: string;
@@ -10609,12 +10651,21 @@ const SILENT_DEATH_RESPAWN_STRATEGY = 'silent_death_respawn';
 /**
  * Sub-classify the worker exit by its session log(s). The LATEST
  * `worker_session_<pid>.log` (mtime, filename tiebreak) decides the sub-class:
- * absent or 0-byte → `log_empty`; nonzero without the terminal promise token →
- * `log_truncated`; nonzero WITH the token → graceful (`null`).
+ * absent or 0-byte → `empty` OR `failed`; nonzero without the terminal promise token →
+ * `measured`/`log_truncated`; nonzero WITH the token → `measured`/graceful (`null`).
  * `sessionLogSize` stays the SUM across all logs (existing payload semantics).
+ *
+ * B-LOGEV: an empty log alone can no longer produce `log_empty`. `workObserved` is the
+ * corroborant — did this ticket do work inside the iteration window — and it is consulted
+ * ONLY on the empty branch, so a `measured` log never spends its cost (the same laziness
+ * `emitWorkerProductionBreadcrumb` already buys for its second arm). It is a REQUIRED
+ * parameter, not a defaulted one, so no call site can silently keep the size-only verdict.
+ * A caller that cannot measure a window passes a thunk returning `false` and classifies
+ * exactly as before — an unknown window is not evidence, in either direction.
  */
-function classifyWorkerSessionLogs(ticketDir: string, files: string[]): {
+function classifyWorkerSessionLogs(ticketDir: string, files: string[], workObserved: () => boolean): {
   subClass: SilentDeathSubClass | null;
+  measurement: WorkerLogMeasurement;
   sessionLogSize: number;
   logPath: string;
   pid: number | null;
@@ -10631,16 +10682,28 @@ function classifyWorkerSessionLogs(ticketDir: string, files: string[]): {
   }
   logs.sort((a, b) => (a.mtimeMs - b.mtimeMs) || a.file.localeCompare(b.file));
   const latest = logs.length > 0 ? logs[logs.length - 1] : null;
+  // The one derivation of the projection: unmeasured + corroborated work → `empty` (no
+  // silent-death shape); unmeasured + nothing to corroborate → `failed` → `log_empty`.
+  const unmeasured = (logPath: string, pid: number | null) => {
+    const measurement: WorkerLogMeasurement = workObserved() ? 'empty' : 'failed';
+    return {
+      subClass: measurement === 'failed' ? ('log_empty' as const) : null,
+      measurement,
+      sessionLogSize,
+      logPath,
+      pid,
+    };
+  };
   if (!latest) {
-    return { subClass: 'log_empty', sessionLogSize, logPath: path.join(ticketDir, 'worker_session_absent.log'), pid: null };
+    return unmeasured(path.join(ticketDir, 'worker_session_absent.log'), null);
   }
   const pidMatch = latest.file.match(/^worker_session_(\d+)\.log$/);
   const pid = pidMatch ? Number(pidMatch[1]) : null;
   const logPath = path.join(ticketDir, latest.file);
-  if (latest.size === 0) return { subClass: 'log_empty', sessionLogSize, logPath, pid };
+  if (latest.size === 0) return unmeasured(logPath, pid);
   let content = '';
   try { content = fs.readFileSync(logPath, 'utf-8'); } catch { /* unreadable nonzero log → treat as truncated */ }
-  return { subClass: WORKER_TERMINAL_PROMISE_RE.test(content) ? null : 'log_truncated', sessionLogSize, logPath, pid };
+  return { subClass: WORKER_TERMINAL_PROMISE_RE.test(content) ? null : 'log_truncated', measurement: 'measured', sessionLogSize, logPath, pid };
 }
 
 /**
@@ -10685,7 +10748,7 @@ function countLedgerSuccesses(statePath: string, ticketId: string, strategy: str
  * `applySilentDeathRecoveryPolicy`. Returns `null` when no partial-lifecycle
  * exit was detected (no event emitted).
  */
-export function checkPartialLifecycleExit(sessionDir: string, statePath: string, ticketId: string): PartialLifecycleExitClassification | null {
+export function checkPartialLifecycleExit(sessionDir: string, statePath: string, ticketId: string, window?: IterationWorkWindow): PartialLifecycleExitClassification | null {
   const ticketDir = path.join(sessionDir, ticketId);
   let files: string[];
   try { files = fs.readdirSync(ticketDir); } catch { return null; }
@@ -10718,10 +10781,16 @@ export function checkPartialLifecycleExit(sessionDir: string, statePath: string,
 
   if (artifactsMissing.length === 0) return null;
 
-  const { subClass, sessionLogSize, logPath, pid } = classifyWorkerSessionLogs(ticketDir, files);
+  const { subClass, measurement, sessionLogSize, logPath, pid } = classifyWorkerSessionLogs(
+    ticketDir,
+    files,
+    () => ticketWorkedInWindow(sessionDir, statePath, ticketId, window),
+  );
 
-  if (subClass === 'log_empty') {
+  if (measurement === 'failed') {
     // 90574654: silent death — NEVER also the worker_partial_lifecycle_exit event.
+    // B-LOGEV: reachable only when the empty log is CORROBORATED by an absence of
+    // window-scoped work. `measurement === 'failed'` iff `subClass === 'log_empty'`.
     writeActivityEntry(statePath, {
       event: 'worker_silent_death',
       ts: new Date().toISOString(),
@@ -10732,6 +10801,10 @@ export function checkPartialLifecycleExit(sessionDir: string, statePath: string,
       respawn_attempt: countSilentDeathRespawns(statePath, ticketId),
     });
   } else {
+    // `measured` (truncated) AND B-LOGEV's `empty` land here. The exit is still REPORTED —
+    // artifacts really are missing and the worker really did leave — it is only the
+    // silent-death CLAIM that an unmeasured log cannot support. Degraded classification is
+    // reported honestly, never halted, and no new event or payload field is invented for it.
     writeActivityEntry(statePath, {
       event: 'worker_partial_lifecycle_exit',
       ts: new Date().toISOString(),
@@ -10741,7 +10814,7 @@ export function checkPartialLifecycleExit(sessionDir: string, statePath: string,
     });
   }
 
-  return { subClass, artifactsMissing, sessionLogSize, logPath, pid };
+  return { subClass, measurement, artifactsMissing, sessionLogSize, logPath, pid };
 }
 
 export interface SilentDeathRecoveryInput {
@@ -10948,6 +11021,38 @@ function detectWindowScopedWork(
   if (hasScopedIterationWindowCommit(input)) return 'scoped_commit';
   if (hasFreshLifecycleArtifacts(input)) return 'fresh_artifacts';
   return null;
+}
+
+/**
+ * B-LOGEV corroborant: did this ticket do work inside the iteration window?
+ *
+ * Routes through `detectWindowScopedWork` — the ONE window-scoped oracle — and never
+ * through either arm directly, which is what AP-EXT-ITER161-01's PATTERN_SHAPE
+ * (`src/bin/CLAUDE.md`) expects zero of outside that function. The synthesised input
+ * mirrors `recordBoundedEscapeAttempt`'s call: `classification` plays no part in the
+ * window-scoped question and `iteration` is not read on this path.
+ *
+ * An ABSENT window is not work, so a caller that cannot measure one classifies exactly as
+ * it did before B-LOGEV. That direction matters more than the other: defaulting to
+ * "corroborated" would disarm silent-death detection, trading one fake-green for another.
+ */
+function ticketWorkedInWindow(
+  sessionDir: string,
+  statePath: string,
+  ticketId: string,
+  window: IterationWorkWindow | undefined,
+): boolean {
+  if (!window) return false;
+  return detectWindowScopedWork({
+    sessionDir,
+    statePath,
+    ticketId,
+    workingDir: window.workingDir,
+    iteration: 0,
+    classification: null,
+    preIterSha: window.preIterSha,
+    iterationStartMs: window.iterationStartMs,
+  }) !== null;
 }
 
 function detectSilentDeathAttributableWork(
@@ -11520,6 +11625,8 @@ export interface WorkerProductionBreadcrumbInput {
   /** Raw artifact-count delta across the iteration; `null` when no progress record was taken. */
   artifactDelta: number | null;
   preIterSha: string | null;
+  /** Epoch ms the iteration began (B-LOGEV). Absent → the empty log has no window to be corroborated against. */
+  iterationStartMs?: number;
 }
 
 export type WorkerProductionBreadcrumb =
@@ -11543,12 +11650,23 @@ export function emitWorkerProductionBreadcrumb(
   input: WorkerProductionBreadcrumbInput,
 ): WorkerProductionBreadcrumb {
   const ticketDir = path.join(input.sessionDir, input.ticketId);
-  const { subClass, sessionLogSize, pid } = classifyWorkerSessionLogs(ticketDir, fs.readdirSync(ticketDir));
+  const { measurement, sessionLogSize, pid } = classifyWorkerSessionLogs(
+    ticketDir,
+    fs.readdirSync(ticketDir),
+    () => ticketWorkedInWindow(input.sessionDir, input.statePath, input.ticketId, {
+      workingDir: input.workingDir,
+      preIterSha: input.preIterSha,
+      iterationStartMs: input.iterationStartMs,
+    }),
+  );
 
+  // B-LOGEV: the third term is `failed`, not "the log was empty". A ticket that committed
+  // in-scope code or wrote a lifecycle artifact this window did not produce NOTHING,
+  // whatever its log recorded, so the breadcrumb declines and the second arm is reached.
   const wsdoFires =
     input.partialLifecycleExit === null &&
     input.artifactDelta === 0 &&
-    subClass === 'log_empty';
+    measurement === 'failed';
 
   const everythingButCommit = wsdoFires
     ? null
@@ -13719,7 +13837,15 @@ async function runMuxRunnerMain() {
       // Hoisted so the R-WSDO breadcrumb below can gate on its null result.
       let plExit: PartialLifecycleExitClassification | null = null;
       if (iterTicket) {
-        plExit = checkPartialLifecycleExit(sessionDir, statePath, iterTicket);
+        // B-LOGEV: hand the classifier the iteration window so an EMPTY log is corroborated
+        // against real work before it is allowed to claim a silent death. Both halves of the
+        // window are already in scope here — the same two values passed to the recovery
+        // policy immediately below.
+        plExit = checkPartialLifecycleExit(sessionDir, statePath, iterTicket, {
+          workingDir: iterWorkingDir,
+          preIterSha,
+          iterationStartMs: iterStartMs,
+        });
         if (plExit && plExit.subClass) {
           const sdDecision = applySilentDeathRecoveryPolicy({
             sessionDir,
@@ -13759,6 +13885,7 @@ async function runMuxRunnerMain() {
           partialLifecycleExit: plExit,
           artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
           preIterSha,
+          iterationStartMs: iterStartMs,
         });
       }
     } catch { /* best-effort — never block iteration on partial-lifecycle check failure */ }

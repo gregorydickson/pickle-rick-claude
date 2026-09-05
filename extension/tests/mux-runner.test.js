@@ -6491,3 +6491,208 @@ test('AP-EXT-ITER207-01: classifyNoProgressFailureReason reads an UNREADABLE sco
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ─── B-LOGEV (ticket 9ef9ea19): an empty worker session log is an ABSENCE OF
+// MEASUREMENT, not evidence of an absent worker. ────────────────────────────────
+//
+// `classifyWorkerSessionLogs` used to derive `log_empty` from log SIZE alone, and
+// `log_empty` is the sole trigger for BOTH `worker_silent_death` and the
+// `worker_produced_nothing` breadcrumb. On the one clean hands-off run ever recorded,
+// 35 of 43 logs were 0 bytes while 11 of 15 tickets held a full lifecycle artifact set.
+//
+// These cases pin the corroborated verdict AND its negative control together: the fix
+// must stop the false silent-death claim WITHOUT disarming silent-death detection, which
+// would trade one fake-green for another.
+//
+// Fixtures need no git repo — `preIterSha: null` short-circuits the commit arm of
+// `detectWindowScopedWork`, so the artifact arm alone decides, and the window is derived
+// from the FIXTURE'S OWN fs clock (`statSync().mtimeMs`), never `Date.now()`.
+
+function bLogevFixture(root, { logBytes = '', ticketId = 'b109ev01' } = {}) {
+  const sessionDir = path.join(root, 'session');
+  const ticketDir = path.join(sessionDir, ticketId);
+  fs.mkdirSync(ticketDir, { recursive: true });
+  const statePath = path.join(sessionDir, 'state.json');
+  fs.writeFileSync(statePath, JSON.stringify({
+    active: true, schema_version: 5, session_dir: sessionDir, activity: [],
+  }));
+  fs.writeFileSync(
+    path.join(ticketDir, `rick_ticket_${ticketId}.md`),
+    `---\nid: ${ticketId}\ncomplexity_tier: medium\n---\n# ${ticketId}\n`,
+  );
+  // A medium-tier worker that got through research review and then died: the research
+  // gate passes, downstream prefixes (plan/conformance/code_review) are missing.
+  fs.writeFileSync(path.join(ticketDir, 'research_2026-09-05.md'), 'what is\n');
+  fs.writeFileSync(path.join(ticketDir, 'research_review.md'), 'complete\n\nAPPROVED');
+  fs.writeFileSync(path.join(ticketDir, 'worker_session_4242.log'), logBytes);
+
+  // The window is read off the artifacts themselves, so it cannot drift from the clock
+  // the runtime will actually compare against (AP-EXT-ITER41-02, 5f23cf4d).
+  const mtimes = ['research_2026-09-05.md', 'research_review.md']
+    .map((f) => fs.statSync(path.join(ticketDir, f)).mtimeMs);
+  return {
+    sessionDir,
+    statePath,
+    ticketDir,
+    ticketId,
+    /** A window the artifacts fall INSIDE — the worker demonstrably worked. */
+    corroboratingWindow: { workingDir: sessionDir, preIterSha: null, iterationStartMs: Math.min(...mtimes) },
+    /** A window that opened AFTER every artifact — nothing corroborates the worker. */
+    barrenWindow: { workingDir: sessionDir, preIterSha: null, iterationStartMs: Math.max(...mtimes) + 60_000 },
+  };
+}
+
+const bLogevEvents = (statePath) =>
+  (JSON.parse(fs.readFileSync(statePath, 'utf8')).activity || []).map((e) => e.event);
+
+test('B-LOGEV: a 0-byte log with fresh window work is `empty` — reported, never claimed a silent death', async () => {
+  const { checkPartialLifecycleExit } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  try {
+    const fx = bLogevFixture(root);
+    const cls = checkPartialLifecycleExit(fx.sessionDir, fx.statePath, fx.ticketId, fx.corroboratingWindow);
+
+    assert.notEqual(cls, null, 'the exit is still classified — nothing is swallowed');
+    assert.equal(cls.measurement, 'empty',
+      'no measurement was taken, and window-scoped work says the worker was NOT absent');
+    assert.equal(cls.subClass, null,
+      'an unmeasured log does not project to log_empty — that is the claim it cannot support');
+    assert.deepEqual(cls.artifactsMissing.length > 0, true, 'the missing downstream prefixes are still reported');
+
+    const events = bLogevEvents(fx.statePath);
+    assert.ok(!events.includes('worker_silent_death'),
+      'AC-5: an empty log alone must not produce worker_silent_death');
+    assert.deepEqual(events, ['worker_partial_lifecycle_exit'],
+      'the exit is REPORTED honestly on the pre-existing event — degraded, not halted, and no new event invented');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('B-LOGEV negative control: a 0-byte log with NO work in the window still classifies as silent death', async () => {
+  const { checkPartialLifecycleExit } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  try {
+    const fx = bLogevFixture(root, { ticketId: 'b109ev02' });
+    // Identical fixture in every respect but the window, which opened after the last
+    // artifact — so the ticket produced nothing THIS pass and the worker really is gone.
+    const cls = checkPartialLifecycleExit(fx.sessionDir, fx.statePath, fx.ticketId, fx.barrenWindow);
+
+    assert.equal(cls.measurement, 'failed',
+      'no measurement AND nothing to corroborate the worker IS positive evidence it died');
+    assert.equal(cls.subClass, 'log_empty', 'measurement `failed` projects to log_empty — no fourth sub-class');
+    assert.equal(cls.pid, 4242, 'the spawn pid still round-trips from the log filename');
+
+    const events = bLogevEvents(fx.statePath);
+    assert.ok(events.includes('worker_silent_death'),
+      'AC-5 negative control: silent-death detection is corroborated, NOT disarmed');
+    assert.ok(!events.includes('worker_partial_lifecycle_exit'),
+      'exactly one event per exit — the two remain mutually exclusive');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('B-LOGEV negative control: with NO window supplied the empty log classifies exactly as it did before', async () => {
+  const { checkPartialLifecycleExit } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  try {
+    const fx = bLogevFixture(root, { ticketId: 'b109ev03' });
+    // The three-argument call every pre-existing caller makes. An unknown window is not
+    // evidence in EITHER direction: defaulting to "corroborated" would silently disarm
+    // silent-death detection for every caller that cannot measure a window.
+    const cls = checkPartialLifecycleExit(fx.sessionDir, fx.statePath, fx.ticketId);
+
+    assert.equal(cls.measurement, 'failed');
+    assert.equal(cls.subClass, 'log_empty');
+    assert.ok(bLogevEvents(fx.statePath).includes('worker_silent_death'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('B-LOGEV: the `measured` arm is untouched — a corroborating window cannot rewrite a log that HAS bytes', async () => {
+  const { checkPartialLifecycleExit } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  try {
+    // A nonzero log carrying no terminal promise token: the worker was measured and did
+    // not finish. Handed the window that flips case 1, the verdict must not move — the
+    // corroborant answers a question the measured branch never asks.
+    const fx = bLogevFixture(root, { ticketId: 'b109ev04', logBytes: 'worker said something\n' });
+    const cls = checkPartialLifecycleExit(fx.sessionDir, fx.statePath, fx.ticketId, fx.corroboratingWindow);
+
+    assert.equal(cls.measurement, 'measured');
+    assert.equal(cls.subClass, 'log_truncated');
+    assert.ok(bLogevEvents(fx.statePath).includes('worker_partial_lifecycle_exit'));
+
+    // The differential that makes the assertion above load-bearing rather than vacuous:
+    // the SAME window over a 0-byte log does move the verdict. (This observes the
+    // corroborant's EFFECT, which is all the public seam exposes — it is not a claim that
+    // the thunk went uncalled.)
+    const empty = bLogevFixture(root, { ticketId: 'b109ev05' });
+    assert.equal(
+      checkPartialLifecycleExit(empty.sessionDir, empty.statePath, empty.ticketId, empty.corroboratingWindow).measurement,
+      'empty',
+      'the window is genuinely corroborating — the measured arm ignored it, it did not fail to fire',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('B-LOGEV: worker_produced_nothing is suppressed when the window shows the ticket worked', async () => {
+  const { emitWorkerProductionBreadcrumb } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  try {
+    const fx = bLogevFixture(root, { ticketId: 'b109ev06' });
+    // No research_review → checkPartialLifecycleExit short-circuits, so plExit is null and
+    // the R-WSDO breadcrumb path is the one under test.
+    fs.rmSync(path.join(fx.ticketDir, 'research_review.md'));
+
+    const fired = emitWorkerProductionBreadcrumb({
+      sessionDir: fx.sessionDir,
+      statePath: fx.statePath,
+      workingDir: fx.sessionDir,
+      ticketId: fx.ticketId,
+      iteration: 1,
+      partialLifecycleExit: null,
+      artifactDelta: 0,
+      preIterSha: null,
+      iterationStartMs: fx.corroboratingWindow.iterationStartMs,
+    });
+
+    assert.equal(fired, null, 'AC-5: an empty log alone must not produce worker_produced_nothing');
+    assert.deepEqual(bLogevEvents(fx.statePath), [], 'nothing was claimed about a worker we did not measure');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('B-LOGEV negative control: worker_produced_nothing still fires when nothing corroborates the worker', async () => {
+  const { emitWorkerProductionBreadcrumb } = await import('../bin/mux-runner.js');
+  const root = makeTmpRoot();
+  try {
+    const fx = bLogevFixture(root, { ticketId: 'b109ev07' });
+    fs.rmSync(path.join(fx.ticketDir, 'research_review.md'));
+
+    const fired = emitWorkerProductionBreadcrumb({
+      sessionDir: fx.sessionDir,
+      statePath: fx.statePath,
+      workingDir: fx.sessionDir,
+      ticketId: fx.ticketId,
+      iteration: 1,
+      partialLifecycleExit: null,
+      artifactDelta: 0,
+      preIterSha: null,
+      iterationStartMs: fx.barrenWindow.iterationStartMs,
+    });
+
+    assert.equal(fired, 'worker_produced_nothing', 'the breadcrumb is corroborated, NOT disarmed');
+    const entry = JSON.parse(fs.readFileSync(fx.statePath, 'utf8')).activity.at(-1);
+    assert.equal(entry.event, 'worker_produced_nothing');
+    assert.equal(entry.gate_payload.spawn_pid, 4242);
+    assert.equal(entry.gate_payload.session_log_bytes, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
