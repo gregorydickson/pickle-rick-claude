@@ -76,17 +76,29 @@ process.env.GIT_CONFIG_SYSTEM = '/dev/null';
 process.env.GIT_CONFIG_COUNT = '1';
 process.env.GIT_CONFIG_KEY_0 = 'user.useConfigOnly';
 process.env.GIT_CONFIG_VALUE_0 = 'true';
-// Neutralising git CONFIG is only half the sandbox: git resolves identity from GIT_AUTHOR_*/
-// GIT_COMMITTER_* in PREFERENCE to config, so an operator or CI job that exports one hands
-// production the identity this property exists to withhold. Measured: with these four set,
-// deleting makeBundleRepo's repo-local user.name/user.email leaves the run GREEN — the pin above
-// stops protecting anything and path (b) passes vacuously, never exercising the config it asserts
-// production needs. Deleting them keeps the outcome a function of the fixture alone, on every host.
-// The git() helper below is unaffected: it passes its own identity per call and never reads these.
+// Pointing the config FILES at /dev/null is only part of the sandbox — git takes an identity from
+// three independent channels, and each one that stays ambient can hand production the very identity
+// this property exists to withhold. Each deletion below was measured by reverting makeBundleRepo's
+// repo-local user.name/user.email and checking the run still goes RED:
+//
+//   GIT_AUTHOR_*/GIT_COMMITTER_*  identity direct from the environment, preferred OVER config.
+//   GIT_CONFIG_PARAMETERS         a SECOND config-injection channel, independent of the
+//                                 GIT_CONFIG_COUNT/KEY_0 pair set above — that pair does not
+//                                 displace it, so it survived the first fix.
+//
+// With either channel left ambient the reverted fixture went GREEN: path (b) then passes vacuously,
+// never exercising the config it asserts production needs, and a revert of the dce84454 fix would
+// not be caught on that host. EMAIL and GIT_AUTHOR_DATE are deliberately NOT deleted — measured
+// RED with each set, since `user.useConfigOnly` already blocks EMAIL's fallback and a commit date
+// is not an identity.
+//
+// The git() helper below is unaffected by any of this: it passes its own identity per call, after
+// the process.env spread, and never reads these back.
 delete process.env.GIT_AUTHOR_NAME;
 delete process.env.GIT_AUTHOR_EMAIL;
 delete process.env.GIT_COMMITTER_NAME;
 delete process.env.GIT_COMMITTER_EMAIL;
+delete process.env.GIT_CONFIG_PARAMETERS;
 
 function git(args, cwd) {
   return execFileSync('git', args, {
