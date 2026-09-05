@@ -412,6 +412,28 @@ function dropSessionFile(filePath: string, reason: string): null {
   return announceScanDrop('session', filePath, reason);
 }
 
+/**
+ * AP-EXT-ITER200-04: the LOC half's per-repo drop reasons. `scanGitRepos` had TWO arms
+ * that removed a whole repo from a published total in silence — the completion guard and
+ * the defensive catch — so this collapses both into the ONE exit above, exactly as
+ * `dropSessionFile` does for the session half. Adding a third guard would have re-forked
+ * the family; the funnel is what stops it.
+ */
+function dropRepo(repoPath: string, reason: string): null {
+  return announceScanDrop('loc', repoPath, reason);
+}
+
+/**
+ * Names WHICH failure mode dropped the repo, because the three the completion predicate
+ * folds together need different operator responses: a `timeout`/`ENOBUFS` error means the
+ * window is too wide to measure, a non-zero exit means the repo itself is unreadable.
+ */
+function describeSpawnFailure(proc: { status: number | null; error?: Error; stderr?: string }): string {
+  if (proc.error) return `git log failed: ${safeErrorMessage(proc.error)}`;
+  const firstLine = (proc.stderr || '').trim().split('\n')[0];
+  return `git log exited ${proc.status ?? 'null'}: ${firstLine || 'no stderr'}`;
+}
+
 function loadSessionFileData(
   filePath: string,
   cache: MetricsCache,
@@ -575,9 +597,13 @@ export function scanGitRepos(repoRoot: string, since: string, until: string): Ma
       // kill lands returns `status: 0` with `error.code === 'ENOBUFS'` and a
       // TRUNCATED log, which a status-only guard reads as a COMPLETE window — the
       // repo then lands in the report with silently under-counted LOC, which is a
-      // WRONG number, not a missing one. Dropping the repo (as every other failure
-      // here does) at least leaves the absence visible.
-      if (!enumerationCompleted(proc)) continue;
+      // WRONG number, not a missing one. Dropping the repo leaves the absence visible
+      // only because `dropRepo` announces it — the bare `continue` this comment used to
+      // sit above made the claim false for every failure mode it folds together.
+      if (!enumerationCompleted(proc)) {
+        dropRepo(repoPath, describeSpawnFailure(proc));
+        continue;
+      }
       const locMap = parseGitLogOutput(proc.stdout || '');
       const boundedLocMap = new Map<string, DailyLOC>();
       for (const [date, totals] of locMap) {
@@ -585,8 +611,10 @@ export function scanGitRepos(repoRoot: string, since: string, until: string): Ma
         boundedLocMap.set(date, totals);
       }
       if (boundedLocMap.size > 0) result.set(repoSlug, boundedLocMap);
-    } catch {
-      // Individual repo failure is non-fatal
+    } catch (err) {
+      // Individual repo failure is non-fatal to the REPORT, but it is not non-fatal to the
+      // NUMBER: this repo's commits/added/removed leave the totals, so it announces too.
+      dropRepo(repoPath, `scan failed: ${safeErrorMessage(err)}`);
     }
   }
 

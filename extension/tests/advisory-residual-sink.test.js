@@ -569,3 +569,74 @@ test('AP-EXT-ITER200-02: a readable root holding no repos is a measured empty, n
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER200-04 — the LOC half's per-REPO altitude, the fifth recurrence.
+//
+// `aceb54d7`, `7e56db10`, `bd7b4033` and `099554aa` each closed ONE arm of "a
+// drop is a diagnostic, never a silent zero". The four of them cover the token
+// half's per-file arm, the token half's directory arm, and the LOC half's
+// corpus-ROOT arm. `scanGitRepos` kept TWO arms below all of them — the
+// completion guard and the defensive catch — each of which removed a whole
+// repo's commits/added/removed from a PUBLISHED total writing nothing at all.
+//
+// Its own comment asserted the opposite ("at least leaves the absence
+// visible"), which is the same shape iteration 2 found in
+// `forEachActivityEventInWindow`: a comment stating an invariant is where the
+// violation lives, not evidence it holds.
+//
+// The fix is a COLLAPSE, not a third guard — both arms now exit through the one
+// `dropRepo` funnel, mirroring `dropSessionFile` on the session half.
+// ---------------------------------------------------------------------------
+
+/**
+ * A stale worktree: a `.git` FILE whose `gitdir:` target no longer exists.
+ * `discoverGitRepos` accepts it (the walk admits `.git` as a file), and `git log`
+ * then exits non-zero without ascending to any parent repo — so the failure is
+ * deterministic and does not depend on where the tmpdir lives.
+ */
+function makeUnreadableRepo(parentDir, name) {
+  const repoDir = path.join(parentDir, name);
+  fs.mkdirSync(repoDir, { recursive: true });
+  fs.writeFileSync(path.join(repoDir, '.git'), `gitdir: ${path.join(parentDir, 'deleted-main', '.git', 'worktrees', name)}\n`);
+  return repoDir;
+}
+
+test('AP-EXT-ITER200-04: a repo whose git log fails is announced, never dropped from the LOC totals in silence', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-loc-repo-'));
+  try {
+    const broken = makeUnreadableRepo(root, 'stale-worktree');
+
+    const day = todayKey();
+    const { value: loc, stderr } = captureStderr(() => scanGitRepos(root, day, day));
+
+    assert.equal(loc.size, 0, 'the unreadable repo contributes nothing to the totals');
+    assert.match(stderr, /\[metrics\] loc scan skipped /, 'a repo leaving a published total must announce itself');
+    assert.ok(stderr.includes(broken), 'the diagnostic must name the repo that left the totals');
+    assert.match(stderr, /git log exited /, 'and must name WHICH failure mode dropped it, not just that one did');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER200-04: a readable repo alongside a broken one is still counted, and only the broken one is announced', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-loc-repo-'));
+  try {
+    // The narrowness control the ROOT case cannot give: the walk continues past a
+    // failed repo, so one bad repo must not zero the corpus, and the announcement
+    // must be exactly one line — a per-repo funnel that fires per-repo, not per-scan.
+    const good = makeCountableRepo(root, 'countable-repo');
+    const broken = makeUnreadableRepo(root, 'stale-worktree');
+
+    const day = todayKey();
+    const { value: loc, stderr } = captureStderr(() => scanGitRepos(root, day, day));
+
+    const stats = loc.get(good.replace(/[\\/]/g, '-'));
+    assert.ok(stats, 'the healthy repo is still discovered and counted');
+    assert.equal(stats.get(day).commits, 1, 'its in-window commit survives the sibling failure');
+    assert.equal(stderr.trim().split('\n').length, 1, 'exactly one drop is announced');
+    assert.ok(stderr.includes(broken), 'and it is the broken repo, not the counted one');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
