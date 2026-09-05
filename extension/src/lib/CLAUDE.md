@@ -13,12 +13,15 @@ Per-module entry points exported from `extension/src/lib/`. Each entry pins a on
 
 - `context-key-matrix.ts` → `buildContextKeyMatrix` — analyzer pass: cross-frame RunContext key writer/reader matrix (see trap door above).
 - `diamond-routing.ts` → `buildDiamondRouting` — analyzer pass: diamond-condition routing matrix (see trap door above).
-- `cycles.ts` → `buildCycles` — analyzer pass: strongly-connected components in the attractor graph; trivial single-node cycles excluded.
+- `tarjan-scc.ts` → `buildCycles` — analyzer pass: strongly-connected components in the attractor graph; trivial single-node cycles excluded.
 - `engine-keys-registry.ts` → `loadEngineKeysRegistry`, `isEngineWritten`, `isUserWritten` — typed registry loader at `extension/data/engine-injected-keys.json` is the source of truth for engine-vs-user RunContext-key classification across `plumbus-frame-analyzer`. ENFORCE: `extension/tests/engine-keys-registry.test.js`.
 - `process-liveness.ts` → `isProcessAlive`, `SignalProbe` — the single positive-death-only pid probe; the `SignalProbe` seam exists so tests can drive real errnos (see trap door above).
+- `salvage-ticket.ts` → `salvageTicket`, `SalvageDeps`, `SalvageTicketInput`, `SalvageOutcome`, `SalvageDisposition`, `GateVerdict` — partial-dep merge over `defaultDeps` and the sole automatic `status: Todo` writer (see both trap doors above).
 - `is-record.ts` → `isRecord` — canonical `value is Record<string, unknown>` boundary type-guard for parsed JSON.
-- `findings.ts` (shared analyzer types) → `Finding`, `FrameId`, `Severity`, `maxSeverity`, `structuralEqual`, `selectFix` — `Severity` is `'P0'|'P1'|'P2'|'P3'|'P4'`; `maxSeverity` returns the strictest (lowest-numbered); `structuralEqual` dedupes findings by semantic identity (file + rule + location), not object identity; `selectFix` picks the highest-priority candidate fix from a list.
-- `generative-audit.ts` → `shouldRunGenerativeAudit` — kill-switch helper that returns `false` whenever `PLUMBUS_GENERATIVE_AUDIT === 'off'`, honouring the `pickle-rick-claude/CLAUDE.md` Override 6 environment variable.
+- `cluster-fix-selector.ts` (shared analyzer types) → `Finding`, `FrameId`, `selectFix` — `selectFix` picks the highest-priority candidate fix from a list.
+- `severity.ts` → `Severity`, `maxSeverity` — `Severity` is `'P0'|'P1'|'P2'|'P3'|'P4'`; `maxSeverity` returns the strictest (lowest-numbered).
+- `verification-comparator.ts` → `structuralEqual` — dedupes findings by semantic identity (file + rule + location), not object identity.
+- `plumbus-kill-switch.ts` → `shouldRunGenerativeAudit` — kill-switch helper that returns `false` whenever `PLUMBUS_GENERATIVE_AUDIT === 'off'`, honouring the `pickle-rick-claude/CLAUDE.md` Override 6 environment variable.
 - `linear-comment.ts` → `emitCrossTicketRegressionLinearComment` — emits Linear comments via the configured `PICKLE_LINEAR_COMMAND` parsed argv (no shell). No-op when the command is absent. ENFORCE: `extension/tests/linear-integration.test.js`.
 - `monitor-respawn.ts` → `respawnMonitorWindowForMode` — phase-boundary respawn always passes the inferred monitor mode (`pickle|council|refinement|szechuan-sauce|anatomy-park`); never defaults to `'pickle'` for microverse phases. ENFORCE: `extension/tests/monitor-mode-resilience.test.js`.
 

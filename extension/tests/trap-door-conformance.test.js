@@ -1180,6 +1180,107 @@ describe('AP-BIN-ITER1-01 anchor sweep catalog coverage (repo)', () => {
 });
 
 /**
+ * AP-EXT-ITER214-01 — a `## Module Export Catalog` row must name a module that EXISTS.
+ *
+ * The anchor sweep above resolves IDENTIFIERS, and `anchorTokenPattern` matches only a
+ * case hump or SCREAMING_SNAKE. A module FILENAME (`cycles.ts`, `findings.ts`) matches
+ * neither alternative, so the catalogs' module-identity axis had no wire at all — the same
+ * blind-on-one-axis shape AP-EXT-ITER151-01 fixed for casing, one axis over.
+ *
+ * Measured on the shipped tree: `src/lib/CLAUDE.md` named `cycles.ts`, `findings.ts` and
+ * `generative-audit.ts`, none of which exist. Every SYMBOL those rows advertised was live
+ * — `buildCycles` in `tarjan-scc.ts`, `selectFix` in `cluster-fix-selector.ts`,
+ * `shouldRunGenerativeAudit` in `plumbus-kill-switch.ts` — so symbol liveness read GREEN
+ * over three rows that routed a reader to a file that was never there. `src/bin/CLAUDE.md`
+ * says the catalog is "Enforced by `audit-subsystem-claude-md.sh`"; that script writes a
+ * report and exits 0 on every drift class, and its own test asserts against a snapshot
+ * committed 2026-05-08 rather than the live run, so nothing failed.
+ *
+ * Derived, never hand-listed: the catalog set comes from `discoverAnchorCatalogs`, the rows
+ * from the heading, the verdict from the filesystem. A row resolves against the subsystem
+ * dir, the extension root, or the repo root — all three forms are live, so trying all three
+ * needs no per-entry exception list and only flags a row NO root can resolve.
+ */
+describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
+  const HEADING_RE = /^## Module Export Catalog/;
+  const ROW_RE = /^- `([^`]+)`/;
+
+  // A prose mention like "MUST appear in the `## Module Export Catalog` below" sits inside
+  // backticks on a normal line, so the heading is matched at LINE START only. Getting this
+  // wrong yields an empty section, which is why the floor below is per catalog and not global.
+  function catalogRows(catalogRel) {
+    const abs = path.join(repoRoot, catalogRel);
+    const lines = fs.readFileSync(abs, 'utf8').split('\n');
+    const start = lines.findIndex(line => HEADING_RE.test(line));
+    if (start < 0) return null;
+
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^## /.test(lines[i])) {
+        end = i;
+        break;
+      }
+    }
+
+    return lines
+      .slice(start, end)
+      .map(line => line.match(ROW_RE))
+      .filter(Boolean)
+      .map(match => match[1]);
+  }
+
+  function resolves(catalogRel, entry) {
+    const subsystemDir = path.dirname(path.join(repoRoot, catalogRel));
+    return [
+      path.join(subsystemDir, entry),
+      path.join(repoRoot, 'extension', entry),
+      path.join(repoRoot, entry),
+    ].some(candidate => fs.existsSync(candidate));
+  }
+
+  const catalogsWithSection = anchorCatalogs.filter(c => catalogRows(c) !== null);
+
+  test('AP-EXT-ITER214-01: every module export catalog row names a file that exists', () => {
+    // Two floors, because one is satisfiable by the other going dark. A catalog whose
+    // section parsed to zero rows reads clean for the wrong reason, and summing rows across
+    // catalogs hides it behind its populated siblings — the per-root vacuity lesson from
+    // AP-EXT-ITER213-01, applied per catalog.
+    assert.ok(
+      catalogsWithSection.length >= 2,
+      `only ${catalogsWithSection.length} catalog(s) carry a '## Module Export Catalog' heading — the heading matcher reached almost nothing, which reads clean for the wrong reason`,
+    );
+
+    const phantoms = [];
+    for (const catalog of catalogsWithSection) {
+      const rows = catalogRows(catalog);
+      assert.ok(
+        rows.length > 0,
+        `${catalog} has a '## Module Export Catalog' heading but zero parsed rows — the section boundary or row shape drifted, and an empty section verifies nothing`,
+      );
+      for (const entry of rows) {
+        if (!resolves(catalog, entry)) phantoms.push(`${catalog} -> ${entry}`);
+      }
+    }
+
+    assert.deepEqual(
+      phantoms,
+      [],
+      'a Module Export Catalog row names a module that does not exist on disk. The row is the index a reader follows to find the code, so a phantom row sends them to a file that was renamed or split away — point the row at the real module (its symbols are usually still live elsewhere, which is exactly why the identifier sweep stays green over this)',
+    );
+  });
+
+  test('the sweep can see a phantom row (negative control)', () => {
+    const planted = ['context-key-matrix.ts', 'cycles.ts'];
+    const unresolved = planted.filter(entry => !resolves('extension/src/lib/CLAUDE.md', entry));
+    assert.deepEqual(
+      unresolved,
+      ['cycles.ts'],
+      'the resolver did not flag the exact phantom row that shipped, so it cannot see the regression it pins',
+    );
+  });
+});
+
+/**
  * AP-EXT-ITER154-01 — the shared 64 MB ceiling stays collapsed, pinned BY VALUE.
  *
  * `src/services/CLAUDE.md`'s AP-EXT-ITER8-01 entry says of `UNBOUNDED_READ_MAX_BUFFER`:
