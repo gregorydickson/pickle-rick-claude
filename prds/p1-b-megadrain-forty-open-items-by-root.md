@@ -166,6 +166,50 @@ presence-predicates at `:4684` / `:4769`.
 tickets.** Log-noise only — the runner DOES override it with real ticket evidence. Lowest priority in
 this root; included because it is the same shape, not because it bites.
 
+## 🐙 ROOT H — THE OPEN GITHUB ISSUES (#6 – #10, filed 2026-09-03; none were in the plan until 2026-09-05)
+
+Six of the seven open GitHub issues were **referenced nowhere** in `MASTER_PLAN.md` or this PRD. They
+are operator-filed, they postdate this bundle's authoring, and two are confirmed live by field evidence
+from the 2026-09-04/05 runs. Read each issue for its full diagnosis; the notes below are the
+independent confirmation, not a substitute.
+
+**#6 — `microverse` auto-commit hardcodes "worker timed out" on a branch that only tests for a dirty
+tree. CONFIRMED at `microverse-runner.ts:4657`:**
+
+```
+ctx.log('No commits but dirty tree detected — auto-committing worker changes');
+execFileSync('git', ['commit','-m',`microverse: auto-commit (worker timed out before committing)`], …)
+```
+
+The guard is `owned.length === 0` plus a dirty tree. **Nothing in it observes a timeout.** The commit
+message asserts a cause the branch never measured — the `failed`-vs-`empty` collapse, written into git
+history where it is read back as fact. Field evidence: `b4404985` (B-ARGMAX) and `099554aa`
+(B-FRESHWIN), both of which were reported up the chain as "a worker timed out" **because the message
+said so**. Fix: name the condition the branch actually tests, or measure the cause before claiming it.
+
+**#9 — command-argument substitution rewrites `$1` inside emitted `launch.sh` templates. CONFIRMED by
+three live launches.** `~/.claude/commands/pickle-pipeline.md:237` on disk is correct
+(`SESSION_ROOT="$1"`), but the RENDERED skill prompt carried `SESSION_ROOT="--refine"` — the invocation
+argument substituted into the template's positional. A launcher that takes it verbatim writes every
+artifact under a session root named after a flag. Caught and hand-corrected at each of the three
+pipeline launches this session; five phase launchers share the shape.
+
+**#7 — szechuan stalls structurally: the worker never works the ledger the metric scores.** Adjacent to
+ROOT C0's judge work and to `R-JPCM`; szechuan degraded on **both** completed bundles this session, so
+compose these three together rather than separately.
+
+**#8 — anatomy-park declares convergence on an iteration that produced no INV-NO-SELF-DISOWN evidence.**
+Anatomy-park reported `completed successfully` on both bundles this session; if the convergence verdict
+can be reached without the evidence that backs it, those verdicts are unproven rather than wrong.
+
+**#10 — `refinement_manifest.tickets` silently omits every requirement whose AC family carried no shape
+smell — dropped 2 of 9 with `all_success: true`.** A success verdict over an incomplete enumeration.
+
+**NOT in this bundle: #5** (adopt Genesis's persistent-knowledge model) is an *enhancement*, and dispatch
+order is bugs before feature epics. It stays queued.
+
+---
+
 ## 🚨 ROOT C0 — `manager_handoff_pending` HALTS THE PIPELINE ON AN INFORMATIVE NOTE (GitHub #11, operator-filed 2026-09-05)
 
 **Order this FIRST. It is the highest-severity item in this bundle and it endangers this bundle's own
