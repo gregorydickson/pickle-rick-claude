@@ -35,6 +35,11 @@ export type TicketGateCompletion = {
 export type GateCompletionReport = {
   tickets: TicketGateCompletion[];
   narrowTierVacuity: boolean;
+  /**
+   * Tickets carrying a manager-side terminal with no spawn in this window — positive proof
+   * the window lost events, so every absence below is unmeasured rather than absent.
+   */
+  windowIncompleteTickets: string[];
   summary: {
     observedCompletions: number;
     timeouts: number;
@@ -154,6 +159,41 @@ function collectSpawnMsByTicket(activity: ActivityEvent[]): Map<string, number[]
   }
   for (const spawnMsList of spawnMsByTicket.values()) spawnMsList.sort((a, b) => a - b);
   return spawnMsByTicket;
+}
+
+/**
+ * Tickets this window provably cannot account for: a manager-side terminal naming a ticket
+ * that has NO spawn in the same window.
+ *
+ * Every other reader here bounds one event against another INSIDE the window; none asks
+ * whether the window IS the run. It is not: `state.activity` is the ONLY sink these events
+ * reach — `writeActivityEntry` appends there and nowhere else, and all four measure zero
+ * occurrences across the unbounded activity JSONL — and `state-manager.ts:trimActivityRing`
+ * caps that array at `ACTIVITY_RING_MAX` on EVERY write, evicting the oldest non-exempt
+ * entries with no marker and no event. Because it drops a PREFIX, spawns go before the
+ * terminals they own, and `findOverlapViolations` compares consecutive SPAWN pairs — delete
+ * spawns and the violations vanish with them. An evicted window then prints `OVERLAP: none`
+ * and exits 0, which is the absence-is-evidence reading AP-EXT-ITER148-01 removed from
+ * `observedCompletion`, one level up in the corpus itself.
+ *
+ * Derived from the data rather than from a second spelling of the ring's size: a copied
+ * threshold is one bump away from lying, and the terminal-without-spawn asymmetry states
+ * the fact instead of a proxy for it. It reuses `collectSpawnMsByTicket` for the spawn side
+ * so the spawn vocabulary is still written once — a ticket whose spawn timestamps are all
+ * unparseable keeps its key there, so it counts as spawned and is not mistaken for eviction.
+ *
+ * REPORTING, not disposition: the exit code stays the violation count. A tool that cannot
+ * see is not a tool that found something.
+ */
+export function unspawnedTerminalTickets(activity: ActivityEvent[]): string[] {
+  const spawned = collectSpawnMsByTicket(activity);
+  const orphaned = new Set<string>();
+  for (const e of activity) {
+    if (!WORKER_TERMINAL_EVENTS.has(e.event)) continue;
+    const ticket = getEventTicketId(e);
+    if (ticket !== null && !spawned.has(ticket)) orphaned.add(ticket);
+  }
+  return [...orphaned].sort();
 }
 
 /**
@@ -305,6 +345,7 @@ export function buildGateCompletionReport(
   return {
     tickets,
     narrowTierVacuity,
+    windowIncompleteTickets: unspawnedTerminalTickets(activity),
     summary: {
       observedCompletions,
       timeouts,

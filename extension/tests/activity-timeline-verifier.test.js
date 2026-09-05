@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import {
   findOverlapViolations,
   buildGateCompletionReport,
+  unspawnedTerminalTickets,
 } from '../services/activity-timeline-verifier.js';
 import { runVerifyActivityTimeline } from '../bin/verify-activity-timeline.js';
 
@@ -628,4 +629,98 @@ test('AP-EXT-ITER155-01 control: a terminal exactly AT the last spawn instant st
   const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'bbbb2222');
   assert.equal(t.observedCompletion, true);
   assert.equal(t.wallClockMs, 0, 'a same-instant terminal measures zero, not null');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER211-01: the WINDOW is not the run. `state.activity` — the only sink
+// these four events reach — is a bounded drop-oldest ring
+// (`state-manager.ts:trimActivityRing`, ACTIVITY_RING_MAX, applied on EVERY
+// write with no marker and no event). It evicts a PREFIX, so spawns go before
+// the terminals they own, and `findOverlapViolations` compares consecutive
+// SPAWN pairs — delete the spawns and the violations vanish with them.
+//
+// The fixtures below are one timeline in two states: what the session WROTE,
+// and what survives after the ring drops its two oldest entries. Assert the
+// operator-visible CLI verdict, not just an array length — the pre-fix reader
+// returned a well-formed empty array and printed a flat `OVERLAP: none`, which
+// is the shape a "does it throw" oracle greens straight over.
+// ---------------------------------------------------------------------------
+
+// A real overlap: bbbb2222 spawns while aaaa1111 is still live.
+const RING_TIMELINE_COMPLETE = [
+  spawnEvt('2026-09-02T10:00:00.000Z', 'aaaa1111'),
+  spawnEvt('2026-09-02T10:01:00.000Z', 'bbbb2222'),
+  boundaryEvt('2026-09-02T10:05:00.000Z', 'aaaa1111'),
+  boundaryEvt('2026-09-02T10:06:00.000Z', 'bbbb2222'),
+  spawnEvt('2026-09-02T10:07:00.000Z', 'cccc3333'),
+];
+
+// The same array after drop-oldest evicted its two oldest entries. Both
+// terminals survive; the spawns they belong to do not.
+const RING_TIMELINE_EVICTED = RING_TIMELINE_COMPLETE.slice(2);
+
+test('AP-EXT-ITER211-01: the complete window reports the overlap it contains', () => {
+  // The control that gives the eviction case its meaning: this is the answer the
+  // truncated window silently loses.
+  assert.equal(findOverlapViolations(RING_TIMELINE_COMPLETE).length, 1);
+  assert.deepEqual(unspawnedTerminalTickets(RING_TIMELINE_COMPLETE), []);
+
+  const { exitCode, output } = withSessionDir(RING_TIMELINE_COMPLETE, runVerifyActivityTimeline);
+  assert.equal(exitCode, 1);
+  assert.match(output, /OVERLAP: 1 violation/);
+  assert.doesNotMatch(output, /WINDOW: INCOMPLETE/);
+});
+
+test('AP-EXT-ITER211-01: an evicted window says it cannot see, instead of reporting none', () => {
+  // Truncation removes the violation without removing the confidence: one spawn
+  // left means zero consecutive pairs means zero violations.
+  assert.deepEqual(findOverlapViolations(RING_TIMELINE_EVICTED), []);
+  assert.deepEqual(
+    unspawnedTerminalTickets(RING_TIMELINE_EVICTED),
+    ['aaaa1111', 'bbbb2222'],
+    'both terminals name a ticket with no spawn in the window — positive proof of eviction',
+  );
+
+  const { exitCode, output } = withSessionDir(RING_TIMELINE_EVICTED, runVerifyActivityTimeline);
+  assert.equal(exitCode, 0, 'incompleteness is reported, not turned into a failing run');
+  assert.match(output, /WINDOW: INCOMPLETE/);
+  assert.match(output, /aaaa1111/);
+  assert.match(output, /bbbb2222/);
+  assert.doesNotMatch(
+    output,
+    /OVERLAP: none$/m,
+    'a bare "OVERLAP: none" over an evicted window is the false green this pins',
+  );
+});
+
+test('AP-EXT-ITER211-01: the evicted window also drops both tickets from the gate table', () => {
+  // The second consequence, stated rather than left implicit: a ticket whose spawn
+  // was evicted is not `unresolved` in the report — it is absent from it, so the
+  // headline counts describe fewer tickets than the session ran.
+  const report = buildGateCompletionReport(RING_TIMELINE_EVICTED);
+  assert.deepEqual(report.tickets.map((t) => t.ticket), ['cccc3333']);
+  assert.deepEqual(report.windowIncompleteTickets, ['aaaa1111', 'bbbb2222']);
+});
+
+test('AP-EXT-ITER211-01 control: a healthy serialized window is never flagged incomplete', () => {
+  // The detector must not fire on the ordinary shape, or it reddens every clean
+  // session and the WINDOW line stops carrying information.
+  assert.deepEqual(unspawnedTerminalTickets(SERIALIZED_TIMELINE), []);
+  assert.deepEqual(buildGateCompletionReport(SERIALIZED_TIMELINE).windowIncompleteTickets, []);
+
+  const { exitCode, output } = withSessionDir(SERIALIZED_TIMELINE, runVerifyActivityTimeline);
+  assert.equal(exitCode, 0);
+  assert.match(output, /OVERLAP: none$/m);
+  assert.doesNotMatch(output, /WINDOW: INCOMPLETE/);
+});
+
+test('AP-EXT-ITER211-01 control: an unparseable spawn timestamp is not eviction', () => {
+  // A ticket keeps its key in the spawn map even when every spawn timestamp is
+  // unparseable (AP-EXT-ITER155-01), so it counts as SPAWNED here. Reading it as
+  // an orphaned terminal would report a corrupt clock as a lost window.
+  const activity = [
+    spawnEvt('not-a-timestamp', 'dddd4444'),
+    boundaryEvt('2026-09-02T10:05:00.000Z', 'dddd4444'),
+  ];
+  assert.deepEqual(unspawnedTerminalTickets(activity), []);
 });

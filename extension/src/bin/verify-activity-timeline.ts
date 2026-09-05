@@ -47,15 +47,26 @@ export function runVerifyActivityTimeline(sessionDir: string): { exitCode: numbe
   lines.push('');
   lines.push(`GATE VERDICT: ${report.summary.verdict}${report.narrowTierVacuity ? ' (narrow-tier short-circuit — no tickets counted as observed)' : ''}`);
   lines.push('');
+  // AP-EXT-ITER211-01: `state.activity` is a bounded drop-oldest ring, so "no violations"
+  // and "the events that would show them were evicted" are the same empty array. Say which.
+  const incomplete = report.windowIncompleteTickets;
   if (violations.length === 0) {
-    lines.push('OVERLAP: none');
+    lines.push(incomplete.length > 0 ? 'OVERLAP: none observable in this window' : 'OVERLAP: none');
   } else {
     lines.push(`OVERLAP: ${violations.length} violation(s)`);
     for (const v of violations) {
       lines.push(`  ${v.priorTicket} (spawned ${v.priorSpawnTs}) still had no terminal event when ${v.nextTicket} spawned at ${v.nextSpawnTs}`);
     }
   }
+  if (incomplete.length > 0) {
+    lines.push(
+      `WINDOW: INCOMPLETE — ${incomplete.length} ticket(s) carry a terminal event with no spawn in state.activity (${incomplete.join(', ')}). ` +
+        'That array is a bounded drop-oldest ring (state-manager.ts:trimActivityRing), so absence of a violation above is not evidence there was none.',
+    );
+  }
 
+  // The exit code stays the VIOLATION count. Incompleteness is a reporting fact, not a
+  // disposition: reddening on it would turn an unreadable window into a failing run.
   return { exitCode: violations.length > 0 ? 1 : 0, output: lines.join('\n') };
 }
 
