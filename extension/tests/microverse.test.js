@@ -23,6 +23,28 @@ import {
     resolveStallLimit,
 } from '../services/microverse-state.js';
 
+// --- ambient git-config sandbox (bundle prior-finding 3) ---
+//
+// Every git fixture in this file builds a throwaway repo and asserts on its behaviour, so
+// anything the AMBIENT environment injects into git is contamination: it makes the result a
+// property of the operator's machine rather than of the code. This bites for real. A Pickle
+// Rick worker runs its children with
+//     GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=<session>/git-trailer-hooks
+// and core.hooksPath redirects hook lookup away from .git/hooks. The two rollback tests below
+// force auto-commit to fail by writing a failing .git/hooks/pre-commit; under that ambient
+// value the hook never runs, the commit SUCCEEDS, and both report "Missing expected exception"
+// — a red on a tree where nothing is wrong. Measured 2026-09-05: 196/198 inside a worker,
+// 198/198 with these variables scrubbed, same sha.
+//
+// Close git's whole config surface rather than the single key that was observed. Deleting
+// GIT_CONFIG_COUNT is sufficient for the indexed channel — git ignores every
+// GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> pair without it — so this needs no list of numbered
+// keys to fall out of date. Repo-local identity is set per fixture in createTempGitRepo, so
+// nulling the global/system files costs the fixtures nothing.
+delete process.env.GIT_CONFIG_COUNT;
+process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+process.env.GIT_CONFIG_SYSTEM = '/dev/null';
+
 function createTempGitRepo() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-microverse-'));
     execSync('git init', { cwd: dir, stdio: 'pipe' });
@@ -257,6 +279,111 @@ test('boundRemediationPrompt output survives a real execve argument', () => {
     // The exact syscall shape that failed: one oversized argv element. Passing the
     // unbounded brief here raises E2BIG on Linux; the bounded one must not.
     execFileSync('/bin/echo', [bounded], { stdio: 'pipe', timeout: 30_000 });
+});
+
+// The four assertions above prove the HELPER bounds a brief. Not one of them observes the
+// exec boundary, so removing boundRemediationPrompt from the single callsite that matters —
+// the buildWorkerInvocation prompt in src/bin/microverse-runner.ts — leaves every one of them
+// green. Measured 2026-09-05: with that call replaced by the raw brief, this file still ran
+// 198/198 on macOS, while Linux CI went red exactly as it did in release run 33060047943
+// (both remediation tests `success: false` at 7-10ms, i.e. execve refused the argument list
+// before any child existed). A helper nobody is required to call is not a bound. So pin the
+// WIRE: let the spawned binary report the argv it really received, and bound that.
+test('runRemediatorForIteration bounds the prompt it hands to execve, not just in the helper', async () => {
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-argv-session-'));
+    const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-argv-work-'));
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-argv-bin-'));
+    const argvReportPath = path.join(binDir, 'argv-bytes.json');
+    const oldPath = process.env.PATH;
+    const gateDir = path.join(sessionDir, 'gate');
+
+    try {
+        fs.writeFileSync(
+            path.join(binDir, 'claude'),
+            [
+                '#!/usr/bin/env node',
+                "const fs = require('node:fs');",
+                "const path = require('node:path');",
+                `const gateDir = ${JSON.stringify(gateDir)};`,
+                'fs.mkdirSync(gateDir, { recursive: true });',
+                // Report the argv this process actually received...
+                `fs.writeFileSync(${JSON.stringify(argvReportPath)}, JSON.stringify(process.argv.slice(2).map((a) => Buffer.byteLength(a))), 'utf-8');`,
+                // ...then behave like a successful remediation, so a bounded prompt still
+                // classifies normally and this test also covers the happy path end to end.
+                "fs.writeFileSync(path.join(gateDir, `remediation_${Date.now()}_result.json`), JSON.stringify({ aborted: false, failures_out: 0 }), 'utf-8');",
+                'process.exit(0);',
+            ].join('\n'),
+            { mode: 0o755 },
+        );
+        process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ''}`;
+
+        // 200 failures render a ~363 KB brief: 2.8x Linux MAX_ARG_STRLEN and well over
+        // REMEDIATION_PROMPT_MAX_BYTES, so the bound has to do real work to pass this.
+        const failures = Array.from({ length: 200 }, (_, i) => ({
+            check: 'tests',
+            file: path.join(workingDir, `broken${i}.test.js`),
+            line: i + 1,
+            ruleOrCode: 'simulated',
+            message: `simulated failure ${i} ${'x'.repeat(120)}`,
+            severity: 'error',
+            occurrence_index: i,
+        }));
+
+        const result = await runRemediatorForIteration(
+            {
+                status: 'red',
+                failures,
+                baseline_used: false,
+                allowed_paths_used: false,
+                elapsed_ms: 1,
+                total_raw_failure_count: failures.length,
+                new_failures_vs_baseline: failures.length,
+            },
+            sessionDir,
+            workingDir,
+            'claude',
+            60,
+        );
+
+        // Fixture precondition. If the brief ever stops exceeding the budget, every assertion
+        // below would pass with the bound removed, and this pin would rot green in silence.
+        const briefName = fs.readdirSync(gateDir).find((name) => name.endsWith('_brief.md'));
+        assert.ok(briefName, 'remediation brief should have been written to the gate dir');
+        const briefBytes = fs.statSync(path.join(gateDir, briefName)).size;
+        assert.ok(
+            briefBytes > REMEDIATION_PROMPT_MAX_BYTES,
+            `fixture must produce an over-budget brief; got ${briefBytes} <= ${REMEDIATION_PROMPT_MAX_BYTES}`,
+        );
+
+        // The exec must have actually happened. Without this the pin passes vacuously on
+        // Linux, where an oversized argv element raises E2BIG and no child ever runs.
+        assert.ok(
+            fs.existsSync(argvReportPath),
+            'the remediator binary never ran — execve rejected the argument list',
+        );
+        const argvBytes = JSON.parse(fs.readFileSync(argvReportPath, 'utf-8'));
+        assert.ok(
+            argvBytes.some((bytes) => bytes > 1024),
+            'no argument resembles the brief; the bound would be satisfied by a flag-only argv',
+        );
+
+        // Teeth on BOTH platforms: bound what was received, never "did the spawn survive".
+        const widest = Math.max(...argvBytes);
+        assert.ok(
+            widest <= REMEDIATION_PROMPT_MAX_BYTES,
+            `widest argv element ${widest} exceeded the budget ${REMEDIATION_PROMPT_MAX_BYTES}`,
+        );
+        assert.ok(
+            widest < LINUX_MAX_ARG_STRLEN,
+            `widest argv element ${widest} would raise E2BIG on Linux (MAX_ARG_STRLEN ${LINUX_MAX_ARG_STRLEN})`,
+        );
+        assert.deepEqual(result, { success: true });
+    } finally {
+        process.env.PATH = oldPath;
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+    }
 });
 
 test('per-iteration gate remediation logs worker_backend_resolved with backend-resolution source semantics', async () => {
