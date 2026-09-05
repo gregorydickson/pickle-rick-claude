@@ -80,9 +80,9 @@ function isPidAlive(pid) {
   // `ps` itself could not run: the state is unknowable, so report alive. An assertion that fails
   // loudly beats one that passes on absent evidence.
   if (probe.error) return true;
-  // `ps` ran and matched nothing: the process is gone.
-  if (probe.status !== 0) return false;
-  return !probe.stdout.trim().startsWith('Z');
+  // Alive means `ps` found it AND it is not a corpse: a non-zero exit is "no such process", and a
+  // `Z` state is a process that has already terminated.
+  return probe.status === 0 && !probe.stdout.trim().startsWith('Z');
 }
 
 function sleep(ms) {
