@@ -14,53 +14,30 @@ PRD → Breakdown → Research → Plan → Implement → Verify → Review → 
 
 Everything below elaborates this. Nothing below overrides it.
 
-## 🧱 COMPLEXITY IS THE SOURCE OF BRITTLENESS (operator-set 2026-08-25, BINDING, elaborates the PRIME DIRECTIVE)
+## 🧱 COMPLEXITY IS THE SOURCE OF BRITTLENESS (operator-set, BINDING, elaborates the PRIME DIRECTIVE)
 
-Every halt, every fake-green, every silent bypass this codebase has shipped traces back to a structure
-that had **more cases than it needed**. Reliability is not bought by adding a guard; it is bought by
-removing the distinction the guard was compensating for. **This does NOT reorder the ratchet** —
-reliability still comes first. It says how you GET reliability: by subtraction.
+Every halt, fake-green and silent bypass this codebase has shipped traces back to a structure with
+**more cases than it needed**. Reliability is not bought by adding a guard; it is bought by removing the
+distinction the guard was compensating for. This does NOT reorder the ratchet — reliability still comes
+first. It says how you GET it: by subtraction.
 
-### The recurring shape: an ENUMERATED SET is a liability with a maintenance schedule
-
-A hand-maintained list of cases is correct only until the world adds a case, and it fails **silently**
-because a missing member looks exactly like a member that does not apply. Measured in one bundle
-(2026-08-25, three CRITICALs in one phase):
-
-| finding | the enumeration | how it failed |
-|---|---|---|
-| `9452a550` | "first bare word ends the options" | bash options take OPERANDS, so the scan stopped at `pipefail` and `bash -o pipefail -c 'git reset --hard'` reached NO guard |
-| `e7502abf` | same shape, sibling detector | hid the expensive test path from the soak guard |
-| `258e0d05` | `ARG_CONSUMING_GIT_GLOBAL_OPTIONS`, **7 members** | omitted `--config-env`; every prohibited git verb became invisible to R-WSRC-GR |
-
-The fix that held needed **no table at all** — read the payload FORWARD from the command-string flag.
-`9452a550` states the rule outright and refused the tempting alternative: *"an enumerated option list is
-the incomplete-set shape, one option away from the next bypass."* `258e0d05` then found that exact
-prediction already true in a sibling.
-
-### Rules
+**An ENUMERATED SET is a liability with a maintenance schedule.** A hand-maintained list of cases is
+correct only until the world adds one, and it fails **silently**, because a missing member looks exactly
+like a member that does not apply.
 
 1. **Prefer the formulation that needs no list.** If a fix adds a member to an enumeration, ask what
-   formulation would need no enumeration. Adding the 8th member schedules the 9th bypass.
-2. **Collapse cases; do not add them.** `collectGateFailures` recorded THREE distinct no-measurement
-   causes and exported ONE — the extra cases created the blindness. Fewer states, fewer ways to be wrong.
-3. **A hand-maintained catalog rots, and rots green.** Three dead trap-door anchors in one phase, three
-   distinct causes (renamed away, deleted by a refactor, **false at birth and never existed**). The audit
-   checked that ENFORCE refs resolve, never that the INVARIANT named a live symbol.
-4. **Subtraction is the preferred fix, and "Necessary?" is the first Simplification Review question.**
-   A fix that removes a divergence beats a fix that guards it.
-5. **Complexity has a measurable price and it must be paid back in-bundle.** Correctness fixes in this
-   same run pushed `runWorkerProcess` to 133 lines, `finalizeWorkerTurn` to 71 and `runCheckCommand` to
-   67 against a 50-line limit. Szechuan repaid all three inside the same run. Growth is acceptable;
-   **unrepaid growth is not.**
+   formulation would need none. Adding the 8th member schedules the 9th bypass.
+2. **Collapse cases; do not add them.** Fewer states, fewer ways to be wrong.
+3. **A hand-maintained catalog rots, and rots green.** An audit that checks a reference RESOLVES has not
+   checked that the invariant names a LIVE symbol.
+4. **Subtraction is the preferred fix.** "Necessary?" is the first Simplification Review question — a fix
+   that removes a divergence beats one that guards it.
+5. **Complexity has a price and it is paid back IN-BUNDLE.** Growth against the 50-line function limit is
+   acceptable; **unrepaid growth is not.**
 
-### The honest tension
-
-Some of this run's best work ADDED code — a 250-line evidence test, a negative control, a typed degrade
-reason. That is not a contradiction: those additions **removed ambiguity**, which is the complexity that
-matters. The metric is not lines. It is **how many distinct states a reader must hold to know the system
-is correct.** Fewer states, fewer silent failures.
-
+**The metric is not lines — it is how many distinct states a reader must hold to know the system is
+correct.** Code that ADDS lines while removing ambiguity (an evidence test, a negative control, a typed
+degrade reason) is subtraction in the sense that matters.
 ## 🛑 WHEN THE PIPELINE STOPS, RELIABILITY GOES TO ZERO — AND SO DOES QUALITY (operator-set, BINDING, elaborates the PRIME DIRECTIVE)
 
 **A halted run produces no output. No output has no quality.** So a "quality gate" that stops the
@@ -219,41 +196,31 @@ Tests: `extension/tests/*.test.js` via `node --test` (no `.test.ts`). Aux script
 
 ## Versioning
 
-Semver in `extension/package.json`: **Major** = breaking (state schema, CLI args, hook contracts) | **Minor** = features (commands, flags, prompts) | **Patch** = fixes/refactors. Bump → commit `chore: bump version to X.Y.Z` → `gh release create vX.Y.Z`.
+Semver in `extension/package.json`: **Major** = breaking (state schema, CLI args, hook contracts) | **Minor** = features (commands, flags, prompts) | **Patch** = fixes/refactors. Bump → commit `chore: bump version to X.Y.Z` → release.
 
-**⛔ TAG AT AN EXPLICIT COMMIT (operator-set 2026-08-26, after a 4-month wrong-tree outage).**
-`gh release create <tag>` with NO `--target` tags the repository's **DEFAULT BRANCH**. `main` is on the
-stale 2.0 line, so every release from 2026-04-22 onward tagged `main` and CI faithfully built a tree
-nobody shipped — `v2.1.0-beta.16` and `v2.1.0-beta.17` BOTH resolve to `e0c91e17` = `origin/main`.
-Always: `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`, then **compare** the pushed tag's
-sha to that value. `git ls-remote --tags origin <tag>` alone confirms EXISTENCE, not correctness — it
-printed the same wrong sha for two consecutive releases and neither was caught. See [[B-RELTAG]].
-Run `extension/scripts/verify-release-tag.sh vX.Y.Z "$(git rev-parse HEAD)"` to perform that
-comparison mechanically instead of eyeballing `git ls-remote` output — it exits non-zero on mismatch
-or absence and prints both the expected and actual sha.
+**⛔ TAG AT AN EXPLICIT COMMIT.** `gh release create <tag>` with no `--target` tags the repository's
+**DEFAULT BRANCH** (`main`, the stale 2.0 line). Always
+`gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`, then verify mechanically with
+`extension/scripts/verify-release-tag.sh vX.Y.Z "$(git rev-parse HEAD)"` — it exits non-zero on mismatch
+or absence. `git ls-remote --tags` confirms EXISTENCE, not correctness.
 
-**Before tagging**, the full release gate must be green from `extension/` (test failures block release, no exceptions) — this is the release-gate source of truth, mirrored by `.github/workflows/release.yml` (enforced by `release-gate-parity.test.js`):
+**Before tagging**, the full release gate must be green from `extension/` (test failures block release,
+no exceptions). This is the release-gate source of truth, mirrored by `.github/workflows/release.yml`
+(enforced by `release-gate-parity.test.js`):
 
 `npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && bash scripts/audit-did-we-count.sh && npm run test:fast:budget && npm run test:integration && npm run test:contract && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`
 
-AND the tree must be clean (`git status` clean, compiled JS matches TS source). No dirty release.
+AND the tree must be clean (`git status` clean, compiled JS matches TS). No dirty release.
 
-**⛔ THE GATE ABOVE COVERS ONE AXIS AND IS NOT SUFFICIENT ALONE (operator-set 2026-09-01, after a
-macOS-green gate hid a Linux-red tree).** Three axes, three legs — a green on one says nothing
-about the others:
+**⛔ THAT GATE COVERS ONE AXIS OF THREE. A green on one says nothing about the others.**
 
-| Axis | Leg | What it covers |
+| Axis | Leg | Covers |
 |---|---|---|
-| Correctness, **authoring OS** | the `&&` chain above | types, lint, audits, all tiers — on whatever OS you typed it on, and only that OS |
+| Correctness, **authoring OS** | the `&&` chain above | types, lint, audits, all tiers — on that OS only |
 | **Runtime** | `node-version: '22.x'` in `ci.yml`/`release.yml`, matching `engines.node` | the Node major CI runs |
-| **OS** | `extension/scripts/ci-repro.sh` — **REQUIRED MANUAL step, deliberately NOT an `&&` link** | Linux, which no other leg here reaches |
+| **OS** | `extension/scripts/ci-repro.sh` — **REQUIRED MANUAL step, deliberately NOT an `&&` link** | Linux, which no other leg reaches |
 
-Measured this bundle: `tests/bin/test-runner-tier-discovery.test.js` ran **16/16 green on macOS
-at BOTH** `6e75e131` and `f1eaa022`, while that same file under `ci-repro.sh` was **RED at the
-first (16 tests / 15 pass / 1 fail) and GREEN at the second**. The
-Node 22 leg had covered the runtime axis the whole time. A locally-green gate demonstrably
-cannot see a Linux-only red, so it is not on its own evidence that a tag is safe.
-
+A locally-green gate cannot see a Linux-only red, so it is not on its own evidence that a tag is safe.
 Run it against the sha you are about to tag (from the repo root):
 
 ```
@@ -261,23 +228,16 @@ bash extension/scripts/ci-repro.sh --ref "$(git rev-parse HEAD)" --cmd 'node bin
 ```
 
 **Honest limits — an overstated green is worse than no run:**
-- **Not joined to the `&&` chain, on purpose.** Docker is not guaranteed on every box, and a
-  fail-closed leg without its provisioning half reds the whole chain. **Escape hatch:** no
-  docker (the harness exits `2`) → record the OS axis as UNRUN and let CI supply it. Never
-  report an unrun leg as green.
-- **Emulated on Apple silicon.** The harness forces `--platform linux/amd64`, and the image
-  measured Ubuntu 24.04.4 / x86_64 / node v22.23.2 — same arch AND node major as CI, so arch
-  fidelity is exact. Wall-clock is not: on an arm64 host that container is emulated, so
-  **timing-sensitive reds under it are suspect**, and a whole tier will not finish in a normal
-  budget. The practical use is driving **specific FILES** via `--cmd`, not tiers.
-- **Only COMMITTED state at `--ref` is measured** — a dirty tree is excluded, so commit first.
-- Exit codes: `0` pass · `1..` the inner command failed · `2` harness refused (underivable
-  field, missing docker) · `3` UNTRUSTED — the run completed but a provisioning gap makes the
-  number inadmissible · `90`/`91` preflight (credential present / model API reachable).
-- **Trust a green only while the measured noise baseline is 0** (FR-A1 measured 0 for the file
-  it drove). Re-measure that baseline before relying on a green; a harness that is mostly noise
-  falsifies nothing.
-
+- **No docker → harness exits `2` → record the OS axis UNRUN** and let CI supply it. Never report an
+  unrun leg as green. (It is unjoined from the `&&` chain for exactly this reason.)
+- **Emulated on Apple silicon** (`--platform linux/amd64`): arch and node major match CI exactly, but
+  wall-clock does not — **timing-sensitive reds under it are suspect**, and a whole tier will not finish
+  in a normal budget. Drive **specific FILES** via `--cmd`, not tiers.
+- **Only COMMITTED state at `--ref` is measured** — commit first.
+- Exit codes: `0` pass · `1..` inner command failed · `2` harness refused · `3` UNTRUSTED (completed, but
+  a provisioning gap makes the number inadmissible) · `90`/`91` preflight.
+- **Trust a green only while the measured noise baseline is 0.** Re-measure it before relying on a green;
+  a harness that is mostly noise falsifies nothing.
 ## Architecture
 
 | Script | Role |
