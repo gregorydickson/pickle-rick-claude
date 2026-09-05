@@ -335,7 +335,7 @@ elif [ "${#AUDITED_FILES[@]}" -gt 0 ]; then
   if [ "$unprovisioned_exit" -ne 0 ]; then
     while IFS=$'\t' read -r up_file up_tool up_line; do
       [ -z "$up_file" ] && continue
-      echo "$up_file:$up_line: spawns unprovisioned binary '$up_tool' (not installed by ci.yml/release.yml); remove the dependency or mark the guarded call site PROVISIONED-OK" >&2
+      echo "$up_file:$up_line: spawns unprovisioned binary '$up_tool' (not provisioned by .github/workflows/*.yml); remove the dependency or mark the guarded call site PROVISIONED-OK" >&2
     done <<< "$unprovisioned_out"
     status=1
   fi

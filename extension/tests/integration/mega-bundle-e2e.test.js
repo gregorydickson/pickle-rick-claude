@@ -33,12 +33,16 @@ function writeExtensionSentinel(root) {
 }
 
 // --- ripgrep-free source enumeration + scan -----------------------------------
-// These replace `rg --files <dir>` and `rg -n <needle> <files>`. ripgrep is NOT
-// provisioned by .github/workflows/{ci,release}.yml, so spawning it here was an
-// invisible-locally / fatal-in-CI dependency (ENOENT). `rg --files` additionally
-// honors .gitignore and skips hidden files; neither is load-bearing under `src`
-// (measured: rg --files and `find -type f` enumerate an identical 173-file set),
-// so a plain walk is equivalent on this input.
+// These replace `rg --files <dir>` and `rg -n <needle> <files>`. Spawning ripgrep
+// here was an invisible-locally / fatal-in-CI dependency (ENOENT). Both workflows
+// DO install ripgrep today (29b4ecc9), so the walk is no longer what keeps this file
+// from ENOENT-ing — but that install step exists for audit-trap-door-enforcement.sh,
+// not for this test, and a test that enumerates source files needs no spawned binary
+// at all. Depending on nothing beats depending on a provisioning list staying
+// correct, which is the property the audit below now derives rather than mirrors.
+// `rg --files` additionally honors .gitignore and skips hidden files; neither is
+// load-bearing under `src` (measured: rg --files and `find -type f` enumerate an
+// identical 173-file set), so a plain walk is equivalent on this input.
 
 // Every regular file under <root>/<relDir>, as root-relative POSIX paths, sorted.
 function listFilesUnder(root, relDir) {
@@ -435,31 +439,147 @@ function runAuditOnScanRoot(scanRoot) {
   });
 }
 
+// The exemplar is `jq`, NOT ripgrep. ripgrep used to be the exemplar, but ci.yml and
+// release.yml both install it (commit 29b4ecc9), so asserting it reds would pin a
+// premise that is false at HEAD. `jq` is in NON_GUARANTEED_TOOLS and no workflow
+// installs it — verified by the derivation test below, not assumed here.
 test('mega bundle audit reds a test that spawns an unprovisioned binary', () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'unprovisioned-scan-root-')));
   try {
-    // 1. Spawning ripgrep fails the audit and names the tool.
-    const rgFixture = path.join(dir, 'spawns-rg.test.js');
-    fs.writeFileSync(rgFixture, unprovisionedFixture("'rg', ['--files', 'src']", ''));
+    // 1. Spawning an unprovisioned tool fails the audit and names it.
+    const fixture = path.join(dir, 'spawns-unprovisioned.test.js');
+    fs.writeFileSync(fixture, unprovisionedFixture("'jq', ['-r', '.version']", ''));
     const red = runAuditOnScanRoot(dir);
     assert.notEqual(red.status, 0, `expected non-zero exit; stderr=${red.stderr}`);
-    assert.match(red.stderr, /spawns unprovisioned binary 'rg'/);
+    assert.match(red.stderr, /spawns unprovisioned binary 'jq'/);
 
     // 2. Removing the dependency turns the same scan root green — this is the
     //    mutation half: the audit reacts to the spawn, not to the fixture's mere
     //    existence.
-    fs.writeFileSync(rgFixture, unprovisionedFixture("'git', ['status']", ''));
+    fs.writeFileSync(fixture, unprovisionedFixture("'git', ['status']", ''));
     const green = runAuditOnScanRoot(dir);
-    assert.equal(green.status, 0, `expected exit 0 after removing rg; stderr=${green.stderr}`);
+    assert.equal(green.status, 0, `expected exit 0 after removing the dependency; stderr=${green.stderr}`);
 
     // 3. A guarded call site opts out explicitly via the PROVISIONED-OK marker.
     fs.writeFileSync(
-      rgFixture,
-      unprovisionedFixture("'rg', ['--files', 'src']", '// PROVISIONED-OK: guarded by a which() probe'),
+      fixture,
+      unprovisionedFixture("'jq', ['-r', '.version']", '// PROVISIONED-OK: guarded by a which() probe'),
     );
     const allowed = runAuditOnScanRoot(dir);
     assert.equal(allowed.status, 0, `expected exit 0 for an allowlisted site; stderr=${allowed.stderr}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- the provisioned set is DERIVED from the workflows, not mirrored ---------------
+//
+// These three tests are the ticket's actual property. The predicate above only shows
+// the audit reacts to a spawn; it says nothing about where "provisioned" comes from.
+// A hardcoded list would pass every assertion above and fail the pair below.
+
+const UNPROVISIONED_SCANNER = path.join(EXTENSION_ROOT, 'scripts/audit-unprovisioned-binary-spawns.mjs');
+
+// A workflow with one install step. `withRipgrep` controls ONLY that step, so the two
+// derivations differ by exactly the thing under test.
+function workflowFixture(dir, { withRipgrep }) {
+  fs.mkdirSync(dir, { recursive: true });
+  const install = withRipgrep
+    ? [
+      '      - name: Install ripgrep',
+      // The backticked binary name is how a package name is bridged to the binary it
+      // provides; this mirrors the real ci.yml step's own comment.
+      '        # audit-trap-door-enforcement.sh shells out to `rg`.',
+      '        run: sudo apt-get update && sudo apt-get install -y ripgrep',
+    ]
+    : [];
+  fs.writeFileSync(
+    path.join(dir, 'ci.yml'),
+    [
+      'name: CI',
+      'jobs:',
+      '  build:',
+      '    steps:',
+      ...install,
+      // Negative control: a NON-install step that backticks a tool name. The
+      // derivation must not read this as provisioning — only install steps declare.
+      '      - name: Test',
+      '        # this project also works with `bat` if you have it',
+      '        run: npm test',
+      '',
+    ].join('\n'),
+  );
+  return dir;
+}
+
+test('unprovisioned-binary audit derives the provisioned set from the workflows', async () => {
+  const { deriveProvisionedTools } = await import(pathToFileURL(UNPROVISIONED_SCANNER).href);
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'provisioned-derive-')));
+  try {
+    // Direction A — the step is present: the package AND the binary it provides are
+    // both derived as provisioned.
+    const withStep = deriveProvisionedTools(workflowFixture(path.join(root, 'with'), { withRipgrep: true }));
+    assert.equal(withStep.has('ripgrep'), true, 'package token should be derived');
+    assert.equal(withStep.has('rg'), true, 'binary named in the install step should be derived');
+
+    // Direction B — the ONLY change is deleting that step, and the tool stops being
+    // provisioned. This is the half a hardcoded mirror cannot pass.
+    const withoutStep = deriveProvisionedTools(workflowFixture(path.join(root, 'without'), { withRipgrep: false }));
+    assert.equal(withoutStep.has('ripgrep'), false, 'removing the step must un-provision the package');
+    assert.equal(withoutStep.has('rg'), false, 'removing the step must un-provision the binary');
+
+    // A tool no step installs is never provisioned, in either direction.
+    assert.equal(withStep.has('jq'), false);
+
+    // The negative control, ASSERTED rather than merely described: both fixtures
+    // carry a NON-install step whose comment backticks `bat`. Clause 2 must stay
+    // scoped to steps that actually install, because `bat` is itself a candidate in
+    // NON_GUARANTEED_TOOLS — so reading backticks file-wide would let a passing
+    // mention in unrelated prose mark it provisioned and silently green-light a real
+    // bat dependency. Measured: without these two lines, widening clause 2 to every
+    // block leaves the whole file green.
+    assert.equal(withStep.has('bat'), false, 'a backticked tool in a NON-install step must not count as provisioned');
+    assert.equal(withoutStep.has('bat'), false, 'and must not, with no install step present at all');
+
+    // Fail-closed: an unreadable workflows dir provisions nothing, so every candidate
+    // stays a candidate. Degrading toward more findings, never fewer.
+    assert.equal(deriveProvisionedTools(path.join(root, 'does-not-exist')).size, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('unprovisioned-binary audit reads the real workflows, and they still provision ripgrep', async () => {
+  const mod = await import(pathToFileURL(UNPROVISIONED_SCANNER).href);
+  const provisioned = mod.deriveProvisionedTools(mod.defaultWorkflowsDir(EXTENSION_ROOT));
+  // A tripwire, not decoration: audit-trap-door-enforcement.sh shells out to ripgrep
+  // independently of the tests, so dropping the workflow install step must not pass
+  // silently. If this reds, the workflows changed — that is the signal, not a flake.
+  assert.equal(provisioned.has('ripgrep'), true, 'ci.yml/release.yml must still install ripgrep');
+  assert.equal(provisioned.has('rg'), true, 'the install step must still name the binary it provides');
+  assert.equal(provisioned.has('jq'), false, 'no workflow installs jq — the red exemplar above depends on this');
+});
+
+// The ticket's acceptance property, stated mechanically over the real corpus:
+//   (binaries spawned by tests) MINUS (binaries provisioned by the workflows) = {}
+test('no test in the repo spawns a binary the workflows do not provision', async () => {
+  const mod = await import(pathToFileURL(UNPROVISIONED_SCANNER).href);
+  const matchers = mod.buildMatchers(mod.deriveProvisionedTools(mod.defaultWorkflowsDir(EXTENSION_ROOT)));
+
+  const testsRoot = path.join(EXTENSION_ROOT, 'tests');
+  const files = fs
+    .readdirSync(testsRoot, { recursive: true, withFileTypes: true })
+    .filter(e => e.isFile() && e.name.endsWith('.test.js'))
+    .map(e => path.join(e.parentPath, e.name));
+
+  // Without this, an empty file list would make the assertion below vacuously true —
+  // the scan would report nothing because it scanned nothing.
+  assert.ok(files.length > 100, `expected the real test corpus, got ${files.length} files`);
+
+  const findings = files.flatMap(f => mod.scanFile(f, EXTENSION_ROOT, matchers));
+  assert.deepEqual(
+    findings.map(f => `${f.rel}:${f.lineNo} spawns ${f.tool}`),
+    [],
+    'a test spawns a binary the workflows do not install; it will ENOENT in CI',
+  );
 });

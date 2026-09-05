@@ -6,11 +6,30 @@
 // machines and is installed by NEITHER .github/workflows/ci.yml NOR release.yml, so
 // the dependency was invisible locally and `spawnSync rg ENOENT` in CI.
 //
-// The tool list is NOT re-enumerated here. It is imported from
+// The CANDIDATE tool list is NOT re-enumerated here. It is imported from
 // `services/verify-command-safety.js` (compiled from src/, committed), which the
 // runtime already uses to warn about non-guaranteed tools. One list, one place to
 // update — a second copy would rot green (root CLAUDE.md: "a hand-maintained
 // catalog rots, and rots green").
+//
+// The PROVISIONED set is not a list at all: it is DERIVED, per run, from
+// `.github/workflows/*.yml` (see `deriveProvisionedTools`). A candidate is reported
+// only if the workflows do not install it:
+//
+//     finding  <=>  tool in NON_GUARANTEED_TOOLS  AND  tool not in derived provisioned set
+//
+// This matters because the mirror had already rotted exactly as predicted. Commit
+// 29b4ecc9 added `Install ripgrep` to BOTH workflows (audit-trap-door-enforcement.sh
+// needs it), but `NON_GUARANTEED_TOOLS` still lists `rg` — so this audit was emitting
+// "not installed by ci.yml/release.yml" about a package both workflows install. One
+// commit of drift, in the direction root CLAUDE.md predicts for an enumerated set.
+// Deriving means deleting the `Install ripgrep` step re-reds `rg` spawners on its own,
+// and adding an `Install jq` step un-reds `jq` spawners on its own. Nobody updates a list.
+//
+// Honest limit: this removes the PROVISIONING mirror, not every enumeration. The
+// candidate set is still hand-maintained — but it is shared with the runtime and is
+// not a copy of anything, so it cannot disagree with a second source the way the
+// provisioning verdict just did.
 //
 // Matching is over WHOLE FILE CONTENT, never line-by-line. The original defect was
 // a multiline call:
@@ -37,7 +56,7 @@
 // provisioning are orthogonal, and mega-bundle-e2e.test.js is in the serial
 // manifest, so sharing that allowlist would blind this audit to the original bug.
 //
-// Usage: node audit-unprovisioned-binary-spawns.mjs --base <root> <file...>
+// Usage: node audit-unprovisioned-binary-spawns.mjs --base <root> [--workflows <dir>] <file...>
 // Output: one `<file>\t<tool>\t<line>` per finding on stdout. Exit 1 if any.
 
 import fs from 'node:fs';
@@ -57,14 +76,99 @@ function escapeForRegex(tool) {
   return tool.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Built once: the tool set is a compiled constant, so there is nothing per-file here.
-const TOOL_ALT = [...NON_GUARANTEED_TOOLS].map(escapeForRegex).join('|');
-const MATCHERS = [
-  // spawnSync('rg', ...) / spawnSync(\n  'rg', ...)
-  new RegExp(String.raw`\b(?:${ARGV0_FNS})\s*\(\s*(['"\`])(${TOOL_ALT})\1`, 'g'),
-  // execSync('rg --files src') — tool is the leading token of the command string
-  new RegExp(String.raw`\b(?:${SHELL_FNS})\s*\(\s*(['"\`])(${TOOL_ALT})(?=[\s;|&>]|\1)`, 'g'),
-];
+// A step whose command installs packages. Anchored on the install VERB, so a step
+// that merely mentions a tool is not mistaken for one that provisions it.
+const INSTALL_CMD =
+  /(?:apt-get|apt)\s+install|apk\s+add|(?:yum|dnf)\s+install|brew\s+install|npm\s+(?:i|install)\s+(?:-g|--global)|pip3?\s+install|cargo\s+install|go\s+install/g;
+
+// A token in backticks. Inside a provisioning step this is read as a declaration of
+// the BINARY that step provides — see deriveProvisionedTools.
+const BACKTICKED = /`([A-Za-z0-9_.+-]+)`/g;
+
+// Operands of an install command: everything up to the next shell separator, minus
+// flags. `sudo apt-get update && sudo apt-get install -y ripgrep` -> ['ripgrep'].
+function installOperands(afterVerb) {
+  return afterVerb
+    .split(/&&|\|\||[;|\n]/)[0]
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !t.startsWith('-'));
+}
+
+// The set of things `.github/workflows/*.yml` installs, derived per run — never stored.
+//
+// Two token sources are unioned, because a package name is NOT a binary name:
+//   1. install-command operands  -> the PACKAGE (`ripgrep`)
+//   2. backticked tokens in that same step block -> the BINARY it provides (`rg`)
+//
+// Source 2 is load-bearing, not decoration. Measured at HEAD: `rg` occurs as a word
+// in ci.yml exactly once, in the Install step's own comment ("shells out to `rg`").
+// Nothing in any `run:` string contains it. So operand extraction ALONE cannot bridge
+// ripgrep->rg, and a scanner that does not bridge it keeps reporting `rg` as
+// unprovisioned — the very drift this derivation exists to end. The alternative, a
+// package->binary mapping table, is the enumerated-set shape we are removing.
+//
+// Source 2 is deliberately scoped to provisioning step blocks. A backticked mention
+// anywhere else in the file does NOT count: file-wide scanning would let unrelated
+// prose silently mark a tool provisioned, and a false green is worse than a false red.
+//
+// Fail-closed: an absent or unreadable workflows dir yields the EMPTY set, so every
+// candidate stays a candidate. The degrade direction is more findings, never fewer.
+export function deriveProvisionedTools(workflowsDir) {
+  const provisioned = new Set();
+  let entries;
+  try {
+    entries = fs.readdirSync(workflowsDir).filter((f) => /\.ya?ml$/.test(f));
+  } catch {
+    return provisioned; // no workflows readable -> provision nothing
+  }
+  for (const entry of entries) {
+    let content;
+    try {
+      content = fs.readFileSync(path.join(workflowsDir, entry), 'utf8');
+    } catch {
+      continue;
+    }
+    // Split into step blocks on the YAML sequence dash. A step's `name:`, its
+    // comments and its `run:` all land in the same chunk, which is what lets
+    // source 2 stay scoped to the step that does the installing.
+    for (const block of content.split(/^\s*-\s+/m)) {
+      INSTALL_CMD.lastIndex = 0;
+      let install;
+      let installs = false;
+      while ((install = INSTALL_CMD.exec(block)) !== null) {
+        installs = true;
+        for (const pkg of installOperands(block.slice(install.index + install[0].length))) {
+          provisioned.add(pkg);
+        }
+      }
+      if (!installs) { continue; }
+      BACKTICKED.lastIndex = 0;
+      let tick;
+      while ((tick = BACKTICKED.exec(block)) !== null) provisioned.add(tick[1]);
+    }
+  }
+  return provisioned;
+}
+
+// Candidates are the non-guaranteed tools the workflows do NOT install.
+export function buildMatchers(provisioned) {
+  const candidates = [...NON_GUARANTEED_TOOLS].filter((t) => !provisioned.has(t));
+  // An empty alternation `()` matches the empty string at every position, which would
+  // report a finding on every line of every file. No candidates means no matchers.
+  if (candidates.length === 0) { return []; }
+  const TOOL_ALT = candidates.map(escapeForRegex).join('|');
+  return [
+    // spawnSync('jq', ...) / spawnSync(\n  'jq', ...)
+    new RegExp(String.raw`\b(?:${ARGV0_FNS})\s*\(\s*(['"\`])(${TOOL_ALT})\1`, 'g'),
+    // execSync('jq -r .x') — tool is the leading token of the command string
+    new RegExp(String.raw`\b(?:${SHELL_FNS})\s*\(\s*(['"\`])(${TOOL_ALT})(?=[\s;|&>]|\1)`, 'g'),
+  ];
+}
+
+// Workflows live at the REPO root; --base is the extension root, one level down.
+export function defaultWorkflowsDir(baseRoot) {
+  return path.join(baseRoot, '..', '.github', 'workflows');
+}
 
 function lineNumberAt(content, index) {
   let line = 1;
@@ -79,14 +183,14 @@ function isAllowlisted(lines, lineNo) {
   return own.includes('PROVISIONED-OK') || prev.includes('PROVISIONED-OK');
 }
 
-function scanFile(filePath, baseRoot) {
+export function scanFile(filePath, baseRoot, matchers) {
   const content = fs.readFileSync(filePath, 'utf8');
   const lines = content.split('\n');
   const rel = path.relative(baseRoot, filePath).split(path.sep).join('/') || filePath;
   const findings = [];
   const seen = new Set();
 
-  for (const matcher of MATCHERS) {
+  for (const matcher of matchers) {
     matcher.lastIndex = 0;
     let m;
     while ((m = matcher.exec(content)) !== null) {
@@ -102,26 +206,30 @@ function scanFile(filePath, baseRoot) {
   return findings;
 }
 
-function main(argv) {
+export function main(argv) {
   let baseRoot = process.cwd();
+  let workflowsDir;
   const files = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--base') {
+    if (argv[i] === '--base' || argv[i] === '--workflows') {
+      const flag = argv[i];
       const value = argv[++i];
       if (value === undefined) {
-        process.stderr.write('usage: --base requires a directory argument\n');
+        process.stderr.write(`usage: ${flag} requires a directory argument\n`);
         return 2;
       }
-      baseRoot = value;
+      if (flag === '--base') baseRoot = value;
+      else workflowsDir = value;
       continue;
     }
     files.push(argv[i]);
   }
 
+  const matchers = buildMatchers(deriveProvisionedTools(workflowsDir ?? defaultWorkflowsDir(baseRoot)));
   const findings = [];
   for (const file of files) {
     if (!fs.existsSync(file)) { continue; }
-    findings.push(...scanFile(file, baseRoot));
+    findings.push(...scanFile(file, baseRoot, matchers));
   }
 
   findings.sort((a, b) => a.rel.localeCompare(b.rel) || a.lineNo - b.lineNo);
@@ -129,4 +237,8 @@ function main(argv) {
   return findings.length > 0 ? 1 : 0;
 }
 
-process.exit(main(process.argv.slice(2)));
+// CLI guard: the tests import this module to drive `deriveProvisionedTools` directly,
+// and a bare top-level exit would kill the test runner on import.
+if (process.argv[1] && path.basename(process.argv[1]) === 'audit-unprovisioned-binary-spawns.mjs') {
+  process.exit(main(process.argv.slice(2)));
+}
