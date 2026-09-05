@@ -2115,3 +2115,102 @@ test('AP-EXT-ITER180-02: the span delimiters this file cuts on are CODE, and eve
   );
   assert.ok(maskCallers.length > 0, 'the anchor test must still exercise codeMask');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER10-01: the speed-bump entry named a compensating control that does
+// not compensate.
+//
+// `WRITE_COMMANDS` is deliberately an incomplete set, and the catalog is right
+// to refuse to grow it — a shell cannot be fenced by verb enumeration. What was
+// wrong was the justification: the entry said "the real containment is
+// state-manager.ts's write ceiling", which converted an OPEN residual into an
+// accepted one. The R-WSRC-1 ceiling cannot contain this class on either axis —
+// it is API-mediated (reachable only inside `StateManager.update()`/
+// `forceWrite()`) and property-scoped (it refuses `schema_version >
+// LATEST_SCHEMA_VERSION` and nothing else).
+//
+// These cases pin the residual as OPEN so the claim cannot silently re-inflate,
+// and the third pins the ceiling still firing on its own property so a future
+// reader can never confuse "the ceiling is absent" with "the ceiling is narrow".
+// ---------------------------------------------------------------------------
+
+// The bypass is specific, not a dead gate: each approving writer is paired with
+// a byte-adjacent `tee` twin over the SAME path that must still block.
+const AP_EXT_ITER10_01_BYPASSES = [
+  ['node -e', (t) => `node -e "require('fs').writeFileSync('${t}','{}')"`],
+  ['python3 -c', (t) => `python3 -c "open('${t}','w').write('{}')"`],
+  ['dd of=', (t) => `dd if=/tmp/pickle-src of=${t}`],
+  ['truncate -s 0', (t) => `truncate -s 0 ${t}`],
+  ['install', (t) => `install /tmp/pickle-src ${t}`],
+  ['ln -sf', (t) => `ln -sf /tmp/pickle-src ${t}`],
+];
+
+for (const [label, build] of AP_EXT_ITER10_01_BYPASSES) {
+  test(`AP-EXT-ITER10-01: ${label} over a protected state path is an OPEN residual (approves), while its tee twin blocks`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'approve',
+      `${label} is a documented uncontained bypass — if it now blocks, the speed-bump catalog entry must be updated, not this test`,
+    );
+    // Non-tautology: the same path through an enumerated writer still blocks,
+    // so the approve above is the missing member, not a disarmed gate.
+    assert.equal(
+      runWorkerBashInSession((t) => `echo x | tee ${t}`).decision,
+      'block',
+      'the enumerated-writer twin must still block',
+    );
+  });
+}
+
+test('AP-EXT-ITER10-01: the R-WSRC-1 ceiling neither refuses nor heals an out-of-band state write', async () => {
+  const sm = await import('../services/state-manager.js');
+  const { LATEST_SCHEMA_VERSION } = await import('../types/index.js');
+  const manager = sm.StateManager ? new sm.StateManager() : sm.default;
+  const tmpDir = mkFixtureTmpDir('cp-iter10-');
+  const statePath = path.join(tmpDir, 'state.json');
+  const seed = {
+    ...baseState({ session_dir: tmpDir }),
+    schema_version: LATEST_SCHEMA_VERSION,
+    tickets: [{ id: 't1', status: 'In Progress' }],
+  };
+  fs.writeFileSync(statePath, JSON.stringify(seed));
+  assert.equal(manager.read(statePath).tickets[0].status, 'In Progress');
+
+  // Exactly what the hook approves above: a raw write that never enters the
+  // StateManager API. The payload is VALID state, not garbage, so no corruption
+  // path or orphan-tmp recovery can engage either.
+  const doctored = JSON.stringify({ ...seed, tickets: [{ id: 't1', status: 'Done' }] });
+  execFileSync(process.execPath, [
+    '-e', `require('fs').writeFileSync(${JSON.stringify(statePath)}, ${JSON.stringify(doctored)})`,
+  ], { timeout: 20000 });
+
+  assert.equal(
+    manager.read(statePath).tickets[0].status,
+    'Done',
+    'an out-of-band write is NOT contained and NOT healed — the ceiling is not on this path',
+  );
+});
+
+test('AP-EXT-ITER10-01: the ceiling is NARROW, not absent — it still refuses a forward schema_version through update()', async () => {
+  const sm = await import('../services/state-manager.js');
+  const { LATEST_SCHEMA_VERSION } = await import('../types/index.js');
+  const manager = sm.StateManager ? new sm.StateManager() : sm.default;
+  const tmpDir = mkFixtureTmpDir('cp-iter10-narrow-');
+  const statePath = path.join(tmpDir, 'state.json');
+  fs.writeFileSync(statePath, JSON.stringify({
+    ...baseState({ session_dir: tmpDir }), schema_version: LATEST_SCHEMA_VERSION,
+  }));
+
+  // The discriminator. The ceiling exists and works on its OWN property, so the
+  // finding is "it does not reach out-of-band writes", never "there is no ceiling".
+  assert.throws(
+    () => manager.update(statePath, (s) => { s.schema_version = LATEST_SCHEMA_VERSION + 1; }),
+    /schema_version=/,
+    'the ceiling must still refuse a forward schema_version through the API',
+  );
+
+  // And it is scoped to that property alone: a non-schema mutation through the
+  // SAME API is untouched, which is why it was never general containment.
+  manager.update(statePath, (s) => { s.tickets = [{ id: 't1', status: 'Done' }]; });
+  assert.equal(manager.read(statePath).tickets[0].status, 'Done');
+});
