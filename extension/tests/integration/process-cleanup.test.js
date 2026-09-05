@@ -760,3 +760,118 @@ test('AP-EXT-ITER54-01: a timed-out gate check leaves no orphaned subtree behind
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// PC-7: the shutdown kill reaps the analyst's GRANDCHILD, not just the `claude` process
+//
+// `terminateWorkerProcess` (spawn-refinement-team.ts) states a guarantee PC-4 and PC-5
+// cannot check: a bare kill of the direct child reaches the `claude` CLI alone, and the
+// analyst's OWN tool subprocesses survive holding the inherited stdout/stderr write ends —
+// so `'close'` never fires and the ref'd pipe handles keep the refinement process alive
+// forever. `detached` + a negative-pid group signal is what actually prevents that.
+//
+// PC-4's and PC-5's fake `claude` bodies spawn no children, so both are satisfied by a bare
+// direct-child kill; the group property is asserted nowhere on the refinement path (ITER54
+// asserts it only for the GATE path). This test is that missing oracle.
+//
+// The oracle is the SURVIVING LEAF, never the team's exit — a team that exits promptly while
+// leaking an orphan is the exact defect, so an exit-only assertion greens over it.
+//
+// The fixture is `sh`, not node: it models the real chain (`claude` -> tool -> worker) and
+// keeps child-spawning tokens out of this file's source text, which the subprocess-heavy
+// audit scans (the same reason ITER54's `leaker.sh` is shaped this way). The leaf carries the
+// test's tmp dir in its argv so its live command line re-proves ownership at reap time.
+//
+// Both waits are observation-driven, not fixed sleeps: it signals only once a grandchild is
+// recorded and alive, then polls for that pid's death. A fixed pre-signal delay would race the
+// staggered worker bring-up and make a red mean "too slow" instead of "leaked an orphan".
+// ---------------------------------------------------------------------------
+test('PC-7: SIGTERM reaps an analyst grandchild, not just the claude process', { timeout: 90_000 }, async () => {
+  const dir = makeTmpRoot('pickle-pc7-');
+  let pidDir = null;
+  let leafDir = null;
+  let child = null;
+  try {
+    const sessionDir = path.join(dir, 'session');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    writeState(sessionDir, { worker_timeout_seconds: 60 });
+
+    fs.writeFileSync(path.join(dir, 'test-prd.md'), '# Test PRD\n\nTest content.\n');
+    const extRoot = path.join(dir, 'ext');
+    fs.mkdirSync(extRoot, { recursive: true });
+
+    pidDir = makePidDir(dir);
+    leafDir = path.join(dir, 'leaf-pids');
+    fs.mkdirSync(leafDir, { recursive: true });
+
+    const fakeBinDir = path.join(dir, 'fakebin');
+    fs.mkdirSync(fakeBinDir, { recursive: true });
+    const fakeClaude = path.join(fakeBinDir, 'claude');
+    fs.writeFileSync(fakeClaude, [
+      '#!/bin/sh',
+      `echo "" > ${JSON.stringify(pidDir)}/"$$"`,
+      // Idles far past this test, so a live leaf after the kill is a genuine orphan and
+      // never a race with its own exit.
+      `${JSON.stringify(process.execPath)} -e 'setTimeout(()=>{},600000)' ${JSON.stringify(dir)} &`,
+      `echo "" > ${JSON.stringify(leafDir)}/"$!"`,
+      'wait',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    fs.chmodSync(fakeClaude, 0o755);
+
+    child = spawn(
+      process.execPath,
+      [
+        SPAWN_REFINEMENT_BIN,
+        '--prd', path.join(dir, 'test-prd.md'),
+        '--session-dir', sessionDir,
+        '--cycles', '1',
+        '--timeout', '60',
+      ],
+      {
+        env: { ...process.env, PATH: `${fakeBinDir}:${process.env.PATH}`, EXTENSION_DIR: extRoot },
+        cwd: dir,
+        // Nothing reads this child's output and its spinner writes continuously; an undrained
+        // pipe would fill and block the process under test.
+        stdio: 'ignore',
+        // Hang-guard, not a perf assertion — it sits above every deadline below.
+        timeout: 60_000,
+      },
+    );
+
+    // Precondition, observed: an analyst is up and has started a grandchild.
+    let leafPids = [];
+    const untilLeaf = Date.now() + 45_000;
+    for (;;) {
+      leafPids = readRecordedPids(leafDir);
+      if (leafPids.length > 0 || Date.now() >= untilLeaf) break;
+      await sleep(50);
+    }
+    assert.ok(leafPids.length > 0, 'fixture must start at least one analyst grandchild before SIGTERM');
+    const leaf = leafPids[0];
+    assert.ok(isPidAlive(leaf), `grandchild ${leaf} must be alive before the SIGTERM under test`);
+
+    child.kill('SIGTERM');
+
+    // Postcondition, observed: the group signal reached the grandchild. The kill is
+    // asynchronous at the OS level, so poll rather than sample once.
+    const untilDead = Date.now() + 20_000;
+    while (Date.now() < untilDead && isPidAlive(leaf)) {
+      await sleep(100);
+    }
+    assert.equal(
+      isPidAlive(leaf),
+      false,
+      `analyst grandchild ${leaf} survived the refinement team's SIGTERM as an orphan: `
+      + `${processCommandLine(leaf).trim()} — group kill regressed to a bare direct-child kill?`,
+    );
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+    // Reap before rmSync — removing the tmp tree deletes the pid records, not the processes.
+    if (pidDir) reapRecordedGrandchildren(pidDir, dir);
+    if (leafDir) reapRecordedGrandchildren(leafDir, dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
