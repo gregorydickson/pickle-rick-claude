@@ -361,35 +361,48 @@ function saveCache(cachePath: string, cache: MetricsCache): void {
   }
 }
 
+/**
+ * AP-EXT-ITER200-01: the ONE announce-and-drop for EVERY jsonl that leaves a metrics
+ * total, at every level of the walk. `aceb54d7` (activity half) and `7e56db10` (session
+ * half) each fixed the per-FILE arm and each left the DIRECTORY arm returning silently
+ * one frame up, so the third recurrence of one theme was a strictly larger under-count
+ * than the two already fixed: a whole corpus, reported as a quiet day.
+ *
+ * `label` names the scanner, `target` the file or directory that left the totals. A
+ * directory the filesystem REFUSED to enumerate is announced; a directory it answered
+ * about (`!isDirectory()`) is not, because nothing was dropped. That is the whole rule —
+ * no list of errno values to keep current.
+ */
+function announceScanDrop(label: string, target: string, reason: string): null {
+  process.stderr.write(`[metrics] ${label} scan skipped ${target}: ${reason}\n`);
+  return null;
+}
+
 function readSessionSlugs(projectsDir: string): string[] | null {
   try {
     return fs.readdirSync(projectsDir).filter((s) => !s.startsWith('-private-var-'));
-  } catch {
-    return null;
+  } catch (err) {
+    return announceScanDrop('session', projectsDir, `enumeration failed: ${safeErrorMessage(err)}`);
   }
 }
 
 function readSlugJsonlFiles(slugDir: string): string[] | null {
   try {
-    const stat = fs.statSync(slugDir);
-    if (!stat.isDirectory()) return null;
+    // A non-directory is an ANSWER, not a refusal — it holds no transcripts, so it is
+    // not a drop and stays silent. Anything that throws is a refusal: announce it.
+    if (!fs.statSync(slugDir).isDirectory()) return null;
     return fs.readdirSync(slugDir).filter((f) => f.endsWith('.jsonl'));
-  } catch {
-    return null;
+  } catch (err) {
+    return announceScanDrop('session', slugDir, `enumeration failed: ${safeErrorMessage(err)}`);
   }
 }
 
 /**
- * AP-EXT-ITER193-01: the ONE announce-and-drop for every reason a session
- * transcript leaves the token totals. `aceb54d7` established the invariant on the
- * activity half (`forEachActivityEventInWindow` reports each file it cannot read)
- * and left this half silent, so `/pickle-metrics` could publish an under-count
- * that reads exactly like a quiet day. Three drop causes share one exit so the
- * family cannot re-fork into a silent fourth.
+ * AP-EXT-ITER193-01: the session half's drop reasons, all of which route through the ONE
+ * exit above so the family cannot re-fork into a silent sibling.
  */
 function dropSessionFile(filePath: string, reason: string): null {
-  process.stderr.write(`[metrics] session scan skipped ${filePath}: ${reason}\n`);
-  return null;
+  return announceScanDrop('session', filePath, reason);
 }
 
 function loadSessionFileData(
@@ -747,7 +760,8 @@ function forEachActivityEventInWindow(
   let files: string[];
   try {
     files = fs.readdirSync(activityDir).filter((f) => f.endsWith('.jsonl'));
-  } catch {
+  } catch (err) {
+    announceScanDrop(label, activityDir, `enumeration failed: ${safeErrorMessage(err)}`);
     return;
   }
 
@@ -770,8 +784,7 @@ function forEachActivityEventInWindow(
         onEvent(obj);
       });
     } catch (err) {
-      const msg = safeErrorMessage(err);
-      process.stderr.write(`[metrics] ${label} scan skipped ${file}: ${msg}\n`);
+      announceScanDrop(label, file, safeErrorMessage(err));
     }
   }
 }

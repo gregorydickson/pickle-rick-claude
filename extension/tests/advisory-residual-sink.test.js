@@ -373,3 +373,92 @@ test('AP-EXT-ITER193-01: anti-vacuity — a countable session transcript is coun
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER200-01 — the DIRECTORY arm of the same invariant.
+//
+// `aceb54d7` and `7e56db10` each announced the per-FILE drop and each left the
+// enumeration one frame up returning silently: `readSessionSlugs`,
+// `readSlugJsonlFiles` and `forEachActivityEventInWindow`'s `readdirSync` all
+// swallowed the error and reported zero. That is the SAME "an under-count that
+// says nothing is a false verdict" defect at strictly larger blast radius — a
+// whole corpus rather than one file — and `/pickle-metrics` prints it as
+// "No metrics data found", indistinguishable from a quiet day.
+//
+// The cases below exercise the shipped scanners, not a mirror of their rule.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER200-01: an unreadable projects dir is announced, never a silent zero', () => {
+  const { root, cacheFile } = makeProjectsDir();
+  try {
+    const missing = path.join(root, 'no-such-projects-dir');
+
+    const { value: result, stderr } = captureStderr(() => scanSessionFiles(missing, todayKey(), todayKey(), cacheFile));
+
+    assert.equal(result.size, 0, 'the corpus is genuinely absent from the totals');
+    assert.match(stderr, /\[metrics\] session scan skipped /, 'the whole-corpus drop must announce itself');
+    assert.ok(stderr.includes(missing), 'the diagnostic must name the directory that left the totals');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER200-01: a project dir that cannot be enumerated is announced', () => {
+  const { root, cacheFile } = makeProjectsDir();
+  try {
+    const day = todayKey();
+    // A dangling symlink: `readSessionSlugs` enumerates it as a slug, then the
+    // per-slug stat REFUSES. A real EACCES project dir takes the same arm, but a
+    // dangling link reproduces it without depending on the runner's uid.
+    const brokenSlug = path.join(root, 'unreadable-project');
+    fs.symlinkSync(path.join(root, 'target-that-does-not-exist'), brokenSlug);
+    // A countable sibling so the scan is not vacuous — the drop must not take it down.
+    const goodDir = path.join(root, 'normal-project');
+    fs.mkdirSync(goodDir, { recursive: true });
+    fs.writeFileSync(path.join(goodDir, 'session.jsonl'), `${assistantLine(isoAtLocalNoon(day), 5, 7)}\n`);
+
+    const { value: result, stderr } = captureStderr(() => scanSessionFiles(root, day, day, cacheFile));
+
+    assert.equal(result.get('normal-project').get(day).input, 5, 'the readable sibling is still counted');
+    assert.match(stderr, /\[metrics\] session scan skipped /, 'the per-project drop must announce itself');
+    assert.ok(stderr.includes(brokenSlug), 'the diagnostic must name the project dir that left the totals');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER200-01: an unreadable activity dir is announced by the scanner that read it', () => {
+  const { root } = makeProjectsDir();
+  try {
+    const missing = path.join(root, 'no-such-activity-dir');
+
+    const { value: events, stderr } = captureStderr(() => scanSkipFlagEvents(missing, todayKey(), todayKey()));
+
+    assert.equal(events.length, 0, 'no events are invented for an unreadable dir');
+    assert.match(stderr, /\[metrics\] skip-flag scan skipped /, 'the activity-half drop must announce itself, and name its scanner');
+    assert.ok(stderr.includes(missing), 'the diagnostic must name the directory that left the totals');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER200-01: anti-vacuity — a non-directory entry drops nothing and stays silent', () => {
+  const { root, cacheFile } = makeProjectsDir();
+  try {
+    const day = todayKey();
+    // The shape a previous run leaves behind: a stray FILE beside the slug dirs.
+    // The filesystem ANSWERED (`!isDirectory()`); no transcript was lost, so a
+    // diagnostic here would be noise — and noise is how a real drop gets ignored.
+    fs.writeFileSync(path.join(root, 'stray-cache-file.json'), '{}');
+    const slugDir = path.join(root, 'normal-project');
+    fs.mkdirSync(slugDir, { recursive: true });
+    fs.writeFileSync(path.join(slugDir, 'session.jsonl'), `${assistantLine(isoAtLocalNoon(day), 111, 222)}\n`);
+
+    const { value: result, stderr } = captureStderr(() => scanSessionFiles(root, day, day, cacheFile));
+
+    assert.equal(result.get('normal-project').get(day).input, 111, 'the transcript beside it is still counted');
+    assert.equal(stderr, '', 'an answered non-directory is not a drop and must produce no diagnostic');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
