@@ -6057,13 +6057,28 @@ function seedBoundedEscapeFixture() {
 const BOUNDED_ESCAPE_CAP_FOR_TEST = 3;
 const LIFECYCLE_PHASES = ['research', 'plan', 'conformance', 'code_review'];
 
+// AP-EXT-ITER41-02: derive the iteration-window reference timestamp from the SAME
+// filesystem clock that will stamp the lifecycle artifact's mtime, never from
+// Date.now(). A same-tick Date.now()-vs-mtime comparison races on any filesystem whose
+// mtime resolution is coarser (or clock source skewed) relative to the write-to-capture
+// gap; measured to fail intermittently in exactly that shape (owning-site research:
+// production never compares same-tick — a full worker spawn separates the two — so the
+// race is fixture-only). Writing then statting a marker on the same fs eliminates the
+// cross-clock skew without a sleep, without padding, and without widening the `>=`
+// comparison this fixture verifies.
+function captureFsClockMs(referenceDir) {
+    const marker = path.join(referenceDir, '.race-probe-marker');
+    fs.writeFileSync(marker, '');
+    return fs.statSync(marker).mtimeMs;
+}
+
 // Drive `cap + 1` relaunch passes. `progressing` writes one real lifecycle artifact per
 // pass (the phase a working manager would have landed); returns the pass index that
 // escaped, or null when the ticket survived every pass.
 async function driveBoundedEscapePasses(fixture, progressing) {
     const { evaluateBoundedEscape, recordBoundedEscapeAttempt } = await import('../bin/mux-runner.js');
     for (let pass = 0; pass <= BOUNDED_ESCAPE_CAP_FOR_TEST; pass++) {
-        const iterationStartMs = Date.now();
+        const iterationStartMs = captureFsClockMs(fixture.root);
         if (progressing) {
             fs.writeFileSync(
                 path.join(fixture.root, fixture.ticket, `${LIFECYCLE_PHASES[pass]}_${fixture.ticket}.md`),
@@ -6104,6 +6119,35 @@ test('AP-EXT-ITER41-02 control: a sterile ticket still escapes at the cap (AC-A4
         escapedAt, BOUNDED_ESCAPE_CAP_FOR_TEST,
         'a ticket that produced nothing across cap relaunches is exactly what AC-A4 forces terminal — '
         + 'the progress reset must not disable the escape',
+    );
+});
+
+// AP-EXT-ITER41-02 (Root A): drive the production detector DIRECTLY with an artifact
+// whose mtime EXACTLY equals the iteration window start. `ticketProducedFreshLifecycleArtifact`
+// (mux-runner.ts:10899) compares `mtimeMs >= sinceMs` — inclusive — and this pin proves
+// the boundary itself, independent of any fixture timing: mutating that comparison to a
+// strict `>` must redden this test while every timing-based AP-EXT-ITER41-02 test above
+// may still pass by luck (they only ever produce a `>=` margin, never an exact tie).
+test('AP-EXT-ITER41-02: an artifact mtime exactly equal to the iteration window start counts as fresh (inclusive boundary)', async () => {
+    const { recordBoundedEscapeAttempt } = await import('../bin/mux-runner.js');
+    const fixture = seedBoundedEscapeFixture();
+    const artifactPath = path.join(fixture.root, fixture.ticket, `research_${fixture.ticket}.md`);
+    fs.writeFileSync(artifactPath, '# work\n');
+    // Read back the artifact's REAL mtime and use that exact value as the window start —
+    // not "shortly before" it, but bit-for-bit equal, so the comparison is tested at the
+    // boundary itself rather than merely on the safe side of it.
+    const iterationStartMs = fs.statSync(artifactPath).mtimeMs;
+
+    recordBoundedEscapeAttempt(fixture.statePath, fixture.ticket, 1, () => {}, {
+        sessionDir: fixture.root,
+        iterationStartMs,
+    });
+
+    const ledger = JSON.parse(fs.readFileSync(fixture.statePath, 'utf8')).recovery_attempts;
+    assert.deepEqual(
+        ledger.filter(a => a.strategy === 'bounded_terminal_escape' && a.ticket === fixture.ticket), [],
+        'mtimeMs === sinceMs must count as fresh evidence (inclusive >=) and clear/skip the charge, '
+        + 'never be read as stale',
     );
 });
 
