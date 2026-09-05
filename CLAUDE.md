@@ -108,9 +108,22 @@ Detail: `prds/CLAUDE.md` → "Self-modifying-recovery bundles".
 
 ## 📐 COMPOSE THE LARGEST BUNDLE THE SURFACE ALLOWS — the review phases are a FIXED toll (operator-set, BINDING for dispatch)
 
-**Dispatch as many tickets per pipeline run as the composition rule below allows. Stop dispatching
-2–3 ticket bundles.** This is a dispatch-composition rule; it does not alter the PRIME DIRECTIVE or the
-ratchet order above.
+**Compose HUGE bundles — dozens of tickets, many fixes at once. Stop dispatching 2–3 ticket bundles;
+a 5-ticket bundle is a MINIMUM, not a target.** (Operator-set 2026-09-05: *"given the tax of our review
+cycles we should do huge bundles with many fixes."*) This is a dispatch-composition rule; it does not
+alter the PRIME DIRECTIVE or the ratchet order above.
+
+**The review toll is paid PER BUNDLE and the release ritual PER RELEASE — neither scales with ticket
+count.** So the correct question when composing is never "is this too many?" but "what else shares this
+surface and can ride the same review?" A bundle that drains 20 findings costs almost exactly what a
+bundle draining 4 costs. `prds/p1-b-megadrain-forty-open-items-by-root.md` is the standing vehicle for
+this: compose into it by ROOT rather than filing another small bundle.
+
+**Composing a stale row is CHEAP; splitting to avoid stale rows is EXPENSIVE.** When a candidate's
+premise turns out already-fixed, declare `zero_diff_intent: already-satisfied` in the ticket
+frontmatter up front and close it on evidence — B-DRAIN13 closed two of thirteen that way, each with a
+full lifecycle. Never shrink a bundle because some members *might* be stale; that trades a cheap
+in-bundle close for another ~300-minute review toll.
 
 **Why — measured across 9 recorded sessions, not argued.** `PICKLE` is roughly **linear at 22–25
 min/ticket**. `ANATOMY-PARK` + `SZECHUAN-SAUCE` are a **near-fixed ~300-minute toll**, because they

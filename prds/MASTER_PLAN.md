@@ -74,7 +74,24 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🧭 QUEUED (after B-CIGREEN) — [[B-JUDGETO]]: the judge times out at its own raised ceiling (2026-09-05)
+## 🧭 QUEUED (after B-CIGREEN) — [[B-MEGADRAIN]]: the whole open backlog, composed BY ROOT (recomposed 2026-09-05)
+
+`prds/p1-b-megadrain-forty-open-items-by-root.md` — **P1, the standing HUGE-bundle vehicle.**
+Operator-set 2026-09-05: *"given the tax of our review cycles we should do huge bundles with many
+fixes."* [[B-JUDGETO]] and [[R-JPCM]] are FOLDED INTO it (same `microverse-runner.ts` surface) rather
+than dispatched as their own small bundles — a 4-class bundle pays the same ~300-minute review toll as
+a 30-ticket one.
+
+**It was authored 2026-08-28 and never dispatched**, so it is recomposed against HEAD: ~10 findings
+struck as closed (the 2026-08-31 sweep's verified-fixed list, plus `R-JUNS`/`R-FBTN`/`R-RNTA` and
+`B-LOGEV`/`B-ONEABORT` closed by B-FRESHWIN), `B-OFFREPO` flagged PARTIAL, and the two judge defects
+added. **The roster is a CANDIDATE list** — an automated status pass was attempted and misclassified
+six sweep-verified rows as live, so every ticket re-runs the mechanism check and declares
+`zero_diff_intent: already-satisfied` when a premise proves stale.
+
+---
+
+## 🔗 FOLDED INTO [[B-MEGADRAIN]] (not separately dispatched) — [[B-JUDGETO]]: the judge times out at its own raised ceiling (2026-09-05)
 
 `prds/p1-b-judgeto-the-szechuan-judge-exceeds-its-own-raised-ceiling.md` — **P1, filed at operator
 request.** szechuan-sauce degraded on every bundle this session, and a degraded run withholds the
@@ -114,7 +131,7 @@ trigger table; two roots in this plan have already dissolved that way this week.
 
 ---
 
-## 🧭 NEXT DISPATCH — [[B-FRESHWIN]]: CI is a coin flip on one test (2026-09-05)
+## ✅ SHIPPED-INTO-BRANCH (was NEXT DISPATCH) — [[B-FRESHWIN]]: CI is a coin flip on one test (2026-09-05)
 
 `prds/p1-b-freshwin-the-progress-window-race-and-two-verified-p1-roots.md` — **P1.** Takes dispatch
 ahead of [[B-CIGREEN]] because it is what makes B-CIGREEN's goal unmeasurable: you cannot certify a
@@ -142,7 +159,7 @@ converts a measurable defect into a standing permission to read red as green.
 
 ---
 
-## 🧭 NEXT DISPATCH — [[B-ARGMAX]]: the fix-forward rung is dead on Linux, silently (2026-09-04)
+## ✅ SHIPPED-INTO-BRANCH (was NEXT DISPATCH) — [[B-ARGMAX]]: the fix-forward rung is dead on Linux, silently (2026-09-04)
 
 `prds/p1-b-argmax-the-fix-forward-rung-is-dead-on-linux.md` — **P1.** Takes dispatch ahead of
 [[B-CIGREEN]] because it is bundle-caused, it reds the release gate now, and it blocks B-CIGREEN's own
@@ -169,7 +186,7 @@ That is the enumerated-set shape — it buys one release and schedules the next 
 
 ---
 
-## 🧭 NEXT DISPATCH — [[B-CIGREEN]]: the release workflow has never been green on a tag (2026-08-27)
+## 📜 SUPERSEDED (was NEXT DISPATCH 2026-08-27) — [[B-CIGREEN]] pre-recompose scope, retained for the record
 
 `prds/p1-b-cigreen-the-release-workflow-has-never-been-green.md` — **P1.** Fourteen consecutive release
 runs have failed, beta.7 through beta.20. Two blindfolds are now gone ([[B-RELTAG]] fixed the tags,

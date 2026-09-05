@@ -410,7 +410,17 @@ export class CodegraphService {
         this.degrade(op, 'timeout');
         resolve({ ok: false });
       }, timeoutMs);
-      if (typeof timer.unref === 'function') timer.unref();
+      // This timer MUST stay ref'd: when `work` hangs — the only case this deadline exists
+      // for — it is the SOLE settle path of the promise returned here. An `.unref()` makes it
+      // fire only if some UNRELATED handle happens to hold the loop open, so with nothing else
+      // pending the loop drains and this promise stays forever unsettled (the `cancelled`
+      // signature: "Promise resolution is still pending but the event loop has already
+      // resolved"). Same shape and same fix as `spawnWithClosedStdin` (microverse-runner.ts).
+      //
+      // Ref'ing costs no liveness and adds no hang: this is a ONE-SHOT deadline, not a
+      // heartbeat. Every non-timeout path clears it (the sync-throw path below, and both
+      // `work.then` handlers), so it holds the loop only while an op is genuinely in flight,
+      // for at most `timeoutMs`.
 
       let work: Promise<unknown>;
       try {

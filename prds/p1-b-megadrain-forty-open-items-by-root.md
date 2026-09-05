@@ -23,6 +23,44 @@ in a large bundle (mux-runner exiting 0 with a ticket `In Progress`) shipped as 
 
 **The real risk predictor is ITERATION COUNT, not roster size.** Watch `iteration`, not the roster.
 
+## ♻️ RECOMPOSED 2026-09-05 — READ THIS BEFORE SCOPING ANY ROOT
+
+This PRD was authored 2026-08-28. **Four releases have shipped since (beta.22 → beta.25) plus
+B-ARGMAX and B-FRESHWIN**, so a meaningful fraction of the roster below is already closed. Launching it
+as written would spend worker lifecycles rebuilding shipped work.
+
+**STRUCK — closed since authoring; do NOT create tickets for these.** Verified FIXED by the 2026-08-31
+sweep: `R-ISSC`, `R-SJLAGMT`, `R-GBANNER`, `R-NOPOSTTIER`, `R-GENVL`, `R-WGTORPH`, `R-ORCG`, `R-MPVU`,
+`R-BCFR`, the 2026-08-07 crash-floor P2. Closed since that sweep: `R-JUNS` and `R-FBTN` (2026-09-01),
+the `R-RNTA` mechanism (2026-09-01, and its distribution channel proven in the field 2026-09-04 —
+beta.25 shipped `assets=1` over a red gate), `B-LOGEV` and the `B-ONEABORT` residual (2026-09-05,
+B-FRESHWIN tickets `9ef9ea19` / `0d579ec5`). `B-OFFREPO` is **partially** shipped — `AC-OFFREPO-1/-2a/
+-2c/-2d` are live across 8 files, but the `<workingDir>/extension` keying still stands at 8+ sites in
+`mux-runner.ts`; scope its FIVE cited sites individually or not at all.
+
+**ADDED — filed after this PRD was written, same `microverse-runner.ts` surface, so they ride this
+review for free:**
+- **[[B-JUDGETO]]** (`prds/p1-b-judgeto-the-szechuan-judge-exceeds-its-own-raised-ceiling.md`) — the
+  szechuan judge times out at 600s, the ceiling `R-SJWT` raised to 600 in June to stop it timing out.
+  Do NOT raise it again; measure whether `R-SJWT-1`'s `allowed_paths` scoping still holds.
+- **[[R-JPCM]]** — the judge PROMPT demands a bare number, the judge PARSER demands JSON, so the
+  violation ledger is always empty. Same file, and the two defects are adjacent: the judge cannot
+  finish measuring, and when it does the contracts disagree.
+
+**MANDATORY per-root discipline — the roster above is a CANDIDATE list, not a verified one.** An
+automated pass over the plan's status cells was attempted and was **not reliable** (it classified six
+sweep-verified-fixed rows as live, because those rows carry descriptive prose about their original
+open state). So every ticket's research phase MUST re-run the mechanism check — grep HEAD and the
+deployed tree for the MECHANISM, never the `R-` code — before writing any fix.
+
+**When a premise turns out to be stale, declare `zero_diff_intent: already-satisfied` in frontmatter UP
+FRONT** and close the ticket on evidence. This is the measured-good pattern: B-DRAIN13 closed two of
+its thirteen that way, each with a full lifecycle and machine-checkable ACs, and composing
+one-ticket-per-PRD would have spent two worker lifecycles discovering nothing. A stale row closed
+cheaply is a success, not a failure.
+
+---
+
 ## 🚨 ROOT A — MEASUREMENT DESTROYS ITS OWN EVIDENCE (this codebase's dominant defect class)
 
 Every item here is a gate or audit that **reports a verdict it did not measure**. Order this root FIRST:
