@@ -127,9 +127,8 @@ function provisionedByBlock(block) {
 // unprovisioned — the very drift this derivation exists to end. The alternative, a
 // package->binary mapping table, is the enumerated-set shape we are removing.
 //
-// Source 2 is deliberately scoped to provisioning step blocks. A backticked mention
-// anywhere else in the file does NOT count: file-wide scanning would let unrelated
-// prose silently mark a tool provisioned, and a false green is worse than a false red.
+// Source 2 is scoped to provisioning step blocks; provisionedByBlock above owns that
+// rule and explains why a wider read would be a false-green generator.
 //
 // Fail-closed: an absent or unreadable workflows dir yields the EMPTY set, so every
 // candidate stays a candidate. The degrade direction is more findings, never fewer.
