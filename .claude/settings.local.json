@@ -9,8 +9,7 @@
       "Bash(bash:*)",
       "Bash(node:*)",
       "Bash(tmux:*)",
-      "Edit(.claude/commands/**)",
-      "Write(.claude/commands/**)"
+      "Edit(.claude/commands/**)"
     ]
   }
 }
