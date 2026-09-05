@@ -10684,14 +10684,14 @@ function classifyWorkerSessionLogs(ticketDir: string, files: string[], workObser
   const latest = logs.length > 0 ? logs[logs.length - 1] : null;
   // The one derivation of the projection: unmeasured + corroborated work → `empty` (no
   // silent-death shape); unmeasured + nothing to corroborate → `failed` → `log_empty`.
-  const unmeasured = (logPath: string, pid: number | null) => {
+  const unmeasured = (unmeasuredLogPath: string, unmeasuredPid: number | null) => {
     const measurement: WorkerLogMeasurement = workObserved() ? 'empty' : 'failed';
     return {
       subClass: measurement === 'failed' ? ('log_empty' as const) : null,
       measurement,
       sessionLogSize,
-      logPath,
-      pid,
+      logPath: unmeasuredLogPath,
+      pid: unmeasuredPid,
     };
   };
   if (!latest) {

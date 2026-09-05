@@ -6628,8 +6628,9 @@ test('B-LOGEV: the `measured` arm is untouched — a corroborating window cannot
     // The differential that makes the assertion above load-bearing rather than vacuous:
     // the SAME window over a 0-byte log does move the verdict. (This observes the
     // corroborant's EFFECT, which is all the public seam exposes — it is not a claim that
-    // the thunk went uncalled.)
-    const empty = bLogevFixture(root, { ticketId: 'b109ev05' });
+    // the thunk went uncalled.) A sibling root under the SAME tmp dir, so the two fixtures
+    // share no state.json and the `finally` still reclaims both.
+    const empty = bLogevFixture(path.join(root, 'alt'), { ticketId: 'b109ev05' });
     assert.equal(
       checkPartialLifecycleExit(empty.sessionDir, empty.statePath, empty.ticketId, empty.corroboratingWindow).measurement,
       'empty',
