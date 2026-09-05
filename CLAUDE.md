@@ -106,6 +106,49 @@ The pipeline is the product: it fixes its own bugs. **Default: author a PRD/tick
 
 Detail: `prds/CLAUDE.md` → "Self-modifying-recovery bundles".
 
+## 📐 COMPOSE THE LARGEST BUNDLE THE SURFACE ALLOWS — the review phases are a FIXED toll (operator-set, BINDING for dispatch)
+
+**Dispatch as many tickets per pipeline run as the composition rule below allows. Stop dispatching
+2–3 ticket bundles.** This is a dispatch-composition rule; it does not alter the PRIME DIRECTIVE or the
+ratchet order above.
+
+**Why — measured across 9 recorded sessions, not argued.** `PICKLE` is roughly **linear at 22–25
+min/ticket**. `ANATOMY-PARK` + `SZECHUAN-SAUCE` are a **near-fixed ~300-minute toll**, because they
+review the accumulated diff **by SUBSYSTEM, not per ticket**. Citadel is noise.
+
+| bundle size | share of wall clock spent on review overhead |
+|---|---|
+| 2 tickets | **~85%** |
+| 8 tickets | **~60%** |
+
+Draining 8 tickets as four small bundles costs ≈**1400** minutes of pipeline time; as one bundle,
+≈**480**. A small bundle pays the expensive phase again to review work that could have been reviewed once.
+
+**There is NO known ticket-count ceiling.** The old "cap at 6–7" was **RETRACTED 2026-08-26**: it rested
+on a `hit iteration cap` log line that was a mislabel (an ABSENT `priorExitReason` rendering as a
+specific cause), and a ticket-count ceiling was never measured. Do not reintroduce one.
+
+**Reliability does NOT degrade with size — size is not the risk predictor.** 8 of 9 recorded sessions
+converged; **both** 8-ticket bundles converged, and the only `stalled_below_target` was a **3-ticket**
+bundle. Do not justify a small bundle on safety grounds; the evidence does not support it.
+
+**The real risk is ITERATION COUNT, not ticket count.** More tickets ⇒ more iterations ⇒ more exposure
+to the iteration/budget cap, and a bundle that exhausts it reports the phase incomplete and ADVANCES —
+a careless reader sees a finished pipeline and never learns a ticket was never built. Watch `iteration`,
+not roster size, and raise the pickle iteration cap in the same breath when composing large.
+
+**Composition rules (priority order):**
+1. **Compose by SHARED FILE / SUBSYSTEM SURFACE, not by priority tier.** The toll scales with subsystem
+   COUNT, so tickets touching the same files ride one review for free; a bundle sprawling across new
+   subsystems pays more. Priority orders the queue; **surface composes the bundle.** This is the real
+   bound on "as many as possible" — more tickets is free only while the surface stays put.
+2. **Mixing fixes with new functionality is SOUND.** Each ticket gets its own commit, so the
+   structural-vs-behavioral separation is preserved at commit granularity, where it belongs.
+3. **Prefer bundles that RETIRE a standing gate exception** — a permanent "ignore these N inherited
+   failures" carve-out is a standing permission to read red as green.
+
+Full measured tables + per-session durations: `prds/MASTER_PLAN.md` → "BUNDLE SIZING".
+
 ## ⛔ Worker Forbidden Ops (R-WSRC)
 
 Workers run inside the runtime they modify. Hooks enforce these (prose alone failed — R-QGSK-3, 2026-05-16).
