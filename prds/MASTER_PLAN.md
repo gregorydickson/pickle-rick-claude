@@ -74,6 +74,29 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🧭 QUEUED (after B-CIGREEN) — [[B-JUDGETO]]: the judge times out at its own raised ceiling (2026-09-05)
+
+`prds/p1-b-judgeto-the-szechuan-judge-exceeds-its-own-raised-ceiling.md` — **P1, filed at operator
+request.** szechuan-sauce degraded on every bundle this session, and a degraded run withholds the
+release verdict — three bundles completed, zero released.
+
+**Two DIFFERENT causes wore one disposition**, which is why it read as a single recurring defect:
+B-ARGMAX died on `judge timed out after 600s` (4 attempts, 1 iteration / 44m); B-FRESHWIN died on a
+malformed `Write(.claude/commands/**)` permission rule, **fixed** `e4edb6f9`. This bundle owns the
+timeout only.
+
+**The remedy for this exact class has already been consumed.** `R-SJWT` (#95, archived) shipped
+`B-SJWT` v1.98.0 on 2026-06-04 with R-SJWT-2 = raise `DEFAULT_METRIC.timeout_seconds` 300 → 600.
+Measured at HEAD: `init-microverse.ts:10` is `600` and the failing run's `microverse.json` used
+exactly `600`. Raising the ceiling bought about three months. **Do not raise it again** — the PRD
+makes that an explicit non-goal, because R-SJWT is the receipt for that approach.
+
+First question, by measurement: is R-SJWT-1 (scope the judge prompt to `allowed_paths`) still
+effective, or is the judge scoring the whole tree again? If unscoped, the timeout is a symptom and
+cost scales with a repo that has grown three bundles since June.
+
+---
+
 ## 🧭 NEXT DISPATCH — [[B-CIGREEN]]: close the last reds between HEAD and a green release verdict (2026-09-05)
 
 `prds/p1-b-cigreen-the-release-workflow-has-never-been-green.md` — **P1.** Unblocked: [[B-FRESHWIN]]
