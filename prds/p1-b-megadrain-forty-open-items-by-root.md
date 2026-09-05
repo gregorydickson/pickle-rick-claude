@@ -200,6 +200,26 @@ executing while this was written** (`12fc3483`, `ad66feb5`, `c75ba623`). That ru
 because the ticket evaluated at the closer boundary happened not to be one of them. **This is a coin
 flip on every bundle, and a bigger roster is a bigger target.**
 
+**CONSUMER CENSUS 2026-09-05 — the predicate has exactly TWO production readers, and one of them is a
+proxy standing in front of a real oracle.** Everything else is test mass.
+
+| consumer | line | what it does |
+|---|---|---|
+| the halt | `mux-runner.ts:6152` | `status === 'done' && hasManagerHandoff` → `exit`, `manager_handoff_pending`. **Terminal by design** — `:12969` records it as "operator-gated and never recovered by the ladder", and `isHaltExit` (`:5347`) includes it. |
+| phantom-Done guard | `mux-runner.ts:2121` | inside `correctPhantomDoneTickets`: `if (conformance.hasManagerHandoff) continue;` — protects a Done ticket from being reverted to Todo |
+
+Defending those two call sites: **11 unit cases** pinning the denylist arms in `mux-runner.test.js`,
+plus source-text pins in `tests/integration/closer-handoff-terminal.test.js` that assert the FUNCTION
+NAME exists in the source, plus a reconcile-parity test. Deleting the predicate reddens all of them, so
+the tests must move with the behaviour rather than be worked around.
+
+**The `:2121` reader is the interesting one: it short-circuits ONE LINE BEFORE the real evidence
+oracle.** `batchLoopPhantomDoneKind` runs immediately after and returns `explicit-reachable` /
+`inferred` / `absent` from actual commit evidence. So the handoff text is being used as a *proxy for
+having evidence*, in front of a check that measures evidence directly. Determine by measurement whether
+that `continue` changes any outcome the oracle would not already reach; if it does not, it deletes too
+and the predicate loses its second consumer.
+
 **Fix shape (subtraction, not another denylist arm).** No arm can classify this case and none should —
 the text genuinely IS a manager note; it simply is not a BLOCKING one. Distinguish the two properties
 instead of guessing between them: either a worker declares blocking-ness explicitly, or the disposition
