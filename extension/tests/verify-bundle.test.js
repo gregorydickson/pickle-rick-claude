@@ -170,6 +170,40 @@ test('verify-bundle.live-acs-still-demanded so unwritten evidence cannot false-g
   assert.equal(/ac-dr-(03|05|07|pre-flight)\.json/.test(result.stderr), false);
 });
 
+// bin/CLAUDE.md's canonical-bundle-schema clause enumerated the required fields by hand and
+// omitted `pass` — the ONE field whose absence turns a receipt into a permanent verdict.
+// It was false from the commit that authored it: `pass` has been in
+// BUNDLE_ARTIFACT_SCHEMA.required since the validator's first commit, so a producer built to
+// the clause was rejected for `missing required field: pass`, which is verbatim the BREAKS
+// the clause claims to prevent. A trap door that causes its own failure mode is worse than a
+// missing one: a reader trusts it.
+//
+// The list is not deleted — a reader wants it inline — it stops being a SECOND COPY. This
+// derives one side from the shipped symbol and parses the other out of the catalog, so the
+// two can only disagree for as long as this test is red. Parse failure IS the assertion: a
+// clause that loses its shape reddens here rather than comparing an empty list.
+test('verify-bundle.AP-BIN-ITER5-01 the canonical-schema clause is a checked projection of BUNDLE_ARTIFACT_SCHEMA.required', () => {
+  const catalog = readFileSync(path.join(REPO_ROOT, 'bin', 'CLAUDE.md'), 'utf8');
+  const clause = /MUST emit the canonical bundle schema \(([^)]*)\)/.exec(catalog);
+  assert.ok(
+    clause,
+    'bin/CLAUDE.md lost the canonical-bundle-schema INVARIANT clause — the trap door that pins '
+    + 'every bundle artifact producer to BUNDLE_ARTIFACT_SCHEMA.required is gone',
+  );
+
+  const listed = [...clause[1].matchAll(/`([A-Za-z_][A-Za-z0-9_]*)`/g)].map((m) => m[1]);
+  // Anti-vacuity: an unparsed list would deepEqual-fail loudly, but an empty one against an
+  // empty `required` would not. Floor the parsed unit, not the comparison.
+  assert.ok(listed.length > 0, `the clause parsed no field names from: ${clause[1]}`);
+
+  assert.deepEqual(
+    listed,
+    [...BUNDLE_ARTIFACT_SCHEMA.required],
+    'bin/CLAUDE.md enumerates a different canonical bundle schema than verify-bundle enforces; '
+    + 'a producer written to the catalog is rejected by validateBundleArtifact',
+  );
+});
+
 test('verify-bundle.fixture-artifacts satisfy required metadata schema for every AC', () => {
   const fixture = makeFixture();
   try {
