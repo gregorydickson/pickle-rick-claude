@@ -149,6 +149,38 @@ not roster size, and raise the pickle iteration cap in the same breath when comp
 
 Full measured tables + per-session durations: `prds/MASTER_PLAN.md` → "BUNDLE SIZING".
 
+## 🗓 RELEASE CADENCE — ship every FEW DAYS, not every bundle (operator-set 2026-09-05, BINDING)
+
+**A completed bundle is NOT a reason to release.** Releasing carries a large, measured time tax, so
+bundles accumulate on the branch and ship together every couple of days. Not releasing after a green
+bundle is the NORMAL state — it is policy, not a blocker, and it must never be reported as one.
+
+**The tax, measured on this host 2026-09-05 (three consecutive runs, not estimated):**
+
+| step | wall clock |
+|---|---|
+| full release gate (`&&` chain) | **33m51s · 34m24s · 34m22s** — call it ~34 min |
+| deploy-lifecycle soak, run properly | **~30 min** (1803s) — it SELF-SKIPS in the chain, so it is extra |
+| bump · deploy · push · tag · verify | ~5–10 min |
+| **blocking local total** | **~70 min** |
+| CI on the tag (async, but gates the verdict) | **66–71 min** green · 19–24 min red |
+
+That is well over an hour of blocking measurement per release, and it is paid **per release, not per
+bundle** — which is exactly why batching bundles is cheap and releasing often is not. The same
+arithmetic as the bundle-sizing directive above: a fixed toll amortises over more work.
+
+**Rules:**
+1. **Default: do not release.** Land the bundle, push the branch, keep draining. Release when several
+   bundles have accumulated, when a fix must reach users, or when the operator asks.
+2. **The soak is NOT optional at release time.** It self-skips with `refuses to mutate $HOME
+   settings.json` and a 16-second "pass" is not a 1800s soak. Run it with `PICKLE_INSTALL_ROOT` set to
+   a non-`$HOME` path, or record the leg as UNRUN. Never report an unrun leg as green.
+3. **A degraded run still does not auto-release** (see B-NOSTOP-GATES above). Cadence and honesty are
+   separate constraints; this section relaxes neither.
+4. **Batching does not mean batching the GATE.** Keep the branch continuously green — run the gate per
+   bundle if you like, since that cost is already sunk in the bundle — but spend the release ritual
+   (soak + bump + tag + verify + CI) only when actually shipping.
+
 ## ⛔ Worker Forbidden Ops (R-WSRC)
 
 Workers run inside the runtime they modify. Hooks enforce these (prose alone failed — R-QGSK-3, 2026-05-16).
