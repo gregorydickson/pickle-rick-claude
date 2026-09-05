@@ -4131,6 +4131,33 @@ export async function runAllBackendsExhaustedFinalizeGate(runtime, counters, raw
 function isCrashFloorPickleHalt(runtime, rawPhase) {
     return rawPhase === 'pickle' && isFatalPhaseFailure('pickle', runtime);
 }
+/**
+ * AC-RPGT-6: best-effort typecheck+lint gate on the abort path — network-free, and it never masks
+ * the original abort reason, so every failure here is swallowed. Extracted from `dispatchHaltAction`
+ * so that function reads as the one thing it decides: the halt.
+ */
+async function runAbortPathGate(runtime, rawPhase) {
+    try {
+        const abortGate = await runGate({
+            workingDir: runtime.workingDir,
+            mode: 'strict',
+            scope: 'full',
+            checks: ['typecheck', 'lint'],
+        });
+        if (abortGate.status !== 'red')
+            return;
+        try {
+            logActivity({
+                event: 'tsc_gate_failed',
+                source: 'pickle',
+                reason: `[R-RPGT] abort-path gate: tsc/lint RED on phase ${rawPhase} exit`,
+                gate_payload: { failure_kind: 'compile_error' },
+            });
+        }
+        catch { /* swallow emit failure */ }
+    }
+    catch { /* gate error never masks original abort reason */ }
+}
 async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
     const haltAction = logPhaseHaltReason(runtime, rawPhase, exitCode, log);
     if (haltAction === 'run-finalize-gate') {
@@ -4139,34 +4166,12 @@ async function dispatchHaltAction(runtime, counters, rawPhase, exitCode, log) {
     if (haltAction === 'run-finalize-gate-incomplete') {
         return runAllBackendsExhaustedFinalizeGate(runtime, counters, rawPhase, log);
     }
-    // AC-CF-15: crash-floor halts skip the abort-path gate entirely — the toolchain
-    // cannot run, so the gate is guaranteed red and its telemetry misattributes cause. This is a
-    // narrowing of when the GATE runs, never of whether the pipeline halts, so it guards the gate
-    // rather than owning a second break — one disposition, one exit.
-    // AC-RPGT-6: best-effort typecheck+lint gate on abort path — network-free, never masks
-    // the original abort reason.
-    if (!isCrashFloorPickleHalt(runtime, rawPhase)) {
-        try {
-            const abortGate = await runGate({
-                workingDir: runtime.workingDir,
-                mode: 'strict',
-                scope: 'full',
-                checks: ['typecheck', 'lint'],
-            });
-            if (abortGate.status === 'red') {
-                try {
-                    logActivity({
-                        event: 'tsc_gate_failed',
-                        source: 'pickle',
-                        reason: `[R-RPGT] abort-path gate: tsc/lint RED on phase ${rawPhase} exit`,
-                        gate_payload: { failure_kind: 'compile_error' },
-                    });
-                }
-                catch { /* swallow emit failure */ }
-            }
-        }
-        catch { /* gate error never masks original abort reason */ }
-    }
+    // AC-CF-15: crash-floor halts skip the abort-path gate entirely — the toolchain cannot run, so
+    // the gate is guaranteed red and its telemetry misattributes cause. This narrows when the GATE
+    // runs, never whether the pipeline halts, so it guards the gate rather than owning a second
+    // break — one disposition, one exit.
+    if (!isCrashFloorPickleHalt(runtime, rawPhase))
+        await runAbortPathGate(runtime, rawPhase);
     return { action: 'break' };
 }
 /**
@@ -4551,7 +4556,7 @@ export function withholdForFailedAcGate(runtime, counters, cancelMarker, rawPhas
         return null;
     const ids = acGate.failures.map((f) => f.id).join(',');
     counters.nonConvergent++;
-    counters.phaseDispositions[rawPhase] = `ac_phase_gate_failed${ids ? `:${ids}` : ''}`;
+    counters.phaseDispositions[rawPhase] = ids ? `ac_phase_gate_failed:${ids}` : 'ac_phase_gate_failed';
     // Errors are non-blocking: a failed status write still reports the phase and continues.
     try {
         writeRunningStatus(runtime, counters, null);
