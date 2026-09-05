@@ -161,12 +161,43 @@ function discoverCatalogs() {
 const slugify = (value) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 const TEST_NAME_RE = /\b(?:it|test)\s*\(\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1/g;
 
-function anchorResolves(fileContent, anchor) {
+function anchorMatchCount(fileContent, anchor) {
   const needle = `-${slugify(anchor)}-`;
+  let count = 0;
   for (const m of fileContent.matchAll(TEST_NAME_RE)) {
-    if (`-${slugify(m[2])}-`.includes(needle)) return true;
+    if (`-${slugify(m[2])}-`.includes(needle)) count++;
   }
-  return false;
+  return count;
+}
+
+function anchorResolves(fileContent, anchor) {
+  return anchorMatchCount(fileContent, anchor) > 0;
+}
+
+// The anchor charset above cannot match a SPACE, so a catalog that writes a whole test
+// NAME after `#` has it silently truncated to the first token. `#exits 10 when the
+// tagged commit package version drifts...` parsed as `#exits`, which resolves against
+// all 25 `exits ...` cases in release-gate.test.js — so the case the trap door names
+// could be deleted with this gate still printing "verified" (measured: rc=0). Detect
+// the loss the one way that needs no terminator list: extend the anchor word by word
+// while it still resolves. A STRICTLY smaller resolving set proves the discarded text
+// was more of the test name, not commentary. Commentary is excluded structurally, not
+// by an exception list -- a parenthetical, a closing backtick or a dash after the
+// anchor is not `<one space><alphanumeric>`, so the extension never starts.
+function anchorTruncation(fileContent, anchor, trailingText) {
+  if (!/^ [A-Za-z0-9]/.test(trailingText)) return null;
+  const parsedCount = anchorMatchCount(fileContent, anchor);
+  if (parsedCount === 0) return null;
+  let extended = anchor;
+  let count = parsedCount;
+  for (const word of trailingText.trim().split(/\s+/)) {
+    const candidate = `${extended} ${word}`;
+    const candidateCount = anchorMatchCount(fileContent, candidate);
+    if (candidateCount === 0) break;
+    extended = candidate;
+    count = candidateCount;
+  }
+  return count < parsedCount ? extended : null;
 }
 
 // Collect all ENFORCE: test file references using the same regex as
@@ -176,7 +207,7 @@ function collectEnforceRefs(claudePath) {
   const lines = fs.readFileSync(claudePath, 'utf8').split('\n');
   // Keyed on `rel#anchor` so each anchored ref is verified on its own, while every
   // bare ref to one file still collapses to a single `rel#` entry as before.
-  const enforceFiles = new Map(); // 'rel#anchor' -> { rel, anchor, lineNum }
+  const enforceFiles = new Map(); // 'rel#anchor' -> { rel, anchor, trailingText, lineNum }
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -196,7 +227,12 @@ function collectEnforceRefs(claudePath) {
     for (const m of matches) {
       const key = `${m[1]}#${m[2] ?? ''}`;
       if (!enforceFiles.has(key)) {
-        enforceFiles.set(key, { rel: m[1], anchor: m[2] ?? null, lineNum: i + 1 });
+        enforceFiles.set(key, {
+          rel: m[1],
+          anchor: m[2] ?? null,
+          trailingText: entryText.slice(m.index + m[0].length),
+          lineNum: i + 1,
+        });
       }
     }
   }
@@ -215,7 +251,7 @@ for (const claudePath of discoverCatalogs()) {
   const enforceFiles = collectEnforceRefs(claudePath);
   perCatalog.push(`${label}=${enforceFiles.size}`);
 
-  for (const { rel, anchor, lineNum } of enforceFiles.values()) {
+  for (const { rel, anchor, trailingText, lineNum } of enforceFiles.values()) {
     // Resolve: 'extension/tests/...' → repo root; 'tests/...' → extension root
     const absPath = rel.startsWith('extension/')
       ? path.join(repoRoot, rel)
@@ -248,6 +284,18 @@ for (const claudePath of discoverCatalogs()) {
     if (anchor && !anchorResolves(fileContent, anchor)) {
       process.stderr.write(
         `ENFORCE: ${label}:${lineNum}: anchor #${anchor} matches no test case in ${rel}\n`
+      );
+      failures++;
+      continue;
+    }
+
+    // Resolving is not identifying: a truncated anchor resolves against every sibling
+    // that shares its first token, so the named case can vanish and this gate stays
+    // green. Fail closed on the loss itself.
+    const truncatedFrom = anchor ? anchorTruncation(fileContent, anchor, trailingText) : null;
+    if (truncatedFrom) {
+      process.stderr.write(
+        `ENFORCE: ${label}:${lineNum}: anchor #${anchor} is space-truncated from "${truncatedFrom}" in ${rel} -- write the whole anchor as one hyphenated slug\n`
       );
       failures++;
       continue;

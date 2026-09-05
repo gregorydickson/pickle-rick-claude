@@ -380,3 +380,93 @@ test('B-ARGMAX argv-ceiling sweep fails rather than reporting a clean sweep over
   assert.notEqual(result.status, 0, `audit should fail; stdout: ${result.stdout}`);
   assert.match(result.stderr, /found zero exported invocation builders/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-BIN-ITER3-01. The ENFORCE anchor charset cannot match a SPACE, so a catalog
+// that writes a whole test NAME after `#` had it silently truncated to the first
+// token. bin/CLAUDE.md's `#exits 10 when the tagged commit package version drifts
+// from HEAD even though the tag name matches` parsed as `#exits`, which resolves
+// against all 25 `exits ...` cases in release-gate.test.js. Measured before the fix:
+// renaming that one test away left the audit at rc=0, "623 ENFORCE reference(s)
+// verified" — resolving is not identifying, and the trap door's whole claim is that
+// deleting the named guard reddens the gate.
+//
+// The arm is BEHAVIORAL: it drives the shipped audit over a fixture catalog rather
+// than grepping the script, because a source grep stays green over a check that is
+// present but unreachable.
+// ---------------------------------------------------------------------------
+const TRUNCATION_PROBE_ANCHOR =
+  'exits 10 when the tagged commit package version drifts from HEAD even though the tag name matches';
+
+function runAuditWithAppendedEntry(entry) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-anchor-truncation-'));
+  try {
+    const fixturePath = path.join(tmpDir, 'CLAUDE.md');
+    const source = fs.readFileSync(path.join(EXTENSION_ROOT, 'CLAUDE.md'), 'utf8');
+    fs.writeFileSync(fixturePath, `${source}\n${entry}\n`);
+    return spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+      cwd: EXTENSION_ROOT,
+      encoding: 'utf8',
+      timeout: 120_000,
+      env: { ...process.env, CLAUDE_PATH_OVERRIDE: fixturePath },
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-BIN-ITER3-01: a space-truncated ENFORCE anchor fails the audit instead of resolving against its siblings', () => {
+  // Non-vacuity: the probe anchor's FIRST token must be shared by other cases in the
+  // target file, or a truncated parse would still identify one test and this arm would
+  // pass for the wrong reason.
+  const targetSource = fs.readFileSync(
+    path.join(EXTENSION_ROOT, 'tests', 'release-gate.test.js'),
+    'utf8',
+  );
+  const firstToken = TRUNCATION_PROBE_ANCHOR.split(' ')[0];
+  const siblings = [...targetSource.matchAll(/\btest\s*\(\s*'([^']*)'/g)]
+    .map((m) => m[1])
+    .filter((name) => name.startsWith(`${firstToken} `));
+  assert.ok(
+    siblings.length > 1,
+    `probe is vacuous: only ${siblings.length} case(s) in release-gate.test.js start with "${firstToken} "`,
+  );
+  assert.ok(
+    siblings.includes(TRUNCATION_PROBE_ANCHOR),
+    'probe anchor no longer names a live release-gate.test.js case',
+  );
+
+  const result = runAuditWithAppendedEntry(
+    '- probe-truncated — INVARIANT: probe. BREAKS: probe. '
+      + `ENFORCE: extension/tests/release-gate.test.js#${TRUNCATION_PROBE_ANCHOR}. `
+      + 'PATTERN_SHAPE: probe.',
+  );
+
+  assert.notEqual(result.status, 0, `audit should fail on a truncated anchor; stdout: ${result.stdout}`);
+  assert.match(result.stderr, /is space-truncated from/, `stderr: ${result.stderr}`);
+});
+
+test('AP-BIN-ITER3-01: the hyphenated repair of that same anchor passes, so the arm is not a blanket rejection', () => {
+  const hyphenated = TRUNCATION_PROBE_ANCHOR.replace(/ /g, '-');
+  const result = runAuditWithAppendedEntry(
+    '- probe-hyphenated — INVARIANT: probe. BREAKS: probe. '
+      + `ENFORCE: extension/tests/release-gate.test.js#${hyphenated}. `
+      + 'PATTERN_SHAPE: probe.',
+  );
+
+  assert.equal(result.status, 0, `hyphenated anchor should pass; stderr: ${result.stderr}`);
+});
+
+test('AP-BIN-ITER3-01: commentary after an anchor is not read as truncated anchor text', () => {
+  // The live catalogs write `#ANCHOR (prose about the cases)`. That prose is not part of
+  // the test name, and the arm must not demand it be slugged into the anchor — the
+  // exclusion is structural (a parenthetical is not `<one space><alphanumeric>`), so pin
+  // it here rather than leaving it to be re-derived.
+  const result = runAuditWithAppendedEntry(
+    '- probe-commentary — INVARIANT: probe. BREAKS: probe. '
+      + `ENFORCE: extension/tests/release-gate.test.js#${TRUNCATION_PROBE_ANCHOR.replace(/ /g, '-')} `
+      + '(exercises the drifted-tag arm). PATTERN_SHAPE: probe.',
+  );
+
+  assert.equal(result.status, 0, `commentary must not trip the arm; stderr: ${result.stderr}`);
+});

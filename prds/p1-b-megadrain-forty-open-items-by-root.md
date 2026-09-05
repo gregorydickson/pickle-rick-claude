@@ -166,6 +166,55 @@ presence-predicates at `:4684` / `:4769`.
 tickets.** Log-noise only — the runner DOES override it with real ticket evidence. Lowest priority in
 this root; included because it is the same shape, not because it bites.
 
+## 🚨 ROOT C0 — `manager_handoff_pending` HALTS THE PIPELINE ON AN INFORMATIVE NOTE (GitHub #11, operator-filed 2026-09-05)
+
+**Order this FIRST. It is the highest-severity item in this bundle and it endangers this bundle's own
+run.** A four-phase `/pickle-pipeline` stopped at **0 of 4 phases** because the last ticket's
+conformance artifact contained a `## Manager Handoff` section that was purely informative — a worker
+CORRECTING a stale note and reporting a 9/9 PASS. Re-attaching cleared `exit_reason` and ran straight
+through to citadel with no operator action. The halt cost three phases and a human round-trip.
+
+**Mechanism.** `evaluateCloserTerminalState` (`mux-runner.ts:5998`) exits `manager_handoff_pending`
+when a Done ticket's conformance has a handoff section. **The gate tests whether the worker WROTE
+something, not whether an operator MUST ACT before work can continue** — orthogonal properties. Thorough
+workers write substantive handoffs routinely, so *the better the worker, the likelier the pipeline
+stalls*: a quality signal wired to a halt, which the PRIME DIRECTIVE forbids outright.
+
+`hasSubstantiveManagerHandoff` (`:5949`) compensates with a **two-arm denylist of boilerplate
+phrasings** — the enumerated-set shape root `CLAUDE.md` names as "a liability with a maintenance
+schedule". It has already grown once (the `none`/`n\a` arm was added for an earlier false-positive
+class), and its own comment concedes the premise: *"Workers write the `## Manager Handoff` header
+unconditionally."* If the header is unconditional, its PRESENCE carries no information at all.
+
+**MEASURED 2026-09-05 by replaying the SHIPPED predicate over the live artifact corpus** (41
+conformance artifacts across 6 sessions) — do not re-derive:
+
+| | count |
+|---|---|
+| artifacts scanned | 41 |
+| carry a `## Manager Handoff` header | **26 (63%)** |
+| **`hasSubstantiveManagerHandoff` returns true → would halt** | **10 (38% of those; 24% of ALL tickets)** |
+
+Ten halting tickets span **five different sessions**, including **three in the B-CIGREEN run that was
+executing while this was written** (`12fc3483`, `ad66feb5`, `c75ba623`). That run did not halt only
+because the ticket evaluated at the closer boundary happened not to be one of them. **This is a coin
+flip on every bundle, and a bigger roster is a bigger target.**
+
+**Fix shape (subtraction, not another denylist arm).** No arm can classify this case and none should —
+the text genuinely IS a manager note; it simply is not a BLOCKING one. Distinguish the two properties
+instead of guessing between them: either a worker declares blocking-ness explicitly, or the disposition
+becomes park-and-flag per [[B-NOSTOP-GATES]] — record the residual, continue to citadel, never break
+the phase loop. Adding a third regex arm is the prohibited fix.
+
+**⚠ R-PSRB: this root makes the WHOLE BUNDLE an ATTENDED run.** The deployed pre-fix runtime applies
+this same gate to the workers building the fix, so a substantive handoff from any ticket can halt the
+bundle at 0/4 — including the one fixing it. Per root `CLAUDE.md` there is no hand-build exception;
+launch normally and watch the closer seam. **Sequencing alternative worth weighing: land C0 as its own
+small ATTENDED bundle first, deploy, then run the rest of B-MEGADRAIN unattended with the fix live.**
+A 20-ticket bundle that halts at 0/4 wastes ~18 hours; a 1-root bundle that halts wastes one.
+
+---
+
 ## ⛔ ROOT C — TWO TERMINATION CHANNELS, ONE SUBTRACTION (halt → park)
 
 **C1 — B-ONEABORT residual — ❌ CLOSED BY MEASUREMENT 2026-08-28. DO NOT DISPATCH A TICKET.**
