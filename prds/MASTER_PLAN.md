@@ -74,6 +74,34 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🧭 NEXT DISPATCH — [[B-FRESHWIN]]: CI is a coin flip on one test (2026-09-05)
+
+`prds/p1-b-freshwin-the-progress-window-race-and-two-verified-p1-roots.md` — **P1.** Takes dispatch
+ahead of [[B-CIGREEN]] because it is what makes B-CIGREEN's goal unmeasurable: you cannot certify a
+green release verdict on a tag while one test decides the gate at random.
+
+**Measured, do not re-derive.** Two consecutive CI runs whose only difference is a markdown edit:
+`33947849271` at `a8ef0566` read `flake-budget OK failures=1 budget=2 runs_completed=5`;
+`33949406204` at `1ebbe54c` read `FAIL_BUDGET_EXCEEDED failures=3 budget=2 runs_completed=4`.
+`AP-EXT-ITER41-02` failed runs 1, 2 and 4 and passed run 3. Introduced by `493c4b2a` (2026-09-02,
+B-CIGREEN4's anatomy-park) — **not** the B-CIGREEN3 fast-tier flake class, which stays closed.
+
+**Leading hypothesis, to be confirmed or killed by the bundle, not assumed:** the fixture captures
+`iterationStartMs = Date.now()` and only then writes the artifact whose mtime must EXCEED that window,
+so a coarse or same-tick mtime reads as no-progress and force-terminates a productive ticket. If the
+same strict comparison lives in `recordBoundedEscapeAttempt`, the race is in PRODUCTION and salvages
+real work — the very defect `AP-EXT-ITER41-02` exists to prevent, arriving through its own detector.
+
+**Composed with two roots verified the same day:** [[B-LOGEV]] (premise INTACT —
+`classifyWorkerSessionLogs` live at `mux-runner.ts:10616`; same `mux-runner.ts` surface, so it rides
+this review for free) and the [[B-ONEABORT]] residual. Per the root-`CLAUDE.md` sizing directive the
+bundle composes by shared surface rather than by priority tier.
+
+**Non-goal, stated because it is the tempting fix:** do NOT raise the flake budget above 2. That
+converts a measurable defect into a standing permission to read red as green.
+
+---
+
 ## 🧭 NEXT DISPATCH — [[B-ARGMAX]]: the fix-forward rung is dead on Linux, silently (2026-09-04)
 
 `prds/p1-b-argmax-the-fix-forward-rung-is-dead-on-linux.md` — **P1.** Takes dispatch ahead of
