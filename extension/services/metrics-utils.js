@@ -60,14 +60,21 @@ function projectSlugFromPath(projectPath) {
 }
 function discoverGitRepos(repoRoot) {
     const repos = [];
-    const pending = [path.resolve(repoRoot)];
+    const root = path.resolve(repoRoot);
+    const pending = [root];
     while (pending.length > 0) {
         const current = pending.pop();
         let entries;
         try {
             entries = fs.readdirSync(current, { withFileTypes: true });
         }
-        catch {
+        catch (err) {
+            // The ROOT is the corpus: its failure drops every repo and publishes a zero LOC
+            // total that reads as a quiet day. A DESCENT failure is one speculative subtree of
+            // an unknown tree — routine, and announcing each one is the noise that hides a real drop.
+            if (current === root) {
+                announceScanDrop('loc', current, `enumeration failed: ${safeErrorMessage(err)}`);
+            }
             continue;
         }
         if (entries.some((entry) => entry.name === '.git' && (entry.isDirectory() || entry.isFile()))) {

@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { emitWorkerGateNotRunResidual } from '../bin/mux-runner.js';
 import {
@@ -17,6 +18,7 @@ import {
   scanRefusedRecoveredCounts,
   buildSkipFlagBudgetReport,
   scanSessionFiles,
+  scanGitRepos,
   SKIP_FLAG_BUDGETS,
 } from '../services/metrics-utils.js';
 import { findResiduals } from './__helpers__/activity-sink.js';
@@ -458,6 +460,111 @@ test('AP-EXT-ITER200-01: anti-vacuity — a non-directory entry drops nothing an
 
     assert.equal(result.get('normal-project').get(day).input, 111, 'the transcript beside it is still counted');
     assert.equal(stderr, '', 'an answered non-directory is not a drop and must produce no diagnostic');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER200-02 — the LOC half of the same corpus-enumeration invariant.
+//
+// `aceb54d7`, `7e56db10` and `bd7b4033` each closed one arm of "a drop is a
+// diagnostic, never a silent zero" on the TOKEN half. `discoverGitRepos` is the
+// LOC half's enumeration and kept a bare `catch { continue; }`, so a `repoRoot`
+// that cannot be read yielded zero repos, zero commits and zero LOC in total
+// silence — and `metrics.ts` DEFAULTS `repoRoot` to `~/loanlight`, a path that
+// does not exist on most hosts (measured absent on the authoring box), so the
+// silent zero is the ORDINARY case rather than an edge one.
+//
+// It could not take the uniform `announceScanDrop` its three siblings share:
+// the same `catch` serves the corpus ROOT and every speculative SUBTREE descent
+// below it, and announcing each routine descent refusal is the noise that hides
+// a real drop. The split is the fix — the ROOT announces, a DESCENT does not.
+//
+// The cases below drive the shipped `scanGitRepos`, not a mirror of its rule.
+// ---------------------------------------------------------------------------
+
+function gitIn(cwd, args, env = {}) {
+  const result = spawnSync('git', args, {
+    cwd,
+    env: { ...process.env, ...env },
+    encoding: 'utf-8',
+    timeout: 15000,
+  });
+  assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr}`);
+}
+
+function isoAtNoon(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0, 0, 0).toISOString();
+}
+
+/** A real single-commit repo dated at local noon TODAY, so the report window contains it. */
+function makeCountableRepo(parentDir, name) {
+  const repoDir = path.join(parentDir, name);
+  fs.mkdirSync(repoDir, { recursive: true });
+  gitIn(repoDir, ['init']);
+  gitIn(repoDir, ['config', 'user.name', 'Metrics Test']);
+  gitIn(repoDir, ['config', 'user.email', 'metrics@example.com']);
+  fs.writeFileSync(path.join(repoDir, 'report.txt'), 'one line\n');
+  const stamp = { GIT_AUTHOR_DATE: isoAtNoon(new Date()), GIT_COMMITTER_DATE: isoAtNoon(new Date()) };
+  gitIn(repoDir, ['add', 'report.txt'], stamp);
+  gitIn(repoDir, ['commit', '-m', 'countable commit'], stamp);
+  return repoDir;
+}
+
+test('AP-EXT-ITER200-02: an unreadable corpus ROOT is announced, never a silent zero', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-loc-scan-'));
+  try {
+    // The live shape: `metrics.ts` defaults `repoRoot` to `~/loanlight`, which is
+    // absent on most hosts. Every project's commits/added/removed then publish as
+    // 0 and the operator reads a real report as a quiet day.
+    const missing = path.join(parent, 'no-such-repo-root');
+
+    const { value: loc, stderr } = captureStderr(() => scanGitRepos(missing, todayKey(), todayKey()));
+
+    assert.equal(loc.size, 0, 'the corpus is genuinely absent from the LOC totals');
+    assert.match(stderr, /\[metrics\] loc scan skipped /, 'the whole-corpus drop must announce itself');
+    assert.ok(stderr.includes(missing), 'the diagnostic must name the root that left the totals');
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER200-02: anti-vacuity — a failed speculative DESCENT drops nothing operators can act on and stays silent', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-loc-scan-'));
+  const blocked = path.join(root, 'unreadable-subtree');
+  try {
+    // A readable ROOT holding one countable repo plus one subtree the walk cannot
+    // descend into. A home-directory walk hits these routinely; announcing each one
+    // is the noise that buries the ROOT drop the case above exists to surface.
+    const repoDir = makeCountableRepo(root, 'countable-repo');
+    fs.mkdirSync(blocked, { recursive: true });
+    fs.chmodSync(blocked, 0o000);
+
+    const day = todayKey();
+    const { value: loc, stderr } = captureStderr(() => scanGitRepos(root, day, day));
+
+    const stats = loc.get(repoDir.replace(/[\\/]/g, '-'));
+    assert.ok(stats, 'the readable sibling repo is still discovered and counted');
+    assert.equal(stats.get(day).commits, 1, 'its in-window commit is counted');
+    assert.equal(stderr, '', 'a speculative descent refusal is not a corpus drop and must produce no diagnostic');
+  } finally {
+    fs.chmodSync(blocked, 0o700);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER200-02: a readable root holding no repos is a measured empty, not a drop', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-loc-scan-'));
+  try {
+    // The gate against over-triggering: the walk RAN and answered "no repos here".
+    // Nothing was dropped, so a diagnostic would misreport a correct measurement.
+    fs.mkdirSync(path.join(root, 'just-a-plain-dir'), { recursive: true });
+
+    const { value: loc, stderr } = captureStderr(() => scanGitRepos(root, todayKey(), todayKey()));
+
+    assert.equal(loc.size, 0, 'an empty corpus is an empty result');
+    assert.equal(stderr, '', 'a root that WAS enumerated must produce no drop diagnostic');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

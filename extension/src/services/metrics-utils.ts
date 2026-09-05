@@ -160,7 +160,8 @@ function projectSlugFromPath(projectPath: string): string {
 
 function discoverGitRepos(repoRoot: string): string[] {
   const repos: string[] = [];
-  const pending = [path.resolve(repoRoot)];
+  const root = path.resolve(repoRoot);
+  const pending = [root];
 
   while (pending.length > 0) {
     const current = pending.pop()!;
@@ -168,7 +169,13 @@ function discoverGitRepos(repoRoot: string): string[] {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      // The ROOT is the corpus: its failure drops every repo and publishes a zero LOC
+      // total that reads as a quiet day. A DESCENT failure is one speculative subtree of
+      // an unknown tree — routine, and announcing each one is the noise that hides a real drop.
+      if (current === root) {
+        announceScanDrop('loc', current, `enumeration failed: ${safeErrorMessage(err)}`);
+      }
       continue;
     }
 
