@@ -119,6 +119,13 @@ surface and can ride the same review?" A bundle that drains 20 findings costs al
 bundle draining 4 costs. `prds/p1-b-megadrain-forty-open-items-by-root.md` is the standing vehicle for
 this: compose into it by ROOT rather than filing another small bundle.
 
+**Never split a bundle to de-risk a self-modifying (R-PSRB) seam.** When a bundle edits the
+salvage / completion-evidence / Done-flip / closer path, the deployed pre-fix runtime applies that same
+logic to the workers building the fix. The answer is to run the bundle **ATTENDED** — an operator
+posture — never to carve the risky root into its own small bundle. Ordering the fix first does not help
+either: a running pipeline executes **deployed JS**, and the fix lands only at `install.sh`, so the
+pre-fix behaviour is live for the whole run regardless of ticket order. Watch the seam and recover.
+
 **Composing a stale row is CHEAP; splitting to avoid stale rows is EXPENSIVE.** When a candidate's
 premise turns out already-fixed, declare `zero_diff_intent: already-satisfied` in the ticket
 frontmatter up front and close it on evidence — B-DRAIN13 closed two of thirteen that way, each with a

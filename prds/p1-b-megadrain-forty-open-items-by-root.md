@@ -226,12 +226,21 @@ instead of guessing between them: either a worker declares blocking-ness explici
 becomes park-and-flag per [[B-NOSTOP-GATES]] — record the residual, continue to citadel, never break
 the phase loop. Adding a third regex arm is the prohibited fix.
 
-**⚠ R-PSRB: this root makes the WHOLE BUNDLE an ATTENDED run.** The deployed pre-fix runtime applies
-this same gate to the workers building the fix, so a substantive handoff from any ticket can halt the
-bundle at 0/4 — including the one fixing it. Per root `CLAUDE.md` there is no hand-build exception;
-launch normally and watch the closer seam. **Sequencing alternative worth weighing: land C0 as its own
-small ATTENDED bundle first, deploy, then run the rest of B-MEGADRAIN unattended with the fix live.**
-A 20-ticket bundle that halts at 0/4 wastes ~18 hours; a 1-root bundle that halts wastes one.
+**⚠ R-PSRB: this root makes the WHOLE BUNDLE an ATTENDED run — it does NOT make it a smaller one.**
+Operator-set 2026-09-05: *"no, we don't run small bundles."* B-MEGADRAIN ships as ONE bundle with C0
+ordered first. Do not split C0 out to de-risk the seam; attended is an operator POSTURE, never a
+different build path or a smaller roster.
+
+**Ordering C0 first does NOT protect this run, and it would be wrong to claim it does.** A running
+pipeline executes **deployed JS**, not the source diff — the fix lands only at `install.sh`. So the
+pre-fix gate stays live in the runtime for the whole bundle, whatever order the tickets land in.
+
+**The attended recovery is cheap and already proven, which is what makes attended sufficient.** GitHub
+#11 measured it: re-attaching `launch.sh` against the same `SESSION_ROOT` cleared `exit_reason`,
+immediately marked pickle complete and entered citadel — `completed_phases` 0 → 1, no operator
+judgement required. So the exposure is not "lose 18 hours", it is "notice a `manager_handoff_pending`
+stop at the closer seam and re-launch". Watch that seam; treat a halt there as a known false positive
+and re-attach rather than investigating it.
 
 ---
 
