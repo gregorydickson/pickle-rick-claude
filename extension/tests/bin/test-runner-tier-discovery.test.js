@@ -61,16 +61,28 @@ function stdoutLines(result) {
 }
 
 /**
- * Returns true if the given PID is alive (process exists in the OS).
- * Uses process.kill(pid, 0) — throws ESRCH if the process is gone.
+ * Returns true if the given PID is a LIVE process — not merely that a PID-table entry exists.
+ *
+ * `process.kill(pid, 0)` answers the second question, and the two diverge on exactly the process
+ * this file's wedged-child test inspects. A zombie — terminated, but not yet wait()ed for by its
+ * parent — still owns its PID entry, so `kill(pid, 0)` succeeds on a process that is already dead.
+ * The runner's teardown kills the wedged child's PARENT first, so the grandchild reparents to
+ * PID 1; in any environment whose PID 1 does not reap (a container started without an init), the
+ * corpse then persists indefinitely. Reading it as a survivor is how this assertion produced a
+ * Linux-only false red while the runner's teardown was working correctly (b9caf765): the accused
+ * process measured `STAT=Z`, i.e. the group kill had already terminated it.
+ *
+ * `ps -o stat=` reports a leading `Z` for a zombie on both macOS and Linux, so one probe answers
+ * this on every platform the suite runs on — no platform branch, and no `/proc` dependency.
  */
 function isPidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false; // ESRCH = no such process
-  }
+  const probe = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', timeout: 10_000 });
+  // `ps` itself could not run: the state is unknowable, so report alive. An assertion that fails
+  // loudly beats one that passes on absent evidence.
+  if (probe.error) return true;
+  // `ps` ran and matched nothing: the process is gone.
+  if (probe.status !== 0) return false;
+  return !probe.stdout.trim().startsWith('Z');
 }
 
 function sleep(ms) {
