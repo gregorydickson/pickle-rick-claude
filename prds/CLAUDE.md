@@ -85,7 +85,13 @@ The reason is recorded as an audit-trail activity event.
 
 ---
 
-## Self-modifying-recovery bundles (R-PSRB attended protocol)
+## ~~Self-modifying-recovery bundles (R-PSRB attended protocol)~~ — ⛔ SUPERSEDED 2026-09-05
+
+> **Operator-set: this category does not exist.** Workers edit SOURCE; the pipeline executes DEPLOYED
+> JS; the two are isolated until `install.sh`. A bundle editing the salvage / completion-evidence /
+> Done-flip path therefore has no special exposure — a defect in the deployed runtime affects EVERY
+> bundle identically, whatever its subject. Posture is never chosen by subject matter. See root
+> `CLAUDE.md` → "NEVER hand-build" for the correction. The protocol below is retained for the record.
 
 **NEVER hand-build. ALWAYS run a pipeline** (see `CLAUDE.md` → "NEVER hand-build"). The hand-build
 exception that used to live in this section was **deleted by operator decision 2026-08-04**. There is

@@ -98,13 +98,28 @@ The pipeline is the product: it fixes its own bugs. **Default: author a PRD/tick
 
 **There is no hand-build exception. Not for the salvage path, not for the completion-evidence path, not for the Done-flip path, not for "just this once because it's load-bearing."** Every code fix in this repo is built by `/pickle-pipeline` (or `/pickle-tmux`). The prior "NARROW R-PSRB exception" is **DELETED** — it was a reflex dressed as a rule, and it kept the tool from being tested exactly where it was weakest.
 
-**The R-PSRB catch-22 is real, and it is not an escape hatch — it is the thing being tested.** When a bundle edits the salvage / completion-evidence / Done-flip path, the deployed pre-fix runtime applies that same buggy logic to the worker building the fix. That is a genuine hazard, so run those bundles **ATTENDED**: launch normally, watch the salvage seam, and recover the stall if it bites (`B-RASO`, beta.43, shipped a salvage-path fix this way — the precedent exists and it worked). Attended is an *operator posture*, never a different build path.
+**⛔ CORRECTION 2026-09-05 (operator-set): there is NO self-modifying-bundle category. Forget it.**
+This section used to claim a "R-PSRB catch-22" — that a bundle editing the salvage / completion-evidence
+/ Done-flip path is specially hazardous because the deployed pre-fix runtime applies that same logic to
+the worker building the fix — and prescribed ATTENDED runs for those bundles. **That reasoning is
+self-refuting, and the paragraph below it always said why:** a running pipeline executes **deployed JS**,
+not your source diff, which lands only at `install.sh`. Source and runtime are ISOLATED.
+
+**We work on source code, not deployed code.** A worker editing `mux-runner.ts` cannot change the
+runtime executing it, whatever that file happens to contain. So the subject matter of a bundle has no
+bearing on its exposure: **a defect in the deployed runtime affects EVERY bundle identically** — the one
+fixing it and the one fixing something unrelated alike. There is no reflexive coupling to be attended
+for, and "salvage-path bundles run attended" had no mechanism behind it.
+
+**What follows.** Posture is never chosen by subject matter. When the deployed runtime carries a known
+defect, the responses are: DEPLOY the fix (`install.sh`), or know the recovery and apply it when it
+bites. Neither is a reason to shrink a bundle, reorder its tickets, or treat one root as special.
 
 **Why the exception had to go:** a bundle we refuse to dogfood is a bundle whose fix we cannot claim the tool survives. Hand-building the recovery path means the recovery path is the one code in the system never exercised by the system. Every stalled run that hand-build "avoided" was a defect report we chose not to collect.
 
-**What is still true (and is NOT a hand-build licence):** spawn-gate / routing / phase-exit / scope-fence / refinement / feature edits are pipeline-safe because a running pipeline executes **deployed JS**, not your source diff (which lands only at `install.sh`). Those run unattended. Salvage-path bundles run attended. Both run.
+**What is still true (and is NOT a hand-build licence):** spawn-gate / routing / phase-exit / scope-fence / refinement / feature edits are pipeline-safe because a running pipeline executes **deployed JS**, not your source diff (which lands only at `install.sh`). **All** bundles run the same way — the isolation above is uniform, so there is no second category.
 
-Detail: `prds/CLAUDE.md` → "Self-modifying-recovery bundles".
+(`prds/CLAUDE.md` → "Self-modifying-recovery bundles" is superseded by the correction above.)
 
 ## 📐 COMPOSE THE LARGEST BUNDLE THE SURFACE ALLOWS — the review phases are a FIXED toll (operator-set, BINDING for dispatch)
 
@@ -119,12 +134,10 @@ surface and can ride the same review?" A bundle that drains 20 findings costs al
 bundle draining 4 costs. `prds/p1-b-megadrain-forty-open-items-by-root.md` is the standing vehicle for
 this: compose into it by ROOT rather than filing another small bundle.
 
-**Never split a bundle to de-risk a self-modifying (R-PSRB) seam.** When a bundle edits the
-salvage / completion-evidence / Done-flip / closer path, the deployed pre-fix runtime applies that same
-logic to the workers building the fix. The answer is to run the bundle **ATTENDED** — an operator
-posture — never to carve the risky root into its own small bundle. Ordering the fix first does not help
-either: a running pipeline executes **deployed JS**, and the fix lands only at `install.sh`, so the
-pre-fix behaviour is live for the whole run regardless of ticket order. Watch the seam and recover.
+**Never split or reorder a bundle to de-risk a deployed-runtime defect.** Source and runtime are
+isolated (see above), so a known defect in the deployed JS hits every bundle equally and no roster shape
+changes that. Ordering the fix first does not help either — the fix is live only after `install.sh`, not
+when its commit lands. Deploy the fix, or know the recovery; never carve a root into its own bundle.
 
 **Composing a stale row is CHEAP; splitting to avoid stale rows is EXPENSIVE.** When a candidate's
 premise turns out already-fixed, declare `zero_diff_intent: already-satisfied` in the ticket

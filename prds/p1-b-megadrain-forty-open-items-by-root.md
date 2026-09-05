@@ -4,8 +4,8 @@
 **Type:** bundle (bug + hardening) — operator-directed 2026-08-28: *"we need to batch these in large
 batches"* / *"in the past we have done very large prds with dozens of tickets."*
 **Branch:** `release/v2.1-beta`
-**build_mode:** unattended, EXCEPT the ROOT E tickets (completion-evidence / Done-flip / salvage seam),
-which are R-PSRB self-modifying-recovery and run ATTENDED per root `CLAUDE.md`.
+**build_mode:** unattended, uniformly. (Corrected 2026-09-05: the "R-PSRB self-modifying-recovery"
+carve-out is DELETED — source and the deployed runtime are isolated, so no root is specially exposed.)
 
 ## Why one bundle and not five
 
@@ -226,21 +226,16 @@ instead of guessing between them: either a worker declares blocking-ness explici
 becomes park-and-flag per [[B-NOSTOP-GATES]] — record the residual, continue to citadel, never break
 the phase loop. Adding a third regex arm is the prohibited fix.
 
-**⚠ R-PSRB: this root makes the WHOLE BUNDLE an ATTENDED run — it does NOT make it a smaller one.**
-Operator-set 2026-09-05: *"no, we don't run small bundles."* B-MEGADRAIN ships as ONE bundle with C0
-ordered first. Do not split C0 out to de-risk the seam; attended is an operator POSTURE, never a
-different build path or a smaller roster.
+**⚠ EXPOSURE — and it is NOT special to this root.** The halt lives in the DEPLOYED runtime, and a
+worker editing `mux-runner.ts` in source cannot change the runtime executing it. So this gate can stop
+**any** bundle at its closer seam, including one fixing something unrelated — the ~24% figure above is a
+property of the deployed build, not of this bundle's subject matter. There is no self-modifying category
+and no reason to split, reorder or re-posture on account of it.
 
-**Ordering C0 first does NOT protect this run, and it would be wrong to claim it does.** A running
-pipeline executes **deployed JS**, not the source diff — the fix lands only at `install.sh`. So the
-pre-fix gate stays live in the runtime for the whole bundle, whatever order the tickets land in.
-
-**The attended recovery is cheap and already proven, which is what makes attended sufficient.** GitHub
-#11 measured it: re-attaching `launch.sh` against the same `SESSION_ROOT` cleared `exit_reason`,
-immediately marked pickle complete and entered citadel — `completed_phases` 0 → 1, no operator
-judgement required. So the exposure is not "lose 18 hours", it is "notice a `manager_handoff_pending`
-stop at the closer seam and re-launch". Watch that seam; treat a halt there as a known false positive
-and re-attach rather than investigating it.
+**The recovery is measured and cheap.** GitHub #11: re-attaching `launch.sh` against the same
+`SESSION_ROOT` cleared `exit_reason`, marked pickle complete and entered citadel — `completed_phases`
+0 → 1, no operator judgement required. Treat a `manager_handoff_pending` stop as a known false positive
+and re-launch. Once C0 ships and is DEPLOYED, the exposure is gone for every future run.
 
 ---
 
@@ -302,12 +297,23 @@ for N minutes), not a timeout.**
 `ps|grep` so a live worker reads as dead. Fix subtractively: remove the heuristic that declared it dead.
 **D6** — TMPDIR fixture-directory leak (~15k `pickle-*` dirs/run; TMPDIR is Spotlight-indexed).
 
-## 📌 ROOT E — REMOVED FROM THIS BUNDLE (operator decision 2026-08-28, option 1)
+## 🔄 ROOT E — RESTORED TO THIS BUNDLE (2026-09-05; its exclusion rested on a category that does not exist)
 
-R-ORSR-2 / R-ACNP / B-LOGEV edit the salvage / completion-evidence / Done-flip path, which is R-PSRB:
-the deployed PRE-FIX runtime applies the same buggy logic to the worker building the fix, so they MUST
-run **ATTENDED**. This bundle's `build_mode` is unattended, so carrying them here would quietly violate
-that requirement.
+**`R-ORSR-2` and `R-ACNP` are back IN.** They were removed 2026-08-28 on the reasoning that they edit
+the salvage / completion-evidence / Done-flip path, which made them "R-PSRB" and therefore
+attended-only, conflicting with this bundle's unattended `build_mode`.
+
+**That rationale is void.** Source and the deployed runtime are isolated — a worker editing those files
+cannot change the runtime executing it — so editing the salvage path confers no special exposure and
+there is no attended-only class to conflict with. The exclusion removed real work for no measured
+reason.
+
+`B-LOGEV`, the third member, is separately **CLOSED** — shipped 2026-09-05 in B-FRESHWIN (ticket
+`9ef9ea19`, commit `b8e4753e`). Do not scope it.
+
+Both restored members carry the same verify-first burden as every other root: re-run the mechanism
+check against HEAD before writing a fix, and declare `zero_diff_intent: already-satisfied` if the
+premise has gone stale.
 
 **Split to `prds/p1-b-evidence-completion-evidence-and-done-flip-attended.md` ([[B-EVIDENCE]]), to be
 launched attended as its own bundle.** 3 of 30 tickets — the phase economics barely move, and the
