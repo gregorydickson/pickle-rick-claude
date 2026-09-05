@@ -4329,10 +4329,9 @@ async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, inde
         stdout: (msg) => log(msg),
         stderr: (msg) => log(msg),
     });
-    if (acGate.status !== 'pass') {
-        log(`Phase ${rawPhase} AC gate failed — stopping pipeline`);
-        return { action: 'break' };
-    }
+    const acGateWithhold = withholdForFailedAcGate(runtime, counters, cancelMarker, rawPhase, acGate, log);
+    if (acGateWithhold)
+        return acGateWithhold;
     return finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode, log);
 }
 export function classifyMicroverseHaltDecision(exitReason) {
@@ -4527,6 +4526,39 @@ function cancelledOutcome(cancelMarker, log) {
         return null;
     log('Pipeline cancelled (cancel marker found) — stopping');
     return { action: 'break' };
+}
+/**
+ * B-ONEABORT (0d579ec5): the per-phase acceptance-criteria gate WITHHOLDS the phase's success; it
+ * does not terminate the run.
+ *
+ * `runAcPhaseGate` fails when an operator-authored criterion command returned an unexpected exit
+ * code, or when `ac_phase_manifest.json` could not be read (`services/ac-phase-gate.ts`). Both are
+ * MEASUREMENT verdicts, and neither is on the crash floor — CLAUDE.md reserves halting for
+ * cannot-physically-continue and states outright that a gate may refuse a LOCAL action and stamp a
+ * reason but may never break the phase loop. This used to `return { action: 'break' }`, so a red AC
+ * gate took the whole run's output — and therefore its quality — to zero.
+ *
+ * Honesty rides the REPORTING wire, which is a different wire from the disposition: `nonConvergent`
+ * feeds `unsuccessful = pipelineFailed || counters.nonConvergent > 0`, so the run still withholds the
+ * success verdict, still skips closer-release, and still exits non-zero. The failure is now MORE
+ * visible than it was while it aborted: the abort path recorded no `phaseDispositions` entry at all,
+ * so `pipeline-status.json` never named the gate; the residual below does.
+ *
+ * Returns `null` on a passing gate so the caller falls through to its normal success path.
+ */
+export function withholdForFailedAcGate(runtime, counters, cancelMarker, rawPhase, acGate, log) {
+    if (acGate.status === 'pass')
+        return null;
+    const ids = acGate.failures.map((f) => f.id).join(',');
+    counters.nonConvergent++;
+    counters.phaseDispositions[rawPhase] = `ac_phase_gate_failed${ids ? `:${ids}` : ''}`;
+    // Errors are non-blocking: a failed status write still reports the phase and continues.
+    try {
+        writeRunningStatus(runtime, counters, null);
+    }
+    catch { /* non-blocking */ }
+    log(`Phase ${rawPhase} AC gate failed (${ids || 'no criterion named'}) — withholding success verdict, advancing`);
+    return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
 }
 /**
  * B-NONSTOP WS-2 (AC-NS-6): the non-pickle honesty gate below. `maybeStampPhaseGraduation`

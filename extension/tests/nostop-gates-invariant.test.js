@@ -61,6 +61,7 @@ import {
   classifyMicroverseHaltDecision,
   isFatalPhaseFailure,
   shouldHaltAfterPhase,
+  withholdForFailedAcGate,
 } from '../bin/pipeline-runner.js';
 import { isFailureExit, isHaltExit, isIncompleteExit } from '../bin/mux-runner.js';
 import { classifyMicroverseDisposition } from '../bin/microverse-runner.js';
@@ -746,5 +747,166 @@ describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never rest
       'the arm must read a property of the reason, not restate reasons');
     assert.equal(body.includes('isMicroverseFailureExit'), false,
       'MICROVERSE_FAILURE_REASONS is no longer consulted here — re-adding it re-splits the arm');
+  });
+});
+
+/**
+ * AC-6 (ticket 0d579ec5, B-ONEABORT Root C) — the abort channel is BOUNDED, and the bound is
+ * measured rather than asserted from memory.
+ *
+ * The reading function is the phase loop's single consumer of `PhaseIterationOutcome`
+ * (`if (outcome.action === 'break') break;`), so an abort condition IS a guarded
+ * `action: 'break'` inside a producer of that type. Nothing else in the file terminates the loop —
+ * `exit_reason` appears ~54 times there and almost none of those are abort conditions, which is why
+ * this census is by PRODUCER and not by grep.
+ *
+ * The count was 8 before this ticket. Two came off:
+ *   - `runPhaseIteration`'s `runAcPhaseGate` break, a MEASUREMENT verdict that terminated the run.
+ *     CLAUDE.md: a gate may refuse a LOCAL action and stamp a reason, and may never break the phase
+ *     loop. It now withholds the phase's success and advances (`withholdForFailedAcGate`, pinned
+ *     behaviourally below).
+ *   - `dispatchHaltAction`'s duplicate exit. The crash-floor early-return existed only to skip the
+ *     doomed abort-path typecheck gate — "a narrowing of when the gate runs, never a change to
+ *     whether the pipeline halts" — so it now guards that gate instead of owning a second break.
+ *     One disposition, one exit. Behaviour-identical; the site count is the whole point.
+ *
+ * The remaining six are the crash floor CLAUDE.md reserves halting for, plus two gate-red breaks
+ * that are pinned outside this file (`nostop-gates-sibling-parity.test.js`,
+ * `oneabort-termination-invariant.test.js`) and could not be reduced from this ticket's fence.
+ */
+describe('AC-6 (0d579ec5) — the abort channel is bounded and the bound is measured', () => {
+  const producers = discoverPhaseIterationOutcomeProducers(PIPELINE_RUNNER_SOURCE);
+
+  /** Every producer that owns at least one `action: 'break'`, mapped to how many it owns. */
+  function abortSiteCensus() {
+    const census = {};
+    for (const name of producers) {
+      const count = (extractFunctionBody(PIPELINE_RUNNER_SOURCE, name).match(/action: 'break'/g) ?? []).length;
+      if (count > 0) census[name] = count;
+    }
+    return census;
+  }
+
+  test('the census machinery is not vacuous — producers were discovered and some do break', () => {
+    // Without this, every assertion below passes trivially if the discovery regex drifts.
+    assert.ok(producers.length > 0, 'no PhaseIterationOutcome producer discovered');
+    assert.ok(Object.keys(abortSiteCensus()).length > 0, 'no abort site found — the scan drifted');
+  });
+
+  test('the abort census is exactly the six surviving sites, named one by one', () => {
+    // Deliberately a per-producer MAP, not a total. A total-only assertion stays green when one
+    // site is deleted and a new one is added somewhere else — which is precisely the regression
+    // this ticket exists to make impossible. Re-measure with the probe in `conformance_*` before
+    // editing any number here; a number without its probe is not a measurement.
+    assert.deepEqual(abortSiteCensus(), {
+      cancelledOutcome: 1,
+      dispatchHaltAction: 1,
+      resolvePhaseIncompleteOutcome: 1,
+      runAllBackendsExhaustedFinalizeGate: 1,
+      runJudgeTimeoutFinalizeGate: 1,
+      runPhaseIteration: 1,
+    });
+  });
+
+  test('the total moved DOWN from the pre-ticket 8 and no producer gained a site', () => {
+    const census = abortSiteCensus();
+    const total = Object.values(census).reduce((a, b) => a + b, 0);
+    assert.equal(total, 6, 'abort-site total changed — AC-6 forbids upward movement');
+    assert.ok(total < 8, 'AC-6 hard constraint: net movement must be downward');
+    // The pre-ticket census had `dispatchHaltAction: 2` and `runPhaseIteration: 2`. Naming the two
+    // that shrank keeps the reduction attributable instead of leaving it to the total.
+    assert.equal(census.dispatchHaltAction, 1, 'dispatchHaltAction re-grew a second break');
+    assert.equal(census.runPhaseIteration, 1, 'runPhaseIteration re-grew a second break');
+  });
+
+  test('the AC gate holds no break of its own — the reduction, read at the call site', () => {
+    const body = extractFunctionBody(PIPELINE_RUNNER_SOURCE, 'runPhaseIteration');
+    const acIdx = body.indexOf('runAcPhaseGate');
+    assert.ok(acIdx !== -1, 'runPhaseIteration no longer calls runAcPhaseGate — re-derive this pin');
+    // From the gate call to the end of the function: the tail that used to own the abort.
+    assert.equal(
+      body.slice(acIdx).includes("action: 'break'"),
+      false,
+      "the AC gate must not terminate the phase loop — it withholds the verdict and advances",
+    );
+  });
+
+  /**
+   * The behavioural half. A source-text pin alone would be satisfiable by a comment, so the helper
+   * is CALLED and its effect on the counters observed. Both directions are covered: a failing gate
+   * must continue AND report, and a passing gate must not report anything at all — without the
+   * second case, a helper hard-wired to always withhold would pass the first.
+   */
+  describe('withholdForFailedAcGate — reporting without halting', () => {
+    const freshCounters = () => ({
+      completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {},
+    });
+    const failingGate = {
+      status: 'fail',
+      phase: 'per-phase',
+      evaluated: ['AC-1', 'AC-2'],
+      skipped: [],
+      failures: [{ id: 'AC-2', reason: 'expected exit 0, got 1' }],
+    };
+
+    test('a failed AC gate continues the phase loop and withholds the success verdict', () => {
+      const { repo, startCommit } = makeRepo();
+      const runtime = makeRuntime({ repo, startCommit });
+      const counters = freshCounters();
+      const cancelMarker = path.join(tmpDir('nostop-ac-cancel-'), 'never-created');
+
+      const outcome = withholdForFailedAcGate(
+        runtime, counters, cancelMarker, 'citadel', failingGate, () => {},
+      );
+
+      assert.deepEqual(outcome, { action: 'continue' },
+        'a measurement verdict must not break the phase loop (PRIME DIRECTIVE)');
+      assert.equal(counters.nonConvergent, 1,
+        'success must be withheld on the REPORTING wire — unsuccessful = pipelineFailed || nonConvergent > 0');
+      assert.match(counters.phaseDispositions.citadel, /^ac_phase_gate_failed:/,
+        'the failure must leave a residual a human can read in pipeline-status.json');
+      assert.ok(counters.phaseDispositions.citadel.includes('AC-2'),
+        'the residual must name the criterion that failed, not just that one did');
+      assert.equal(counters.completed, 0,
+        'a phase whose ACs are red is not a completed phase');
+      fs.rmSync(repo, { recursive: true, force: true });
+    });
+
+    test('a passing AC gate is inert — the withhold cannot over-trigger', () => {
+      const { repo, startCommit } = makeRepo();
+      const runtime = makeRuntime({ repo, startCommit });
+      const counters = freshCounters();
+      const cancelMarker = path.join(tmpDir('nostop-ac-cancel-pass-'), 'never-created');
+
+      const outcome = withholdForFailedAcGate(
+        runtime, counters, cancelMarker,
+        'citadel',
+        { status: 'pass', phase: 'per-phase', evaluated: ['AC-1'], skipped: [], failures: [] },
+        () => {},
+      );
+
+      assert.equal(outcome, null, 'a passing gate must fall through to the normal success path');
+      assert.deepEqual(counters, freshCounters(), 'a passing gate must touch no counter');
+      fs.rmSync(repo, { recursive: true, force: true });
+    });
+
+    test('operator cancel still wins over the withhold — removing an abort kept the operator\'s', () => {
+      const { repo, startCommit } = makeRepo();
+      const runtime = makeRuntime({ repo, startCommit });
+      const counters = freshCounters();
+      const cancelDir = tmpDir('nostop-ac-cancel-live-');
+      const cancelMarker = path.join(cancelDir, 'cancel');
+      fs.writeFileSync(cancelMarker, '');
+
+      const outcome = withholdForFailedAcGate(
+        runtime, counters, cancelMarker, 'citadel', failingGate, () => {},
+      );
+
+      assert.equal(outcome.action, 'break',
+        'operator cancel is a crash-floor disposition and must survive this reduction');
+      assert.equal(counters.nonConvergent, 1,
+        'the residual is still recorded even when the operator cancels');
+      fs.rmSync(repo, { recursive: true, force: true });
+    });
   });
 });
