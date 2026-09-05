@@ -746,13 +746,29 @@ else
 fi
 
 # --- PRE-TOOL-USE HOOKS (merge from source settings, preserving existing entries) ---
+# Stop/PostToolUse/PostToolUseFailure are registered from shell literals built here, so
+# 09b89954 (--prefix) made them relocation-aware in one edit. PreToolUse is a verbatim jq
+# copy of source data, so it was invisible to that retrofit and kept the hardcoded
+# $HOME/.claude/pickle-rick the source file has carried since 7d69bd7e — a --prefix install
+# registered the R-WSRC write guard at a path that does not exist there, node exited 1 with
+# no decision JSON, and dispatch's fail-open arm approved every protected write.
+# Canonicalize instead of special-casing: ONE spelling of the runtime root, applied to both
+# the incoming source group and any legacy entry already deployed, so the dedupe below
+# compares like with like and an upgrade cannot leave a second dead registration behind.
+# Idempotent by construction — the canonical form contains the legacy substring, so the
+# rewrite is skipped once PICKLE_INSTALL_ROOT is present. Third-party hooks are untouched.
+CANONICALIZE_HOOK_ROOT_EXPR='if test("PICKLE_INSTALL_ROOT") then . else sub("\\$HOME/\\.claude/pickle-rick"; "${PICKLE_INSTALL_ROOT:-$HOME/.claude/pickle-rick}") end'
 SOURCE_SETTINGS="$SCRIPT_DIR/.claude/settings.json"
 SOURCE_PTU_COUNT=$(jq '.hooks.PreToolUse // [] | length' "$SOURCE_SETTINGS" 2>/dev/null || echo "0")
 if [ "$SOURCE_PTU_COUNT" -gt 0 ]; then
   echo "🔧 Merging $SOURCE_PTU_COUNT PreToolUse hook group(s) from source..."
+  TMPFILE="$(mktemp)"
+  jq "(.hooks.PreToolUse[]?.hooks[]?.command) |= ($CANONICALIZE_HOOK_ROOT_EXPR)" "$SETTINGS_FILE" > "$TMPFILE" \
+    && mv "$TMPFILE" "$SETTINGS_FILE"
   for i in $(seq 0 $((SOURCE_PTU_COUNT - 1))); do
-    # Extract the command from the source hook group
-    SRC_CMD=$(jq -r ".hooks.PreToolUse[$i].hooks[0].command" "$SOURCE_SETTINGS")
+    # Extract the command from the source hook group, canonicalized to the same runtime-root
+    # literal the other three hook families use.
+    SRC_CMD=$(jq -r ".hooks.PreToolUse[$i].hooks[0].command | ($CANONICALIZE_HOOK_ROOT_EXPR)" "$SOURCE_SETTINGS")
     # Check if this command already exists in deployed settings
     if jq -e --arg cmd "$SRC_CMD" \
         '.hooks.PreToolUse // [] | map(.hooks // [] | map(.command)) | flatten | any(. == $cmd)' \
@@ -761,7 +777,7 @@ if [ "$SOURCE_PTU_COUNT" -gt 0 ]; then
     else
       # Extract the full hook group from source and merge into deployed
       TMPFILE="$(mktemp)"
-      SRC_GROUP=$(jq ".hooks.PreToolUse[$i]" "$SOURCE_SETTINGS")
+      SRC_GROUP=$(jq ".hooks.PreToolUse[$i] | (.hooks[]?.command) |= ($CANONICALIZE_HOOK_ROOT_EXPR)" "$SOURCE_SETTINGS")
       jq --argjson group "$SRC_GROUP" '
         if .hooks == null then
           .hooks = {"PreToolUse": [$group]}

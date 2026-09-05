@@ -1646,3 +1646,108 @@ describe('install.sh R-PJV-6 pkgjson forensic emission (producer pin)', () => {
     );
   });
 });
+
+// AP-EXT-ITER12-01: Stop/PostToolUse/PostToolUseFailure are registered from shell literals
+// built inside install.sh, so 09b89954 (--prefix) made them relocation-aware in one edit.
+// PreToolUse is a verbatim jq copy of `.claude/settings.json`, so it was invisible to that
+// retrofit and kept the hardcoded $HOME the source file has carried since 7d69bd7e: a
+// --prefix install registered the R-WSRC write guard at a path that does not exist, node
+// exited 1 with no decision JSON, and dispatch's fail-open arm approved every protected
+// write. These cases drive the REAL merge block extracted from install.sh, so the pin
+// cannot drift from the shipped script.
+describe('install.sh PreToolUse hook root canonicalization (AP-EXT-ITER12-01)', () => {
+  const LEGACY_CMD = 'node $HOME/.claude/pickle-rick/extension/hooks/dispatch.js config-protection';
+  const CANONICAL_CMD =
+    'node ${PICKLE_INSTALL_ROOT:-$HOME/.claude/pickle-rick}/extension/hooks/dispatch.js config-protection';
+
+  /** Extract the real PreToolUse merge block verbatim and run it over a fixture. */
+  function runRealPreToolUseMerge(deployedSettings, { runs = 1 } = {}) {
+    const src = readFileSync(INSTALL_SH, 'utf8').split('\n');
+    const start = src.findIndex((l) => l.startsWith('# --- PRE-TOOL-USE HOOKS'));
+    const end = src.findIndex((l) => l.startsWith('# --- VALIDATE result ---'));
+    assert.ok(start >= 0 && end > start, 'PreToolUse merge block not found in install.sh');
+
+    const dir = mkdtempSync(path.join(tmpdir(), 'install-ptu-'));
+    try {
+      mkdirSync(path.join(dir, 'src', '.claude'), { recursive: true });
+      // The REAL source settings file — the thing the merge actually copies.
+      writeFileSync(
+        path.join(dir, 'src', '.claude', 'settings.json'),
+        readFileSync(path.join(REPO_ROOT, '.claude', 'settings.json'), 'utf8'),
+      );
+      const settingsPath = path.join(dir, 'settings.json');
+      writeFileSync(settingsPath, JSON.stringify(deployedSettings));
+      const scriptPath = path.join(dir, 'run.sh');
+      writeFileSync(scriptPath, [
+        '#!/bin/bash',
+        'set -euo pipefail',
+        `SCRIPT_DIR="${path.join(dir, 'src')}"`,
+        `SETTINGS_FILE="${settingsPath}"`,
+        ...src.slice(start, end),
+      ].join('\n'), { mode: 0o755 });
+
+      for (let i = 0; i < runs; i++) {
+        const r = spawnSync('bash', [scriptPath], { encoding: 'utf8' });
+        assert.equal(r.status, 0, `merge block failed: ${r.stderr}`);
+      }
+      const merged = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      return (merged.hooks?.PreToolUse ?? []).flatMap((g) => (g.hooks ?? []).map((h) => h.command));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test('AP-EXT-ITER212-01: a fresh install registers the guard through PICKLE_INSTALL_ROOT, never a hardcoded $HOME', () => {
+    const commands = runRealPreToolUseMerge({});
+    assert.deepEqual(commands, [CANONICAL_CMD]);
+  });
+
+  test('AP-EXT-ITER212-01: an upgrade migrates a legacy hardcoded entry in place, not a second registration', () => {
+    const commands = runRealPreToolUseMerge({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Write|Edit|Bash', hooks: [{ type: 'command', command: LEGACY_CMD }] },
+        ],
+      },
+    });
+    // Exactly one registration: migrated, not duplicated. A second (dead) entry would
+    // fail open on a relocated box and double-fire on a default one.
+    assert.deepEqual(commands, [CANONICAL_CMD]);
+  });
+
+  test('AP-EXT-ITER212-01: re-running the installer is idempotent (canonical form not rewritten)', () => {
+    const commands = runRealPreToolUseMerge({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Write|Edit|Bash', hooks: [{ type: 'command', command: LEGACY_CMD }] },
+        ],
+      },
+    }, { runs: 3 });
+    assert.deepEqual(commands, [CANONICAL_CMD]);
+  });
+
+  test('AP-EXT-ITER212-01: a third-party PreToolUse hook is preserved untouched', () => {
+    const thirdParty = 'node /opt/thirdparty/audit.js';
+    const commands = runRealPreToolUseMerge({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: thirdParty }] },
+        ],
+      },
+    });
+    assert.ok(commands.includes(thirdParty), 'third-party hook must survive the merge verbatim');
+    assert.ok(commands.includes(CANONICAL_CMD), 'the guard must still be registered');
+  });
+
+  test('AP-EXT-ITER212-01: every hook family install.sh registers points at the same relocatable root', () => {
+    // The defect was an ASYMMETRY: three families relocation-aware, one not. Pin the
+    // property, not the four spellings, so a fifth family cannot regress unseen.
+    const installSh = readFileSync(INSTALL_SH, 'utf8');
+    const hookCommands = [...installSh.matchAll(/'node [^']*\/extension\/[^']*'/g)].map((m) => m[0]);
+    assert.ok(hookCommands.length >= 3, 'expected install.sh to build hook command literals');
+    for (const cmd of hookCommands) {
+      assert.match(cmd, /\$\{PICKLE_INSTALL_ROOT:-\$HOME\/\.claude\/pickle-rick\}/,
+        `hook command literal is not relocation-aware: ${cmd}`);
+    }
+  });
+});
