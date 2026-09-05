@@ -57,23 +57,46 @@ test('negative control: an unref\'d sole-settle-path timer does NOT reliably fir
 // was one member short, and a missing member looks exactly like a member that does not apply.
 //
 // So this asserts the PROPERTY instead of a list: no `setTimeout`/`setInterval` whose callback
-// settles an enclosing `new Promise` executor may be `.unref()`'d. Validated as an oracle
-// against the base sha `58dbe500`, where it recovers exactly the three sites owning the three
-// cancelled tests (process-cleanup.test.js:158, :587, :683) with no misses and no false
-// positives — it needed no knowledge of which tests failed.
+// settles an enclosing `new Promise` executor may be `.unref()`'d.
+//
+// THE WALK COVERS `tests/` AS WELL AS `src/`, AND THAT IS THE WHOLE POINT (AP-EXT-ITER213-01).
+// A `src/`-only walk reproduces the very mistake it replaced: beta.20's three misses were in
+// TEST-harness poll code, so scoping the replacement to `src/` generalises on the wrong axis —
+// it widens within `src/` while the actual miss lived outside it. Replayed at base sha
+// `58dbe500` this matcher recovers, over `extension/tests`, exactly the three sites owning the
+// three cancelled tests — integration/process-cleanup.test.js:158, :587 and :683 — plus the
+// still-unfixed mux-silent-worker-exit.test.js:93. Over `extension/src` at that same sha it
+// recovers two entirely different sites (bin/jar-runner.ts:231, services/codegraph-service.ts:407)
+// and NONE of the three. The oracle claim is only reproducible with `tests/` in the walk.
+//
+// The property is about promise settlement, not about which directory a file sits in, so the
+// scan carries no src-vs-tests distinction to get wrong.
 // ---------------------------------------------------------------------------
 
-const SRC_ROOT = path.resolve(__dirname, '..', 'src');
+const EXT_ROOT = path.resolve(__dirname, '..');
 const TIMER_FNS = new Set(['setTimeout', 'setInterval']);
 
-/** Every `.ts` file under `src/`. Throws rather than returning [] — an empty walk must not pass. */
-function collectSourceFiles(dir) {
+// One row per scanned root. `minSettling` is a PER-ROOT anti-vacuity floor rather than one
+// global number: a single total cannot notice one root going dark (src/ contributes 10 of the
+// 86 matches, so a global floor of 5 stays green with the whole `tests/` walk broken — exactly
+// the silent under-count this file exists to refuse).
+//
+// `.mjs` IS DELIBERATELY NOT SCANNED. tests/fixtures/sole-settle-path-repro.mjs is this file's
+// own negative control and reproduces the violating shape ON PURPOSE; adding `.mjs` reds the
+// gate on its own fixture. Extend the extensions only with that fixture excluded.
+const SCAN_ROOTS = [
+  { dir: 'src', exts: ['.ts'], minSettling: 5 },     // measured 10 at c75ba623
+  { dir: 'tests', exts: ['.ts', '.js'], minSettling: 30 }, // measured 76 at c75ba623
+];
+
+/** Every file with one of `exts` under `dir`. Throws rather than returning [] — an empty walk must not pass. */
+function collectSourceFiles(dir, exts) {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules') continue;
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...collectSourceFiles(full));
-    else if (entry.name.endsWith('.ts')) out.push(full);
+    if (entry.isDirectory()) out.push(...collectSourceFiles(full, exts));
+    else if (exts.some((ext) => entry.name.endsWith(ext))) out.push(full);
   }
   return out;
 }
@@ -117,15 +140,16 @@ function isUnrefd(node, unrefdNames) {
  * unref spellings count); both are documented above.
  *
  * KNOWN LIMITS — this matcher UNDER-detects, and the gaps are named so the next reader does not
- * read the test title as broader than the check. Both are deliberate: closing either one turns a
- * currently-unflagged site into a reported violation in a file outside ticket c75ba623's fence,
- * so widening belongs in a bundle scoped to adjudicate it, not here.
+ * read the test title as broader than the check.
  *   1. SETTLE-THROUGH-A-LOCAL-HELPER is invisible. Only DIRECT calls to the executor's own
  *      parameters count, so `const settle = r => resolve(r); setTimeout(() => settle(x), ms)`
- *      does not match. Live example: `src/services/codegraph-query-runner.ts:190`, an unref'd
- *      timer settling via `settle()` — absent from this scan's census. (Believed benign there:
- *      a live child-process handle holds the loop open so the timer still fires. But it is
- *      unflagged because it was never examined, NOT because that argument was checked.)
+ *      does not match. Live examples: `src/services/codegraph-query-runner.ts:190` and
+ *      `src/bin/jar-runner.ts:252`, both unref'd timers settling via `settle()` — absent from
+ *      this scan's census. jar-runner is the cautionary one: the SAME site WAS flagged at
+ *      58dbe500 and left the census only when a refactor routed it through the helper, so this
+ *      limit demonstrably loses true positives over time. (Believed benign at both: a live
+ *      child-process handle holds the loop open so the timer still fires. But they are
+ *      unflagged because they were never examined, NOT because that argument was checked.)
  *   2. PROPERTY-RECEIVER `unref` is invisible. `collectUnrefs` requires an identifier receiver,
  *      so `this.timer.unref()` is not collected — e.g. `src/bin/mux-runner.ts:4389`, `:4530`.
  *      Neither is a settling timer per `settlerReachedBy` today, so nothing is missed at present.
@@ -165,7 +189,7 @@ function findSettlingTimers(file) {
     const settles = isTimerCall(node) ? settlerReachedBy(node.arguments?.[0], inScope) : null;
     if (settles) {
       found.push({
-        file: path.relative(SRC_ROOT, file),
+        file: path.relative(EXT_ROOT, file).split(path.sep).join('/'),
         line: src.getLineAndCharacterOfPosition(node.getStart(src)).line + 1,
         settles,
         unrefd: isUnrefd(node, unrefdNames),
@@ -178,26 +202,43 @@ function findSettlingTimers(file) {
   return found;
 }
 
-function scanSrc() {
-  const files = collectSourceFiles(SRC_ROOT);
-  if (files.length === 0) {
-    throw new Error(`no .ts files found under ${SRC_ROOT} — the walk is broken, not the tree clean`);
-  }
-  return { files, timers: files.flatMap(findSettlingTimers) };
+const describeViolation = (v) => `${v.file}:${v.line} (settles ${v.settles}())`;
+
+/**
+ * Scan every root once. Memoised because both tests below consume it and the widened walk
+ * parses ~1070 files (~0.8s); paying that twice would push a @tier: fast file toward the
+ * load-sensitive band that audit-subprocess-heavy-tests.sh flags.
+ */
+let scanCache = null;
+function scanTree() {
+  if (scanCache) { return scanCache; }
+  scanCache = SCAN_ROOTS.map((root) => {
+    const files = collectSourceFiles(path.join(EXT_ROOT, root.dir), root.exts);
+    if (files.length === 0) {
+      throw new Error(`no ${root.exts.join('/')} files found under ${root.dir}/ — the walk is broken, not the tree clean`);
+    }
+    return { ...root, files, timers: files.flatMap(findSettlingTimers) };
+  });
+  return scanCache;
 }
 
-// The floor is the anti-vacuity guard, and it is the reason this test cannot green for free.
-// "Zero violations" is exactly what a broken walk, an empty file list or a desynced parse also
-// produce, so the scan must additionally PROVE it looked at something. Measured 10 at
-// c75ba623; 5 leaves room to delete half of them without a spurious red.
-const MIN_SETTLING_TIMERS = 5;
+// The one violation this ticket cannot close, named rather than silently tolerated.
+//
+// tests/mux-silent-worker-exit.test.js:93 unref's `boundTimer`, the sole settle path of the
+// `Promise.race` watchdog in a test whose subject IS a 0%-CPU hang — so the watchdog is
+// disarmed in exactly the case it guards. It predates c75ba623 (present at 58dbe500) and that
+// file is outside this ticket's scope fence, so fixing it belongs to a bundle that can edit it.
+//
+// This entry ROTS RED, not green: the test below asserts it is still PRESENT in the scan, so
+// the day someone ref's that timer this constant reds and must be deleted. A stale member
+// cannot sit here quietly granting permission.
+const KNOWN_UNFIXED = ['tests/mux-silent-worker-exit.test.js:93 (settles reject())'];
 
-test('no promise\'s sole settle path is an unref\'d timer, anywhere under src/', () => {
-  const { timers } = scanSrc();
-  const violations = timers.filter(t => t.unrefd);
+test('no promise\'s sole settle path is an unref\'d timer, anywhere under src/ or tests/', () => {
+  const violations = scanTree().flatMap(r => r.timers).filter(t => t.unrefd).map(describeViolation);
 
   assert.deepEqual(
-    violations.map(v => `${v.file}:${v.line} (settles ${v.settles}())`),
+    violations.filter(v => !KNOWN_UNFIXED.includes(v)),
     [],
     'a timer that settles an enclosing `new Promise` executor must NOT be unref\'d: when the '
     + 'other settle path hangs — the case the timer exists for — it is the SOLE settle path, and '
@@ -205,17 +246,30 @@ test('no promise\'s sole settle path is an unref\'d timer, anywhere under src/',
   );
 });
 
-test('the sole-settle-path scan is not vacuous: it actually finds settling timers in src/', () => {
-  const { files, timers } = scanSrc();
+test('every KNOWN_UNFIXED entry is still a real violation — the exception list rots red, not green', () => {
+  const violations = scanTree().flatMap(r => r.timers).filter(t => t.unrefd).map(describeViolation);
 
-  assert.ok(
-    files.length > 0,
-    'the src/ walk returned no files — a zero-violation verdict would be meaningless',
+  assert.deepEqual(
+    KNOWN_UNFIXED.filter(k => !violations.includes(k)),
+    [],
+    'a KNOWN_UNFIXED entry the scan no longer reports is either fixed (delete the entry) or has '
+    + 'moved line (update it) — either way it is now silently excusing nothing, or worse, '
+    + 'excusing a site that has drifted somewhere else',
   );
-  assert.ok(
-    timers.length >= MIN_SETTLING_TIMERS,
-    `expected at least ${MIN_SETTLING_TIMERS} promise-settling timers under src/, found `
-    + `${timers.length} across ${files.length} files — the walk or the AST match is broken, and `
-    + 'a broken scan reports zero violations exactly like a clean tree does',
+});
+
+test('the sole-settle-path scan is not vacuous: it finds settling timers under EVERY root', () => {
+  // "Zero violations" is exactly what a broken walk, an empty file list or a desynced parse also
+  // produce, so the scan must additionally PROVE it looked at something — per root, because one
+  // dark root is invisible in a combined total.
+  const shortfalls = scanTree()
+    .filter(r => r.timers.length < r.minSettling)
+    .map(r => `${r.dir}/: found ${r.timers.length} settling timers across ${r.files.length} files, expected >= ${r.minSettling}`);
+
+  assert.deepEqual(
+    shortfalls,
+    [],
+    'a root came up short — the walk or the AST match is broken for it, and a broken scan '
+    + 'reports zero violations exactly like a clean tree does',
   );
 });
