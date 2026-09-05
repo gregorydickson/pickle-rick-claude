@@ -648,12 +648,24 @@ const ACTIVITY_RING_MAX = 2000;
  *   - `rate_limit_*`     (prefix) — rate-limit park/resume/wait/exhaustion
  *   - `*_quarantined`    (suffix) — crashed-ticket-files quarantine forensics
  *   - `ticket_ladder_exhausted` (exact) — terminal ladder-exhaustion marker
+ *   - `recoverable_phase_failure` (exact) — degradation breadcrumb (AP-EXT-ITER211-02)
+ *
+ * Membership rule, so the set stops being a hand-list: an event belongs here iff
+ * some reader treats its ABSENCE as an all-clear verdict. Eviction cannot be
+ * distinguished from "never happened", so for those events a dropped entry does
+ * not degrade a report — it INVERTS a verdict. `recoverable_phase_failure` is
+ * read that way by `pipeline-runner.ts:buildCloserReleasePlan`, which returns
+ * `{release,install,tag}` all true when it finds none; it is written early in a
+ * run, so it sat in the drop-oldest PREFIX and a long degraded run silently
+ * restored its own success verdict and tagged a release. All four members are
+ * low-cardinality by construction, so exempting them cannot unbound the ring.
  */
 function isExemptActivityEvent(name: unknown): boolean {
   if (typeof name !== 'string') return false;
   return name.startsWith('rate_limit_') ||
     name.endsWith('_quarantined') ||
-    name === 'ticket_ladder_exhausted';
+    name === 'ticket_ladder_exhausted' ||
+    name === 'recoverable_phase_failure';
 }
 
 /**

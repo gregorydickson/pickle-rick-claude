@@ -17,6 +17,7 @@ import {
   shouldHaltAfterPhase,
 } from '../bin/pipeline-runner.js';
 import { MICROVERSE_FATAL_REASONS } from '../types/index.js';
+import { StateManager } from '../services/state-manager.js';
 
 const TMP_DIRS = new Set();
 
@@ -537,5 +538,125 @@ test('AP-EXT-ITER83-01 control: the missing-key-metric downgrade still continues
   const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
   assert.equal(status.status, 'completed');
   assert.equal(status.skipped_phases, 1);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER211-02: `buildCloserReleasePlan` derives a RELEASE verdict from an
+// ABSENCE in `state.activity` — and `state.activity` is a bounded drop-oldest
+// ring (`state-manager.ts:ACTIVITY_RING_MAX` = 2000). `recoverable_phase_failure`
+// is written EARLY in a run, so it sits in the evicted PREFIX. Pre-fix it was not
+// in `isExemptActivityEvent`, so a long degraded run evicted its own degradation
+// breadcrumb and the closer read "no prior non-zero exit" — returning
+// `{release,install,tag}` all true and auto-tagging a release, which is exactly
+// the success verdict CLAUDE.md's PRIME DIRECTIVE says a degraded run must
+// withhold. The over-cap condition is not hypothetical: the cap exists because a
+// real run reached 7021 entries (state-manager.ts, B-PDBL D1).
+//
+// This drives the REAL phase loop through `main` to produce the breadcrumb, then
+// pushes the ring over the cap through the REAL `StateManager.update` write path
+// (which is what invokes `trimActivityRing`), then reads the surviving state back
+// through the shipped `buildCloserReleasePlan`. No fixture stands in for either
+// end of the wire.
+// ---------------------------------------------------------------------------
+
+const RING_OVERFLOW_FILLER = 2500;
+
+function floodActivityRing(statePath, count) {
+  const sm = new StateManager();
+  sm.update(statePath, (state) => {
+    const activity = Array.isArray(state.activity) ? state.activity : [];
+    const filler = Array.from({ length: count }, (_, i) => ({
+      event: 'worker_backend_resolved',
+      ts: new Date().toISOString(),
+      seq: i,
+    }));
+    // Append AFTER the existing entries so the breadcrumb is the OLDEST — the
+    // position drop-oldest eviction actually takes.
+    state.activity = [...activity, ...filler];
+  });
+}
+
+test('AP-EXT-ITER211-02: an over-cap activity ring must not evict the degradation breadcrumb into a clean closer release', async () => {
+  const { repo, sessionDir, statePath } = driveAnatomyMissingKeyMetricCrash();
+
+  await expectMainExit(sessionDir, 0);
+
+  const before = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+  const beforeBreadcrumbs = before.activity.filter((e) => e.event === 'recoverable_phase_failure');
+  assert.equal(beforeBreadcrumbs.length, 1, 'precondition: the crash left exactly one breadcrumb');
+  assert.equal(
+    before.activity.findIndex((e) => e.event === 'recoverable_phase_failure') <
+      before.activity.length,
+    true,
+  );
+
+  floodActivityRing(statePath, RING_OVERFLOW_FILLER);
+
+  const after = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+  // The ring really was trimmed — otherwise this test would pass without the cap
+  // ever engaging, and would not be measuring eviction at all.
+  assert.ok(
+    after.activity.length < before.activity.length + RING_OVERFLOW_FILLER,
+    `precondition: trimActivityRing must have engaged (len=${after.activity.length})`,
+  );
+  assert.equal(after.activity.length, 2000, 'the ring is capped at ACTIVITY_RING_MAX');
+
+  const survivors = after.activity.filter((e) => e.event === 'recoverable_phase_failure');
+  assert.equal(
+    survivors.length,
+    1,
+    'the degradation breadcrumb must survive eviction — its absence INVERTS the closer verdict',
+  );
+  assert.equal(survivors[0].phase, 'anatomy-park');
+  assert.equal(survivors[0].exit_code, 1);
+
+  // The consequence the exemption exists for, read through the shipped builder.
+  const plan = buildCloserReleasePlan(after);
+  assert.equal(plan.release, false, 'a degraded run must still withhold release after eviction');
+  assert.equal(plan.install, false, 'a degraded run must not auto-install after eviction');
+  assert.equal(plan.tag, false, 'a degraded run must not auto-tag after eviction');
+  assert.equal(plan.skipReason, 'prior phase non-zero exit detected');
+
+  let installCalled = false;
+  let tagCalled = false;
+  executeCloserReleasePlan(plan, {
+    install: () => { installCalled = true; },
+    tag: () => { tagCalled = true; },
+  }, () => {});
+  assert.equal(installCalled, false);
+  assert.equal(tagCalled, false);
+
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// Control: the exemption must not make the ring unbounded, and must not preserve
+// ordinary high-cardinality events. Without this, widening `isExemptActivityEvent`
+// to a blanket `return true` would also satisfy the case above.
+test('AP-EXT-ITER211-02 control: the exemption is narrow — non-exempt events are still evicted and the cap still holds', async () => {
+  const { repo, statePath } = driveAnatomyMissingKeyMetricCrash();
+  const sm = new StateManager();
+
+  sm.update(statePath, (state) => {
+    state.activity = [
+      { event: 'recoverable_phase_failure', ts: new Date().toISOString(), phase: 'pickle', exit_code: 1 },
+      ...Array.from({ length: 2500 }, (_, i) => ({
+        event: 'worker_backend_resolved',
+        ts: new Date().toISOString(),
+        seq: i,
+      })),
+    ];
+  });
+
+  const after = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+  assert.equal(after.activity.length, 2000, 'the cap still bounds the ring');
+  assert.equal(
+    after.activity.filter((e) => e.event === 'worker_backend_resolved').length,
+    1999,
+    'ordinary events are still evicted oldest-first — the exemption did not become blanket',
+  );
+  assert.equal(after.activity[0].event, 'recoverable_phase_failure');
+  assert.equal(after.activity.filter((e) => e.event === 'recoverable_phase_failure').length, 1);
+
   fs.rmSync(repo, { recursive: true, force: true });
 });
