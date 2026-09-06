@@ -228,9 +228,8 @@ describe('shouldHaltAfterPhase', () => {
   // membership assertion below now asserts ABSENCE where it used to assert presence.
   //
   // `isFatalPhaseFailure`/`shouldHaltAfterPhase` still return `true` here and that is UNCHANGED —
-  // arm 3 of `isFatalPhaseFailure`'s anatomy-park branch (`isMicroverseFailureExit`, backed by the
-  // separate `MICROVERSE_FAILURE_REASONS` set, which still lists `judge_cli_missing` per the
-  // out-of-scope R-MBLE-2 trap door) independently routes the halt-dispatch path. That path then
+  // `isFatalPhaseFailure`'s anatomy-park branch reads `judge_cli_missing`'s `failure` disposition
+  // off `MICROVERSE_DISPOSITIONS` and independently routes the halt-dispatch path. That path then
   // consults `classifyMicroverseHaltDecision`, which — because `judge_cli_missing` is a
   // `MICROVERSE_EXIT_REASONS` union member — resolves to `run-finalize-gate-incomplete`: the
   // pipeline runs finalize-gate and, on pass, continues to the next phase with success withheld

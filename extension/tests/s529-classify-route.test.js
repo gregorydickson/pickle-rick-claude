@@ -13,7 +13,6 @@ import {
   JudgeMeasurementTimeout,
 } from '../bin/microverse-runner.js';
 import { classifyMicroverseHaltDecision, isFatalPhaseFailure } from '../bin/pipeline-runner.js';
-import { isMicroverseFailureExit } from '../types/index.js';
 
 const TMP_DIRS = new Set();
 
@@ -100,14 +99,6 @@ describe('AC-S529-1: classifyJudgeError — 529/429 → rate_limited', () => {
 
   test('generic error without 529/429 → unknown', () => {
     assert.deepEqual(classifyJudgeError(new Error('something else failed')), { failureKind: 'unknown' });
-  });
-});
-
-describe('AC-S529-2 regression pin: baseline_unmeasurable_transient is non-fatal', () => {
-  test('isMicroverseFailureExit(baseline_unmeasurable_transient) === false', () => {
-    // baseline_unmeasurable_transient must stay out of MICROVERSE_FAILURE_REASONS so
-    // pipeline-runner routes it to finalize-gate-incomplete, not fatal abort.
-    assert.equal(isMicroverseFailureExit('baseline_unmeasurable_transient'), false);
   });
 });
 

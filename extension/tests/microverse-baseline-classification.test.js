@@ -13,7 +13,6 @@ import {
   measureAndClassifyIteration,
 } from '../bin/microverse-runner.js';
 import { readMicroverseState } from '../services/microverse-state.js';
-import { isMicroverseFailureExit } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(__dirname, '..');
@@ -166,7 +165,6 @@ describe('microverse-baseline-classification', () => {
     assert.equal(measurementCalls > 0, true);
     assert.equal(persisted.exit_reason, 'judge_timeout');
     assert.equal(persisted.status, 'stopped');
-    assert.equal(isMicroverseFailureExit(persisted.exit_reason), false);
   });
 
   test('ENOENT -> judge_cli_missing fatal', async () => {
@@ -178,7 +176,6 @@ describe('microverse-baseline-classification', () => {
     assert.equal(measurementCalls > 0, true);
     assert.equal(persisted.exit_reason, 'judge_cli_missing');
     assert.equal(persisted.status, 'stopped');
-    assert.equal(isMicroverseFailureExit(persisted.exit_reason), true);
   });
 
   test('unsupported-model -> baseline_unmeasurable_unrecoverable fatal', async () => {
@@ -190,7 +187,6 @@ describe('microverse-baseline-classification', () => {
     assert.equal(measurementCalls > 0, true);
     assert.equal(persisted.exit_reason, 'baseline_unmeasurable_unrecoverable');
     assert.equal(persisted.status, 'stopped');
-    assert.equal(isMicroverseFailureExit(persisted.exit_reason), true);
   });
 
   test('schema-invalid -> baseline_unmeasurable_unrecoverable fatal', async () => {
@@ -202,7 +198,6 @@ describe('microverse-baseline-classification', () => {
     assert.equal(measurementCalls > 0, true);
     assert.equal(persisted.exit_reason, 'baseline_unmeasurable_unrecoverable');
     assert.equal(persisted.status, 'stopped');
-    assert.equal(isMicroverseFailureExit(persisted.exit_reason), true);
   });
 
   test('iteration ETIMEDOUT attempts emit baseline_attempt_timeout telemetry per attempt', async () => {

@@ -25,11 +25,12 @@ import {
     maybeHaltAnatomyNonConvergent,
     countComplexityRuleFailures,
     classifyComplexityRegression,
+    classifyMicroverseDisposition,
     maybeEmitComplexityRegression,
 } from '../bin/microverse-runner.js';
 import { classifyMicroverseHaltDecision } from '../bin/pipeline-runner.js';
 import { resolveApncMaxPassesWithoutClean } from '../bin/mux-runner.js';
-import { isMicroverseFailureExit, MICROVERSE_FATAL_REASONS } from '../types/index.js';
+import { MICROVERSE_FATAL_REASONS } from '../types/index.js';
 
 function makeTmpDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'apnc-'));
@@ -126,7 +127,7 @@ test('AC-APNC-2: classifyMicroverseHaltDecision routes anatomy_non_convergent to
 });
 
 test('AC-APNC-2: anatomy_non_convergent is NOT a fatal/failure microverse exit', () => {
-    assert.equal(isMicroverseFailureExit('anatomy_non_convergent'), false);
+    assert.equal(classifyMicroverseDisposition('anatomy_non_convergent').reportAs, 'non-convergent');
     assert.ok(!MICROVERSE_FATAL_REASONS.includes('anatomy_non_convergent'));
 });
 

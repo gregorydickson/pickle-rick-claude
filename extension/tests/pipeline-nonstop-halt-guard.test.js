@@ -124,7 +124,7 @@ describe('AC-NS-4: strict-mode arms route the three new dispositions to run-fina
 /**
  * d03738ee (harden): the four Template-A dispositions the original literal chain omitted.
  * The map classifies all of them `non-convergent`, but they are in neither
- * MICROVERSE_FATAL_REASONS nor MICROVERSE_FAILURE_REASONS, so pre-fix they fell straight
+ * MICROVERSE_FATAL_REASONS nor the since-deleted failure allowlist, so pre-fix they fell straight
  * through to the unattributed abort. `limit_reached` is still live-emitted by
  * microverse-runner (rate-limit poll + wait-budget exhaustion), so this was reachable.
  */

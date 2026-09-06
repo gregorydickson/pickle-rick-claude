@@ -602,7 +602,8 @@ describe('AC-NSG-5b — structural producer enumeration (widened reach)', () => 
  *
  * It used to be THREE arms: the crash floor, an inline `judge_timeout ||
  * all_judge_backends_exhausted || baseline_unmeasurable_transient` literal triple, and
- * `isMicroverseFailureExit`'s five-member set — eight hand-maintained literals across two lists,
+ * a five-member failure allowlist in types/index.ts — eight hand-maintained literals across two
+ * lists,
  * i.e. the enumerated-set shape root CLAUDE.md names as "a liability with a maintenance schedule".
  * It is now ONE derived term: the crash floor, plus a `reportAs` read off `MICROVERSE_DISPOSITIONS`
  * (an exhaustive `Record<MicroverseExitReason, …>`, so tsc forces an entry for every new reason and
@@ -745,8 +746,6 @@ describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never rest
     const REPORT_AS_VALUES = ['success', 'non-convergent', 'non-fatal-halt', 'failure', 'non-success'];
     assert.deepEqual(literals.filter((l) => !REPORT_AS_VALUES.includes(l)), [],
       'the arm must read a property of the reason, not restate reasons');
-    assert.equal(body.includes('isMicroverseFailureExit'), false,
-      'MICROVERSE_FAILURE_REASONS is no longer consulted here — re-adding it re-splits the arm');
   });
 });
 

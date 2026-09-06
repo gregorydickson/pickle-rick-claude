@@ -3349,7 +3349,7 @@ function judgeCliMissingResult(attempts: number, lastError: string | null): Judg
  *
  * `judge_unreachable` is an EXISTING MICROVERSE_EXIT_REASONS member and is deliberately reused
  * rather than joined by a new one: it is honest (the judge could not be started), it is already
- * in MICROVERSE_FAILURE_REASONS so a run cannot report success on it, and pipeline-runner already
+ * dispositioned `failure` in MICROVERSE_DISPOSITIONS so a run cannot report success on it, and pipeline-runner already
  * routes it to run-finalize-gate-incomplete — degraded, never aborted. No new exit reason, no new
  * MICROVERSE_FATAL_REASONS member, no new abort condition.
  *

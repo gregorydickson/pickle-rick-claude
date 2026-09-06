@@ -2646,21 +2646,22 @@ function isCrashFloorExitReason(reason) {
  *
  * B-ONEABORT FR-B1: this used to be three arms — the crash floor, an inline
  * `judge_timeout || all_judge_backends_exhausted || baseline_unmeasurable_transient` literal
- * triple, and `isMicroverseFailureExit`'s five-member set. Eight hand-maintained literals across
- * two lists, and the comment justifying the split claimed the triple was held OUT of
- * MICROVERSE_FAILURE_REASONS "so logPhaseHaltReason can route them through finalize-gate". That
- * was false at the time it was deleted: `classifyMicroverseHaltDecision` never consults
- * MICROVERSE_FAILURE_REASONS — it keys on the `judge_timeout` literal plus membership in
- * MICROVERSE_EXIT_REASONS — so both groups already routed to `run-finalize-gate-incomplete`
- * identically. (The same comment's claim that R-SCJM-3 wants `judge_unreachable` to halt WITHOUT
- * finalize-gate was false too; it routes to `run-finalize-gate-incomplete` like the rest.)
+ * triple, and a five-member failure allowlist in types/index.ts. Eight hand-maintained literals
+ * across two lists, and the comment justifying the split claimed the triple was held out of that
+ * allowlist "so logPhaseHaltReason can route them through finalize-gate". That was false at the
+ * time it was deleted: `classifyMicroverseHaltDecision` never consulted the allowlist — it keys on
+ * the `judge_timeout` literal plus membership in MICROVERSE_EXIT_REASONS — so both groups already
+ * routed to `run-finalize-gate-incomplete` identically. (The same comment's claim that R-SCJM-3
+ * wants `judge_unreachable` to halt WITHOUT finalize-gate was false too; it routes to
+ * `run-finalize-gate-incomplete` like the rest.)
  *
- * The membership is now READ, not restated: `MICROVERSE_DISPOSITIONS` is an exhaustive
- * `Record<MicroverseExitReason, …>`, so a new exit reason cannot slip past this arm by omission —
- * tsc demands a disposition and halt-eligibility follows from it. `non-fatal-halt` is set-equal to
- * the deleted triple (its very name encodes the halt property); `failure` is set-equal to
- * MICROVERSE_FAILURE_REASONS *as observed here*. Bare `baseline_unmeasurable` is the one reason
- * whose disposition (`failure`) disagrees with the old predicate, and it is unreachable: every
+ * TIER-3.9 finished the collapse: that allowlist and its predicate outlived their last caller here
+ * and were deleted, so the membership is now READ, not restated. `MICROVERSE_DISPOSITIONS` is an
+ * exhaustive `Record<MicroverseExitReason, …>`, so a new exit reason cannot slip past this arm by
+ * omission — tsc demands a disposition and halt-eligibility follows from it. `non-fatal-halt` is
+ * set-equal to the deleted triple (its very name encodes the halt property). Bare
+ * `baseline_unmeasurable` is the one reason whose disposition (`failure`) disagreed with the old
+ * predicate, and it is unreachable: every
  * `sm.read` normalises it to `baseline_unmeasurable_unrecoverable` via
  * `migrateLegacyBaselineExitReason` (state-manager.ts) on all three migrate branches, including the
  * already-current-schema one. That normalisation is load-bearing for this collapse and is pinned in

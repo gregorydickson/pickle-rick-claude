@@ -21,7 +21,7 @@
  * AC4 — `state.json.active === false` after exit (safeDeactivate ran)
  * AC5 — every non-cap-check sm.read(statePath) call site routes through readRunnerState
  * AC6 — `state_schema_version_ahead` in ExitReason union and isFailureExit set
- * AC7 — `state_schema_version_ahead` NOT in MICROVERSE_FAILURE_REASONS
+ * AC7 — `state_schema_version_ahead` is NOT a microverse-class exit reason
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -185,16 +185,19 @@ test('AC6: state_schema_version_ahead is in ExitReason union AND isFailureExit s
   );
 });
 
-test('AC7: state_schema_version_ahead NOT in MICROVERSE_FAILURE_REASONS', () => {
+test('AC7: state_schema_version_ahead is NOT a microverse-class exit reason', async () => {
   // The reason is a fatal-but-recoverable-via-operator state for mux-runner, NOT a
-  // microverse-class failure. Including it in MICROVERSE_FAILURE_REASONS would
-  // route forward-schema exits into microverse recovery loops.
-  const typesSrc = fs.readFileSync(TYPES_INDEX_TS, 'utf-8');
-  const microverseFailureBlock = typesSrc.match(/MICROVERSE_FAILURE_REASONS\s*=\s*new Set<[^>]+>\(\[([\s\S]*?)\]\)/);
-  assert.ok(microverseFailureBlock, 'MICROVERSE_FAILURE_REASONS Set literal must exist');
+  // microverse-class failure; classifying it as one would route forward-schema exits
+  // into microverse recovery loops.
+  //
+  // TIER-3.9: this used to read a hand-maintained failure allowlist that no longer exists
+  // (it outlived its last caller and was deleted). Non-membership in MICROVERSE_EXIT_REASONS
+  // is the STRONGER live oracle: a reason outside the union cannot carry a microverse
+  // disposition at all, since MICROVERSE_DISPOSITIONS is keyed exhaustively on that union.
+  const { MICROVERSE_EXIT_REASONS } = await import('../types/index.js');
   assert.ok(
-    !microverseFailureBlock[1].includes('state_schema_version_ahead'),
-    'state_schema_version_ahead MUST NOT appear inside MICROVERSE_FAILURE_REASONS',
+    !MICROVERSE_EXIT_REASONS.includes('state_schema_version_ahead'),
+    'state_schema_version_ahead MUST NOT be a MicroverseExitReason',
   );
 });
 
