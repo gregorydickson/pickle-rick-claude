@@ -38,35 +38,55 @@ like a member that does not apply.
 **The metric is not lines — it is how many distinct states a reader must hold to know the system is
 correct.** Code that ADDS lines while removing ambiguity (an evidence test, a negative control, a typed
 degrade reason) is subtraction in the sense that matters.
-## 🛑 WHEN THE PIPELINE STOPS, RELIABILITY GOES TO ZERO — AND SO DOES QUALITY (operator-set, BINDING, elaborates the PRIME DIRECTIVE)
+## 🔁 THE SYSTEM IS AUTONOMOUS CONTINUOUS LOOPS (operator-set, BINDING, elaborates the PRIME DIRECTIVE)
 
-**A halted run produces no output. No output has no quality.** So a "quality gate" that stops the
-pipeline does not trade reliability for quality — it takes **both** to zero. A stopping gate is
-**anti-quality**, not a careful one.
+**Iterations do not need to be correct. The loop is the correctness mechanism.** An imperfect iteration
+that keeps running is self-correcting — the next pass sees the result and adjusts. Convergence comes
+from ITERATION COUNT, not from per-iteration precision. (anatomy-park: `pass_counts: 8`,
+`consecutive_clean: 0`, then a clean pass and convergence. 423 commits out of many imperfect passes.)
 
-**Ratchet order — they are sequential, not a dial:**
-1. **Reliability / autonomy first.** The bar is: the system COMPLETES hands-off runs. A correct-but-halted
-   run is a failure; an imperfect-but-completed run is a success.
-2. **Quality second**, ratcheted up on top of a system that already completes. You cannot ratchet quality
-   on a system that stops.
+**The cost asymmetry is total.** A wrong iteration costs ONE iteration. A verdict that stops the loop
+costs the ENTIRE run — a halted run produces no output, and no output has no quality, so a stopping
+"quality gate" takes reliability AND quality to zero. It is anti-quality, not careful.
 
-**What a gate MAY do:** refuse a LOCAL action (don't flip THIS ticket Done, don't ship THIS commit),
-stamp an `exit_reason`, and log a residual for a human.
-**What a gate MAY NEVER do:** break the phase loop or terminate the pipeline.
-The run **parks the item, flags it, and CONTINUES.** Output-with-flags ≫ no-output.
+**Ratchet order — sequential, not a dial:** (1) **reliability/autonomy first** — the bar is that the
+system COMPLETES hands-off runs; a correct-but-halted run is a failure and an imperfect-but-completed
+run is a success. (2) **quality second**, ratcheted on top of a system that already completes.
 
-**But continuing is NOT claiming success.** *Ran to completion* and *reported success* are different
-facts, and conflating them is fake-green — this codebase's most frequent failure mode. A degraded run
-must execute every phase, report the degradation honestly, and **withhold the success verdict** (no
-auto-release). That is [[B-NOSTOP-GATES]]' rule stated as a priority: **honesty is a REPORTING property,
-halting is a DISPOSITION, and they are not the same wire.**
+### The first question on any finding: would the NEXT ITERATION have fixed this?
+
+If yes — **add nothing.** No guard, no classifier, no disposition, no halt. Record it and move on. Only
+a defect that **prevents the next iteration from happening**, or that makes the loop **converge on a
+false answer**, earns code.
+
+- **A guard per finding is how the verdict layer grew +31% LOC and +41% classifiers in nine weeks while
+  build failures stayed at ZERO.** The loop was never the problem.
+- **Precision that costs a spawn, a timeout, or an external dependency is worse than an approximation
+  the loop already holds.** (szechuan spawns an LLM to compute a number its own ledger defines.)
+- **"Is this right?" is usually the wrong question. "Did the loop advance?" is the right one.**
+- **A claim is a measurement or it is a hypothesis.** Before asserting a cause, count, regression window
+  or "this is stale/fixed/broken", name the observation that would FALSIFY it and take it — otherwise
+  say hypothesis. A string is not a measurement (a log line, commit message or disposition may assert a
+  cause its producer never observed — read the branch that emits it). An absent or green result is not
+  one either (a grep that matched a fixture, a tier that ran zero files, an audit over an empty set all
+  read as agreement). Rate and trend claims need two points. Re-derive inherited premises before acting.
+
+### What a gate MAY and MAY NEVER do
+
+**MAY:** refuse a LOCAL action (don't flip THIS ticket Done, don't ship THIS commit), stamp an
+`exit_reason`, log a residual for a human. The run **parks the item, flags it, and CONTINUES** —
+output-with-flags ≫ no-output.
+**MAY NEVER:** break the phase loop or terminate the pipeline.
+
+**Continuing is NOT claiming success.** *Ran to completion* and *reported success* are different facts;
+conflating them is fake-green, this codebase's most frequent failure mode. A degraded run executes every
+phase, reports the degradation honestly, and **withholds the success verdict** (no auto-release).
+**Honesty is a REPORTING property, halting is a DISPOSITION — not the same wire.**
 
 **Halting is reserved for the genuine crash floor** — cannot-physically-continue only (unreadable/
 unwritable state, missing `start_commit`, `state_schema_version_ahead`, `state_working_dir_missing`,
-toolchain unavailable, budget/iteration cap, operator cancel, explicit `--strict-phases`). Anything
-that is a *measurement* or *quality* verdict is not a floor. **Do not add abort conditions** — every new
-one is a new way for reliability and quality to both reach zero.
-
+toolchain unavailable, budget/iteration cap, operator cancel, explicit `--strict-phases`). A
+*measurement* or *quality* verdict is never a floor. **Do not add abort conditions.**
 ## 🐶 Dogfood by default — fix Pickle Rick by RUNNING Pickle Rick
 
 The pipeline is the product: it fixes its own bugs. **Default: author a PRD/ticket → `/pickle-pipeline` (or `/pickle-tmux`).** Hand-decomposing a PRD into tickets is planning (fine); hand-*building* the fix code is not. A bug we won't dogfood is one we don't trust the tool to survive — fix that.
@@ -150,6 +170,10 @@ PRD: `prds/archive/bundles/p1-worker-source-state-recursion-contamination.md`. C
 ## Documentation Rule
 
 Adding/removing/modifying commands (`.claude/commands/*.md`) → update `README.md`. Docs drift = bugs.
+
+**`CLAUDE.md` carries CURRENT INSTRUCTIONS, token-efficient — never history.** It loads every session.
+The measurement or incident that produced a rule belongs in `prds/MASTER_PLAN.md`; only the rule lands
+here. No "used to claim", no "RETRACTED", no dated correction narrative.
 
 Internal ticket artifacts use `rick_ticket_<hash>.md` and `rick_ticket_parent.md`; reserve "Linear ticket" prose for real external tracker issues, not the on-disk worker artifacts.
 
