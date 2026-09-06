@@ -235,7 +235,7 @@ Write the launch sequence to a script file and `tmux send-keys` only the path. I
 ```bash
 cat > "${SESSION_ROOT}/launch.sh" <<'LAUNCH_EOF'
 #!/bin/bash
-SESSION_ROOT="$1"
+SESSION_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_PATH="${SESSION_ROOT}/state.json"
 node --input-type=module - "$STATE_PATH" "$$" <<'NODE_EOF' || true
 import fs from 'node:fs';
@@ -270,7 +270,7 @@ chmod +x "${SESSION_ROOT}/launch.sh"
 
 tmux new-session -d -s <name> -c <working_dir>
 sleep 1
-tmux send-keys -t <name>:0 "bash '${SESSION_ROOT}/launch.sh' '${SESSION_ROOT}'" Enter
+tmux send-keys -t <name>:0 "bash '${SESSION_ROOT}/launch.sh'" Enter
 ```
 
 Verify before reporting: after `sleep 5`, `tmux list-windows -t <name>` MUST show two windows (`0: bash` running launch.sh, `1: monitor` with 4 node panes). If only window 0 exists, the runner failed to start — read `${SESSION_ROOT}/microverse-runner.log` (if present) and the pane buffer (`tmux capture-pane -p -t <name>:0`).

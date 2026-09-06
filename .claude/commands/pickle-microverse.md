@@ -116,7 +116,7 @@ Print attach command: `tmux attach -t <name>`
 ```bash
 cat > "${SESSION_ROOT}/launch.sh" <<'LAUNCH_EOF'
 #!/bin/bash
-SESSION_ROOT="$1"
+SESSION_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_PATH="${SESSION_ROOT}/state.json"
 node --input-type=module - "$STATE_PATH" "$$" <<'NODE_EOF' || true
 import fs from 'node:fs';
@@ -138,7 +138,7 @@ read -r _
 LAUNCH_EOF
 chmod +x "${SESSION_ROOT}/launch.sh"
 
-tmux send-keys -t <name>:0 "bash '${SESSION_ROOT}/launch.sh' '${SESSION_ROOT}'" Enter
+tmux send-keys -t <name>:0 "bash '${SESSION_ROOT}/launch.sh'" Enter
 ```
 
 6. Launch monitor: microverse-runner auto-creates the 4-pane monitor window on startup — no manual invocation needed. Verify before reporting: after `sleep 5`, `tmux list-windows -t <name>` MUST show two windows (`0: bash` running launch.sh, `1: monitor` with 4 node panes).
