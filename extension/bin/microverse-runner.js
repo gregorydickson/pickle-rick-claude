@@ -3434,6 +3434,13 @@ export async function measureAndClassifyIteration(state, baseline, ctx) {
         emitJudgeParseDiagnostic(judgeResult, metricResult.raw);
         emitJudgeLegacyShapeDiagnostic(judgeResult);
         if (judgeResult.shape === 'full') {
+            // The score the loop converges on is the count of the violations the ledger was
+            // built from — never the judge's self-reported integer. `extractScore` reads that
+            // self-report off the same JSON, so the two disagreed silently: a judge emitting
+            // `{"score": 0, "violations": [3 entries]}` recorded score 0, classified 'improved'
+            // and satisfied `isConverged`'s `convergence_target` branch while its own ledger
+            // held 3 open violations. One array, one number derived from it, one wire.
+            metricResult = { ...metricResult, score: judgeResult.violations.length };
             previousLedger = { resolved: [], new: [], remaining: state.violation_ledger?.map((entry) => entry.id) ?? [] };
             updateViolationLedger(state, judgeResult, ctx.iteration);
             emitJudgeLedgerDiagnostic(judgeResult, state.violation_ledger);

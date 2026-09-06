@@ -18,6 +18,7 @@ import {
   writeMicroverseState,
   generateViolationId,
   updateViolationLedger,
+  isConverged,
 } from '../services/microverse-state.js';
 
 function makeTempDir(prefix = 'pickle-mv-helper-') {
@@ -534,6 +535,114 @@ test('TIER-1.4 B-SZLEDGER AC-R3: full-shape score is derived from violations.len
   assert.equal(result.shape, 'full');
   assert.equal(result.score, 3, 'score must equal violations.length, not the self-reported 99');
   assert.equal(result.violations.length, 3);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER220-01 — the score the LOOP consumes must be the derived one.
+// `parseLlmJudgeOutput` derives its `score` from `violations.length`, but nothing
+// reads that field for a full-shape parse; the score that reaches history,
+// `compareMetricWithBasis` and `isConverged` comes from `extractScore`, which reads
+// the judge's self-reported `score` off the same JSON. The two disagreed silently:
+// a judge emitting `{"score": 0, "violations": [3 entries]}` recorded score 0 and
+// satisfied the `convergence_target` branch with 3 live violations in its ledger.
+// These two cases drive the REAL `measureAndClassifyIteration` path with a stubbed
+// judge spawn and pin both directions of the divergence.
+// ---------------------------------------------------------------------------
+
+function makeJudgeSession(judgeOutput, { convergenceTarget, baselineScore }) {
+  const sessionDir = makeTempDir('pickle-mv-derived-score-session-');
+  const workingDir = makeTempDir('pickle-mv-derived-score-work-');
+  const runnerState = makeRunnerState(sessionDir, workingDir, { backend: 'claude' });
+  const mv = createMicroverseState({
+    prdPath: path.join(workingDir, 'prd.md'),
+    metric: {
+      description: 'violations',
+      validation: 'count violations',
+      type: 'llm',
+      timeout_seconds: 60,
+      tolerance: 0,
+      direction: 'lower',
+      judge_model: 'claude-sonnet-4-6',
+    },
+    stallLimit: 3,
+    convergenceTarget,
+  });
+  mv.status = 'iterating';
+  mv.baseline_score = baselineScore;
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+  writeMicroverseState(sessionDir, mv);
+
+  process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+  const originalExec = _deps.execFileSync;
+  _deps.execFileSync = (_cmd, args) => {
+    if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+    return JSON.stringify(judgeOutput);
+  };
+  const ctx = makeContext(sessionDir, workingDir, runnerState, {
+    iteration: 2,
+    preIterSha: 'a'.repeat(40),
+    postIterSha: 'b'.repeat(40),
+  });
+  const cleanup = () => {
+    delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    _deps.execFileSync = originalExec;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  };
+  return { mv, ctx, cleanup };
+}
+
+const judgeViolation = (id) => ({
+  id, path: `src/${id}.ts`, line: 1, severity: 'high', description: id,
+});
+
+test('AP-EXT-ITER220-01: an under-reported judge score cannot converge the loop against its own ledger', async () => {
+  const { mv, ctx, cleanup } = makeJudgeSession(
+    {
+      score: 0,
+      violations: ['v1', 'v2', 'v3'].map(judgeViolation),
+      resolved: [], new: ['v1', 'v2', 'v3'], remaining: [],
+    },
+    { convergenceTarget: 0, baselineScore: 5 },
+  );
+  try {
+    await measureAndClassifyIteration(mv, { raw: '5', score: 5 }, ctx);
+    assert.equal(mv.violation_ledger?.length, 3, 'the ledger carries the three reported violations');
+    assert.equal(
+      mv.convergence.history[0].score,
+      3,
+      'the recorded score is violations.length, not the judge self-reported 0',
+    );
+    assert.equal(
+      isConverged(mv),
+      null,
+      'three live violations must not satisfy convergence_target 0',
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('AP-EXT-ITER220-01 control: an over-reported judge score still converges when the ledger is empty', async () => {
+  const { mv, ctx, cleanup } = makeJudgeSession(
+    { score: 99, violations: [], resolved: [], new: [], remaining: [] },
+    { convergenceTarget: 0, baselineScore: 5 },
+  );
+  try {
+    await measureAndClassifyIteration(mv, { raw: '5', score: 5 }, ctx);
+    assert.equal(
+      mv.convergence.history[0].score,
+      0,
+      'the recorded score is violations.length, not the judge self-reported 99',
+    );
+    assert.equal(
+      isConverged(mv),
+      'target',
+      'a genuinely clean pass must still reach convergence_target 0',
+    );
+  } finally {
+    cleanup();
+  }
 });
 
 test('AP-EXT-ITER4-01 control: a drift BEYOND ±5 still takes a new id (the fix does not over-match)', () => {
