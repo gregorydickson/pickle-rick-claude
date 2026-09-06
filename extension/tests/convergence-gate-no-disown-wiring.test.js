@@ -17,8 +17,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const { runGate, getChangedExportedSymbols, getChangedFilesSince } = await import(
   path.resolve(__dirname, '../services/convergence-gate.js'),
 );
-const { runInterfaceChangeSweep, handleWorkerManagedIteration } = await import(
-  path.resolve(__dirname, '../bin/microverse-runner.js'),
+const {
+  runInterfaceChangeSweep,
+  handleWorkerManagedIteration,
+  handleIterationOutcome,
+  _deps,
+} = await import(path.resolve(__dirname, '../bin/microverse-runner.js'));
+const { createMicroverseState, writeMicroverseState } = await import(
+  path.resolve(__dirname, '../services/microverse-state.js'),
 );
 
 function git(dir, args) {
@@ -764,8 +770,14 @@ test('TIER-2.5 gh-8: an iteration with the incoherent empty-file-list shape WITH
     // AC-3: non-fatal — no exception was thrown reaching this line, and the disposition is the
     // ordinary shape of ANY not-yet-converged iteration, not a distinct halt/error signal.
     assert.equal(result.selfRedOpen, undefined, 'a missing measurement is not a measured self-red');
-    assert.equal(typeof result.reason, 'string');
-    assert.match(result.reason, /withholding convergence/);
+    // AP-EXT-ITER221-01: `reason` is the R-APXG-3 bound's join key, so a withhold returns the
+    // ONE shared withhold value. The specific skip axis is the operator's, and it is carried by
+    // the log line asserted above — never by this field, which decides a disposition.
+    assert.equal(
+      result.reason,
+      'per-iteration gate left unresolved regressions',
+      'every withhold returns the shared value the deferral bound counts',
+    );
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
@@ -1485,5 +1497,180 @@ test('AP-EXT-ITER117-03 control: unrelated failures and unresolvable specifiers 
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// AP-EXT-ITER221-01: the R-APXG-3 bound is what stops the runner withholding a worker's
+// convergence signal forever, and it counts CONSECUTIVE withholds by matching `reason` against
+// one value. TIER-2.5 gh-8 added a third withhold path (the unmeasurable interface-change sweep)
+// that worded its own reason, so it landed in the reset branch instead: it cleared the counter it
+// should have raised, and the bound could never fire. A permanently unmeasurable sweep — any
+// target repo whose typecheck the gate cannot run — then withholds on every iteration and the run
+// burns its whole iteration/time budget instead of converging.
+//
+// The pre-existing AC-1/AC-3 case above observes ONE frame and cannot see this: its result shape
+// is identical either way. These cases drive the REAL withhold result through the REAL runner loop
+// and assert the loop TERMINATES.
+function makeDeferralLoopSession(prefix) {
+  const sessionDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const workingDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}w-`)));
+  const runnerState = {
+    active: true,
+    working_dir: workingDir,
+    step: 'implement',
+    iteration: 0,
+    max_iterations: 50,
+    max_time_minutes: 60,
+    worker_timeout_seconds: 0,
+    start_time_epoch: Math.floor(Date.now() / 1000),
+    completion_promise: null,
+    original_prompt: 'test',
+    current_ticket: null,
+    history: [],
+    started_at: new Date().toISOString(),
+    session_dir: sessionDir,
+    tmux_mode: true,
+    command_template: 'anatomy-park.md',
+  };
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+  const mv = createMicroverseState({
+    prdPath: path.join(workingDir, 'prd.md'),
+    metric: {
+      description: 'none', validation: 'none', type: 'none',
+      timeout_seconds: 0, tolerance: 0, direction: 'lower',
+    },
+    stallLimit: 5,
+  });
+  mv.status = 'iterating';
+  mv.convergence_mode = 'worker';
+  mv.convergence_file = 'anatomy-park.json';
+  writeMicroverseState(sessionDir, mv);
+  fs.writeFileSync(
+    path.join(sessionDir, 'anatomy-park.json'),
+    JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
+  );
+  const ctx = {
+    sessionDir,
+    extensionRoot: path.resolve(__dirname, '..'),
+    statePath: path.join(sessionDir, 'state.json'),
+    workingDir,
+    startTime: Date.now(),
+    initialIteration: 0,
+    enableFailureClassification: false,
+    cgSettings: {
+      enabled_convergence_files: ['anatomy-park.json'],
+      regression_warning_threshold: 5,
+      remediator_timeout_s: 600,
+      baseline_max_age_iterations: 30,
+      baseline_max_age_seconds: 14_400,
+    },
+    rateLimitWaitMinutes: 1,
+    maxRateLimitRetries: 1,
+    log: () => {},
+    currentRunnerState: runnerState,
+    iteration: 1,
+    consecutiveRateLimits: 0,
+    preIterSha: 'abc0000',
+    postIterSha: 'abc0000',
+    postConvergenceDeferralCount: 0,
+  };
+  return { sessionDir, workingDir, mv, ctx };
+}
+
+async function driveLoopUntilTerminal(mv, ctx, workerResult, maxCalls) {
+  const orig = {
+    runWorkerManagedIteration: _deps.runWorkerManagedIteration,
+    getHeadSha: _deps.getHeadSha,
+    sleep: _deps.sleep,
+  };
+  try {
+    _deps.runWorkerManagedIteration = async () => workerResult;
+    _deps.getHeadSha = () => 'abc0000';
+    _deps.sleep = async () => {};
+    const outcome = { completion: 'task_completed', timedOut: false, exitCode: 0, wallSeconds: 1 };
+    const baseline = { raw: '', score: 0 };
+    let calls = 0;
+    while (calls < maxCalls) {
+      calls += 1;
+      ctx.iteration = calls;
+      const result = await handleIterationOutcome(mv, baseline, ctx, outcome);
+      if (result !== null && result !== 'continue') return { calls, exitReason: result };
+    }
+    return { calls, exitReason: null };
+  } finally {
+    _deps.runWorkerManagedIteration = orig.runWorkerManagedIteration;
+    _deps.getHeadSha = orig.getHeadSha;
+    _deps.sleep = orig.sleep;
+  }
+}
+
+test('AP-EXT-ITER221-01: an unmeasurable sweep withholds under the R-APXG-3 bound, so the loop terminates', async () => {
+  const produce = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter221-produce-'));
+  const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-apiter221-');
+  try {
+    fs.writeFileSync(
+      path.join(produce, 'anatomy-park.json'),
+      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
+    );
+    // The REAL withhold result, produced by the REAL guard over the incoherent axes shape —
+    // never a hand-written reason string, which is exactly what the bug was.
+    const withheld = await handleWorkerManagedIteration({
+      currentMv: { convergence_file: 'anatomy-park.json', key_metric: { type: 'none' }, iteration_regressions: 0 },
+      preIterSha: 'aaaa1111',
+      workingDir: produce,
+      sessionDir: produce,
+      enabledFiles: ['anatomy-park.json'],
+      regressionWarningThreshold: 5,
+      backend: 'claude',
+      remediatorTimeoutS: 600,
+      log: () => {},
+      iteration: 1,
+      startCommit: 'bbbb2222',
+      _deps: {
+        getHeadShaFn: () => 'aaaa1111',
+        logActivityFn: () => {},
+        writeMicroverseStateFn: () => {},
+        runGateFn: async () => ({ failures: [] }),
+        getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+        getChangedFilesSinceFn: () => [],
+      },
+    });
+    assert.equal(withheld.converged, false, 'precondition: the sweep withheld convergence');
+
+    const { calls, exitReason } = await driveLoopUntilTerminal(
+      mv, ctx, { currentMv: mv, converged: false, reason: withheld.reason }, 30,
+    );
+
+    assert.notEqual(
+      exitReason, null,
+      'a permanently unmeasurable sweep must not withhold forever — the run burns its whole ' +
+      'iteration budget while the worker has nothing left to do',
+    );
+    assert.ok(
+      calls <= 3,
+      `the R-APXG-3 bound must fire by call 3 (POST_CONVERGENCE_GATE_DEFERRAL_LIMIT); took ${calls}`,
+    );
+  } finally {
+    fs.rmSync(produce, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER221-01 control: an ordinary not-converged iteration still does not count toward the bound', async () => {
+  const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-apiter221-ctl-');
+  try {
+    const { calls, exitReason } = await driveLoopUntilTerminal(
+      mv, ctx, { currentMv: mv, converged: false, reason: 'no reason' }, 10,
+    );
+    assert.equal(
+      exitReason, null,
+      'a worker that simply has not converged yet is not a withheld convergence signal — ' +
+      'counting it would force-exit healthy runs after three ordinary iterations',
+    );
+    assert.equal(calls, 10);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
   }
 });

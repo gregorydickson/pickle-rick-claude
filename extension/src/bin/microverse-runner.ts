@@ -575,6 +575,17 @@ const GIT_TEMP_CHECKOUT_TIMEOUT_MS = 10_000;
 const GIT_REV_PARSE_TIMEOUT_MS = 5_000;
 // R-APXG-3: how many consecutive gate-deferred-convergence iterations before force-exiting
 const POST_CONVERGENCE_GATE_DEFERRAL_LIMIT = 3;
+/**
+ * AP-EXT-ITER221-01: the ONE `reason` value that means "the worker signalled convergence and this
+ * runner withheld it, non-terminally". `handlePostConvergenceGateDeferral` counts consecutive
+ * occurrences of exactly this value toward `POST_CONVERGENCE_GATE_DEFERRAL_LIMIT`, so a withhold
+ * path that words its own reason is not counted, resets the counter, and the bound can never
+ * fire — the loop then withholds forever on a permanently-unmeasurable input. Every non-terminal
+ * `converged: false` return that answers a worker convergence signal MUST return this constant;
+ * the operator-facing detail belongs in the `log` line that path already emits, never here.
+ * `reason` is read by nothing else on the withheld path.
+ */
+const POST_CONVERGENCE_WITHHELD_REASON = 'per-iteration gate left unresolved regressions';
 
 // R-MPGD-A: git-repo membership test (replaces naive `existsSync(path.join(dir, '.git'))`,
 // which false-negatives for monorepo subdirs/worktrees/submodules and true-positives on a
@@ -1418,8 +1429,10 @@ async function applyInterfaceChangeSweepGuard(opts: {
     return {
       currentMv,
       converged: false,
-      reason: `interface-change sweep did not run (${sweep.skipped}) — withholding convergence ` +
-        'pending measurable INV-NO-SELF-DISOWN evidence',
+      // AP-EXT-ITER221-01: the shared withhold value, NOT bespoke prose. `renderInterfaceSweepNotRun`
+      // above already told the operator which axis went unmeasured; spelling that detail here too
+      // made this the one withhold the R-APXG-3 bound could not count.
+      reason: POST_CONVERGENCE_WITHHELD_REASON,
     };
   }
   if (!sweep.ran || sweep.selfIntroduced.length === 0) return null;
@@ -1438,7 +1451,7 @@ async function applyInterfaceChangeSweepGuard(opts: {
   return {
     currentMv: sweptMv,
     converged: false,
-    reason: 'per-iteration gate left unresolved regressions',
+    reason: POST_CONVERGENCE_WITHHELD_REASON,
     selfRedOpen: true,
   };
 }
@@ -1488,7 +1501,7 @@ function deferConvergenceOnGateRegression(opts: {
   return {
     currentMv: opts.currentMv,
     converged: false,
-    reason: 'per-iteration gate left unresolved regressions',
+    reason: POST_CONVERGENCE_WITHHELD_REASON,
     ...(opts.uncertifiableBaselineDeferFired ? { selfRedOpen: true as const } : {}),
   };
 }
@@ -4816,14 +4829,24 @@ export function autoRescueDirtyTree(ctx: RunContext): void {
 // cyclomatic complexity under the eslint ceiling. At the cap, re-runs the gate: returns
 // 'converged' only when the tree is GREEN (trust-the-worker preserved for flaky gates);
 // returns 'error' when the tree is RED (AC-RPGT-7 / B-RPGT gate-on-cap). Returns null to
-// keep iterating; resets the counter on any non-deferral reason.
+// keep iterating; resets the counter on any iteration that did not withhold convergence.
+//
+// AP-EXT-ITER221-01: `reason` is this bound's join key, so it is a DISPOSITION and every
+// withhold producer returns the one `POST_CONVERGENCE_WITHHELD_REASON` value — never its own
+// wording. TIER-2.5 gh-8 added a third withhold (the unmeasurable interface-change sweep) that
+// worded its reason for the operator instead, so it landed in the reset branch above: it cleared
+// the counter it should have raised AND cleared the R-ORSR-6 `postConvergenceSelfRedOpen` latch,
+// and the bound could never fire. MEASURED pre-fix on the shipped bin: all four
+// `InterfaceSweepSkipReason`s ran 30/30 iterations with `postConvergenceDeferralCount` pinned at
+// 0 and no terminal exit, against a control that exited `converged` at 3 — a permanently
+// unmeasurable sweep (any target whose typecheck the gate cannot run) withholds forever and the
+// run burns to its iteration/time budget instead of converging.
 async function handlePostConvergenceGateDeferral(
   workerResult: { reason: string; selfRedOpen?: boolean },
   ctx: RunContext,
   runGateFn: typeof runGate = runGate,
 ): Promise<ExitReason | null> {
-  const GATE_DEFERRED_REASON = 'per-iteration gate left unresolved regressions';
-  if (workerResult.reason !== GATE_DEFERRED_REASON) {
+  if (workerResult.reason !== POST_CONVERGENCE_WITHHELD_REASON) {
     ctx.postConvergenceDeferralCount = 0;
     ctx.postConvergenceSelfRedOpen = false;
     return null;
