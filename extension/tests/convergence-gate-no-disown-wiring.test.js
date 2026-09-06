@@ -547,9 +547,11 @@ test('AP-EXT-ITER47-01: an unmeasurable sweep is RENDERED to the operator and st
   );
   assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
 
-  // PRIME DIRECTIVE: an ABSENT measurement is not a measured regression. Rendering it must never
-  // become a halt — a stopping gate takes reliability and quality to zero together.
-  assert.equal(result.converged, true, 'an unmeasurable sweep must not block convergence');
+  // TIER-2.5 gh-8: an ABSENT measurement is not a measured regression, so rendering it must
+  // never become a HALT — but it must also never become a convergence VERDICT. Convergence
+  // requires positive evidence; the run simply keeps iterating (non-fatal), it does not declare
+  // success over a measurement that never happened.
+  assert.equal(result.converged, false, 'an unmeasurable sweep must WITHHOLD convergence, not grant it');
   assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
 });
 
@@ -657,32 +659,188 @@ test('AP-EXT-ITER48-01: an unmeasurable changed-file list reaches the sweep as s
   }
 });
 
-test('AP-EXT-ITER48-01: a measured EMPTY file list still sweeps (the skip cannot over-trigger)', async () => {
+// TIER-2.5 gh-8 (b7388a43) corrects this case. It was previously asserted as
+// `ran: true, skipped: null` — a non-empty symbol set paired with a completed-but-EMPTY file
+// list read as a real clean measurement. That combination cannot occur from real git
+// (`getChangedExportedSymbols` scans a strict `*.ts`/`*.tsx` subset of the same range
+// `getChangedFilesSince` scans unfiltered), so treating it as "ran, found nothing" launders an
+// incoherent reading into INV-NO-SELF-DISOWN evidence — a convergence verdict reached with no
+// positive evidence behind it. It must now report the SAME "could not measure" disposition as
+// the two null axes, distinguishable from both of them by its own `skipped` reason.
+test('TIER-2.5 gh-8: a non-empty symbol set with an EMPTY (non-null) file list is incoherent, not a clean sweep', async () => {
+  const common = {
+    workingDir: '/repo',
+    sessionDir: '/sessions/gh8',
+    startCommit: 'base000',
+    logActivityFn: () => {},
+  };
+  let gateCalls = 0;
+  const runGateFn = async () => { gateCalls++; return { failures: [] }; };
+
+  // The defect shape: symbols changed, but the file enumeration came back empty.
+  const incoherent = await runInterfaceChangeSweep({
+    ...common,
+    runGateFn,
+    getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+    getChangedFilesSinceFn: () => [],
+  });
+
+  // Negative control: a genuinely unmeasurable (null) file enumeration must stay on its own
+  // existing reason — the new guard must not swallow the pre-existing null-axis disposition.
+  const unmeasurable = await runInterfaceChangeSweep({
+    ...common,
+    runGateFn,
+    getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+    getChangedFilesSinceFn: () => null,
+  });
+
+  // Negative control: a genuinely empty measurement on BOTH axes is a real "nothing changed"
+  // verdict (the pre-existing early return one level above the new guard) — proving the fix
+  // cannot over-trigger and swallow the legitimate zero-symbols case.
+  const genuinelyClean = await runInterfaceChangeSweep({
+    ...common,
+    runGateFn,
+    getChangedExportedSymbolsFn: () => new Set(),
+    getChangedFilesSinceFn: () => [],
+  });
+
+  assert.equal(incoherent.ran, false, 'an incoherent empty file list must never read as `ran: true`');
+  assert.equal(incoherent.skipped, 'changed_files_empty_incoherent');
+  assert.equal(unmeasurable.ran, false);
+  assert.equal(unmeasurable.skipped, 'changed_files_unmeasurable');
+  assert.equal(genuinelyClean.ran, false);
+  assert.equal(genuinelyClean.skipped, null, 'zero changed symbols is a real measured verdict, not a skip');
+  assert.notEqual(
+    incoherent.skipped,
+    unmeasurable.skipped,
+    'the two unmeasurable-file shapes must not collapse to one reason — each names its own axis failure',
+  );
+  assert.equal(gateCalls, 0, 'no whole-repo tsc runs when the sweep cannot trust its own inputs');
+});
+
+// AC-1/AC-3 round trip: an iteration whose ONLY interface-change evidence is the incoherent
+// empty-file-list shape must not converge (AC-1 — no verdict without positive evidence), and
+// must do so WITHOUT throwing, halting, or stamping a new exit reason (AC-3 — the run continues).
+test('TIER-2.5 gh-8: an iteration with the incoherent empty-file-list shape WITHHOLDS convergence and keeps iterating (AC-1/AC-3)', async () => {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-gh8-round-trip-'));
+  const logs = [];
+  try {
+    fs.writeFileSync(
+      path.join(sessionDir, 'anatomy-park.json'),
+      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
+    );
+    const result = await handleWorkerManagedIteration({
+      currentMv: {
+        convergence_file: 'anatomy-park.json',
+        key_metric: { type: 'none' },
+        iteration_regressions: 0,
+      },
+      preIterSha: 'aaaa1111',
+      workingDir: sessionDir,
+      sessionDir,
+      enabledFiles: ['anatomy-park.json'],
+      regressionWarningThreshold: 5,
+      backend: 'claude',
+      remediatorTimeoutS: 600,
+      log: (msg) => logs.push(msg),
+      iteration: 42,
+      startCommit: 'bbbb2222',
+      _deps: {
+        getHeadShaFn: () => 'aaaa1111',
+        logActivityFn: () => {},
+        writeMicroverseStateFn: () => {},
+        runGateFn: async () => ({ failures: [] }),
+        getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+        getChangedFilesSinceFn: () => [],
+      },
+    });
+
+    // AC-1 (direction A, under-trigger): zero evidence must not produce a convergence verdict,
+    // even though the worker's own convergence file claimed success.
+    assert.equal(result.converged, false, 'zero INV-NO-SELF-DISOWN evidence cannot produce a convergence verdict');
+    const rendered = logs.filter((line) => line.includes('changed_files_empty_incoherent'));
+    assert.equal(rendered.length, 1, `the specific reason must be surfaced; got logs: ${JSON.stringify(logs)}`);
+
+    // AC-3: non-fatal — no exception was thrown reaching this line, and the disposition is the
+    // ordinary shape of ANY not-yet-converged iteration, not a distinct halt/error signal.
+    assert.equal(result.selfRedOpen, undefined, 'a missing measurement is not a measured self-red');
+    assert.equal(typeof result.reason, 'string');
+    assert.match(result.reason, /withholding convergence/);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// AC-1 (direction B, over-trigger control): the same shape but with a REAL, non-empty file list
+// must still converge normally — proving the new guard fires only on the incoherent shape and
+// does not become a blanket "never converge when symbols changed" regression.
+test('TIER-2.5 gh-8 control: a coherent measured sweep (real files, no violations) still converges', async () => {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-gh8-control-'));
+  try {
+    fs.writeFileSync(
+      path.join(sessionDir, 'anatomy-park.json'),
+      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
+    );
+    const result = await handleWorkerManagedIteration({
+      currentMv: {
+        convergence_file: 'anatomy-park.json',
+        key_metric: { type: 'none' },
+        iteration_regressions: 0,
+      },
+      preIterSha: 'aaaa1111',
+      workingDir: sessionDir,
+      sessionDir,
+      enabledFiles: ['anatomy-park.json'],
+      regressionWarningThreshold: 5,
+      backend: 'claude',
+      remediatorTimeoutS: 600,
+      log: () => {},
+      iteration: 43,
+      startCommit: 'bbbb2222',
+      _deps: {
+        getHeadShaFn: () => 'aaaa1111',
+        logActivityFn: () => {},
+        writeMicroverseStateFn: () => {},
+        runGateFn: async () => ({ failures: [] }),
+        getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+        getChangedFilesSinceFn: () => ['src/audit.ts'],
+      },
+    });
+
+    assert.equal(result.converged, true, 'a genuinely measured, clean sweep must still converge');
+    assert.equal(result.selfRedOpen, undefined);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER48-01: a measured EMPTY file list on BOTH axes still sweeps as a real verdict (the skip cannot over-trigger)', async () => {
   const common = {
     workingDir: '/repo',
     sessionDir: '/sessions/apiter48',
     startCommit: 'base000',
     logActivityFn: () => {},
-    getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
   };
   let gateCalls = 0;
-  const measuredEmpty = await runInterfaceChangeSweep({
+  const measuredNonEmpty = await runInterfaceChangeSweep({
     ...common,
     runGateFn: async () => { gateCalls++; return { failures: [] }; },
-    getChangedFilesSinceFn: () => [],
+    getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+    getChangedFilesSinceFn: () => ['src/audit.ts'],
   });
   const unmeasurable = await runInterfaceChangeSweep({
     ...common,
     runGateFn: async () => { gateCalls++; return { failures: [] }; },
+    getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
     getChangedFilesSinceFn: () => null,
   });
 
-  assert.equal(measuredEmpty.ran, true, 'a completed enumeration is a verdict — the sweep must run on it');
-  assert.equal(measuredEmpty.skipped, null, 'a real measurement must not be tagged a measurement failure');
+  assert.equal(measuredNonEmpty.ran, true, 'a completed, coherent enumeration is a verdict — the sweep must run on it');
+  assert.equal(measuredNonEmpty.skipped, null, 'a real measurement must not be tagged a measurement failure');
   assert.equal(unmeasurable.ran, false);
   assert.equal(unmeasurable.skipped, 'changed_files_unmeasurable');
   assert.notEqual(
-    measuredEmpty.skipped,
+    measuredNonEmpty.skipped,
     unmeasurable.skipped,
     'the two must not collapse to one shape — that collapse IS the defect',
   );
@@ -731,9 +889,9 @@ test('AP-EXT-ITER48-01: an unmeasurable file enumeration is RENDERED once and st
     );
     assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
 
-    // PRIME DIRECTIVE: an ABSENT measurement is not a measured regression. Rendering it must
-    // never become a halt — a stopping gate takes reliability and quality to zero together.
-    assert.equal(result.converged, true, 'an unmeasurable sweep must not block convergence');
+    // TIER-2.5 gh-8: an ABSENT measurement is not a measured regression, so rendering it must
+    // never become a HALT — but it must also never become a convergence VERDICT.
+    assert.equal(result.converged, false, 'an unmeasurable sweep must WITHHOLD convergence, not grant it');
     assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -922,9 +1080,9 @@ test('AP-EXT-ITER7-01: an unmeasurable typecheck is RENDERED once and stays non-
     );
     assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
 
-    // PRIME DIRECTIVE: an ABSENT measurement is not a measured regression. Rendering it must
-    // never become a halt — a stopping gate takes reliability and quality to zero together.
-    assert.equal(result.converged, true, 'an unmeasurable sweep must not block convergence');
+    // TIER-2.5 gh-8: an ABSENT measurement is not a measured regression, so rendering it must
+    // never become a HALT — but it must also never become a convergence VERDICT.
+    assert.equal(result.converged, false, 'an unmeasurable sweep must WITHHOLD convergence, not grant it');
     assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });

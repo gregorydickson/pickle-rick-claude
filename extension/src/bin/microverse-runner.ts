@@ -1157,6 +1157,7 @@ function resolveMetricType(currentMv: MicroverseSessionState): string {
 export type InterfaceSweepSkipReason =
   | 'symbols_unmeasurable'
   | 'changed_files_unmeasurable'
+  | 'changed_files_empty_incoherent'
   | 'typecheck_unmeasurable';
 
 /**
@@ -1164,10 +1165,19 @@ export type InterfaceSweepSkipReason =
  * disposition. `null` from either enumeration is "git could not answer", NOT "nothing changed":
  * an empty result on either axis is a POSITIVE finding that `isSelfIntroducedFailure`
  * short-circuits on, so a fabricated empty set disarms that axis and the sweep still reports
- * `ran: true` — a verdict the caller reads as INV-NO-SELF-DISOWN evidence. An empty FILE list is
- * not even a coherent reading once a symbol changed: no exported declaration changes without its
- * file changing. Enumerating before the gate also means an unmeasurable sweep costs no
- * whole-repo tsc.
+ * `ran: true` — a verdict the caller reads as INV-NO-SELF-DISOWN evidence.
+ *
+ * A THIRD case is neither `null`: a completed, non-empty symbol enumeration paired with a
+ * completed, EMPTY file enumeration. This is not a coherent measurement — `getChangedExportedSymbols`
+ * scans a strict `*.ts`/`*.tsx` subset of the same commit range `getChangedFilesSince` scans with
+ * no path filter, so any file carrying a changed exported declaration is necessarily present in
+ * the unfiltered file list too. From real git this combination cannot occur; treating it as a
+ * genuine "no files touched" verdict would let `runInterfaceChangeSweep` proceed to `ran: true`
+ * with the file axis silently disarmed (`isSelfIntroducedFailure` short-circuits its file-axis
+ * check on `changedFiles.size > 0`), reachable only via the identifier-axis fallback that depends
+ * on tsc's message text happening to spell the exact symbol name. Routing it through the same
+ * `skipped` door as the two `null` axes makes the absence type-checkable at the call boundary
+ * instead of resting on a runtime coincidence.
  */
 function enumerateInterfaceSweepAxes(
   workingDir: string,
@@ -1181,6 +1191,9 @@ function enumerateInterfaceSweepAxes(
     return {
       skipped: changedExportedSymbols === null ? 'symbols_unmeasurable' : 'changed_files_unmeasurable',
     };
+  }
+  if (changedExportedSymbols.size > 0 && changedFilesList.length === 0) {
+    return { skipped: 'changed_files_empty_incoherent' };
   }
   return {
     changedExportedSymbols,
@@ -1339,9 +1352,14 @@ function sweepBaseCommit(startCommit: string | undefined): string | null {
 
 /**
  * RENDER the sweep's not-run case. It stays NON-fatal — an unmeasurable sweep is not a measured
- * regression, and halting here would take reliability and quality to zero over an absent
- * reading. But it must not be silent: convergence proceeds carrying no INV-NO-SELF-DISOWN
- * evidence either way, and that is a materially different fact from "the sweep cleared it".
+ * regression, and HALTING here would take reliability and quality to zero over an absent
+ * reading. Non-fatal means the RUN keeps iterating, never that THIS iteration may still declare
+ * convergence: honesty is a reporting property, halting is a disposition, and a convergence
+ * verdict reached with no INV-NO-SELF-DISOWN evidence in either direction is a false positive
+ * regardless of how it was rendered. `applyInterfaceChangeSweepGuard` withholds convergence
+ * (`converged: false`) for every `skipped` reason so the caller can never read "could not
+ * measure" as "measured clean" (TIER-2.5 gh-8) — the loop simply continues to the next
+ * iteration, exactly as it does for any other not-yet-converged signal.
  */
 function renderInterfaceSweepNotRun(
   skipped: InterfaceSweepSkipReason,
@@ -1360,6 +1378,16 @@ function renderInterfaceSweepNotRun(
  * when the phase's own diff changed an exported symbol. A self-introduced out-of-scope consumer
  * break blocks convergence and arms the no-disown bound on the deferral force-exit.
  *
+ * TIER-2.5 gh-8: convergence requires POSITIVE INV-NO-SELF-DISOWN evidence. `sweep.skipped !==
+ * null` means the sweep could not measure at all — for ANY of its `InterfaceSweepSkipReason`
+ * members, not only the newest one — so this guard withholds convergence (`converged: false`)
+ * rather than treating an absent measurement as a cleared one. `selfRedOpen` is omitted on the
+ * withhold path: that flag arms the no-disown bound specifically for a MEASURED self-introduced
+ * regression, and a missing measurement is neither a measured regression nor its absence. Per
+ * the PRIME DIRECTIVE this is non-fatal — the iteration is simply not converged, the same
+ * disposition as any other iteration whose convergence signal isn't trustworthy yet, so the run
+ * continues without a new halt or exit reason.
+ *
  * The guard owns its own ARMING predicate: a blank or absent `startCommit` leaves the sweep with
  * no base to diff against, so it is unarmed and returns null. Callers pass the raw
  * `state.start_commit` through — AP-EXT-ITER14-01 pins that wiring at the one seam that crosses it.
@@ -1372,7 +1400,7 @@ async function applyInterfaceChangeSweepGuard(opts: {
   iteration: number;
   log: (msg: string) => void;
   _deps?: PerIterationGateDeps;
-}): Promise<{ currentMv: MicroverseSessionState; converged: false; reason: string; selfRedOpen: true } | null> {
+}): Promise<{ currentMv: MicroverseSessionState; converged: false; reason: string; selfRedOpen?: boolean } | null> {
   const { currentMv, workingDir, sessionDir, iteration, log, _deps } = opts;
   const baseCommit = sweepBaseCommit(opts.startCommit);
   if (baseCommit === null) return null;
@@ -1385,8 +1413,16 @@ async function applyInterfaceChangeSweepGuard(opts: {
     getChangedExportedSymbolsFn: _deps?.getChangedExportedSymbolsFn,
     getChangedFilesSinceFn: _deps?.getChangedFilesSinceFn,
   });
-  if (sweep.skipped !== null) renderInterfaceSweepNotRun(sweep.skipped, iteration, log);
-  if (!(sweep.ran && sweep.selfIntroduced.length > 0)) return null;
+  if (sweep.skipped !== null) {
+    renderInterfaceSweepNotRun(sweep.skipped, iteration, log);
+    return {
+      currentMv,
+      converged: false,
+      reason: `interface-change sweep did not run (${sweep.skipped}) — withholding convergence ` +
+        'pending measurable INV-NO-SELF-DISOWN evidence',
+    };
+  }
+  if (!sweep.ran || sweep.selfIntroduced.length === 0) return null;
   log(
     `Iteration ${iteration} — convergence blocked: interface-change sweep found ` +
     `${sweep.selfIntroduced.length} self-introduced whole-repo break(s) — phase cannot disown its own regression`,
