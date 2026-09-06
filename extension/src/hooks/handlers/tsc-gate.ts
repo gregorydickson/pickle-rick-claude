@@ -496,6 +496,13 @@ function classifyTscFailure(result: TextCommandResult): GateFailureKind {
 
 function formatBlockReason(kind: GateFailureKind, details: string): string {
   const suffix = details.trim().length > 0 ? `: ${details.trim()}` : '.';
+  if (kind === 'cold_cache_timeout') {
+    return (
+      `R-WACT: tsc --noEmit failed with cold_cache_timeout${suffix} ` +
+      'This is the gate hitting its own time budget before tsc produced any output — ' +
+      'NOT proof of a compile error. Warm the cache with `npx tsc --noEmit`, then retry once.'
+    );
+  }
   return `R-WACT: tsc --noEmit failed with ${kind}${suffix}`;
 }
 

@@ -1295,6 +1295,39 @@ it('blocks deterministic timeout cases using a shimmed npx and the actual config
   }
 });
 
+it('R-FOMH(b) redirects a cold_cache_timeout block message — gate budget expiry is not a compile error', () => {
+  const harness = makeHarness();
+  const repoRoot = makeRepo();
+  try {
+    writeSession(harness, repoRoot);
+    stageTimeoutConfig(repoRoot);
+    const result = runHandler({
+      harness,
+      repoRoot,
+      command: 'git commit -m "cold cache timeout"',
+      timeout: 6_000,
+      extraEnv: {
+        PICKLE_DISPATCH_TIMEOUT_MS: '2000',
+        TSC_GATE_NPX_MODE: 'timeout-silent',
+        TSC_GATE_SLEEP_MS: '2500',
+      },
+    });
+    assert.equal(result.decision?.decision, 'block');
+    assert.match(
+      result.decision?.reason ?? '',
+      /^R-WACT: tsc --noEmit failed with cold_cache_timeout[.:].*NOT proof of a compile error/,
+    );
+    assertFailedEvent(latestEvent(result.events, 'tsc_gate_failed'), 'cold_cache_timeout');
+    // Control: the sibling `timeout` kind (noisy — tsc DID produce output before
+    // the gate's own budget expired) must keep its unredirected message shape,
+    // proving this branch is cold_cache_timeout-scoped, not a blanket rewrite.
+    assert.doesNotMatch(result.decision?.reason ?? '', /^R-WACT: tsc --noEmit failed with timeout:/);
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    harness.cleanup();
+  }
+});
+
 it('keeps non-trigger Bash approvals fast at the handler boundary', async () => {
   // The "handler boundary" is the predicate that decides whether tsc gating
   // applies. Spawning the full handler subprocess measures Node bootstrap
