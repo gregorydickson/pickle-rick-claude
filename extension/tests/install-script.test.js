@@ -1925,7 +1925,7 @@ describe('install.sh deploy content drift audit (TIER-2.7)', () => {
       ...(extraExclude ? [`extension/${extraExclude}`] : [])]);
     runGit(sourceRoot, ['commit', '-m', 'fixture baseline']);
 
-    return { dir, sourceRoot, deployedRoot, commandsDir };
+    return { dir, sourceRoot, deployedRoot };
   }
 
   function runDriftAudit(fixture) {
