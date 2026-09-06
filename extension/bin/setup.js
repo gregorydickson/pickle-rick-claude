@@ -515,6 +515,44 @@ export function resolveCodexVersionForSetup(backend, extensionRoot = getExtensio
     return versionOutput;
 }
 /**
+ * Resolve the `claude` CLI version for the session record.
+ *
+ * This is the OBSERVABILITY sibling of `resolveCodexVersionForSetup`, and it
+ * deliberately does NOT share that function's failure shape. The codex probe is a
+ * COMPATIBILITY GATE: it `die()`s when the binary is missing or its version falls
+ * outside `engines.codex`, because running on an incompatible codex is the thing it
+ * exists to prevent. Nothing here gates anything — the value is written down so that
+ * the next external CLI change is legible in the FIRST log instead of after a
+ * multi-session bisect.
+ *
+ * So it FAILS OPEN, unconditionally: a missing binary, a non-zero exit, a timeout or
+ * empty output all yield `null` and setup proceeds. Making this able to stop setup
+ * would add an abort condition to buy a diagnostic, which is the wrong trade in both
+ * directions — a halted run produces no log at all.
+ *
+ * It is not gated on `state.backend` either. The claude CLI is not confined to
+ * `backend: 'claude'` — refinement grandchildren are pinned to claude regardless of
+ * the session backend, the microverse judge invokes it by name, and the R-XBL-5
+ * sub-tool override runs it inside a codex-backed session. A backend-gated probe
+ * would record `null` for exactly those runs, where the answer is least obvious.
+ * `state.backend` is recorded alongside this field, so the two can always be joined.
+ */
+export function resolveClaudeVersionForSetup() {
+    try {
+        const versionOutput = execFileSync('claude', ['--version'], {
+            encoding: 'utf-8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 10_000,
+        }).trim();
+        // Collapse empty output onto the same `null` that a throw yields, so
+        // "unresolvable" has exactly ONE representation on disk instead of two.
+        return versionOutput === '' ? null : versionOutput;
+    }
+    catch {
+        return null;
+    }
+}
+/**
  * Apply the per-backend iteration budget AFTER CLI parsing, so we know which
  * backend was selected. Resolution order:
  *   1. Explicit --max-iterations CLI flag wins (already in config.loopLimit).
@@ -906,7 +944,7 @@ function reconcileTicketStateDesyncOnResume(sessionDir, statePath, currentTicket
     }
     return sm.read(statePath);
 }
-function applyResumeConfig(s, config, fullSessionPath, codexVersionSeen) {
+function applyResumeConfig(s, config, fullSessionPath, codexVersionSeen, claudeVersionSeen) {
     s.active = !config.pausedMode;
     // R-PTSB-3: stamp the live owning pid when reactivating so the dead-pid /
     // pid-null phantom recovery in recoverStaleActiveFlag does not immediately
@@ -927,6 +965,14 @@ function applyResumeConfig(s, config, fullSessionPath, codexVersionSeen) {
     applyResumeModeConfig(s, config);
     if (codexVersionSeen)
         s.codex_version_seen = codexVersionSeen;
+    // GUARDED on purpose, and NOT symmetric with createInitialState's unconditional
+    // write. `null` from this probe means "could not measure right now", not "there is
+    // no version" — so a transient PATH problem on one --resume must not erase a good
+    // measurement taken at bootstrap. Assigning unconditionally here would destroy the
+    // only record of the very thing this field exists to preserve. A resolvable probe
+    // still refreshes the value, so this loses nothing.
+    if (claudeVersionSeen)
+        s.claude_version_seen = claudeVersionSeen;
     s.session_dir = fullSessionPath;
     // D3 (B-RRH AC-D3): the resume-path equivalent of the createInitialState
     // prd_path stamp (NOT a duplicate — createInitialState is never reached on
@@ -1328,10 +1374,10 @@ function claimSessionMapForResume(fullSessionPath) {
     }
 }
 /** Apply the resume config to state.json, reconciling desync; dies on corrupt state. */
-function applyResumeStateTransition(config, fullSessionPath, statePath, codexVersionSeen) {
+function applyResumeStateTransition(config, fullSessionPath, statePath, codexVersionSeen, claudeVersionSeen) {
     try {
         let state = sm.update(statePath, s => {
-            applyResumeConfig(s, config, fullSessionPath, codexVersionSeen);
+            applyResumeConfig(s, config, fullSessionPath, codexVersionSeen, claudeVersionSeen);
         });
         if (state.active === true) {
             clearExitReason(statePath);
@@ -1359,10 +1405,11 @@ function resumeSession(config) {
     claimSessionMapForResume(fullSessionPath);
     const resumeBackend = config.explicitFlags.has('backend') ? config.backend : preState?.backend;
     const codexVersionSeen = resolveCodexVersionForSetup(resumeBackend);
+    const claudeVersionSeen = resolveClaudeVersionForSetup();
     // AC-LPB-05: capture the pre-resume epoch so we can emit the
     // session_reconstructed_epoch_reset activity event with both timestamps.
     const originalEpoch = typeof preState?.start_time_epoch === 'number' ? preState.start_time_epoch : null;
-    const state = applyResumeStateTransition(config, fullSessionPath, statePath, codexVersionSeen);
+    const state = applyResumeStateTransition(config, fullSessionPath, statePath, codexVersionSeen, claudeVersionSeen);
     // C5 (B-RRH AC-C5): self-heal an orphaned ticket commit on resume.
     tryResumeOrphanReattach(fullSessionPath, statePath, state.current_ticket, state.working_dir);
     emitResumeEpochReset(fullSessionPath, originalEpoch, state);
@@ -1448,6 +1495,7 @@ function applyGitProvenanceToState(state) {
  */
 function createInitialState(config, sessionPath, taskStr) {
     const codexVersionSeen = resolveCodexVersionForSetup(config.backend);
+    const claudeVersionSeen = resolveClaudeVersionForSetup();
     const state = {
         active: !config.pausedMode && !config.tmuxMode,
         working_dir: process.cwd(),
@@ -1479,6 +1527,7 @@ function createInitialState(config, sessionPath, taskStr) {
         flags: {},
         readiness: { cycle_history: [] },
         codex_version_seen: codexVersionSeen,
+        claude_version_seen: claudeVersionSeen,
         orphans_detected: [],
         invocation_source: process.env.PICKLE_PARENT_SESSION_HASH ? 'manager_subprocess' : 'operator',
         parent_session_hash: process.env.PICKLE_PARENT_SESSION_HASH || null,

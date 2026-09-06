@@ -119,6 +119,16 @@ export interface State {
   readiness?: ReadinessState;
   codex_version_seen?: string | null;
   /**
+   * The `claude` CLI version string resolved at setup, or `null` when it could not
+   * be resolved. PURE OBSERVABILITY — it exists so a run record answers "which CLI
+   * executed this?" in the first log rather than after a multi-session bisect.
+   *
+   * It is NEVER a gate: unlike `codex_version_seen`, whose producer dies on a
+   * version mismatch, an unresolvable claude version records `null` and setup
+   * proceeds. `null` therefore means "could not measure", not "no claude here".
+   */
+  claude_version_seen?: string | null;
+  /**
    * Terminal-exit forensic marker. Set by finalize/forensic helpers in the
    * runners (mux/microverse/pipeline/jar). Values: 'success', 'limit',
    * 'circuit_open', 'stall', 'fatal', 'signal', plus microverse-specific

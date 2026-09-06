@@ -663,6 +663,14 @@ function normalizeV4StateDefaults(state) {
         state.invocation_source = 'operator';
 }
 function normalizeV5StateDefaults(state) {
+    // Hydrated here, NOT in normalizeV3StateDefaults beside `codex_version_seen`: the
+    // field ships at schema 5, and every real read path reaches
+    // `normalizeUpToVersion(state, 5)` (a lower file is migrated up first), so V3 and
+    // V5 placement are behaviourally identical for the shipped runtime and truthful
+    // provenance is the only discriminator left. This default is also what lets an
+    // OLD state file load unchanged, which is why no schema bump is required.
+    if (typeof state.claude_version_seen !== 'string')
+        state.claude_version_seen = null;
     if (!isRecord(state.worker_artifact_progress))
         state.worker_artifact_progress = {};
     if (typeof state.codex_manager_consecutive_no_progress !== 'number')

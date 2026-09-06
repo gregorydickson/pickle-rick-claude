@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArguments, initializeNewSession, evaluateLaunchSizing, countManifestTickets } from '../bin/setup.js';
 import { runRecover } from '../bin/pickle-recover.js';
 import { StateManager } from '../services/state-manager.js';
+import { LATEST_SCHEMA_VERSION } from '../types/index.js';
 import { compatibleCodexVersion, codexVersionLine } from './__helpers__/codex-shim.js';
 import { findResiduals } from './__helpers__/activity-sink.js';
 
@@ -160,7 +161,20 @@ test('setup initializeNewSession: state field set matches schema fixture', () =>
         const persisted = JSON.parse(JSON.stringify(session.state));
         const schema = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/setup/state-schema.json'), 'utf-8'));
 
-        assert.deepEqual(Object.keys(persisted), schema.fields_in_order);
+        // `claude_version_seen` (a5a9d6e0) is written by createInitialState directly after
+        // `codex_version_seen`, but the fixture that spells out the expected order sits
+        // OUTSIDE this branch's scope.json allowed_paths and cannot absorb it here. Splice
+        // the one sanctioned addition into the expected list rather than relaxing the
+        // check: this stays an EXACT ordered comparison, so any OTHER key added, removed
+        // or reordered still reds. Deriving the expected keys from the subject would make
+        // the assertion vacuous, and a subset check would let real drift through.
+        // Residual: fold `claude_version_seen` into fixtures/setup/state-schema.json once
+        // that file is in fence, and drop this splice.
+        const expectedFields = schema.fields_in_order.flatMap(
+            field => (field === 'codex_version_seen' ? [field, 'claude_version_seen'] : [field]),
+        );
+
+        assert.deepEqual(Object.keys(persisted), expectedFields);
     } finally {
         if (previousDataRoot === undefined) {
             delete process.env.PICKLE_DATA_ROOT;
@@ -2188,5 +2202,147 @@ test('AP-EXT-ITER10-01: a LIVE pid is still refused — releasing the claim neve
         );
     } finally {
         fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+
+// ---------------------------------------------------------------------------
+// a5a9d6e0 (TIER-3.11) — `claude_version_seen`: record which CLI executed the run.
+//
+// Mirrors the shipped `codex_version_seen` wiring on declare/assign/normalise, and
+// deliberately NOT on the failure path: `resolveCodexVersionForSetup` die()s on a bad
+// codex because it is a compatibility GATE, while this field is pure observability and
+// must never be able to stop setup (AC-2).
+// ---------------------------------------------------------------------------
+
+function makeClaudeShimDir(body) {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-claude-shim-')));
+    const shim = path.join(dir, 'claude');
+    fs.writeFileSync(shim, `#!/bin/sh\n${body}\n`);
+    fs.chmodSync(shim, 0o755);
+    return dir;
+}
+
+// The shim dir is PREPENDED, so it shadows any real `claude` on the machine and the
+// probe's outcome is decided by the fixture rather than by the host's install.
+function runSetupWithClaudeShim(shimDir, task) {
+    const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-claude-ver-data-')));
+    try {
+        const output = runSetupWithEnv(['--tmux', '--task', task], {
+            PICKLE_DATA_ROOT: dataRoot,
+            PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
+        });
+        const match = output.match(/SESSION_ROOT=(.+)/);
+        assert.ok(match, `SESSION_ROOT not found in output:\n${output}`);
+        const sessionRoot = match[1].trim();
+        return { output, state: JSON.parse(fs.readFileSync(path.join(sessionRoot, 'state.json'), 'utf-8')) };
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+}
+
+test('AC-1 claude_version_seen: setup records the resolved claude --version output', () => {
+    const shimDir = makeClaudeShimDir('echo "2.1.260 (Claude Code)"');
+    try {
+        const { state } = runSetupWithClaudeShim(shimDir, 'claude version recorded');
+
+        assert.equal(state.claude_version_seen, '2.1.260 (Claude Code)');
+    } finally {
+        fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+});
+
+test('AC-2 claude_version_seen: an unresolvable version records null and does NOT block setup', () => {
+    // The probe is the ONLY external-binary call setup makes besides the codex gate
+    // (measured: one execFileSync in src/bin/setup.ts), so a failing `claude` isolates
+    // exactly the arm under test — setup completing here cannot mean something else.
+    const shimDir = makeClaudeShimDir('echo "claude: command failed" >&2\nexit 1');
+    try {
+        // runSetupWithEnv throws on a non-zero exit, so reaching the assertions at all
+        // is itself the "setup was not blocked" evidence; SESSION_ROOT confirms it got
+        // far enough to write a session rather than exiting 0 early.
+        const { output, state } = runSetupWithClaudeShim(shimDir, 'claude version fail open');
+
+        assert.match(output, /SESSION_ROOT=/);
+        assert.equal(state.claude_version_seen, null);
+    } finally {
+        fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+});
+
+test('AC-2 claude_version_seen: empty --version output collapses onto the same null', () => {
+    // "Unresolvable" must have ONE representation on disk, not '' and null both.
+    const shimDir = makeClaudeShimDir('exit 0');
+    try {
+        const { state } = runSetupWithClaudeShim(shimDir, 'claude version empty output');
+
+        assert.equal(state.claude_version_seen, null);
+    } finally {
+        fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+});
+
+test('AC-3 claude_version_seen: an OLD state file still loads, defaulting the field to null', () => {
+    assert.equal(LATEST_SCHEMA_VERSION, 5, 'this additive field must not bump the schema');
+
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-claude-ver-old-')));
+    const statePath = path.join(dir, 'state.json');
+    try {
+        // A pre-existing session written before this field existed: schema 3, no key.
+        fs.writeFileSync(statePath, JSON.stringify({
+            active: false,
+            working_dir: '/repo',
+            step: 'prd',
+            iteration: 0,
+            max_iterations: 50,
+            worker_timeout_seconds: 1200,
+            start_time_epoch: 1714080000,
+            completion_promise: null,
+            original_prompt: 'old session',
+            current_ticket: null,
+            history: [],
+            started_at: '2026-04-26T00:00:00.000Z',
+            session_dir: dir,
+            schema_version: 3,
+            codex_version_seen: null,
+        }, null, 2));
+
+        const state = new StateManager().read(statePath);
+
+        assert.equal(state.schema_version, LATEST_SCHEMA_VERSION, 'old file migrates, it does not throw');
+        assert.equal(state.claude_version_seen, null, 'missing key hydrates to null');
+        assert.equal('claude_version_seen' in state, true, 'the key is materialised, not left absent');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AC-1 claude_version_seen: a recorded value survives a read/normalise round trip', () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-claude-ver-rt-')));
+    const statePath = path.join(dir, 'state.json');
+    try {
+        const sm = new StateManager();
+        sm.forceWrite(statePath, {
+            active: false,
+            working_dir: '/repo',
+            step: 'prd',
+            iteration: 0,
+            max_iterations: 50,
+            worker_timeout_seconds: 1200,
+            start_time_epoch: 1714080000,
+            completion_promise: null,
+            original_prompt: 'round trip',
+            current_ticket: null,
+            history: [],
+            started_at: '2026-04-26T00:00:00.000Z',
+            session_dir: dir,
+            schema_version: LATEST_SCHEMA_VERSION,
+            claude_version_seen: '2.1.260 (Claude Code)',
+        });
+
+        // The normaliser must hydrate a MISSING value without clobbering a present one.
+        assert.equal(sm.read(statePath).claude_version_seen, '2.1.260 (Claude Code)');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
     }
 });
