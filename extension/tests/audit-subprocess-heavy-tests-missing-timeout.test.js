@@ -106,6 +106,60 @@ test('audit-subprocess-heavy-tests --scan-root: clean scan root (no candidates) 
   }
 });
 
+// AP-EXT-ITER224-01. The case above is the DISJOINT CONTROL for this one: the two scan
+// roots differ only in whether a single `.test.js` rides along, so a gate that rejected on
+// anything but "nothing was measured" would red that control too.
+//
+// Every predicate in the audit is derived from its AUDITED_FILES list, so an empty list
+// disarms all of them -- and the shipped tail printed `audit-subprocess-heavy-tests: OK`
+// and exited 0 over a run that examined no file at all. That verdict is consumed by the
+// release gate chain and by `pretest:integration`, both of which read it with `&&`.
+//
+// The rows are the three root-independent producers of the empty list. A $TEST_ROOT that
+// `find` cannot read is a fourth, deliberately NOT pinned here: it needs a mode-000
+// directory, which a root-owned container ignores, so the row would go quietly vacuous
+// exactly where CI runs it. It converges on the identical empty-list state these rows pin.
+const NOTHING_MEASURED_PRODUCERS = [
+  {
+    name: 'a scan root holding zero .test.js files',
+    seed: (dir) => fs.writeFileSync(path.join(dir, 'helper.js'), 'export const noop = () => {};\n'),
+  },
+  {
+    name: 'a scan root whose only .test.js files are pruned fixtures',
+    seed: (dir) => {
+      fs.mkdirSync(path.join(dir, 'fixtures'));
+      fs.writeFileSync(
+        path.join(dir, 'fixtures', 'pruned.test.js'),
+        fixtureSource('execFileSync', "'git', ['status']", true),
+      );
+    },
+  },
+  {
+    name: 'an entirely empty scan root',
+    seed: () => {},
+  },
+];
+
+for (const producer of NOTHING_MEASURED_PRODUCERS) {
+  test(`AP-EXT-ITER224-01: ${producer.name} has no verdict, not a clean one`, () => {
+    const dir = tmpScanRoot();
+    try {
+      producer.seed(dir);
+
+      const result = runAudit(dir);
+      assert.equal(
+        result.status,
+        1,
+        `expected exit 1 when nothing was audited; stderr=${result.stderr}`,
+      );
+      assert.match(result.stderr, /nothing was measured, so this audit has no verdict/);
+      assert.doesNotMatch(result.stderr, /audit-subprocess-heavy-tests: OK/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 // Receiver qualification. `RegExp.prototype.exec` shares its name with
 // `child_process.exec`, so the candidate matcher classifies by receiver. These
 // fixtures pin BOTH directions in one test, which is what stops the fix from

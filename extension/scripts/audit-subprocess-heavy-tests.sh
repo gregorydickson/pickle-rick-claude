@@ -300,10 +300,25 @@ else
     ! -path "$TEST_ROOT/fixtures/*" | sort)
 fi
 
+# NOTHING MEASURED IS NOT A CLEAN VERDICT. Every predicate below is derived from
+# AUDITED_FILES, so an empty list disarms all of them and the tail would print
+# "audit-subprocess-heavy-tests: OK" over a run that examined no file at all --
+# on a script the release gate and `pretest:integration` both chain with &&.
+# One check covers every producer of the empty list: a scan root holding zero
+# *.test.js, one holding only pruned tests/fixtures/**, and a $TEST_ROOT `find`
+# could not read (its status is unreadable from the process substitution above).
+# The not-deployed case already exited 0 at the `-d "$TEST_ROOT"` guard, so
+# reaching this line with zero files is always a defect, never a deployment shape.
+# LOCAL refusal only: this script's own exit code. It breaks no loop (PRIME DIRECTIVE).
+if [ "${#AUDITED_FILES[@]}" -eq 0 ]; then
+  echo "[error: no *.test.js audited under $TEST_ROOT - nothing was measured, so this audit has no verdict]" >&2
+  exit 1
+fi
+
 # Missing-timeout predicate (R-TFP-C2 extension): the whole child_process
 # family, grandfathered against a committed baseline so pre-existing debt
 # does not redden this gate. Only callsites absent from the baseline fail.
-if [ "${#AUDITED_FILES[@]}" -gt 0 ] && command -v node >/dev/null 2>&1; then
+if command -v node >/dev/null 2>&1; then
   missing_timeout_out="$(node "$MISSING_TIMEOUT_SCANNER" --baseline "$MISSING_TIMEOUT_BASELINE" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}" 2>/dev/null)"
   missing_timeout_exit=$?
   if [ "$missing_timeout_exit" -ne 0 ]; then
@@ -324,12 +339,12 @@ fi
 # binary provisioning are orthogonal, and tests/integration/mega-bundle-e2e.test.js
 # -- the file whose ripgrep spawn motivated this predicate -- is in the serial
 # manifest, so sharing that allowlist would blind this check to the original bug.
-if [ "${#AUDITED_FILES[@]}" -gt 0 ] && [ ! -f "$UNPROVISIONED_SCANNER" ]; then
+if [ ! -f "$UNPROVISIONED_SCANNER" ]; then
   # Absent scanner is an ERROR, never a skip: a silent skip would print
   # "audit-subprocess-heavy-tests: OK" with this predicate disarmed.
   echo "[error: $UNPROVISIONED_SCANNER not found — unprovisioned-binary predicate cannot run]" >&2
   status=1
-elif [ "${#AUDITED_FILES[@]}" -gt 0 ]; then
+else
   unprovisioned_out="$(node "$UNPROVISIONED_SCANNER" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}" 2>/dev/null)"
   unprovisioned_exit=$?
   if [ "$unprovisioned_exit" -ne 0 ]; then
