@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(__dirname, '..');
@@ -1520,6 +1521,162 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
       covered,
       catalogModuleSurface,
       'the modules the catalogs are held to and the cross-imported export surface under `src/` have diverged. A module in the surface but not covered is required by its subsystem contract and demanded by NO catalog — the shape that hid all 27 `src/services/citadel` modules while the completeness arm read green',
+    );
+  });
+
+  /**
+   * AP-EXT-ITER219-01 — the row's PAYLOAD had no wire.
+   *
+   * Every arm above judges a row by its FILE: does the path resolve, is the module required,
+   * does the required set cover the tree. Nothing read what comes AFTER the arrow — and the
+   * symbol list is the whole reason the row exists, the index a reader follows to find where a
+   * name is declared. Blind BY CONSTRUCTION, the same way the module-identity axis was before
+   * `AP-EXT-ITER214-01`: the catalog's other symbol oracle, `collectAnchorTokens`, skips any
+   * line not matching `/INVARIANT:|PATTERN_SHAPE/`, and a catalog row carries neither label, so
+   * no sweep in this file or in `audit-trap-door-enforcement.sh` ever saw one of these names.
+   *
+   * MEASURED on the shipped tree: of 131 rows carrying a symbol list, `src/types/CLAUDE.md`'s
+   * `index.ts` row named 15 symbols that module does not export. SEVEN (`ALL_EXITS`,
+   * `ALL_STEPS`, `TicketTier`, `PROMISE_TOKEN_STRINGS`, `ALL_TICKET_STATUSES`, `isFailedExit`,
+   * `VALID_EFFORTS`) have no export site anywhere under `src/`; the other eight are exported by
+   * four OTHER modules (`bin/mux-runner.ts`, `services/pickle-utils.ts`,
+   * `services/state-manager.ts`, `services/backend-spawn.ts`,
+   * `services/transaction-ticket-ops.ts`), so the row sent a reader to the wrong file for a name
+   * that really exists — `AP-EXT-ITER214-01`'s failure mode one level down. The row was carried
+   * over from a `## Public Exports` section no wire had ever read, and `git log -S` finds those
+   * seven names in `types/index.ts` in NO commit: false at birth, never drifted.
+   *
+   * LIVENESS IS THE WRONG QUESTION, which is why widening `collectAnchorTokens` to swallow
+   * catalog rows would not close this: `ExitReason` IS live, so a liveness sweep passes it while
+   * the row still misroutes. The property is SET MEMBERSHIP in the named module's own export
+   * surface, so it is derived from that module's AST rather than from a search of the tree.
+   *
+   * CONTAINMENT, not equality. Measured across the same 131 rows: 111 list exactly the module's
+   * exports and 19 legitimately list a curated subset. Demanding equality would red those 19 and
+   * force an exemption list; containment needs none, and completeness is already owned by
+   * `AP-EXT-ITER216-01` at module granularity.
+   */
+  function rowSymbols(tail) {
+    // The export list is the comma-separated backticked run after the arrow. A row may carry a
+    // parenthetical gloss per symbol and an em-dash prose tail, and both spell OTHER identifiers
+    // in backticks (`State` inside "load and validate a `State` object"), so reading raw
+    // backticks reports names the row never advertised. Cut prose off structurally rather than
+    // keeping a list of the words that introduce it.
+    const withoutGlosses = tail.replace(/\([^)]*\)/g, ' ');
+    const proseAt = withoutGlosses.search(/\s[—–]\s/);
+    const list = proseAt >= 0 ? withoutGlosses.slice(0, proseAt) : withoutGlosses;
+
+    return list
+      .split(',')
+      .map(part => part.trim().match(/^`([A-Za-z_$][A-Za-z0-9_$]*)`$/))
+      .filter(Boolean)
+      .map(match => match[1]);
+  }
+
+  // The AST, not a `/^export (const|function|class|interface|type|enum|…)/` regex: that form is
+  // an enumerated set of declaration keywords, correct only until TypeScript grows another one,
+  // and it fails by silently reporting a real export missing — which reads here as the row
+  // over-claiming, a false RED against a correct catalog.
+  function exportedNames(abs) {
+    const source = ts.createSourceFile(
+      abs,
+      fs.readFileSync(abs, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const names = new Set();
+
+    for (const statement of source.statements) {
+      const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined;
+      if (modifiers && modifiers.some(m => m.kind === ts.SyntaxKind.ExportKeyword)) {
+        if (ts.isVariableStatement(statement)) {
+          for (const declaration of statement.declarationList.declarations) {
+            if (ts.isIdentifier(declaration.name)) names.add(declaration.name.text);
+          }
+        } else if (statement.name && ts.isIdentifier(statement.name)) {
+          names.add(statement.name.text);
+        }
+      }
+
+      if (
+        ts.isExportDeclaration(statement) &&
+        statement.exportClause &&
+        ts.isNamedExports(statement.exportClause)
+      ) {
+        for (const element of statement.exportClause.elements) names.add(element.name.text);
+      }
+    }
+
+    return names;
+  }
+
+  // ONE row grammar. The tail is whatever `ROW_RE` did not consume, so a change to the row shape
+  // moves the symbol list with it instead of leaving a second regex to keep in sync.
+  const symbolRows = anchorCatalogs.flatMap(catalog => {
+    const dir = path.dirname(path.join(repoRoot, catalog));
+    return (catalogSectionLines(catalog) ?? [])
+      .map(line => ({ line, match: line.match(ROW_RE) }))
+      .filter(entry => entry.match !== null)
+      .map(entry => ({
+        catalog,
+        module: entry.match[1],
+        abs: path.join(dir, entry.match[1]),
+        symbols: rowSymbols(entry.line.slice(entry.match[0].length)),
+      }))
+      .filter(row => fs.existsSync(row.abs));
+  });
+
+  test('AP-EXT-ITER219-01: every symbol a catalog row advertises is exported by the module it names', () => {
+    // The floor guards the ROW side only. A dark export probe cannot fake a pass — it makes every
+    // listed symbol look unexported and REDS the assertion below — but a row parser that stopped
+    // yielding symbols would compare an empty list against every module and read clean, which is
+    // the AP-EXT-ITER213-01 shape.
+    const listed = symbolRows.reduce((total, row) => total + row.symbols.length, 0);
+    assert.ok(
+      symbolRows.length >= 100 && listed >= 1000,
+      `only ${listed} symbol(s) parsed from ${symbolRows.length} catalog row(s) — the row grammar or the symbol-list parser stopped reaching the catalogs, and an empty list is contained in every export surface`,
+    );
+
+    const overclaims = [];
+    for (const row of symbolRows) {
+      const exported = exportedNames(row.abs);
+      for (const symbol of row.symbols) {
+        if (!exported.has(symbol)) {
+          overclaims.push(`${row.catalog} -> ${row.module}: \`${symbol}\``);
+        }
+      }
+    }
+
+    assert.deepEqual(
+      overclaims,
+      [],
+      'a Module Export Catalog row advertises a symbol the module it names does not export. The row is the index a reader follows to find a declaration, so an over-claimed name sends them to the wrong file — or to no file at all, when the name is dead. Point the symbol at the module that really exports it, or drop it',
+    );
+  });
+
+  test('AP-EXT-ITER219-01: the probe separates a real export from a name the module lacks (negative control)', () => {
+    // Fixed text against a real module, so this still separates the two cases once the live
+    // catalogs are clean. `State` is exported by `types/index.ts`; `ALL_EXITS` shipped in that
+    // module's own catalog row and is exported by nothing in the tree.
+    const exported = exportedNames(path.join(repoRoot, 'extension/src/types/index.ts'));
+    assert.deepEqual(
+      [exported.has('State'), exported.has('ALL_EXITS')],
+      [true, false],
+      'the export probe no longer separates a symbol `types/index.ts` really exports from one that shipped in its catalog row while being exported nowhere, so it cannot see the regression it pins',
+    );
+  });
+
+  test('AP-EXT-ITER219-01: the symbol list stops at glosses and prose (negative control)', () => {
+    // Both live grammars, fixed text. Without the cut, `State` and `PICKLE_LINEAR_COMMAND` —
+    // spelled inside a gloss and a prose tail — are read as claimed exports and correct rows red.
+    const glossed =
+      '`sameWorkingDir` (compare canonical realpaths), `loadActiveState` (load a `State` object)';
+    const prosed =
+      '`shouldRunGenerativeAudit` — returns `false` when `PICKLE_LINEAR_COMMAND` is unset';
+    assert.deepEqual(
+      [rowSymbols(glossed), rowSymbols(prosed)],
+      [['sameWorkingDir', 'loadActiveState'], ['shouldRunGenerativeAudit']],
+      "the symbol-list parser is reading identifiers out of a row's parenthetical gloss or its em-dash prose tail, which names symbols the row never advertised as exports of that module",
     );
   });
 
