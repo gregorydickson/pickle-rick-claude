@@ -1330,6 +1330,27 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
 
   const catalogsWithSection = anchorCatalogs.filter(c => catalogRows(c) !== null);
 
+  /**
+   * AP-EXT-ITER217-01 — carrying the section was a PRECONDITION for being checked.
+   *
+   * Every arm above quantifies over `catalogsWithSection`, so a catalog enters the ledger only
+   * by carrying a `## Module Export Catalog` heading. That makes the STRONGEST drift invisible:
+   * MEASURED on the shipped tree, renaming the heading in `src/services/CLAUDE.md` drops all 46
+   * rows and all 42 required modules out of the identity arm, both vacuity floors and the
+   * completeness arm at once, and the suite stays 280/280 GREEN — while merely deleting one row
+   * from that same catalog reds. A weaker drift failed and a total one passed, because a catalog
+   * that left the set looks exactly like a catalog the rule never applied to.
+   *
+   * The requirement side is already derived and does NOT depend on the heading — `requiredRows`
+   * walks the subsystem directory and the import graph — so membership can be a VERDICT instead
+   * of a precondition. Stating it as a set equality also absorbs the per-catalog vacuity floor it
+   * replaces: "carries a section but requires nothing" IS a dark derivation (AP-EXT-ITER213-01),
+   * and "requires modules but carries no section" is the hole above. One quantification over one
+   * derived set, no list of which catalogs are supposed to have one — a subsystem is in the set
+   * because its own modules are cross-imported, or it is not in it at all.
+   */
+  const catalogsNeedingSection = anchorCatalogs.filter(c => requiredRows(c).length > 0);
+
   test('AP-EXT-ITER214-01: every module export catalog row names a file that exists', () => {
     // Two floors, because one is satisfiable by the other going dark. A catalog whose
     // section parsed to zero rows reads clean for the wrong reason, and summing rows across
@@ -1401,19 +1422,9 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
   });
   test('AP-EXT-ITER216-01: every module the subsystem exports across a boundary has a catalog row', () => {
     const missing = [];
-    for (const catalog of catalogsWithSection) {
-      const required = requiredRows(catalog);
-
-      // Per catalog, not summed: a subsystem whose derived set goes dark reads clean for the
-      // wrong reason, and its populated siblings would hide it — the AP-EXT-ITER213-01
-      // per-root vacuity lesson applied to the requirement side of the ledger.
-      assert.ok(
-        required.length > 0,
-        `${catalog}: the derived required-module set is EMPTY, so this catalog is being checked against nothing — the directory walk, the import scan or the export probe stopped reaching the subsystem`,
-      );
-
-      const listed = new Set(catalogRows(catalog).map(row => path.basename(row)));
-      for (const module of required) {
+    for (const catalog of catalogsNeedingSection) {
+      const listed = new Set((catalogRows(catalog) ?? []).map(row => path.basename(row)));
+      for (const module of requiredRows(catalog)) {
         if (!listed.has(module)) missing.push(`${catalog} -> ${module}`);
       }
     }
@@ -1422,6 +1433,14 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
       missing,
       [],
       'a module exported from the subsystem and imported by another module carries no `## Module Export Catalog` row. The catalog is the index a reader follows to find the import surface, so an absent module is invisible to everyone who reads the subsystem contract instead of the directory — add the row next to its alphabetical neighbours',
+    );
+  });
+
+  test('AP-EXT-ITER217-01: a catalog carries an export section exactly where the import graph requires one', () => {
+    assert.deepEqual(
+      catalogsWithSection,
+      catalogsNeedingSection,
+      'the set of catalogs carrying a `## Module Export Catalog` section and the set the import graph says must carry one have diverged. A catalog on the right but not the left exports cross-imported modules while documenting none of them under the heading every wire reads, so it is checked by NOTHING — renaming or deleting the heading is a silent pass. A catalog on the left but not the right is being checked against an empty derived set, so its walk, import scan or export probe went dark',
     );
   });
 

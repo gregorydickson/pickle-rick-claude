@@ -1,16 +1,12 @@
-## Public Exports
+## Module Export Catalog
 
-Exports enumerated from `grep -E '^export ' extension/src/hooks/*.ts` (top-level files only; `handlers/` sub-directory is covered under Handler Invariants below).
+Machine-maintained export index for the `hooks/` subsystem, in the row grammar the conformance
+wire reads (`AP-EXT-ITER216-01` / `AP-EXT-ITER217-01` in `tests/trap-door-conformance.test.js`).
+Top-level files only; the `handlers/` sub-directory is covered under Handler Invariants below.
 
-### `resolve-state.ts`
-- `sameWorkingDir(a, b)` — compare canonical realpaths for hook cwd matching
-- `selectScannedStateFile(stateFiles, cwd)` — choose the best matching state file from a scanned list
-- `resolveStateFile(dataDir)` — resolve a single authoritative state file path
-- `loadActiveState(stateFile)` — load and validate a `State` object from disk
-- `approve()` — emit the hook approve response to stdout
-
-### `dispatch.ts`
-CLI entry point — no named exports. Spawns the appropriate handler subprocess based on hook event type.
+- `resolve-state.ts` -> `sameWorkingDir` (compare canonical realpaths for hook cwd matching), `selectScannedStateFile` (choose the best matching state file from a scanned list), `resolveStateFile` (resolve a single authoritative state file path), `loadActiveState` (load and validate a `State` object from disk), `approve` (emit the hook approve response to stdout)
+- `shell-exec.ts` -> `ENV_ASSIGNMENT_RE`, `SHELL_PATTERN_CHARS`, `ShellToken`, `execAnchorIndex`, `execName`, `execNameIs`, `execNamesIn`, `execTokenIndex`, `isShellWrapper`, `shellPatternToRegex`, `shellWordWitness`, `skipEnvAssignments`, `splitShellSegments`, `tokenizeShellCommand`, `tokenizeShellTokens`, `wordExpandsTo` — shell tokenizer backing the config-protection and tsc-gate command scanners
+- `dispatch.ts` -> no named exports — CLI entry point that spawns the appropriate handler subprocess based on hook event type; nothing imports it, so the wire never demands this row
 
 ---
 
