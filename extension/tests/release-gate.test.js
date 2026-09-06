@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -143,6 +144,17 @@ function storeMemberMode(tarballPath, memberName, mode) {
   writeFileSync(tarballPath, zlib.gzipSync(raw));
 }
 
+// Every pair keyed on a stored mode differs ONLY in that mode, so each fixture asserts the mode
+// back out of `-tvzf` rather than trusting the rewrite — a decayed rewrite would silently turn
+// such a test into a duplicate of its own control. Derived from the requested mode, so widening
+// the domain past 000 needs no edit here.
+function storedPermissions(mode) {
+  return 'rwxrwxrwx'
+    .split('')
+    .map((bit, index) => (((mode >> (8 - index)) & 1) ? bit : '-'))
+    .join('');
+}
+
 // AP-BIN-ITER26-01. The members below are the DIRECTORIES, not the files inside them, because
 // `.github/workflows/release.yml` tars `extension/` whole — so every real asset carries directory
 // headers with their own stored modes, and a fixture naming files alone leaves that member class,
@@ -187,9 +199,9 @@ function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule, mo
     `fixture stored the wrong mode for the importer:\n${verbose}`,
   );
   const dirRow = verbose.split('\n').find((row) => row.endsWith('extension/services/'));
-  assert.equal(
-    /^d-{9}\s/.test(dirRow ?? ''),
-    dirMode === 0o000,
+  assert.match(
+    dirRow ?? '',
+    dirMode === undefined ? /^drwx/ : new RegExp(`^d${storedPermissions(dirMode)}\\s`),
     `fixture stored the wrong mode for the importer's directory:\n${verbose}`,
   );
   return { dir, tarball };
@@ -422,19 +434,37 @@ esac
   return { dir, tarball, tarPath };
 }
 
-// `tmpRoot` exists for one case: a payload carrying an UNWALKABLE directory is also an UNDELETABLE
-// one (no mode both blocks `find` and admits `rm -rf`, measured on BSD and GNU), so the gate's own
-// `mktemp -d` survives its EXIT trap. Pointing the gate at a caller-owned root lets that test
-// restore the modes and clean up after itself instead of leaking a permanent temp directory.
-function gate(args, { cwd, pathPrefix, tmpRoot } = {}) {
+function gate(args, { cwd, pathPrefix } = {}) {
   return run('bash', [RELEASE_GATE, ...args], {
     cwd,
     env: {
       ...process.env,
       PATH: pathPrefix ? `${pathPrefix}:${process.env.PATH}` : process.env.PATH,
-      ...(tmpRoot ? { TMPDIR: tmpRoot } : {}),
     },
   });
+}
+
+// AP-BIN-ITER27-01. A payload carrying a directory `rm -rf` cannot remove leaves the gate's own
+// `mktemp -d` behind, and a caller CANNOT place that root: macOS `mktemp -d` resolves the Darwin
+// per-user temp directory through confstr and ignores `$TMPDIR` outright (measured), so the
+// `TMPDIR`-passing option this replaces removed an empty directory of its own, reported success,
+// and leaked the real root once per run. Recover the path from cleanup's own stderr instead — `rm`
+// names every directory it refused, innermost first, so the LAST is the gate's root. BSD prints
+// `rm: <path>: ...` and GNU `rm: cannot remove '<path>': ...`; both are matched.
+//
+// The same stderr is the only evidence that cleanup FAILED, and every case keyed on the gate's
+// exit code needs it: a removable temp root never runs `rm` to failure, so those assertions would
+// hold with the status-preserving cleanup amputated. Returning null is therefore a test failure at
+// the call site, not a silent skip.
+function undeletableGateTmpdir(stderr) {
+  const refused = [...stderr.matchAll(/^rm: (?:cannot remove )?'?(\/[^\n']+?)'?: /gm)].map((match) => match[1]);
+  return refused.length > 0 ? refused[refused.length - 1] : null;
+}
+
+function reclaimUndeletableGateTmpdir(leaked) {
+  if (leaked === null) return;
+  run('chmod', ['-R', 'u+rwX', leaked]);
+  rmSync(leaked, { recursive: true, force: true });
 }
 
 describe('release-gate.pre-tag', () => {
@@ -676,22 +706,55 @@ describe('release-gate.post-tag', () => {
     const { dir: repoDir, tagName } = makeGitFixture();
     const tarFixture = makeRuntimePayloadTarball({ carryImportedModule: true, dirMode: 0o000 });
     const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
-    // An unwalkable directory is an undeletable one, so the gate's `mktemp -d` outlives its EXIT
-    // trap. Own that root here and restore the modes rather than leaking it.
-    const tmpRoot = mkdtempSync(path.join(tmpdir(), 'release-gate-tmproot-'));
+    let leaked = null;
     try {
-      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir, tmpRoot });
-      // The VERDICT is the discriminator here, not the status: the same undeletable directory that
-      // defeats `find` also defeats the EXIT trap's `rm -rf`, and the trap's failure overwrites
-      // `die 21` with an undocumented 1 (measured on this asset BEFORE the fix too, where the
-      // status was likewise 1 while stdout carried `ok:`). So `status` cannot separate the two
-      // halves of this pair and the message must — see the release-gate.sh trap door's OPEN GAP.
-      assert.notEqual(result.status, 0, result.stdout);
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      leaked = undeletableGateTmpdir(result.stderr);
+      // AP-BIN-ITER27-01. The status is a discriminator again: the same undeletable directory that
+      // defeats `find` also defeats the EXIT trap's `rm -rf`, and under `set -e` that failure used
+      // to exit the shell FROM INSIDE the trap carrying `rm`'s status — so this asset reported an
+      // undocumented 1 for `die 21`, and reported 1 for the pre-fix `ok:` run as well. Pinning 21
+      // exactly is what keeps the trap from silently re-acquiring the script's exit code.
+      assert.equal(result.status, 21, `${result.stdout}${result.stderr}`);
       assert.match(result.stderr, /carries no runtime modules to verify/);
       assert.doesNotMatch(result.stdout, /^ok:/m);
+      // Without this the case is vacuous: a temp root the trap CAN remove never runs `rm` to
+      // failure, and the exit-code assertion above would hold with the fix amputated.
+      assert.notEqual(leaked, null, `cleanup must actually fail here:\n${result.stderr}`);
     } finally {
-      run('chmod', ['-R', 'u+rwX', tmpRoot]);
-      rmSync(tmpRoot, { recursive: true, force: true });
+      reclaimUndeletableGateTmpdir(leaked);
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER27-01, the disjoint half. The pair above and this one differ ONLY in the stored mode
+  // of the `extension/services/` directory member: 000 blocks `find` and produces `die 21`, 500
+  // admits `find` and the import RESOLVES, so the gate reaches `ok:` and exit 0. Both modes defeat
+  // `rm -rf` identically (removing a child needs WRITE on its directory, which neither grants), so
+  // pre-fix BOTH halves collapsed onto the cleanup's exit 1 — the green run reporting failure and
+  // the red run losing its documented code. This half is the only case in the suite where cleanup
+  // fails on a run the gate PASSES, so it is the sole pin on the exit-0 direction.
+  test('reports the gate\'s own exit 0, not the cleanup\'s status, when its tmpdir cannot be removed', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({ carryImportedModule: true, dirMode: 0o500 });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    let leaked = null;
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      leaked = undeletableGateTmpdir(result.stderr);
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+      // Two independent ways this case could pass for the wrong reason, both closed here: the EXIT
+      // trap must have actually FAILED (a removable temp root never runs `rm` to failure, so exit 0
+      // would hold with the fix amputated), and the sweep must have actually MEASURED the importer
+      // inside the 500 directory rather than skipping one it never extracted.
+      assert.notEqual(leaked, null, `cleanup must actually fail here:\n${result.stderr}`);
+      const survivor = run('find', [leaked]).stdout;
+      assert.match(survivor, /payload\/extension\/services\/state-manager\.js$/m, survivor);
+    } finally {
+      reclaimUndeletableGateTmpdir(leaked);
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(tarFixture.dir, { recursive: true, force: true });
       rmSync(ghDir, { recursive: true, force: true });

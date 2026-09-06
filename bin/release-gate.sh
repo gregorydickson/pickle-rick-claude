@@ -35,6 +35,22 @@ die() {
   exit "$code"
 }
 
+# The EXIT trap runs with the status the script CHOSE still in `$?`, and under `set -e` a failing
+# cleanup command exits the shell from inside the trap carrying the CLEANUP's status instead — so
+# `rm` refusing a directory it could not delete replaced `die 21` with an undocumented 1, and would
+# replace a clean run's 0 with 1 the same way. Every code the usage block above documents is
+# corruptible that way and 1 is none of them, so a caller that distinguishes "download failed" (20)
+# from "bad payload" (21) reads neither. An unwalkable payload directory is an undeletable one,
+# which makes this precisely the asset class `payload_unresolved_import` exists to reject: the gate
+# names the right cause on stderr and then reports a status that does not mean it. Capture the
+# status first, leave cleanup's own stderr intact (it is the operator's only notice of a leaked
+# temp root), and re-exit what the script decided.
+release_gate_cleanup() {
+  local status=$?
+  rm -rf "$RELEASE_GATE_TMPDIR" || true
+  exit "$status"
+}
+
 read_expected_version() {
   local version
   version="$(jq -r '.version' "$PKG_PATH" 2>/dev/null)" || die 11 "could not parse $PKG_DISPLAY_PATH with jq"
@@ -339,7 +355,7 @@ post_tag() {
   gh api "repos/$REPO/releases/tags/$tag" >/dev/null 2>&1 || die 22 "GitHub release API check failed for $tag"
   tmpdir="$(mktemp -d)"
   RELEASE_GATE_TMPDIR="$tmpdir"
-  trap 'rm -rf "$RELEASE_GATE_TMPDIR"' EXIT
+  trap release_gate_cleanup EXIT
   gh release download "$tag" -R "$REPO" -p '*.tar.gz' -D "$tmpdir" >/dev/null 2>&1 || die 20 "release download failed for $tag"
 
   local tarball payload_root pkg_member pkg tagged name_listing payload_dir unresolved_import
