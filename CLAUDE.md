@@ -140,9 +140,14 @@ Measured tax: gate ~34 min + a properly-run soak ~30 min + bump/deploy/push/tag/
 
 1. **Default: do not release.** Land the bundle, push the branch, keep draining. Release when several
    bundles have accumulated, a fix must reach users, or the operator asks.
-2. **The soak is NOT optional at release time.** It self-skips with `refuses to mutate $HOME
-   settings.json`; a 16-second pass is not an 1800s soak. Set `PICKLE_INSTALL_ROOT` to a non-`$HOME`
-   path or record the leg UNRUN. Never report an unrun leg as green.
+2. **The soak is NOT optional at release time.** It provisions its own sandbox root (a private
+   `HOME`, install prefix and data root under `os.tmpdir()`) and no longer reads
+   `PICKLE_INSTALL_ROOT` — so there is nothing for the operator to export, and nothing of the real
+   `~/.claude` is touched. Once `RUN_EXPENSIVE_TESTS=1` is set, a refusal THROWS with a
+   `SOAK_UNRUN:` prefix instead of skipping, so an unrun leg reds the tier rather than reporting
+   `ok ... # SKIP`. **Wall-clock is the oracle: a 16-second pass is not an 1800s soak** — check the
+   reported duration against `SOAK_SECONDS`, and `grep SOAK_UNRUN` for a complete audit of refusals.
+   Never report an unrun leg as green.
 3. **A degraded run still does not auto-release** (see B-NOSTOP-GATES). Cadence does not relax honesty.
 4. **Batching releases ≠ batching the GATE.** Keep the branch green per bundle; spend the release
    ritual only when shipping.
