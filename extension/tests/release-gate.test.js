@@ -449,20 +449,34 @@ function gate(args, { cwd, pathPrefix } = {}) {
 // `TMPDIR`-passing option this replaces removed an empty directory of its own, reported success,
 // and leaked the real root once per run. Recover the path from cleanup's own stderr instead — `rm`
 // names every directory it refused, innermost first, so the LAST is the gate's root. BSD prints
-// `rm: <path>: ...` and GNU `rm: cannot remove '<path>': ...`; both are matched.
+// `rm: <path>: ...` and GNU `rm: cannot remove '<path>': ...`.
 //
-// The same stderr is the only evidence that cleanup FAILED, and every case keyed on the gate's
-// exit code needs it: a removable temp root never runs `rm` to failure, so those assertions would
-// hold with the status-preserving cleanup amputated. Returning null is therefore a test failure at
-// the call site, not a silent skip.
+// WHICH path each names is NOT portable and must not be assumed: BSD `rm` reports the DIRECTORY it
+// could not clear and then every ancestor, so its last line is the root, while GNU `rm` descends
+// into a mode-500 directory it can still read and reports the FILE whose unlink was refused --
+// measured on Ubuntu 24.04, where taking the last line handed back a file path and the reclaim
+// below then failed EACCES. Anchor on the gate's own structure instead: `post_tag` extracts into
+// `$tmpdir/payload`, so the segment before `/payload` is the root under either `rm`.
+//
+// Only `rm:` lines count. A `find:` refusal proves the payload was unwalkable, not that cleanup
+// failed, and cleanup failing is exactly what the two cases calling this must establish: a
+// removable temp root never runs `rm` to failure, so their exit-code assertions would hold with
+// the status-preserving cleanup amputated. Returning null is a test failure at the call site.
 function undeletableGateTmpdir(stderr) {
-  const refused = [...stderr.matchAll(/^rm: (?:cannot remove )?'?(\/[^\n']+?)'?: /gm)].map((match) => match[1]);
-  return refused.length > 0 ? refused[refused.length - 1] : null;
+  for (const line of stderr.split('\n')) {
+    if (!line.startsWith('rm:')) continue;
+    const match = /(\/[^\s'"]*)\/payload(?:[/'"]|$)/.exec(line);
+    if (match) return match[1];
+  }
+  return null;
 }
 
 function reclaimUndeletableGateTmpdir(leaked) {
   if (leaked === null) return;
-  run('chmod', ['-R', 'u+rwX', leaked]);
+  // Assert the restore, or a future portability break surfaces as an EACCES stack from `rmSync`
+  // in an unrelated frame instead of naming the step that actually failed.
+  const restored = run('chmod', ['-R', 'u+rwX', leaked]);
+  assert.equal(restored.status, 0, `could not restore modes under ${leaked}: ${restored.stderr}`);
   rmSync(leaked, { recursive: true, force: true });
 }
 
