@@ -656,8 +656,9 @@ export const CRASH_FLOOR_EXIT_REASONS = [
  * Written by `recordExitReason(statePath, STATE_SCHEMA_VERSION_AHEAD_EXIT_REASON)`
  * when `sm.read()` throws `SchemaVersionAheadError`/`SCHEMA_MISMATCH`. Listed
  * in the mux-runner `ExitReason` union and `isFailureExit` set. It is a
- * fatal-but-operator-recoverable state, not a microverse-class failure, and its
- * microverse disposition follows from `MICROVERSE_DISPOSITIONS`. auto-resume.sh
+ * fatal-but-operator-recoverable state, not a microverse-class failure — it is
+ * not a `MicroverseExitReason` at all, so it carries no microverse disposition.
+ * auto-resume.sh
  * R-CNAR-4(c) stops on this exit reason because it is in `isFailureExit`.
  */
 export const STATE_SCHEMA_VERSION_AHEAD_EXIT_REASON = 'state_schema_version_ahead';

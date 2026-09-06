@@ -34,7 +34,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_RUNNER_JS = path.resolve(__dirname, '..', 'bin', 'mux-runner.js');
 const MUX_RUNNER_TS = path.resolve(__dirname, '..', 'src', 'bin', 'mux-runner.ts');
-const TYPES_INDEX_TS = path.resolve(__dirname, '..', 'src', 'types', 'index.ts');
 
 function makeSessionDir(extra = {}) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wsrc2-')));
