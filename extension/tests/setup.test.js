@@ -2282,67 +2282,62 @@ test('AC-2 claude_version_seen: empty --version output collapses onto the same n
     }
 });
 
+// One literal for both persisted-state cases below; each supplies only the fields it
+// is actually asserting on, so the difference between them stays visible.
+function claudeVersionStateFixture(sessionDir, overrides) {
+    return {
+        active: false,
+        working_dir: '/repo',
+        step: 'prd',
+        iteration: 0,
+        max_iterations: 50,
+        worker_timeout_seconds: 1200,
+        start_time_epoch: 1714080000,
+        completion_promise: null,
+        original_prompt: 'claude version fixture',
+        current_ticket: null,
+        history: [],
+        started_at: '2026-04-26T00:00:00.000Z',
+        session_dir: sessionDir,
+        ...overrides,
+    };
+}
+
+function withStateDir(prefix, fn) {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    try {
+        return fn(dir, path.join(dir, 'state.json'));
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
 test('AC-3 claude_version_seen: an OLD state file still loads, defaulting the field to null', () => {
     assert.equal(LATEST_SCHEMA_VERSION, 5, 'this additive field must not bump the schema');
 
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-claude-ver-old-')));
-    const statePath = path.join(dir, 'state.json');
-    try {
+    withStateDir('pickle-claude-ver-old-', (dir, statePath) => {
         // A pre-existing session written before this field existed: schema 3, no key.
-        fs.writeFileSync(statePath, JSON.stringify({
-            active: false,
-            working_dir: '/repo',
-            step: 'prd',
-            iteration: 0,
-            max_iterations: 50,
-            worker_timeout_seconds: 1200,
-            start_time_epoch: 1714080000,
-            completion_promise: null,
-            original_prompt: 'old session',
-            current_ticket: null,
-            history: [],
-            started_at: '2026-04-26T00:00:00.000Z',
-            session_dir: dir,
-            schema_version: 3,
-            codex_version_seen: null,
-        }, null, 2));
+        fs.writeFileSync(statePath, JSON.stringify(
+            claudeVersionStateFixture(dir, { schema_version: 3, codex_version_seen: null }), null, 2,
+        ));
 
         const state = new StateManager().read(statePath);
 
         assert.equal(state.schema_version, LATEST_SCHEMA_VERSION, 'old file migrates, it does not throw');
         assert.equal(state.claude_version_seen, null, 'missing key hydrates to null');
         assert.equal('claude_version_seen' in state, true, 'the key is materialised, not left absent');
-    } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
 });
 
 test('AC-1 claude_version_seen: a recorded value survives a read/normalise round trip', () => {
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-claude-ver-rt-')));
-    const statePath = path.join(dir, 'state.json');
-    try {
+    withStateDir('pickle-claude-ver-rt-', (dir, statePath) => {
         const sm = new StateManager();
-        sm.forceWrite(statePath, {
-            active: false,
-            working_dir: '/repo',
-            step: 'prd',
-            iteration: 0,
-            max_iterations: 50,
-            worker_timeout_seconds: 1200,
-            start_time_epoch: 1714080000,
-            completion_promise: null,
-            original_prompt: 'round trip',
-            current_ticket: null,
-            history: [],
-            started_at: '2026-04-26T00:00:00.000Z',
-            session_dir: dir,
+        sm.forceWrite(statePath, claudeVersionStateFixture(dir, {
             schema_version: LATEST_SCHEMA_VERSION,
             claude_version_seen: '2.1.260 (Claude Code)',
-        });
+        }));
 
         // The normaliser must hydrate a MISSING value without clobbering a present one.
         assert.equal(sm.read(statePath).claude_version_seen, '2.1.260 (Claude Code)');
-    } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
 });

@@ -119,13 +119,10 @@ export interface State {
   readiness?: ReadinessState;
   codex_version_seen?: string | null;
   /**
-   * The `claude` CLI version string resolved at setup, or `null` when it could not
-   * be resolved. PURE OBSERVABILITY — it exists so a run record answers "which CLI
-   * executed this?" in the first log rather than after a multi-session bisect.
-   *
-   * It is NEVER a gate: unlike `codex_version_seen`, whose producer dies on a
-   * version mismatch, an unresolvable claude version records `null` and setup
-   * proceeds. `null` therefore means "could not measure", not "no claude here".
+   * The `claude` CLI version resolved at setup, or `null` when it could not be
+   * measured. Observability only — never a gate. Full invariant (why it fails open,
+   * why it is not backend-gated, why the two write paths differ) lives in the
+   * `state.json Field Invariants` section of `extension/CLAUDE.md`.
    */
   claude_version_seen?: string | null;
   /**
