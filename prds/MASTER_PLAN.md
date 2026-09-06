@@ -74,6 +74,45 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 📌 SESSION HANDOFF — state as of 2026-09-06 (context cleared here; read this first)
+
+**LIVE PIPELINE — do not relaunch, do not touch the tree.** Session `2026-09-06-f625727a`
+(`tmux attach -t pipeline-f625727a`), bundle **B-UNATTENDED**, at **anatomy-park, 2/4 phases complete**,
+3 procs alive, `exit_reason: null`, tree clean, 0 unpushed. HEAD `0d52923b`, version `2.1.0-beta.25`.
+
+**IMMEDIATE NEXT ACTION:** when `pipeline-status.json` reaches `completed_phases: 3`, cut **beta.26** per
+the STANDING RELEASE TRIGGER below. That is one phase away.
+
+**What happened this session (2026-09-04 → 09-06), so it is not re-derived:**
+- Recovered from a power outage; committed an interrupted worker's in-scope fix; deployed; pushed 199 commits.
+- Shipped `v2.1.0-beta.25`. **Its Linux CI is GREEN** (`a8ef0566`) — the first green on this branch.
+- **szechuan is broken and its cause is EXTERNAL**: the `claude` CLI auto-updated 2.1.252 → 2.1.260 on
+  2026-09-04 12:57 CDT. Every szechuan run before that succeeded; all three after failed, each with a
+  DIFFERENT message under one disposition — 600s timeout · rejected `Write()` permission rule (fixed
+  `e4edb6f9`) · **`Autocompact is thrashing` (context too large — STILL UNFIXED)**.
+- **B-UNATTENDED halted at 0/4 on GitHub #11** with all 17 tickets Done, because the fix was in SOURCE
+  and the pipeline runs DEPLOYED JS. Recovered: pushed → `install.sh` → re-attached `launch.sh`.
+  **Deploy is now current** (verified by content). The #11 halt is deleted and live.
+- **PR #12 closed.** `pr-factory.ts` ran `gh pr create` with no `--base` → targeted stale `main`
+  (+160k/−17.7k, 643 files). Root `CLAUDE.md` now carries a BINDING **NO PULL REQUESTS** rule; deletion
+  queued as TIER-1.4b.
+
+**Open, in priority order:**
+1. **AC-G3 is FAILING: +174 LOC** (26,327 → 26,501). Net LOC across the three runners must go DOWN;
+   that is the bundle's grade. Re-measure at bundle end.
+2. **szechuan's context/autocompact cause is unfixed.** `b5d885c4` changed score *derivation*, not what
+   the judge *reads*. Expect szechuan to degrade again at phase 4. Not a halt — it withholds the
+   success verdict, which is why the release trigger sits at phase 3.
+3. **The babysitter cron is SESSION-ONLY and dies when this session ends.** Re-arm it
+   (`prds/babysitter.md` → the prompt; operator cadence is every 2 hours) or the loop stops.
+
+**Corrections made this session — do not re-derive the disproven versions:** "we outgrew the judge
+ceiling" was WRONG (measured tree size, not judge CONTEXT); "B-LOGEV is stale" was WRONG (premise
+intact); the "self-modifying bundle / R-PSRB" category **does not exist** (source and runtime are
+isolated) and is struck from `CLAUDE.md` and `prds/CLAUDE.md`.
+
+---
+
 ## 🚢 STANDING RELEASE TRIGGER (operator-set 2026-09-06) — cut beta.26 when B-UNATTENDED's ANATOMY-PARK completes
 
 **Trigger:** `pipeline-status.json` for session `2026-09-06-f625727a` shows `Phase anatomy-park completed`
