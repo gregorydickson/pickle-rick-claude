@@ -55,11 +55,20 @@ function makeGitFixture({
   return { dir, tagName };
 }
 
+// AP-BIN-ITER24-01. The runtime module is not decoration: `post_tag` now refuses a payload it
+// could not measure, and every fixture here that expects exit 0 must therefore be a payload a real
+// installer could deploy. One self-resolving module is the minimum that makes the completeness
+// sweep say something rather than nothing.
 function makeTarball(version, archiveName = 'release.tar.gz') {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-tar-'));
   const root = path.join(dir, 'pickle-rick-claude');
   writePackage(root, version);
   writeFileSync(path.join(root, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  mkdirSync(path.join(root, 'extension', 'services'), { recursive: true });
+  writeFileSync(
+    path.join(root, 'extension', 'services', 'state-manager.js'),
+    'export const readState = () => null;\n',
+  );
   const tarball = path.join(dir, archiveName);
   run('tar', ['-czf', tarball, '-C', dir, 'pickle-rick-claude']);
   return { dir, tarball };
@@ -71,16 +80,37 @@ function makeTarball(version, archiveName = 'release.tar.gz') {
 // root that no release has ever emitted, which left the only path a real asset takes through this
 // gate unfixtured. Asserts the archive really carries TOP-LEVEL members, so a fixture that silently
 // regrows a prefix fails here instead of decaying into a duplicate of the prefixed happy path.
-function makeBarePayloadTarball(version, archiveName = 'pickle-release.tar.gz') {
+// AP-BIN-ITER24-01. `carryRuntimeModule` defaults TRUE because the two sentinels alone are not a
+// shippable payload: an asset with no `.js` member at all cannot load, and the completeness sweep
+// is silent over it (it finds no unresolved specifier because it resolves nothing). The false
+// variant is that asset, and it is the ONLY difference across the pair — same bare root, same two
+// sentinels, same version — so a gate rejecting on anything else reds the true variant too.
+function makeBarePayloadTarball(version, archiveName = 'pickle-release.tar.gz', {
+  carryRuntimeModule = true,
+} = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-bare-'));
   const payload = path.join(dir, 'payload');
   writePackage(payload, version);
   writeFileSync(path.join(payload, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  const members = ['extension/package.json', 'install.sh'];
+  if (carryRuntimeModule) {
+    mkdirSync(path.join(payload, 'extension', 'services'), { recursive: true });
+    writeFileSync(
+      path.join(payload, 'extension', 'services', 'state-manager.js'),
+      'export const readState = () => null;\n',
+    );
+    members.push('extension/services/state-manager.js');
+  }
   const tarball = path.join(dir, archiveName);
-  run('tar', ['-czf', tarball, '-C', payload, 'extension/package.json', 'install.sh']);
+  run('tar', ['-czf', tarball, '-C', payload, ...members]);
   const listing = run('tar', ['-tzf', tarball]).stdout;
   assert.match(listing, /^extension\/package\.json$/m, `fixture archive is not bare-rooted:\n${listing}`);
   assert.match(listing, /^install\.sh$/m, `fixture archive is not bare-rooted:\n${listing}`);
+  assert.equal(
+    /^extension\/services\/state-manager\.js$/m.test(listing),
+    carryRuntimeModule,
+    `fixture carried the wrong module set:\n${listing}`,
+  );
   return { dir, tarball };
 }
 
@@ -277,10 +307,13 @@ ${fakeFindNames.map((name) => `printf '%s\\n' "$dir/${name}"`).join('\n')}
   return binDir;
 }
 
-// The `-xzf` arm materializes the listing as EMPTY files. That is deliberate, not a shortcut: a
-// payload with no `.js` bytes has no import to resolve, so every fixture built here keeps exactly
-// the verdict it had before `post_tag` learned to sweep the extracted payload. Completeness is
-// exercised against a REAL tar in the AP-BIN-ITER23-01 pair below, never through this shim.
+// The `-xzf` arm materializes the listing as EMPTY files. That is deliberate, not a shortcut: an
+// empty `.js` has no import to resolve, so a fixture built here is CLEAN to the completeness sweep
+// as long as its listing carries at least one `.js` member — and since AP-BIN-ITER24-01 the sweep
+// distinguishes clean from unmeasured, so a listing with no module at all now dies 21 instead of
+// greening. Green fixtures here must therefore name a runtime module; the omission fails loudly
+// with `carries no runtime modules to verify`. Completeness itself is exercised against a REAL tar
+// in the AP-BIN-ITER23-01 pair below, never through this shim.
 function makeFakeTarFixture(listing, extractedMembers = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-fake-tar-'));
   const tarball = path.join(dir, 'pickle-release.tar.gz');
@@ -548,6 +581,30 @@ describe('release-gate.post-tag', () => {
     }
   });
 
+  // AP-BIN-ITER24-01. AP-BIN-ITER23-01 replaced the two-sentinel completeness check with a sweep
+  // derived from the payload's own imports — but a sweep over ZERO modules reports no unresolved
+  // specifier, so the most extreme incomplete asset (both sentinels, no runtime at all) still
+  // printed `ok:`. Measured on the shipped gate before the fix: exit 0. `payload_unresolved_import`
+  // now separates "measured, clean" (1) from "nothing measured" (2) and post_tag dies on the
+  // latter, so the sweep can never green what it never read.
+  test('exits 21 when the release asset carries both sentinels but no runtime module at all', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeBarePayloadTarball('1.67.0', 'pickle-release.tar.gz', {
+      carryRuntimeModule: false,
+    });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /carries no runtime modules to verify/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
   test('exits 21 when a bare-payload-root release asset carries a drifted package version', () => {
     const { dir: repoDir, tagName } = makeGitFixture();
     const tarFixture = makeBarePayloadTarball('1.64.0');
@@ -576,6 +633,7 @@ describe('release-gate.post-tag', () => {
       [
         './extension/package.json',
         './install.sh',
+        './extension/services/state-manager.js',
       ],
       {
         './extension/package.json': JSON.stringify({ version: '1.67.0' }, null, 2),
@@ -606,6 +664,7 @@ describe('release-gate.post-tag', () => {
       [
         'extension/package.json',
         'install.sh',
+        'extension/services/state-manager.js',
       ],
       {
         'extension/package.json': JSON.stringify({ version: '1.67.0' }, null, 2),
@@ -660,6 +719,7 @@ describe('release-gate.post-tag', () => {
       [
         './pickle-rick-claude/extension/package.json',
         './pickle-rick-claude/install.sh',
+        './pickle-rick-claude/extension/services/state-manager.js',
       ],
       {
         './pickle-rick-claude/extension/package.json': JSON.stringify({ version: '1.67.0' }, null, 2),

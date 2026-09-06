@@ -222,6 +222,13 @@ payload_relative_specifiers() {
 # CALLER — a bare early exit mid-pipe SIGPIPEs the still-writing producer, the same trap the
 # archive scans above document. Resolution is the filesystem's (`..` segments included), which is
 # why this runs on an EXTRACTED payload rather than against the member listing.
+#
+# Status 1 (measured, clean) and status 2 (nothing measured) are DIFFERENT answers: a sweep over an
+# empty module set reports no unresolved specifier for the same reason a complete payload does, so
+# collapsing them lets an asset carrying no runtime at all read as agreement — the very false-green
+# this sweep exists to close, in its most extreme form. Same no-measurement-is-not-a-verdict rule
+# `verify-recapture-fired.js` already applies to its activity scan, and the same 1-vs-2 idiom
+# `find_installable_payload_root` above uses to separate absent from ambiguous.
 payload_unresolved_import() {
   local payload_dir="$1"
   local -a files=()
@@ -232,7 +239,7 @@ payload_unresolved_import() {
     files+=("$file")
   done < <(find "$payload_dir" -type f -name '*.js' -print)
 
-  [ ${#files[@]} -gt 0 ] || return 1
+  [ ${#files[@]} -gt 0 ] || return 2
 
   for file in "${files[@]}"; do
     specs="$(payload_relative_specifiers "$file")"
@@ -335,6 +342,9 @@ post_tag() {
   tar -xzf "$tarball" -C "$payload_dir" || die 21 "could not extract downloaded tarball $tarball"
   if unresolved_import="$(payload_unresolved_import "$payload_dir")"; then
     die 21 "downloaded tarball ships a runtime that cannot load: $unresolved_import"
+  else
+    status=$?
+    [ "$status" -eq 1 ] || die 21 "downloaded tarball carries no runtime modules to verify"
   fi
   echo "ok: release $tag tarball has $PKG_DISPLAY_PATH version $expected"
 }
