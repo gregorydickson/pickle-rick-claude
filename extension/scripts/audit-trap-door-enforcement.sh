@@ -429,6 +429,19 @@ const CLAUSE_RE = new RegExp(
 );
 const BACKTICKED_RE = /`([^`\n]+)`/g;
 const BARE_IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+// A git abbreviated object name is not a symbol claim. The catalogs cite commits in
+// backticks throughout, and an all-hex span satisfies BARE_IDENTIFIER_RE, so without
+// this the corpus is asked whether a COMMIT is live code. Both tiers were reachable:
+// a sha spelled nowhere in the tree FAILS the gate as `names a symbol absent from the
+// tree` (mutation-verified, exit 1), and one that happens to appear in a code COMMENT
+// -- `aceb54d7`, cited by metrics-utils.ts -- lands in the prose-only advisory. The
+// CLAUSE_TERMINATORS list already carries TICKET_TRACEABILITY for exactly this reason,
+// but that excludes one LABEL, not the shape: a commit cited inside the INVARIANT body
+// is the same token in a place no label can name. Shape is the rule that needs no list.
+// The floor of 7 is git's own abbreviation minimum; measured over this tree, zero
+// declarations in any tracked file carry a 7-40 char all-lowercase-hex name, so this
+// excludes no live symbol.
+const GIT_OBJECT_NAME_RE = /^[0-9a-f]{7,40}$/;
 const WORD_RE = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 
 // Entry grammar is the ENFORCE arm's: the line, plus every following line until one
@@ -608,7 +621,7 @@ for (const claudePath of discoverCatalogs()) {
     for (const span of text.matchAll(BACKTICKED_RE)) {
       const candidate = span[1].trim();
 
-      if (!BARE_IDENTIFIER_RE.test(candidate)) {
+      if (!BARE_IDENTIFIER_RE.test(candidate) || GIT_OBJECT_NAME_RE.test(candidate)) {
         nonIdentifierSpans++;
         continue;
       }

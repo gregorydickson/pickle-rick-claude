@@ -470,3 +470,72 @@ test('AP-BIN-ITER3-01: commentary after an anchor is not read as truncated ancho
 
   assert.equal(result.status, 0, `commentary must not trip the arm; stderr: ${result.stderr}`);
 });
+
+// A backticked git object name is a COMMIT citation, not a claim that a symbol is live.
+// The catalogs cite commits in backticks throughout and an all-hex span satisfies
+// BARE_IDENTIFIER_RE, so before the shape exclusion the corpus was asked whether a
+// COMMIT was live code. Both tiers were reachable and one was live: `aceb54d7` (cited by
+// metrics-utils.ts, so it resolves in COMMENT text) sat permanently in the prose-only
+// advisory, and a sha spelled nowhere in the tree failed the gate outright -- a
+// release-gate red over a commit reference. CLAUSE_TERMINATORS already carries
+// TICKET_TRACEABILITY for this reason, but that excludes one LABEL, not the shape.
+//
+// Every probe token is ASSEMBLED at runtime and never spelled whole in this file. The
+// corpus is the tree, this file is in the tree, and a literal probe would resolve itself
+// -- the first draft of these cases did exactly that and passed for the wrong reason.
+const SHA_PROBE = ['dead', 'beef', '99'].join('');
+const ABSENT_SYMBOL_PROBE = ['zzNoSuch', 'Anchor', 'Probe'].join('');
+const SUB_FLOOR_HEX_PROBE = ['fac', 'ade'].join('');
+const RESOLVING_ANCHOR = TRUNCATION_PROBE_ANCHOR.replace(/ /g, '-');
+
+function auditWithInvariantToken(token) {
+  return runAuditWithAppendedEntry(
+    `- probe-object-name — INVARIANT: introduced in \`${token}\`, the probe holds. `
+      + 'BREAKS: probe. '
+      + `ENFORCE: extension/tests/release-gate.test.js#${RESOLVING_ANCHOR}. `
+      + 'PATTERN_SHAPE: probe.',
+  );
+}
+
+function assertTokenAbsentFromTree(token) {
+  const found = spawnSync('git', ['grep', '-cw', token], {
+    cwd: path.resolve(EXTENSION_ROOT, '..'),
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  assert.notEqual(found.status, 0, `probe token must not appear in the tree: ${found.stdout}`);
+}
+
+test('a backticked commit sha inside an INVARIANT clause is not read as a symbol claim', () => {
+  assertTokenAbsentFromTree(SHA_PROBE);
+
+  const result = auditWithInvariantToken(SHA_PROBE);
+  assert.equal(result.status, 0, `a commit citation must not fail the audit; stderr: ${result.stderr}`);
+  assert.doesNotMatch(result.stderr, new RegExp(SHA_PROBE), `stderr: ${result.stderr}`);
+});
+
+test('a non-hex identifier in that same position still fails, so the exclusion is not a blanket pass', () => {
+  assertTokenAbsentFromTree(ABSENT_SYMBOL_PROBE);
+
+  const result = auditWithInvariantToken(ABSENT_SYMBOL_PROBE);
+  assert.notEqual(result.status, 0, `an absent symbol must still fail; stdout: ${result.stdout}`);
+  assert.match(
+    result.stderr,
+    new RegExp(`names a symbol absent from the tree: ${ABSENT_SYMBOL_PROBE}`),
+    `stderr: ${result.stderr}`,
+  );
+});
+
+test('a hex token below git\'s 7-char abbreviation floor is still judged as a symbol', () => {
+  // The floor is load-bearing: without it the exclusion would swallow short all-hex
+  // identifiers, which are ordinary symbol claims rather than object names.
+  assertTokenAbsentFromTree(SUB_FLOOR_HEX_PROBE);
+
+  const result = auditWithInvariantToken(SUB_FLOOR_HEX_PROBE);
+  assert.notEqual(result.status, 0, `a sub-floor hex token must still be judged; stdout: ${result.stdout}`);
+  assert.match(
+    result.stderr,
+    new RegExp(`names a symbol absent from the tree: ${SUB_FLOOR_HEX_PROBE}`),
+    `stderr: ${result.stderr}`,
+  );
+});
