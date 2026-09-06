@@ -147,3 +147,99 @@ dispatch order is bugs before feature epics. It is the only deliberate exclusion
 
 Its live roots are carried above. It is retired as a queued bundle rather than left as a remainder
 parking lot, because a deferred row is a forgotten row and this plan already proved that.
+
+## Global AC results — measured 2026-09-06 (ticket a375c09f)
+
+Base = `13d96e1e` (bundle start commit). Head = `2ea102db`. Every number below is a measurement;
+the command that produced it is named beside it.
+
+### AC-G1 — behaviour parity: **MET**
+
+Generator: `extension/scripts/audit-exit-reason-parity.mjs`. Neither table is written down — both
+are derived by EXECUTING each ref's own committed, compiled `bin/pipeline-runner.js` and
+`bin/mux-runner.js` (`git archive` the tree, import it, ask it). Six wires per cell:
+`isFatalPhaseFailure`, `shouldHaltAfterPhase` at exit code 1 and 0,
+`classifyMicroverseHaltDecision(...).action`, `isHaltExit`, `isFailureExit`.
+
+The domain is the **UNION** of both refs' reason sets (39 reasons, incl. an `<absent>`
+`exit_reason` row) × 4 phases = **156 cells** per ref. The union is load-bearing: a reason deleted
+at head must still be probed at head, or this bundle's own deletion would be invisible to the very
+check meant to catch it.
+
+**4 of 156 cells differ, all four the same reason, and it is named:**
+
+| exit_reason | phases | base | head |
+|---|---|---|---|
+| `manager_handoff_pending` | all 4 | `haltExit=true` | `haltExit=false` |
+
+Evidence: TIER-1.2 gh-11 (`d304bd36`) — mux-runner no longer stamps `manager_handoff_pending` as
+an exit_reason; it is a non-halting residual. Removed from `EXIT_REASONS` (`types/index.ts`), from
+`isHaltExit` (`mux-runner.ts`, `:5347` at base) and from `PIPELINE_HANDOFF_EXIT_REASONS`
+(`pipeline-runner.ts:4413`). `claimPipelineRunnerActive` still CLEARS the legacy value so a session
+resumed across the upgrade is not stranded. This is the intended fix: a handoff residual must not
+halt the pipeline. **Every other cell is byte-identical across the two refs.**
+
+The audit is mutation-verified in both directions, so its green is not vacuous: emptying the
+named-difference ledger reds it with 4 UNNAMED findings; declaring a difference that does not occur
+reds it with 1 STALE finding. A named entry that stops occurring fails the same as an unnamed
+difference — the ledger cannot rot green.
+
+`cd extension && node scripts/audit-exit-reason-parity.mjs --base 13d96e1e --head HEAD` → exit 0.
+
+### AC-G2 — no new abort condition: **MET**
+
+`MICROVERSE_FATAL_REASONS` is unchanged between the refs and still has exactly ONE member,
+`session_state_corrupted` (`extension/src/types/index.ts:1522-1524`).
+
+Pinned in two fast-tier suites — `tests/nostop-gates-invariant.test.js:434` and
+`tests/oneabort-termination-invariant.test.js:207` (plus AC-M7 at `:398-403`). No third copy was
+added; the pins already exist and duplicating them would add a case rather than collapse one.
+
+**Mutation-verified.** Adding a second member to the array and recompiling (the suites import the
+compiled `../types/index.js`, so recompiling is what makes the probe real):
+- `./node_modules/.bin/tsc` still exits **0** — the type system alone does NOT catch a widened
+  crash floor. The pin is the only thing that does.
+- the suites go **113 pass / 0 fail → 109 pass / 4 fail**, and the one-member pin fires by name in
+  BOTH suites, plus two collateral assertions (`the effective set is 10 reasons`, `the null score
+  maps to baseline_unmeasurable_unrecoverable, never the crash floor`).
+- restored from a file backup and recompiled → **113/113 green**, `git diff` on
+  `src/types/index.ts` and `types/index.js` empty.
+
+### AC-G3 — net LOC: **NOT MET**
+
+| file | 13d96e1e | 2ea102db | delta |
+|---|---|---|---|
+| `extension/src/bin/mux-runner.ts` | 14,849 | 14,878 | +29 |
+| `extension/src/bin/pipeline-runner.ts` | 5,614 | 5,619 | +5 |
+| `extension/src/bin/microverse-runner.ts` | 5,864 | 6,004 | +140 |
+| **total** | **26,327** | **26,501** | **+174** |
+
+The 26,327 baseline was RE-DERIVED at `13d96e1e`, not copied from the plan, and matched exactly —
+so the delta is admissible.
+
+**The number is +174. It is POSITIVE. By this PRD's own standard, AC-G3 FAILED.** Recording it
+rather than reframing it: a degraded run reports its degradation and withholds the success verdict.
+
+Attribution (`git show --numstat` per commit over the three files; sums to +174 exactly):
+
+| commit | net | what |
+|---|---|---|
+| `ba977db6` | **+104** | TIER-1.3 B-CLIBRITTLE — decouple judge spawn from ambient CLI settings |
+| `328fb2e2` | **+36** | TIER-2.5 gh-8 — anatomy-park INV-NO-SELF-DISOWN convergence evidence |
+| `d304bd36` | **+33** | TIER-1.2 gh-11 — delete the `manager_handoff_pending` halt |
+| `da7779cd` | +1 | TIER-3.9 — delete `MICROVERSE_FAILURE_REASONS` + `isMicroverseFailureExit` |
+| `9dcde2f2` | 0 | TIER-3.10 — auto-commit message states the observed condition |
+| `b5d885c4` | 0 | TIER-1.4 — derive judge score from `violations.length` |
+
+The honest reading: the two deletion tickets (`da7779cd`, `d304bd36`) did remove enumerated sets,
+but each replaced them with prose and guard code that cost more lines than the members it removed —
+`d304bd36` is net **+33** despite "delete" in its subject. The +174 is dominated by `ba977db6`
+(+104), which added capability rather than removing a distinction. **The bundle closed roots but did
+not subtract**; the growth-against-findings pattern this PRD names is NOT broken by this bundle.
+
+### AC-G4 — live 4/4 unattended run: **OPERATOR-OWNED, not observed from here**
+
+Acceptance is a live pipeline completing 4/4 with zero human interventions, plus a full release
+gate with the soak genuinely run and a `ci-repro.sh` run naming the sha. That is observed by the
+operator from the run this ticket executes inside; a worker cannot see its own run's intervention
+count. **Status reported, not simulated.** No claim is made here in either direction.
