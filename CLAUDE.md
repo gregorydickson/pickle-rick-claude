@@ -198,6 +198,19 @@ auto-skip. Name the failure and cite the observable that proves it: **hang** (CP
 loop** (iteration advances, artifacts do not) · **manual recovery** (the command that unblocked it).
 Applies to new writing; fix old occurrences only when already touching the file.
 
+## 🚫 NO PULL REQUESTS (operator-set 2026-09-06, BINDING)
+
+**This repo does not use PRs.** The v2.1 line ships by TAG from `release/v2.1-beta` —
+`gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`. Work lands as commits pushed straight to
+the release branch. **Never run `gh pr create`**, and never invoke `services/pr-factory.ts` (no
+production caller; queued for deletion).
+
+**Why this is a hard rule and not a preference:** `gh pr create` with no `--base` targets the repository
+DEFAULT branch. `main` is the stale 2.0 line — 1530 commits behind `release/v2.1-beta` and 57 ahead on
+its own — so such a PR is unmergeable and merging it would be destructive. This is the same defect class
+as [[B-RELTAG]] (`gh release create` with no `--target` tagged `main` for four months). **Any `git`/`gh`
+command that can default to the repository default branch MUST name its target explicitly.**
+
 ## Source of Truth
 
 Canonical → deployed (`bash install.sh` rsyncs, overwrites): `extension/src/*.ts` → `~/.claude/pickle-rick/extension/**/*.js` | `.claude/commands/*.md` → `~/.claude/commands/*.md` | `pickle_settings.json` + `persona.md` → `~/.claude/pickle-rick/`. **NEVER edit deployed files — edit source, run `bash install.sh`.**

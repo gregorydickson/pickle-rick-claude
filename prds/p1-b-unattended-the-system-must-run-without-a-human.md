@@ -79,6 +79,21 @@ no timeout to exceed, no ambient config to be rejected.
    DISCOVERS — deleting the discovery spawn must redden a test, or we have built a no-op that trivially
    converges at zero. Folds in **R-JPCM** and **#7**, which both dissolve under one ledger.
 
+**4b. DELETE `services/pr-factory.ts` — it produced a destructive artifact and has no caller.**
+Measured 2026-09-06: it is the **only** `gh pr create` in the tree, it passes **no `--base`**, and it
+opened PR #12 from `release/v2.1-beta` into `main` (+160,042 / −17,687 across 643 files) — the stale 2.0
+line, 1530 commits behind. Merging would have been destructive; the PR is closed. It has **no production
+caller** (only its own test and the `services/CLAUDE.md` export-catalog row), it is referenced by zero
+commands, skills or prompts, and a worker triggered its CLI guard while sweeping dead code — so it can
+fire again on any run. **Delete the module, its test, and its catalog row.** Do NOT "fix" it by adding
+`--base`: this repo does not use PRs (root `CLAUDE.md` → NO PULL REQUESTS), so the correct fix is
+removal, not a correct argument.
+
+**Sweep the class in the same ticket, and state the count:** every `git`/`gh` invocation that can
+default to the repository default branch must name its target explicitly. Measured now: `release create`
+sites already carry `--target` (B-RELTAG), and `pr-factory.ts:38` was the sole remaining offender — but
+re-derive that rather than trusting this line.
+
 ## TIER 2 — MAKES THE LOOP CONVERGE ON A FALSE ANSWER
 
 5. **GitHub #8 — anatomy-park declares convergence on an iteration with no INV-NO-SELF-DISOWN evidence.**
