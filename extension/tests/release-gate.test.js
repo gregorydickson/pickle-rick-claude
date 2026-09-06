@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -119,7 +120,30 @@ function makeBarePayloadTarball(version, archiveName = 'pickle-release.tar.gz', 
 // broke for four months (`extension/services/state-manager.js` -> `../lib/is-record.js`). BOTH
 // variants carry both sentinel members `post_tag` reads, so the only difference across the pair is
 // whether the imported file rides along.
-function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule } = {}) {
+// AP-BIN-ITER25-01. `tar` must READ a file to archive it, so no tar invocation can publish a
+// member stored mode 000, and bsdtar has no `--mode` at all — the only portable way to build the
+// asset this arm exists to reject is to rewrite that one member's ustar mode field in an archive
+// REAL tar produced. Everything else about the asset stays tar's own output: members, order,
+// contents, both sentinels. The ustar checksum is recomputed with the checksum field read as
+// spaces, exactly as the format specifies, or every tar refuses the archive outright.
+function storeMemberMode(tarballPath, memberName, mode) {
+  const raw = zlib.gunzipSync(readFileSync(tarballPath));
+  let patched = 0;
+  for (let offset = 0; offset + 512 <= raw.length; offset += 512) {
+    const name = raw.toString('utf8', offset, offset + 100).replace(/\0[\s\S]*$/, '');
+    if (name !== memberName) continue;
+    raw.write(`${mode.toString(8).padStart(7, '0')}\0`, offset + 100, 8, 'ascii');
+    raw.fill(0x20, offset + 148, offset + 156);
+    let sum = 0;
+    for (let i = offset; i < offset + 512; i += 1) sum += raw[i];
+    raw.write(`${sum.toString(8).padStart(6, '0')}\0 `, offset + 148, 8, 'ascii');
+    patched += 1;
+  }
+  assert.equal(patched, 1, `expected exactly one ustar header named ${memberName}, patched ${patched}`);
+  writeFileSync(tarballPath, zlib.gzipSync(raw));
+}
+
+function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule, moduleMode } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-runtime-'));
   const payload = path.join(dir, 'payload');
   writePackage(payload, version);
@@ -140,6 +164,7 @@ function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule } =
   }
   const tarball = path.join(dir, 'pickle-release.tar.gz');
   run('tar', ['-czf', tarball, '-C', payload, ...members]);
+  if (moduleMode !== undefined) storeMemberMode(tarball, 'extension/services/state-manager.js', moduleMode);
   const listing = run('tar', ['-tzf', tarball]).stdout;
   assert.match(listing, /^extension\/package\.json$/m, `fixture lost the package sentinel:\n${listing}`);
   assert.match(listing, /^install\.sh$/m, `fixture lost the installer sentinel:\n${listing}`);
@@ -147,6 +172,13 @@ function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule } =
     /^extension\/lib\/is-record\.js$/m.test(listing),
     Boolean(carryImportedModule),
     `fixture carried the wrong module set:\n${listing}`,
+  );
+  const verbose = run('tar', ['-tvzf', tarball]).stdout;
+  const importerRow = verbose.split('\n').find((row) => row.endsWith('extension/services/state-manager.js'));
+  assert.equal(
+    /^-{10}\s/.test(importerRow ?? ''),
+    moduleMode === 0o000,
+    `fixture stored the wrong mode for the importer:\n${verbose}`,
   );
   return { dir, tarball };
 }
@@ -294,10 +326,24 @@ exit 1
 `,
     { mode: 0o755 },
   );
+  // The gate calls `find` TWICE with different jobs: once to discover the downloaded `*.tar.gz`
+  // assets (this stub exists to pin their order) and once to sweep the EXTRACTED payload for
+  // `*.js` modules. A stub answering both hands the completeness sweep two paths that do not
+  // exist, so it measures nothing — which `payload_relative_specifiers`' trailing `|| true` then
+  // reported as clean (AP-BIN-ITER25-01). Delegate every other call to the real `find`.
   if (fakeFindNames) {
     writeFileSync(
       path.join(binDir, 'find'),
       `#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = '*.js' ]; then
+    for real in /usr/bin/find /bin/find; do
+      if [ -x "$real" ]; then exec "$real" "$@"; fi
+    done
+    echo "find stub: no real find on this host" >&2
+    exit 127
+  fi
+done
 dir="$1"
 ${fakeFindNames.map((name) => `printf '%s\\n' "$dir/${name}"`).join('\n')}
 `,
@@ -559,6 +605,33 @@ describe('release-gate.post-tag', () => {
       const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
       assert.equal(result.status, 0, result.stdout || result.stderr);
       assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER25-01. The sweep AP-BIN-ITER23-01 built resolves specifiers `grep` reports, and
+  // `payload_relative_specifiers` ended `|| true` — which swallows grep's exit 2 (READ error)
+  // alongside its exit 1 (measured, no match). A member the extractor writes mode 000 therefore
+  // scored as a module holding no imports and the gate printed `ok:` over a runtime it never read:
+  // the same nothing-measured-is-not-a-verdict false-green AP-BIN-ITER24-01 closed for the empty
+  // module set, one level down. Measured on the shipped functions before the fix: the identical
+  // module yields status 1 (clean) at mode 000 and status 0 (RED) at 0644.
+  //
+  // Disjoint by construction from the GREEN control above: same fixture, same members, same
+  // contents, same imports, same two sentinels — the ONLY difference is the stored mode of
+  // `extension/services/state-manager.js`, so a gate rejecting on anything else reds the control.
+  test('exits 21 when the release asset ships a module the gate cannot read', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({ carryImportedModule: true, moduleMode: 0o000 });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /ships extension\/services\/state-manager\.js but the gate could not read it/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(tarFixture.dir, { recursive: true, force: true });

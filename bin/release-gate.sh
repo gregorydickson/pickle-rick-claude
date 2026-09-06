@@ -212,10 +212,18 @@ listing_has_link_entries() {
 # member allow-list here would rot exactly the way the workflow's did, so derive the requirement
 # from the payload's OWN bytes: every relative static specifier in every shipped `.js` must name a
 # file the same payload carries. A runtime directory added later needs no edit here.
+# grep exits 1 for a MEASURED "this module imports nothing relative" and >= 2 for a READ error.
+# The trailing `|| true` this replaces swallowed both, so a module the gate could not OPEN scored
+# as one holding no imports and the sweep printed the clean verdict over it (measured: a mode-000
+# `.js` importing a member the payload lacks yielded status 1, the same status a complete module
+# yields). Same no-measurement-is-not-a-verdict rule the caller applies one level up.
 payload_relative_specifiers() {
   local file="$1"
-  grep -Eo "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"]\.\.?/[^'\"\${]*\.(js|json)['\"]" "$file" |
-    sed -E "s/^.*['\"](.*)['\"]$/\1/" || true
+  local matches
+  local status=0
+  matches="$(grep -Eo "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"]\.\.?/[^'\"\${]*\.(js|json)['\"]" "$file")" || status=$?
+  [ "$status" -le 1 ] || return 2
+  printf '%s\n' "$matches" | sed -E "s/^.*['\"](.*)['\"]$/\1/"
 }
 
 # Materialize the file list and each specifier list before consuming them, and decide in the
@@ -239,10 +247,16 @@ payload_unresolved_import() {
     files+=("$file")
   done < <(find "$payload_dir" -type f -name '*.js' -print)
 
-  [ ${#files[@]} -gt 0 ] || return 2
+  if [ ${#files[@]} -eq 0 ]; then
+    printf 'carries no runtime modules to verify\n'
+    return 2
+  fi
 
   for file in "${files[@]}"; do
-    specs="$(payload_relative_specifiers "$file")"
+    specs="$(payload_relative_specifiers "$file")" || {
+      printf 'ships %s but the gate could not read it\n' "${file#"$payload_dir"/}"
+      return 2
+    }
     while IFS= read -r spec; do
       [ -n "$spec" ] || continue
       if [ ! -f "$(dirname "$file")/$spec" ]; then
@@ -344,7 +358,7 @@ post_tag() {
     die 21 "downloaded tarball ships a runtime that cannot load: $unresolved_import"
   else
     status=$?
-    [ "$status" -eq 1 ] || die 21 "downloaded tarball carries no runtime modules to verify"
+    [ "$status" -eq 1 ] || die 21 "downloaded tarball $unresolved_import"
   fi
   echo "ok: release $tag tarball has $PKG_DISPLAY_PATH version $expected"
 }
