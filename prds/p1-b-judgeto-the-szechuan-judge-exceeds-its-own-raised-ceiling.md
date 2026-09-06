@@ -1,80 +1,89 @@
-# B-JUDGETO — the szechuan judge times out at the ceiling that was raised to stop it timing out
+# B-CLIBRITTLE — an external CLI upgrade silently disabled a phase, and nothing in the system could see it
 
 ---
-title: "B-JUDGETO — a 600s judge baseline that cannot measure, degrading every run and blocking every release"
+title: "B-CLIBRITTLE — every phase spawns the ambient `claude` CLI, inherits its config validation, and records nothing about it"
 status: draft
 priority: P1
 type: bug-bundle
-composes: [szechuan-baseline-judge-timeout, R-SJWT-regression-or-insufficiency]
+composes: [szechuan-baseline-unmeasurable, cli-version-observability, spawn-startup-failfast, ambient-config-coupling]
 ---
 
-## Trigger — three bundles completed, zero released
+> **RESCOPED 2026-09-05.** This PRD was filed as "the judge times out at its own raised ceiling" on the
+> theory that `R-SJWT`'s 600s budget had been consumed by repo growth. **That premise is FALSIFIED** —
+> see below. The real defect is not cost, and not the judge.
 
-`szechuan-sauce` has degraded on **every** bundle this session, and a degraded run stamps
-`run cannot report success`, which under root `CLAUDE.md` withholds the release verdict. The result is
-a system that builds and reviews correctly and then never ships.
+## Trigger — szechuan worked for months, then stopped, and we changed nothing
 
-**Two DIFFERENT causes wore the same disposition** — recorded because the collapse is the reason this
-looked like one recurring defect for two ticks:
+| when | what |
+|---|---|
+| 2026-09-01 08:56 CDT | szechuan **completed successfully** — CLI `2.1.252` |
+| **2026-09-04 12:57 CDT** | **`claude` CLI auto-updated `2.1.252` → `2.1.260`** (`~/.claude/.last-update-result.json`) |
+| 2026-09-05 00:17 CDT | szechuan **FAILED** — `judge timed out after 600s`, 4 attempts |
+| 2026-09-05 09:27 CDT | szechuan **FAILED** — `Permission allow rule … Write(.claude/commands/**) is not matched by file permission checks` |
 
-| bundle | disposition | actual cause |
-|---|---|---|
-| B-ARGMAX (`2026-09-04-b71e8f4f`) | `baseline_unmeasurable_unrecoverable` | **`judge timed out after 600s`**, 4 attempts, 1 iteration / 44m 2s |
-| B-FRESHWIN (`2026-09-05-afe6cf89`) | `baseline_unmeasurable_unrecoverable` | a malformed `Write(.claude/commands/**)` permission rule — **fixed** `e4edb6f9` |
+Every szechuan run before that timestamp succeeded; every one after it failed. **Nothing in this repo
+changed across the boundary.**
 
-This bundle owns the FIRST row only. The second is closed.
+**The cost theory is dead, measured not argued.** The judge's scored surface went `600 → 607 → 611 →
+612` allowed_paths across the whole period, same `base_sha 578cbf96`. A 2% scope change cannot take a
+working judge to a 600s timeout. `extension/src` grew 4.8% in bytes over the same window — also
+insufficient. **Do not scope a cost-reduction bundle.**
 
-## Root cause — the remedy that shipped for this exact class has been consumed
+**The permission rule proves the mechanism.** `Write(.claude/commands/**)` entered
+`.claude/settings.local.json` on **2026-04-17** and was benign for five months, present in both the
+last-good and first-bad trees. `2.1.260` began rejecting it, and that rejection killed the judge
+subprocess. The failure is CLI-side config validation reaching into a phase.
 
-`R-SJWT` (#95, archived) diagnosed this in June: the scoped szechuan judge scored the **whole** target
-tree rather than `scope.json:allowed_paths`, producing both timeout and score inflation. `B-SJWT`
-shipped v1.98.0 (2026-06-04) with three parts — **R-SJWT-1** scope the judge prompt to `allowed_paths`,
-**R-SJWT-2** raise `DEFAULT_METRIC.timeout_seconds` 300 → 600, R-SJWT-3 regression pin + trap door.
+## Root — the design couples every phase to an ambient, self-updating binary, and observes nothing about it
 
-**Measured at HEAD:** `init-microverse.ts:10` reads `timeout_seconds: 600` — R-SJWT-2's remedy is
-present — and the failing run's `microverse.json` confirms it used exactly `600`. The judge exceeded it
-anyway. **Raising the ceiling bought roughly three months.**
-
-## The question this bundle must answer FIRST, by measurement
-
-**Is R-SJWT-1 still effective — is the judge prompt actually scoped to `allowed_paths`, or is it
-scoring the whole tree again?** If the prompt is unscoped, the timeout is a SYMPTOM and the ceiling is
-irrelevant: cost scales with repo size, and the repo has grown by three bundles since June. If the
-prompt IS scoped and 600s still fails, the cost model is different and must be named before anything is
-changed.
-
-Do not begin by adjusting a number. `R-SJWT` already tried that and this PRD is the receipt.
+1. **No version observability.** `codex_version_seen` exists in `State` (`types/index.ts:120`), but
+   **`claude_version` / `cli_version` appears NOWHERE in `src/`.** We instrument the backend we rarely
+   use and not the one every spawn depends on. Four sessions of state carry no evidence of the change
+   that broke them — which is why diagnosing this took a four-session bisect instead of one log line.
+2. **No fast-fail.** A startup rejection burned the full budget **four times** (~40 min) before
+   reporting. A config the CLI refuses is knowable in milliseconds.
+3. **Undifferentiated disposition.** A config rejection and a genuinely slow judge both land on
+   `baseline_unmeasurable_unrecoverable` — the `failed`-vs-`empty` collapse, which is exactly why two
+   unrelated failures read as one recurring defect for two ticks.
+4. **Ambient config coupling.** The judge inherits `.claude/settings.local.json`; a rule the CLI later
+   dislikes takes down a phase. Phase-critical spawns should not inherit operator-editable ambient
+   config they do not need.
+5. **Blast radius is not the judge.** Three invocation builders return `cmd: 'claude'`, and workers,
+   managers, remediators and judges all spawn it. The judge is where this surfaced first, not where it
+   is confined. **Any CLI change can break any of them, and today each would be diagnosed separately.**
 
 ## Acceptance criteria (machine-checkable)
 
-- **AC-1** State, with the probe, whether the judge prompt at HEAD is scoped to `allowed_paths`. If it
-  is not, that is the defect; if it is, name what the 600s is actually being spent on (prompt bytes,
-  file count, or model latency) with a measurement, not an estimate.
-- **AC-2** A szechuan baseline measures successfully on this repo at its current size, demonstrated by
-  a real phase run reaching at least iteration 1 with a scored baseline — not by a unit test.
-- **AC-3** The fix does NOT consist of raising `timeout_seconds` again. A ceiling raise is the
-  one-more-member shape root `CLAUDE.md` forbids; if the honest fix genuinely requires a larger budget,
-  it must ship together with the cost reduction that makes the budget stable, and the PRD must say why
-  the new number will not be consumed the way 600 was.
-- **AC-4** An unmeasurable baseline is distinguishable in the logs from a baseline that measured and
-  scored badly. Today both land on `baseline_unmeasurable_unrecoverable`; a timeout and a malformed
-  permission rule reached the identical string, which is what made two unrelated failures look like one.
-- **AC-5** Negative control: a genuinely unmeasurable baseline (judge binary absent) still degrades
-  honestly and still does not halt the pipeline — B-NOSTOP-GATES is preserved, no new abort condition.
-- **AC-6** Closer: full release gate green with the soak leg genuinely RUN (set `PICKLE_INSTALL_ROOT`
-  to a non-`$HOME` path — it self-skips otherwise and a 16-second pass is not a 1800s soak), plus a
-  `ci-repro.sh --runner-release 24.04` run naming the sha.
+- **AC-1** The resolved `claude` CLI version is recorded in session state at setup and is present in the
+  activity log at every backend spawn resolution. A future external break is visible in the FIRST log,
+  not after a bisect. Negative control: an unresolvable version records `null` and does not halt.
+- **AC-2** A backend spawn that fails at STARTUP (non-zero, or a recognisable config/permission
+  rejection, before any usable output) is detected as such and does NOT consume the full timeout, and
+  does NOT consume all retry attempts. State the measured before/after wall-clock.
+- **AC-3** A startup/config failure is DISTINGUISHABLE in state and logs from a measurement that ran and
+  timed out. `baseline_unmeasurable_unrecoverable` must no longer be the single bucket for both.
+  Negative control: a genuine slow-judge timeout still reports as a timeout.
+- **AC-4** Decide, by measurement, whether phase-critical spawns need ambient `.claude/settings*.json`
+  at all. If not, stop inheriting it — that is the subtraction and it removes the coupling class rather
+  than guarding one instance. If they do, name exactly what they need and why.
+- **AC-5** Census EVERY `claude` spawn site and state the count. Each is either covered by AC-2/AC-3 or
+  recorded as inert with the reason that bounds it. "The judge was the one that broke" is not a bound.
+- **AC-6** szechuan measures a real baseline on this repo — demonstrated by a live phase run reaching
+  iteration 1 with a scored baseline, not by a unit test.
+- **AC-7** Closer: full release gate green with the soak genuinely RUN (`PICKLE_INSTALL_ROOT` off
+  `$HOME`), plus a `ci-repro.sh --runner-release 24.04` run naming the sha.
 
 ## Explicit non-goals
 
-- Do NOT raise `timeout_seconds` as the fix (see AC-3).
-- Do NOT make szechuan's degradation non-degrading to unblock releases. The verdict is honest; the
-  measurement is what is broken. Faking the verdict is the fake-green this codebase exists to prevent.
-- Do NOT re-open the B-FRESHWIN permission cause — closed at `e4edb6f9`.
+- Do NOT raise `timeout_seconds`. The cost theory is falsified; a bigger number fixes nothing here.
+- Do NOT pin or downgrade the CLI as the fix. Pinning hides the coupling instead of removing it, and the
+  next upgrade is not optional forever. (Pinning is a legitimate *diagnostic*, not a deliverable.)
+- Do NOT re-derive the timeline. It is measured above.
 
 ## Ticket classes
 
-1. Measure and state the R-SJWT-1 scoping status + the real cost driver (research/evidence).
-2. The cost fix itself (behavioural).
-3. AC-4 disposition split so an unmeasurable baseline names its own cause (behavioural).
-4. Closer: gate with a genuinely-run soak + ci-repro evidence.
+1. AC-1 version observability at setup + spawn resolution.
+2. AC-2 + AC-3 startup-failure detection and disposition split.
+3. AC-4 ambient-config coupling: measure, then subtract.
+4. AC-5 spawn-site census across all builders.
+5. Closer: gate + genuinely-run soak + ci-repro evidence.
