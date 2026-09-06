@@ -1,116 +1,99 @@
-# B-UNATTENDED — everything required to run hands-off, and nothing else
+# B-UNATTENDED — replanned against the loop principle
 
 ---
-title: "B-UNATTENDED — remove every reason a human must touch a running pipeline, and the verdict layer that keeps creating them"
+title: "B-UNATTENDED — delete what stops the loop; fix what makes it converge falsely; record the rest"
 status: draft
 priority: P1
 type: mega-bundle
-composes: [gh-9, gh-11, gh-6, gh-8, gh-10, B-CLIBRITTLE, B-SZLEDGER, R-JPCM, verdict-layer-collapse, soak-self-skip, deploy-drift]
+composes: [gh-9, gh-11, gh-8, gh-10, B-CLIBRITTLE-decoupling, B-SZLEDGER, R-JPCM, gh-7, soak-self-skip, deploy-drift]
 supersedes_scope_of: B-MEGADRAIN
 ---
 
-## The bar
+## The filter (root `CLAUDE.md` → autonomous continuous loops)
 
-**A run completes, reports honestly, and needs no human.** Measured against that bar the system has not
-been usable for months, and the evidence is specific, not atmospheric:
+**Only a defect that (a) PREVENTS THE NEXT ITERATION FROM HAPPENING, or (b) makes the loop CONVERGE ON A
+FALSE ANSWER, earns code. Everything else is recorded and left alone.** Every item below is placed by
+that filter and nothing is here because it is annoying, untidy, or merely wrong.
 
-- **Releases beta.18–21 shipped `assets=0`** — the auto-updater had nothing to download. Fixed at
-  beta.22; distribution is no longer the problem.
-- **Across three bundles on 2026-09-04/05 a human intervened at least seven times**: hand-patching
-  `SESSION_ROOT="$1"` at **every** launch (×3), committing an interrupted worker's tree, fixing a
-  permission rule that had killed szechuan, re-running the self-skipping soak, closing deploy drift,
-  starting Docker.
-- **One operator run halted at 0 of 4 phases** on an informative note and needed a manual re-attach.
-- **The verdict layer grew +31% LOC and +41% classifiers in nine weeks** (20,133 → 26,327 lines;
-  34 → 48 `classify*`). Every fix added structure; nothing shrank.
-
-**Ordering rule for this bundle: by what forces a human into the loop.** Not by priority tier, not by
-elegance. ROOT 1 items were each performed BY HAND this week.
+**Two consequences, stated up front because they are counter-intuitive:**
+- **Most of this bundle is DELETION.** Three of the four TIER-1 items are removals. A guard added per
+  finding is how the verdict layer reached 26,327 lines against 5,238 for the workers, +31% LOC and
+  +41% classifiers in nine weeks, **while build failures stayed at ZERO**.
+- **TIER 3 is real work we are deliberately NOT doing.** Including one of the operator's own filed
+  issues. Recording that honestly is the point of the filter.
 
 ---
 
-## ROOT 1 — THE PIPELINE CANNOT RUN WITHOUT A HUMAN (order FIRST)
+## TIER 1 — PREVENTS THE NEXT ITERATION (order first; all four are deletions or near-deletions)
 
-1. **GitHub #9 — command-argument substitution rewrites `$1` in emitted `launch.sh` templates.**
-   `pickle-pipeline.md:237` on disk is correct; the RENDERED prompt carried `SESSION_ROOT="--refine"`.
-   Hand-corrected at **three** launches this session. Uncorrected, every artifact lands under a session
-   root named after a flag. Five phase launchers share the shape. **Cheapest, highest-impact item here.**
-2. **GitHub #11 — `manager_handoff_pending` halts the whole pipeline on an INFORMATIVE note.**
-   Measured by replaying the shipped predicate over the live corpus: 41 conformance artifacts, 26 carry
-   the header, **10 would halt — 24% of all tickets**, across five sessions. The gate tests whether a
-   worker WROTE something, not whether an operator MUST ACT. Fix by subtraction: no third denylist arm.
-3. **The deploy-lifecycle soak self-skips** (`refuses to mutate $HOME settings.json`) and a 16-second
-   pass is not an 1800s soak. Every release currently needs a manual second run. Make it run, or make
-   its skip loud and machine-visible — never a silent green.
-4. **Deploy drift has no check.** Source and the deployed runtime diverged silently and were closed by
-   hand. The installer does not bump the version, so a version match proves nothing: compare BY CONTENT.
+1. **GitHub #9 — `$1` rewritten in emitted `launch.sh` templates.** Rendered prompt carried
+   `SESSION_ROOT="--refine"`; hand-patched at **three** launches on 2026-09-05. Uncorrected, every
+   artifact lands under a session root named after a flag and the loop has nowhere to write. Five phase
+   launchers share the shape. Cheapest item here, highest blast radius.
+2. **GitHub #11 — `manager_handoff_pending` halts the run at 0/4.** Live-corpus replay of the SHIPPED
+   predicate: 41 conformance artifacts, 26 carry the header, **10 halt — 24% of all tickets** across
+   five sessions. **Fix by DELETING the halt, not by adding a third denylist arm.** The gate tests
+   whether a worker WROTE something, not whether an operator must ACT. Also census
+   `hasSubstantiveManagerHandoff`'s second consumer (`mux-runner.ts:2121`), which short-circuits one
+   line before `batchLoopPhantomDoneKind` — the real evidence oracle. If it changes no outcome that
+   oracle would not reach, the predicate deletes entirely.
+3. **CLI coupling — stop inheriting ambient `.claude/settings*.json` in phase-critical spawns.** A
+   `claude` auto-update (2.1.252 → 2.1.260, 2026-09-04 12:57 CDT) disabled szechuan for five days: every
+   run before succeeded, every run after failed, nothing in this repo changed. A five-month-old benign
+   permission rule became fatal. **The fix is decoupling (subtraction), not detection.** Plus: a spawn
+   that fails at STARTUP must not burn 4 × 600s before reporting.
+4. **szechuan scores its own ledger — delete the measurement spawn.** `microverse-runner.ts:1999`
+   already requires `score === violations.length` for count metrics, and `basis=ledger_count` exists at
+   `:4332`. The judge spawns an LLM to compute a number the ledger defines. Deleting the scoring spawn
+   makes `baseline_unmeasurable_*` **unreachable** for count metrics — it cannot time out, cannot be
+   rejected by a config validator, cannot exhaust retries. **Verify `score === violations.length` across
+   every recorded session FIRST; if it does not hold universally, STOP and report.** The judge still
+   DISCOVERS — deleting the discovery spawn must redden a test, or we have built a no-op that trivially
+   converges at zero. Folds in **R-JPCM** and **#7**, which both dissolve under one ledger.
 
-## ROOT 2 — THE VERDICT LAYER THAT KEEPS CREATING ROOT 1
+## TIER 2 — MAKES THE LOOP CONVERGE ON A FALSE ANSWER
 
-**26,327 lines vs 5,238 for the phase workers. 48 `classify*` predicates. Four overlapping state sets
-(18 + 5 + 1 + 5). Seven boolean halt predicates, ~50 refs.** Across six recorded runs there were **zero
-build failures** — every shortfall came from this layer.
+5. **GitHub #8 — anatomy-park declares convergence on an iteration with no INV-NO-SELF-DISOWN evidence.**
+   A convergence verdict is exactly the loop's terminating answer; reaching it without evidence is
+   textbook (b). It reported `completed successfully` twice this session.
+6. **GitHub #10 — `refinement_manifest.tickets` drops requirements with `all_success: true`** (2 of 9).
+   A success verdict over an incomplete enumeration; the loop converges having never seen the work.
+7. **Deploy drift has no content check.** Source and runtime diverged silently and were closed by hand.
+   Iterations then measure one tree while another ships. The installer does not bump the version, so a
+   version match proves nothing — compare BY CONTENT.
+8. **The soak self-skips** (`refuses to mutate $HOME settings.json`); a 16-second pass is not an 1800s
+   soak. A green over an unrun leg is a false answer at release scale. Make it run, or make the skip
+   loud and machine-visible — never a silent green.
 
-A phase outcome has three shapes: **made progress · did not · could not measure**, plus the crash floor.
+## TIER 3 — RECORD, DO NOT FIX (fails the filter; listed so the decision is explicit, not silent)
 
-- **AC-2a** One disposition vocabulary; every surviving predicate derives from it. State before/after counts.
-- **AC-2b** **Behaviour parity, exhaustively proven**: build the `(exit_reason × phase) → action` table
-  from shipped code and from collapsed code and **diff them**. Differences are absent or named as
-  intentional fixes with evidence. This is what stops a simplification silently changing halt behaviour.
-- **AC-2c** No new abort condition. `MICROVERSE_FATAL_REASONS` stays at ONE member. Mutation-verify.
-- **AC-2d** Net LOC across the three runners goes **DOWN**, stated as a number. **This is the grade.**
-- **AC-2e** Instances that dissolve here, each verified rather than assumed — close
-  `zero_diff_intent: already-satisfied` if the collapse already fixed them:
-  **#6** (auto-commit hardcodes "worker timed out" on a branch that only tests a dirty tree —
-  `microverse-runner.ts:4657`), **#8** (anatomy-park converges without INV-NO-SELF-DISOWN evidence),
-  **#10** (`refinement_manifest.tickets` drops requirements with `all_success: true`).
+- **GitHub #6 — auto-commit hardcodes "worker timed out" on a branch that only tests a dirty tree**
+  (`microverse-runner.ts:4657`). Real, and it misled this session's reporting twice. But it changes no
+  disposition, stops no iteration and falsifies no convergence — **it is a reporting defect.** Under the
+  filter it earns a record, not code. *If* the TIER-1/2 work touches that line anyway, correct the
+  message in passing; do not schedule a ticket for it.
+- **Recording the CLI version in state.** Would have turned a four-session bisect into one log line —
+  but it is diagnostic convenience, not a loop defect. Decoupling (item 3) removes the failure; this
+  only labels it. Reconsider *after* item 3, if a second external break lands.
+- **"Collapse 48 classifiers" as a standalone goal.** Replaced by a filter, not a target number: delete
+  every predicate that CAN STOP THE LOOP (items 2, 3) and every classifier NOTHING CONSUMES. LOC down is
+  the grade; the filter is the method. Do not refactor a classifier that neither halts nor lies.
 
-## ROOT 3 — EXTERNAL COUPLING, UNOBSERVED
+## Global ACs
 
-A `claude` CLI auto-update (**2.1.252 → 2.1.260, 2026-09-04 12:57 CDT**) disabled szechuan for five
-days. Every run before it succeeded; every run after failed; nothing in this repo changed. Diagnosing it
-took a four-session bisect because **`claude_version` appears nowhere in `src/`** while
-`codex_version_seen` does.
+- **AC-G1 Behaviour parity where anything is deleted:** build the `(exit_reason × phase) → action` table
+  from shipped code and from post-change code and **diff them**. Differences are absent or named as
+  intentional fixes with evidence.
+- **AC-G2** No new abort condition. `MICROVERSE_FATAL_REASONS` stays at ONE member. Mutation-verify.
+- **AC-G3** Net LOC across `mux-runner` + `pipeline-runner` + `microverse-runner` goes **DOWN**, stated
+  as a number. Nine weeks of bundles added +6,194 lines while closing findings; if this bundle closes
+  every root and that number is positive, **it failed.**
+- **AC-G4 Acceptance is a live run, not a gate:** a pipeline completes **4/4 with zero human
+  interventions**. Plus the full release gate with the soak genuinely run and a `ci-repro.sh` run naming
+  the sha.
 
-- **AC-3a** Record the resolved CLI version in state at setup and at every backend spawn resolution.
-- **AC-3b** A spawn that fails at STARTUP is detected as such, does not consume the full timeout, and
-  does not burn all retries. (It burned 4 × 600s.) State measured before/after.
-- **AC-3c** A startup/config failure is distinguishable from a measurement that ran and timed out.
-- **AC-3d** Decide by measurement whether phase-critical spawns need ambient `.claude/settings*.json`
-  at all. If not, stop inheriting it — that removes the coupling class.
-- **AC-3e** Census every `claude` spawn site; each covered or recorded inert with the bound.
-- **Non-goal:** pinning the CLI. That hides the coupling; the next upgrade is not optional forever.
+## CUT to [[B-MEGADRAIN]] (remainder parking lot)
 
-## ROOT 4 — SZECHUAN: SPLIT THE GENERATOR FROM THE LOOP
-
-`microverse-runner.ts:1999` already requires that for a count-type metric **`score` MUST equal
-`violations.length`**, and `basis=ledger_count` exists at `:4332`. The judge spawns an LLM to produce a
-number the ledger defines. **Discovery is real and stays; scoring is a tautology and goes.**
-
-- **AC-4a** Verify `score === violations.length` across every recorded session **before relying on it**.
-  State the sample size. **If it does not hold universally, STOP and report.**
-- **AC-4b** Count-type score computed from the ledger, **no subprocess on the scoring path**.
-- **AC-4c** `baseline_unmeasurable_*` unreachable for count metrics; enumerate the paths and show each gone.
-- **AC-4d** The judge still DISCOVERS — deleting the discovery spawn must redden a test. Without this the
-  redesign turns szechuan into a no-op that trivially converges at zero.
-- **AC-4e** Folds in **R-JPCM** (prompt demands a bare number, parser demands JSON → ledger always empty)
-  and **#7** (the worker never works the ledger the metric scores) — both dissolve under one ledger.
-- **Non-goals:** do not delete the judge; do not retune a timeout on a path being removed; **do not touch
-  anatomy-park's loop** — it works (423 commits, converged 2/2).
-
-## Closer
-
-Full release gate green with the soak **genuinely run**, a `ci-repro.sh --runner-release 24.04` run
-naming the sha, **and a live pipeline run that completes 4/4 with zero human interventions** — that last
-one is the bundle's actual acceptance.
-
-## DELIBERATELY CUT — "exactly what we need"
-
-Not lost; deferred to [[B-MEGADRAIN]] as the remainder parking lot. Cut because none blocks unattended
-operation: `B-CGCAP` `B-CGPROBE` `B-CGHARD` `B-GIMA` `B-GSUB` `B-CIINT` `R-DPMC-3` `R-GRLS` `R-LSPC`
-`R-APGG` `R-TCVC` `R-HNCG` `R-MVFM` `R-RWNF` `R-FOMH` `R-PSCG`, and GitHub **#5** (enhancement — bugs
-before feature epics). `B-OFFREPO` also stays out: it is PARTIALLY shipped and needs a per-site
-re-measure before it can be scoped at all.
-
-**Every root above is either something a human did by hand this week, or the machinery that made them
-necessary. If an item does not meet that bar, it does not belong in this bundle.**
+`B-CGCAP` `B-CGPROBE` `B-CGHARD` `B-GIMA` `B-GSUB` `B-CIINT` `R-DPMC-3` `R-GRLS` `R-LSPC` `R-APGG`
+`R-TCVC` `R-HNCG` `R-MVFM` `R-RWNF` `R-FOMH` `R-PSCG`, GitHub **#5** (enhancement), and `B-OFFREPO`
+(partially shipped — needs a per-site re-measure before it can be scoped at all).
