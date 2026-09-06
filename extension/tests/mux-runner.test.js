@@ -6499,6 +6499,171 @@ test('AP-EXT-ITER207-01: classifyNoProgressFailureReason reads an UNREADABLE sco
   }
 });
 
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER223-01 — the recovery-budget ledger had THREE states and was read as
+// two. `countLedgerSuccesses` answered `0` both for a state.json it could not READ
+// and for a measured state carrying no ledger, and both of its consumers compare
+// that count against a hardening cap: silent-death respawn on `prior < cap`,
+// failed-flip suppression on `prior >= cap`. An unreadable state therefore read as
+// a FULLY UNSPENT budget on every pass, and `appendRecoveryLedgerEntry` swallows its
+// own write failure — so the anti-infinite-loop bound could neither count nor be
+// drawn down.
+//
+// The negative control is the readable-but-EMPTY ledger: a measured zero really is
+// an unspent budget, so "refuse whenever the ledger is not resolved" is not the fix
+// — the three states must be distinguished, not merged the other way.
+// ---------------------------------------------------------------------------
+
+const AP223_TICKET = 'tkt00223';
+const AP223_SETTINGS = {
+  silent_death_respawn_cap: 1,
+  failed_flip_suppression_cap: 2,
+  breaker_recovery_grace_seconds: 30,
+  bounded_terminal_escape_cap: 3,
+};
+// Every producer of `readRecoverableJsonObject(...) === null` a live session can
+// reach, uid-independent. Mode-000 is deliberately NOT here: it is the same null by
+// a route CI's uid can change, and these four already quantify the branch.
+const AP223_UNREADABLE_STATES = [
+  ['truncated mid-write', '{"schema_version":5,"recovery_att'],
+  ['not an object (array)', '[]'],
+  ['not an object (string)', '"state"'],
+  ['empty file', ''],
+];
+const AP223_SPENT_LEDGER = [{
+  strategy: 'silent_death_respawn',
+  outcome: 'success',
+  reason: `log_empty respawn 1/1 for ${AP223_TICKET}`,
+  iteration: 2,
+  ticket: AP223_TICKET,
+}];
+
+function ap223State(recoveryAttempts, workingDir) {
+  return JSON.stringify({
+    schema_version: 5,
+    working_dir: workingDir,
+    activity: [],
+    recovery_attempts: recoveryAttempts,
+  });
+}
+
+/** A session whose ticket has NO attributable work, so a policy reaches the budget gate. */
+function ap223Session(root, stateJson) {
+  const repoDir = seedRecoveryEvidenceRepo(root);
+  const sessionDir = path.join(root, 'session');
+  const ticketDir = path.join(sessionDir, AP223_TICKET);
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(ticketDir, `rick_ticket_${AP223_TICKET}.md`),
+    `---\nid: ${AP223_TICKET}\nstatus: In Progress\ncomplexity_tier: medium\n---\n\n# Ticket\n`,
+  );
+  const statePath = path.join(sessionDir, 'state.json');
+  fs.writeFileSync(statePath, typeof stateJson === 'function' ? stateJson(repoDir) : stateJson);
+  const preSha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 }).stdout.trim();
+  return { repoDir, sessionDir, statePath, preSha };
+}
+
+async function ap223SilentDeath(root, stateJson) {
+  const { applySilentDeathRecoveryPolicy } = await import('../bin/mux-runner.js');
+  const fix = ap223Session(root, stateJson);
+  return applySilentDeathRecoveryPolicy({
+    sessionDir: fix.sessionDir,
+    statePath: fix.statePath,
+    ticketId: AP223_TICKET,
+    workingDir: fix.repoDir,
+    iteration: 3,
+    classification: { subClass: 'log_empty', measurement: 'failed', sessionLogSize: 0, logPath: '/dev/null', pid: null },
+    preIterSha: fix.preSha,
+    // Future window: no lifecycle artifact and no window commit can be attributable
+    // work, so the decision reaches the ledger gate rather than salvaging.
+    iterationStartMs: Date.now() + 60_000,
+    settings: AP223_SETTINGS,
+    archive: () => null,
+    log: () => {},
+  });
+}
+
+test('AP-EXT-ITER223-01: an UNREADABLE recovery ledger is not a fully-unspent silent-death respawn budget', async () => {
+  // Control A — the ledger is MEASURED and already at the cap: the bound fires.
+  const spentRoot = makeTmpRoot();
+  try {
+    const spent = await ap223SilentDeath(spentRoot, (dir) => ap223State(AP223_SPENT_LEDGER, dir));
+    assert.equal(spent.action, 'halt', 'control: a measured ledger at the cap exhausts the budget');
+  } finally {
+    fs.rmSync(spentRoot, { recursive: true, force: true });
+  }
+
+  // Control B (negative) — the ledger is MEASURED and empty: a measured zero IS an
+  // unspent budget, so the fix must not refuse merely because the count is 0.
+  const emptyRoot = makeTmpRoot();
+  try {
+    const empty = await ap223SilentDeath(emptyRoot, (dir) => ap223State([], dir));
+    assert.equal(empty.action, 'respawn', 'negative control: a measured empty ledger still funds a respawn');
+    assert.equal(empty.attempt, 1);
+  } finally {
+    fs.rmSync(emptyRoot, { recursive: true, force: true });
+  }
+
+  // The defect — every unreadable state.json read as a fresh budget and respawned.
+  for (const [label, content] of AP223_UNREADABLE_STATES) {
+    const root = makeTmpRoot();
+    try {
+      const d = await ap223SilentDeath(root, content);
+      assert.equal(d.action, 'hold', `state.json ${label}: an unreadable budget must not fund a respawn`);
+      assert.equal(d.evidence, 'ledger_unmeasured', `state.json ${label}: the hold names the unmeasured ledger`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('AP-EXT-ITER223-01: an UNREADABLE recovery ledger is not a fully-unspent failed-flip suppression budget', async () => {
+  const { evaluateFailedFlipSuppression } = await import('../bin/mux-runner.js');
+
+  const run = (root, stateJson) => {
+    const fix = ap223Session(root, stateJson);
+    // One in-window commit and no scope.json: an unscoped session counts any window
+    // commit, so evidence is PRESENT and the decision reaches the ledger gate.
+    fs.writeFileSync(path.join(fix.repoDir, 'work.txt'), 'work\n');
+    for (const args of [['add', 'work.txt'], ['commit', '-m', 'ticket work', '--no-gpg-sign']]) {
+      assert.equal(spawnSync('git', args, { cwd: fix.repoDir, encoding: 'utf-8', timeout: 30_000 }).status, 0);
+    }
+    return evaluateFailedFlipSuppression({
+      sessionDir: fix.sessionDir,
+      statePath: fix.statePath,
+      ticketId: AP223_TICKET,
+      workingDir: fix.repoDir,
+      iteration: 3,
+      callsite: 'wmw_auto_skip',
+      windowStartMs: Date.now() - 60_000,
+      preSha: fix.preSha,
+      settings: AP223_SETTINGS,
+      log: () => {},
+    });
+  };
+
+  // Control — a MEASURED empty ledger: the suppression budget really is unspent.
+  const controlRoot = makeTmpRoot();
+  try {
+    const control = run(controlRoot, (dir) => ap223State([], dir));
+    assert.equal(control.action, 'suppress', 'control: a measured empty ledger still funds a suppression');
+    assert.equal(control.suppressionCount, 1);
+  } finally {
+    fs.rmSync(controlRoot, { recursive: true, force: true });
+  }
+
+  for (const [label, content] of AP223_UNREADABLE_STATES) {
+    const root = makeTmpRoot();
+    try {
+      const d = run(root, content);
+      assert.equal(d.action, 'proceed', `state.json ${label}: an unreadable budget must not fund a suppression`);
+      assert.equal(d.reason, 'ledger_unmeasured', `state.json ${label}: the flip names the unmeasured ledger`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 // ─── B-LOGEV (ticket 9ef9ea19): an empty worker session log is an ABSENCE OF
 // MEASUREMENT, not evidence of an absent worker. ────────────────────────────────
 //

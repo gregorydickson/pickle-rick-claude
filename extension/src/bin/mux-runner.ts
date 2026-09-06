@@ -10741,19 +10741,32 @@ function classifyWorkerSessionLogs(ticketDir: string, files: string[], workObser
  * scoped per ticket, mirroring `worker_artifact_progress` keying: ticket B's
  * silent death must not be charged against ticket A's budget.
  */
-function countSilentDeathRespawns(statePath: string, ticketId: string): number {
+function countSilentDeathRespawns(statePath: string, ticketId: string): number | null {
   return countLedgerSuccesses(statePath, ticketId, SILENT_DEATH_RESPAWN_STRATEGY);
 }
 
-/** Count `outcome: 'success'` entries in `state.recovery_attempts` for one ticket + strategy (persisted ledger — survives relaunch and `setup.js --resume`). */
-function countLedgerSuccesses(statePath: string, ticketId: string, strategy: string): number {
+/**
+ * Count `outcome: 'success'` entries in `state.recovery_attempts` for one ticket + strategy
+ * (persisted ledger — survives relaunch and `setup.js --resume`).
+ *
+ * `null` is NOT MEASURED, and it is not the same answer as `0`. `readRecoverableJsonObject`
+ * returns null for an absent, unreadable, unparseable or non-object state.json alike, and a
+ * budget nobody could read is not a budget that is unspent. Every consumer compares this
+ * against a cap, so collapsing the unread state onto `0` read as a fully-unspent budget on
+ * every pass — and `appendRecoveryLedgerEntry` is best-effort, so nothing drew it down
+ * either. A state that PARSES but carries no `recovery_attempts` is measured, and is
+ * genuinely 0.
+ */
+function countLedgerSuccesses(statePath: string, ticketId: string, strategy: string): number | null {
+  let s: State | null;
   try {
-    const s = readRecoverableJsonObject(statePath) as State | null;
-    if (!s || !Array.isArray(s.recovery_attempts)) return 0;
-    return s.recovery_attempts.filter(
-      (a) => a && a.strategy === strategy && a.outcome === 'success' && a.ticket === ticketId,
-    ).length;
-  } catch { return 0; }
+    s = readRecoverableJsonObject(statePath) as State | null;
+  } catch { return null; }
+  if (!s) return null;
+  if (!Array.isArray(s.recovery_attempts)) return 0;
+  return s.recovery_attempts.filter(
+    (a) => a && a.strategy === strategy && a.outcome === 'success' && a.ticket === ticketId,
+  ).length;
 }
 
 /**
@@ -10865,7 +10878,7 @@ export interface SilentDeathRecoveryInput {
 
 export type SilentDeathRecoveryDecision =
   | { action: 'none' }
-  | { action: 'hold'; subClass: SilentDeathSubClass; evidence: 'completion_commit' | 'scoped_commit' | 'fresh_artifacts' | 'archive_failed' }
+  | { action: 'hold'; subClass: SilentDeathSubClass; evidence: 'completion_commit' | 'scoped_commit' | 'fresh_artifacts' | 'archive_failed' | 'ledger_unmeasured' }
   | { action: 'respawn'; subClass: SilentDeathSubClass; attempt: number; cap: number }
   | { action: 'halt'; subClass: SilentDeathSubClass; exitReason: 'recovery_exhausted'; cap: number };
 
@@ -11142,6 +11155,10 @@ export function applySilentDeathRecoveryPolicy(input: SilentDeathRecoveryInput):
   const settings = input.settings ?? resolveHardeningSettings(loadPickleSettingsBag());
   const cap = settings.silent_death_respawn_cap;
   const prior = countSilentDeathRespawns(input.statePath, input.ticketId);
+  if (prior === null) {
+    log(`[silent-death] ${subClass} for ${input.ticketId}: respawn ledger unreadable at ${input.statePath} — cannot prove budget remains, hold (no respawn, no drawdown)`);
+    return { action: 'hold', subClass, evidence: 'ledger_unmeasured' };
+  }
   if (prior < cap) {
     const attempt = prior + 1;
     appendRecoveryLedgerEntry(input.statePath, {
@@ -11229,7 +11246,7 @@ export interface FailedFlipSuppressionInput {
 
 export type FailedFlipSuppressionDecision =
   | { action: 'suppress'; evidence: FailedFlipEvidenceKind; suppressionCount: number }
-  | { action: 'proceed'; reason: 'no_evidence' | 'evidence_check_error' }
+  | { action: 'proceed'; reason: 'no_evidence' | 'evidence_check_error' | 'ledger_unmeasured' }
   | { action: 'escalate'; cap: number };
 
 /** Evidence arm (a): a lifecycle artifact mtime inside [spawn, exit] + skew; `.codegraph/**` excluded via isCodegraphArtifact. */
@@ -11342,6 +11359,10 @@ export function evaluateFailedFlipSuppression(input: FailedFlipSuppressionInput)
   const settings = input.settings ?? resolveHardeningSettings(loadPickleSettingsBag());
   const cap = settings.failed_flip_suppression_cap;
   const prior = countLedgerSuccesses(input.statePath, input.ticketId, FAILED_FLIP_SUPPRESSED_STRATEGY);
+  if (prior === null) {
+    log(`[failed-flip] ${input.callsite} for ${input.ticketId}: suppression ledger unreadable at ${input.statePath} — cannot prove budget remains, flip proceeds (fail-open)`);
+    return { action: 'proceed', reason: 'ledger_unmeasured' };
+  }
   if (prior >= cap) {
     appendRecoveryLedgerEntry(input.statePath, {
       strategy: FAILED_FLIP_SUPPRESSED_STRATEGY,
