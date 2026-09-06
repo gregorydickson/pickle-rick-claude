@@ -554,9 +554,12 @@ test('AC-JPCM-1: buildJudgePrompt asks for the JSON object the parser accepts, n
     for (const key of ['"score"', '"violations"', '"resolved"', '"new"', '"remaining"']) {
         assert.ok(prompt.includes(key), `prompt must request the ${key} key`);
     }
+    // TIER-1.4 B-SZLEDGER: score===violations.length is now enforced by
+    // parseLlmJudgeOutput deriving score directly, not by prompt instruction — the
+    // sentence this used to assert is dead and was deleted.
     assert.ok(
-        prompt.includes('score` MUST equal `violations.length'),
-        'count-type metrics must pin score to the evidence array, not a free-floating integer',
+        !prompt.includes('score` MUST equal `violations.length'),
+        'the self-enforcement instruction is dead; the ledger derives score in code now',
     );
 });
 

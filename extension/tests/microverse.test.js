@@ -2164,7 +2164,7 @@ test('extractScore: returns null for empty string', () => {
 
 // --- parseLlmJudgeOutput tests ---
 
-test('parseLlmJudgeOutput: full-shape JSON returns shape=full with all fields parsed', () => {
+test('parseLlmJudgeOutput: full-shape JSON returns shape=full with all fields parsed, score derived from violations.length', () => {
     const raw = JSON.stringify({
         score: 7,
         violations: [{ id: 'V1', severity: 'high', description: 'test violation' }],
@@ -2174,7 +2174,7 @@ test('parseLlmJudgeOutput: full-shape JSON returns shape=full with all fields pa
     });
     const result = parseLlmJudgeOutput(raw);
     assert.equal(result.shape, 'full');
-    assert.equal(result.score, 7);
+    assert.equal(result.score, 1, 'score is derived from violations.length, not the self-reported 7 (TIER-1.4 B-SZLEDGER)');
     assert.equal(result.violations.length, 1);
     assert.equal(result.violations[0].id, 'V1');
     assert.deepEqual(result.resolved, ['r1']);
@@ -2438,15 +2438,14 @@ test('buildJudgePrompt includes goal, cwd, and scoring format instructions', () 
     assert.ok(prompt.includes('"remaining"'), 'should include remaining key');
 });
 
-// R-JPCM superseded the bare-integer contract (and with it the fractions hazard the old
-// 'Do NOT use fractions' assertion used to guard) with a single JSON object; the live
-// numeric-scoring constraint is now that `score` must equal `violations.length` for
-// count-type metrics.
-test('buildJudgePrompt instructs score must equal violations.length for count-type metrics', () => {
+// TIER-1.4 B-SZLEDGER: the score===violations.length invariant is now enforced by
+// parseLlmJudgeOutput deriving score directly, not by asking the model nicely — the
+// prompt sentence that used to carry this instruction is now dead and was deleted.
+test('buildJudgePrompt no longer asks the model to self-enforce score===violations.length (now derived in code)', () => {
     const prompt = buildJudgePrompt({ goal: 'fix bugs', cwd: '/tmp' });
     assert.ok(
-        prompt.includes('score` MUST equal `violations.length`'),
-        'should instruct score equals violations.length for count-type metrics'
+        !prompt.includes('score` MUST equal `violations.length`'),
+        'the now-dead self-enforcement instruction must not reappear in the prompt'
     );
 });
 

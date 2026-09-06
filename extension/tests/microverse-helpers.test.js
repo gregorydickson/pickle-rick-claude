@@ -512,6 +512,30 @@ test('AP-EXT-ITER4-01: a judge violation with no `path` either still reuses its 
   assert.equal(state.violation_ledger[0].first_seen_iter, 1);
 });
 
+// ---------------------------------------------------------------------------
+// TIER-1.4 B-SZLEDGER AC-R3 — the ledger is authoritative, never the judge's
+// self-report. `parseLlmJudgeOutput`'s full-shape return must derive `score`
+// from `violations.length`, not trust `obj.score`, so a disagreeing self-report
+// cannot desync the ledger's count metric from its own evidence array.
+// ---------------------------------------------------------------------------
+
+test('TIER-1.4 B-SZLEDGER AC-R3: full-shape score is derived from violations.length, not the self-reported score', () => {
+  const raw = JSON.stringify({
+    score: 99,
+    violations: [
+      { id: 'v1', path: 'src/a.ts', line: 10, severity: 'high', description: 'x' },
+      { id: 'v2', path: 'src/b.ts', line: 20, severity: 'med', description: 'y' },
+      { id: 'v3', path: 'src/c.ts', line: 30, severity: 'low', description: 'z' },
+    ],
+    resolved: [], new: ['v1', 'v2', 'v3'], remaining: [],
+  });
+
+  const result = parseLlmJudgeOutput(raw);
+  assert.equal(result.shape, 'full');
+  assert.equal(result.score, 3, 'score must equal violations.length, not the self-reported 99');
+  assert.equal(result.violations.length, 3);
+});
+
 test('AP-EXT-ITER4-01 control: a drift BEYOND ±5 still takes a new id (the fix does not over-match)', () => {
   const state = createMicroverseState(AP_ITER4_OPTS);
   state.violation_ledger = [];

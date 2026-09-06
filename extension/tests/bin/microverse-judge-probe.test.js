@@ -757,7 +757,9 @@ describe('R-JPCM judge output contract', () => {
 
     const parsed = parseLlmJudgeOutput(JSON.stringify(responseForKeys(keys)));
     assert.equal(parsed.shape, 'full', 'a reply obeying the advertised schema must parse as full');
-    assert.equal(parsed.score, 3);
+    // TIER-1.4 B-SZLEDGER: score is derived from violations.length (1), not the
+    // fixture's self-reported score of 3 — the ledger is authoritative now.
+    assert.equal(parsed.score, 1);
     assert.equal(parsed.violations.length, 1);
     assert.deepEqual(parsed.new, ['v1']);
   });
@@ -783,8 +785,10 @@ describe('R-JPCM judge output contract', () => {
       );
     }
 
-    // `score` degrades by value rather than by shape: it is read only when already a number.
+    // TIER-1.4 B-SZLEDGER: `score` is derived from violations.length in the full shape,
+    // so a malformed self-reported score no longer degrades the result at all — the
+    // ledger is authoritative regardless of what obj.score claims or how it is typed.
     const wrongType = { ...full, score: '3' };
-    assert.equal(parseLlmJudgeOutput(JSON.stringify(wrongType)).score, null);
+    assert.equal(parseLlmJudgeOutput(JSON.stringify(wrongType)).score, full.violations.length);
   });
 });
