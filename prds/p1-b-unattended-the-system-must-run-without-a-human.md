@@ -47,6 +47,29 @@ remediate is below.
    run before succeeded, every run after failed, nothing in this repo changed. A five-month-old benign
    permission rule became fatal. **The fix is decoupling (subtraction), not detection.** Plus: a spawn
    that fails at STARTUP must not burn 4 × 600s before reporting.
+**⚠ THIRD CAUSE MEASURED 2026-09-06 — one disposition, THREE unrelated messages.** szechuan failed a
+third time, again as `baseline_unmeasurable_unrecoverable`, again for a new reason:
+
+| bundle | message |
+|---|---|
+| B-ARGMAX | `judge timed out after 600s` |
+| B-FRESHWIN | `Permission allow rule … Write(.claude/commands/**)` rejected |
+| **B-CIGREEN** | **`Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row. A file being read or a tool output is likely too large for the context window.`** |
+
+All three post-date the CLI upgrade (2.1.252 → 2.1.260, 2026-09-04 12:57 CDT). This is the single
+strongest piece of evidence in this bundle: **one bucket has now absorbed three distinct failures**, and
+that is precisely why two of them read as one recurring defect for two ticks.
+
+**CORRECTION to an earlier claim of mine, published as measured.** I wrote that "the cost theory is
+falsified" on the basis that the judge's scoped surface grew only 600 → 612 allowed_paths (2%) and
+`extension/src` only 4.8% in bytes. **I measured the wrong size.** The size that matters is the judge's
+CONTEXT consumption, which I never measured — and the autocompact message names exactly that. Cost is
+back in play, in a form the earlier measurement could not see. Treat the earlier "falsified" line as
+withdrawn.
+
+**Which makes item 4 below the fix for all three at once:** no scoring spawn → no context to overflow,
+no timeout to exceed, no ambient config to be rejected.
+
 4. **szechuan scores its own ledger — delete the measurement spawn.** `microverse-runner.ts:1999`
    already requires `score === violations.length` for count metrics, and `basis=ledger_count` exists at
    `:4332`. The judge spawns an LLM to compute a number the ledger defines. Deleting the scoring spawn
