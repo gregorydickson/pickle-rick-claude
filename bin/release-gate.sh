@@ -206,6 +206,47 @@ listing_has_link_entries() {
   '
 }
 
+# Payload COMPLETENESS is not decidable from sentinel members. Every scan above asks whether the
+# archive is SAFE or uniquely rooted; none asks whether the runtime it carries can LOAD, so
+# `--post-tag` printed `ok:` for four months over an asset missing `extension/lib/` entirely. A
+# member allow-list here would rot exactly the way the workflow's did, so derive the requirement
+# from the payload's OWN bytes: every relative static specifier in every shipped `.js` must name a
+# file the same payload carries. A runtime directory added later needs no edit here.
+payload_relative_specifiers() {
+  local file="$1"
+  grep -Eo "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"]\.\.?/[^'\"\${]*\.(js|json)['\"]" "$file" |
+    sed -E "s/^.*['\"](.*)['\"]$/\1/" || true
+}
+
+# Materialize the file list and each specifier list before consuming them, and decide in the
+# CALLER — a bare early exit mid-pipe SIGPIPEs the still-writing producer, the same trap the
+# archive scans above document. Resolution is the filesystem's (`..` segments included), which is
+# why this runs on an EXTRACTED payload rather than against the member listing.
+payload_unresolved_import() {
+  local payload_dir="$1"
+  local -a files=()
+  local file spec specs
+
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    files+=("$file")
+  done < <(find "$payload_dir" -type f -name '*.js' -print)
+
+  [ ${#files[@]} -gt 0 ] || return 1
+
+  for file in "${files[@]}"; do
+    specs="$(payload_relative_specifiers "$file")"
+    while IFS= read -r spec; do
+      [ -n "$spec" ] || continue
+      if [ ! -f "$(dirname "$file")/$spec" ]; then
+        printf '%s -> %s\n' "${file#"$payload_dir"/}" "$spec"
+        return 0
+      fi
+    done <<< "$specs"
+  done
+  return 1
+}
+
 select_installable_tarball() {
   local dir="$1"
   local tag="$2"
@@ -272,7 +313,7 @@ post_tag() {
   trap 'rm -rf "$RELEASE_GATE_TMPDIR"' EXIT
   gh release download "$tag" -R "$REPO" -p '*.tar.gz' -D "$tmpdir" >/dev/null 2>&1 || die 20 "release download failed for $tag"
 
-  local tarball payload_root pkg_member pkg tagged name_listing
+  local tarball payload_root pkg_member pkg tagged name_listing payload_dir unresolved_import
   tarball="$(select_installable_tarball "$tmpdir" "$tag")"
   name_listing="$(read_tarball_listing "$tarball" -tzf)" ||
     die 21 "could not list archive entries of downloaded tarball $tarball"
@@ -287,6 +328,14 @@ post_tag() {
   tagged="$(printf '%s\n' "$pkg" | jq -r '.version' 2>/dev/null)" || die 21 "could not parse $PKG_DISPLAY_PATH from downloaded tarball"
   [ -n "$tagged" ] && [ "$tagged" != "null" ] || die 21 "downloaded tarball $PKG_DISPLAY_PATH missing version"
   [ "$expected" = "$tagged" ] || die 21 "expected downloaded $PKG_DISPLAY_PATH version $expected but found $tagged"
+  # Last, and only here: extracting is safe ONLY because `select_installable_tarball` already
+  # rejected every traversal and link member. Keep this downstream of that guard.
+  payload_dir="$tmpdir/payload"
+  mkdir -p "$payload_dir"
+  tar -xzf "$tarball" -C "$payload_dir" || die 21 "could not extract downloaded tarball $tarball"
+  if unresolved_import="$(payload_unresolved_import "$payload_dir")"; then
+    die 21 "downloaded tarball ships a runtime that cannot load: $unresolved_import"
+  fi
   echo "ok: release $tag tarball has $PKG_DISPLAY_PATH version $expected"
 }
 

@@ -84,6 +84,43 @@ function makeBarePayloadTarball(version, archiveName = 'pickle-release.tar.gz') 
   return { dir, tarball };
 }
 
+// AP-BIN-ITER23-01. A REAL tar payload in the shape release.yml builds (bare root) carrying a
+// shipped module that statically imports a sibling — the exact relationship the published asset
+// broke for four months (`extension/services/state-manager.js` -> `../lib/is-record.js`). BOTH
+// variants carry both sentinel members `post_tag` reads, so the only difference across the pair is
+// whether the imported file rides along.
+function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule } = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-runtime-'));
+  const payload = path.join(dir, 'payload');
+  writePackage(payload, version);
+  writeFileSync(path.join(payload, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+  mkdirSync(path.join(payload, 'extension', 'services'), { recursive: true });
+  writeFileSync(
+    path.join(payload, 'extension', 'services', 'state-manager.js'),
+    "import { isRecord } from '../lib/is-record.js';\nexport const readState = isRecord;\n",
+  );
+  const members = ['extension/package.json', 'install.sh', 'extension/services/state-manager.js'];
+  if (carryImportedModule) {
+    mkdirSync(path.join(payload, 'extension', 'lib'), { recursive: true });
+    writeFileSync(
+      path.join(payload, 'extension', 'lib', 'is-record.js'),
+      'export const isRecord = (value) => typeof value === "object";\n',
+    );
+    members.push('extension/lib/is-record.js');
+  }
+  const tarball = path.join(dir, 'pickle-release.tar.gz');
+  run('tar', ['-czf', tarball, '-C', payload, ...members]);
+  const listing = run('tar', ['-tzf', tarball]).stdout;
+  assert.match(listing, /^extension\/package\.json$/m, `fixture lost the package sentinel:\n${listing}`);
+  assert.match(listing, /^install\.sh$/m, `fixture lost the installer sentinel:\n${listing}`);
+  assert.equal(
+    /^extension\/lib\/is-record\.js$/m.test(listing),
+    Boolean(carryImportedModule),
+    `fixture carried the wrong module set:\n${listing}`,
+  );
+  return { dir, tarball };
+}
+
 function makeSidecarTarball(archiveName = 'sidecar.tar.gz', { includeInstallScript = false } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-sidecar-'));
   const root = path.join(dir, 'sidecar');
@@ -240,6 +277,10 @@ ${fakeFindNames.map((name) => `printf '%s\\n' "$dir/${name}"`).join('\n')}
   return binDir;
 }
 
+// The `-xzf` arm materializes the listing as EMPTY files. That is deliberate, not a shortcut: a
+// payload with no `.js` bytes has no import to resolve, so every fixture built here keeps exactly
+// the verdict it had before `post_tag` learned to sweep the extracted payload. Completeness is
+// exercised against a REAL tar in the AP-BIN-ITER23-01 pair below, never through this shim.
 function makeFakeTarFixture(listing, extractedMembers = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-fake-tar-'));
   const tarball = path.join(dir, 'pickle-release.tar.gz');
@@ -259,6 +300,18 @@ EOF
     cat <<'EOF'
 ${listing.map((entry) => `-rw-r--r--  0 release gate  0 Jan  1 00:00 ${entry}`).join('\n')}
 EOF
+    ;;
+  -xzf)
+    dest="$4"
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      case "$entry" in
+        */) mkdir -p "$dest/$entry" ;;
+        *) mkdir -p "$dest/$(dirname "$entry")"; : > "$dest/$entry" ;;
+      esac
+    done <<'MEMBERS'
+${listing.join('\n')}
+MEMBERS
     ;;
   -xOzf)
     case "$3" in
@@ -442,6 +495,44 @@ describe('release-gate.post-tag', () => {
   // pre-existing post-tag fixtures used a `pickle-rick-claude/` prefix, so deleting either bare-root
   // arm left the suite fully GREEN while every real release asset died 21 `missing install payload
   // root`. The drift case below proves the version really comes from the bare member.
+  // AP-BIN-ITER23-01. `--post-tag` is the last thing standing between a published asset and an
+  // operator trusting it, and its completeness predicate was TWO members: measured `ok:` / exit 0
+  // against a replay of release.yml's own tar minus `extension/lib/`, over 25 unresolved
+  // specifiers. The pair below is disjoint by construction — same importer, same two sentinels,
+  // same payload shape — so a gate that rejected on anything other than the missing module would
+  // red the second case too.
+  test('exits 21 when the release asset ships a module whose static import it does not carry', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({ carryImportedModule: false });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /ships a runtime that cannot load/);
+      assert.match(result.stderr, /state-manager\.js -> \.\.\/lib\/is-record\.js/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  test('passes when the release asset carries every module its own payload imports', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({ carryImportedModule: true });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 0, result.stdout || result.stderr);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
   test('passes when the release asset carries a bare payload root, the shape release.yml builds', () => {
     const { dir: repoDir, tagName } = makeGitFixture();
     const tarFixture = makeBarePayloadTarball('1.67.0');
