@@ -31,7 +31,7 @@ const BASE_INVENTORIES = {
     'success', 'cancelled', 'error', 'limit', 'iteration_cap_exhausted', 'stall', 'circuit_open',
     'rate_limit_exhausted', 'timeout_repeat', 'manager_persistent_hallucination',
     'codex_unhealthy_consecutive_failures', 'working_tree_modified_externally',
-    'state_schema_version_ahead', 'closer_handoff_terminal', 'manager_handoff_pending',
+    'state_schema_version_ahead', 'closer_handoff_terminal',
     'done_without_commit_evidence', 'codex_manager_no_progress', 'recovery_exhausted',
     'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
   ],

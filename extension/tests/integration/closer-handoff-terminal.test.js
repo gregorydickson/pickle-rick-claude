@@ -17,7 +17,11 @@ test('closer-handoff-terminal source: failed-handoff terminal detection is keyed
   assert.match(muxRunnerSource, /reason:\s*'closer_handoff_terminal'/);
 });
 
-test('closer-handoff-terminal source: done-plus-manager-handoff exits manager_handoff_pending', () => {
+// TIER-1.2 gh-11: manager_handoff_pending no longer halts. A Done ticket whose
+// latest conformance artifact carries a substantive Manager Handoff section is
+// parked and flagged (residual logged) — never routed through the exit-action
+// arm of CloserTerminalDecision.
+test('closer-handoff-terminal source: done-plus-manager-handoff is parked and flagged, never an exit action', () => {
   assert.match(muxRunnerSource, /readLatestTicketConformanceSnapshot/);
   // The Manager Handoff detector was extracted into hasSubstantiveManagerHandoff()
   // — it carries the `^## Manager Handoff` regex and additionally rejects
@@ -27,13 +31,26 @@ test('closer-handoff-terminal source: done-plus-manager-handoff exits manager_ha
   assert.match(muxRunnerSource, /\/\^##\\s\+Manager Handoff\\b/);
   assert.match(muxRunnerSource, /hasManagerHandoff:\s*hasSubstantiveManagerHandoff\(content\)/);
   assert.match(muxRunnerSource, /status === 'done' && conformance\.hasManagerHandoff/);
-  assert.match(muxRunnerSource, /reason:\s*'manager_handoff_pending'/);
+  assert.match(muxRunnerSource, /emitManagerHandoffResidual\(ticketId,\s*conformance\.file\)/);
+
+  // AC-1: the reason must not be reachable as a `CloserTerminalDecision` exit action —
+  // it survives only as the residual payload's `reason` value.
+  const isHaltExitLine = muxRunnerSource.match(/const isHaltExit = \(r: ExitReason\).*$/m)[0];
+  assert.doesNotMatch(isHaltExitLine, /manager_handoff_pending/);
+  const closerTerminalDecisionType = muxRunnerSource.match(/type CloserTerminalDecision =[\s\S]*?;/)[0];
+  assert.doesNotMatch(closerTerminalDecisionType, /manager_handoff_pending/);
 });
 
 test('closer-handoff-terminal source: mux-runner checks closer terminal state at the iteration head and both completion exits', () => {
   const occurrences = [...muxRunnerSource.matchAll(/evaluateCloserTerminalState\(\{/g)].length;
   assert.equal(occurrences, 3, 'expected iteration-head and two completion-path checks');
   assert.match(muxRunnerSource, /persistCloserHandoffTracker\(statePath,\s*closerDecision\.tracker\)/);
-  assert.match(muxRunnerSource, /exitForCloserTerminalState\(ctx\.statePath,\s*ctx\.sessionDir,\s*ctx\.iteration,\s*closerDecision,\s*ctx\.log\)/);
-  assert.match(muxRunnerSource, /exitForCloserTerminalState\(statePath,\s*sessionDir,\s*iteration,\s*closerDecision,\s*log\)/);
+  // TIER-1.2 gh-11: only the main-loop iteration-head site still routes a closer
+  // terminal decision to a halt (closer_handoff_terminal survives); the two
+  // completion-path sites call evaluateCloserTerminalState only for its
+  // park-and-flag residual side effect and no longer branch on its result.
+  const exitForCloserTerminalStateOccurrences =
+    [...muxRunnerSource.matchAll(/exitForCloserTerminalState\(/g)].length;
+  assert.equal(exitForCloserTerminalStateOccurrences, 2, 'expected the definition plus exactly one call site');
+  assert.match(muxRunnerSource, /exitReason = exitForCloserTerminalState\(statePath,\s*sessionDir,\s*iteration,\s*closerDecision,\s*log\)/);
 });

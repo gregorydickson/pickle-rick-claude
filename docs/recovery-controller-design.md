@@ -22,7 +22,6 @@ Every member of the `ExitReason` union classified into one of three disposition 
 | `limit` | retained-operator (halt) | false | true | no — may retry |
 | `timeout_repeat` | retained-operator (halt) | false | true | no — may retry |
 | `closer_handoff_terminal` | retained-operator (halt) | false | true | no — may retry |
-| `manager_handoff_pending` | retained-operator (halt) | false | true | no — may retry |
 | `done_without_commit_evidence` | retained-operator (halt) | false | true | no — may retry |
 | `error` | retained-fatal (failure) | true | false | yes |
 | `stall` | retained-fatal (failure) | true | false | yes |

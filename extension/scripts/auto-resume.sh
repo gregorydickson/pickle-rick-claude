@@ -24,7 +24,7 @@ FOREGROUND ONLY: setsid, nohup, disown, and detach are forbidden. The wrapper di
 parent shell. Child mux-runner is killed when the wrapper receives SIGTERM or SIGINT.
 
 Stop conditions (any one triggers halt):
-  - exit_reason is 'closer_handoff_terminal' or 'manager_handoff_pending'
+  - exit_reason is 'closer_handoff_terminal'
   - exit_reason is not 'pipeline_phase_incomplete', 'phase_no_progress' (R-PIPE-2),
     or 'phase_incomplete_tickets' (R-PPPA)
   - MAX_RETRIES exhausted
@@ -141,7 +141,7 @@ while true; do
 
   exit_reason="$(_read_state_field exit_reason)"
 
-  if [[ "$exit_reason" == "closer_handoff_terminal" || "$exit_reason" == "manager_handoff_pending" ]]; then
+  if [[ "$exit_reason" == "closer_handoff_terminal" ]]; then
     echo "[auto-resume] stopped: manager handoff required (exit_reason='$exit_reason')" >&2
     break
   fi

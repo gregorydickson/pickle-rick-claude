@@ -5344,7 +5344,7 @@ export type ExitReason = typeof EXIT_REASONS[number];
  * the three classifiers cannot disagree. 'state_schema_version_ahead' is likewise
  * not a member — do not add it.
  */
-export const isHaltExit = (r: ExitReason): boolean => r === 'cancelled' || r === 'limit' || r === 'timeout_repeat' || r === 'closer_handoff_terminal' || r === 'manager_handoff_pending';
+export const isHaltExit = (r: ExitReason): boolean => r === 'cancelled' || r === 'limit' || r === 'timeout_repeat' || r === 'closer_handoff_terminal';
 /**
  * R-CNAR-4(c): failure exits stop auto-resume.sh. Includes 'recovery_exhausted' — a
  * non-recoverable terminal state.
@@ -5444,7 +5444,7 @@ interface TicketConformanceSnapshot {
 
 type CloserTerminalDecision =
   | { action: 'continue'; tracker: CloserHandoffTracker | null }
-  | { action: 'exit'; reason: Extract<ExitReason, 'closer_handoff_terminal' | 'manager_handoff_pending' | 'recovery_exhausted'>; tracker: CloserHandoffTracker | null; detail: string };
+  | { action: 'exit'; reason: Extract<ExitReason, 'closer_handoff_terminal' | 'recovery_exhausted'>; tracker: CloserHandoffTracker | null; detail: string };
 
 /**
  * Returns true only when the conformance has a `## Manager Handoff` section AND
@@ -6132,6 +6132,39 @@ function readCloserHandoffBudget(extensionRoot: string): number {
   return positiveIntegerOrNull(settings.closer_handoff_iteration_budget) ?? 2;
 }
 
+/**
+ * TIER-1.2 gh-11: a Done ticket carrying deferred `[manager]`-owned work is a
+ * per-ticket residual, not a reason to halt the run. Park-and-flag: reuse the
+ * registered 'gate_skipped' event (AP-EXT-ITER60-01 residual-sink shape) so an
+ * operator can find it without a new activity-event registration. Best-effort —
+ * a residual must never block the ticket loop.
+ *
+ * AC-3 measurement: this is NOT redundant with `batchLoopPhantomDoneKind`
+ * (:2123), which answers "does this Done ticket have an attributable git
+ * commit?". This answers "does the worker's own conformance artifact declare
+ * manager-owned work still outstanding?" — an orthogonal question the commit
+ * oracle never reaches, so the predicate stays.
+ */
+function emitManagerHandoffResidual(ticketId: string, conformanceFile: string | null): void {
+  try {
+    const ts = new Date();
+    const activityDir = path.join(getDataRoot(), 'activity');
+    fs.mkdirSync(activityDir, { recursive: true });
+    const event: ActivityEvent = {
+      event: 'gate_skipped',
+      ts: ts.toISOString(),
+      source: 'pickle',
+      ticket_id: ticketId,
+      gate_payload: { reason: 'manager_handoff_pending', file: conformanceFile ?? undefined },
+    };
+    fs.appendFileSync(
+      path.join(activityDir, `${formatLocalDateKey(ts)}.jsonl`),
+      `${JSON.stringify(event)}\n`,
+      { mode: 0o600 },
+    );
+  } catch { /* best-effort */ }
+}
+
 export function evaluateCloserTerminalState(args: {
   state: State;
   sessionDir: string;
@@ -6150,12 +6183,7 @@ export function evaluateCloserTerminalState(args: {
   const ticketDir = path.join(args.sessionDir, ticketId);
   const conformance = readLatestTicketConformanceSnapshot(ticketDir);
   if (status === 'done' && conformance.hasManagerHandoff) {
-    return {
-      action: 'exit',
-      reason: 'manager_handoff_pending',
-      tracker: null,
-      detail: `ticket ${ticketId} is Done and ${conformance.file ?? 'latest conformance artifact'} contains a Manager Handoff section`,
-    };
+    emitManagerHandoffResidual(ticketId, conformance.file);
   }
   if (status !== 'failed') return { action: 'continue', tracker: null };
 
@@ -7892,7 +7920,7 @@ export interface HaltOrRecoverCodexNoProgressInput {
  * halt blocks BEFORE the terminal park: runs the recovery ladder and tells the caller
  * whether the queue advanced (relaunch, don't halt), the ladder is exhausted (halt with
  * the honest `recovery_exhausted`), or there is nothing to recover (existing
- * `codex_manager_no_progress` halt). `manager_handoff_pending` is never routed here.
+ * `codex_manager_no_progress` halt).
  */
 function haltOrRecoverCodexNoProgress(input: HaltOrRecoverCodexNoProgressInput): CodexNoProgressDisposition {
   let flags: Record<string, unknown> | null = null;
@@ -9811,17 +9839,17 @@ function processTaskCompleted(state: State, ctx: LoopContext): LoopAction {
     (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, process.pid, ctx.log);
     return { kind: 'continue', resetStall: true };
   }
-  const closerDecision = evaluateCloserTerminalState({
+  // TIER-1.2 gh-11: manager_handoff_pending no longer halts — evaluateCloserTerminalState
+  // logs the residual internally (park-and-flag) and never returns it as an exit action.
+  // closer_handoff_terminal requires status 'failed', which cannot hold on a ticket the
+  // epic-completion decision above just confirmed genuinely done.
+  evaluateCloserTerminalState({
     state: curState,
     sessionDir: ctx.sessionDir,
     workingDir: curState.working_dir || state.working_dir || process.cwd(),
     headSha: observeCurrentHead(curState.working_dir || state.working_dir || process.cwd())?.sha ?? null,
     failedBudget: readCloserHandoffBudget(ctx.extensionRoot),
   });
-  if (closerDecision.action === 'exit' && closerDecision.reason === 'manager_handoff_pending') {
-    exitForCloserTerminalState(ctx.statePath, ctx.sessionDir, ctx.iteration, closerDecision, ctx.log);
-    return { kind: 'break', reason: closerDecision.reason };
-  }
   const ticketAction = finalizeCurrentTicketBeforeEpicExit(state, ctx, curState);
   if (ticketAction) return ticketAction;
   const drainAction = refuseEpicFinalizeWhileWorkPending(state, ctx, curState);
@@ -12966,7 +12994,8 @@ async function runMuxRunnerMain() {
       });
       if (closerDecision.action === 'exit') {
         // R-ORSR-2: intercept the closer_handoff_terminal park with the recovery
-        // ladder. manager_handoff_pending is operator-gated and never recovered.
+        // ladder. (TIER-1.2 gh-11: manager_handoff_pending no longer reaches this
+        // branch — it is a non-halting residual logged by evaluateCloserTerminalState.)
         if (closerDecision.reason === 'closer_handoff_terminal') {
           // AC-2 fail-safe: missing working_dir must halt this git-mutating
           // recovery call, never fall back to process.cwd() (the real repo).
@@ -14437,17 +14466,17 @@ async function runMuxRunnerMain() {
           log(`Marked final ticket ${curState.current_ticket} as Done`);
         }
       }
-      const closerDecision = evaluateCloserTerminalState({
+      // TIER-1.2 gh-11: manager_handoff_pending no longer halts — evaluateCloserTerminalState
+      // logs the residual internally (park-and-flag) and never returns it as an exit action.
+      // closer_handoff_terminal requires status 'failed', which cannot hold on the ticket just
+      // marked Done above.
+      evaluateCloserTerminalState({
         state: curState,
         sessionDir,
         workingDir: curState.working_dir || state.working_dir || process.cwd(),
         headSha: observeCurrentHead(curState.working_dir || state.working_dir || process.cwd())?.sha ?? null,
         failedBudget: readCloserHandoffBudget(extensionRoot),
       });
-      if (closerDecision.action === 'exit' && closerDecision.reason === 'manager_handoff_pending') {
-        exitReason = exitForCloserTerminalState(statePath, sessionDir, iteration, closerDecision, log);
-        break;
-      }
       // R-NOPOSTTIER (AC-13): this is the manager-token completion seam (the model
       // itself emitted EPIC_COMPLETED/TASK_COMPLETED and evaluateEpicCompletion
       // verified it genuine) — a second promise-synthesis path distinct from the

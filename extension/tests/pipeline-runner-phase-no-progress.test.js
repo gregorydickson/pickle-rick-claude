@@ -351,7 +351,7 @@ test('R-PPPA: pickle phase with Done + Skipped tickets and no pending advances n
   }
 });
 
-test('R-PRH: a manager_handoff_pending phase exit is preserved, not folded into failed', async () => {
+test('TIER-1.2 gh-11: a manager_handoff_pending phase exit is NOT a pipeline handoff stop', async () => {
   const repo = tmpDir('pipe-prh-repo-');
   const sessionDir = tmpDir('pipe-prh-session-');
   try {
@@ -361,8 +361,11 @@ test('R-PRH: a manager_handoff_pending phase exit is preserved, not folded into 
     writeTicket(sessionDir, 'aaa11111', 1, 'Done');
     writeTicket(sessionDir, 'bbb22222', 2, 'Todo');
 
-    // mux-runner exits clean (code 0) but stamps a manager_handoff_pending
-    // exit_reason — the worker shipped and the manager must finish the handoff.
+    // A worker may still stamp this legacy string (e.g. a stale conformance-derived
+    // residual), but mux-runner itself never produces it as an exit_reason anymore
+    // (TIER-1.2 gh-11: park-and-flag, not a halt) — so pipeline-runner must not treat
+    // it as a clean handoff stop either. With a pending ticket remaining, the phase
+    // is honestly incomplete: exit code 3, not the Success a handoff stop would claim.
     const statePath = path.join(sessionDir, 'state.json');
     __setSpawnRunnerForTests(async () => {
       const s = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
@@ -371,77 +374,12 @@ test('R-PRH: a manager_handoff_pending phase exit is preserved, not folded into 
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.Success);
-
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.equal(
-      state.exit_reason,
-      'manager_handoff_pending',
-      'pipeline-runner must preserve the handoff exit_reason, not overwrite it with failed',
-    );
-
-    const ps = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
-    assert.equal(ps.status, 'completed', 'handoff stop must write pipeline-status completed');
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
 
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.ok(
-      /stopped for manager handoff/.test(log),
-      `log must describe the handoff stop; got:\n${log.split('\n').slice(-10).join('\n')}`,
-    );
-    assert.ok(
-      !/Phase pickle completed successfully/.test(log),
-      'a handoff stop is not a phase success',
-    );
-    assert.ok(!/Phase citadel/.test(log), 'pipeline must not advance to citadel after a handoff');
-  } finally {
-    __setSpawnRunnerForTests(null);
-    fs.rmSync(repo, { recursive: true, force: true });
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
-});
-
-test('R-CCR-10: manager_handoff_pending + unresolved tickets preserves handoff reason', async () => {
-  const repo = tmpDir('pipe-ccr10-handoff-pending-repo-');
-  const sessionDir = tmpDir('pipe-ccr10-handoff-pending-session-');
-  try {
-    const startCommit = initRepo(repo);
-    writeState(sessionDir, repo, startCommit);
-    writePipeline(sessionDir, repo, ['pickle']);
-
-    // 1 Done + 2 Todo: phase exits clean with a handoff reason but unresolved tickets.
-    // pipeline-runner must preserve the handoff reason instead of clobbering it with
-    // phase_incomplete_tickets.
-    writeTicket(sessionDir, 'aaa11111', 1, 'Done');
-    writeTicket(sessionDir, 'bbb22222', 2, 'Todo');
-    writeTicket(sessionDir, 'ccc33333', 3, 'Todo');
-
-    // mux-runner exits clean (code 0) and stamps a handoff exit_reason.
-    // maybeStampPhaseIncompleteTickets should NOT overwrite this with phase_incomplete_tickets.
-    const statePath = path.join(sessionDir, 'state.json');
-    __setSpawnRunnerForTests(async () => {
-      const s = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-      s.exit_reason = 'manager_handoff_pending';
-      fs.writeFileSync(statePath, JSON.stringify(s, null, 2));
-      return { exitCode: 0, stdout: '', stderr: '' };
-    });
-
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.Success);
-
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.equal(
-      state.exit_reason,
-      'manager_handoff_pending',
-      'pipeline-runner must preserve manager_handoff_pending even with unresolved tickets',
-    );
-
-    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
-    assert.ok(
-      /stopped for manager handoff/.test(log),
-      `log must describe the handoff stop; got:\n${log.split('\n').slice(-10).join('\n')}`,
-    );
-    assert.ok(
-      !/tickets remain unresolved/.test(log),
-      'log must NOT describe incomplete-ticket condition when handoff is present',
+      !/stopped for manager handoff/.test(log),
+      `manager_handoff_pending must not read as a handoff stop; got:\n${log.split('\n').slice(-10).join('\n')}`,
     );
   } finally {
     __setSpawnRunnerForTests(null);
@@ -527,45 +465,6 @@ test('R-CCR-4: real failure (no handoff) still exits Failure with status failed'
   }
 });
 
-test('R-CCR-3: non-zero exit + stale manager_handoff_pending does NOT take clean-handoff break', async () => {
-  const repo = tmpDir('pipe-ccr3-nonzero-repo-');
-  const sessionDir = tmpDir('pipe-ccr3-nonzero-session-');
-  try {
-    const startCommit = initRepo(repo);
-    // B-NOSTOP-GATES WS-1: force a genuine halt via the strict-phase override —
-    // see the rationale comment on the R-CCR-4 test above.
-    writeState(sessionDir, repo, startCommit, { pipeline_continue_on_phase_fail: false });
-    writePipeline(sessionDir, repo, ['pickle', 'citadel']);
-    writeTicket(sessionDir, 'aaa11111', 1, 'Todo');
-
-    // Phase runner exits non-zero and leaves a stale manager_handoff_pending
-    // in state — this simulates the cross-phase leak scenario.
-    const statePath = path.join(sessionDir, 'state.json');
-    __setSpawnRunnerForTests(async () => {
-      const s = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-      s.exit_reason = 'manager_handoff_pending';
-      fs.writeFileSync(statePath, JSON.stringify(s, null, 2));
-      return { exitCode: 1, stdout: '', stderr: '' };
-    });
-
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.Failure);
-
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.notEqual(
-      state.exit_reason,
-      'manager_handoff_pending',
-      'non-zero exit must NOT preserve a stale handoff exit_reason',
-    );
-    assert.ok(!/Phase citadel/.test(
-      fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8'),
-    ), 'pipeline must not advance to citadel on a failed phase');
-  } finally {
-    __setSpawnRunnerForTests(null);
-    fs.rmSync(repo, { recursive: true, force: true });
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
-});
-
 test('R-CCR-3: non-zero exit with stale handoff reason terminates with failure marker, not step:completed+handoff', async () => {
   const repo = tmpDir('pipe-ccr3-twin-repo-');
   const sessionDir = tmpDir('pipe-ccr3-twin-session-');
@@ -612,38 +511,6 @@ test('R-CCR-3: non-zero exit with stale handoff reason terminates with failure m
     );
   } finally {
     __setSpawnRunnerForTests(null);
-    fs.rmSync(repo, { recursive: true, force: true });
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
-});
-
-test('R-CCR-5: closer-release install/tag NOT invoked when pipeline stops on manager_handoff_pending', async () => {
-  const repo = tmpDir('pipe-ccr5-mhp-repo-');
-  const sessionDir = tmpDir('pipe-ccr5-mhp-session-');
-  let installCalled = 0;
-  let tagCalled = 0;
-  __setCloserReleaseActionsForTests({ install: () => { installCalled++; }, tag: () => { tagCalled++; } });
-  try {
-    const startCommit = initRepo(repo);
-    writeState(sessionDir, repo, startCommit);
-    writePipeline(sessionDir, repo, ['pickle']);
-    writeTicket(sessionDir, 'aaa11111', 1, 'Done');
-
-    const statePath = path.join(sessionDir, 'state.json');
-    __setSpawnRunnerForTests(async () => {
-      const s = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-      s.exit_reason = 'manager_handoff_pending';
-      fs.writeFileSync(statePath, JSON.stringify(s, null, 2));
-      return { exitCode: 0, stdout: '', stderr: '' };
-    });
-
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.Success);
-
-    assert.equal(installCalled, 0, 'install must NOT be called on manager_handoff_pending stop');
-    assert.equal(tagCalled, 0, 'tag must NOT be called on manager_handoff_pending stop');
-  } finally {
-    __setSpawnRunnerForTests(null);
-    __setCloserReleaseActionsForTests(null);
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }

@@ -165,7 +165,7 @@ Workers run inside the runtime they modify. Hooks enforce these (prose alone fai
 | `spawnSync`/`spawn` no `timeout` | per-callsite | Per-file trap doors |
 | Orchestrator tokens (`EPIC_COMPLETED`, etc.) | none — workers emit only `<promise>I AM DONE</promise>` | `promise-tokens.ts` scrubber |
 
-PRD: `prds/archive/bundles/p1-worker-source-state-recursion-contamination.md`. Closer manager-handoff runbook: `docs/closer-ticket-manager-handoff.md` (manager-owned residuals after `closer_handoff_terminal` / `manager_handoff_pending`).
+PRD: `prds/archive/bundles/p1-worker-source-state-recursion-contamination.md`. Closer manager-handoff runbook: `docs/closer-ticket-manager-handoff.md` (manager-owned residuals after `closer_handoff_terminal`, or a parked Manager Handoff residual — no longer a halting `exit_reason`).
 
 ## Documentation Rule
 

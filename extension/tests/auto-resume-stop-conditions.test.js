@@ -209,32 +209,48 @@ describe('auto-resume.stop-conditions', () => {
   });
 
   test('halts immediately on manager handoff exit reasons without consuming retries', () => {
-    for (const exitReason of ['closer_handoff_terminal', 'manager_handoff_pending']) {
-      runFixtureTest((fixture) => {
-        writeMuxRunner(fixture, singleExitReasonRunner(exitReason));
-        const result = runScript(fixture, { PICKLE_AUTO_RESUME_MAX_RETRIES: '5' });
-        assertCompleted(result);
-        assert.ok(
-          result.stderr.includes(`manager handoff required (exit_reason='${exitReason}')`),
-          `expected manager-handoff stop banner\n${formatResultDiagnostics(result)}`,
-        );
-        assert.equal(
-          readIfExists(fixture.counterFile),
-          '1',
-          `expected manager handoff to stop after first launch\n${formatResultDiagnostics(result)}`,
-        );
-        assert.equal(
-          result.stderrLines.some(line => /\[auto-resume\] retry \d+\//.test(line)),
-          false,
-          `expected manager handoff to avoid retry consumption\n${formatResultDiagnostics(result)}`,
-        );
-        assert.equal(
-          result.stderr.includes('[warn] auto-resume retry'),
-          false,
-          `expected no retry warning banner on manager handoff stop\n${formatResultDiagnostics(result)}`,
-        );
-      });
-    }
+    const exitReason = 'closer_handoff_terminal';
+    runFixtureTest((fixture) => {
+      writeMuxRunner(fixture, singleExitReasonRunner(exitReason));
+      const result = runScript(fixture, { PICKLE_AUTO_RESUME_MAX_RETRIES: '5' });
+      assertCompleted(result);
+      assert.ok(
+        result.stderr.includes(`manager handoff required (exit_reason='${exitReason}')`),
+        `expected manager-handoff stop banner\n${formatResultDiagnostics(result)}`,
+      );
+      assert.equal(
+        readIfExists(fixture.counterFile),
+        '1',
+        `expected manager handoff to stop after first launch\n${formatResultDiagnostics(result)}`,
+      );
+      assert.equal(
+        result.stderrLines.some(line => /\[auto-resume\] retry \d+\//.test(line)),
+        false,
+        `expected manager handoff to avoid retry consumption\n${formatResultDiagnostics(result)}`,
+      );
+      assert.equal(
+        result.stderr.includes('[warn] auto-resume retry'),
+        false,
+        `expected no retry warning banner on manager handoff stop\n${formatResultDiagnostics(result)}`,
+      );
+    });
+  });
+
+  test('TIER-1.2 gh-11: manager_handoff_pending is no longer a named handoff stop condition — it halts via the generic non-incomplete path', () => {
+    runFixtureTest((fixture) => {
+      writeMuxRunner(fixture, singleExitReasonRunner('manager_handoff_pending'));
+      const result = runScript(fixture, { PICKLE_AUTO_RESUME_MAX_RETRIES: '5' });
+      assertCompleted(result);
+      assert.equal(
+        result.stderr.includes("manager handoff required (exit_reason='manager_handoff_pending')"),
+        false,
+        `manager_handoff_pending must not print the named handoff banner\n${formatResultDiagnostics(result)}`,
+      );
+      assert.ok(
+        result.stderr.includes("exit_reason='manager_handoff_pending'"),
+        `expected the generic stop line to still name the reason\n${formatResultDiagnostics(result)}`,
+      );
+    });
   });
 
   test('halts when MAX_RETRIES exhausted', () => {

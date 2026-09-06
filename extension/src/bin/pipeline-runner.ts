@@ -1582,6 +1582,8 @@ export function claimPipelineRunnerActive(statePath: string): State {
     s.pid = process.pid;
     if (
       s.exit_reason === 'failed' || s.exit_reason === 'completed'
+      // TIER-1.2 gh-11: 'manager_handoff_pending' is no longer stamped by mux-runner, but a
+      // pre-existing session resumed after upgrade may still carry the legacy value — clear it.
       || s.exit_reason === 'manager_handoff_pending' || s.exit_reason === 'closer_handoff_terminal'
     ) {
       s.exit_reason = null;
@@ -4405,7 +4407,9 @@ function emitPhaseGraduationRefused(
  */
 // 'recovery_exhausted' is intentionally absent here — it is a fatal non-recoverable failure
 // (isFailureExit=true), NOT an operator handoff; auto-resume.sh R-CNAR-4(c) stops on it.
-const PIPELINE_HANDOFF_EXIT_REASONS = new Set(['manager_handoff_pending', 'closer_handoff_terminal']);
+// TIER-1.2 gh-11: 'manager_handoff_pending' removed — mux-runner never stamps it as an
+// exit_reason anymore (non-halting residual instead), so it can never reach this set.
+const PIPELINE_HANDOFF_EXIT_REASONS = new Set(['closer_handoff_terminal']);
 
 function readHandoffExitReason(statePath: string): string | null {
   try {

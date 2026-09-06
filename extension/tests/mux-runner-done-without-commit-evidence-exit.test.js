@@ -263,11 +263,10 @@ const EXPECTED_HALT_EXITS = [
   'cancelled',
   'closer_handoff_terminal',
   'limit',
-  'manager_handoff_pending',
   'timeout_repeat',
 ];
 
-test('AC-GTRUTH-A2-3: isHaltExit is true for EXACTLY the five session-scoped pause reasons', () => {
+test('AC-GTRUTH-A2-3: isHaltExit is true for EXACTLY the four session-scoped pause reasons', () => {
   const actual = exitReasons().filter((r) => isHaltExit(r)).sort();
   assert.deepEqual(
     actual,

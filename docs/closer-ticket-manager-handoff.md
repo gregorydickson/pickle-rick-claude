@@ -1,11 +1,12 @@
 # Closer Ticket Manager Handoff
 
-Use this runbook when a closer exits with `state.exit_reason = closer_handoff_terminal` or `state.exit_reason = manager_handoff_pending`.
+Use this runbook when a closer exits with `state.exit_reason = closer_handoff_terminal`, or when
+an operator is asked to clear a parked Manager Handoff residual (see below).
 
 ## Meaning
 
-- `closer_handoff_terminal`: the worker hit the configured closer-handoff stop condition and cannot complete manager-owned residuals from worker scope.
-- `manager_handoff_pending`: worker-owned closer work is done and the latest conformance artifact includes a `## Manager Handoff` block.
+- `closer_handoff_terminal`: the worker hit the configured closer-handoff stop condition and cannot complete manager-owned residuals from worker scope. This halts the run.
+- **Manager Handoff residual (TIER-1.2 gh-11)**: worker-owned closer work is done and the latest conformance artifact includes a `## Manager Handoff` block. This does **not** halt the run — the ticket is parked Done and the residual is logged as a `gate_skipped` activity event (`gate_payload.reason: 'manager_handoff_pending'`, `gate_payload.file: <conformance artifact>`) so the operator can find and finish the deferred item without the pipeline stopping. There is no longer a `manager_handoff_pending` value of `state.exit_reason`.
 
 ## Manager-owned steps
 

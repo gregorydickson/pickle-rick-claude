@@ -1664,11 +1664,18 @@ test('classifyIterationExit: continue with rate_limit_event JSON returns api_lim
     }
 });
 
-test('mux-runner source: closer handoff exit reasons are part of the runner contract', () => {
+test('mux-runner source (TIER-1.2 gh-11): closer_handoff_terminal still halts; manager_handoff_pending never does', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../src/bin/mux-runner.ts'), 'utf-8');
     assert.match(source, /closer_handoff_terminal/);
-    assert.match(source, /manager_handoff_pending/);
-    assert.match(source, /const isHaltExit = \(r: ExitReason\).*closer_handoff_terminal.*manager_handoff_pending/s);
+    const isHaltExitLine = source.match(/const isHaltExit = \(r: ExitReason\).*$/m)[0];
+    assert.match(isHaltExitLine, /closer_handoff_terminal/);
+    assert.doesNotMatch(isHaltExitLine, /manager_handoff_pending/);
+    // The reason string survives only as a non-halting residual payload value.
+    assert.match(source, /reason: 'manager_handoff_pending'/);
+
+    const typesSource = fs.readFileSync(path.resolve(__dirname, '../src/types/index.ts'), 'utf-8');
+    const exitReasonsLine = typesSource.match(/export const EXIT_REASONS = \[[\s\S]*?\] as const;/)[0];
+    assert.doesNotMatch(exitReasonsLine, /manager_handoff_pending/);
 });
 
 test('mux-runner source: closer handoff tracker persists ticket id, head sha, and consecutive budget', () => {
@@ -2503,7 +2510,7 @@ test('hasSubstantiveManagerHandoff: section absent returns false', async () => {
     assert.equal(hasSubstantiveManagerHandoff(content), false);
 });
 
-test('mux-runner: exits before manager spawn when a done closer ticket carries manager handoff work', () => {
+test('mux-runner (TIER-1.2 gh-11): a done closer ticket carrying manager handoff work is parked and flagged, never halted', () => {
     const tmpRoot = makeTmpRoot();
     try {
         const sessionDir = path.join(tmpRoot, 'session');
@@ -2516,7 +2523,7 @@ test('mux-runner: exits before manager spawn when a done closer ticket carries m
         writeUnexpectedSpawnStub(stubBinDir, spawnMarker);
 
         const { repoDir } = initCloserTerminalGitRepo(tmpRoot);
-        writeCloserTerminalSession(sessionDir, repoDir, {
+        const ticketId = writeCloserTerminalSession(sessionDir, repoDir, {
             status: 'Done',
             conformanceBody: [
                 'ALL_PASS',
@@ -2529,15 +2536,21 @@ test('mux-runner: exits before manager spawn when a done closer ticket carries m
 
         const result = runMuxRunnerWithDataRoot(sessionDir, dataRoot, stubBinDir);
         assert.equal(result.status, 0, `Expected clean terminal exit, got ${result.status} stderr=${result.stderr}`);
-        assert.equal(fs.existsSync(spawnMarker), false, 'manager subprocess should not spawn when manager handoff is pending');
 
         const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
-        assert.equal(finalState.active, false, 'session should deactivate on manager handoff pending');
-        assert.equal(finalState.exit_reason, 'manager_handoff_pending');
+        // A halted run produces no output; this ticket's own work is already Done and
+        // committed, so the run reports its ordinary completion — never `manager_handoff_pending`.
+        assert.notEqual(finalState.exit_reason, 'manager_handoff_pending');
 
-        const activity = readActivityLines(dataRoot).filter((entry) => entry.terminal_exit_reason === 'manager_handoff_pending');
-        assert.equal(activity.length > 0, true, 'expected a session_end activity for manager_handoff_pending');
-        assert.match(activity.at(-1).reason || '', /Manager Handoff section/);
+        // AC-2: the residual stays operator-visible even though the run did not halt.
+        const residuals = readActivityLines(dataRoot).filter((entry) => (
+            entry.event === 'gate_skipped'
+            && entry.ticket_id === ticketId
+            && entry.gate_payload
+            && entry.gate_payload.reason === 'manager_handoff_pending'
+        ));
+        assert.equal(residuals.length > 0, true, 'expected a park-and-flag residual for the outstanding Manager Handoff section');
+        assert.match(residuals.at(-1).gate_payload.file || '', /conformance_/);
     } finally {
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
