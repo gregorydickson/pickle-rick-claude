@@ -1264,6 +1264,70 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
     ].some(candidate => fs.existsSync(candidate));
   }
 
+  /**
+   * AP-EXT-ITER216-01 — the catalog was checked in ONE direction only.
+   *
+   * Everything above asks "does this row name a real module?". Nothing asked the converse,
+   * "does this module have a row?", and that is the direction the contract is written in:
+   * `src/bin/CLAUDE.md` says every module exported from the subsystem and imported by other
+   * modules MUST appear in the catalog, and names `audit-subsystem-claude-md.sh` as the
+   * enforcer. That script's only non-zero exit is a missing-`python3` preflight — its
+   * `INCOMPLETE` verdict is written into a report and never raised — and it is not in the
+   * release-gate chain, so the completeness axis had no wire at all. Measured on the shipped
+   * tree: 11 `src/services` modules and 1 `src/lib` module were exported AND imported across
+   * a module boundary while carrying no row (`recovery-controller.ts`, `codegraph-service.ts`,
+   * `fom-blocks.ts`, `signature-caller-gap.ts`, `reconcile-ticket-truth.ts` among them).
+   *
+   * The required set is DERIVED — the subsystem's own directory, the import graph under
+   * `src/`, and the filesystem — so it is a checked projection of the export surface rather
+   * than a second hand-kept copy of it, and it needs no per-module exemption list: a module
+   * nothing imports (a CLI entry point) simply never enters the set.
+   */
+  const srcRoot = path.join(extensionRoot, 'src');
+  const RELATIVE_IMPORT_RE = /(?:from\s+|import\s*\(\s*)['"](\.[^'"]+)['"]/g;
+
+  function tsFilesUnder(dir) {
+    const found = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) found.push(...tsFilesUnder(abs));
+      else if (entry.name.endsWith('.ts')) found.push(abs);
+    }
+    return found;
+  }
+
+  // A module is "imported across a boundary" when some OTHER `src/**/*.ts` names it. The
+  // specifier is written `./foo.js` (NodeNext) and resolves to `foo.ts`, so the `.js` suffix is
+  // dropped before probing. ONE resolution form, not a list of them: a directory specifier could
+  // only ever resolve to a nested `index.ts`, which is never a direct child of a catalog's own
+  // directory and so can never be a required row — measured, 0 of the 162 scanned files reach a
+  // specifier that `${base}.ts` does not already resolve. `resolved !== file` is not breadth but
+  // the contract's word "OTHER"; it has no live instance either, and it stays because dropping it
+  // would let a self-import make a module its own importer.
+  const importedAcrossModules = (() => {
+    const targets = new Set();
+    for (const file of tsFilesUnder(srcRoot)) {
+      const body = fs.readFileSync(file, 'utf8');
+      for (const [, specifier] of body.matchAll(RELATIVE_IMPORT_RE)) {
+        const resolved = `${path.resolve(path.dirname(file), specifier).replace(/\.js$/, '')}.ts`;
+        if (resolved !== file && fs.existsSync(resolved)) targets.add(resolved);
+      }
+    }
+    return targets;
+  })();
+
+  function requiredRows(catalogRel) {
+    const dir = path.dirname(path.join(repoRoot, catalogRel));
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith('.ts'))
+      .map(entry => path.join(dir, entry.name))
+      .filter(abs => importedAcrossModules.has(abs))
+      .filter(abs => /^export\s/m.test(fs.readFileSync(abs, 'utf8')))
+      .map(abs => path.basename(abs))
+      .sort();
+  }
+
   const catalogsWithSection = anchorCatalogs.filter(c => catalogRows(c) !== null);
 
   test('AP-EXT-ITER214-01: every module export catalog row names a file that exists', () => {
@@ -1333,6 +1397,43 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
       [asciiRow, unicodeRow, trapDoor].filter(line => ROW_RE.test(line)),
       [asciiRow, unicodeRow],
       'the row shape no longer separates a catalog row from a trap-door entry: it must accept a backticked path followed by `->` or `→` (an optional parenthetical between them) and reject the ` (…) — INVARIANT:` grammar',
+    );
+  });
+  test('AP-EXT-ITER216-01: every module the subsystem exports across a boundary has a catalog row', () => {
+    const missing = [];
+    for (const catalog of catalogsWithSection) {
+      const required = requiredRows(catalog);
+
+      // Per catalog, not summed: a subsystem whose derived set goes dark reads clean for the
+      // wrong reason, and its populated siblings would hide it — the AP-EXT-ITER213-01
+      // per-root vacuity lesson applied to the requirement side of the ledger.
+      assert.ok(
+        required.length > 0,
+        `${catalog}: the derived required-module set is EMPTY, so this catalog is being checked against nothing — the directory walk, the import scan or the export probe stopped reaching the subsystem`,
+      );
+
+      const listed = new Set(catalogRows(catalog).map(row => path.basename(row)));
+      for (const module of required) {
+        if (!listed.has(module)) missing.push(`${catalog} -> ${module}`);
+      }
+    }
+
+    assert.deepEqual(
+      missing,
+      [],
+      'a module exported from the subsystem and imported by another module carries no `## Module Export Catalog` row. The catalog is the index a reader follows to find the import surface, so an absent module is invisible to everyone who reads the subsystem contract instead of the directory — add the row next to its alphabetical neighbours',
+    );
+  });
+
+  test('AP-EXT-ITER216-01: the required set excludes what nothing imports (negative control)', () => {
+    // `reap-orphans.ts` is a `src/bin` CLI entry point that no module imports, and it has no
+    // row; `mux-runner.ts` is imported and does. If the derivation ever stopped keying on the
+    // import graph, the first would be demanded and this arm reds before the live one does.
+    const required = requiredRows('extension/src/bin/CLAUDE.md');
+    assert.deepEqual(
+      [required.includes('reap-orphans.ts'), required.includes('mux-runner.ts')],
+      [false, true],
+      'the derived required set no longer separates an imported module from a CLI entry point nothing imports, so it is demanding rows the subsystem contract does not ask for (or missing the ones it does)',
     );
   });
 });
