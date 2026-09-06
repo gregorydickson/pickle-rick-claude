@@ -89,7 +89,7 @@ parking lot. Acceptance is a live 4/4 run with **zero human interventions**.
 
 ---
 
-## 🧭 QUEUED (after B-CIGREEN) — [[B-MEGADRAIN]]: the whole open backlog, composed BY ROOT (recomposed 2026-09-05)
+## 🔗 ABSORBED INTO [[B-UNATTENDED]] (not separately dispatched) — [[B-MEGADRAIN]]: the whole open backlog, composed BY ROOT (recomposed 2026-09-05)
 
 `prds/p1-b-megadrain-forty-open-items-by-root.md` — **P1, the standing HUGE-bundle vehicle.**
 Operator-set 2026-09-05: *"given the tax of our review cycles we should do huge bundles with many

@@ -11,9 +11,14 @@ supersedes_scope_of: B-MEGADRAIN
 
 ## The filter (root `CLAUDE.md` → autonomous continuous loops)
 
-**Only a defect that (a) PREVENTS THE NEXT ITERATION FROM HAPPENING, or (b) makes the loop CONVERGE ON A
-FALSE ANSWER, earns code. Everything else is recorded and left alone.** Every item below is placed by
-that filter and nothing is here because it is annoying, untidy, or merely wrong.
+**The filter ORDERS the work; it does not EXCLUDE it.** (a) Does it PREVENT THE NEXT ITERATION? (b) Does
+it make the loop CONVERGE ON A FALSE ANSWER? Those come first and second. Everything else we have decided
+to remediate comes third — **in this same bundle**, because the ~300-minute review toll is paid PER
+BUNDLE, so deferring a row costs a whole second toll while carrying it costs almost nothing.
+
+**No parking lot.** An earlier draft cut sixteen rows to a "remainder" bundle. That is how this plan
+accumulated stale rows in the first place — a deferred row is a forgotten row. Everything we intend to
+remediate is below.
 
 **Two consequences, stated up front because they are counter-intuitive:**
 - **Most of this bundle is DELETION.** Three of the four TIER-1 items are removals. A guard added per
@@ -65,19 +70,42 @@ that filter and nothing is here because it is annoying, untidy, or merely wrong.
    soak. A green over an unrun leg is a false answer at release scale. Make it run, or make the skip
    loud and machine-visible — never a silent green.
 
-## TIER 3 — RECORD, DO NOT FIX (fails the filter; listed so the decision is explicit, not silent)
+## TIER 3 — THE REST OF THE BRITTLE CODE WE INTEND TO REMEDIATE (same bundle, lower order)
 
-- **GitHub #6 — auto-commit hardcodes "worker timed out" on a branch that only tests a dirty tree**
-  (`microverse-runner.ts:4657`). Real, and it misled this session's reporting twice. But it changes no
-  disposition, stops no iteration and falsifies no convergence — **it is a reporting defect.** Under the
-  filter it earns a record, not code. *If* the TIER-1/2 work touches that line anyway, correct the
-  message in passing; do not schedule a ticket for it.
-- **Recording the CLI version in state.** Would have turned a four-session bisect into one log line —
-  but it is diagnostic convenience, not a loop defect. Decoupling (item 3) removes the failure; this
-  only labels it. Reconsider *after* item 3, if a second external break lands.
-- **"Collapse 48 classifiers" as a standalone goal.** Replaced by a filter, not a target number: delete
-  every predicate that CAN STOP THE LOOP (items 2, 3) and every classifier NOTHING CONSUMES. LOC down is
-  the grade; the filter is the method. Do not refactor a classifier that neither halts nor lies.
+These neither stop the loop nor falsify convergence, so they do not gate TIER 1/2 — but they are brittle
+code we have decided to fix, and a second bundle for them would cost a second full review toll.
+
+**Every TIER-3 row is CANDIDATE, not verified.** An automated pass over the plan's status cells was
+attempted and **misclassified six sweep-verified-fixed rows as live**. So each ticket re-runs the
+mechanism check against HEAD — grep the MECHANISM, never the `R-` code — and declares
+`zero_diff_intent: already-satisfied` in frontmatter up front when the premise proves stale. B-DRAIN13
+closed two of thirteen that way; a stale row closed cheaply is a success, not waste.
+
+**9. The classifier sweep.** Delete every predicate that CAN STOP THE LOOP and every classifier NOTHING
+CONSUMES. 48 `classify*` + 7 boolean halt predicates (~50 refs) + four overlapping state sets
+(18 + 5 + 1 + 5). This is a filter, not a target number — do not refactor a classifier that neither
+halts nor lies. Report the before/after counts.
+
+**10. GitHub #6** — auto-commit hardcodes `"worker timed out"` on a branch that only tests a dirty tree
+(`microverse-runner.ts:4657`). A reporting defect: it changes no disposition and stops no iteration, but
+it wrote a cause into git history that misled this session's own reporting twice. Name the condition the
+branch actually tests.
+
+**11. CLI version in session state** — `codex_version_seen` exists; `claude_version` appears nowhere in
+`src/`. Diagnosing the 2.1.252 → 2.1.260 break took a four-session bisect. Decoupling (item 3) removes
+the failure; this makes the next external change legible in the first log.
+
+**12. `B-OFFREPO`** — PARTIALLY shipped. `AC-OFFREPO-1/-2a/-2c/-2d` are live across 8 files, but the
+`<workingDir>/extension` keying still stands at 8+ sites in `mux-runner.ts` (`:917 :1170 :5716 :5947
+:6698 :7800`). **Re-measure the five cited sites individually** — scoping it as written rebuilds shipped
+work; closing it drops the live keying.
+
+**13. The deferred drain-queue rows**, each verify-first: `B-CIINT` `R-GRLS` `R-LSPC` `R-APGG`
+`R-DPMC-3` `B-GSUB` `R-TCVC` `R-HNCG` `R-FOMH` `R-RWNF` `R-MVFM` `R-PSCG`, and the codegraph cluster
+`B-CGCAP` `B-CGPROBE` `B-CGHARD` `B-GIMA`.
+
+**Still OUT:** GitHub **#5** (adopt Genesis's persistent-knowledge model) — an *enhancement*, and
+dispatch order is bugs before feature epics. It is the only deliberate exclusion.
 
 ## Global ACs
 
@@ -92,8 +120,7 @@ that filter and nothing is here because it is annoying, untidy, or merely wrong.
   interventions**. Plus the full release gate with the soak genuinely run and a `ci-repro.sh` run naming
   the sha.
 
-## CUT to [[B-MEGADRAIN]] (remainder parking lot)
+## [[B-MEGADRAIN]] is ABSORBED, not deferred
 
-`B-CGCAP` `B-CGPROBE` `B-CGHARD` `B-GIMA` `B-GSUB` `B-CIINT` `R-DPMC-3` `R-GRLS` `R-LSPC` `R-APGG`
-`R-TCVC` `R-HNCG` `R-MVFM` `R-RWNF` `R-FOMH` `R-PSCG`, GitHub **#5** (enhancement), and `B-OFFREPO`
-(partially shipped — needs a per-site re-measure before it can be scoped at all).
+Its live roots are carried above. It is retired as a queued bundle rather than left as a remainder
+parking lot, because a deferred row is a forgotten row and this plan already proved that.
