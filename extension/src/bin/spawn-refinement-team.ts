@@ -1995,6 +1995,48 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim() !== ''))].sort();
 }
 
+export interface RequirementCoverageGap {
+  expectedRequirementIds: string[];
+  missingRequirementIds: string[];
+}
+
+/**
+ * `all_success` must be conditioned on the UNION of requirements actually
+ * covered by the tickets a refinement produced, not on whatever count the
+ * analysts happened to return. `tickets` is populated PER-ANALYST
+ * (`collapseAnalystTicketCopies`), so this reads the raw concatenation
+ * directly — a union over duplicate copies of the same ticket id is
+ * unaffected by the duplication, and routing through the collapse would
+ * additionally lose coverage `mergeAnalystTicketShape` does not union
+ * (`source_ac_ids`/`mapped_requirements` are copied from `first` only).
+ *
+ * The expected set is DERIVED from the PRD parse — the same `AC-*` id
+ * pattern `extractSourceRequirements` uses for composed/peer PRDs, plus a
+ * direct scan of the parent PRD's own body (the common single-PRD case,
+ * which `extractSourceRequirements` does not visit since it exists to
+ * enrich tickets with a PEER source, not to enumerate the parent's own
+ * requirements) — never a hardcoded mirror that can drift out of step with
+ * the PRD.
+ */
+export function computeRequirementCoverageGap(
+  prdPath: string,
+  tickets: RefinementTicketManifestEntry[],
+): RequirementCoverageGap {
+  if (!fs.existsSync(prdPath)) return { expectedRequirementIds: [], missingRequirementIds: [] };
+  const expectedIds = new Set<string>();
+  for (const match of fs.readFileSync(prdPath, 'utf-8').matchAll(/\bAC-[A-Z0-9-]+\b/g)) expectedIds.add(match[0]);
+  for (const requirement of extractSourceRequirements(prdPath)) expectedIds.add(requirement.requirementId);
+  if (expectedIds.size === 0) return { expectedRequirementIds: [], missingRequirementIds: [] };
+  const coveredIds = new Set<string>();
+  for (const ticket of tickets) {
+    for (const id of ticket.source_ac_ids) coveredIds.add(id);
+    for (const id of ticket.mapped_requirements ?? []) coveredIds.add(id);
+  }
+  const expectedRequirementIds = [...expectedIds].sort();
+  const missingRequirementIds = expectedRequirementIds.filter((id) => !coveredIds.has(id));
+  return { expectedRequirementIds, missingRequirementIds };
+}
+
 export function enrichManifestTicketsFromSourcePrds(prdPath: string, tickets: RefinementTicketManifestEntry[]): RefinementTicketManifestEntry[] {
   if (!path.isAbsolute(prdPath)) {
     throw new Error('enrichManifestTicketsFromSourcePrds requires absolute parentPrdPath');
@@ -2562,10 +2604,11 @@ export function buildRefinementManifest(args: RefinementArgs, results: CycleResu
   const decompQualityFlags = detectDecompositionQualityFlags(
     collapseAnalystTicketCopies(classifiedTickets),
   );
+  const requirementCoverage = computeRequirementCoverageGap(args.prdPath, classifiedTickets);
   const manifest: RefinementManifest = {
     prd_path: args.prdPath,
     refinement_dir: results.refinementDir,
-    all_success: results.allSuccess,
+    all_success: results.allSuccess && requirementCoverage.missingRequirementIds.length === 0,
     cycles_requested: results.cyclesRequested,
     cycles_completed: results.allCycleResults.length,
     max_turns_per_worker: results.maxTurns,
@@ -2591,6 +2634,13 @@ export function buildRefinementManifest(args: RefinementArgs, results: CycleResu
   if (decompQualityFlags.length > 0) {
     process.stderr.write(
       `[pickle-rick] decomposition_quality_flags: ${decompQualityFlags.length} ticket(s) flagged (large_tier or open-ended derivation) — see refinement_manifest.json\n`,
+    );
+  }
+  if (requirementCoverage.missingRequirementIds.length > 0) {
+    process.stderr.write(
+      `[pickle-rick] requirement coverage gap: ${requirementCoverage.missingRequirementIds.length} of ` +
+        `${requirementCoverage.expectedRequirementIds.length} requirement(s) not mapped by any ticket: ` +
+        `${requirementCoverage.missingRequirementIds.join(', ')}\n`,
     );
   }
   return manifest;

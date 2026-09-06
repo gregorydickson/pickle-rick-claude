@@ -25,6 +25,7 @@ import {
     findStaleAnchorWarnings,
     evaluateAcShapeEnforcement,
     detectBundleOfBundlesOverCollapse,
+    computeRequirementCoverageGap,
 } from '../bin/spawn-refinement-team.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 
@@ -2053,4 +2054,194 @@ test('AP-EXT-ITER189-01: a bounded ticket no analyst flags stays unflagged', () 
     );
 
     assert.deepEqual(manifest.decomposition_quality_flags, [], 'a bounded ticket must not be flagged');
+});
+
+// ─── TIER-2.6 gh-10: all_success must reflect requirement coverage ──────────
+//
+// `all_success` was declared straight from `results.allSuccess` — whether the
+// analyst PROCESSES exited cleanly — and said nothing about whether the
+// tickets those analysts produced actually covered every requirement in the
+// PRD. A manifest could report `all_success: true` while the loop that reads
+// it never saw the dropped work. `computeRequirementCoverageGap` derives the
+// expected requirement set from the PRD's own `AC-*` ids (never a hardcoded
+// mirror) and unions the ids every ticket (per-analyst copy included — a
+// union is unaffected by duplication) actually maps.
+
+function buildManifestWithPrdBodyAndTickets(dir, prdBody, tickets) {
+    const refinementDir = path.join(dir, 'refinement');
+    writeAcShapeAnalystOutputs(refinementDir, () => tickets, { ac_id: 'AC-1', ticket_ids: [] });
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, prdBody);
+    return buildRefinementManifest(
+        { prdPath, sessionDir: dir },
+        {
+            refinementDir,
+            cyclesRequested: 1,
+            maxTurns: 1,
+            allCycleResults: [[]],
+            finalResults: AC_SHAPE_ANALYST_ROLES.map((roleId) => ({
+                roleId,
+                success: true,
+                logPath: path.join(refinementDir, `${roleId}.log`),
+                cycle: 1,
+            })),
+            allSuccess: true,
+        },
+    );
+}
+
+const NINE_AC_PRD = `---
+title: gh-10 probe
+---
+
+# Probe
+
+## Acceptance Criteria
+- AC-1 first
+- AC-2 second
+- AC-3 third
+- AC-4 fourth
+- AC-5 fifth
+- AC-6 sixth
+- AC-7 seventh
+- AC-8 eighth
+- AC-9 ninth
+`;
+
+function ticketCovering(id, acIds) {
+    return { id, title: `ticket ${id}`, source_ac_ids: acIds, acceptance_test: 'probe', justification: 'probe' };
+}
+
+test('computeRequirementCoverageGap: a PRD requirement no ticket maps is reported missing', () => {
+    const gap = computeRequirementCoverageGap(
+        path.join(tmpDir('pickle-reqgap-prd-'), 'unused'),
+        [],
+    );
+    // Precondition sanity: a non-existent PRD path yields an empty set, never a throw.
+    assert.deepEqual(gap, { expectedRequirementIds: [], missingRequirementIds: [] });
+
+    const dir = tmpDir('pickle-reqgap-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, NINE_AC_PRD);
+    const tickets = [
+        ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3']),
+        ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7']),
+        ticketCovering('T-3', ['AC-9']),
+        // AC-4 and AC-8 are never mapped by any ticket — the known 2-of-9 drop.
+    ];
+    const measured = computeRequirementCoverageGap(prdPath, tickets);
+    assert.equal(measured.expectedRequirementIds.length, 9, 'the PRD declares 9 requirements');
+    assert.deepEqual(measured.missingRequirementIds, ['AC-4', 'AC-8']);
+});
+
+test('computeRequirementCoverageGap: direction 2 — full coverage reports no missing requirements (negative control)', () => {
+    const dir = tmpDir('pickle-reqgap-full-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, NINE_AC_PRD);
+    const tickets = [
+        ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3', 'AC-4']),
+        ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7', 'AC-8']),
+        ticketCovering('T-3', ['AC-9']),
+    ];
+    const measured = computeRequirementCoverageGap(prdPath, tickets);
+    assert.equal(measured.expectedRequirementIds.length, 9);
+    assert.deepEqual(measured.missingRequirementIds, [], 'a fully-mapped requirement set must not be flagged missing');
+});
+
+test('computeRequirementCoverageGap: a union over per-analyst duplicate copies still finds full coverage', () => {
+    // `tickets` is the per-ANALYST concatenation — the same ticket id appears once
+    // per analyst that named it, sometimes with different source_ac_ids. The
+    // union must not be defeated by that duplication (unlike collapse, which
+    // would drop a duplicate copy's ac ids via first-wins merge).
+    const dir = tmpDir('pickle-reqgap-dup-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, NINE_AC_PRD);
+    const tickets = [
+        ticketCovering('T-1', ['AC-1', 'AC-2']),
+        ticketCovering('T-1', ['AC-3', 'AC-4']), // second analyst's copy of the SAME ticket id
+        ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7', 'AC-8', 'AC-9']),
+    ];
+    const measured = computeRequirementCoverageGap(prdPath, tickets);
+    assert.deepEqual(measured.missingRequirementIds, []);
+});
+
+test('AC-1: a manifest missing a requirement CANNOT report all_success: true, even when every analyst succeeded', () => {
+    const dir = tmpDir('pickle-reqgap-manifest-drop-');
+    const manifest = buildManifestWithPrdBodyAndTickets(dir, NINE_AC_PRD, [
+        ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3']),
+        ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7']),
+        ticketCovering('T-3', ['AC-9']),
+    ]);
+    assert.equal(manifest.all_success, false, 'AC-4 and AC-8 are unmapped — all_success must not be true');
+});
+
+test('AC-1 (direction 2): a manifest covering every requirement, with every analyst succeeding, DOES report all_success: true', () => {
+    // The believe-anything failure mode this pins against: a fix that always
+    // reports false (or never reports true) would pass the case above while
+    // being useless. Both directions must hold.
+    const dir = tmpDir('pickle-reqgap-manifest-full-');
+    const manifest = buildManifestWithPrdBodyAndTickets(dir, NINE_AC_PRD, [
+        ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3', 'AC-4']),
+        ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7', 'AC-8']),
+        ticketCovering('T-3', ['AC-9']),
+    ]);
+    assert.equal(manifest.all_success, true, 'full requirement coverage plus successful analysts must report all_success: true');
+});
+
+test('AC-3: a dropped requirement is reported to stderr and the manifest build still completes — no new halt', () => {
+    const dir = tmpDir('pickle-reqgap-nohalt-');
+    const originalWrite = process.stderr.write;
+    const lines = [];
+    process.stderr.write = (chunk, ...rest) => {
+        lines.push(String(chunk));
+        return originalWrite.call(process.stderr, chunk, ...rest);
+    };
+    let manifest;
+    try {
+        manifest = buildManifestWithPrdBodyAndTickets(dir, NINE_AC_PRD, [
+            ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3']),
+            ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7']),
+            ticketCovering('T-3', ['AC-9']),
+        ]);
+    } finally {
+        process.stderr.write = originalWrite;
+    }
+    // buildRefinementManifest is synchronous and process.exit-free; reaching
+    // this line without throwing/exiting IS the no-halt evidence.
+    assert.equal(manifest.all_success, false);
+    assert.ok(
+        lines.some((line) => line.includes('requirement coverage gap') && line.includes('AC-4') && line.includes('AC-8')),
+        'the drop must be reported (reporting is a property, halting is a disposition)',
+    );
+});
+
+test('AC-2: replaying the shipped predicate over a recorded manifest disagrees with a stale all_success: true verdict (2-of-9 drop detected)', () => {
+    // Models a manifest recorded BEFORE this fix: `all_success: true` was
+    // stamped straight from analyst-process success, blind to requirement
+    // coverage. The replay recomputes coverage from the SAME prd_path +
+    // tickets the manifest already carries and must disagree with the stale
+    // recorded verdict.
+    const dir = tmpDir('pickle-reqgap-replay-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, NINE_AC_PRD);
+    const recordedManifest = {
+        prd_path: prdPath,
+        all_success: true, // the stale, pre-fix recorded verdict
+        tickets: [
+            ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3']),
+            ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7']),
+            ticketCovering('T-3', ['AC-9']),
+        ],
+    };
+
+    const replay = computeRequirementCoverageGap(recordedManifest.prd_path, recordedManifest.tickets);
+    const recomputedAllSuccess = replay.missingRequirementIds.length === 0;
+
+    assert.notEqual(
+        recomputedAllSuccess,
+        recordedManifest.all_success,
+        'the recount must disagree with the recorded verdict — that disagreement is the finding',
+    );
+    assert.equal(replay.expectedRequirementIds.length, 9);
+    assert.deepEqual(replay.missingRequirementIds, ['AC-4', 'AC-8'], 'the known 2-of-9 drop must be detected');
 });
