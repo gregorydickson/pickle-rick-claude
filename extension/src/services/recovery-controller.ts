@@ -208,30 +208,6 @@ export function runRecoveryLadder(deps: RecoveryDeps): RecoveryOutcome {
 }
 
 /**
- * R-ORSR-3 taxonomy: the three distinct stalled-iteration failure classes the ladder
- * must NOT conflate. `work_uncommitted` (dirty tree) and `no_work_produced` (clean tree,
- * no plan) already routed; `plan_converged_uncommitted` (clean tree, approved plan, no
- * diff) is the class this ticket gives a real recovery rung instead of a blind Failed-flip.
- */
-export type RecoveryTaxonomy =
-  | 'work_uncommitted'
-  | 'plan_converged_uncommitted'
-  | 'no_work_produced';
-
-/**
- * Classify recovery evidence into its taxonomy string. The three evidence booleans are
- * mutually exclusive by construction (`planConvergedUncommitted` and `noWorkProduced`
- * both require `!treeDirty`), so the precedence here only formalises that ordering.
- * Returns null when no stalled-class signal is present.
- */
-export function classifyRecoveryTaxonomy(evidence: RecoveryEvidence): RecoveryTaxonomy | null {
-  if (evidence.treeDirty) return 'work_uncommitted';
-  if (evidence.planConvergedUncommitted) return 'plan_converged_uncommitted';
-  if (evidence.noWorkProduced) return 'no_work_produced';
-  return null;
-}
-
-/**
  * R-ORSR-3 approval predicate: a converged plan is eligible for execute-converged-plan
  * iff a `plan_*.md` artifact exists AND the co-located `plan_review.md` carries APPROVED.
  * Pure, so the runtime evidence assessor (mux-runner) and the unit tests share one

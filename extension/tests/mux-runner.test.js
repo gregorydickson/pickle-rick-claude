@@ -5297,7 +5297,6 @@ test('AP-EXT-ITER49-01: an unmeasurable tree with an APPROVED plan still reaches
 
 test('AP-EXT-ITER198-01: a DATE-SUFFIXED plan review still reaches the converged-plan rung', async () => {
   const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
-  const { classifyRecoveryTaxonomy } = await import('../services/recovery-controller.js');
   const root = makeTmpRoot();
   const repoDir = seedRecoveryEvidenceRepo(root);
   const sessionDir = path.join(root, 'session');
@@ -5314,12 +5313,10 @@ test('AP-EXT-ITER198-01: a DATE-SUFFIXED plan review still reaches the converged
     evidence.planConvergedUncommitted, true,
     'an APPROVED review the EXECUTOR would read must not be invisible to the gate that gates it',
   );
-  assert.equal(classifyRecoveryTaxonomy(evidence), 'plan_converged_uncommitted');
 });
 
 test('AP-EXT-ITER198-01: the plan REVIEW alone is not plan evidence', async () => {
   const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
-  const { classifyRecoveryTaxonomy } = await import('../services/recovery-controller.js');
   const root = makeTmpRoot();
   const repoDir = seedRecoveryEvidenceRepo(root);
   const sessionDir = path.join(root, 'session');
@@ -5338,7 +5335,6 @@ test('AP-EXT-ITER198-01: the plan REVIEW alone is not plan evidence', async () =
     evidence.noWorkProduced, true,
     'the review is not work — suppressing the honest zero-output class costs the ladder its only accurate verdict',
   );
-  assert.equal(classifyRecoveryTaxonomy(evidence), 'no_work_produced');
 });
 
 test('AP-EXT-ITER198-01: with two reviews present the LEXICOGRAPHIC LAST wins, as in newestExecutablePlanFile', async () => {
@@ -5418,7 +5414,7 @@ function seedAttributedCommitFixture(root) {
 /** Run the real ladder over real evidence, capturing the ledger it would write. */
 async function runLadderOverEvidence(sessionDir, repoDir, ticketId) {
   const { assessRecoveryEvidence } = await import('../bin/mux-runner.js');
-  const { runRecoveryLadder, classifyRecoveryTaxonomy } = await import('../services/recovery-controller.js');
+  const { runRecoveryLadder } = await import('../services/recovery-controller.js');
   const evidence = assessRecoveryEvidence(sessionDir, repoDir, ticketId);
   const ledger = [];
   const outcome = runRecoveryLadder({
@@ -5432,7 +5428,7 @@ async function runLadderOverEvidence(sessionDir, repoDir, ticketId) {
     appendAttempt: (a) => ledger.push(`${a.strategy}/${a.outcome}`),
     log: () => {},
   });
-  return { evidence, outcome, ledger, taxonomy: classifyRecoveryTaxonomy(evidence) };
+  return { evidence, outcome, ledger };
 }
 
 test('AP-EXT-ITER163-01: a ticket that COMMITTED its work is not classified no_work_produced', async () => {
@@ -5445,14 +5441,13 @@ test('AP-EXT-ITER163-01: a ticket that COMMITTED its work is not classified no_w
   assert.equal(f.git(['status', '--porcelain']), '', 'fixture precondition: the tree is clean');
   assert.equal(f.git(['rev-list', '--count', `${f.startCommit}..HEAD`]), '3', 'fixture precondition: 3 commits landed');
 
-  const { evidence, outcome, ledger, taxonomy } = await runLadderOverEvidence(f.sessionDir, f.repoDir, 'tkt1');
+  const { evidence, outcome, ledger } = await runLadderOverEvidence(f.sessionDir, f.repoDir, 'tkt1');
 
   assert.equal(
     evidence.noWorkProduced, false,
     'committed work IS work — a tree-only oracle read the ticket\'s whole delivered ' +
     'implementation as "genuinely zero output at timeout"',
   );
-  assert.equal(taxonomy, null, 'no_work_produced is a false taxonomy for a ticket with committed work');
   assert.notEqual(
     outcome.reason, 'no_work_produced',
     'the ladder must not fall through to the oversized_no_progress Failed flip over committed work',
@@ -5471,14 +5466,13 @@ test('AP-EXT-ITER163-01: a SIBLING ticket\'s commit is not this ticket\'s work (
   // tkt2 delivers; tkt1 produced nothing at all.
   f.commitFor('tkt2', 'sibling.txt');
 
-  const { evidence, outcome, ledger, taxonomy } = await runLadderOverEvidence(f.sessionDir, f.repoDir, 'tkt1');
+  const { evidence, outcome, ledger } = await runLadderOverEvidence(f.sessionDir, f.repoDir, 'tkt1');
 
   assert.equal(
     evidence.noWorkProduced, true,
     'a session-wide commit probe would delete the no_work_produced class outright — ' +
     'the evidence must be attributed to THIS ticket',
   );
-  assert.equal(taxonomy, 'no_work_produced');
   assert.equal(outcome.kind, 'fall_through');
   assert.equal(outcome.reason, 'no_work_produced');
   assert.ok(ledger.includes('auto-split/failed'), 'the genuine zero-output disposition is preserved');

@@ -126,21 +126,6 @@ export function runRecoveryLadder(deps) {
     return { kind: 'exhausted', reason: 'ladder_exhausted' };
 }
 /**
- * Classify recovery evidence into its taxonomy string. The three evidence booleans are
- * mutually exclusive by construction (`planConvergedUncommitted` and `noWorkProduced`
- * both require `!treeDirty`), so the precedence here only formalises that ordering.
- * Returns null when no stalled-class signal is present.
- */
-export function classifyRecoveryTaxonomy(evidence) {
-    if (evidence.treeDirty)
-        return 'work_uncommitted';
-    if (evidence.planConvergedUncommitted)
-        return 'plan_converged_uncommitted';
-    if (evidence.noWorkProduced)
-        return 'no_work_produced';
-    return null;
-}
-/**
  * R-ORSR-3 approval predicate: a converged plan is eligible for execute-converged-plan
  * iff a `plan_*.md` artifact exists AND the co-located `plan_review.md` carries APPROVED.
  * Pure, so the runtime evidence assessor (mux-runner) and the unit tests share one

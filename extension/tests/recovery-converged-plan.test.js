@@ -29,39 +29,7 @@ test('AC1 isConvergedPlanEligible: plan present but review not APPROVED → not 
   assert.equal(isConvergedPlanEligible({ planArtifactExists: true, planReviewApproved: false }), false);
 });
 
-// ---- AC2: taxonomy classification + ladder routing -------------------------
-
-test('AC2 classifyRecoveryTaxonomy: clean tree + approved plan → plan_converged_uncommitted', async () => {
-  const { classifyRecoveryTaxonomy } = await load();
-  assert.equal(
-    classifyRecoveryTaxonomy({ treeDirty: false, planConvergedUncommitted: true, noWorkProduced: false }),
-    'plan_converged_uncommitted',
-  );
-});
-
-test('AC2 classifyRecoveryTaxonomy: dirty tree → work_uncommitted (distinct)', async () => {
-  const { classifyRecoveryTaxonomy } = await load();
-  assert.equal(
-    classifyRecoveryTaxonomy({ treeDirty: true, planConvergedUncommitted: false, noWorkProduced: false }),
-    'work_uncommitted',
-  );
-});
-
-test('AC2 classifyRecoveryTaxonomy: clean tree + no plan → no_work_produced (distinct)', async () => {
-  const { classifyRecoveryTaxonomy } = await load();
-  assert.equal(
-    classifyRecoveryTaxonomy({ treeDirty: false, planConvergedUncommitted: false, noWorkProduced: true }),
-    'no_work_produced',
-  );
-});
-
-test('AC2 classifyRecoveryTaxonomy: no stalled signal → null', async () => {
-  const { classifyRecoveryTaxonomy } = await load();
-  assert.equal(
-    classifyRecoveryTaxonomy({ treeDirty: false, planConvergedUncommitted: false, noWorkProduced: false }),
-    null,
-  );
-});
+// ---- AC2: ladder routing ---------------------------------------------------
 
 test('AC2 INV taxonomy route: approved plan + no diff → ladder advances via execute-converged-plan', async () => {
   const { runRecoveryLadder } = await load();
