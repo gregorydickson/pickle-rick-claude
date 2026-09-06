@@ -990,7 +990,7 @@ esac
   });
 });
 
-// AP-BIN-ITER1-01. The release ASSET, not the gate that reads it. `bin/release-gate.sh
+// AP-BIN-ITER22-01. The release ASSET, not the gate that reads it. `bin/release-gate.sh
 // --post-tag` proves only that `extension/package.json` and the installer script share a
 // payload root, so it exits 0 on a payload whose runtime cannot load: measured against the
 // real published v2.1.0-beta.25 asset, which carries `extension/services/state-manager.js`
