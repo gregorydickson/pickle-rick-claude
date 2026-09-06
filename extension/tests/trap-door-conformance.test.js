@@ -1298,12 +1298,12 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
 
   // A module is "imported across a boundary" when some OTHER `src/**/*.ts` names it. The
   // specifier is written `./foo.js` (NodeNext) and resolves to `foo.ts`, so the `.js` suffix is
-  // dropped before probing. ONE resolution form, not a list of them: a directory specifier could
-  // only ever resolve to a nested `index.ts`, which is never a direct child of a catalog's own
-  // directory and so can never be a required row — measured, 0 of the 162 scanned files reach a
-  // specifier that `${base}.ts` does not already resolve. `resolved !== file` is not breadth but
-  // the contract's word "OTHER"; it has no live instance either, and it stays because dropping it
-  // would let a self-import make a module its own importer.
+  // dropped before probing. ONE resolution form, not a list of them — measured, 0 of the 162
+  // scanned files reach a specifier that `${base}.ts` does not already resolve, and a directory
+  // specifier resolving to a nested `index.ts` would land in the surface below like any other
+  // module rather than falling outside it. `resolved !== file` is not breadth but the contract's
+  // word "OTHER"; it has no live instance either, and it stays because dropping it would let a
+  // self-import make a module its own importer.
   const importedAcrossModules = (() => {
     const targets = new Set();
     for (const file of tsFilesUnder(srcRoot)) {
@@ -1316,16 +1316,66 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
     return targets;
   })();
 
+  /**
+   * AP-EXT-ITER218-01 — a subsystem is a TREE, and the requirement enumerated one level of it.
+   *
+   * The required set was `readdirSync(catalogDir).filter(entry => entry.isFile())`, so every
+   * module in a SUB-directory was dropped before the filters ever saw it — and a directory is
+   * dropped the same way a documented module is, silently. MEASURED on the shipped tree: all 27
+   * modules under `src/services/citadel/` are exported AND cross-imported, every one of them
+   * required by the `services/` contract ("every helper module exported from the subsystem that
+   * is imported by other modules"), and NOT ONE has a catalog row — 27 of that subsystem's 69
+   * required modules, including the whole audit family the citadel phase runs on, invisible to a
+   * completeness wire that reported the catalog complete. The toothless named enforcer
+   * `audit-subsystem-claude-md.sh` shares the same flat `os.listdir`, so both wires inherited one
+   * assumption and neither could see past it. The previous pass then wrote the blind spot INTO
+   * `src/hooks/CLAUDE.md` as "Top-level files only" — a carve-out compensating for the gap
+   * instead of closing it.
+   *
+   * The fix SUBTRACTS the per-catalog directory listing rather than adding a recursive one beside
+   * it. There is now ONE enumeration — the cross-imported, exported modules under `src/` — and
+   * one ownership rule: a module belongs to the catalog whose directory is its DEEPEST ancestor.
+   * That needs no list of which sub-directories to descend into and no exemption list; a future
+   * `src/services/citadel/CLAUDE.md` would take ownership of its own modules the moment it exists.
+   * Ownership is TOTAL rather than guarded: `extension/CLAUDE.md` is an ancestor of all of `src/`,
+   * so a module with no nearer catalog falls up to it and `AP-EXT-ITER217-01` reds because that
+   * catalog carries no export section — one mechanism, not a second unowned-module guard beside
+   * it (a guard that, measured, could never fire).
+   *
+   * Keys are the module path RELATIVE to its catalog (`citadel/reporter.ts`, `git-utils.ts`), not
+   * the basename: two modules with the same basename in different directories are two rows, and
+   * basename keying would have let one satisfy both.
+   */
+  const catalogModuleSurface = [...importedAcrossModules]
+    .filter(abs => /^export\s/m.test(fs.readFileSync(abs, 'utf8')))
+    .sort();
+
+  const requiredByCatalog = (() => {
+    const owners = anchorCatalogs.map(catalog => [
+      catalog,
+      path.dirname(path.join(repoRoot, catalog)) + path.sep,
+    ]);
+    const byCatalog = new Map(anchorCatalogs.map(catalog => [catalog, []]));
+
+    for (const abs of catalogModuleSurface) {
+      let owner = null;
+      let ownerDir = '';
+      for (const [catalog, dir] of owners) {
+        if (abs.startsWith(dir) && dir.length > ownerDir.length) {
+          owner = catalog;
+          ownerDir = dir;
+        }
+      }
+
+      if (owner !== null) byCatalog.get(owner).push(path.relative(ownerDir, abs));
+    }
+
+    for (const modules of byCatalog.values()) modules.sort();
+    return byCatalog;
+  })();
+
   function requiredRows(catalogRel) {
-    const dir = path.dirname(path.join(repoRoot, catalogRel));
-    return fs
-      .readdirSync(dir, { withFileTypes: true })
-      .filter(entry => entry.isFile() && entry.name.endsWith('.ts'))
-      .map(entry => path.join(dir, entry.name))
-      .filter(abs => importedAcrossModules.has(abs))
-      .filter(abs => /^export\s/m.test(fs.readFileSync(abs, 'utf8')))
-      .map(abs => path.basename(abs))
-      .sort();
+    return requiredByCatalog.get(catalogRel) ?? [];
   }
 
   const catalogsWithSection = anchorCatalogs.filter(c => catalogRows(c) !== null);
@@ -1423,7 +1473,7 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
   test('AP-EXT-ITER216-01: every module the subsystem exports across a boundary has a catalog row', () => {
     const missing = [];
     for (const catalog of catalogsNeedingSection) {
-      const listed = new Set((catalogRows(catalog) ?? []).map(row => path.basename(row)));
+      const listed = new Set((catalogRows(catalog) ?? []).map(row => row.replace(/^\.\//, '')));
       for (const module of requiredRows(catalog)) {
         if (!listed.has(module)) missing.push(`${catalog} -> ${module}`);
       }
@@ -1441,6 +1491,35 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
       catalogsWithSection,
       catalogsNeedingSection,
       'the set of catalogs carrying a `## Module Export Catalog` section and the set the import graph says must carry one have diverged. A catalog on the right but not the left exports cross-imported modules while documenting none of them under the heading every wire reads, so it is checked by NOTHING — renaming or deleting the heading is a silent pass. A catalog on the left but not the right is being checked against an empty derived set, so its walk, import scan or export probe went dark',
+    );
+  });
+
+  test('AP-EXT-ITER218-01: the required sets cover the whole src/ export surface, sub-directories included', () => {
+    // The floor first: both sides of the equality below are built from the same walk, so a dark
+    // import graph or a dark export probe would match EMPTY against EMPTY and read as full
+    // coverage — the AP-EXT-ITER213-01 per-root lesson, one level up.
+    assert.ok(
+      catalogModuleSurface.length > 0,
+      'the cross-imported export surface under `src/` is EMPTY, so the coverage equality below is comparing nothing against nothing — the file walk, the import scan or the export probe stopped reaching the tree',
+    );
+
+    // Reconstructing the absolute path from (catalog, relative key) is what makes a re-flattened
+    // derivation loud: a required set that enumerates only a catalog's direct children drops all
+    // 27 `citadel/` modules out of the union while they stay in the surface. It also proves the
+    // keys round-trip, so a row spelling that cannot address a nested module fails here rather
+    // than passing as an unmatched name.
+    const covered = anchorCatalogs
+      .flatMap(catalog =>
+        requiredRows(catalog).map(rel =>
+          path.join(path.dirname(path.join(repoRoot, catalog)), rel),
+        ),
+      )
+      .sort();
+
+    assert.deepEqual(
+      covered,
+      catalogModuleSurface,
+      'the modules the catalogs are held to and the cross-imported export surface under `src/` have diverged. A module in the surface but not covered is required by its subsystem contract and demanded by NO catalog — the shape that hid all 27 `src/services/citadel` modules while the completeness arm read green',
     );
   });
 

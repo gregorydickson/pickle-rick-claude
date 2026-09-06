@@ -2,7 +2,9 @@
 
 Machine-maintained export index for the `hooks/` subsystem, in the row grammar the conformance
 wire reads (`AP-EXT-ITER216-01` / `AP-EXT-ITER217-01` in `tests/trap-door-conformance.test.js`).
-Top-level files only; the `handlers/` sub-directory is covered under Handler Invariants below.
+A module belongs to the nearest `CLAUDE.md` above it, so this index covers the `hooks/` tree including
+`handlers/`; those four handlers are spawned as subprocesses and imported by nothing, so the wire
+requires no row for them today and their invariants are summarised under Handler Invariants below.
 
 - `resolve-state.ts` -> `sameWorkingDir` (compare canonical realpaths for hook cwd matching), `selectScannedStateFile` (choose the best matching state file from a scanned list), `resolveStateFile` (resolve a single authoritative state file path), `loadActiveState` (load and validate a `State` object from disk), `approve` (emit the hook approve response to stdout)
 - `shell-exec.ts` -> `ENV_ASSIGNMENT_RE`, `SHELL_PATTERN_CHARS`, `ShellToken`, `execAnchorIndex`, `execName`, `execNameIs`, `execNamesIn`, `execTokenIndex`, `isShellWrapper`, `shellPatternToRegex`, `shellWordWitness`, `skipEnvAssignments`, `splitShellSegments`, `tokenizeShellCommand`, `tokenizeShellTokens`, `wordExpandsTo` — shell tokenizer backing the config-protection and tsc-gate command scanners
