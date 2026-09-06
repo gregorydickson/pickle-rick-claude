@@ -3713,7 +3713,7 @@ export function autoRescueDirtyTree(ctx) {
     ctx.log('No commits but dirty tree detected — auto-committing worker changes');
     try {
         stageOwnedPaths(ctx.workingDir, toTopLevelPathspecs(plan.stagePaths));
-        execFileSync('git', ['commit', '-m', `microverse: auto-commit (worker timed out before committing)`], { cwd: ctx.workingDir, timeout: 30_000 });
+        execFileSync('git', ['commit', '-m', `microverse: auto-commit (no commits produced — dirty tree detected)`], { cwd: ctx.workingDir, timeout: 30_000 });
         ctx.postIterSha = _deps.getHeadSha(ctx.workingDir);
         ctx.log(`Auto-committed: ${ctx.postIterSha}`);
     }

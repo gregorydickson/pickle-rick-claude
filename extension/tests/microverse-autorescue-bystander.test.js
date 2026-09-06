@@ -80,6 +80,21 @@ test('R-MACB: rescue commits ONLY session-owned dirt — foreign docs/prds untra
     assert.doesNotMatch(committed, /docs\/prd-foreign\.md/, 'foreign docs untracked file must NOT be swept into the rescue commit');
     assert.doesNotMatch(committed, /prds\/other-session\.md/, 'foreign prds untracked file must NOT be swept into the rescue commit');
 
+    // TIER-3.10 (51392b95): the rescue commit message must state only what
+    // this branch observes — no commits were produced and the (owned) tree
+    // was dirty — never an unobserved cause like "worker timed out".
+    const commitMessage = git(workingDir, ['log', '-1', '--format=%s', 'HEAD']);
+    assert.match(
+      commitMessage,
+      /^microverse: auto-commit \(no commits produced.*dirty tree detected\)$/,
+      'rescue commit message must state the observed condition (no commits, dirty tree)',
+    );
+    assert.doesNotMatch(
+      commitMessage,
+      /timed out/,
+      'rescue commit message must NOT assert a timeout this branch never measures',
+    );
+
     // (b) foreign files remain present and untracked in the worktree.
     assert.ok(fs.existsSync(path.join(workingDir, 'docs', 'prd-foreign.md')), 'foreign file must survive on disk');
     const porcelain = git(workingDir, ['status', '--porcelain', '-uall']);
