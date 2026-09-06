@@ -56,7 +56,8 @@ test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 
     // and commands dir as <prefix>/../*, so nesting the prefix keeps those siblings INSIDE
     // the directory after() removes instead of leaking into the shared $TMPDIR.
     const soakHome = fs.realpathSync(fs.mkdtempSync(path.join(tmpBase, 'pickle-soak-')));
-    const installRoot = path.join(soakHome, '.claude', 'pickle-rick');
+    const claudeHome = path.join(soakHome, '.claude');
+    const installRoot = path.join(claudeHome, 'pickle-rick');
     const dataRoot = path.join(soakHome, '.local', 'share', 'pickle-rick');
 
     after(() => {
@@ -68,9 +69,8 @@ test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 
     // The sandbox is deliberately that shape — it mirrors the real layout, so the soak
     // exercises the same branch an operator install takes — so seed the one file a real
     // $HOME would already have. Without this the soak is fail-closed and reds the tier.
-    const settingsPath = path.join(soakHome, '.claude', 'settings.json');
-    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-    fs.writeFileSync(settingsPath, '{}\n');
+    fs.mkdirSync(claudeHome, { recursive: true });
+    fs.writeFileSync(path.join(claudeHome, 'settings.json'), '{}\n');
 
     // Explicit env rather than mutating process.env: the installer resolves several paths
     // from HOME that its --prefix flag does NOT cover (notably the agents dir), so HOME must
@@ -111,7 +111,8 @@ test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 
 
     // --prefix <installRoot> deposits directly into <installRoot>; package.json lives at
     // <installRoot>/extension/package.json.
-    const pkgjsonPath = path.join(installRoot, 'extension', 'package.json');
+    const deployedExtensionDir = path.join(installRoot, 'extension');
+    const pkgjsonPath = path.join(deployedExtensionDir, 'package.json');
     const expectedVersion = JSON.parse(fs.readFileSync(pkgjsonPath, 'utf-8')).version;
     assert.ok(typeof expectedVersion === 'string' && expectedVersion.length > 0,
         'installed package.json must have a version');
@@ -125,12 +126,12 @@ test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 
     const codegraphProbe = spawnSync(
         process.execPath,
         ['-e', "import('@colbymchenry/codegraph').then(()=>process.exit(0),()=>process.exit(1))"],
-        { encoding: 'utf-8', timeout: 30_000, cwd: path.join(installRoot, 'extension'), env: soakEnv },
+        { encoding: 'utf-8', timeout: 30_000, cwd: deployedExtensionDir, env: soakEnv },
     );
     assert.equal(
         codegraphProbe.status,
         0,
-        `deployed @colbymchenry/codegraph must resolve from ${path.join(installRoot, 'extension')}:\n` +
+        `deployed @colbymchenry/codegraph must resolve from ${deployedExtensionDir}:\n` +
         `stdout: ${codegraphProbe.stdout}\nstderr: ${codegraphProbe.stderr}`,
     );
 
