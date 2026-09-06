@@ -210,6 +210,59 @@ order is bugs before feature epics. It stays queued.
 
 ---
 
+## ✂️ ROOT 0 — COLLAPSE THE VERDICT LAYER (operator-set 2026-09-05; ORDER FIRST; subsumes much of A/C/C0)
+
+**Operator: *"all those reasons and classifiers are cruft. fix it."*** This is a SUBTRACTION root and it
+is the thesis of the bundle. Every other root here fixes an INSTANCE of a verdict asserted over
+something unmeasured; this one removes the structure that keeps generating them.
+
+**Measured 2026-09-05 — do not re-derive:**
+
+| | |
+|---|---|
+| phase workers (`spawn-morty` + `backend-spawn`) | **5,238 lines** |
+| verdict/orchestration (`mux` + `pipeline` + `microverse` runners) | **26,327 lines — 5×** |
+| distinct `classify*` / `is*Exit` predicates in `src/` | **52** |
+| overlapping state sets | `MICROVERSE_EXIT_REASONS` **18**, `MICROVERSE_FAILURE_REASONS` **5**, `MICROVERSE_FATAL_REASONS` **1**, `MUX_ITERATION_REASONS` **5** |
+| boolean halt/failure predicates, ~50 refs | `isHaltExit`, `isFailedExit`, `isFailureExit`, `isMicroverseFailureExit`, `isFatalPhaseFailure`, `isIncompleteExit`, `shouldHaltAfterPhase` |
+
+**Output for comparison (commits since 2026-07-01, total 1,593):** pickle **786**, anatomy-park **423**,
+szechuan **139**, microverse rescue 28, **citadel 9**. The work layer earns its keep. Across six recorded
+runs there were **ZERO build failures** — every shortfall came from the verdict layer.
+
+**The whole loop is: iterate on issues until they reach zero.** A phase outcome has three shapes —
+**made progress · did not · could not measure** — plus the crash floor (state unreadable/unwritable).
+Seven booleans and four overlapping sets exist mostly to answer *"should we stop?"*, which the PRIME
+DIRECTIVE already answers: **no**.
+
+### Acceptance criteria (machine-checkable)
+
+- **AC-0a** ONE disposition vocabulary for phase and iteration outcomes. Every surviving predicate is a
+  DERIVATION of it, not an independent list. State the before/after count of predicates and sets.
+- **AC-0b** **Behaviour parity, exhaustively proven.** Build the full `(exit_reason × phase) → action`
+  table from the SHIPPED code, then from the collapsed code, and diff them. Every difference is either
+  absent or named as an intentional defect fix with its evidence. This is the AC that stops a
+  "simplification" from silently changing halt behaviour.
+- **AC-0c** **No new abort condition.** `MICROVERSE_FATAL_REASONS` stays at ONE member
+  (`session_state_corrupted`). The crash floor does not grow. Mutation-verify: adding a member reddens.
+- **AC-0d** Net LOC across the three runners goes **DOWN**, stated as a number. Growth anywhere is
+  repaid in-bundle.
+- **AC-0e** Citadel: it produced **9 commits in two months** while emitting 111/115/25 advisory findings
+  per run that close `cycles: 0, findings_remaining: 67`. `readCitadelReport` has 4 readers — trace them
+  and state whether any finding becomes a fix. If none does, the phase emits a number nobody acts on:
+  either wire it to remediation or delete it. Do not leave it emitting an unread verdict.
+- **AC-0f** Each removed predicate/set member is mutation-verified: deleting it must redden a real test,
+  or it was already dead and its removal is recorded as such with the probe.
+
+**Non-goals.** Do NOT preserve a predicate because a test names it — move the test to the collapsed
+seam. Do NOT add a compatibility shim that keeps both vocabularies alive; two vocabularies is the defect.
+
+**Subsumption.** ROOT A (measurement destroys its own evidence) and ROOT C (two termination channels)
+are instances of this; scope them AFTER ROOT 0 lands and close as `zero_diff_intent: already-satisfied`
+whichever the collapse already fixed.
+
+---
+
 ## 🚨 ROOT C0 — `manager_handoff_pending` HALTS THE PIPELINE ON AN INFORMATIVE NOTE (GitHub #11, operator-filed 2026-09-05)
 
 **Order this FIRST. It is the highest-severity item in this bundle and it endangers this bundle's own
