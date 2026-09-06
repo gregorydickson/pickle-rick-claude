@@ -74,6 +74,21 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🧭 NEXT DISPATCH — [[B-UNATTENDED]]: everything required to run hands-off, and nothing else (2026-09-05)
+
+`prds/p1-b-unattended-the-system-must-run-without-a-human.md` — **P1, operator-set.** Ordered by what
+forces a human into the loop, not by priority tier. ROOT 1 items were each performed BY HAND this week:
+the `$1` launch-template substitution (#9, hand-patched at 3 launches), the `manager_handoff_pending`
+halt (#11, 24% of tickets by live-corpus replay), the self-skipping soak, and unchecked deploy drift.
+ROOT 2 collapses the verdict layer that keeps creating them (26,327 lines vs 5,238 for the workers;
+48 classifiers; +31% LOC in nine weeks; **zero build failures in six runs**). ROOT 3 is the unobserved
+CLI coupling that disabled szechuan for five days. ROOT 4 splits szechuan's generator from its loop.
+
+**Sixteen P2/P3 rows and #5 are deliberately CUT** to [[B-MEGADRAIN]], which becomes the remainder
+parking lot. Acceptance is a live 4/4 run with **zero human interventions**.
+
+---
+
 ## 🧭 QUEUED (after B-CIGREEN) — [[B-MEGADRAIN]]: the whole open backlog, composed BY ROOT (recomposed 2026-09-05)
 
 `prds/p1-b-megadrain-forty-open-items-by-root.md` — **P1, the standing HUGE-bundle vehicle.**
