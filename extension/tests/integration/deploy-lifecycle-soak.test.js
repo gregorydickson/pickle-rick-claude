@@ -63,6 +63,15 @@ test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 
         try { fs.rmSync(soakHome, { recursive: true, force: true }); } catch { /* best-effort */ }
     });
 
+    // The installer classifies <HOME>/.claude/pickle-rick as a DEFAULT-root install and then
+    // REQUIRES a pre-existing settings.json ("run claude at least once first"), exiting 1.
+    // The sandbox is deliberately that shape — it mirrors the real layout, so the soak
+    // exercises the same branch an operator install takes — so seed the one file a real
+    // $HOME would already have. Without this the soak is fail-closed and reds the tier.
+    const settingsPath = path.join(soakHome, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, '{}\n');
+
     // Explicit env rather than mutating process.env: the installer resolves several paths
     // from HOME that its --prefix flag does NOT cover (notably the agents dir), so HOME must
     // point into the sandbox for the run to be hermetic. PICKLE_DATA_ROOT keeps the
@@ -91,7 +100,14 @@ test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 
         timeout: 600_000,
         env: soakEnv,
     });
-    assert.equal(install.status, 0, `install failed: ${install.stderr}`);
+    // Report BOTH streams: the installer sends several of its fatals (missing settings.json,
+    // absent node/jq/rsync) to stdout, so a stderr-only message renders them as a bare
+    // "1 !== 0" with no cause.
+    assert.equal(
+        install.status,
+        0,
+        `install failed (status=${install.status}):\nstdout: ${install.stdout}\nstderr: ${install.stderr}`,
+    );
 
     // --prefix <installRoot> deposits directly into <installRoot>; package.json lives at
     // <installRoot>/extension/package.json.
