@@ -2245,3 +2245,97 @@ test('AC-2: replaying the shipped predicate over a recorded manifest disagrees w
     assert.equal(replay.expectedRequirementIds.length, 9);
     assert.deepEqual(replay.missingRequirementIds, ['AC-4', 'AC-8'], 'the known 2-of-9 drop must be detected');
 });
+
+// ─── AP-EXT-ITER222-01: the coverage gate counts DEFINED requirements, not cited ones ───
+//
+// `computeRequirementCoverageGap` derived its expected set from a whole-body
+// `\bAC-[A-Z0-9-]+\b` scan of the PRD, so an id the PRD merely CITED — another
+// document's already-shipped criterion, a test name in a parenthetical — was counted
+// as a requirement this refinement had to cover. No ticket can ever map a criterion
+// that belongs to another PRD, so `all_success` was false however complete the
+// refinement was. Measured on the shipped bin against the live PRD of the run that
+// found this: a refinement covering all four of its acceptance criteria still reported
+// `all_success: false` over the single prose mention `AC-OFFREPO-1/-2a/-2c/-2d`.
+
+// The citation shape is copied verbatim from that PRD (prd-pickle.md:121) rather than
+// invented, so this fixture cannot drift into a shape the real corpus does not contain.
+const CITING_PRD = `---
+title: cites another PRD's criteria
+---
+
+# Probe
+
+**12. \`B-OFFREPO\`** — PARTIALLY shipped. \`AC-OFFREPO-1/-2a/-2c/-2d\` are live across 8 files, but the
+keying still stands at 8+ sites. (AC-A4 preserved), and the omitted-window arm must still charge.
+
+## Acceptance Criteria
+- AC-1 first
+- AC-2 second
+- AC-3 third
+`;
+
+test('AP-EXT-ITER222-01: a criterion the PRD only CITES is not counted as a requirement this refinement must cover', () => {
+    const dir = tmpDir('pickle-reqgap-cites-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, CITING_PRD);
+
+    const gap = computeRequirementCoverageGap(prdPath, [
+        ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3']),
+    ]);
+
+    assert.deepEqual(
+        gap.expectedRequirementIds,
+        ['AC-1', 'AC-2', 'AC-3'],
+        'AC-OFFREPO-1 and AC-A4 belong to other documents — citing them is not requiring them',
+    );
+    assert.deepEqual(
+        gap.missingRequirementIds,
+        [],
+        'a refinement covering every requirement the PRD DEFINES has no coverage gap',
+    );
+});
+
+test('AP-EXT-ITER222-01 (direction 2): a genuinely dropped requirement in the SAME PRD is still reported', () => {
+    // The believe-anything failure mode this pins against: narrowing the expected set until
+    // nothing is ever expected passes the case above while disabling the gate. This fixture
+    // differs from it ONLY in whether AC-2 rides along.
+    const dir = tmpDir('pickle-reqgap-cites-drop-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, CITING_PRD);
+
+    const gap = computeRequirementCoverageGap(prdPath, [
+        ticketCovering('T-1', ['AC-1', 'AC-3']),
+    ]);
+
+    assert.deepEqual(gap.expectedRequirementIds, ['AC-1', 'AC-2', 'AC-3']);
+    assert.deepEqual(gap.missingRequirementIds, ['AC-2'], 'a defined-but-unmapped requirement must still be flagged');
+});
+
+test('AP-EXT-ITER222-01: every markdown block lead this repo defines requirements in stays EXPECTED', () => {
+    // The rule is "no prose word precedes the id on its line", which has no list of
+    // decorations to maintain — but a future narrowing of it would silently stop expecting
+    // real requirements, and a shrinking expected set fails GREEN. Each line below is a
+    // definition shape taken from the live prds/ corpus; a citation closes the pair.
+    const dir = tmpDir('pickle-reqgap-shapes-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, [
+        '### AC-HEAD-1 — heading definition',
+        '- AC-BULLET-1 bullet definition',
+        '- [ ] **AC-CHECK-1** checkbox definition',
+        '| AC-TABLE-1 | table-row definition |',
+        '7. AC-NUMBER-1 numbered definition',
+        '> AC-QUOTE-1 blockquote definition',
+        '- **AC-PAIR-1**, **AC-PAIR-2**: two on one lead',
+        // Mixed on ONE line: the decision is per-MATCH, not per-line.
+        '- AC-MIXED-1 supersedes AC-CITED-2',
+        'prose that cites AC-CITED-1 mid-sentence is not a definition',
+        '',
+    ].join('\n'));
+
+    const gap = computeRequirementCoverageGap(prdPath, []);
+
+    assert.deepEqual(gap.expectedRequirementIds, [
+        'AC-BULLET-1', 'AC-CHECK-1', 'AC-HEAD-1', 'AC-MIXED-1', 'AC-NUMBER-1',
+        'AC-PAIR-1', 'AC-PAIR-2', 'AC-QUOTE-1', 'AC-TABLE-1',
+    ], 'every definition shape must be expected, and only the cited ids excluded');
+});

@@ -1553,13 +1553,16 @@ function extractSourceRequirements(parentPrdPath) {
             const heading = /^#{1,6}\s+(.+?)\s*$/.exec(line);
             if (heading)
                 section = heading[1].trim();
-            for (const match of line.matchAll(/\bAC-[A-Z0-9-]+\b/g)) {
-                if (requirementsById.has(match[0]))
+            // AP-EXT-ITER222-01: the SAME defines-vs-cites rule the coverage gate uses. A peer PRD
+            // citing a third document's criterion mid-sentence is not a requirement this refinement
+            // sources from it, and enriching a ticket with that citation's section is equally wrong.
+            for (const requirementId of definedRequirementIdsInLine(line)) {
+                if (requirementsById.has(requirementId))
                     continue;
-                requirementsById.set(match[0], {
+                requirementsById.set(requirementId, {
                     sourcePrd: normalizeResolvedPeerPrdPath(parentPrdPath, canonicalPath),
                     sourceSection: section,
-                    requirementId: match[0],
+                    requirementId,
                 });
             }
         }
@@ -1590,6 +1593,30 @@ function extractSourceRequirements(parentPrdPath) {
 function uniqueStrings(values) {
     return [...new Set(values.filter((value) => value.trim() !== ''))].sort();
 }
+const REQUIREMENT_ID_RE = /\bAC-[A-Z0-9-]+\b/g;
+/**
+ * AP-EXT-ITER222-01: the requirement ids a line DEFINES, never the ones it CITES.
+ *
+ * A whole-body `AC-*` scan cannot tell the two apart, and a PRD cites other documents'
+ * criteria constantly — "`AC-OFFREPO-1/-2a` are live across 8 files", "(AC-A4 preserved)",
+ * "the AC-DR-05 trap door all over again". No ticket can ever map a criterion that belongs
+ * to another PRD, so counting one as expected makes the coverage gap permanently non-empty.
+ *
+ * The rule is ONE property with no list of markdown decorations to maintain: a definition
+ * has no PROSE WORD before it on its line. Other requirement ids are not prose, so a
+ * multi-id lead (`- **AC-G1**, **AC-G2**:`) defines both. Every block lead this repo's PRDs
+ * use falls out of that single property — heading, bullet, `- [ ]` checkbox, table row,
+ * numbered item, blockquote, bold, backticks — because none of them contain letters.
+ */
+function definedRequirementIdsInLine(line) {
+    const defined = [];
+    for (const match of line.matchAll(REQUIREMENT_ID_RE)) {
+        if (!/[A-Za-z]/.test(line.slice(0, match.index).replace(REQUIREMENT_ID_RE, ''))) {
+            defined.push(match[0]);
+        }
+    }
+    return defined;
+}
 /**
  * `all_success` must be conditioned on the UNION of requirements actually
  * covered by the tickets a refinement produced, not on whatever count the
@@ -1600,20 +1627,23 @@ function uniqueStrings(values) {
  * additionally lose coverage `mergeAnalystTicketShape` does not union
  * (`source_ac_ids`/`mapped_requirements` are copied from `first` only).
  *
- * The expected set is DERIVED from the PRD parse — the same `AC-*` id
- * pattern `extractSourceRequirements` uses for composed/peer PRDs, plus a
- * direct scan of the parent PRD's own body (the common single-PRD case,
- * which `extractSourceRequirements` does not visit since it exists to
- * enrich tickets with a PEER source, not to enumerate the parent's own
- * requirements) — never a hardcoded mirror that can drift out of step with
- * the PRD.
+ * The expected set is DERIVED from the PRD parse — the same
+ * `definedRequirementIdsInLine` rule `extractSourceRequirements` uses for
+ * composed/peer PRDs, plus a direct scan of the parent PRD's own body (the
+ * common single-PRD case, which `extractSourceRequirements` does not visit
+ * since it exists to enrich tickets with a PEER source, not to enumerate the
+ * parent's own requirements) — never a hardcoded mirror that can drift out of
+ * step with the PRD. It counts only ids the document DEFINES: an id it merely
+ * cites belongs to another PRD and no ticket here can map it.
  */
 export function computeRequirementCoverageGap(prdPath, tickets) {
     if (!fs.existsSync(prdPath))
         return { expectedRequirementIds: [], missingRequirementIds: [] };
     const expectedIds = new Set();
-    for (const match of fs.readFileSync(prdPath, 'utf-8').matchAll(/\bAC-[A-Z0-9-]+\b/g))
-        expectedIds.add(match[0]);
+    for (const line of fs.readFileSync(prdPath, 'utf-8').split(/\r?\n/)) {
+        for (const id of definedRequirementIdsInLine(line))
+            expectedIds.add(id);
+    }
     for (const requirement of extractSourceRequirements(prdPath))
         expectedIds.add(requirement.requirementId);
     if (expectedIds.size === 0)
