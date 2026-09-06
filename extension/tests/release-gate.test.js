@@ -143,7 +143,12 @@ function storeMemberMode(tarballPath, memberName, mode) {
   writeFileSync(tarballPath, zlib.gzipSync(raw));
 }
 
-function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule, moduleMode } = {}) {
+// AP-BIN-ITER26-01. The members below are the DIRECTORIES, not the files inside them, because
+// `.github/workflows/release.yml` tars `extension/` whole — so every real asset carries directory
+// headers with their own stored modes, and a fixture naming files alone leaves that member class,
+// and every gate behaviour keyed on it, unfixtured. `dirMode` is `moduleMode`'s sibling: the same
+// ustar rewrite, applied to the `extension/services/` header.
+function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule, moduleMode, dirMode } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-runtime-'));
   const payload = path.join(dir, 'payload');
   writePackage(payload, version);
@@ -153,18 +158,19 @@ function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule, mo
     path.join(payload, 'extension', 'services', 'state-manager.js'),
     "import { isRecord } from '../lib/is-record.js';\nexport const readState = isRecord;\n",
   );
-  const members = ['extension/package.json', 'install.sh', 'extension/services/state-manager.js'];
+  const members = ['extension/package.json', 'install.sh', 'extension/services'];
   if (carryImportedModule) {
     mkdirSync(path.join(payload, 'extension', 'lib'), { recursive: true });
     writeFileSync(
       path.join(payload, 'extension', 'lib', 'is-record.js'),
       'export const isRecord = (value) => typeof value === "object";\n',
     );
-    members.push('extension/lib/is-record.js');
+    members.push('extension/lib');
   }
   const tarball = path.join(dir, 'pickle-release.tar.gz');
   run('tar', ['-czf', tarball, '-C', payload, ...members]);
   if (moduleMode !== undefined) storeMemberMode(tarball, 'extension/services/state-manager.js', moduleMode);
+  if (dirMode !== undefined) storeMemberMode(tarball, 'extension/services/', dirMode);
   const listing = run('tar', ['-tzf', tarball]).stdout;
   assert.match(listing, /^extension\/package\.json$/m, `fixture lost the package sentinel:\n${listing}`);
   assert.match(listing, /^install\.sh$/m, `fixture lost the installer sentinel:\n${listing}`);
@@ -179,6 +185,12 @@ function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule, mo
     /^-{10}\s/.test(importerRow ?? ''),
     moduleMode === 0o000,
     `fixture stored the wrong mode for the importer:\n${verbose}`,
+  );
+  const dirRow = verbose.split('\n').find((row) => row.endsWith('extension/services/'));
+  assert.equal(
+    /^d-{9}\s/.test(dirRow ?? ''),
+    dirMode === 0o000,
+    `fixture stored the wrong mode for the importer's directory:\n${verbose}`,
   );
   return { dir, tarball };
 }
@@ -410,12 +422,17 @@ esac
   return { dir, tarball, tarPath };
 }
 
-function gate(args, { cwd, pathPrefix } = {}) {
+// `tmpRoot` exists for one case: a payload carrying an UNWALKABLE directory is also an UNDELETABLE
+// one (no mode both blocks `find` and admits `rm -rf`, measured on BSD and GNU), so the gate's own
+// `mktemp -d` survives its EXIT trap. Pointing the gate at a caller-owned root lets that test
+// restore the modes and clean up after itself instead of leaking a permanent temp directory.
+function gate(args, { cwd, pathPrefix, tmpRoot } = {}) {
   return run('bash', [RELEASE_GATE, ...args], {
     cwd,
     env: {
       ...process.env,
       PATH: pathPrefix ? `${pathPrefix}:${process.env.PATH}` : process.env.PATH,
+      ...(tmpRoot ? { TMPDIR: tmpRoot } : {}),
     },
   });
 }
@@ -633,6 +650,48 @@ describe('release-gate.post-tag', () => {
       assert.match(result.stderr, /ships extension\/services\/state-manager\.js but the gate could not read it/);
       assert.doesNotMatch(result.stdout, /^ok:/m);
     } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER26-01. The sweep enumerated its modules through a process substitution, whose exit
+  // status is unreachable. `find` prints everything it DID reach before exiting non-zero for a
+  // directory it could not walk, so a PARTIAL enumeration arrived as a NON-EMPTY file set: the
+  // AP-BIN-ITER24-01 empty-set guard could not see it, `payload_unresolved_import` resolved the
+  // modules it happened to reach and returned 1 — the MEASURED-clean verdict — over the ones it
+  // never opened, and `post_tag` printed `ok:`. That is the third producer of the same
+  // nothing-measured-is-not-a-verdict false-green: AP-BIN-ITER24-01 closed the empty module set and
+  // AP-BIN-ITER25-01 the unreadable FILE, while the unwalkable DIRECTORY defeated both. Measured on
+  // the shipped gate before the fix, on macOS AND on Ubuntu 24.04 under docker: `ok: release
+  // v1.67.0 tarball has extension/package.json version 1.67.0` for this asset, against `die 21` for
+  // the identical asset with the directory walkable.
+  //
+  // Disjoint by construction from the GREEN control above: same fixture, same members, same
+  // contents, same imports, same two sentinels, and here the import RESOLVES — the ONLY difference
+  // is the stored mode of the `extension/services/` DIRECTORY member, so a gate rejecting on
+  // anything else reds the control too.
+  test('exits 21 when the release asset holds a directory the gate cannot walk', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({ carryImportedModule: true, dirMode: 0o000 });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    // An unwalkable directory is an undeletable one, so the gate's `mktemp -d` outlives its EXIT
+    // trap. Own that root here and restore the modes rather than leaking it.
+    const tmpRoot = mkdtempSync(path.join(tmpdir(), 'release-gate-tmproot-'));
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir, tmpRoot });
+      // The VERDICT is the discriminator here, not the status: the same undeletable directory that
+      // defeats `find` also defeats the EXIT trap's `rm -rf`, and the trap's failure overwrites
+      // `die 21` with an undocumented 1 (measured on this asset BEFORE the fix too, where the
+      // status was likewise 1 while stdout carried `ok:`). So `status` cannot separate the two
+      // halves of this pair and the message must — see the release-gate.sh trap door's OPEN GAP.
+      assert.notEqual(result.status, 0, result.stdout);
+      assert.match(result.stderr, /carries no runtime modules to verify/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      run('chmod', ['-R', 'u+rwX', tmpRoot]);
+      rmSync(tmpRoot, { recursive: true, force: true });
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(tarFixture.dir, { recursive: true, force: true });
       rmSync(ghDir, { recursive: true, force: true });

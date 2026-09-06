@@ -240,17 +240,25 @@ payload_relative_specifiers() {
 payload_unresolved_import() {
   local payload_dir="$1"
   local -a files=()
-  local file spec specs
+  local file spec specs listing
+
+  # A process substitution's exit status is unreachable, and `find` prints everything it DID reach
+  # before exiting non-zero for a directory it could not walk — so a PARTIAL enumeration arrived
+  # here as a non-empty file set, the empty-set guard could not see it, and the sweep resolved the
+  # modules it happened to reach and returned 1, the MEASURED-clean verdict, over the ones it never
+  # opened. Materialize the enumeration through a status-checked command substitution, the rule the
+  # archive scans above already apply to every tar listing. An unwalkable payload shares the
+  # NOTHING-MEASURED answer an empty one already gets rather than minting a third state for it:
+  # `find` names the directory it refused on stderr, so the cause reaches the operator unaided.
+  listing="$(find "$payload_dir" -type f -name '*.js' -print)" && [ -n "$listing" ] || {
+    printf 'carries no runtime modules to verify\n'
+    return 2
+  }
 
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     files+=("$file")
-  done < <(find "$payload_dir" -type f -name '*.js' -print)
-
-  if [ ${#files[@]} -eq 0 ]; then
-    printf 'carries no runtime modules to verify\n'
-    return 2
-  fi
+  done <<< "$listing"
 
   for file in "${files[@]}"; do
     specs="$(payload_relative_specifiers "$file")" || {
