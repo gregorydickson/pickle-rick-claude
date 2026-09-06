@@ -15,7 +15,7 @@ import {
   buildWorkerInvocation,
   backendEnvOverrides,
 } from '../services/backend-spawn.js';
-import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js'; // R-SJET-3
+import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir, decoupleJudgeSettingSources } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 import {
   readMicroverseState,
@@ -96,7 +96,7 @@ type FatalErrorMarkResult = 'overwritten' | 'preserved';
 type IterationRunOutcome = Awaited<ReturnType<typeof runIteration>>;
 type ClassifiedIterationExit = ReturnType<typeof classifyIterationExit>;
 export type MetricSnapshot = { raw: string; score: number };
-type JudgeFailureExitReason = Extract<ExitReason, 'judge_timeout' | 'judge_cli_missing' | 'all_judge_backends_exhausted'>;
+type JudgeFailureExitReason = Extract<ExitReason, 'judge_timeout' | 'judge_cli_missing' | 'all_judge_backends_exhausted' | 'judge_unreachable'>;
 type JudgeMeasurementFailureExitReason = Extract<ExitReason, 'judge_timeout' | 'judge_cli_missing' | 'baseline_unmeasurable_unrecoverable' | 'baseline_unmeasurable_transient' | 'all_judge_backends_exhausted'>;
 type CommandMeasurementFailureKind = 'timeout' | 'cli_missing' | 'spawn_failure' | 'failed';
 type ProbeJudgeBackend = Extract<Backend, 'claude' | 'codex'>;
@@ -1563,6 +1563,16 @@ const METRIC_PARK_WAIT_MS = 5 * 60 * 1000;
  * so it lives as a single constant rather than a literal repeated at each write/clear site. */
 const RATE_LIMIT_WAIT_FILENAME = 'rate_limit_wait.json';
 
+/**
+ * How soon after spawn a non-zero exit still counts as "died at startup".
+ *
+ * The four measured rejections all landed at 0.07-0.08s, so this is a ~60x margin, while sitting
+ * far below DEFAULT_JUDGE_TIMEOUT (180s). It is a floor on evidence, not a tuning knob: the
+ * window is one third of a conjunction, and the "no stdout at all" term is what actually
+ * excludes a slow-but-working judge.
+ */
+const JUDGE_STARTUP_REJECTION_WINDOW_MS = 5_000;
+
 export const _deps = {
   execFileSync: execFileSync as typeof execFileSync,
   execFile: execFile as typeof execFile,
@@ -1594,6 +1604,11 @@ export const _deps = {
   recordExitReason: recordExitReason as typeof recordExitReason,
   metricParkMaxMs: METRIC_PARK_MAX_MINUTES * 60 * 1000,
   metricParkWaitMs: METRIC_PARK_WAIT_MS,
+  // B-CLIBRITTLE: injected for the SAME reason as metricParkMaxMs above — the alternative is a
+  // test that burns the real window in wall-clock to prove a slow failure is NOT a startup
+  // rejection. Without a seam here that direction is untestable, and an under-trigger-only test
+  // passes a classify-anything bug.
+  judgeStartupRejectionWindowMs: JUDGE_STARTUP_REJECTION_WINDOW_MS,
 };
 
 type TestRunIterationOverride = typeof runIteration;
@@ -2303,7 +2318,7 @@ export async function measureLlmMetric(
 
 type JudgeMeasurementAttempt = {
   metric: MetricSnapshot | null;
-  failureKind?: 'timeout' | 'cli_missing' | 'failed' | 'rate_limited';
+  failureKind?: 'timeout' | 'cli_missing' | 'failed' | 'rate_limited' | 'startup_rejected';
   message?: string;
   typedFailure?: ClassifiedJudgeError;
 };
@@ -2323,7 +2338,9 @@ type CommandMeasurementResult =
     lastError: string | null;
   };
 
-type JudgeMeasurementExhaustedFailureKind = Exclude<JudgeMeasurementAttempt['failureKind'], 'cli_missing' | undefined>;
+// 'startup_rejected' joins 'cli_missing' here: both are round-terminal, so neither can reach
+// the exhausted path.
+type JudgeMeasurementExhaustedFailureKind = Exclude<JudgeMeasurementAttempt['failureKind'], 'cli_missing' | 'startup_rejected' | undefined>;
 
 type JudgeMeasurementResult =
   | { metric: MetricSnapshot; attempts: number }
@@ -2364,6 +2381,29 @@ export class JudgeMeasurementSpawnFailed extends Error {
   }
 }
 
+/**
+ * B-CLIBRITTLE. The judge CLI refused its CONFIGURATION and died at startup — it never began
+ * the work. An identical retry is deterministic waste, so this kind is terminal FOR THE ATTEMPT.
+ *
+ * It is NEVER a run halt: it reports through the existing non-fatal `judge_unreachable` exit
+ * reason, the phase degrades honestly, and the pipeline continues.
+ *
+ * Recognised by the three axes a startup rejection shares and a genuine timeout inverts on every
+ * one: non-zero exit, death far inside the timeout, and no stdout at all. Measured shapes
+ * (claude 2.1.260, all exit 1 at 0.07-0.08s with empty stdout): `error: unknown option '--x'`,
+ * `error: option '--permission-mode <mode>' argument ... is invalid`,
+ * `Error processing --setting-sources: ...`, `Error: Settings file not found: ...`.
+ * Those messages are EVIDENCE, not a matcher — nothing here enumerates them, so a CLI release
+ * that adds a fifth rejection message needs no edit.
+ */
+export class JudgeStartupRejected extends Error {
+  readonly kind = 'startup_rejected' as const;
+  constructor(msg: string, public readonly elapsed_ms: number) {
+    super(msg);
+    this.name = 'JudgeStartupRejected';
+  }
+}
+
 // R-SJET-1b TRAP DOOR: classifyJudgeError MUST check instanceof typed errors FIRST before
 // regex fallbacks; no standalone ENOENT/ETIMEDOUT regex may appear inside the two spawn
 // function bodies (measureLlmMetricAttempt, probeJudgeBackendAvailability). Each body calls
@@ -2374,7 +2414,21 @@ type ClassifiedJudgeError =
   | { failureKind: 'cli_missing' }
   | { failureKind: 'spawn_failed'; cause_code: string | null }
   | { failureKind: 'rate_limited' }
+  | { failureKind: 'startup_rejected'; elapsed_ms: number }
   | { failureKind: 'unknown' };
+
+/**
+ * The message-derived failure signals, in priority order — ONE home, read by both the typed
+ * `JudgeStartupRejected` branch and the untyped fallback below, so the two cannot drift.
+ * Returns null when the message carries no signal more specific than "it failed".
+ */
+function classifyJudgeErrorByMessage(err: unknown): ClassifiedJudgeError | null {
+  if (isMissingCliError(err)) return { failureKind: 'cli_missing' };
+  const msg = safeErrorMessage(err);
+  if (/\bETIMEDOUT\b/i.test(msg)) return { failureKind: 'timeout' };
+  if (/\b(529|429)\b/.test(msg)) return { failureKind: 'rate_limited' };
+  return null;
+}
 
 export function classifyJudgeError(err: unknown): ClassifiedJudgeError {
   if (err instanceof JudgeMeasurementTimeout) return { failureKind: 'timeout', elapsed_ms: err.elapsed_ms };
@@ -2383,10 +2437,16 @@ export function classifyJudgeError(err: unknown): ClassifiedJudgeError {
       ? { failureKind: 'cli_missing' }
       : { failureKind: 'spawn_failed', cause_code: err.cause_code };
   }
-  if (isMissingCliError(err)) return { failureKind: 'cli_missing' };
-  if (/\bETIMEDOUT\b/i.test(safeErrorMessage(err))) return { failureKind: 'timeout' };
-  if (/\b(529|429)\b/.test(safeErrorMessage(err))) { return { failureKind: 'rate_limited' }; }
-  return { failureKind: 'unknown' };
+  // R-SJET-1b: typed errors are checked BEFORE the untyped fallback. Unlike its two siblings
+  // above, this type asserts a SHAPE (died at startup, no output), not a cause — so the message
+  // may still name something more specific, and a rate limit or an ETIMEDOUT must keep its own
+  // retry/park behaviour rather than being read as a configuration rejection. Startup rejection
+  // is what remains when no more specific signal is present.
+  if (err instanceof JudgeStartupRejected) {
+    return classifyJudgeErrorByMessage(err)
+      ?? { failureKind: 'startup_rejected', elapsed_ms: err.elapsed_ms };
+  }
+  return classifyJudgeErrorByMessage(err) ?? { failureKind: 'unknown' };
 }
 
 const COMMAND_METRIC_KILL_GRACE_MS = 1000;
@@ -2664,7 +2724,11 @@ function buildJudgeAttemptInvocation(
     model,
     systemPrompt: JUDGE_SYSTEM_PROMPT,
   });
-  return { cmd, args, model };
+  // B-CLIBRITTLE: the ONE place the measurement judge's args are assembled, so decoupling here
+  // covers both spawn transports below (legacy execFileSync and spawnWithClosedStdin) without a
+  // per-callsite edit. Deliberately NOT applied to probeJudgeBackendAvailability, whose spawn is
+  // `<backend> --version` — no prompt, no tools, nothing settings-dependent to isolate.
+  return { cmd, args: decoupleJudgeSettingSources(args), model };
 }
 
 function toAttemptFailureKind(c: ClassifiedJudgeError): JudgeMeasurementAttempt['failureKind'] {
@@ -2778,6 +2842,7 @@ function spawnWithClosedStdin(
     let settled = false;
     let stdout = '';
     let stderr = '';
+    const startedAt = Date.now();
     // AP-EXT-ITER53-02: the judge is the ROOT of a subtree (the `claude` CLI spawns
     // its own tool/MCP subprocesses), so it leads its OWN process group and the
     // timeout signals the GROUP. `detached` is the load-bearing half — without it
@@ -2817,7 +2882,18 @@ function spawnWithClosedStdin(
           resolve(stdout.trim());
           return;
         }
+        // Message construction is UNCHANGED from the bare-Error original — downstream consumers
+        // match on this text (isMissingCliError, the 429/529 test), so only the error's TYPE is
+        // new, never its wording.
         const message = stderr.trim() || stdout.trim() || `command exited with code ${code ?? 'unknown'}`;
+        const elapsedMs = Date.now() - startedAt;
+        // B-CLIBRITTLE: the CLI refused its configuration and never started work. All three axes
+        // must hold; a genuine timeout inverts every one of them and settles on the timer path
+        // below as a JudgeMeasurementTimeout, never here.
+        if (elapsedMs < _deps.judgeStartupRejectionWindowMs && stdout.trim() === '') {
+          reject(new JudgeStartupRejected(message, elapsedMs));
+          return;
+        }
         reject(new Error(message));
       });
     });
@@ -3232,6 +3308,22 @@ function judgeCliMissingResult(attempts: number, lastError: string | null): Judg
   return { metric: null, exitReason: 'judge_cli_missing', attempts, lastError, exhaustedFailureKind: 'failed' };
 }
 
+/**
+ * B-CLIBRITTLE. Terminal FOR THE ROUND, never for the run.
+ *
+ * `judge_unreachable` is an EXISTING MICROVERSE_EXIT_REASONS member and is deliberately reused
+ * rather than joined by a new one: it is honest (the judge could not be started), it is already
+ * in MICROVERSE_FAILURE_REASONS so a run cannot report success on it, and pipeline-runner already
+ * routes it to run-finalize-gate-incomplete — degraded, never aborted. No new exit reason, no new
+ * MICROVERSE_FATAL_REASONS member, no new abort condition.
+ *
+ * `lastError` carries the CLI's own rejection text, so the report names the real cause instead of
+ * inheriting a timeout's wording after four timeouts that never had anything to wait for.
+ */
+function judgeStartupRejectedResult(attempts: number, lastError: string | null): JudgeMeasurementResult {
+  return { metric: null, exitReason: 'judge_unreachable', attempts, lastError, exhaustedFailureKind: 'failed' };
+}
+
 function judgeExhaustedResult(state: JudgeBackoffState): JudgeMeasurementResult {
   return {
     metric: null,
@@ -3286,6 +3378,12 @@ async function runJudgeBackoffRound(
     maybeActivateWorkerFallback(ctx, state, result);
     if (result.failureKind === 'cli_missing') {
       return judgeCliMissingResult(state.totalAttempts, state.lastError);
+    }
+    // Alongside cli_missing, and for the same reason: retrying an attempt whose CLI rejected its
+    // configuration in the first moments re-runs an identical command for an identical refusal.
+    // This refuses ONE attempt; the phase still degrades honestly and the pipeline continues.
+    if (result.failureKind === 'startup_rejected') {
+      return judgeStartupRejectedResult(state.totalAttempts, state.lastError);
     }
     if (result.failureKind === 'timeout' && state.exhaustedFailureKind !== 'failed') {
       emitBaselineAttemptTimeout(ctx.attemptActivity, state.totalAttempts, elapsedMs);
@@ -3729,6 +3827,12 @@ function mapJudgeMeasurementFailure(
       return 'judge_cli_missing';
     case 'all_judge_backends_exhausted':
       return 'all_judge_backends_exhausted';
+    // B-CLIBRITTLE: a startup rejection. Explicit rather than riding the `default` below, so the
+    // mapping is a decision on the record. Unmeasurable, and NOT transient — a configuration the
+    // CLI rejects in the first moments does not clear by waiting, which is the same reason the
+    // attempt is not retried.
+    case 'judge_unreachable':
+      return 'baseline_unmeasurable_unrecoverable';
     case 'judge_timeout':
       return measured.exhaustedFailureKind === 'timeout'
         ? 'judge_timeout'

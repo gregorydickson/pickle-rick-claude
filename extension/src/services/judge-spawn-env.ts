@@ -98,6 +98,42 @@ export function getJudgeEnvForAttempt(
   return buildJudgeEnv(narrowed, isNestedClaude());
 }
 
+/**
+ * The explicit, repo-owned value for `claude --setting-sources`: load NO ambient setting
+ * source (`user`, `project`, or `local`).
+ *
+ * WHY an empty string rather than a curated list: the judge needs none of them. Everything the
+ * judge spawn depends on is already passed explicitly on its own command line (model, system
+ * prompt, tool allowlist, add-dirs, permission posture). Anything it would inherit is, by
+ * definition, an input nobody in this repo controls.
+ */
+export const JUDGE_DECOUPLED_SETTING_SOURCES = '';
+
+/**
+ * Appends the ambient-settings decoupling flag to a judge invocation's args.
+ *
+ * B-CLIBRITTLE. The judge spawn is phase-critical, so an unrelated change in the operator's
+ * environment must not be able to make a phase fail. Without this flag the child CLI reads the
+ * operator's `user`/`project`/`local` settings hierarchy, which makes every rule in it — however
+ * old and however benign — a live input to this repo's pipeline.
+ *
+ * DECOUPLE, DO NOT DETECT: this needs no list of known-bad rules. A detector would be an
+ * enumerated set with a maintenance schedule, correct only until the next CLI release
+ * reinterprets a rule nobody has touched in months.
+ *
+ * Measured basis (claude 2.1.260, judge invocation shape, workspace carrying an ambient
+ * `permissions.allow` rule): WITHOUT the flag the child reports reading `.claude/settings.json`;
+ * WITH `--setting-sources ''` its stderr is empty and the file is never consulted. The flag is
+ * accepted by every version in the band spanning the update that motivated this fix
+ * (2.1.248 / 2.1.251 / 2.1.252 / 2.1.260), so no capability probe is warranted.
+ *
+ * Pure: returns a new array and never mutates `args`. Same shape as `scrubGateEnv`
+ * (services/pickle-utils.ts) — a named constant plus a pure transform returning a copy.
+ */
+export function decoupleJudgeSettingSources(args: readonly string[]): string[] {
+  return [...args, '--setting-sources', JUDGE_DECOUPLED_SETTING_SOURCES];
+}
+
 const JUDGE_TMPDIR_PREFIX = 'pickle-judge-';
 
 /**
@@ -120,4 +156,4 @@ export function cleanupJudgeRuntimeDir(env: NodeJS.ProcessEnv): void {
   }
 }
 
-export default { getJudgeEnvForAttempt, buildJudgeEnv, isNestedClaude, cleanupJudgeRuntimeDir };
+export default { getJudgeEnvForAttempt, buildJudgeEnv, isNestedClaude, cleanupJudgeRuntimeDir, decoupleJudgeSettingSources };

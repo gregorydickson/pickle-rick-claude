@@ -9,7 +9,10 @@ import {
   buildJudgeEnv,
   getJudgeEnvForAttempt,
   cleanupJudgeRuntimeDir,
+  decoupleJudgeSettingSources,
+  JUDGE_DECOUPLED_SETTING_SOURCES,
 } from '../services/judge-spawn-env.js';
+import { execFileSync } from 'node:child_process';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 
 // ---------------------------------------------------------------------------
@@ -182,4 +185,78 @@ test('cleanupJudgeRuntimeDir: never throws when the directory was already remove
 
 test('cleanupJudgeRuntimeDir: never throws for a non-existent path outside tmpdir', () => {
   assert.doesNotThrow(() => cleanupJudgeRuntimeDir({ XDG_RUNTIME_DIR: '/run/user/1000' }));
+});
+
+
+// ---------------------------------------------------------------------------
+// B-CLIBRITTLE AC-1 — the judge spawn is decoupled from ambient CLI settings
+// ---------------------------------------------------------------------------
+
+test('decoupleJudgeSettingSources: appends --setting-sources with the repo-owned empty value', () => {
+  const out = decoupleJudgeSettingSources(['--model', 'x', '-p', 'prompt']);
+  const i = out.indexOf('--setting-sources');
+  assert.notEqual(i, -1, 'the decoupling flag must be present');
+  assert.equal(out[i + 1], JUDGE_DECOUPLED_SETTING_SOURCES);
+  assert.equal(JUDGE_DECOUPLED_SETTING_SOURCES, '', 'empty value means: load NO ambient source');
+});
+
+test('decoupleJudgeSettingSources: preserves prior args in order and does not mutate its input', () => {
+  const input = ['--model', 'x', '-p', 'prompt'];
+  const frozen = [...input];
+  const out = decoupleJudgeSettingSources(input);
+  assert.deepEqual(input, frozen, 'input array must not be mutated');
+  assert.deepEqual(out.slice(0, frozen.length), frozen, 'prior args must keep their order');
+});
+
+// The behavioural half of AC-1. A permissive-but-unrelated ambient rule is INSTALLED in a real
+// workspace, and the spawn must still work.
+//
+// The stub models a CLI that treats the ambient rule as fatal — which is the whole hazard class:
+// this repo cannot control which severity a future CLI release assigns to a rule nobody here
+// wrote. Whether any particular shipped version happens to warn or fail on it is exactly the
+// variable the decoupling removes, so the stub pins the property that survives that variance.
+test('AC-1: an ambient permissions rule cannot break the judge spawn once decoupled', () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'clibrittle-ac1-'));
+  try {
+    // The literal rule from the five-day outage.
+    fs.mkdirSync(path.join(ws, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(ws, '.claude', 'settings.json'),
+      JSON.stringify({ permissions: { allow: ['Write(.claude/commands/**)'] } }),
+    );
+
+    const stub = path.join(ws, 'stub-claude.js');
+    fs.writeFileSync(stub, [
+      'const fs = require("fs");',
+      'const path = require("path");',
+      'const args = process.argv.slice(2);',
+      'const i = args.indexOf("--setting-sources");',
+      // Decoupled === flag present AND its value empty (load no sources).
+      'const decoupled = i !== -1 && args[i + 1] === "";',
+      'if (!decoupled) {',
+      '  const f = path.join(process.cwd(), ".claude", "settings.json");',
+      '  if (fs.existsSync(f)) {',
+      '    const s = JSON.parse(fs.readFileSync(f, "utf8"));',
+      '    for (const rule of (s.permissions && s.permissions.allow) || []) {',
+      '      process.stderr.write("Permission allow rule: " + rule + " rejected\\n");',
+      '      process.exit(1);',
+      '    }',
+      '  }',
+      '}',
+      'process.stdout.write("42\\n");',
+    ].join('\n'));
+
+    const run = (extra) => {
+      const args = [stub, '--model', 'm', '-p', 'score it', ...extra];
+      return execFileSync(process.execPath, args, { cwd: ws, encoding: 'utf8', timeout: 20000 }).trim();
+    };
+
+    // Mutation direction that matters: WITHOUT the decoupling the ambient rule kills the spawn.
+    assert.throws(() => run([]), /rejected/, 'control: the installed rule must be able to break an undecoupled spawn');
+
+    // AC-1 proper: with the decoupling the same installed rule is inert and the spawn works.
+    assert.equal(run(decoupleJudgeSettingSources([])), '42');
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
 });
