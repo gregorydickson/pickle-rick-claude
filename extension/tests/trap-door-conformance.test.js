@@ -1203,12 +1203,32 @@ describe('AP-BIN-ITER1-01 anchor sweep catalog coverage (repo)', () => {
  */
 describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
   const HEADING_RE = /^## Module Export Catalog/;
-  const ROW_RE = /^- `([^`]+)`/;
+
+  /**
+   * AP-EXT-ITER215-01 — a row is what it LOOKS like, not where it SITS.
+   *
+   * `## Module Export Catalog` is the LAST `## ` heading in all three catalogs that carry
+   * one, so the heading-to-next-heading slice runs to end of file — and every trap door a
+   * later pass appends lands inside it. A positional `- \`x\`` match therefore read 92 rows
+   * in `src/bin` (38 real), 60 in `src/services` (35) and 14 in `src/lib` (13). The rows it
+   * invented all resolve, so the phantom arm stayed green; what it broke is the per-catalog
+   * vacuity floor below, whose whole job is to notice a section that verifies nothing —
+   * 54 / 25 / 1 trap-door bullets keep `rows.length > 0` true with the real catalog deleted
+   * outright. It also made this pin's own lib evidence ("14 rows, matching its 14 on-disk
+   * modules exactly") a coincidence: the 14th bullet is `reconcile-ticket-truth.ts`'s TRAP
+   * DOOR, and that module has no catalog row at all.
+   *
+   * A row is a backticked path followed by the export arrow — `->` in bin/services, `→` in
+   * lib — with at most a parenthetical between them. Trap doors put ` (…) — INVARIANT:` there
+   * instead, so the arrow separates the two grammars with no list of section boundaries,
+   * heading names or file positions to keep current.
+   */
+  const ROW_RE = /^- `([^`]+)`\s*(?:\([^)]*\)\s*)?(?:->|→)\s/;
 
   // A prose mention like "MUST appear in the `## Module Export Catalog` below" sits inside
   // backticks on a normal line, so the heading is matched at LINE START only. Getting this
   // wrong yields an empty section, which is why the floor below is per catalog and not global.
-  function catalogRows(catalogRel) {
+  function catalogSectionLines(catalogRel) {
     const abs = path.join(repoRoot, catalogRel);
     const lines = fs.readFileSync(abs, 'utf8').split('\n');
     const start = lines.findIndex(line => HEADING_RE.test(line));
@@ -1222,8 +1242,14 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
       }
     }
 
-    return lines
-      .slice(start, end)
+    return lines.slice(start, end);
+  }
+
+  function catalogRows(catalogRel) {
+    const section = catalogSectionLines(catalogRel);
+    if (section === null) return null;
+
+    return section
       .map(line => line.match(ROW_RE))
       .filter(Boolean)
       .map(match => match[1]);
@@ -1276,6 +1302,37 @@ describe('AP-EXT-ITER214-01 module export catalog identity (repo)', () => {
       unresolved,
       ['cycles.ts'],
       'the resolver did not flag the exact phantom row that shipped, so it cannot see the regression it pins',
+    );
+  });
+
+  test('AP-EXT-ITER215-01: a trap door inside the catalog section is not read as a catalog row', () => {
+    // The live half. Every catalog's section ends at EOF, so it holds trap doors; if a
+    // positional row shape comes back, they arrive here as "rows" and the floor above stops
+    // being able to see the real catalog go dark.
+    const misread = [];
+    for (const catalog of catalogsWithSection) {
+      for (const line of catalogSectionLines(catalog)) {
+        if (!line.startsWith('- `') || !ROW_RE.test(line)) continue;
+        if (line.includes('INVARIANT')) misread.push(`${catalog} -> ${line.slice(0, 90)}`);
+      }
+    }
+    assert.deepEqual(
+      misread,
+      [],
+      'a trap-door entry sitting below the `## Module Export Catalog` heading was parsed as a catalog row. Section membership is not row-hood — the heading is the last one in the file, so every appended trap door falls inside its slice, and counting them keeps the per-catalog vacuity floor green over a catalog that has been emptied',
+    );
+  });
+
+  test('AP-EXT-ITER215-01: the row shape accepts both arrow spellings and rejects a trap door (negative control)', () => {
+    // Fixed text, so this arm still separates the two grammars if the live catalogs are ever
+    // reorganised so that no trap door sits inside a catalog section.
+    const asciiRow = '- `pickle-utils.ts` -> `collectTickets`, `ticketFilePath`';
+    const unicodeRow = '- `cluster-fix-selector.ts` (shared analyzer types) → `Finding`, `selectFix`';
+    const trapDoor = '- `pickle-utils.ts` (AP-EXT-ITER208-01 roster ticket identity) — INVARIANT: every ticket carries a non-null id.';
+    assert.deepEqual(
+      [asciiRow, unicodeRow, trapDoor].filter(line => ROW_RE.test(line)),
+      [asciiRow, unicodeRow],
+      'the row shape no longer separates a catalog row from a trap-door entry: it must accept a backticked path followed by `->` or `→` (an optional parenthetical between them) and reject the ` (…) — INVARIANT:` grammar',
     );
   });
 });
