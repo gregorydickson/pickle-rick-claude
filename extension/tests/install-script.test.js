@@ -1751,3 +1751,298 @@ describe('install.sh PreToolUse hook root canonicalization (AP-EXT-ITER12-01)', 
     }
   });
 });
+
+// TIER-2.7: deploy drift has no CONTENT check. A version match proves nothing
+// because install.sh does not bump the version on every change. These tests
+// exercise extension/scripts/audit-deploy-content-drift.sh, a standalone,
+// re-runnable, content-based drift check whose compared file set is DERIVED
+// from install.sh's own rsync --exclude flags and MANAGED_KEYS jq filter
+// (extracted from the REAL install.sh at test time below), never a second
+// hand-maintained list.
+describe('install.sh deploy content drift audit (TIER-2.7)', () => {
+  const DRIFT_AUDIT_SCRIPT = path.join(REPO_ROOT, 'extension', 'scripts', 'audit-deploy-content-drift.sh');
+  const REAL_TS_NODE_MODULES = path.join(REPO_ROOT, 'extension', 'node_modules');
+
+  function extractRsyncExtensionBlock(installShSource) {
+    const lines = installShSource.split('\n');
+    const startIdx = lines.findIndex((l) => l.includes('rsync -a --delete --delete-excluded'));
+    assert.ok(startIdx >= 0, 'rsync -a --delete --delete-excluded line not found in real install.sh');
+    let endIdx = startIdx;
+    for (let i = startIdx; i < lines.length; i++) {
+      endIdx = i;
+      if (lines[i].includes('extension/"')) break;
+    }
+    return { lines: lines.slice(startIdx, endIdx + 1), startIdx, endIdx };
+  }
+
+  function extractManagedKeysLine(installShSource) {
+    const marker = 'MANAGED_KEYS: force code-owned settings source-authoritative';
+    const idx = installShSource.indexOf(marker);
+    assert.ok(idx >= 0, 'MANAGED_KEYS banner comment not found in real install.sh');
+    const after = installShSource.slice(idx);
+    const match = after.match(/^jq '.*$/m);
+    assert.ok(match, "jq '...' MANAGED_KEYS line not found after banner in real install.sh");
+    return match[0];
+  }
+
+  function buildFixtureInstallSh({ extraExclude = null } = {}) {
+    const real = readFileSync(INSTALL_SH, 'utf8');
+    const { lines: rsyncLines } = extractRsyncExtensionBlock(real);
+    const managedKeysLine = extractManagedKeysLine(real);
+    let rsyncBlockLines = rsyncLines;
+    if (extraExclude) {
+      const destIdx = rsyncBlockLines.length - 1;
+      rsyncBlockLines = [
+        ...rsyncBlockLines.slice(0, destIdx),
+        `  --exclude='${extraExclude}' \\`,
+        ...rsyncBlockLines.slice(destIdx),
+      ];
+    }
+    return [
+      '#!/bin/bash',
+      rsyncBlockLines.join('\n'),
+      '',
+      '# MANAGED_KEYS: force code-owned settings source-authoritative',
+      managedKeysLine,
+      '',
+    ].join('\n');
+  }
+
+  // Runs project-mode tsc from `extensionDir` — the SAME invocation shape the
+  // audit script itself uses (`cd extension && npx tsc --outDir <dir>`) — so
+  // the fixture's "clean, pre-seeded deployed" content is produced by the
+  // identical code path the check re-derives, never a hand-tuned CLI flag set
+  // that could drift from what the real invocation emits.
+  function compileFreshProject(extensionDir) {
+    const outDir = mkdtempSync(path.join(tmpdir(), 'drift-fixture-tsc-'));
+    const tscBin = path.join(extensionDir, 'node_modules', '.bin', 'tsc');
+    const result = spawnSync(tscBin, ['--outDir', outDir], { cwd: extensionDir, encoding: 'utf8', timeout: 30000 });
+    assert.strictEqual(result.status, 0, `fixture tsc compile failed: ${result.stdout}\n${result.stderr}`);
+    return outDir;
+  }
+
+  function makeDriftFixture({ extraExclude = null } = {}) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'deploy-drift-fixture-'));
+    const sourceRoot = path.join(dir, 'source');
+    const claudeHome = path.join(dir, 'claude-home');
+    const deployedRoot = path.join(claudeHome, 'pickle-rick');
+    const commandsDir = path.join(claudeHome, 'commands');
+
+    mkdirSync(path.join(sourceRoot, 'extension', 'src', 'bin'), { recursive: true });
+    mkdirSync(path.join(sourceRoot, 'extension', 'src', 'types'), { recursive: true });
+    mkdirSync(path.join(sourceRoot, '.claude', 'commands'), { recursive: true });
+    mkdirSync(deployedRoot, { recursive: true });
+    mkdirSync(commandsDir, { recursive: true });
+
+    writeFileSync(path.join(sourceRoot, 'install.sh'), buildFixtureInstallSh({ extraExclude }), { mode: 0o755 });
+
+    // A tiny TS source that compiles to extension/bin/hello.js (rootDir=src, outDir=.).
+    const tsPath = path.join(sourceRoot, 'extension', 'src', 'bin', 'hello.ts');
+    writeFileSync(tsPath, "export function hello(): string {\n  return 'hello';\n}\n");
+
+    // Real tsconfig.json copied verbatim (rootDir/outDir/module settings must
+    // match exactly what the audit script's own `npx tsc --outDir` invocation
+    // will use, or the "clean" fixture would false-drift on compiler options
+    // alone rather than on real content divergence).
+    writeFileSync(
+      path.join(sourceRoot, 'extension', 'tsconfig.json'),
+      readFileSync(path.join(REPO_ROOT, 'extension', 'tsconfig.json'), 'utf8'),
+    );
+    writeFileSync(path.join(sourceRoot, 'extension', 'package.json'), '{"name":"fixture","version":"9.9.9","type":"module"}\n');
+
+    // Symlink node_modules/.bin/tsc and node_modules/typescript to the REAL
+    // repo's so tsc resolves without a network install; left untracked so
+    // git ls-files never surfaces this fixture-only wiring.
+    mkdirSync(path.join(sourceRoot, 'extension', 'node_modules', '.bin'), { recursive: true });
+    symlinkSync(
+      path.join(REAL_TS_NODE_MODULES, '.bin', 'tsc'),
+      path.join(sourceRoot, 'extension', 'node_modules', '.bin', 'tsc'),
+    );
+    symlinkSync(
+      path.join(REAL_TS_NODE_MODULES, 'typescript'),
+      path.join(sourceRoot, 'extension', 'node_modules', 'typescript'),
+    );
+
+    const extensionDir = path.join(sourceRoot, 'extension');
+    const freshOutDir = compileFreshProject(extensionDir);
+    try {
+      const freshEmit = readFileSync(path.join(freshOutDir, 'bin', 'hello.js'), 'utf8');
+      mkdirSync(path.join(sourceRoot, 'extension', 'bin'), { recursive: true });
+      writeFileSync(path.join(sourceRoot, 'extension', 'bin', 'hello.js'), freshEmit);
+      mkdirSync(path.join(deployedRoot, 'extension', 'bin'), { recursive: true });
+      writeFileSync(path.join(deployedRoot, 'extension', 'bin', 'hello.js'), freshEmit);
+    } finally {
+      rmSync(freshOutDir, { recursive: true, force: true });
+    }
+
+    // A direct (non-TS-sourced) file compared byte-for-byte.
+    writeFileSync(path.join(deployedRoot, 'extension', 'package.json'), readFileSync(path.join(sourceRoot, 'extension', 'package.json'), 'utf8'));
+
+    // The activity-events.schema.json special case: source has a small stub at
+    // extension/activity-events.schema.json, deployed carries the REAL content
+    // copied from extension/src/types/activity-events.schema.json.
+    writeFileSync(path.join(sourceRoot, 'extension', 'activity-events.schema.json'), '{"$ref":"stub"}\n');
+    writeFileSync(path.join(sourceRoot, 'extension', 'src', 'types', 'activity-events.schema.json'), '{"real":"schema"}\n');
+    writeFileSync(path.join(deployedRoot, 'extension', 'activity-events.schema.json'), '{"real":"schema"}\n');
+
+    // Excludable content: node_modules/src/tests must never be compared.
+    mkdirSync(path.join(sourceRoot, 'extension', 'node_modules', 'somepkg'), { recursive: true });
+    writeFileSync(path.join(sourceRoot, 'extension', 'node_modules', 'somepkg', 'index.js'), 'module.exports = {};\n');
+    if (extraExclude) {
+      mkdirSync(path.join(sourceRoot, 'extension', extraExclude), { recursive: true });
+      writeFileSync(path.join(sourceRoot, 'extension', extraExclude, 'whatever.js'), 'MISMATCHED_CONTENT_ON_PURPOSE\n');
+    }
+
+    // .claude/commands/*.md
+    writeFileSync(path.join(sourceRoot, '.claude', 'commands', 'foo.md'), '# foo command\n');
+    writeFileSync(path.join(commandsDir, 'foo.md'), '# foo command\n');
+
+    // persona.md
+    writeFileSync(path.join(sourceRoot, 'persona.md'), '# persona\n');
+    writeFileSync(path.join(deployedRoot, 'persona.md'), '# persona\n');
+
+    // pickle_settings.json: MANAGED_KEYS forced values already satisfied, plus
+    // one unrelated operator-added key that legitimately differs from source.
+    writeFileSync(
+      path.join(sourceRoot, 'pickle_settings.json'),
+      JSON.stringify({ codegraph: { enabled: true, index_at_setup: true, expose_mcp_to_workers: true } }, null, 2),
+    );
+    writeFileSync(
+      path.join(deployedRoot, 'pickle_settings.json'),
+      JSON.stringify({
+        codegraph: { enabled: true, index_at_setup: true, expose_mcp_to_workers: true },
+        auto_update_enabled: false,
+        operator_custom_key: 'operator-set, expected to differ from source',
+      }, null, 2),
+    );
+
+    runGit(sourceRoot, ['init', '-b', 'main']);
+    runGit(sourceRoot, ['config', 'user.email', 'test@example.com']);
+    runGit(sourceRoot, ['config', 'user.name', 'Test User']);
+    runGit(sourceRoot, ['add', 'install.sh', '.claude', 'persona.md', 'pickle_settings.json',
+      'extension/src', 'extension/bin', 'extension/package.json', 'extension/activity-events.schema.json',
+      'extension/tsconfig.json',
+      ...(extraExclude ? [`extension/${extraExclude}`] : [])]);
+    runGit(sourceRoot, ['commit', '-m', 'fixture baseline']);
+
+    return { dir, sourceRoot, deployedRoot, commandsDir };
+  }
+
+  function runDriftAudit(fixture) {
+    const result = spawnSync('bash', [DRIFT_AUDIT_SCRIPT, '--source-root', fixture.sourceRoot, '--deployed-root', fixture.deployedRoot], {
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+    const jsonLine = result.stdout.trim().split('\n').pop();
+    let report = null;
+    try {
+      report = JSON.parse(jsonLine);
+    } catch {
+      // leave report null; assertions below will surface stdout/stderr
+    }
+    return { result, report };
+  }
+
+  function withDriftFixture(options, fn) {
+    const fixture = makeDriftFixture(options);
+    try {
+      fn(fixture);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  }
+
+  test('AC-1: undrifted fixture reports status clean, exit 0', () => {
+    withDriftFixture({}, (fixture) => {
+      const { result, report } = runDriftAudit(fixture);
+      assert.strictEqual(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+      assert.ok(report, `expected a JSON report line, got: ${result.stdout}`);
+      assert.strictEqual(report.status, 'clean');
+      assert.ok(report.checked >= 4, `expected several files checked, got ${report.checked}`);
+      assert.deepEqual(report.drifted, []);
+    });
+  });
+
+  test('AC-1 mutation-verify: perturbing a deployed compiled JS file (version unchanged) reports drift', () => {
+    withDriftFixture({}, (fixture) => {
+      const helloPath = path.join(fixture.deployedRoot, 'extension', 'bin', 'hello.js');
+      const before = readFileSync(helloPath, 'utf8');
+      writeFileSync(helloPath, `${before}\n// perturbed by test, content drifted from a fresh emit\n`);
+
+      const sourcePkg = readFileSync(path.join(fixture.sourceRoot, 'extension', 'package.json'), 'utf8');
+      const deployedPkg = readFileSync(path.join(fixture.deployedRoot, 'extension', 'package.json'), 'utf8');
+      assert.strictEqual(sourcePkg, deployedPkg, 'precondition: versions must match while content drifts');
+
+      const { result, report } = runDriftAudit(fixture);
+      assert.strictEqual(result.status, 1, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+      assert.strictEqual(report.status, 'drift');
+      assert.ok(
+        report.drifted.some((e) => e.path === 'bin/hello.js' && e.reason === 'content_mismatch_vs_fresh_emit'),
+        `expected bin/hello.js drift entry, got: ${JSON.stringify(report.drifted)}`,
+      );
+    });
+  });
+
+  test('AC-1 mutation-verify: perturbing a deployed direct-copy file (persona.md) reports drift', () => {
+    withDriftFixture({}, (fixture) => {
+      writeFileSync(path.join(fixture.deployedRoot, 'persona.md'), '# persona DRIFTED\n');
+      const { result, report } = runDriftAudit(fixture);
+      assert.strictEqual(result.status, 1);
+      assert.strictEqual(report.status, 'drift');
+      assert.ok(
+        report.drifted.some((e) => e.category === 'persona' && e.path === 'persona.md'),
+        `expected persona.md drift entry, got: ${JSON.stringify(report.drifted)}`,
+      );
+    });
+  });
+
+  test('AC-2: excludes are derived from install.sh, not hardcoded (a new exclude is honored)', () => {
+    withDriftFixture({ extraExclude: 'fixtures' }, (fixture) => {
+      const { result, report } = runDriftAudit(fixture);
+      assert.strictEqual(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+      assert.strictEqual(report.status, 'clean');
+      assert.ok(
+        !report.drifted.some((e) => e.path.includes('whatever.js')),
+        'a file under a NEW install.sh --exclude pattern must not be compared at all',
+      );
+    });
+  });
+
+  test('AC-2/settings: MANAGED_KEYS conformance is derived from install.sh\'s own jq filter', () => {
+    withDriftFixture({}, (fixture) => {
+      const { report: cleanReport } = runDriftAudit(fixture);
+      assert.strictEqual(cleanReport.settings_managed_keys_ok, true);
+      assert.strictEqual(cleanReport.status, 'clean', 'an unrelated operator-set key must not itself count as drift');
+
+      const settingsPath = path.join(fixture.deployedRoot, 'pickle_settings.json');
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      settings.auto_update_enabled = true; // violates the forced value (must be false)
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+
+      const { report: driftedReport } = runDriftAudit(fixture);
+      assert.strictEqual(driftedReport.settings_managed_keys_ok, false);
+      assert.ok(driftedReport.drifted.some((e) => e.category === 'settings'));
+    });
+  });
+
+  test('AC-3: the audit script never invokes log-activity or touches state.json (cannot halt the pipeline)', () => {
+    const src = readFileSync(DRIFT_AUDIT_SCRIPT, 'utf8');
+    assert.doesNotMatch(src, /log-activity\.js/);
+    assert.doesNotMatch(src, /state\.json/);
+    assert.doesNotMatch(src, /pipeline-status\.json/);
+  });
+
+  test('not deployed: empty deployed root reports status skipped, exit 0', () => {
+    withDriftFixture({}, (fixture) => {
+      const emptyDeployed = path.join(fixture.dir, 'never-installed');
+      const result = spawnSync('bash', [DRIFT_AUDIT_SCRIPT, '--source-root', fixture.sourceRoot, '--deployed-root', emptyDeployed], {
+        encoding: 'utf8',
+        timeout: 30000,
+      });
+      assert.strictEqual(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+      const report = JSON.parse(result.stdout.trim().split('\n').pop());
+      assert.strictEqual(report.status, 'skipped');
+      assert.strictEqual(report.reason, 'not_deployed');
+    });
+  });
+});
