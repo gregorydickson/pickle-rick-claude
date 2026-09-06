@@ -74,6 +74,28 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🐙 GITHUB ISSUES → BUNDLE MAP (verified against HEAD 2026-09-05; nothing closed)
+
+All open issues were re-measured at HEAD before this map was written. **None qualifies as won't-fix.**
+
+| # | premise verified live by | disposition |
+|---|---|---|
+| **#6** | `microverse-runner.ts:4657` — the hardcoded `"worker timed out"` string is present on a branch guarded only by `owned.length === 0` + dirty tree | B-UNATTENDED **TIER 3** |
+| **#7** | `violation_ledger` 8 refs; szechuan 0-for-2 this session | B-UNATTENDED **TIER 1** (folds into item 4) |
+| **#8** | `microverse-runner.ts:1354` reads *"INV-NO-SELF-DISOWN evidence in either direction — continuing"* | B-UNATTENDED **TIER 2** |
+| **#9** | hand-patched at **3** launches on 2026-09-05; rendered prompt carried `SESSION_ROOT="--refine"` | B-UNATTENDED **TIER 1** |
+| **#10** | `all_success` live at `spawn-refinement-team.ts:2568` | B-UNATTENDED **TIER 2** |
+| **#11** | shipped-predicate replay over the live corpus: 10 of 26 artifacts halt = **24% of all tickets** | B-UNATTENDED **TIER 1** |
+| **#5** | architecture review; already concludes *"do not migrate"* | **OPEN, not scoped — and now MORE relevant** |
+
+**#5 is deliberately left open and unscheduled.** It is not a bug and it is not won't-fix. It states
+that of four ideas worth taking from Genesis, *"one of them is arguably the whole thesis of this project
+that we only half-implemented"* — which speaks directly to the autonomous-continuous-loops principle in
+root `CLAUDE.md` and to the redesign B-UNATTENDED begins. **Read it before the next redesign decision.**
+It stays out of B-UNATTENDED only because dispatch order is bugs before feature epics.
+
+---
+
 ## 🧭 NEXT DISPATCH — [[B-UNATTENDED]]: everything required to run hands-off, and nothing else (2026-09-05)
 
 `prds/p1-b-unattended-the-system-must-run-without-a-human.md` — **P1, operator-set.** Ordered by what
