@@ -989,3 +989,112 @@ esac
     }
   });
 });
+
+// AP-BIN-ITER1-01. The release ASSET, not the gate that reads it. `bin/release-gate.sh
+// --post-tag` proves only that `extension/package.json` and the installer script share a
+// payload root, so it exits 0 on a payload whose runtime cannot load: measured against the
+// real published v2.1.0-beta.25 asset, which carries `extension/services/state-manager.js`
+// but not the `extension/lib/is-record.js` that file statically imports (11 distinct
+// unresolved specifiers; `import()` of the shipped state-manager raises
+// ERR_MODULE_NOT_FOUND). Cause: the workflow's tar member list ALLOW-listed 7
+// subdirectories of `extension/`, so `extension/lib/` (added in e14ca028) and
+// `extension/data/` were never in any asset and the omission was silent.
+//
+// The oracle is DERIVED, never a list: replay the workflow's OWN tar invocation over the
+// real tree, then require every static relative specifier in every payload `.js` member to
+// resolve to another payload member. A new runtime directory needs no edit here; dropping
+// one from the workflow reddens this immediately.
+function parseWorkflowTarOperands() {
+  const workflow = readFileSync(
+    path.join(REPO_ROOT, '.github', 'workflows', 'release.yml'),
+    'utf8',
+  );
+  const lines = workflow.split('\n');
+  const start = lines.findIndex((line) => /^\s*tar -c[a-z]*f\s/.test(line));
+  assert.notEqual(start, -1, 'release.yml no longer builds the asset with `tar -c…f` — this pin cannot replay it');
+
+  const words = [];
+  for (let i = start; i < lines.length; i++) {
+    const continued = lines[i].trimEnd().endsWith('\\');
+    words.push(...lines[i].replace(/\\$/, '').trim().split(/\s+/));
+    if (!continued) break;
+  }
+  // Drop `tar`, its flag word, and the output-archive operand that follows it. Shell
+  // quoting is stripped wholesale, not just at the word edges: `--exclude='node_modules'`
+  // quotes its VALUE, so an edge-only strip leaves a dangling quote in the pattern and
+  // every exclude silently stops matching — the replay would then sweep `extension/tests/`
+  // and `node_modules/` and this pin would red on fixtures instead of on the payload.
+  const operands = words.slice(3).map((word) => word.replace(/['"]/g, ''));
+  assert.ok(
+    operands.some((word) => !word.startsWith('-')),
+    `parsed no path operands from release.yml's tar invocation: ${JSON.stringify(operands)}`,
+  );
+  return operands;
+}
+
+function workflowPayloadMembers() {
+  const listed = run('sh', [
+    '-c',
+    // -cf/-tf, never -czf: the member SET is the subject, and gzip is pure cost here.
+    'tar -cf - "$@" | tar -tf -',
+    'sh',
+    ...parseWorkflowTarOperands(),
+  ], { cwd: REPO_ROOT });
+  assert.equal(listed.status, 0, `could not replay release.yml's tar invocation: ${listed.stderr}`);
+  return new Set(
+    listed.stdout.split('\n').map((name) => name.replace(/\/$/, '')).filter(Boolean),
+  );
+}
+
+const RELATIVE_SPECIFIER_RE =
+  /(?:from|import|require)\s*\(?\s*['"](\.\.?\/[^'"${]*\.(?:js|json))['"]/g;
+
+function unresolvedPayloadImports(members) {
+  const unresolved = [];
+  for (const member of [...members].filter((name) => name.endsWith('.js'))) {
+    const source = readFileSync(path.join(REPO_ROOT, member), 'utf8');
+    for (const match of source.matchAll(RELATIVE_SPECIFIER_RE)) {
+      const target = path.relative(
+        REPO_ROOT,
+        path.resolve(path.dirname(path.join(REPO_ROOT, member)), match[1]),
+      );
+      if (!members.has(target)) unresolved.push(`${member} -> ${match[1]}`);
+    }
+  }
+  return unresolved;
+}
+
+test('release-gate.the workflow asset carries every module its own runtime imports', () => {
+  const members = workflowPayloadMembers();
+  assert.ok(members.size > 50, `replayed payload has only ${members.size} members`);
+
+  const jsMemberCount = [...members].filter((name) => name.endsWith('.js')).length;
+  assert.ok(jsMemberCount > 50, `replayed payload has only ${jsMemberCount} .js members`);
+
+  assert.deepEqual(
+    unresolvedPayloadImports(members),
+    [],
+    'release.yml publishes an asset whose runtime cannot load: an import names a file the asset does not carry',
+  );
+});
+
+test('release-gate.the payload sweep is disjoint from the two-sentinel post-tag check', () => {
+  // Negative control. The post-tag gate greens the very payload the sweep above rejects,
+  // so neither pin restates the other: amputating `extension/lib/` reds only the sweep,
+  // and both members `bin/release-gate.sh` actually looks at survive untouched.
+  const members = workflowPayloadMembers();
+  const withoutLib = new Set([...members].filter((name) => !name.startsWith('extension/lib/')));
+
+  assert.ok(
+    members.size - withoutLib.size > 0,
+    'the replayed payload carries no extension/lib/ members — the control cannot fire',
+  );
+  assert.ok(
+    withoutLib.has('extension/package.json') && withoutLib.has('install.sh'),
+    'the two members post-tag actually checks must survive the amputation, or the control proves nothing',
+  );
+  assert.ok(
+    unresolvedPayloadImports(withoutLib).length > 0,
+    'amputating extension/lib/ left every import resolvable — the sweep would not have caught the shipped defect',
+  );
+});

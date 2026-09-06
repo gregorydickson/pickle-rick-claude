@@ -99,15 +99,23 @@ jobs:
       - name: Build tarball
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # Ship extension/ WHOLE, minus exactly what install.sh's rsync excludes.
+          # An allow-list of subdirectories fails SILENTLY: a directory added later is
+          # simply absent from every asset. extension/lib/ (e14ca028) and extension/data/
+          # were never added here, so every published tarball since carries a runtime that
+          # cannot load -- extension/services/state-manager.js statically imports
+          # ../lib/is-record.js. install.sh rsyncs "$SCRIPT_DIR/extension/" into the
+          # deployed root under exactly these excludes, so mirroring them makes the asset
+          # equal the deployable set and fails toward harmless bloat, never a dead payload.
           tar -czf "pickle-rick-${VERSION}.tar.gz" \
-            extension/bin/ \
-            extension/services/ \
-            extension/types/ \
-            extension/hooks/ \
-            extension/scripts/ \
-            extension/layouts/ \
-            extension/eslint-plugin-pickle/ \
-            extension/package.json \
+            --exclude='node_modules' \
+            --exclude='src' \
+            --exclude='tests' \
+            --exclude='tsconfig.json' \
+            --exclude='package-lock.json' \
+            --exclude='.pickle-rick' \
+            --exclude='.codegraph' \
+            extension/ \
             install.sh \
             .claude/commands/ \
             pickle_settings.json \
