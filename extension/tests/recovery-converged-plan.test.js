@@ -155,3 +155,115 @@ test('parsePlanPhases: no phases at all → empty array', async () => {
   const { parsePlanPhases } = await load();
   assert.deepEqual(parsePlanPhases('# Plan\nNothing here.\n'), []);
 });
+
+// ---- AP-EXT-ITER227-01: the heading grammar matches the authored corpus -----
+//
+// `parsePlanPhases` used to accept ONE spelling — `## Phase N` with an em-dash or
+// hyphen separator — of a heading nothing produces: no template, agent file or command
+// prompt pins the level or the separator, so both are whatever the authoring model wrote.
+// Measured over the operator's 72 live `plan_*.md` artifacts, 45 (63%) parsed to ZERO
+// phases, hiding 177 of 283 authored headings, every one of them headed `### Phase N`.
+//
+// A zero-phase parse is not a degraded parse: `readConvergedPlanPhases` maps it to null,
+// `executeConvergedPlanAdapter` returns `{ok:false}`, and the recovery ladder escalates to
+// the terminal `recovery_exhausted` — discarding the diff the re-execution seam just
+// produced. So this is a case TABLE over the live spellings, not a row per spelling: the
+// grammar must not enumerate levels or separators at all, and a new authored spelling must
+// need no new row here.
+const ITER227_SHAPES = [
+  ['h2 em-dash (the one spelling the old grammar accepted)', '## Phase 1 — structural: add the resolver'],
+  ['h3 em-dash (45 of 72 live plans)', '### Phase 1 — structural: add the resolver'],
+  ['h3 colon (`### Phase 1: Confirm no regression since research`)', '### Phase 1: structural: add the resolver'],
+  ['h2 colon', '## Phase 1: structural: add the resolver'],
+  ['h4 hyphen', '#### Phase 1 - structural: add the resolver'],
+  ['h3 en-dash', '### Phase 1 – structural: add the resolver'],
+  ['no separator at all', '### Phase 1 structural: add the resolver'],
+];
+
+for (const [label, heading] of ITER227_SHAPES) {
+  test(`AP-EXT-ITER227-01: ${label} parses to the same Phase`, async () => {
+    const { parsePlanPhases } = await load();
+    const md = [
+      '# Plan — b3 (37ec5fdf)',
+      '',
+      '## Phases',
+      '',
+      heading,
+      'Edit the resolver, no call site changed.',
+      '**Verify:** `./node_modules/.bin/tsc --noEmit`',
+      '',
+    ].join('\n');
+    assert.deepEqual(parsePlanPhases(md), [{
+      index: 1,
+      title: 'structural: add the resolver',
+      verify: './node_modules/.bin/tsc --noEmit',
+    }], `heading spelling must not decide membership: ${heading}`);
+  });
+}
+
+test('AP-EXT-ITER227-01: every authored Phase of a multi-phase H3 plan is executable', async () => {
+  const { parsePlanPhases } = await load();
+  // The shape of a real `### Phase N` plan (fa96d062/plan_2026-09-07.md), trimmed.
+  const md = [
+    '# Plan — G1 (fa96d062)',
+    '',
+    '## Scope',
+    'One file.',
+    '',
+    '## Phases',
+    '',
+    '### Phase 1 — structural: add the resolver (no call site changed)',
+    '**Verify:** `./node_modules/.bin/tsc --noEmit`',
+    '',
+    '### Phase 2 — behavioural: F4 (`:918`)',
+    '**Verify:** `node --test tests/mux-runner.test.js`',
+    '',
+    '### Phase 3 — full fast tier',
+    '**Verify:** `npm run test:fast`',
+    '',
+    '## Self-check',
+    'Not a phase.',
+    '',
+  ].join('\n');
+  const phases = parsePlanPhases(md);
+  assert.equal(phases.length, 3, 'all three authored phases must be visible');
+  assert.deepEqual(phases.map(p => p.index), [1, 2, 3]);
+  assert.deepEqual(phases.map(p => p.title), [
+    'structural: add the resolver (no call site changed)',
+    'behavioural: F4 (`:918`)',
+    'full fast tier',
+  ]);
+  assert.ok(phases.every(p => p.verify), 'each phase carries its own verify command');
+});
+
+// Over-rejection controls. The fix widens a grammar, so it must be shown NOT to have
+// widened into the surrounding prose — otherwise `executePhaseLoop` would run phases the
+// author never wrote. `## Phases` is the plans' own section header: 43 live occurrences,
+// i.e. more than half the corpus carries one directly above the real headings.
+const ITER227_NON_PHASES = [
+  ['the `## Phases` section header (43 live occurrences)', '## Phases'],
+  ['a `### Phases` section header', '### Phases'],
+  ['a phase-less unit name (`### P1 — the seam bound`)', '### P1 — the seam bound'],
+  ['prose naming a phase', 'See Phase 1 below for the resolver.'],
+  ['a non-heading line that starts with a hash', '#Phase 1 — not a heading'],
+  ['a verify-command heading (`### Verify command`)', '### Verify command (confirms the premise)'],
+];
+
+for (const [label, line] of ITER227_NON_PHASES) {
+  test(`AP-EXT-ITER227-01 control: ${label} is not a Phase`, async () => {
+    const { parsePlanPhases } = await load();
+    assert.deepEqual(
+      parsePlanPhases(`# Plan\n\n${line}\nSome body text.\n`),
+      [],
+      `must not be read as an authored Phase: ${line}`,
+    );
+  });
+}
+
+test('AP-EXT-ITER227-01 control: a section header does not absorb the real Phase below it', async () => {
+  const { parsePlanPhases } = await load();
+  const phases = parsePlanPhases(
+    '# Plan\n\n## Phases\n\n### Phase 2 — the only real one\n\n**Verify:** `true`\n',
+  );
+  assert.deepEqual(phases, [{ index: 2, title: 'the only real one', verify: 'true' }]);
+});

@@ -1746,12 +1746,17 @@ test('AP-EXT-ITER7-01 control: a ticket dir whose only plan has no phases stays 
 // its steps" — the recovery worker re-implements the review VERDICT instead of the approved
 // plan, then the rung reports not-ok and the ladder escalates to `recovery_exhausted`.
 //
-// The parser grammar is the root cause and is fence-blocked (its compiled mirror
-// `extension/services/recovery-controller.js` is outside this branch's `scope.json`), so the
-// fix lands where the candidate SET is built: a review artifact is never a plan candidate.
-// These cases therefore assert WHICH ARTIFACT the implement pass receives — the observable the
-// defect actually moves — and never the rung's ok, which an H3-headed plan leaves not-ok either
-// way until the grammar gap is closed.
+// The parser grammar is the root cause. It was recorded here as fence-blocked (its compiled
+// mirror `extension/services/recovery-controller.js` outside that branch's `scope.json`), so
+// the fix landed where the candidate SET is built: a review artifact is never a plan
+// candidate. These cases therefore assert WHICH ARTIFACT the implement pass receives — the
+// observable that fix actually moves — and never the rung's ok.
+//
+// AP-EXT-ITER227-01 closed the grammar itself (the fence premise was re-derived and found
+// stale), so the rung's ok is now observable for an H3-headed plan; the case at the bottom of
+// this block pins it. Keep the two separate: the candidate-SET rule must hold even when the
+// grammar recognises every candidate, or a phase-less `plan_review` is re-elected by the
+// lexicographic tie-break the moment a plan stops parsing again.
 
 /** A reExecutionSeam that records the plan basename it was handed and claims success. */
 function recordingReExecutionSeam(handed) {
@@ -1788,6 +1793,65 @@ test('AP-EXT-ITER58-01: an unparseable-header plan still routes the implement pa
   assert.deepEqual(
     handed, ['plan_2026-07-11.md'],
     'the implement pass must re-execute the approved plan, never the plan review verdict',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+// AP-EXT-ITER227-01: the rung's verdict for an `### Phase N` plan — the shape 45 of the
+// operator's 72 live `plan_*.md` artifacts use. Before the grammar collapse `parsePlanPhases`
+// returned [], `readConvergedPlanPhases` mapped that to null, and the adapter returned
+// `{ok:false}` AFTER the re-execution seam had already produced a real diff: the work was
+// abandoned uncommitted and the ladder escalated to the terminal `recovery_exhausted`.
+//
+// Assert the LANDED COMMIT, not just `ok` — `reportConvergedPlanOutcome`'s verdict is ground
+// truth (AP-EXT-ITER2-01), so an `ok`-only oracle could be satisfied by a rung that committed
+// nothing.
+
+/** A seam that writes a real diff into the repo, as a live implement pass would. */
+function diffProducingReExecutionSeam(repo, handed) {
+  return {
+    spawnImplementPass: (opts) => {
+      handed.push(path.basename(opts.planPath));
+      writeFileSync(path.join(repo, 'produced.ts'), 'export const produced = 1;\n');
+      return { ok: true };
+    },
+  };
+}
+
+test('AP-EXT-ITER227-01: an `### Phase N` plan commits its produced diff instead of escalating', () => {
+  const { repo, baseSha } = makeRepo('ap-iter227-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter227-session-');
+  const ticketId = 'd4e5f6a7';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress' });
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-09-07.md'),
+    [
+      '# Plan',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1 — land the resolver',
+      '**Verify:** `true`',
+      '',
+      '### Phase 2 — full verification',
+      '**Verify:** `true`',
+      '',
+    ].join('\n'),
+  );
+
+  const handed = [];
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+    reExecutionSeam: diffProducingReExecutionSeam(repo, handed),
+  });
+
+  assert.deepEqual(handed, ['plan_2026-09-07.md'], 'precondition: the plan, not the review, was re-executed');
+  assert.equal(out.ok, true, 'an H3-headed plan must not escalate the ladder over a produced diff');
+  assert.notEqual(
+    git(repo, ['rev-parse', 'HEAD']), baseSha,
+    'the produced diff must be committed — the rung verdict is ground truth, not a phase tally',
   );
 
   rmSync(repo, { recursive: true, force: true });

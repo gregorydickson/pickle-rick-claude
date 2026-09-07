@@ -227,15 +227,36 @@ export interface PlanPhase {
   verify: string | null;
 }
 
-const PLAN_PHASE_SPLIT_RE = /^(?=## Phase \d+)/m;
-const PLAN_PHASE_HEADER_RE = /^## Phase (\d+)\s*(?:[—-]\s*(.*))?$/m;
+/**
+ * AP-EXT-ITER227-01: a Phase heading is `<any ATX level> Phase <N>` and the rest of the line
+ * is its title. The heading level and the title separator are NOT part of the grammar,
+ * because nothing produces them: no template, agent file or command prompt pins either one,
+ * so both are whatever the authoring model wrote that iteration.
+ *
+ * The prior shape enumerated one level (`##`) and two separators (`[—-]`), and the separator
+ * group was load-bearing — an unlisted one made the WHOLE header fail to match, so the phase
+ * became invisible rather than untitled. Measured over the operator's 72 live `plan_*.md`
+ * artifacts: 45 of them (63%) parsed to ZERO phases, hiding 177 of 283 authored headings,
+ * every one of them headed `### Phase N`.
+ *
+ * Nothing here is a list any more. The split and the header agree by construction (the header
+ * accepts anything after the number, so every split point parses — they could previously
+ * disagree and silently drop a block), and `PLAN_PHASE_TITLE_SEPARATOR_RE` is off the
+ * load-bearing path: a punctuation mark it does not know costs a leading character in a commit
+ * subject, never a lost phase. `## Phases` — the plans' own section header, 43 live
+ * occurrences — still does not match, since a digit must follow.
+ */
+const PLAN_PHASE_SPLIT_RE = /^(?=#{1,6}[ \t]+Phase[ \t]+\d+)/m;
+const PLAN_PHASE_HEADER_RE = /^#{1,6}[ \t]+Phase[ \t]+(\d+)[ \t]*(.*)$/m;
+/** Cosmetic only: strips an authored `—`/`-`/`:`/`.` title separator. Never decides membership. */
+const PLAN_PHASE_TITLE_SEPARATOR_RE = /^[—–\-:.]+[ \t]*/;
 const PLAN_PHASE_VERIFY_RE = /\*\*Verify:\*\*[^`\n]*`([^`]+)`/;
 
 /**
- * Parse the authored `## Phase N — Title` blocks (each with an optional
+ * Parse the authored `Phase N — Title` blocks (each with an optional
  * `**Verify:** \`cmd\`` line) out of an approved plan's markdown. The Phase is the plan's
- * authored unit (spawn-morty plan template), NOT a finding. Blocks without a parseable
- * header are skipped; a block with no verify command yields `verify: null`.
+ * authored unit, NOT a finding. Blocks without a parseable header are skipped; a block with
+ * no verify command yields `verify: null`.
  */
 export function parsePlanPhases(planMarkdown: string): PlanPhase[] {
   const phases: PlanPhase[] = [];
@@ -245,7 +266,7 @@ export function parsePlanPhases(planMarkdown: string): PlanPhase[] {
     const verify = block.match(PLAN_PHASE_VERIFY_RE);
     phases.push({
       index: Number(header[1]),
-      title: (header[2] ?? '').trim(),
+      title: (header[2] ?? '').replace(PLAN_PHASE_TITLE_SEPARATOR_RE, '').trim(),
       verify: verify ? verify[1].trim() : null,
     });
   }
