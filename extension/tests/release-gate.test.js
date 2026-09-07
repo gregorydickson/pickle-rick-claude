@@ -1507,7 +1507,7 @@ function replayWorkflowBuild() {
     const target = path.join(dir, operand);
     if (/\.[a-z]+$/.test(operand)) {
       mkdirSync(path.dirname(target), { recursive: true });
-      if (!operand.endsWith('activity-events.schema.json')) writeFileSync(target, 'fixture\n');
+      writeFileSync(target, 'fixture\n');
     } else {
       mkdirSync(target, { recursive: true });
       writeFileSync(path.join(target, 'fixture.md'), 'fixture\n');
