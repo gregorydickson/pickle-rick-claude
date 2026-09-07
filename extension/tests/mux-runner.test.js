@@ -5081,6 +5081,8 @@ test('B5: the SHIPPED main-loop resume folds the ledger and does not null it', a
             // One poll jumps the clock past the (jitter-free) resume target.
             sleep: async () => { now = (START_EPOCH + 601) * 1000; },
             jitterMs: 0,
+            // B2 (ticket a7a029df): stub the re-probe so this fixture never spawns a real backend CLI.
+            probeApiCleared: async () => 'unknown',
         });
 
         assert.equal(outcome.kind, 'resume', 'a sub-ceiling park resumes rather than exiting');
@@ -5111,6 +5113,205 @@ test('B5: a clean iteration ends the episode by clearing the park ledger', () =>
     const successBlock = muxSrc.slice(successIdx, successIdx + 700);
     assert.match(successBlock, /rate_limit_park\b/, 'the success branch must reset the episode ledger');
     assert.match(successBlock, /s\.rate_limit_park = null/);
+});
+
+// ---------------------------------------------------------------------------
+// B2 (ticket a7a029df): the rate-limit wait must re-probe the API rather than
+// only trusting the precomputed deadline. All cases drive the REAL
+// `runMainLoopRateLimitPark` with injected `now`/`sleep`/`probeApiCleared` —
+// no real spawn, no real time.
+// ---------------------------------------------------------------------------
+
+function b2Fixture(overrides = {}) {
+    const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-b2-probe-')));
+    const statePath = path.join(tmpDir, 'state.json');
+    const START_EPOCH = 1714080000;
+    fs.writeFileSync(statePath, JSON.stringify({
+        active: true, iteration: 3, max_iterations: 10, min_iterations: 0,
+        worker_timeout_seconds: 30, max_time_minutes: 0, step: 'implement',
+        current_ticket: 't1', working_dir: tmpDir, start_time_epoch: START_EPOCH,
+        rate_limit_park: overrides.priorPark ?? null,
+    }, null, 2));
+    return { tmpDir, statePath, START_EPOCH };
+}
+
+test('B2/AC-B2-1: a re-probe reporting cleared exits the wait BEFORE the computed deadline', async () => {
+    const { tmpDir, statePath, START_EPOCH } = b2Fixture();
+    try {
+        let now = START_EPOCH * 1000;
+        let sleepCalls = 0;
+        let probeCalls = 0;
+        const outcome = await runMainLoopRateLimitPark({
+            exitResult: { type: 'api_limit', rateLimitInfo: {} },
+            consecutiveRateLimits: 1,
+            maxRateLimitRetries: 3,
+            rateLimitWaitMinutes: 60, // deadline ~1hr out — never reached if the probe works
+            maxParkMinutes: 360,
+            statePath,
+            sessionDir: tmpDir,
+            state: { current_ticket: 't1', working_dir: tmpDir },
+            iteration: 3,
+            log: () => {},
+            now: () => now,
+            sleep: async () => { sleepCalls += 1; now += Defaults.RATE_LIMIT_POLL_MS; },
+            jitterMs: 0,
+            probeIntervalMs: 1_000, // far below one poll tick so the first poll always re-probes
+            probeApiCleared: async () => { probeCalls += 1; return 'cleared'; },
+        });
+
+        assert.equal(outcome.kind, 'resume', 'a cleared re-probe resumes, it does not exit');
+        assert.ok(probeCalls >= 1, 'the probe must actually be asked');
+        assert.equal(sleepCalls, 1, 'the wait must break on the FIRST poll that re-probes clear — not run out the deadline');
+        const deadlineMs = START_EPOCH * 1000 + 60 * 60 * 1000;
+        assert.ok(now < deadlineMs, `resume happened at now=${now}, which must be well before the computed deadline ${deadlineMs}`);
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('B2/AC-B2-2 (negative control): a re-probe that never clears still waits out the full deadline', async () => {
+    const { tmpDir, statePath, START_EPOCH } = b2Fixture();
+    try {
+        let now = START_EPOCH * 1000;
+        let probeCalls = 0;
+        const rateLimitWaitMinutes = 1; // small deadline so the test finishes in a handful of polls
+        const outcome = await runMainLoopRateLimitPark({
+            exitResult: { type: 'api_limit', rateLimitInfo: {} },
+            consecutiveRateLimits: 1,
+            maxRateLimitRetries: 3,
+            rateLimitWaitMinutes,
+            maxParkMinutes: 360,
+            statePath,
+            sessionDir: tmpDir,
+            state: { current_ticket: 't1', working_dir: tmpDir },
+            iteration: 3,
+            log: () => {},
+            now: () => now,
+            sleep: async () => { now += Defaults.RATE_LIMIT_POLL_MS; },
+            jitterMs: 0,
+            probeIntervalMs: 1_000,
+            // The probe never says cleared — "stop waiting" is NOT what this fix does.
+            probeApiCleared: async () => { probeCalls += 1; return 'limited'; },
+        });
+
+        assert.equal(outcome.kind, 'resume', 'the park still resumes once the deadline is reached');
+        assert.ok(probeCalls >= 1, 'the probe was consulted');
+        const deadlineMs = START_EPOCH * 1000 + rateLimitWaitMinutes * 60 * 1000;
+        assert.ok(now >= deadlineMs, `a never-clearing probe must NOT cause an early exit — now=${now} must reach the deadline ${deadlineMs}`);
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('B2/AC-B2-3: the cumulative park ceiling still folds correctly with the probe wired in', async () => {
+    const { tmpDir, statePath, START_EPOCH } = b2Fixture({
+        priorPark: {
+            reset_at_epoch_sec: null,
+            parked_started_epoch_ms: 1_000,
+            cumulative_parked_ms: 30 * MIN_MS,
+            consecutive_waits: 1,
+        },
+    });
+    try {
+        let now = START_EPOCH * 1000;
+        const outcome = await runMainLoopRateLimitPark({
+            exitResult: { type: 'api_limit', rateLimitInfo: { resetsAt: START_EPOCH + 600 } },
+            consecutiveRateLimits: 2,
+            maxRateLimitRetries: 3,
+            rateLimitWaitMinutes: 5,
+            maxParkMinutes: 360,
+            statePath,
+            sessionDir: tmpDir,
+            state: { current_ticket: 't1', working_dir: tmpDir },
+            iteration: 3,
+            log: () => {},
+            now: () => now,
+            sleep: async () => { now = (START_EPOCH + 601) * 1000; },
+            jitterMs: 0,
+            probeApiCleared: async () => 'unknown', // never clears — the fold must be unaffected
+        });
+
+        assert.equal(outcome.kind, 'resume');
+        const persisted = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.ok(persisted.rate_limit_park, 'the ledger arm must survive the wake');
+        assert.ok(persisted.rate_limit_park.cumulative_parked_ms > 30 * MIN_MS,
+            `the probe addition must not disturb the B5 fold (got ${persisted.rate_limit_park.cumulative_parked_ms})`);
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('B2/AC-B2-4 (mutation kill): the probe is actually CALLED during a park crossing one probeIntervalMs', async () => {
+    const { tmpDir, statePath, START_EPOCH } = b2Fixture();
+    try {
+        let now = START_EPOCH * 1000;
+        let probeCalls = 0;
+        await runMainLoopRateLimitPark({
+            exitResult: { type: 'api_limit', rateLimitInfo: {} },
+            consecutiveRateLimits: 1,
+            maxRateLimitRetries: 3,
+            rateLimitWaitMinutes: 1,
+            maxParkMinutes: 360,
+            statePath,
+            sessionDir: tmpDir,
+            state: { current_ticket: 't1', working_dir: tmpDir },
+            iteration: 3,
+            log: () => {},
+            now: () => now,
+            sleep: async () => { now += Defaults.RATE_LIMIT_POLL_MS; },
+            jitterMs: 0,
+            probeIntervalMs: 1_000,
+            probeApiCleared: async () => { probeCalls += 1; return 'unknown'; },
+        });
+
+        // This is the pin that a mutation removing `if (verdict === 'cleared') break;`
+        // (or removing the probe call entirely) must red, even though AC-B2-1's
+        // early-exit fixture would not notice a probe that is called but ignored.
+        assert.ok(probeCalls >= 1, `expected the probe to be called at least once, got ${probeCalls}`);
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('B2/AC-B2-5: cumulative ceiling exhaustion still exits via the EXISTING rate_limit_exhausted path, never a new one', async () => {
+    const { tmpDir, statePath, START_EPOCH } = b2Fixture({
+        priorPark: {
+            reset_at_epoch_sec: null,
+            parked_started_epoch_ms: 1_000,
+            // Already at the 360min ceiling — the next park's waitMs pushes it over.
+            cumulative_parked_ms: 360 * MIN_MS,
+            consecutive_waits: 5,
+        },
+    });
+    try {
+        let now = START_EPOCH * 1000;
+        let probeCalls = 0;
+        const outcome = await runMainLoopRateLimitPark({
+            exitResult: { type: 'api_limit', rateLimitInfo: { resetsAt: START_EPOCH + 600 } },
+            consecutiveRateLimits: 2,
+            maxRateLimitRetries: 3,
+            rateLimitWaitMinutes: 5,
+            maxParkMinutes: 360,
+            statePath,
+            sessionDir: tmpDir,
+            state: { current_ticket: 't1', working_dir: tmpDir },
+            iteration: 3,
+            log: () => {},
+            now: () => now,
+            sleep: async () => { now += Defaults.RATE_LIMIT_POLL_MS; },
+            jitterMs: 0,
+            // Never resolves 'cleared' — proves an exhausted ceiling still disposes
+            // via the pre-existing 'exit' path, not a probe-invented one, and (since
+            // the ceiling check runs BEFORE the wait loop) the probe is never reached.
+            probeApiCleared: async () => { probeCalls += 1; return 'limited'; },
+        });
+
+        assert.equal(outcome.kind, 'exit', 'an exhausted cumulative ceiling must still exit cleanly');
+        assert.equal(outcome.exitReason, 'rate_limit_exhausted', 'no NEW exit_reason may be introduced by the probe');
+        assert.equal(probeCalls, 0, 'the ceiling bail happens before the wait loop — the probe is never consulted');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
 });
 
 // R-WSRC-2 anchor executability (anatomy-park iter 9).

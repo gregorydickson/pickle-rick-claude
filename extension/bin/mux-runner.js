@@ -9,11 +9,12 @@ import { PromiseTokens, hasToken, VALID_STEPS, Defaults, classifyExitReason, FAL
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
-import { buildManagerInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv } from '../services/backend-spawn.js';
+import { buildManagerInvocation, buildJudgeInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv } from '../services/backend-spawn.js';
+import { getJudgeEnvForAttempt, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js';
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
 import { readTicketWorkerGateTestsVerdict } from './setup.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
-import { emitOrphanReapSummary, reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
+import { emitOrphanReapSummary, reapOrphanedWorkerProcs, killProcessGroup } from '../services/orphan-reaper.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
@@ -7602,6 +7603,130 @@ async function waitThroughRateLimit(ctx, resetAtSec, minWaitMs) {
     }
     return { exit: false };
 }
+const RATE_LIMIT_PROBE_TIMEOUT_MS = 120_000;
+const RATE_LIMIT_PROBE_LOG_FILENAME = 'rate_limit_probe.log';
+const RATE_LIMIT_PROBE_PROMPT = 'Reply with exactly: ok';
+/** Same env var microverse-runner.ts's resolveRateLimitProbeIntervalMs reads — one operator knob for
+ * "how often does a rate-limit wait re-probe", not two. Duplicated here (not imported) because
+ * microverse-runner.ts imports FROM mux-runner.ts, so the reverse import would be circular. */
+const RATE_LIMIT_PROBE_INTERVAL_ENV_VAR = 'PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS';
+const DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS = 10 * 60 * 1000;
+const MIN_RATE_LIMIT_PROBE_INTERVAL_MS = 60_000;
+function resolveMuxRateLimitProbeIntervalMs(env = process.env) {
+    const raw = parseInt(env[RATE_LIMIT_PROBE_INTERVAL_ENV_VAR] ?? '', 10);
+    if (!Number.isFinite(raw) || raw <= 0)
+        return DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS;
+    return Math.max(raw, MIN_RATE_LIMIT_PROBE_INTERVAL_MS);
+}
+/** Minimal spawn-and-capture with a timeout — the mux-runner-local twin of
+ * microverse-runner.ts's private (unexported) spawnWithClosedStdin. */
+function spawnRateLimitProbe(cmd, args, opts) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let stdout = '';
+        let stderr = '';
+        // detached so the probe leads its own process group (it may spawn its own tool
+        // subprocesses); the timeout signals the GROUP so a bare kill cannot orphan them.
+        const child = spawn(cmd, args, {
+            cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'],
+            detached: process.platform !== 'win32',
+        });
+        const timer = setTimeout(() => {
+            if (settled)
+                return;
+            settled = true;
+            if (typeof child.pid !== 'number' || !killProcessGroup(child.pid, 'SIGTERM'))
+                child.kill('SIGTERM');
+            reject(new Error(`rate-limit probe timed out after ${opts.timeoutMs}ms`));
+        }, opts.timeoutMs);
+        child.stdout?.on('data', (chunk) => { stdout += chunk; });
+        child.stderr?.on('data', (chunk) => { stderr += chunk; });
+        child.on('error', (err) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            reject(err);
+        });
+        child.on('close', (code) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            if (code === 0) {
+                resolve(stdout);
+                return;
+            }
+            reject(new Error(stderr.trim() || stdout.trim() || `rate-limit probe exited with code ${code ?? 'unknown'}`));
+        });
+    });
+}
+/**
+ * B2 (ticket a7a029df): re-ask the API whether the rate limit has cleared, rather than trusting a
+ * precomputed deadline. Exit 0 means the API served us, which is the entire cleared rule — no text
+ * analysis on the success path. Only the failure path is classified, and it delegates to
+ * classifyIterationExit, the SAME oracle that produced the api_limit verdict that started the wait
+ * (matches the microverse-runner.ts handleRateLimit precedent, commit 88152b8f) — no second pattern list.
+ */
+async function probeMuxRateLimitCleared(input) {
+    const probeLogPath = path.join(input.sessionDir, RATE_LIMIT_PROBE_LOG_FILENAME);
+    const { cmd, args } = buildJudgeInvocation(input.backend, { prompt: RATE_LIMIT_PROBE_PROMPT, addDirs: [] });
+    // getJudgeEnvForAttempt accepts only the judge-backend narrowing; anything else maps to 'auto',
+    // which resolves to the claude default internally — matches microverse-runner.ts's precedent.
+    const envBackend = input.backend === 'claude' || input.backend === 'codex' ? input.backend : 'auto';
+    const spawnEnv = { ...getJudgeEnvForAttempt(envBackend, input.workingDir), ...backendEnvOverrides(input.backend) };
+    let served = false;
+    let transcript;
+    try {
+        transcript = await spawnRateLimitProbe(cmd, args, { cwd: input.workingDir, env: spawnEnv, timeoutMs: RATE_LIMIT_PROBE_TIMEOUT_MS });
+        served = true;
+    }
+    catch (err) {
+        transcript = safeErrorMessage(err);
+    }
+    finally {
+        cleanupJudgeRuntimeDir(spawnEnv);
+    }
+    try {
+        fs.writeFileSync(probeLogPath, transcript);
+    }
+    catch {
+        return served ? 'cleared' : 'unknown';
+    }
+    if (served)
+        return 'cleared';
+    return classifyIterationExit('continue', probeLogPath).type === 'api_limit' ? 'limited' : 'unknown';
+}
+/**
+ * B2 (ticket a7a029df): the sleep-and-cancel loop, now re-probing the API on an
+ * interval rather than only trusting the precomputed deadline — a limit that clears
+ * early ends the wait early instead of burning the full projected park. A probe
+ * reporting the limit is still active (or that could not answer) changes nothing:
+ * the loop keeps waiting toward resumeTargetMs. Returns true on operator cancellation.
+ */
+async function waitOutRateLimitParkWithProbe(input, now, sleepFn, parkStartMs, resumeTargetMs) {
+    const { statePath, sessionDir, state } = input;
+    const probeFn = input.probeApiCleared ?? probeMuxRateLimitCleared;
+    const probeIntervalMs = input.probeIntervalMs ?? resolveMuxRateLimitProbeIntervalMs();
+    let lastProbeMs = parkStartMs;
+    while (now() < resumeTargetMs) {
+        await sleepFn(Defaults.RATE_LIMIT_POLL_MS);
+        try {
+            if (readRunnerState(statePath).active !== true)
+                return true;
+        }
+        catch { /* proceed */ }
+        if (now() - lastProbeMs < probeIntervalMs)
+            continue;
+        lastProbeMs = now();
+        const verdict = await probeFn({
+            sessionDir, statePath, workingDir: state.working_dir || process.cwd(), backend: resolveBackend(state),
+        });
+        if (verdict === 'cleared')
+            break;
+    }
+    return false;
+}
 /**
  * The main loop's rate-limit park: decide, persist the arm, sleep through the
  * reset, then FOLD the burned wall into the episode ledger.
@@ -7639,14 +7764,9 @@ export async function runMainLoopRateLimitPark(input) {
     // budget; instead we advance start_time_epoch by the parked seconds on resume so
     // the wall-clock cap never counts parked time. The sleep loop stays cancellable.
     const resumeTargetMs = resolveParkResumeTime(resetAtSec, parkStartMs, rateLimitWaitMinutes * 60 * 1000, input.jitterMs ?? drawParkResumeJitterMs());
-    while (now() < resumeTargetMs) {
-        await sleepFn(Defaults.RATE_LIMIT_POLL_MS);
-        try {
-            if (readRunnerState(statePath).active !== true)
-                return exitRateLimitPark(statePath, 'cancelled');
-        }
-        catch { /* proceed */ }
-    }
+    const cancelled = await waitOutRateLimitParkWithProbe(input, now, sleepFn, parkStartMs, resumeTargetMs);
+    if (cancelled)
+        return exitRateLimitPark(statePath, 'cancelled');
     const parkedMinutes = foldRateLimitParkOnWake({
         statePath, sessionDir, session, priorPark,
         parkedMs: now() - parkStartMs, consecutiveRateLimits, nowMs: now(),
