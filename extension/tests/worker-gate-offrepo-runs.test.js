@@ -15,10 +15,13 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
 
 import { runWorkerGate } from '../bin/spawn-morty.js';
 import { isAdvisoryWorkerGateVerdict } from '../bin/mux-runner.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const TMP_ROOTS = [];
 
@@ -236,6 +239,57 @@ test('off-repo: a failing target suite is recorded red but does NOT halt the pip
   assert.equal(result.ok, true, 'a red target suite must not block the local action');
   assert.equal(result.failedFlipSuppressed, false);
   assert.equal(result.gatePhase, 'test:fast', 'the failing phase is flagged, not swallowed');
+});
+
+// ---------------------------------------------------------------------------
+// D3 / R-TIERWEDGE, AC-D3-2/AC-D3-3 — the off-repo test dimension waits on the
+// stall detector, not a bare wall-clock timeout. Both cases configure a SHORT
+// `worker_test_gate_timeout_ms` (which also caps the stall window, since
+// `runOffRepoGateDimension` takes `Math.min(timeoutMs, resolveTierStallThresholdMs())`)
+// so the fixture's own runtime is the only thing that decides the outcome —
+// a wall-clock-only design would kill the first case well before it finishes.
+// ---------------------------------------------------------------------------
+
+test('off-repo: a slow-but-live target test:fast run is NOT killed', async () => {
+  const fixture = makeNpmFixture({
+    scripts: {
+      typecheck: 'node -e "process.exit(0)"',
+      lint: 'node -e "process.exit(0)"',
+      // Ticks every 100ms, 6 times (~600ms total) — comfortably longer than the
+      // 250ms configured budget, but no single gap between ticks exceeds it.
+      test: 'node -e "let n=0;const t=setInterval(()=>{process.stdout.write(String(n)+\'\\n\');n++;if(n>=6){clearInterval(t);process.exit(0);}},100)"',
+    },
+  });
+  fs.writeFileSync(path.join(fixture.root, 'pickle_settings.json'), JSON.stringify({ worker_test_gate_timeout_ms: 250 }, null, 2));
+
+  const result = await runWorkerGate([], gateArgs(fixture));
+
+  assert.equal(result.gatePhase, null, 'no failing phase reported — the run completed on its own');
+  assert.equal(
+    frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_tests_verdict'),
+    'green',
+    'a run that keeps producing output must survive past the configured budget and be measured green',
+  );
+});
+
+test('off-repo: a genuinely stalled target test:fast run IS killed (negative control)', async () => {
+  const fixture = makeNpmFixture({
+    scripts: {
+      typecheck: 'node -e "process.exit(0)"',
+      lint: 'node -e "process.exit(0)"',
+      test: 'node -e "setTimeout(()=>{}, 10000)"',
+    },
+  });
+  fs.writeFileSync(path.join(fixture.root, 'pickle_settings.json'), JSON.stringify({ worker_test_gate_timeout_ms: 250 }, null, 2));
+
+  const result = await runWorkerGate([], gateArgs(fixture));
+
+  assert.equal(result.gatePhase, 'test:fast', 'the stalled phase is flagged, not swallowed');
+  assert.equal(
+    frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_tests_verdict'),
+    'red',
+    'a stalled run is a measured failure (not a silent not_run) — it genuinely ran and produced a timeout verdict',
+  );
 });
 
 test('off-repo: a missing script is not_run, not a failure', async () => {
@@ -649,4 +703,176 @@ test('AP-EXT-ITER174-02 the ONE-classifier pin reads a fork as uncalled and a co
     ))), true,
     'a declared unsafe-runner pattern must still read as a second copy',
   );
+});
+
+// ---------------------------------------------------------------------------
+// D3 / R-TIERWEDGE — AC-D3-1: a DERIVED census of every tier-run wait in
+// extension/src/, stating for each whether it is stall-detected
+// (spawn-morty.ts's shared `runCommand` with `stallThresholdMs` — killed only
+// on the ABSENCE of output growth) or timeout-bounded (a bare wall-clock wait
+// that kills a slow-but-live run indistinguishably from a genuinely stalled
+// one). This lives here — not a new file — because `runOffRepoGateDimension`
+// is exactly what this file already exercises; "derived" means the census is
+// built by walking the TypeScript AST for the concrete shape (a call site
+// whose argument list names the literal npm script `test:fast` or
+// `test:integration`), never a hand-maintained file:line list, so a new call
+// site is caught automatically.
+// ---------------------------------------------------------------------------
+
+const CENSUS_SRC_DIR = path.resolve(__dirname, '..', 'src');
+const TIER_SCRIPT_NAMES = new Set(['test:fast', 'test:integration']);
+
+/** Call targets that spawn a child process directly — never a wrapper. */
+const PRIMITIVE_SPAWN_NAMES = new Set(['spawnSync', 'spawn', 'execSync', 'execFileSync', 'runCommand']);
+
+/** Every `.ts` source file under `src/`, excluding declaration/test files. */
+function listCensusSourceFiles(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) { out.push(...listCensusSourceFiles(full)); continue; }
+    if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts') && !entry.name.endsWith('.test.ts')) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/** True iff `node` is a string literal whose text is a tier script name. */
+function isTierScriptLiteral(node) {
+  return ts.isStringLiteral(node) && TIER_SCRIPT_NAMES.has(node.text);
+}
+
+/** Find every top-level (or nested) FunctionDeclaration in a source file by name. */
+function findFunctionDeclarationsByName(sourceFile) {
+  const byName = new Map();
+  const visit = (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      byName.set(node.name.text, node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return byName;
+}
+
+/**
+ * Scan one source file's AST for CALL EXPRESSIONS naming a tier script as one of their
+ * arguments (directly, or inside an array literal argument — covers both
+ * `runWorkerGateTestCommand('test:fast', ...)` and `spawnSync` called with `pm, ['run', 'test:fast'], ...`).
+ *
+ * Classification, per call site:
+ *  - Callee is a PRIMITIVE-spawn function (one of `spawnSync`, `spawn`, `execSync`,
+ *    `execFileSync`, `runCommand`):
+ *    classify DIRECTLY from that call's own argument text — `stallThresholdMs` present means
+ *    stall-detected, its absence (a bare `timeout`) means timeout-bounded. A primitive spawn
+ *    can never be stall-detected any other way — a synchronous `spawnSync`/`execSync` call is
+ *    incapable of polling output growth, so it is always timeout-bounded regardless of any
+ *    text nearby.
+ *  - Callee is a WRAPPER function (any other plain identifier, e.g. `runOffRepoGateDimension`):
+ *    resolve that function's declaration in the SAME FILE (best-effort, one hop) and check
+ *    whether ITS body text contains `stallThresholdMs` — this is where the wrapper decides,
+ *    not the call site.
+ *  - Callee is a property access (`x.includes(...)`, `x.some(...)`, ...): not a spawn at all,
+ *    excluded — only plain-identifier calls are considered spawn-shaped.
+ */
+function censusFile(filePath) {
+  const censusText = fs.readFileSync(filePath, 'utf-8');
+  const sourceFile = ts.createSourceFile(filePath, censusText, ts.ScriptTarget.Latest, true);
+  const relPath = path.relative(path.resolve(__dirname, '..'), filePath);
+  const functionsByName = findFunctionDeclarationsByName(sourceFile);
+  const hits = [];
+
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const namesTierScript = node.arguments.some((arg) => {
+        if (isTierScriptLiteral(arg)) return true;
+        if (ts.isArrayLiteralExpression(arg)) return arg.elements.some(isTierScriptLiteral);
+        return false;
+      });
+      if (namesTierScript) {
+        const calleeName = node.expression.text;
+        let stallDetected;
+        let classifiedVia;
+        if (PRIMITIVE_SPAWN_NAMES.has(calleeName)) {
+          stallDetected = calleeName === 'runCommand'
+            ? /\bstallThresholdMs\b/.test(node.getText(sourceFile))
+            : false; // spawnSync/spawn/execSync/execFileSync cannot poll output growth
+          classifiedVia = 'direct-primitive';
+        } else {
+          const callee = functionsByName.get(calleeName);
+          stallDetected = callee ? /\bstallThresholdMs\b/.test(callee.getText(sourceFile)) : false;
+          classifiedVia = callee ? 'one-hop-wrapper' : 'unresolved-wrapper';
+        }
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+        hits.push({
+          file: relPath,
+          line: line + 1,
+          calleeName,
+          classifiedVia,
+          callText: node.getText(sourceFile).replace(/\s+/g, ' ').slice(0, 90),
+          stallDetected,
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return hits;
+}
+
+function buildTierRunWaitCensus() {
+  const hits = [];
+  for (const file of listCensusSourceFiles(CENSUS_SRC_DIR)) {
+    hits.push(...censusFile(file));
+  }
+  // Stable order so the census reads the same on every run regardless of directory walk order.
+  hits.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file.localeCompare(b.file)));
+  return hits;
+}
+
+test('AC-D3-1: the census is non-vacuous — it finds real tier-run wait call sites', () => {
+  const census = buildTierRunWaitCensus();
+  assert.ok(census.length >= 3, `expected at least 3 tier-run wait call sites, found ${census.length}: ${JSON.stringify(census, null, 2)}`);
+});
+
+test('AC-D3-1: every census entry resolved to a known classification path', () => {
+  const census = buildTierRunWaitCensus();
+  const unresolved = census.filter((h) => h.classifiedVia === 'unresolved-wrapper');
+  assert.deepEqual(unresolved, [], `a wrapper call site could not be traced to its callee's definition in the same file — widen the census (cross-file resolution) or hand-verify: ${JSON.stringify(unresolved, null, 2)}`);
+});
+
+test('AC-D3-1: spawn-morty.ts runWorkerGateTestCommand is stall-detected (R-TIERWEDGE, shipped)', () => {
+  const census = buildTierRunWaitCensus();
+  const hit = census.find((h) => h.file === 'src/bin/spawn-morty.ts' && h.calleeName === 'runWorkerGateTestCommand');
+  assert.ok(hit, `expected a runWorkerGateTestCommand call site; census: ${JSON.stringify(census, null, 2)}`);
+  assert.equal(hit.stallDetected, true, 'runWorkerGateTestCommand must stay stall-detected');
+});
+
+test('AC-D3-1: spawn-morty.ts runOffRepoGateDimension is stall-detected for test:fast/test:integration', () => {
+  const census = buildTierRunWaitCensus();
+  const hits = census.filter((h) => h.file === 'src/bin/spawn-morty.ts' && h.calleeName === 'runOffRepoGateDimension');
+  assert.ok(hits.length >= 1, `expected a runOffRepoGateDimension call site; census: ${JSON.stringify(census, null, 2)}`);
+  for (const hit of hits) {
+    assert.equal(hit.stallDetected, true, `runOffRepoGateDimension (${hit.file}:${hit.line}) must be stall-detected — it runs the off-repo target's own test:fast/test:integration and must not kill a slow-but-live target suite`);
+  }
+});
+
+// D3 RESIDUAL, fence-blocked: this is the ticket's own documented finding, not a silent
+// gap. `runBetweenTicketFastTests` (mux-runner.ts, the between-ticket #99 fast gate) still
+// waits on a bare `spawnSync` timeout. Fixing it requires converting it to async, which
+// cascades into `applyAllTicketsDoneCompletion` / `runManagerTokenPostFinalMeasurement`
+// (~8 test files) and collides with two synchronous dependency-injection contracts owned by
+// files OUTSIDE this ticket's scope.json (`services/recovery-controller.ts`'s
+// `RecoveryDeps.runArmedGate`, `lib/salvage-ticket.ts`'s `SalvageDeps.gate`) and with a
+// literal-text AST-check anchor in `bin/did-we-count-replay.ts` (also out of scope) that
+// pins this function's exact `export function` declaration text. This test PINS the residual
+// so it cannot silently regress further (a NEW timeout-bounded site would still be caught by
+// the non-vacuity test above) and so it flips automatically the day a follow-up ticket lands
+// the fix — see the D3 ticket's plan/conformance for the full rationale.
+test('AC-D3-1: mux-runner.ts runBetweenTicketFastTests is the documented D3 residual (timeout-bounded)', () => {
+  const census = buildTierRunWaitCensus();
+  const hit = census.find((h) => h.file === 'src/bin/mux-runner.ts' && h.calleeName === 'spawnSync');
+  assert.ok(hit, `expected the runBetweenTicketFastTests spawnSync call site; census: ${JSON.stringify(census, null, 2)}`);
+  assert.equal(hit.stallDetected, false, 'runBetweenTicketFastTests became stall-detected — update this pin AND the D3 ticket/plan docs to reflect the residual closing, do not just flip this assertion');
 });

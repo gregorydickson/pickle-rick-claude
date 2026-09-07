@@ -1808,7 +1808,14 @@ async function runOffRepoGateDimension(phase, commandString, dir, timeoutMs) {
     const parts = (commandString ?? '').trim().split(/\s+/).filter(Boolean);
     if (parts.length === 0)
         return { phase, outcome: 'not_run', failures: [] };
-    const result = await runCommand(parts[0], parts.slice(1), dir, { timeoutMs });
+    // R-TIERWEDGE (D3): only the test-tier phases stream continuous TAP output, so only
+    // they get the stall detector — same asymmetry as `runWorkerGateTestCommand`. `lint`/
+    // `tsc` may legitimately emit nothing at all until they finish, so they keep the flat
+    // `timeoutMs` wait (`runCommand`'s other mode) unchanged.
+    const isTestPhase = phase === 'test:fast' || phase === 'test:integration';
+    const result = await runCommand(parts[0], parts.slice(1), dir, isTestPhase
+        ? { stallThresholdMs: Math.min(timeoutMs, resolveTierStallThresholdMs()) }
+        : { timeoutMs });
     if (result.ok)
         return { phase, outcome: 'pass', failures: [] };
     if (isCommandResultUnrunnable(result))
