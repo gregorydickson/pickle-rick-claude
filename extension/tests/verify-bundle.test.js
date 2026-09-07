@@ -319,7 +319,7 @@ test('verify-bundle.single-ac validates only requested artifact', () => {
   try {
     const result = runVerifier(fixture, ['--ac', 'AC-DR-08']);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /checked=1/);
+    assert.match(result.stdout, /checked=1 /);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -469,6 +469,18 @@ const REJECTION_ARMS = Object.freeze([
     payload: (acId) => artifact(acId, { checker_version: 3 }),
   },
   { arm: 'evidence must be an object', acId: 'AC-DR-11', payload: (acId) => artifact(acId, { evidence: [] }) },
+  // `value !== null` in isObject is the ONLY conjunct rejecting this one. The array payload
+  // above is caught by `!Array.isArray` instead, so null slipped through unpinned: with that
+  // conjunct deleted, `evidence: null` reports `bundle PASS` exit 0 — an AC greened with its
+  // evidence literally absent. `failure_reason`/`remediation_hint` are nullable in this same
+  // schema, so a checker emitting `evidence: null` is following the file's own idiom. A
+  // top-level `null` artifact is NOT an arm here: verifyBundle dereferences `artifact.ac_id`
+  // before reading the error list, so it throws (exit 1, fails closed) and never names the arm.
+  {
+    arm: 'evidence must be an object',
+    acId: 'AC-DR-11',
+    payload: (acId) => artifact(acId, { evidence: null }),
+  },
   {
     arm: 'failure_reason must be a string or null',
     acId: 'AC-DR-12',
@@ -573,5 +585,44 @@ test('verify-bundle.exported-api defaults to repo root instead of caller cwd', (
     assert.match(result.stdout, /bundle PASS/);
   } finally {
     process.chdir(originalCwd);
+  }
+});
+
+// parseArgs' `argv[0] === '--ac'` is the only conjunct rejecting a two-token invocation whose
+// flag is something else. Deleted, `verify-bundle.js --only AC-DR-08` stops erroring and
+// instead silently narrows the run to ONE AC, exiting 0 PASS while fourteen go unverified.
+test('verify-bundle.unknown two-token flag errors instead of silently narrowing the bundle', () => {
+  const fixture = makeFixture();
+  try {
+    const result = runVerifier(fixture, ['--only', 'AC-DR-08']);
+    assert.equal(
+      result.status,
+      2,
+      `expected usage error, got exit=${result.status} stdout=${JSON.stringify(result.stdout)}`,
+    );
+    assert.match(result.stderr, /usage: bin\/verify-bundle\.js/);
+    assert.doesNotMatch(result.stdout, /bundle PASS/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+// `checked=` is the coverage claim a reader takes the verdict's scope from, so it must count the
+// ACs THIS run verified (`expectedIds`), not the whole contract: sourced from
+// EXPECTED_BUNDLE_AC_IDS it reports `checked=15` for a one-AC run. Asserted as whole lines
+// because an unanchored /checked=1/ also matches `checked=15`.
+test('verify-bundle.checked-count reports the ACs this run verified, not the whole contract', () => {
+  const fixture = makeFixture();
+  try {
+    const scoped = verifyBundle({ repoRoot: fixture, ac: 'AC-DR-08' });
+    assert.equal(scoped.stdout.trim(), 'bundle PASS checked=1 missing=0 failures=0', scoped.stderr);
+    const full = verifyBundle({ repoRoot: fixture });
+    assert.equal(
+      full.stdout.trim(),
+      `bundle PASS checked=${EXPECTED_BUNDLE_AC_IDS.length} missing=0 failures=0`,
+      full.stderr,
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
   }
 });
