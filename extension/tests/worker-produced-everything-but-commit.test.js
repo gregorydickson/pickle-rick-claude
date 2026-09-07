@@ -2402,3 +2402,52 @@ test('AP-EXT-ITER199-01: the R-WSE-3 breadcrumb also reads the review by contrac
     rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER228-01: the rung's verdict for a plan whose Verify marker carries any other
+// decoration. The parser fix is pinned as a case table in recovery-converged-plan.test.js;
+// this is the WIRE — `verify: null` is not inert data, it is the value `executePhase` turns
+// into a phase failure, so before the marker collapse the loop stopped at phase 1, nothing
+// was committed, and `reportConvergedPlanOutcome` reported not-ok over the diff the
+// re-execution seam had just produced. 188 of the operator's 283 authored phase blocks
+// carried a decoration the old grammar rejected; 40 of 69 plans had it on their FIRST phase.
+//
+// Assert the LANDED COMMIT, not just `ok` — the rung's verdict is ground truth
+// (AP-EXT-ITER2-01), so an `ok`-only oracle could be satisfied by a rung that committed
+// nothing.
+test('AP-EXT-ITER228-01: an undecorated `Verify:` plan commits its produced diff instead of escalating', () => {
+  const { repo, baseSha } = makeRepo('ap-iter228-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter228-session-');
+  const ticketId = 'e5f6a7b8';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress' });
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-09-07.md'),
+    [
+      '# Plan',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1 — land the resolver',
+      'Verify: `true`',
+      '',
+      '### Phase 2 — full verification',
+      '- Verify: `true`',
+      '',
+    ].join('\n'),
+  );
+
+  const handed = [];
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+    reExecutionSeam: diffProducingReExecutionSeam(repo, handed),
+  });
+
+  assert.deepEqual(handed, ['plan_2026-09-07.md'], 'precondition: the plan, not the review, was re-executed');
+  assert.equal(out.ok, true, 'a marker decoration must not escalate the ladder over a produced diff');
+  assert.notEqual(
+    git(repo, ['rev-parse', 'HEAD']), baseSha,
+    'the produced diff must be committed — the rung verdict is ground truth, not a phase tally',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});

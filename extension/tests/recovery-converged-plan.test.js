@@ -267,3 +267,127 @@ test('AP-EXT-ITER227-01 control: a section header does not absorb the real Phase
   );
   assert.deepEqual(phases, [{ index: 2, title: 'the only real one', verify: 'true' }]);
 });
+
+// ---- AP-EXT-ITER228-01: the verify-marker grammar matches the authored corpus ----
+//
+// One field over from AP-EXT-ITER227-01, and the same class: `PLAN_PHASE_VERIFY_RE` demanded
+// the exact `**Verify:**` decoration of a marker NOTHING produces — the plan prompt asks for
+// "Phases with Goal/Steps/Verify command" and pins no spelling. Measured over the operator's
+// 283 authored phase blocks in 72 live `plan_*.md` artifacts, that spelling parsed 95; the
+// other 188 were `verify: null`. Null is not a degraded verify: `executeConvergedPlanAdapter`
+// returns not-ok on it, `executePhaseLoop` STOPS there, and in 40 of the 69 phase-carrying
+// plans the FIRST phase was the null one — so the entire diff the re-execution seam had just
+// produced was abandoned uncommitted and the ladder escalated to `recovery_exhausted`.
+//
+// A case TABLE over the live decorations, not a row per decoration: the grammar must not
+// enumerate them at all, and a new authored decoration must need no new row here.
+const ITER228_MARKERS = [
+  ['`**Verify:**` (the one decoration the old grammar accepted)', '**Verify:** `node --test tests/x.test.js`'],
+  ['`**Verify**:` — emphasis outside the colon (4 live blocks)', '**Verify**: `node --test tests/x.test.js`'],
+  ['`**Verify.**` — a period, not a colon (5 live blocks)', '**Verify.** `node --test tests/x.test.js`'],
+  ['bare `Verify:` with no emphasis at all (6 live blocks)', 'Verify: `node --test tests/x.test.js`'],
+  ['a list bullet: `- Verify:`', '- Verify: `node --test tests/x.test.js`'],
+  ['a bulleted bold marker: `- **Verify:**`', '- **Verify:** `node --test tests/x.test.js`'],
+  ['a trailing word: `**Verify command:**`', '**Verify command:** `node --test tests/x.test.js`'],
+  ['lower-case `verify:`', 'verify: `node --test tests/x.test.js`'],
+];
+
+for (const [label, markerLine] of ITER228_MARKERS) {
+  test(`AP-EXT-ITER228-01: ${label} yields the same runnable phase`, async () => {
+    const { parsePlanPhases } = await load();
+    const md = ['# Plan', '', '### Phase 1 — behavioural: widen the marker', 'Edit one constant.', markerLine, ''].join('\n');
+    assert.deepEqual(parsePlanPhases(md), [{
+      index: 1,
+      title: 'behavioural: widen the marker',
+      verify: 'node --test tests/x.test.js',
+    }], `marker decoration must not decide whether the phase is runnable: ${markerLine}`);
+  });
+}
+
+test('AP-EXT-ITER228-01: a multi-phase plan mixing decorations runs every phase', async () => {
+  const { parsePlanPhases } = await load();
+  // The shape of a real mixed-decoration plan (b5ffdb76, 950cc70c), trimmed.
+  const md = [
+    '# Plan — mixed decorations',
+    '',
+    '## Phases',
+    '',
+    '### Phase 1 — structural',
+    '**Verify:** `./node_modules/.bin/tsc --noEmit`',
+    '',
+    '### Phase 2 — behavioural',
+    'Verify: `node --test tests/mux-runner.test.js`',
+    '',
+    '### Phase 3 — full tier',
+    '- Verify: `npm run test:fast`',
+    '',
+  ].join('\n');
+  const phases = parsePlanPhases(md);
+  assert.deepEqual(phases.map(p => p.verify), [
+    './node_modules/.bin/tsc --noEmit',
+    'node --test tests/mux-runner.test.js',
+    'npm run test:fast',
+  ], 'no phase may be the null one that stops the loop over the others’ committed work');
+});
+
+// Over-rejection controls. The fix widens a matcher whose capture is handed to a SHELL, so
+// it must be shown not to have widened into the surrounding prose. The line anchor and the
+// `\b` are the two load-bearing halves, and both point fail-CLOSED.
+
+test('AP-EXT-ITER228-01 control: prose naming verification must not SHADOW the real command', async () => {
+  const { parsePlanPhases } = await load();
+  // Measured: 4 live blocks are exactly this shape. Unanchored, the capture is
+  // `parseLlmJudgeOutput` — an identifier, run as a command, in place of the real one.
+  const md = [
+    '### Phase 2 — Regression test (AC-R3, mutation-verified)',
+    '3. Mutation-verify: temporarily revert the `parseLlmJudgeOutput` full-shape return to',
+    '   the scalar form and re-run.',
+    'Verify: `node --test tests/microverse-helpers.test.js`',
+    '',
+  ].join('\n');
+  assert.equal(parsePlanPhases(md)[0].verify, 'node --test tests/microverse-helpers.test.js');
+});
+
+test('AP-EXT-ITER228-01 control: a mid-line mention of verifying is not a verify line', async () => {
+  const { parsePlanPhases } = await load();
+  const md = [
+    '### Phase 1 — Solo',
+    'Read the interface and verify it against `resolveHardeningSettings` by eye.',
+    '',
+  ].join('\n');
+  assert.equal(parsePlanPhases(md)[0].verify, null, 'prose must not become a shell command');
+});
+
+test('AP-EXT-ITER228-01 control: `Verifying`/`verified` prose is not the marker', async () => {
+  const { parsePlanPhases } = await load();
+  const md = [
+    '### Phase 1 — Solo',
+    'Verifying the emitter against `git log --oneline -1` is the point of Phase 2.',
+    'verified: `cat plan.md` was read in Research.',
+    '',
+  ].join('\n');
+  assert.equal(parsePlanPhases(md)[0].verify, null, '`Verify` must be the line’s own whole first word');
+});
+
+test('AP-EXT-ITER228-01 control: a verify line with no backticked span stays null', async () => {
+  const { parsePlanPhases } = await load();
+  // 102 of the 283 live blocks are this: an authored verification with nothing runnable.
+  // The absent command stays absent — this fix parses markers, it does not invent commands.
+  const md = ['### Phase 1 — Solo', '**Verify:** all four commands exit 0.', ''].join('\n');
+  assert.equal(parsePlanPhases(md)[0].verify, null);
+});
+
+test('AP-EXT-ITER228-01 control: the self-check bullet plans carry is not a verify line', async () => {
+  const { parsePlanPhases } = await load();
+  // `## Self-check` is not a Phase heading, so its bullets sit inside the LAST phase's block.
+  const md = [
+    '### Phase 1 — Solo',
+    '**Verify:** `npm run test:fast`',
+    '',
+    '## Self-check',
+    '- Every phase has a verify command? Yes, runnable as written.',
+    '- No magic steps: every step names its exact file and exact verify command.',
+    '',
+  ].join('\n');
+  assert.equal(parsePlanPhases(md)[0].verify, 'npm run test:fast');
+});

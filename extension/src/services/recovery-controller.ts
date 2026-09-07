@@ -223,7 +223,7 @@ export interface PlanPhase {
   index: number;
   /** Phase title (text after the `—`/`-` separator), or '' when absent. */
   title: string;
-  /** First backticked command on the `**Verify:**` line, or null when none parses. */
+  /** First backticked command on the block's `Verify` line, or null when none parses. */
   verify: string | null;
 }
 
@@ -250,11 +250,39 @@ const PLAN_PHASE_SPLIT_RE = /^(?=#{1,6}[ \t]+Phase[ \t]+\d+)/m;
 const PLAN_PHASE_HEADER_RE = /^#{1,6}[ \t]+Phase[ \t]+(\d+)[ \t]*(.*)$/m;
 /** Cosmetic only: strips an authored `—`/`-`/`:`/`.` title separator. Never decides membership. */
 const PLAN_PHASE_TITLE_SEPARATOR_RE = /^[—–\-:.]+[ \t]*/;
-const PLAN_PHASE_VERIFY_RE = /\*\*Verify:\*\*[^`\n]*`([^`]+)`/;
+/**
+ * AP-EXT-ITER228-01: a phase's verify command is the first backticked span on a line whose
+ * OWN first word is `Verify`. The marker's decoration — bold, italic, a bullet, a colon, a
+ * period, a trailing word like `command` — is not part of the grammar, because nothing
+ * produces it: the plan prompt asks for "Phases with Goal/Steps/Verify command"
+ * (`spawn-morty.ts`) and pins no spelling, so the decoration is whatever the authoring model
+ * wrote that iteration. `git log -S` on this constant returns exactly one commit — its birth.
+ *
+ * The prior shape accepted ONE decoration, `**Verify:**`. Measured over the operator's 283
+ * authored phase blocks in 72 live `plan_*.md` artifacts, it parsed 95; the other 188 were
+ * `verify: null`, and null is not a degraded verify — `executeConvergedPlanAdapter`'s
+ * `executePhase` returns not-ok on it, so `executePhaseLoop` STOPS at that phase. In 40 of
+ * the 69 phase-carrying plans the FIRST phase was the null one, so the whole diff the
+ * re-execution seam had just produced was abandoned uncommitted and the ladder escalated to
+ * the terminal `recovery_exhausted`. This shape parses 181 of the same 283 — a strict
+ * superset (0 of the 95 lost, 0 captured differently).
+ *
+ * Two properties, both measured, neither an enumeration:
+ * - The line anchor is LOAD-BEARING and points fail-CLOSED. Unanchored, prose mentioning
+ *   verification ("3. Mutation-verify: revert the `parseLlmJudgeOutput` return") captures an
+ *   identifier and SHADOWS the real command lower in the block — 4 live blocks do exactly
+ *   that. `\b` is the other half: it keeps `Verifying`/`verified` prose out.
+ * - Widening cannot make a phase worse. A span that is prose rather than a command
+ *   (`file:line`, `zero_diff_intent` — 13 of the 86 newly parsed) runs and exits non-zero,
+ *   which is the not-ok the phase already had. The remaining 102 blocks carry no backticked
+ *   command at all and keep `verify: null`; that disposition is the consumer's, not this
+ *   regex's.
+ */
+const PLAN_PHASE_VERIFY_RE = /^[ \t]*[^`\n\w]{0,4}Verify\b[^`\n]*`([^`]+)`/im;
 
 /**
  * Parse the authored `Phase N — Title` blocks (each with an optional
- * `**Verify:** \`cmd\`` line) out of an approved plan's markdown. The Phase is the plan's
+ * `Verify … \`cmd\`` line) out of an approved plan's markdown. The Phase is the plan's
  * authored unit, NOT a finding. Blocks without a parseable header are skipped; a block with
  * no verify command yields `verify: null`.
  */
