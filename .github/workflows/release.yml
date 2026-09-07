@@ -105,8 +105,21 @@ jobs:
           # were never added here, so every published tarball since carries a runtime that
           # cannot load -- extension/services/state-manager.js statically imports
           # ../lib/is-record.js. install.sh rsyncs "$SCRIPT_DIR/extension/" into the
-          # deployed root under exactly these excludes, so mirroring them makes the asset
-          # equal the deployable set and fails toward harmless bloat, never a dead payload.
+          # deployed root under exactly these excludes, so mirroring them fails toward
+          # harmless bloat, never a dead payload.
+          #
+          # The rsync is not the whole deployable set: install.sh:391 also copies
+          # extension/src/types/activity-events.schema.json over the $ref stub that ships at
+          # extension/activity-events.schema.json. `--exclude='src'` prunes that source from
+          # the asset -- and from an explicitly named operand too, measured -- so tarball-mode
+          # install found nothing to copy, silently kept the 112-byte stub, and
+          # bin/log-activity.js read `definitions` as {}: every schema-required-field check on
+          # persona and agent emissions skipped, with no diagnostic, since the "no candidate
+          # path resolved" arm never fires for a stub that RESOLVES. An auto-update REGRESSED a
+          # healthy deploy that way, the rsync overwriting real bytes with the stub. Stage the
+          # real bytes onto the deployed path so the asset carries them under the excludes
+          # unchanged; install.sh's own copy keeps git mode byte-identical.
+          cp extension/src/types/activity-events.schema.json extension/activity-events.schema.json
           tar -czf "pickle-rick-${VERSION}.tar.gz" \
             --exclude='node_modules' \
             --exclude='src' \

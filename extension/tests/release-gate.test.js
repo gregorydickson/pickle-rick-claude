@@ -1437,6 +1437,112 @@ test('release-gate.the workflow asset carries every module its own runtime impor
   );
 });
 
+// AP-BIN-ITER28-01. `extension/` minus install.sh's rsync excludes is NOT the deployable set:
+// install.sh also copies `extension/src/types/activity-events.schema.json` over the `$ref` stub
+// that ships at `extension/activity-events.schema.json`, and `--exclude='src'` prunes that source
+// from the asset. MEASURED end to end on the real compiled runtime: a git-mode deploy carries the
+// 80164-byte schema and `bin/log-activity.js` rejects an emission missing a schema-required field
+// (rc 1, names the field); the same runtime deployed from a replayed asset carries the 112-byte
+// stub, `definitions` reads as `{}`, and the identical invalid emission is ACCEPTED at rc 0 with
+// no diagnostic — the "no candidate path resolved" arm cannot fire, because the stub RESOLVES.
+// An auto-update regresses a healthy deploy that way: `check-update.ts` runs install.sh from the
+// extract dir (tarball mode), the rsync overwrites the real bytes with the stub, and the `cp`
+// that would repair it is guarded by `[ -f "$_schema_src" ]` on a path the payload does not carry.
+//
+// Pin the OUTCOME, not the path: replay the workflow's OWN build block over a fixture and require
+// the member `bin/log-activity.js` actually loads to parse with a non-empty `definitions`. A
+// staging step that moves, or a schema that relocates, keeps this green as long as validation
+// survives the trip; deleting the staging reds it.
+function parseWorkflowBuildBlock() {
+  const workflow = readFileSync(
+    path.join(REPO_ROOT, '.github', 'workflows', 'release.yml'),
+    'utf8',
+  );
+  const lines = workflow.split('\n');
+  const start = lines.findIndex((line) => /^\s*- name: Build tarball\s*$/.test(line));
+  assert.notEqual(start, -1, 'release.yml no longer has a `Build tarball` step — this pin cannot replay it');
+  const runAt = lines.findIndex((line, index) => index > start && /^\s*run: \|\s*$/.test(line));
+  assert.notEqual(runAt, -1, 'the `Build tarball` step no longer carries a `run: |` block');
+
+  const indent = lines[runAt + 1].match(/^\s*/)[0];
+  const body = [];
+  for (let i = runAt + 1; i < lines.length; i++) {
+    if (lines[i].trim() !== '' && !lines[i].startsWith(indent)) break;
+    body.push(lines[i].slice(indent.length));
+  }
+  const script = body.join('\n');
+  assert.match(script, /tar -c[a-z]*f\s/, `parsed no tar invocation from the Build tarball block: ${script}`);
+  return script;
+}
+
+// The tar operands the workflow names, minus the archive it writes — the paths a replay fixture
+// must materialize. Derived so a new operand cannot leave the fixture silently short.
+function workflowFixturePaths() {
+  return parseWorkflowTarOperands()
+    .filter((operand) => !operand.startsWith('-'))
+    .map((operand) => operand.replace(/\/$/, ''));
+}
+
+// The path `bin/log-activity.js` actually opens in a deployed tree: its first candidate lives
+// under `src/`, which no deploy carries, so the second is the one every install resolves.
+const DEPLOYED_SCHEMA_MEMBER = 'extension/activity-events.schema.json';
+
+function replayWorkflowBuild() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-build-'));
+  const stub = { $schema: 'http://json-schema.org/draft-07/schema#', $ref: './src/types/activity-events.schema.json' };
+  const real = { definitions: { baseline_attempt_timeout: { required: ['session'] } } };
+
+  mkdirSync(path.join(dir, 'extension', 'src', 'types'), { recursive: true });
+  writeFileSync(path.join(dir, DEPLOYED_SCHEMA_MEMBER.replace('extension/', 'extension/')), `${JSON.stringify(stub)}\n`);
+  writeFileSync(path.join(dir, 'extension', 'src', 'types', 'activity-events.schema.json'), `${JSON.stringify(real)}\n`);
+  // Without this the pin is vacuous: it must be possible for the staged member to still be the
+  // stub, or "carries definitions" proves nothing about the staging step.
+  assert.equal(
+    JSON.parse(readFileSync(path.join(dir, DEPLOYED_SCHEMA_MEMBER), 'utf8')).definitions,
+    undefined,
+    'the fixture stub already carries definitions — this replay could not observe a missing staging step',
+  );
+
+  for (const operand of workflowFixturePaths()) {
+    const target = path.join(dir, operand);
+    if (/\.[a-z]+$/.test(operand)) {
+      mkdirSync(path.dirname(target), { recursive: true });
+      if (!operand.endsWith('activity-events.schema.json')) writeFileSync(target, 'fixture\n');
+    } else {
+      mkdirSync(target, { recursive: true });
+      writeFileSync(path.join(target, 'fixture.md'), 'fixture\n');
+    }
+  }
+
+  const built = run('bash', ['-e', '-c', parseWorkflowBuildBlock()], {
+    cwd: dir,
+    env: {
+      ...process.env,
+      GITHUB_REF_NAME: 'v9.9.9',
+      GITHUB_ENV: path.join(dir, 'github_env'),
+    },
+  });
+  assert.equal(built.status, 0, `could not replay release.yml's Build tarball block: ${built.stderr}`);
+  return { dir, tarball: path.join(dir, 'pickle-rick-9.9.9.tar.gz') };
+}
+
+test('release-gate.the workflow asset carries a schema the deployed runtime can validate against', () => {
+  const { dir, tarball } = replayWorkflowBuild();
+  try {
+    const shipped = run('tar', ['-xOzf', tarball, DEPLOYED_SCHEMA_MEMBER]);
+    assert.equal(shipped.status, 0, `the asset does not carry ${DEPLOYED_SCHEMA_MEMBER}: ${shipped.stderr}`);
+
+    const parsed = JSON.parse(shipped.stdout);
+    assert.ok(
+      parsed.definitions && Object.keys(parsed.definitions).length > 0,
+      `release.yml publishes an asset whose ${DEPLOYED_SCHEMA_MEMBER} carries no definitions, so every`
+        + ` deployed schema-required-field check is skipped: ${shipped.stdout}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('release-gate.the payload sweep is disjoint from the two-sentinel post-tag check', () => {
   // Negative control. The post-tag gate greens the very payload the sweep above rejects,
   // so neither pin restates the other: amputating `extension/lib/` reds only the sweep,
