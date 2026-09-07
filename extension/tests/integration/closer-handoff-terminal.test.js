@@ -42,13 +42,27 @@ test('closer-handoff-terminal source: done-plus-manager-handoff is parked and fl
 });
 
 test('closer-handoff-terminal source: mux-runner checks closer terminal state at the iteration head and both completion exits', () => {
+  // Command-Query Separation: the decision QUERY has exactly one call site and it
+  // consumes the `CloserTerminalDecision`. The two completion-path sites used to
+  // invoke the same query purely for its park-and-flag side effect and discard the
+  // return — while eagerly spending `observeCurrentHead` (two git subprocesses) and
+  // `readCloserHandoffBudget` (a settings read) to populate arguments that only the
+  // 'failed' arm reads, an arm those sites' own comments state is unreachable there.
+  // These two assertions together forbid that shape returning: one call site, and
+  // that site binds the result.
   const occurrences = [...muxRunnerSource.matchAll(/evaluateCloserTerminalState\(\{/g)].length;
-  assert.equal(occurrences, 3, 'expected iteration-head and two completion-path checks');
+  assert.equal(occurrences, 1, 'expected the single decision-consuming iteration-head call site');
+  assert.match(muxRunnerSource, /const closerDecision = evaluateCloserTerminalState\(\{/);
+  // The completion paths reach the residual through the COMMAND instead. Anchored at
+  // statement position so neither the definition (`function flag...`) nor the query's
+  // own `const status = flag...` binding is counted — only bare side-effect calls.
+  const residualCommandCalls =
+    [...muxRunnerSource.matchAll(/^[ \t]*flagManagerHandoffResidual\(/gm)].length;
+  assert.equal(residualCommandCalls, 2, 'expected both completion paths to park-and-flag via the command');
+  assert.match(muxRunnerSource, /function flagManagerHandoffResidual\(/);
   assert.match(muxRunnerSource, /persistCloserHandoffTracker\(statePath,\s*closerDecision\.tracker\)/);
   // TIER-1.2 gh-11: only the main-loop iteration-head site still routes a closer
-  // terminal decision to a halt (closer_handoff_terminal survives); the two
-  // completion-path sites call evaluateCloserTerminalState only for its
-  // park-and-flag residual side effect and no longer branch on its result.
+  // terminal decision to a halt (closer_handoff_terminal survives).
   const exitForCloserTerminalStateOccurrences =
     [...muxRunnerSource.matchAll(/exitForCloserTerminalState\(/g)].length;
   assert.equal(exitForCloserTerminalStateOccurrences, 2, 'expected the definition plus exactly one call site');

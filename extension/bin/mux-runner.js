@@ -5212,23 +5212,42 @@ function emitManagerHandoffResidual(ticketId, conformanceFile) {
     }
     catch { /* best-effort */ }
 }
-export function evaluateCloserTerminalState(args) {
-    const ticketId = args.state.current_ticket;
+/**
+ * TIER-1.2 gh-11 park-and-flag, as a COMMAND. Emits the manager-handoff residual
+ * for `state`'s current ticket and reports that ticket's normalized status
+ * (null when there is no current ticket or its status is unreadable).
+ *
+ * This is the ONLY observable write `evaluateCloserTerminalState` performs on a
+ * ticket that is not 'failed'. Naming it separately is what lets the two
+ * completion paths — where the ticket was just confirmed Done, so 'failed'
+ * cannot hold — ask for the residual directly instead of invoking the decision
+ * QUERY for its side effect and discarding the `CloserTerminalDecision`. Those
+ * sites used to pay `observeCurrentHead` (two git subprocesses) and
+ * `readCloserHandoffBudget` (a settings read) to populate arguments that only
+ * the unreachable 'failed' arm ever reads.
+ */
+function flagManagerHandoffResidual(sessionDir, state) {
+    const ticketId = state.current_ticket;
     if (!ticketId)
-        return { action: 'continue', tracker: null };
+        return null;
     let status;
     try {
-        status = normalizeTicketStatus(getTicketStatus(args.sessionDir, ticketId));
+        status = normalizeTicketStatus(getTicketStatus(sessionDir, ticketId));
     }
     catch {
-        return { action: 'continue', tracker: null };
+        return null;
     }
-    const ticketDir = path.join(args.sessionDir, ticketId);
+    const ticketDir = path.join(sessionDir, ticketId);
     const conformance = readLatestTicketConformanceSnapshot(ticketDir);
     if (status === 'done' && conformance.hasManagerHandoff) {
         emitManagerHandoffResidual(ticketId, conformance.file);
     }
-    if (status !== 'failed')
+    return status;
+}
+export function evaluateCloserTerminalState(args) {
+    const ticketId = args.state.current_ticket;
+    const status = flagManagerHandoffResidual(args.sessionDir, args.state);
+    if (!ticketId || status !== 'failed')
         return { action: 'continue', tracker: null };
     const headSha = args.headSha ?? observeCurrentHead(args.workingDir)?.sha ?? null;
     if (!headSha) {
@@ -8197,7 +8216,6 @@ function refuseEpicFinalizeWhileWorkPending(state, ctx, curState) {
     (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, process.pid, ctx.log);
     return { kind: 'continue', resetStall: true };
 }
-// eslint-disable-next-line complexity -- HT-1 reviewed: F3 R-DWC completion_commit guard adds branches to an already-large completion handler; surrounding-flow refactor out of scope for the surgical sweep.
 function processTaskCompleted(state, ctx) {
     let curState;
     try {
@@ -8228,17 +8246,13 @@ function processTaskCompleted(state, ctx) {
         (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, process.pid, ctx.log);
         return { kind: 'continue', resetStall: true };
     }
-    // TIER-1.2 gh-11: manager_handoff_pending no longer halts — evaluateCloserTerminalState
-    // logs the residual internally (park-and-flag) and never returns it as an exit action.
-    // closer_handoff_terminal requires status 'failed', which cannot hold on a ticket the
-    // epic-completion decision above just confirmed genuinely done.
-    evaluateCloserTerminalState({
-        state: curState,
-        sessionDir: ctx.sessionDir,
-        workingDir: curState.working_dir || state.working_dir || process.cwd(),
-        headSha: observeCurrentHead(curState.working_dir || state.working_dir || process.cwd())?.sha ?? null,
-        failedBudget: readCloserHandoffBudget(ctx.extensionRoot),
-    });
+    // TIER-1.2 gh-11: manager_handoff_pending no longer halts — this is park-and-flag
+    // only. closer_handoff_terminal requires status 'failed', which cannot hold on a
+    // ticket the epic-completion decision above just confirmed genuinely done, so what
+    // this path wants is the residual COMMAND, not the decision query whose
+    // `CloserTerminalDecision` it would discard along with the two git subprocesses and
+    // the settings read spent populating arguments the 'failed' arm alone reads.
+    flagManagerHandoffResidual(ctx.sessionDir, curState);
     const ticketAction = finalizeCurrentTicketBeforeEpicExit(state, ctx, curState);
     if (ticketAction)
         return ticketAction;
@@ -12433,17 +12447,13 @@ async function runMuxRunnerMain() {
                     log(`Marked final ticket ${curState.current_ticket} as Done`);
                 }
             }
-            // TIER-1.2 gh-11: manager_handoff_pending no longer halts — evaluateCloserTerminalState
-            // logs the residual internally (park-and-flag) and never returns it as an exit action.
-            // closer_handoff_terminal requires status 'failed', which cannot hold on the ticket just
-            // marked Done above.
-            evaluateCloserTerminalState({
-                state: curState,
-                sessionDir,
-                workingDir: curState.working_dir || state.working_dir || process.cwd(),
-                headSha: observeCurrentHead(curState.working_dir || state.working_dir || process.cwd())?.sha ?? null,
-                failedBudget: readCloserHandoffBudget(extensionRoot),
-            });
+            // TIER-1.2 gh-11: manager_handoff_pending no longer halts — this is park-and-flag
+            // only. closer_handoff_terminal requires status 'failed', which cannot hold on the
+            // ticket just marked Done above, so what this path wants is the residual COMMAND,
+            // not the decision query whose `CloserTerminalDecision` it would discard along with
+            // the two git subprocesses and the settings read spent populating arguments the
+            // 'failed' arm alone reads.
+            flagManagerHandoffResidual(sessionDir, curState);
             // R-NOPOSTTIER (AC-13): this is the manager-token completion seam (the model
             // itself emitted EPIC_COMPLETED/TASK_COMPLETED and evaluateEpicCompletion
             // verified it genuine) — a second promise-synthesis path distinct from the
