@@ -1,5 +1,5 @@
 // @tier: fast
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -18,11 +18,43 @@ const REPO_ROOT = path.resolve(__dirname, '../..');
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
 
 /**
+ * D6 (R-ORCG replay): a per-test `finally` is unreachable when the whole
+ * `node --test` process dies (uncaught throw, cancel, or a killed run) before
+ * that specific test's cleanup line runs — measured live: `makeSandboxedExtensionDir()`
+ * leaked its directory on every call because its three callers' `finally` blocks
+ * never named it. Every fixture root created below is tracked here and reaped by
+ * `after()` (normal suite end) and `process.on('exit')` (uncaught throw / cancel)
+ * regardless of which test created it or whether that test's own `finally` ran.
+ * SIGKILL/OOM survives neither hook — that class is already bounded by the
+ * existing age-gated `sweepDerivedTmpDirFixtures` (services/orphan-reaper.ts),
+ * wired into every `posttest*` script, which derives this file's `pickle-mux-runner-`
+ * prefix from source with no list to maintain. A per-test `finally` is left in
+ * place where it already exists — cleaning up early is harmless (this registry's
+ * sweep is `force: true` and no-ops on an already-removed path).
+ */
+const trackedFixtureRoots = new Set();
+
+function reapTrackedFixtureRoots() {
+    for (const dir of trackedFixtureRoots) {
+        try {
+            fs.rmSync(dir, { recursive: true, force: true });
+        } catch {
+            /* best-effort — a locked/in-use directory is left for the posttest sweep */
+        }
+    }
+    trackedFixtureRoots.clear();
+}
+process.on('exit', reapTrackedFixtureRoots);
+after(reapTrackedFixtureRoots);
+
+/**
  * Create an isolated temp root directory.
  * Uses fs.realpathSync to resolve macOS /var -> /private/var symlinks.
  */
 function makeTmpRoot() {
-    return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mux-runner-')));
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mux-runner-')));
+    trackedFixtureRoots.add(dir);
+    return dir;
 }
 
 /**
@@ -32,7 +64,9 @@ function makeTmpRoot() {
  */
 function makeSandboxedExtensionDir() {
     const name = 'pickle-mux-runner-test-' + crypto.randomBytes(4).toString('hex');
-    return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), name + '-')));
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), name + '-')));
+    trackedFixtureRoots.add(dir);
+    return dir;
 }
 
 async function waitFor(predicate, timeoutMs = 5000) {
@@ -7076,4 +7110,97 @@ test('B-LOGEV negative control: worker_produced_nothing still fires when nothing
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// --- D6 (R-ORCG replay): TMPDIR fixture-directory leak ---
+//
+// `makeTmpRoot`/`makeSandboxedExtensionDir` used to rely ENTIRELY on each
+// calling test's own `try { ... } finally { fs.rmSync(dir, ...) }`. That shape
+// passes the happy path and leaks the path that matters: a test that throws
+// before reaching its own `finally`, is cancelled, or never wrote the `finally`
+// in the first place (measured: `makeSandboxedExtensionDir()` leaked on every
+// one of its 3 callers) abandons its directory with nothing left to clean it.
+//
+// The two cases below assert the fix directly: a fixture created with NO
+// `finally` of its own is still reaped, because reaping is now a property of
+// the SUITE (`after()` / `process.on('exit')`, both wired to
+// `reapTrackedFixtureRoots` at the top of this file), never of the individual
+// test. Mutation check (AC-D6-4): delete either `trackedFixtureRoots.add(dir)`
+// line from `makeTmpRoot`/`makeSandboxedExtensionDir` and both go RED — the
+// directory a test never rmSync'd itself would still exist after the reap call.
+
+test('D6: a fixture whose owning test never reaches its own cleanup is still reaped (makeTmpRoot)', () => {
+    const dir = makeTmpRoot();
+    assert.ok(fs.existsSync(dir), 'fixture must exist before any reap runs');
+    // No try/finally here — this stands in for a test that crashed, was
+    // cancelled, or timed out before reaching its own cleanup line.
+    reapTrackedFixtureRoots();
+    assert.ok(!fs.existsSync(dir), 'the suite-level reap must remove a fixture this test never cleaned itself');
+});
+
+test('D6: a fixture whose owning test never reaches its own cleanup is still reaped (makeSandboxedExtensionDir)', () => {
+    const dir = makeSandboxedExtensionDir();
+    assert.ok(fs.existsSync(dir), 'fixture must exist before any reap runs');
+    reapTrackedFixtureRoots();
+    assert.ok(!fs.existsSync(dir), 'the suite-level reap must remove a fixture this test never cleaned itself');
+});
+
+test('D6: the tracked-fixture registry is not fooled by a directory it never created', () => {
+    // AC-D6-5 anti-vacuity: reapTrackedFixtureRoots() must not become a blanket
+    // "delete anything pickle-mux-runner-shaped" sweep — it only removes what
+    // THIS process actually registered.
+    const untracked = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mux-runner-')));
+    try {
+        reapTrackedFixtureRoots();
+        assert.ok(fs.existsSync(untracked), 'an untracked directory must survive a registry reap');
+    } finally {
+        fs.rmSync(untracked, { recursive: true, force: true });
+    }
+});
+
+test('D6 (AC-D6-3): a SIGKILLed child leaves its fixture behind — the in-process reap cannot reach it, only the posttest sweep can', async () => {
+    // This is the crash-floor case `reapTrackedFixtureRoots` explicitly does
+    // NOT cover (SIGKILL/OOM give no JS code a chance to run at all). The
+    // control half proves that gap is real; the sweep half proves it is
+    // already bounded by the existing age-gated posttest mechanism
+    // (services/orphan-reaper.ts: sweepDerivedTmpDirFixtures), which this
+    // repo already ships and tests generically — this case pins that THIS
+    // file's specific `pickle-mux-runner-` prefix is one of the prefixes it
+    // reaches, end to end, through a real subprocess kill.
+    const { sweepDerivedTmpDirFixtures } = await import('../services/orphan-reaper.js');
+    const scanRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'd6-sigkill-scan-')));
+    try {
+        const child = spawn(process.execPath, ['-e', `
+            const fs = require('fs');
+            const path = require('path');
+            const dir = fs.mkdtempSync(path.join(${JSON.stringify(scanRoot)}, 'pickle-mux-runner-'));
+            process.send({ dir });
+            setInterval(() => {}, 1000); // hang until killed — never reaches its own cleanup
+        `], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+
+        const createdDir = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('child never reported its fixture dir')), 5000);
+            child.once('message', (msg) => { clearTimeout(timer); resolve(msg.dir); });
+        });
+        assert.ok(fs.existsSync(createdDir), 'child must have created its fixture before being killed');
+
+        child.kill('SIGKILL');
+        await new Promise((resolve) => child.once('exit', resolve));
+
+        // Control: an uncatchable kill leaves the fixture behind. No in-process
+        // hook (after()/exit) can reach a directory owned by a DIFFERENT,
+        // already-dead process — this is the honest limit this repo's own
+        // fixture-lifetime-and-registry.test.js documents for PID cleanup too.
+        assert.ok(fs.existsSync(createdDir), 'a SIGKILLed child leaves its own fixture on disk — no in-process hook can prevent this');
+
+        // Backdate past the sweep's staleness floor and let the REAL sweep run.
+        const past = new Date(Date.now() - 25 * 60 * 60 * 1000);
+        fs.utimesSync(createdDir, past, past);
+
+        const result = sweepDerivedTmpDirFixtures({ tmpDir: scanRoot, prefixes: ['pickle-mux-runner-'] });
+        assert.equal(result.skipped, null, 'the sweep must have actually run a census');
+        assert.ok(!fs.existsSync(createdDir), 'the posttest sweep must remove the orphaned fixture the SIGKILLed child could never clean itself');
+    } finally {
+        fs.rmSync(scanRoot, { recursive: true, force: true });
+    }
 });
