@@ -1563,3 +1563,125 @@ test('release-gate.the payload sweep is disjoint from the two-sentinel post-tag 
     'amputating extension/lib/ left every import resolvable — the sweep would not have caught the shipped defect',
   );
 });
+
+// AP-BIN-ITER29-01. The same silent-omission class one level out from AP-BIN-ITER22-01, on the
+// operand list rather than inside it. `.claude/commands/` was named alone, so `.claude/agents/`
+// (18 managed subagents) and `.claude/settings.json` were in NO published asset, and `templates/`
+// was named nowhere at all. install.sh reads all three behind a silent skip -- `[ -d ]` at :614
+// and :645, and `jq '.hooks.PreToolUse // [] | length' ... || echo "0"` at :762, which spends the
+// same 0 on a MISSING source file as on a source carrying no hooks. MEASURED on the replayed
+// asset: a tarball install registered ZERO PreToolUse hook groups (the source file carries exactly
+// one -- the R-WSRC config-protection write guard), resolved no managed agent, and FATALed every
+// microverse command, because resolveManagerPromptPath looks in $EXTENSION_ROOT/templates/ then
+// ~/.claude/commands/ and install.sh rm -f's the second copy of microverse.md.
+//
+// The oracle is DERIVED on BOTH sides, so it carries no hand-maintained list to rot:
+//   required = every literal `$SCRIPT_DIR/<path>` install.sh reads
+//   minus     paths git does not track -- a tarball is built from a fresh checkout, so install.sh
+//             already tolerates their absence (.git, whose absence IS the tarball-mode sentinel;
+//             extension/.tsbuildinfo; node_modules)
+//   minus     paths the tar invocation's OWN --exclude patterns prune (extension/src/**, whose
+//             schema is staged onto the deployed path instead -- pinned separately above)
+// Adding a deploy source to install.sh without carrying it reds this immediately.
+const TAR_EXCLUDE_PREFIX = '--exclude=';
+
+function workflowExcludePatterns() {
+  return parseWorkflowTarOperands()
+    .filter((operand) => operand.startsWith(TAR_EXCLUDE_PREFIX))
+    .map((operand) => operand.slice(TAR_EXCLUDE_PREFIX.length));
+}
+
+function trackedIndex() {
+  const listed = run('git', ['ls-files', '-z'], { cwd: REPO_ROOT });
+  assert.equal(listed.status, 0, `could not read the git index: ${listed.stderr}`);
+  const files = new Set(listed.stdout.split('\0').filter(Boolean));
+  assert.ok(files.size > 100, `the git index reports only ${files.size} tracked files`);
+  const directories = new Set();
+  for (const file of files) {
+    const parts = file.split('/');
+    for (let i = 1; i < parts.length; i++) directories.add(parts.slice(0, i).join('/'));
+  }
+  return { files, directories };
+}
+
+// Stops at a quote, whitespace, `;`, `)` or a `$` interpolation, so only fully literal reads are
+// claimed. A path built from a variable is out of the oracle's reach and is not asserted on.
+const SCRIPT_DIR_READ_RE = /\$\{?SCRIPT_DIR\}?"?\/([^"\s;)$]+)/g;
+
+function installDeploySources() {
+  const install = readFileSync(path.join(REPO_ROOT, 'install.sh'), 'utf8');
+  const literals = new Set();
+  for (const match of install.matchAll(SCRIPT_DIR_READ_RE)) {
+    literals.add(match[1].replace(/\/+$/, ''));
+  }
+  assert.ok(literals.size > 10, `parsed only ${literals.size} $SCRIPT_DIR reads from install.sh`);
+
+  const { files, directories } = trackedIndex();
+  const excludes = workflowExcludePatterns();
+  assert.ok(excludes.length > 0, 'release.yml names no --exclude patterns — this oracle cannot excuse pruned reads');
+
+  const expand = (literal) => {
+    if (!literal.includes('*')) return [literal];
+    const pattern = new RegExp(
+      `^${literal.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')}$`,
+    );
+    return [...files].filter((tracked) => pattern.test(tracked));
+  };
+
+  const required = new Set();
+  for (const literal of literals) {
+    for (const candidate of expand(literal)) {
+      if (!files.has(candidate) && !directories.has(candidate)) continue;
+      if (candidate.split('/').some((component) => excludes.includes(component))) continue;
+      required.add(candidate);
+    }
+  }
+  return [...required].sort();
+}
+
+function uncarriedDeploySources(members) {
+  return installDeploySources().filter(
+    (source) => !members.has(source) && ![...members].some((name) => name.startsWith(`${source}/`)),
+  );
+}
+
+test('release-gate.the workflow asset carries every deploy source install.sh reads', () => {
+  const required = installDeploySources();
+  assert.ok(
+    required.length >= 10,
+    `derived only ${required.length} deploy sources from install.sh — the oracle is too thin to fire`,
+  );
+
+  assert.deepEqual(
+    uncarriedDeploySources(workflowPayloadMembers()),
+    [],
+    'release.yml publishes an asset missing a path install.sh deploys from, and every consumer of'
+      + ' that path skips silently',
+  );
+});
+
+test('release-gate.the deploy-source oracle is disjoint from the import sweep and the post-tag check', () => {
+  // Negative control. Amputating `.claude/` reds ONLY this oracle: no shipped `.js` imports from
+  // it, so the import sweep stays green, and both members the post-tag gate reads survive.
+  // Amputate MEMBERS, never the operand: an operand-level filter would stop matching the moment
+  // the workflow respells the operand, and would then report "cannot fire" instead of controlling.
+  const members = workflowPayloadMembers();
+  const amputated = new Set([...members].filter((name) => !name.startsWith('.claude/')));
+  assert.ok(
+    members.size - amputated.size > 0,
+    'the replayed payload carries no .claude/ members — the control cannot fire',
+  );
+  assert.ok(
+    amputated.has('extension/package.json') && amputated.has('install.sh'),
+    'the two members post-tag actually checks must survive the amputation, or the control proves nothing',
+  );
+  assert.deepEqual(
+    unresolvedPayloadImports(amputated),
+    [],
+    'amputating .claude/ broke a static import — the control is not disjoint from the import sweep',
+  );
+  assert.ok(
+    uncarriedDeploySources(amputated).includes('.claude/settings.json'),
+    'amputating .claude/ left every deploy source carried — this oracle would not have caught the shipped defect',
+  );
+});

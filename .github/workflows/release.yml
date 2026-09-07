@@ -119,6 +119,17 @@ jobs:
           # healthy deploy that way, the rsync overwriting real bytes with the stub. Stage the
           # real bytes onto the deployed path so the asset carries them under the excludes
           # unchanged; install.sh's own copy keeps git mode byte-identical.
+          #
+          # Same failure one level out: `.claude/commands/` was named alone, so `.claude/agents/`
+          # (18 managed subagents) and `.claude/settings.json` rode in no asset, and `templates/`
+          # was named nowhere. Every consumer skips silently -- install.sh guards them with
+          # `[ -d ]`, `[ -f ]` and `jq ... || echo 0`. MEASURED on a replayed asset: a tarball
+          # install registers ZERO PreToolUse hooks (the source file holds the one R-WSRC
+          # config-protection group), resolves no managed agent, and FATALs every microverse
+          # command -- resolveManagerPromptPath finds microverse.md in neither
+          # $EXTENSION_ROOT/templates/ nor ~/.claude/commands/, which install.sh rm -f's.
+          # Ship `.claude/` WHOLE for the same reason `extension/` is shipped whole: a
+          # subdirectory allow-list rots silently, and the excludes above still apply.
           cp extension/src/types/activity-events.schema.json extension/activity-events.schema.json
           tar -czf "pickle-rick-${VERSION}.tar.gz" \
             --exclude='node_modules' \
@@ -130,7 +141,8 @@ jobs:
             --exclude='.codegraph' \
             extension/ \
             install.sh \
-            .claude/commands/ \
+            .claude/ \
+            templates/ \
             pickle_settings.json \
             persona.md
           echo "TARBALL=pickle-rick-${VERSION}.tar.gz" >> "$GITHUB_ENV"
