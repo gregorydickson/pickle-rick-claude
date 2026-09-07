@@ -492,3 +492,87 @@ test('AP-EXT-ITER38-01: a COMPLETED enumeration through the same seam still rend
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-BIN-ITER33-01: `isPathInScope` — the predicate the fence actually IS — had
+// NO fixture on either of its two arms. Eight commits hardened everything around
+// it (the recovering read, the enumeration ceiling, the `-z` contract, the
+// CLAUDE.md exemption) while the membership comparison stayed at its birth
+// commit, uncovered.
+//
+// Both cases below drive the SHIPPED CLI against a REAL git repo and assert the
+// emitted verdict, and both use a PRODUCTION-SHAPED fence: `allowed_paths` is
+// built by `scope-resolver.ts:computeAllowedFromDiff` from `--name-status`, so
+// every entry is a FILE path. Every pre-existing case in this file instead
+// allowlists a DIRECTORY (`extension/src`), which reaches only the `startsWith`
+// arm — so the arm that decides essentially every real allowlist hit was blind
+// by construction.
+// ---------------------------------------------------------------------------
+
+test('AP-BIN-ITER33-01: a staged path EQUAL to an allowed file path is inside the fence', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp, timeout: 30_000 });
+
+    fs.mkdirSync(path.join(tmp, 'extension', 'src', 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'bin', 'setup.ts'), 'export {};');
+    spawnSync('git', ['add', 'extension/src/bin/setup.ts'], { cwd: tmp, timeout: 30_000 });
+
+    // The allowlist names the staged file EXACTLY and has no staged descendant,
+    // so only equality can admit it. Drop that arm and the fence refuses the very
+    // file it was told to allow: `outside_scope` at exit 1, on every worker commit
+    // of every scoped session.
+    const scopePath = writeScopeJson(tmp, ['extension/src/bin/setup.ts']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stdout: ${result.stdout} stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'ok', 'an explicitly-allowed file path must not read as drift');
+    assert.equal(output.staged_count, 1);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// The opposite direction, and the reason the separator is not cosmetic: an
+// allowlist entry admits its DESCENDANTS, never its name-prefix SIBLINGS.
+test('AP-BIN-ITER33-01: a staged path that merely name-prefixes an allowed path is still outside the fence', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp, timeout: 30_000 });
+
+    fs.mkdirSync(path.join(tmp, 'extension', 'src', 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'docs', 'api-notes'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'bin', 'setup.ts'), 'export {};');
+    // Extends an allowed FILE entry's name — the shape a worker produces by hand
+    // (`.bak`, `.orig`, `.tsx`) while editing the file it is scoped to.
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'bin', 'setup.ts.bak'), 'export {};');
+    // Extends an allowed DIRECTORY entry's name — the same defect one shape over.
+    fs.writeFileSync(path.join(tmp, 'docs', 'api-notes', 'leaked.md'), 'x\n');
+    spawnSync(
+      'git',
+      ['add', 'extension/src/bin/setup.ts', 'extension/src/bin/setup.ts.bak', 'docs/api-notes/leaked.md'],
+      { cwd: tmp, timeout: 30_000 },
+    );
+
+    // Neither allowlist entry is an ANCESTOR of either sibling, so only the
+    // separator decides them. Drop it and both walk straight through the fence.
+    const scopePath = writeScopeJson(tmp, ['extension/src/bin/setup.ts', 'docs/api']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 1, `expected exit 1, got ${result.status}. stdout: ${result.stdout} stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'outside_scope');
+    assert.deepEqual(
+      [...output.staged_paths_outside_scope].sort(),
+      ['docs/api-notes/leaked.md', 'extension/src/bin/setup.ts.bak'],
+      'both name-prefix siblings must be fenced, and the allowed file itself must not be',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
