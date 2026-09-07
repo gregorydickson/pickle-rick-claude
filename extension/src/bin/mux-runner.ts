@@ -5333,24 +5333,15 @@ export function appendPipelineRunnerMarker(sessionDir: string, message: string):
 export type ExitReason = typeof EXIT_REASONS[number];
 
 /**
- * ROOT 0 (1428cbe9): the three predicates below are DERIVATIONS of the ONE disposition
- * vocabulary, `EXIT_DISPOSITIONS` in `types/index.ts`, read through `classifyExitReason`.
- * They hold no membership of their own.
+ * ROOT 0 (1428cbe9): DERIVATIONS of the one disposition vocabulary, `EXIT_DISPOSITIONS` in
+ * `types/index.ts`, read through `classifyExitReason`. They hold no membership of their own —
+ * a predicate here that reintroduces a local set is the defect this collapse removed, and the
+ * record's own comment carries the history and the three axes' definitions.
  *
- * They used to be three hand-maintained subsets of the same 20-member domain — an inline
- * literal disjunction, `FAILURE_EXIT_REASONS` and `INCOMPLETE_EXIT_REASONS` — none of them
- * exhaustive. A reason matching none fell through to the SUCCESS arm, which is how
- * `done_without_commit_evidence` printed a green "mux-runner Complete" panel for a bundle
- * that halted mid-flight. The three sets' comments answered that hazard with an instruction
- * to remember to edit the other lists in the same commit; the total `Record` in
- * `types/index.ts` makes the compiler answer it instead (an omitted member is TS2741).
- *
- * The three properties they read remain distinct and are documented on the record:
- * `haltEligible` is R-CNAR-4(c) pause/defer, `verdict: 'failure'` stops auto-resume.sh, and
- * `verdict: 'incomplete'` is the third class — the run neither failed nor finished — which
- * a binary verdict could not express. Membership questions belong to the record; only the
- * NAMES live here, because two of them are pinned as canonical by trap-door INVARIANTs
- * (`src/types/CLAUDE.md`).
+ * Only the NAMES live here, because two are pinned as canonical by trap-door INVARIANTs
+ * (`src/types/CLAUDE.md`). `haltEligible` is R-CNAR-4(c) pause/defer; `verdict: 'failure'`
+ * stops auto-resume.sh; `verdict: 'incomplete'` is the third class — the run neither failed
+ * nor finished — which a binary verdict could not express.
  */
 export const isHaltExit = (r: ExitReason): boolean => classifyExitReason(r).haltEligible;
 export const isFailureExit = (r: ExitReason): boolean => classifyExitReason(r).verdict === 'failure';
