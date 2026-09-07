@@ -963,6 +963,24 @@ describe('ROOT 0 — one disposition vocabulary, every predicate a derivation', 
     assert.equal(isIncompleteExit('__not_an_exit_reason__'), false);
   });
 
+  test('inherited Object.prototype keys are NOT exit reasons', () => {
+    // An object literal inherits from Object.prototype, so a bare `EXIT_DISPOSITIONS[reason] ??
+    // DEFAULT` lookup returns a truthy inherited FUNCTION for these keys and never reaches the
+    // default — `isHaltExit` then answers `undefined` instead of `false`, violating its declared
+    // boolean type for a corrupted state.exit_reason. The ReadonlySet this record replaced could
+    // not do that, so this is parity, not a new guard.
+    for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+      assert.deepEqual(
+        classifyExitReason(key),
+        { verdict: 'unknown', haltEligible: false, crashFloor: false },
+        `${key} must classify as the DEFAULT disposition, not an inherited prototype member`,
+      );
+      assert.equal(isHaltExit(key), false, `isHaltExit('${key}') must be exactly false`);
+      assert.equal(isFailureExit(key), false);
+      assert.equal(isIncompleteExit(key), false);
+    }
+  });
+
   test('mux-runner holds NO exit-reason membership list of its own', () => {
     // The whole defect was two vocabularies. A local set here would be a third.
     for (const banned of ['FAILURE_EXIT_REASONS', 'INCOMPLETE_EXIT_REASONS']) {

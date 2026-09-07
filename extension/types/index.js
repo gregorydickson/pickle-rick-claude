@@ -678,7 +678,15 @@ const DEFAULT_EXIT_DISPOSITION = { verdict: 'unknown', haltEligible: false, cras
 export function classifyExitReason(reason) {
     if (typeof reason !== 'string')
         return DEFAULT_EXIT_DISPOSITION;
-    return EXIT_DISPOSITIONS[reason] ?? DEFAULT_EXIT_DISPOSITION;
+    // `hasOwnProperty`, not a bare lookup with `??`. An object literal inherits from
+    // Object.prototype, so `EXIT_DISPOSITIONS['constructor']` (or 'toString', '__proto__', ...)
+    // returns an inherited FUNCTION — truthy, so `??` never reaches the default, and the caller
+    // reads `.verdict` as `undefined`. `isHaltExit` would then return `undefined` rather than
+    // `false`, breaking its declared `boolean` type for a corrupted `state.exit_reason`. The
+    // `ReadonlySet` this record replaced was immune by construction; own-key checking restores that.
+    if (!Object.prototype.hasOwnProperty.call(EXIT_DISPOSITIONS, reason))
+        return DEFAULT_EXIT_DISPOSITION;
+    return EXIT_DISPOSITIONS[reason];
 }
 /**
  * B-CRASHFLOOR: the pickle-phase crash floor — exit reasons meaning the runner cannot physically
