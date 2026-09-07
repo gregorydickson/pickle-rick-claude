@@ -113,6 +113,40 @@ isolated) and is struck from `CLAUDE.md` and `prds/CLAUDE.md`.
 
 ---
 
+## ⚠ B-MEGADRAIN (session `2026-09-06-27819a21`) — SUCCESS VERDICT ALREADY WITHHELD at the pickle boundary
+
+**Measured 2026-09-07 15:18Z**, do not re-derive. `pipeline-status.json`:
+
+```
+status: running · current_phase: anatomy-park · completed_phases: 2/4
+phase_dispositions: { "pickle": "done_over_red_worker_gate_tests:7d47affe,f4dd43e8,0618cccd,fa96d062" }
+citadel_advisory_findings: 134
+```
+
+**Four tickets flipped Done over a red `worker_gate_tests_verdict`.** This is `withholdForDoneOverRed
+TestVerdict` (`pipeline-runner.ts:5315`) doing exactly what WS-B (`f8559470`) built it to do:
+
+- it raises `counters.nonConvergent += 4`, so `unsuccessful = pipelineFailed || nonConvergent > 0`
+  **withholds the success verdict and skips closer-release (AC-B1)**;
+- it leaves `completed++` alone (AC-B2), which is why `completed_phases` reads 2 with the phase
+  graduated — the phase DID complete, the RUN is what is not successful. Those are different wires.
+
+**Consequence for dispatch, stated now so no later tick re-litigates it: B-MEGADRAIN will NOT
+auto-release, whatever anatomy-park and szechuan-sauce return.** `nonConvergent` is already 4 and
+nothing downstream lowers it. Its fixes still land on the branch and still ship in a LATER release
+whose gate is green; what is foreclosed is this run producing a release verdict of its own.
+
+**Corroborating detail worth keeping:** `state.recovery_attempts` had earlier logged
+`failed_flip_suppressed` at 1/2 (`fresh_artifacts`) for `7d47affe` and `f4dd43e8` — two of the same
+four ids. The suppression cap let a ticket with fresh artifacts past a `worker_gate_fail` flip, and the
+Done-over-red withhold then caught it at the phase boundary. Two independent mechanisms, consistent
+story, no fake-green: the suppression is bounded and the withhold is honest.
+
+**NOT a halt and NOT a defect.** The phase loop continued into anatomy-park unaided. Do not "fix" the
+disposition, do not re-run the phase, and do not treat `completed_phases: 2` as a lost counter.
+
+---
+
 ## 🏁 B-UNATTENDED RUN OUTCOME — session `2026-09-06-f625727a` ENDED 2026-09-07 03:39Z (measured)
 
 **Terminal state, read off `pipeline-status.json` + `state.json` after the runners exited:**
