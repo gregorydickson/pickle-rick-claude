@@ -2545,3 +2545,138 @@ test('AP-BIN-ITER35-01 control: a verify command that RUNS AND FAILS at phase 2 
   assert.equal(r.ok, false, 'a measured failure downstream of a committed phase must still report not-ok');
   assert.equal(r.headMoved, true, 'precondition: phase 1 committed');
 });
+
+// ---- AP-BIN-ITER36-01: an UNPARSEABLE phase table is not a failed plan ----
+//
+// One field UP from AP-BIN-ITER35-01, which reclassified an absent `verify`. This is the same
+// absence-as-failure shape at the level of the phase TABLE: `readConvergedPlanPhases` collapses
+// four no-plan-to-run cases into one null, and `executeConvergedPlanAdapter` read every one of
+// them as "nothing was produced". But on the `'fallthrough'` path the re-execution seam has
+// ALREADY spawned an implement pass that returned ok and left a real diff, so the bare
+// `{ok:false}` abandoned that work uncommitted, moved no HEAD, and — measured on the shipped
+// mirror before the fix — logged NOTHING AT ALL, leaving a dirty tree to contaminate the next
+// iteration while the ladder walked to the terminal `recovery_exhausted`.
+//
+// MEASURED with the shipped parser over the operator's 72 live `plan_*.md`: 3 parse to ZERO
+// phases. The table below is those live shapes, not invented ones — 2 of the 3 author their
+// units as `### P1 —` and the third carries a `## Phases` section with no phase-unit heading
+// under it at all. Widening the grammar to admit `P` would be the third enumeration patch on
+// this artifact in three passes (after AP-EXT-ITER227-01's level/separator collapse and
+// AP-EXT-ITER228-01's marker collapse) and would still strand the fourth spelling silently:
+// nothing PRODUCES these headings, so the disposition is the fix, not the regex.
+//
+// The three controls are the other direction. Committing is not a success claim — the verdict
+// stays ground truth (HEAD moved) — but the fix must reclassify ONLY the case where a diff of
+// OURS exists: no seam and a seam that produced nothing must both still report not-ok.
+const ITER36_ZERO_PHASE_PLANS = [
+  ['the live `### P1 —` unit spelling', [
+    '# Plan — ROOT 0', '', '## Phases', '',
+    '### P1 — STRUCTURAL: introduce the record (`types/index.ts`)', 'Steps: 1. add the type.', '',
+    '### P2 — BEHAVIOURAL SEAM: re-point the predicates', 'Steps: 1. edit the caller.', '',
+  ]],
+  ['a `## Phases` section carrying no phase-unit heading at all', [
+    '# Plan — B3', '', '## Phases', '',
+    'Zero-diff: the premise is already satisfied; nothing to implement.', '',
+    '### Verify command (confirms the zero-diff premise, not a phase to execute)', '`true`', '',
+  ]],
+];
+
+/**
+ * Run the shipped converged-plan rung over a plan whose phase table does not parse.
+ * `seam: 'diff' | 'nothing' | 'none'` selects which re-execution seam (if any) is wired.
+ */
+function runIter36Rung(planLines, seam, { preDirty = false } = {}) {
+  const { repo, baseSha } = makeRepo('ap-iter36-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter36-session-');
+  const ticketId = 'c3d4e5f6';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress' });
+  writeFileSync(path.join(ticketDir, 'plan_2026-09-07.md'), planLines.join('\n'));
+  // FOREIGN dirt: not ours, produced by nobody in this rung. Without it the no-seam control is
+  // VACUOUS — a clean tree hits `commitConvergedPlanPhase`'s empty-index no-op, so the verdict
+  // is not-ok whether the guard is there or not, and dropping the guard survives the pin.
+  if (preDirty) writeFileSync(path.join(repo, 'stray.ts'), 'export const stray = 1;\n');
+  const logs = [];
+  const seams = {
+    diff: diffProducingReExecutionSeam(repo, []),
+    nothing: { spawnImplementPass: () => ({ ok: true }) },
+    // Dirty to `isWorkingTreeDirty` (which takes no exclude here, so the rung DOES fall
+    // through) but empty to `git add -A ...CODEGRAPH_PATHSPEC_EXCLUDES`. This is the one
+    // reachable input that separates the committer's own `ok` — true, via its empty-index
+    // no-op — from ground truth, and it is the fake-green direction.
+    codegraphOnly: {
+      spawnImplementPass: () => {
+        mkdirSync(path.join(repo, '.codegraph'), { recursive: true });
+        writeFileSync(path.join(repo, '.codegraph', 'index.bin'), 'regenerable\n');
+        return { ok: true };
+      },
+    },
+    none: undefined,
+  };
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: (m) => logs.push(m),
+    ...(seams[seam] ? { reExecutionSeam: seams[seam] } : {}),
+  });
+  const result = {
+    ok: out.ok,
+    headMoved: git(repo, ['rev-parse', 'HEAD']) !== baseSha,
+    dirty: git(repo, ['status', '--porcelain']),
+    committedFiles: git(repo, ['log', '--name-only', '--format=', `${baseSha}..HEAD`]).split('\n').filter(Boolean),
+    subjects: git(repo, ['log', '--format=%s', `${baseSha}..HEAD`]).split('\n').filter(Boolean),
+    logs,
+  };
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+  return result;
+}
+
+for (const [label, planLines] of ITER36_ZERO_PHASE_PLANS) {
+  test(`AP-BIN-ITER36-01: ${label} commits the produced diff instead of abandoning it`, () => {
+    const r = runIter36Rung(planLines, 'diff');
+    assert.equal(r.ok, true, 'an unparseable phase table must not read as a failed plan');
+    assert.equal(r.headMoved, true, 'the rung verdict is ground truth — a commit must have landed');
+    assert.deepEqual(r.committedFiles, ['produced.ts'], "the seam's diff must be IN the commit, not left in the tree");
+    assert.equal(r.dirty, '', 'nothing may be left uncommitted behind an unparseable plan');
+    assert.deepEqual(r.subjects, ['fix(c3d4e5f6): execute-converged-plan unphased plan'],
+      'the unphased subject arm must be taken — there is no phase number to name');
+    assert.ok(
+      r.logs.some((l) => l.includes('parses to zero phases')),
+      'the degradation must be reported — pre-fix this path emitted NO log line at all',
+    );
+  });
+
+  test(`AP-BIN-ITER36-01 control: ${label} with a seam that produced NOTHING still reports not-ok`, () => {
+    const r = runIter36Rung(planLines, 'nothing');
+    assert.equal(r.ok, false, 'a genuinely zero-diff re-execution must still reconcile to terminal');
+    assert.equal(r.headMoved, false, 'no diff of ours exists, so nothing may be committed');
+    assert.equal(r.dirty, '', 'precondition: the seam left the tree clean');
+  });
+
+  test(`AP-BIN-ITER36-01 control: ${label} whose diff is codegraph-ONLY reports GROUND TRUTH, not the no-op`, () => {
+    const r = runIter36Rung(planLines, 'codegraphOnly');
+    assert.equal(r.headMoved, false, 'the whole diff was excluded from staging — no commit can have landed');
+    assert.equal(r.ok, false,
+      "the verdict is HEAD moving, never the committer's own ok — an empty index is a no-op that reads ok:true");
+    assert.deepEqual(r.subjects, [], 'an empty index must not produce a commit');
+  });
+
+  test(`AP-BIN-ITER36-01 control: ${label} with NO re-execution seam must not commit FOREIGN dirt`, () => {
+    const r = runIter36Rung(planLines, 'none', { preDirty: true });
+    assert.equal(r.ok, false, 'with no seam there is no diff of ours to rescue — the no-plan-to-run arm is unchanged');
+    assert.equal(r.headMoved, false, 'nothing may be committed on the no-seam path');
+    assert.equal(r.dirty, '?? stray.ts', "a dirty tree we did not produce must be left exactly as found, never swept into a commit");
+  });
+}
+
+test('AP-BIN-ITER36-01 control: a plan whose phases DO parse still runs the phase loop', () => {
+  const r = runIter36Rung(
+    ['# Plan', '', '## Phases', '', '### Phase 1 — land it', '**Verify:** `true`', ''],
+    'diff',
+  );
+  assert.equal(r.ok, true, 'the parsing path is untouched');
+  assert.deepEqual(r.subjects, ['fix(c3d4e5f6): execute-converged-plan phase 1 — land it'],
+    'a parsed phase must still take the PHASED subject arm, never the unphased one');
+  assert.ok(
+    r.logs.some((l) => l.includes('ran 1/1 phase(s)')),
+    'the phase-loop outcome report must still fire when the table parses',
+  );
+});

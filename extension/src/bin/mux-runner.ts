@@ -7650,7 +7650,7 @@ function reportConvergedPlanOutcome(args: {
  * minus the runtime's own code index, treats an empty index as a no-op, and stamps the runner's
  * `Pickle-Ticket` trailer on the phase commit.
  */
-function commitConvergedPlanPhase(input: ExecuteConvergedPlanInput, phase: PlanPhase): { ok: boolean } {
+function commitConvergedPlanPhase(input: ExecuteConvergedPlanInput, phase: PlanPhase | null): { ok: boolean } {
   // AP-EXT-ITER6-01 replay: the sibling whole-tree add. Same shared exclusion —
   // a per-Phase recovery commit must not carry the runtime's own `.codegraph/`
   // index into the target repo.
@@ -7675,12 +7675,14 @@ function commitConvergedPlanPhase(input: ExecuteConvergedPlanInput, phase: PlanP
   }).status === 0) {
     return { ok: true };
   }
-  const title = phase.title ? ` — ${phase.title}` : '';
-  const phaseMsg = stampPickleTicketTrailer(
-    input.workingDir,
-    `fix(${input.ticketId}): execute-converged-plan phase ${phase.index}${title}`,
-    input.ticketId,
-  );
+  // AP-BIN-ITER36-01: `phase: null` is the UNPHASED commit — the plan parsed to zero phases,
+  // so there is no phase number to name, but the staging rules (whole tree minus the
+  // runtime's own code index), the empty-index no-op and the `Pickle-Ticket` trailer are all
+  // identical. One committer, two subjects — never a second staging path to drift from this.
+  const subject = phase
+    ? `fix(${input.ticketId}): execute-converged-plan phase ${phase.index}${phase.title ? ` — ${phase.title}` : ''}`
+    : `fix(${input.ticketId}): execute-converged-plan unphased plan`;
+  const phaseMsg = stampPickleTicketTrailer(input.workingDir, subject, input.ticketId);
   const commit = spawnSync('git', ['commit', '-m', phaseMsg], {
     cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
   });
@@ -7693,15 +7695,40 @@ export function executeConvergedPlanAdapter(input: ExecuteConvergedPlanInput): {
   const idempotent = convergedPlanIdempotentNoOp(input);
   if (idempotent) return idempotent;
 
+  // `'fallthrough'` is returned by exactly one branch — the one where the implement pass
+  // ran ok AND left a dirty tree — so this flag IS "the seam produced an uncommitted diff".
+  let seamProducedDiff = false;
   if (input.reExecutionSeam) {
     const reExec = executeCleanTreeReExecution({ ...input, seam: input.reExecutionSeam, ticketDir });
     if (reExec !== 'fallthrough') return reExec;
+    seamProducedDiff = true;
   }
 
-  const phases = readConvergedPlanPhases(ticketDir);
-  if (phases === null) return { ok: false };
-
   const headBefore = convergedPlanHeadSha(input.workingDir);
+
+  const phases = readConvergedPlanPhases(ticketDir);
+  if (phases === null) {
+    // AP-BIN-ITER36-01, the sibling of AP-BIN-ITER35-01 one field UP: an unparseable phase
+    // table is not a failed plan. `readConvergedPlanPhases` collapses four no-plan-to-run
+    // cases into one null, and this arm read every one of them as "nothing was produced" —
+    // but on the fallthrough path the seam has ALREADY spawned an implement pass that
+    // returned ok and left a real diff, so the bare `{ok:false}` abandoned that work
+    // uncommitted, moved no HEAD, and logged NOTHING, leaving a dirty tree to contaminate
+    // the next iteration while the ladder walked to the terminal `recovery_exhausted`.
+    // Measured on the shipped parser over the operator's 72 live `plan_*.md`: 3 parse to
+    // ZERO phases, and all 3 are well-formed plans that author their units as `### P1 —`
+    // rather than `### Phase 1`. Widening the grammar to admit `P` would be the third
+    // enumeration patch on this artifact in three passes and would still strand the fourth
+    // spelling silently — nothing PRODUCES these headings, so the disposition is the fix.
+    // Committing is not a success claim: the verdict below is still ground truth (HEAD
+    // moved, which a no-op cannot fake), and an advanced rung only relaunches the loop, it
+    // never flips a ticket Done. With no seam there is no diff of ours to rescue, so that
+    // path keeps its original not-ok.
+    if (!seamProducedDiff) return { ok: false };
+    input.log(`recovery: execute-converged-plan plan for ${input.ticketId} parses to zero phases — committing the produced diff unphased`);
+    const commit = commitConvergedPlanPhase(input, null);
+    return { ok: commit.ok && convergedPlanCommitLanded(input.workingDir, headBefore) };
+  }
 
   const result = executePhaseLoop({
     phases,
