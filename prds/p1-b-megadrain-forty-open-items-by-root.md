@@ -392,6 +392,56 @@ inherit it — an env-only fix leaves the shipped default wrong for everyone els
 axes; the operator ruling named this ceiling. Changing them here would make the bundle's diff unreviewable
 against its own thesis.
 
+**C7 — the PHASE LENGTH bounds are small and mutually inconsistent (operator-set 2026-09-07: they
+should be very, very large if they should exist at all).** Full census of every bound that can end a
+loop or phase, taken at HEAD. They fall into two kinds, and only the first kind is in scope:
+
+**KIND 1 — LENGTH bounds. They count passes that DID work. In scope; raise.**
+
+| bound | default | source |
+|---|---|---|
+| `default_max_iterations` (pickle) | **500** in `pickle_settings.json:19`, but the compiled fallback is **100** (`setup.ts:283`) | settings + source disagree |
+| `anatomy_max_iterations` | **100** | `pipeline-runner.ts:243` |
+| `szechuan_max_iterations` | **50** | `pipeline-runner.ts:244` |
+| `APNC_MAX_PASSES_WITHOUT_CLEAN` | **8** (→50, C6) | `mux-runner.ts:264` |
+
+The asymmetry is the finding: **pickle gets 500 and szechuan gets 50** — 10x less — and szechuan is the
+phase that has failed to deliver a verdict on three consecutive bundles. `APNC`'s 8 sits an order of
+magnitude below its own phase's 100. No measurement justifies any of these three numbers; they are not
+derived from anything, and `git log -S` on each would be the falsifying check if one is claimed to be.
+
+**KIND 2 — NO-PROGRESS detectors. They count CONSECUTIVE failures to advance. NOT in scope; leave.**
+`anatomy_stall_limit` 3 / `szechuan_stall_limit` 5 (`pipeline-runner.ts:241-242`; verified semantics —
+`stall_counter >= stall_limit` at `microverse-runner.js:4156`, counting stalls, not passes) ·
+`silent_death_respawn_cap` 1 · `failed_flip_suppression_cap` 2 · `bounded_terminal_escape_cap` 3 ·
+`DEFAULT_MUX_IDLE_STALL_RECOVERY_CAP` 3 · `PHANTOM_DONE_RECHECK_CAP` 2/60s ·
+`POST_CONVERGENCE_GATE_DEFERRAL_LIMIT` 3 · `READINESS_MAX_RECYCLE_CYCLES` 3 · `MCP_STARTUP_MAX_RETRIES` 2.
+
+**Why the operator's rule sorts them this way.** *"No reason for limiting these if they are healthy"* —
+a KIND 1 tick is healthy by construction (a pass that landed a fix), so bounding it converts working
+progress into a withheld verdict, which is exactly what happened on `2026-09-06-f625727a`. A KIND 2 tick
+is by construction UNhealthy (nothing advanced), so those counters ARE the health measurement; raising
+them only burns wall-clock to reach the same conclusion. Raising KIND 2 would be the anti-pattern the
+PRIME DIRECTIVE warns about, not compliance with it.
+
+**They should exist, but as a BUDGET, not a count.** Every KIND 1 tick spawns an LLM, so removing the
+bound entirely makes spend unbounded — and root `CLAUDE.md` already names `budget/iteration cap` as a
+legitimate crash floor. The subtraction that ends this class is ONE wall-clock/token budget per phase
+replacing three hand-picked counts. This ticket does the raise; the budget collapse is C7b, deliberately
+NOT attempted in the same diff.
+
+### C7 acceptance criteria (machine-checkable)
+- `anatomy_max_iterations` default is `500` and `szechuan_max_iterations` default is `500` (`pipeline-runner.ts:243-244`). No phase's length bound is smaller than another's without a comment citing the measurement that justifies the gap.
+- `setup.ts:283` `loopLimit` fallback is `500`, matching `pickle_settings.json:default_max_iterations` — source and settings no longer disagree. A test pins them EQUAL by deriving both, not by restating `500` twice (the parity-test-compares-a-stale-mirror shape).
+- Every KIND 2 bound listed above is UNCHANGED. A test enumerates them with their current values so a future raise of a no-progress detector fails loudly.
+- `parsePositiveInteger` override behaviour is unchanged in both directions for each raised bound: an explicit `1` still yields 1, an explicit `9999` still yields 9999, invalid still falls back to the NEW default.
+- Mutation check: restore each old value (100 / 50 / 100) in the compiled mirror and the new pins go RED individually — one pin per bound, so a single assertion cannot mask two regressions.
+
+**C7 non-goals:** the KIND 2 detectors; the time budgets (`max_park_minutes` 360, `METRIC_PARK_MAX_MINUTES`
+60, judge `timeout_seconds` 600 — the last is explicitly forbidden to raise, R-SJWT is the receipt); and
+every output-truncation cap (`UNFINISHED_TICKETS_PRINT_CAP`, `MAX_PRIOR_VIOLATIONS_IN_PROMPT`, word/byte
+caps), which bound rendering, not looping.
+
 ## 🧟 ROOT D — PROCESS LIFECYCLE: ORPHANS, WEDGES, AND THE LINUX-ONLY SUBPROCESS REDS
 
 **D1 — R-ORCG (supersedes R-WGTORPH's scope).** The orphan reaper's own test suite is the box's biggest
