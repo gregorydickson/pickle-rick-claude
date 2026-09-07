@@ -252,14 +252,98 @@ const PREDICATE_SCANNERS = [
     script: 'audit-subprocess-heavy-tests-missing-timeout.mjs',
     reason: /missing-timeout scan did not complete: EACCES/,
     verdict: /missing-timeout predicate did not complete \(exit 2\)/,
+    absentVerdict: /not found — missing-timeout predicate cannot run/,
   },
   {
     name: 'unprovisioned-binary',
     script: 'audit-unprovisioned-binary-spawns.mjs',
     reason: /unprovisioned-binary scan did not complete: EACCES/,
     verdict: /unprovisioned-binary predicate did not complete \(exit 2\)/,
+    absentVerdict: /not found — unprovisioned-binary predicate cannot run/,
   },
 ];
+
+// SZ-PREDABSENT-01. An ABSENT scanner is the third way a predicate can fail to measure,
+// and the only one the exit-code split above cannot see: `node <missing-file>` exits 1,
+// which is this script's "scan completed, findings on stdout" code. MEASURED on the shipped
+// script: deleting audit-subprocess-heavy-tests-missing-timeout.mjs produced exit 1 with a
+// raw MODULE_NOT_FOUND stack and NOT ONE verdict line from the audit itself — the predicate
+// went dark and its `did not complete` diagnostic never fired. The sibling arm already
+// guarded this with `[ ! -f ]`; the two arms now carry the same shape, and this row pins
+// BOTH so neither guard can be dropped silently.
+//
+// The scanner is made absent WITHOUT touching the real tree: a symlink farm supplies a
+// SCRIPT_DIR containing every sibling the script resolves except the one under test.
+// `dirname "$BASH_SOURCE"` gives the farm, while ESM resolves each symlinked scanner to its
+// realpath, so the linked-in scanners still find their own relative imports.
+//
+// The farm is DERIVED (readdir of the real scripts dir minus one entry), never a listed set
+// of siblings: a hand-maintained list would silently stop linking a newly-added dependency
+// and the absence under test would no longer be the only difference from a real run.
+function farmWithout(absentScript) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'absent-scanner-farm-'));
+  const realScripts = path.resolve(__dirname, '../scripts');
+  fs.mkdirSync(path.join(root, 'scripts'));
+  fs.mkdirSync(path.join(root, 'fixture'));
+  // EXTENSION_ROOT/tests is where the serial manifests are read from; --scan-root retargets
+  // only the scan itself, so the farm still needs that path to resolve.
+  fs.symlinkSync(path.resolve(__dirname), path.join(root, 'tests'));
+  const siblings = fs.readdirSync(realScripts);
+  assert.ok(siblings.includes(absentScript), `${absentScript} must exist to be made absent`);
+  for (const sibling of siblings) {
+    if (sibling === absentScript) continue;
+    fs.symlinkSync(path.join(realScripts, sibling), path.join(root, 'scripts', sibling));
+  }
+  fs.writeFileSync(
+    path.join(root, 'fixture', 'clean.test.js'),
+    ['// @tier: fast', 'export function noop() {', '  return 1;', '}', ''].join('\n'),
+  );
+  return root;
+}
+
+function runFarmAudit(root) {
+  return spawnSync(
+    'bash',
+    [
+      path.join(root, 'scripts', 'audit-subprocess-heavy-tests.sh'),
+      '--scan-root',
+      path.join(root, 'fixture'),
+    ],
+    { encoding: 'utf-8', timeout: 30000 },
+  );
+}
+
+for (const scanner of PREDICATE_SCANNERS) {
+  test(`SZ-PREDABSENT-01: an absent ${scanner.name} scanner is named, not read as a completed scan`, () => {
+    const root = farmWithout(scanner.script);
+    try {
+      const absent = runFarmAudit(root);
+      assert.equal(
+        absent.status,
+        1,
+        `expected exit 1 with the ${scanner.name} scanner absent; stderr=${absent.stderr}`,
+      );
+      assert.match(absent.stderr, scanner.absentVerdict);
+      assert.doesNotMatch(absent.stderr, /audit-subprocess-heavy-tests: OK/);
+      // The guard must PREEMPT the spawn, not merely accompany it: a raw MODULE_NOT_FOUND
+      // stack means node was still invoked on the missing file and the exit-1 collision
+      // that made this arm dark is still reachable.
+      assert.doesNotMatch(absent.stderr, /Cannot find module/);
+
+      // Control: the same farm with every sibling linked in is clean, so the row above
+      // discriminates on the absent scanner and not on the farm being a farm.
+      fs.symlinkSync(
+        path.resolve(__dirname, '../scripts', scanner.script),
+        path.join(root, 'scripts', scanner.script),
+      );
+      const present = runFarmAudit(root);
+      assert.equal(present.status, 0, `expected exit 0 once restored; stderr=${present.stderr}`);
+      assert.doesNotMatch(present.stderr, scanner.absentVerdict);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 function runScanner(script, args) {
   return spawnSync(process.execPath, [path.resolve(__dirname, '../scripts', script), ...args], {

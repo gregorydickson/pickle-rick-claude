@@ -340,7 +340,18 @@ fi
 # Missing-timeout predicate (R-TFP-C2 extension): the whole child_process
 # family, grandfathered against a committed baseline so pre-existing debt
 # does not redden this gate. Only callsites absent from the baseline fail.
-if command -v node >/dev/null 2>&1; then
+# Same shape as the unprovisioned-binary arm below, deliberately: both run a scanner
+# and both must distinguish "scan completed" from "scan did not run". An absent scanner
+# is an ERROR, never a skip -- `node <missing-file>` exits 1, which is this arm's
+# "completed, findings on stdout" code, so without this guard a deleted scanner read as
+# a completed scan and the predicate went dark while the tail still printed a verdict.
+# There is no `command -v node` guard here (nor on the sibling): the node-absent case
+# already hard-exited 1 at the top of this script, so such a guard would be a dead
+# branch wearing the silent-skip shape AP-EXT-ITER224-01 forbids.
+if [ ! -f "$MISSING_TIMEOUT_SCANNER" ]; then
+  echo "[error: $MISSING_TIMEOUT_SCANNER not found — missing-timeout predicate cannot run]" >&2
+  status=1
+else
   # stderr is NOT discarded: it is the only channel carrying WHY a scan did not complete, and
   # the scanner writes nothing to it on a run that did.
   missing_timeout_out="$(node "$MISSING_TIMEOUT_SCANNER" --baseline "$MISSING_TIMEOUT_BASELINE" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}")"
