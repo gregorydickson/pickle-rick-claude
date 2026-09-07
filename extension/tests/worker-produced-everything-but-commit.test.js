@@ -2451,3 +2451,97 @@ test('AP-EXT-ITER228-01: an undecorated `Verify:` plan commits its produced diff
   rmSync(repo, { recursive: true, force: true });
   rmSync(sessionDir, { recursive: true, force: true });
 });
+
+// ---- AP-BIN-ITER35-01: an ABSENT verify command is not a FAILED one ----
+//
+// One field over from AP-EXT-ITER228-01, which widened the marker GRAMMAR. This is the
+// disposition the widening left standing: `parsePlanPhases` documents the marker as OPTIONAL
+// and yields `verify: null` for a block that carries none, and `executePhase` turned that null
+// into a phase FAILURE — so `executePhaseLoop` stopped there and never called `commitPhase`.
+//
+// Measured over the operator's 283 authored phase blocks in 72 live `plan_*.md`: 102 parse as
+// null and 91 of those DO carry a `Verify` line — the criterion is written in PROSE, so no
+// further widening of the grammar can produce a command. 13 of the 69 phase-carrying plans
+// have it on their FIRST phase and 51 on SOME phase. Measured on the shipped adapter before
+// the fix: first-phase prose → ok=false with the seam's whole diff abandoned uncommitted;
+// later-phase prose → ok=false with HEAD ALREADY MOVED and the tree clean, i.e. a fake-RED
+// over committed, verify-passing work that walks the ladder to `recovery_exhausted`.
+//
+// A case TABLE over the live prose shapes, not a row per shape, and both POSITIONS — the
+// position is what decides whether the abandoned diff is uncommitted or already committed.
+// The two failing-verify controls below are the other direction: a phase that RAN and FAILED
+// must still stop the loop, or this fix would have greened every failure.
+const ITER35_PROSE_VERIFY = [
+  ['a bare prose criterion', 'Verify: each mutation shows RED'],
+  ['prose after a bold marker', '**Verify**: artifact contains 25 rows and both measured exit codes.'],
+  ['prose naming a backticked symbol on the NEXT line', 'Verify: the failing-test set is a subset of\n`the 3 known inherited reds`'],
+  ['a phase block with no Verify line at all', 'Steps: 1. edit the resolver.'],
+];
+
+/** Run the shipped converged-plan rung over a two-phase plan; report ground truth. */
+function runIter35Rung(phase1Body, phase2Body) {
+  const { repo, baseSha } = makeRepo('ap-iter35-repo-');
+  const { sessionDir, statePath } = makeSession('ap-iter35-session-');
+  const ticketId = 'f7a8b9c0';
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'medium', status: 'In Progress' });
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-09-07.md'),
+    [
+      '# Plan', '', '## Phases', '',
+      '### Phase 1 — land the resolver', phase1Body, '',
+      '### Phase 2 — full verification', phase2Body, '',
+    ].join('\n'),
+  );
+  const logs = [];
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: (m) => logs.push(m),
+    reExecutionSeam: diffProducingReExecutionSeam(repo, []),
+  });
+  const result = {
+    ok: out.ok,
+    headMoved: git(repo, ['rev-parse', 'HEAD']) !== baseSha,
+    dirty: git(repo, ['status', '--porcelain']),
+    committedFiles: git(repo, ['log', '--name-only', '--format=', `${baseSha}..HEAD`]).split('\n').filter(Boolean),
+    logs,
+  };
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+  return result;
+}
+
+for (const [label, prose] of ITER35_PROSE_VERIFY) {
+  test(`AP-BIN-ITER35-01: ${label} on the FIRST phase commits the produced diff instead of abandoning it`, () => {
+    const r = runIter35Rung(prose, 'Verify: `true`');
+    assert.equal(r.ok, true, 'an unmeasurable phase must not read as a failed one');
+    assert.equal(r.headMoved, true, 'the rung verdict is ground truth — a commit must have landed');
+    assert.deepEqual(r.committedFiles, ['produced.ts'], "the seam's diff must be IN the commit, not left in the tree");
+    assert.equal(r.dirty, '', 'nothing may be left uncommitted behind an unverifiable phase');
+    assert.ok(
+      r.logs.some((l) => l.includes('phase 1 has no runnable verify command')),
+      'the degradation must be reported, not silently swallowed',
+    );
+  });
+
+  test(`AP-BIN-ITER35-01: ${label} on a LATER phase does not fake-RED an already-committed diff`, () => {
+    const r = runIter35Rung('Verify: `true`', prose);
+    assert.equal(r.ok, true, 'phase 1 committed the whole diff and passed — the rung must not report failure');
+    assert.equal(r.headMoved, true, 'precondition: the diff is committed by phase 1');
+    assert.ok(
+      r.logs.some((l) => l.includes('phase 2 has no runnable verify command')),
+      'the degradation must be reported, not silently swallowed',
+    );
+  });
+}
+
+test('AP-BIN-ITER35-01 control: a verify command that RUNS AND FAILS still stops the loop at phase 1', () => {
+  const r = runIter35Rung('Verify: `false`', 'Verify: `true`');
+  assert.equal(r.ok, false, 'a measured failure must still fail — absence is the only thing this fix reclassifies');
+  assert.equal(r.headMoved, false, 'a failing phase must not be committed');
+  assert.equal(r.dirty, '?? produced.ts', 'the failing phase leaves its diff uncommitted, as before');
+});
+
+test('AP-BIN-ITER35-01 control: a verify command that RUNS AND FAILS at phase 2 still reports not-ok', () => {
+  const r = runIter35Rung('Verify: `true`', 'Verify: `false`');
+  assert.equal(r.ok, false, 'a measured failure downstream of a committed phase must still report not-ok');
+  assert.equal(r.headMoved, true, 'precondition: phase 1 committed');
+});

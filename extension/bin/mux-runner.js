@@ -6435,8 +6435,24 @@ export function executeConvergedPlanAdapter(input) {
     const result = executePhaseLoop({
         phases,
         executePhase: (phase) => {
-            if (!phase.verify)
-                return { ok: false };
+            // AP-BIN-ITER35-01: an ABSENT verify command is not a FAILED one. `parsePlanPhases`
+            // documents the marker as OPTIONAL and yields `verify: null` for a block that carries
+            // none; this arm turned that null into a phase FAILURE, so `executePhaseLoop` stopped
+            // there and never called `commitPhase`. Measured over the operator's 283 authored phase
+            // blocks in 72 live `plan_*.md`: 102 are null and 91 of those DO carry a `Verify` line —
+            // the criterion is written in PROSE ("failing-test set ⊆ the 3 known inherited reds"),
+            // so there is no command to run and no widening of the grammar can produce one. 13 of
+            // the 69 phase-carrying plans have it on their FIRST phase (the re-execution seam's
+            // whole diff is abandoned uncommitted) and 51 on SOME phase — where phase 1 has already
+            // committed the entire diff via `git add -A`, so the rung reported not-ok over a
+            // COMMITTED, verify-passing tree and the ladder walked to the terminal
+            // `recovery_exhausted`. Committing and continuing is not a success claim: the rung's
+            // verdict is still ground truth (`landed`), and `advanced` only relaunches the loop —
+            // it never flips a ticket Done. Log the degradation, take the phase, keep going.
+            if (!phase.verify) {
+                input.log(`recovery: execute-converged-plan phase ${phase.index} has no runnable verify command — committing it unverified`);
+                return { ok: true };
+            }
             // AP-EXT-ITER9-02: a markdown code span is ONE command, and `shell: true` reads a
             // newline as a command SEPARATOR. `PLAN_PHASE_VERIFY_RE` captures `([^`]+)`, which
             // spans newlines, and authors routinely wrap a long test invocation inside one
