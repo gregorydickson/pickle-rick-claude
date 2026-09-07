@@ -1139,3 +1139,66 @@ test('verify-recapture.an unparseable anatomy timestamp drops the window instead
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
+
+// AP-BIN-ITER30-01. `anatomyWindows` closes a window on the first LATER history entry that is
+// both a phase marker AND carries a parseable timestamp. The phase-marker half is pinned above
+// (`ignores timestamp-only history entries when closing the anatomy window`); the parseable-
+// timestamp half was not — deleting `&& isoMs(candidate?.timestamp) !== null` left the suite
+// 33/33 GREEN. Without it the unparseable marker IS selected, `end` becomes null, and `ts < end`
+// coerces to `ts < 0`, so the window admits NOTHING: a recapture that provably fired reports
+// `recapture-event-missing` (measured: intact exit 0 / pass, mutated exit 1) and the hint sends
+// the operator at the producer rather than at the corrupt history row. That is the exact
+// false-RED mirror of the fail-OPEN start guard pinned by AP-BIN-ITER21-02.
+//
+// An entry whose timestamp will not parse cannot serve as a boundary, for the same reason a
+// timestamp-only audit row cannot — skipping it leaves the window open to the next real marker,
+// which is bounded and honest.
+//
+// The verdict is the ONLY observable here: `artifactWindows` maps BOTH an Infinity end and a null
+// end onto JSON `null`, so `evidence.anatomy_windows` is byte-identical across the mutation and
+// asserting on it alone would pin nothing. A/B on ONE field — the closing marker's timestamp
+// string — over one session and one unchanged activity log, so the parse failure is provably the
+// cause and the event is provably findable in both halves.
+test('verify-recapture.an unparseable CLOSING phase timestamp cannot close the anatomy window', () => {
+  const session = makeSession(baseState([
+    { step: 'pickle', timestamp: '2026-05-02T10:00:00.000Z' },
+    { step: 'anatomy-park', timestamp: '2026-05-02T11:00:00.000Z' },
+    { step: 'szechuan-sauce', timestamp: 'not-a-timestamp' },
+  ]));
+  const dataRoot = makeDataRoot();
+  const sessionName = path.basename(session);
+  try {
+    writeActivityEvents(dataRoot, [recaptureEvent(sessionName)]);
+
+    const unparseable = runVerifier(session, dataRoot);
+    assert.equal(unparseable.status, 0, unparseable.stderr);
+    assert.equal(unparseable.runtimeArtifact.pass, true);
+    assert.equal(
+      unparseable.runtimeArtifact.failure_reason,
+      null,
+      'an unclosable window must stay open, not collapse to one that admits no event',
+    );
+    assert.equal(unparseable.runtimeArtifact.evidence.activity_count, 1);
+    assert.equal(unparseable.runtimeArtifact.evidence.matched_event.ts, RECAPTURE_TS);
+
+    // Same session, same single event, same history SHAPE — only the CLOSING entry's timestamp
+    // becomes parseable, and it closes the window after the event rather than before it.
+    writeFileSync(
+      path.join(session, 'state.json'),
+      `${JSON.stringify(baseState([
+        { step: 'pickle', timestamp: '2026-05-02T10:00:00.000Z' },
+        { step: 'anatomy-park', timestamp: '2026-05-02T11:00:00.000Z' },
+        { step: 'szechuan-sauce', timestamp: '2026-05-02T12:00:00.000Z' },
+      ]), null, 2)}\n`,
+    );
+    const parseable = runVerifier(session, dataRoot);
+    assert.equal(parseable.status, 0, parseable.stderr);
+    assert.equal(parseable.runtimeArtifact.pass, true);
+    assert.deepEqual(parseable.runtimeArtifact.evidence.anatomy_windows, [
+      { start: Date.parse('2026-05-02T11:00:00.000Z'), end: Date.parse('2026-05-02T12:00:00.000Z') },
+    ]);
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
