@@ -136,8 +136,22 @@ function discoverCatalogs() {
     let entries;
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue;
+    } catch (err) {
+      // A root the walk cannot ENTER drops every subsystem CLAUDE.md beneath it while
+      // perCatalog -- the number the verdict line reports -- stays satisfied by the
+      // readable roots. Measured on the shipped script before this fix: a dark
+      // subsystem root collapsed the census from 649 ENFORCE refs across 8 catalogs to
+      // 331 across 3, still printing `verified` and still exiting 0. Same swallow that
+      // 057b4bec fixed in audit-did-we-count.sh:findClaudeMdFiles; one report, both
+      // walks. Fail here rather than counting it: no census over the surviving roots is
+      // admissible once an unknown number of catalogs went unswept, so there is no
+      // partial verdict worth printing.
+      process.stderr.write(
+        `catalog discovery: ${path.relative(repoRoot, root) || root}: unreadable catalog ` +
+          'root -- every subsystem CLAUDE.md beneath it would go unswept, so no census ' +
+          `over the remaining catalogs can be reported as verified (${err instanceof Error ? err.message : String(err)})\n`
+      );
+      process.exit(1);
     }
 
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -400,8 +414,22 @@ function discoverCatalogs() {
     let entries;
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue;
+    } catch (err) {
+      // A root the walk cannot ENTER drops every subsystem CLAUDE.md beneath it while
+      // perCatalog -- the number the verdict line reports -- stays satisfied by the
+      // readable roots. Measured on the shipped script before this fix: a dark
+      // subsystem root collapsed the census from 649 ENFORCE refs across 8 catalogs to
+      // 331 across 3, still printing `verified` and still exiting 0. Same swallow that
+      // 057b4bec fixed in audit-did-we-count.sh:findClaudeMdFiles; one report, both
+      // walks. Fail here rather than counting it: no census over the surviving roots is
+      // admissible once an unknown number of catalogs went unswept, so there is no
+      // partial verdict worth printing.
+      process.stderr.write(
+        `catalog discovery: ${path.relative(repoRoot, root) || root}: unreadable catalog ` +
+          'root -- every subsystem CLAUDE.md beneath it would go unswept, so no census ' +
+          `over the remaining catalogs can be reported as verified (${err instanceof Error ? err.message : String(err)})\n`
+      );
+      process.exit(1);
     }
 
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {

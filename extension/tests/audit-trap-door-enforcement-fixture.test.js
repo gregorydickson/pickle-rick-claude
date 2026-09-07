@@ -539,3 +539,80 @@ test('a hex token below git\'s 7-char abbreviation floor is still judged as a sy
     `stderr: ${result.stderr}`,
   );
 });
+
+// A catalog root the walk cannot ENTER used to drop every subsystem CLAUDE.md beneath
+// it while the verdict line still reported `verified` over the readable roots and exited
+// 0 -- perCatalog counts what the walk FOUND, and nothing invalidated it. Measured on
+// the shipped script before the fix: 649 ENFORCE refs across 8 catalogs collapsed to 331
+// across 3, silently. Both `discoverCatalogs` copies (the ENFORCE arm and the INVARIANT
+// arm) carried the same swallow, so both are exercised here through the one run.
+function runAuditWithSubsystemRoot(rootMode) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-trap-door-root-'));
+  const root = path.join(tmpDir, 'catalog-root');
+  fs.mkdirSync(root);
+  // A real catalog beneath the root: what a dark root silently drops must be something
+  // the sweep would otherwise have HAD to read, or the row measures nothing.
+  fs.mkdirSync(path.join(root, 'services'));
+  fs.writeFileSync(
+    path.join(root, 'services', 'CLAUDE.md'),
+    '- `x.ts` — INVARIANT: `buildSymbolCorpus` is the anchor.\n'
+  );
+
+  try {
+    fs.chmodSync(root, rootMode);
+    if (rootMode === 0o000) {
+      // chmod 000 does not stop uid 0, so under root this fixture would assert over a
+      // readable directory and pass vacuously. Detect that here rather than measure it.
+      try {
+        fs.readdirSync(root);
+        return { vacuous: true };
+      } catch {
+        /* unreadable as intended */
+      }
+    }
+
+    const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+      cwd: EXTENSION_ROOT,
+      encoding: 'utf8',
+      timeout: 180_000,
+      env: { ...process.env, SUBSYSTEM_CATALOG_ROOT_OVERRIDE: root },
+    });
+    return { vacuous: false, result };
+  } finally {
+    fs.chmodSync(root, 0o755);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+const CENSUS_VERDICT_RE = /(?:reference|symbol)\(s\) verified across/;
+
+test('SZ-CATROOT-01: an unreadable catalog root fails the audit instead of reporting a verified census over the roots it could read', (t) => {
+  const { vacuous, result } = runAuditWithSubsystemRoot(0o000);
+  if (vacuous) {
+    t.skip('running as a user that ignores mode 000 (uid 0) — the dark root is readable, so this row cannot measure');
+    return;
+  }
+
+  assert.notEqual(result.status, 0, `a catalog root the walk cannot enter must red the audit; stdout: ${result.stdout}`);
+  assert.match(
+    result.stderr,
+    /unreadable catalog root -- every subsystem CLAUDE\.md beneath it would go unswept/,
+    `the failure must name the unswept root as the cause; stderr: ${result.stderr}`
+  );
+  assert.doesNotMatch(
+    result.stdout,
+    CENSUS_VERDICT_RE,
+    `no census may be reported as verified once an unknown number of catalogs went unswept; stdout: ${result.stdout}`
+  );
+});
+
+test('SZ-CATROOT-01: a readable but empty catalog root still passes, so the unreadable-root failure is not a blanket red', () => {
+  const { result } = runAuditWithSubsystemRoot(0o755);
+
+  assert.equal(result.status, 0, `an empty catalog root is not a failure; stderr: ${result.stderr}`);
+  assert.match(
+    result.stdout,
+    CENSUS_VERDICT_RE,
+    `a readable root must still produce a census verdict; stdout: ${result.stdout}`
+  );
+});
