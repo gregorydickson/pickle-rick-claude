@@ -468,19 +468,8 @@ const REJECTION_ARMS = Object.freeze([
     acId: 'AC-DR-10',
     payload: (acId) => artifact(acId, { checker_version: 3 }),
   },
-  { arm: 'evidence must be an object', acId: 'AC-DR-11', payload: (acId) => artifact(acId, { evidence: [] }) },
-  // `value !== null` in isObject is the ONLY conjunct rejecting this one. The array payload
-  // above is caught by `!Array.isArray` instead, so null slipped through unpinned: with that
-  // conjunct deleted, `evidence: null` reports `bundle PASS` exit 0 — an AC greened with its
-  // evidence literally absent. `failure_reason`/`remediation_hint` are nullable in this same
-  // schema, so a checker emitting `evidence: null` is following the file's own idiom. A
-  // top-level `null` artifact is NOT an arm here: verifyBundle dereferences `artifact.ac_id`
-  // before reading the error list, so it throws (exit 1, fails closed) and never names the arm.
-  {
-    arm: 'evidence must be an object',
-    acId: 'AC-DR-11',
-    payload: (acId) => artifact(acId, { evidence: null }),
-  },
+  // The `evidence` arm is NOT listed here — see the JSON-value-shape sweep below. One row per
+  // arm cannot pin a guard whose conjuncts outnumber its messages.
   {
     arm: 'failure_reason must be a string or null',
     acId: 'AC-DR-12',
@@ -519,6 +508,61 @@ test('verify-bundle.rejection-arms each reject their own malformed artifact', ()
       rmSync(fixture, { recursive: true, force: true });
     }
   }
+});
+
+// `evidence` is guarded by `isObject`, whose THREE conjuncts (`!== null`, `typeof === 'object'`,
+// `!Array.isArray`) all emit the SAME message — so the source-derived arm pin below, which greps
+// message literals, is satisfied by one fixture while three conjuncts need three, and one row per
+// arm above pins whichever conjunct happens to fire first. That is how `evidence: null` shipped
+// unpinned behind the array payload, and how `typeof === 'object'` then stayed unpinned behind
+// both: deleted, `evidence: 42` reports `bundle PASS` exit 0 — an AC greened with a scalar where
+// its evidence belongs. So enumerate the INPUT SPACE, not the arms: JSON has exactly six value
+// shapes and this contract accepts exactly one, which no future fourth conjunct can rot. The
+// assertion is two-directional — a shape wrongly accepted and the object shape wrongly rejected
+// both redden it. A top-level non-object artifact is not covered here: verifyBundle dereferences
+// `artifact.ac_id` before reading the error list, so it throws (exit 1, fails closed).
+const JSON_VALUE_SHAPES = Object.freeze([
+  { label: 'null', evidence: null },
+  { label: 'array', evidence: [] },
+  { label: 'number', evidence: 42 },
+  { label: 'string', evidence: 'collected' },
+  { label: 'boolean', evidence: true },
+  { label: 'object', evidence: { note: 'collected' } },
+]);
+
+test('verify-bundle.evidence accepts exactly one of the six JSON value shapes', () => {
+  const accepted = [];
+  for (const { label, evidence } of JSON_VALUE_SHAPES) {
+    const fixture = makeFixture(({ bundleDir }) => {
+      writeFileSync(
+        path.join(bundleDir, acFileName('AC-DR-11')),
+        `${JSON.stringify(artifact('AC-DR-11', { evidence }), null, 2)}\n`,
+      );
+    });
+    try {
+      const result = verifyBundle({ repoRoot: fixture, ac: 'AC-DR-11' });
+      if (result.exitCode === 0) {
+        accepted.push(label);
+        continue;
+      }
+      assert.equal(
+        result.exitCode,
+        1,
+        `evidence:${label}: expected exit 1, got ${result.exitCode} — ${result.stdout.trim()}`,
+      );
+      assert.ok(
+        result.stderr.includes('evidence must be an object'),
+        `evidence:${label}: rejected without naming the arm — ${result.stderr.trim()}`,
+      );
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+  assert.deepEqual(
+    accepted,
+    ['object'],
+    `exactly the object shape may green the bundle gate; accepted ${JSON.stringify(accepted)}`,
+  );
 });
 
 // The in-process cases above prove each arm fires; this proves the arm that matters most
