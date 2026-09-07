@@ -7176,7 +7176,15 @@ test('D6 (AC-D6-3): a SIGKILLed child leaves its fixture behind — the in-proce
             const dir = fs.mkdtempSync(path.join(${JSON.stringify(scanRoot)}, 'pickle-mux-runner-'));
             process.send({ dir });
             setInterval(() => {}, 1000); // hang until killed — never reaches its own cleanup
-        `], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+        `], {
+            stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+            // Safety net only: the test kills this child with SIGKILL within
+            // milliseconds of receiving its IPC message (well inside the 5s
+            // message-wait below). This bounds the case where the message is
+            // never received and that wait rejects, which would otherwise
+            // leave the hanging child running with nothing left to kill it.
+            timeout: 30000,
+        });
 
         const createdDir = await new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('child never reported its fixture dir')), 5000);
