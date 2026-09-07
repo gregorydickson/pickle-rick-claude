@@ -260,3 +260,145 @@ test('AC-1: an ambient permissions rule cannot break the judge spawn once decoup
     fs.rmSync(ws, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER230-01 — the CLAUDE namespace is DEFAULT-DENY in the nested judge.
+//
+// The prior shape enumerated three session-marker prefixes (CLAUDECODE_,
+// CLAUDE_SESSION_, CLAUDE_PROJECT_) that no producer emits, while exempting the
+// CLAUDE_CODE_ prefix the CLI actually stamps its session identity under. These
+// cases pin the RULE (default-deny plus a vouched routing family), not a list,
+// so a marker the CLI adds tomorrow needs no code change here.
+// ---------------------------------------------------------------------------
+
+/** Runs buildJudgeEnv's nested-claude branch and cleans up the tmpdir it mints. */
+function nestedJudgeEnv(baseEnv) {
+  const env = buildJudgeEnv('claude', true, baseEnv);
+  try { fs.rmdirSync(env['XDG_RUNTIME_DIR'] ?? ''); } catch { /* best-effort */ }
+  return env;
+}
+
+/** Every CLAUDE-namespace key the child is allowed to keep. */
+function preservedClaudeKeys(env) {
+  return Object.keys(env).filter((k) => k.startsWith('CLAUDE'));
+}
+
+// The markers a real `claude` CLI stamps into the env of every process it spawns,
+// measured off a live Claude Code session's microverse-runner (the process that
+// actually spawns the judge). None of these matched the prior enumeration.
+const OUTER_SESSION_MARKERS = {
+  CLAUDECODE: '1',
+  CLAUDE_CODE_SESSION_ID: '0df636b6-9508-4d85-832e-0cb75ad93e68',
+  CLAUDE_CODE_BRIDGE_SESSION_ID: 'session_011FRURWj26SN9JvrzNAfD4A',
+  CLAUDE_CODE_CHILD_SESSION: '1',
+  CLAUDE_CODE_ENTRYPOINT: 'cli',
+  CLAUDE_CODE_EXECPATH: '/Users/test/.local/share/claude/versions/2.1.252',
+  CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/944.sock',
+  CLAUDE_CODE_MESSAGING_TOKEN: 'd35229d899376a8122e61c6a030f6239',
+  CLAUDE_PID: '944',
+  CLAUDE_EFFORT: 'high',
+};
+
+test('AP-EXT-ITER230-01: every live outer-session marker is stripped from the nested judge env', () => {
+  const env = nestedJudgeEnv({ ...OUTER_SESSION_MARKERS, PATH: '/usr/bin' });
+  for (const key of Object.keys(OUTER_SESSION_MARKERS)) {
+    assert.strictEqual(env[key], undefined, `${key} must not reach the nested judge`);
+  }
+  assert.strictEqual(env['PATH'], '/usr/bin', 'non-CLAUDE env is untouched');
+});
+
+test('AP-EXT-ITER230-01: the IPC socket and its auth token never reach the child', () => {
+  const env = nestedJudgeEnv({
+    CLAUDECODE: '1',
+    CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/944.sock',
+    CLAUDE_CODE_MESSAGING_TOKEN: 'd35229d899376a8122e61c6a030f6239',
+    PATH: '/usr/bin',
+  });
+  const leaked = Object.entries(env).filter(([, v]) => v === 'd35229d899376a8122e61c6a030f6239');
+  assert.deepStrictEqual(leaked, [], 'the outer session messaging token must not be inherited');
+  assert.strictEqual(env['CLAUDE_CODE_MESSAGING_SOCKET'], undefined);
+});
+
+test('AP-EXT-ITER230-01: a CLAUDE marker the rule has never seen is stripped without a code change', () => {
+  // Default-deny is the whole point: an enumeration would need a new member here.
+  const env = nestedJudgeEnv({
+    CLAUDECODE: '1',
+    CLAUDE_CODE_FUTURE_SESSION_HANDLE: 'whatever-the-cli-adds-next',
+    CLAUDECODE_LEGACY_MARKER: 'legacy',
+    CLAUDE_SOMETHING_ENTIRELY_NEW: 'x',
+    PATH: '/usr/bin',
+  });
+  assert.deepStrictEqual(preservedClaudeKeys(env), [], 'no unvouched CLAUDE key survives');
+});
+
+test('AP-EXT-ITER230-01: provider routing survives — the whole reason the namespace is not blanket-stripped', () => {
+  const env = nestedJudgeEnv({
+    CLAUDECODE: '1',
+    CLAUDE_CODE_USE_VERTEX: '1',
+    CLAUDE_CODE_USE_BEDROCK: '1',
+    ANTHROPIC_API_KEY: 'sk-test',
+    PATH: '/usr/bin',
+  });
+  assert.strictEqual(env['CLAUDE_CODE_USE_VERTEX'], '1');
+  assert.strictEqual(env['CLAUDE_CODE_USE_BEDROCK'], '1');
+  assert.strictEqual(env['ANTHROPIC_API_KEY'], 'sk-test');
+});
+
+test('AP-EXT-ITER230-01: a future CLAUDE_CODE_USE_<PROVIDER> selector routes without a code change', () => {
+  const env = nestedJudgeEnv({ CLAUDECODE: '1', CLAUDE_CODE_USE_SOMEPROVIDER: '1', PATH: '/usr/bin' });
+  assert.strictEqual(env['CLAUDE_CODE_USE_SOMEPROVIDER'], '1');
+});
+
+test('AP-EXT-ITER230-01: the child keeps its own key when ANTHROPIC_API_KEY cannot authenticate it', () => {
+  // The auth arm is the one conditional survivor in the namespace; a blanket
+  // strip would take the child's only credential on an API-key-only box.
+  const withAnthropic = nestedJudgeEnv({ CLAUDECODE: '1', CLAUDE_API_KEY: 'sk-claude', ANTHROPIC_API_KEY: 'sk-ant' });
+  assert.strictEqual(withAnthropic['CLAUDE_API_KEY'], undefined);
+
+  const withoutAnthropic = nestedJudgeEnv({ CLAUDECODE: '1', CLAUDE_API_KEY: 'sk-claude' });
+  assert.strictEqual(withoutAnthropic['CLAUDE_API_KEY'], 'sk-claude');
+  assert.deepStrictEqual(preservedClaudeKeys(withoutAnthropic), ['CLAUDE_API_KEY']);
+});
+
+test("AP-EXT-ITER230-01: pickle's own run context is still stripped", () => {
+  const env = nestedJudgeEnv({
+    CLAUDECODE: '1',
+    PICKLE_SESSION: '2026-09-06-27819a21',
+    PICKLE_STATE_FILE: '/tmp/state.json',
+    PICKLE_RICK_LEGACY: '1',
+    SESSION_ROOT: '/tmp/session',
+    TICKET_DIR: '/tmp/ticket',
+    PATH: '/usr/bin',
+  });
+  for (const key of ['PICKLE_SESSION', 'PICKLE_STATE_FILE', 'PICKLE_RICK_LEGACY', 'SESSION_ROOT', 'TICKET_DIR']) {
+    assert.strictEqual(env[key], undefined, `${key} must not reach the nested judge`);
+  }
+});
+
+test('AP-EXT-ITER230-01: the non-nested branch is unchanged — nothing is stripped there', () => {
+  const base = { ...OUTER_SESSION_MARKERS, PATH: '/usr/bin' };
+  const env = buildJudgeEnv('claude', false, base);
+  for (const [key, value] of Object.entries(base)) {
+    assert.strictEqual(env[key], value, `${key} passes through when not nested`);
+  }
+});
+
+test('AP-EXT-ITER230-01: the ambient session env — the real producer — is fully stripped', () => {
+  // Derivation, not a list: whatever the CLI actually set in THIS process must
+  // come out vouched-or-gone. Self-checking so it cannot pass vacuously in CI,
+  // where no outer Claude Code session exists.
+  const ambient = Object.fromEntries(
+    Object.entries(process.env).filter(([k, v]) => k.startsWith('CLAUDE') && v !== undefined),
+  );
+  if (Object.keys(ambient).length === 0) {
+    assert.strictEqual(isNestedClaude(process.env), false, 'no ambient CLAUDE env means no outer session to leak');
+    return;
+  }
+  const env = nestedJudgeEnv({ ...ambient, PATH: '/usr/bin' });
+  for (const key of preservedClaudeKeys(env)) {
+    assert.ok(
+      key.startsWith('CLAUDE_CODE_USE_') || key === 'CLAUDE_API_KEY',
+      `ambient ${key} survived the strip but is neither routing nor the child's own key`,
+    );
+  }
+});
