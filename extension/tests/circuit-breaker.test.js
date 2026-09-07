@@ -820,12 +820,22 @@ test('recordIterationResult: HALF_OPEN → OPEN when same error hits sameErrorTh
 // Gap 3: ISO 8601 timestamp normalization
 // ---------------------------------------------------------------------------
 
-test('normalizeErrorSignature: ISO 8601 timestamp has time digits neutralized by line:col rule', () => {
-    // Rules fire in order: paths → :\d+:\d+ → ISO timestamps → UUIDs.
-    // A real ISO timestamp's :MM:SS is consumed by line:col before the ISO regex runs.
+test('AP-EXT-ITER221-01: an ISO 8601 timestamp is replaced WHOLE, sub-second field included', () => {
+    // The ISO rule must run before the line:col rule. Reversed, `:\d+:\d+` eats the
+    // `:MM:SS` and leaves `2026-03-01T15:<N>:<N>.376Z` — the `.376` survives and varies
+    // per occurrence, so the same error never produces the same signature twice.
     const result = normalizeErrorSignature('Error at 2026-03-01T15:12:06.376Z in module');
-    assert.equal(result, 'Error at 2026-03-01T15:<N>:<N>.376Z in module');
-    assert.ok(!result.includes(':12:06'), 'varying time digits are neutralized');
+    assert.equal(result, 'Error at <TS> in module');
+    assert.ok(!/\.\d+Z/.test(result), `sub-second field must not survive, got: ${result}`);
+});
+
+test('AP-EXT-ITER221-01: timestamps differing only in sub-seconds normalize identically', () => {
+    // The dominant machine-generated shape: `new Date().toISOString()` ALWAYS emits
+    // `.sssZ`. Previously pinned only for the rare no-fractional form, which dedups
+    // via the line:col rule by accident and hides this case.
+    const a = normalizeErrorSignature('Error at 2026-03-01T15:12:06.376Z in module');
+    const b = normalizeErrorSignature('Error at 2026-03-01T15:12:06.981Z in module');
+    assert.equal(a, b, `Sub-second-only difference must dedup:\n  a: ${a}\n  b: ${b}`);
 });
 
 test('normalizeErrorSignature: timestamps at same hour/date normalize identically (no fractional)', () => {
@@ -833,6 +843,57 @@ test('normalizeErrorSignature: timestamps at same hour/date normalize identicall
     const a = normalizeErrorSignature('Error at 2026-03-01T15:12:06Z in module');
     const b = normalizeErrorSignature('Error at 2026-03-01T15:59:59Z in module');
     assert.equal(a, b, `Same-date/hour timestamps should dedup:\n  a: ${a}\n  b: ${b}`);
+});
+
+test('AP-EXT-ITER221-01: a real line:col is still scrubbed alongside a timestamp', () => {
+    // Negative control: reordering must not disarm the line:col rule. Without this,
+    // the fix could pass by deleting the `:\d+:\d+` rule outright.
+    const result = normalizeErrorSignature('at 2026-03-01T15:12:06.376Z /a/b/foo.ts:42:17 failed');
+    assert.equal(result, 'at <TS> <PATH>:<N>:<N> failed');
+});
+
+test('AP-EXT-ITER221-01: a repeated timestamped error trips the same-error breaker', () => {
+    // Exercises the real data flow: worker stream-json -> extractErrorSignature ->
+    // recordIterationResult, one iteration per occurrence. Each occurrence carries its
+    // own wall-clock timestamp, exactly as a re-emitted worker failure does.
+    const settings = makeSettings({ sameErrorThreshold: 3, noProgressThreshold: 99, halfOpenAfter: 98 });
+    const ndjson = (ts) => [
+        JSON.stringify({ type: 'system', subtype: 'init', session_id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }),
+        JSON.stringify({
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'text', text: `FATAL: worker gate failed at ${ts}` }] },
+        }),
+        JSON.stringify({ type: 'result', subtype: 'error_during_execution' }),
+    ].join('\n');
+
+    const stamps = ['2026-03-01T15:12:06.101Z', '2026-03-01T15:12:07.202Z', '2026-03-01T15:12:08.303Z'];
+    const signatures = stamps.map(ts => extractErrorSignature(ndjson(ts)));
+    assert.equal(new Set(signatures).size, 1, `one error must yield one signature, got: ${JSON.stringify(signatures)}`);
+
+    let state = makeFreshState({ last_known_head: 'abc1234' });
+    stamps.forEach((ts, i) => {
+        state = recordIterationResult(state, { hasProgress: false, errorSignature: extractErrorSignature(ndjson(ts)) }, i + 1, settings);
+    });
+    assert.equal(state.consecutive_same_error, 3, 'the same error must accumulate across iterations');
+    assert.equal(state.state, 'OPEN', 'the same-error breaker must trip');
+    assert.equal(canExecute(state), false, 'a tripped breaker must stop the loop');
+});
+
+test('AP-EXT-ITER221-01: genuinely different errors still do NOT trip the same-error breaker', () => {
+    // Over-rejection control: the fix must not collapse distinct errors into one
+    // signature, which would trip the breaker on a run that is still making progress.
+    const settings = makeSettings({ sameErrorThreshold: 3, noProgressThreshold: 99, halfOpenAfter: 98 });
+    const messages = [
+        'FATAL: tsc failed at 2026-03-01T15:12:06.101Z',
+        'FATAL: eslint failed at 2026-03-01T15:12:07.202Z',
+        'FATAL: tests failed at 2026-03-01T15:12:08.303Z',
+    ];
+    let state = makeFreshState({ last_known_head: 'abc1234' });
+    messages.forEach((m, i) => {
+        state = recordIterationResult(state, { hasProgress: false, errorSignature: normalizeErrorSignature(m) }, i + 1, settings);
+    });
+    assert.equal(state.consecutive_same_error, 1, 'distinct errors must reset the same-error counter');
+    assert.equal(state.state, 'CLOSED');
 });
 
 // ---------------------------------------------------------------------------

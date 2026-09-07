@@ -295,11 +295,15 @@ export function normalizeErrorSignature(errorLine: string): string {
   // Rule 1: Replace Unix paths
   s = s.replace(/\/[\w.@/-]+/g, '<PATH>');
 
-  // Rule 2: Replace line:column patterns :N:N
-  s = s.replace(/:\d+:\d+/g, ':<N>:<N>');
-
-  // Rule 3: Replace ISO 8601 timestamps
+  // Rule 2: Replace ISO 8601 timestamps.
+  // MUST run before the line:column rule below: `:\d+:\d+` matches the `:MM:SS`
+  // inside a timestamp, which leaves this regex unmatchable and the sub-second
+  // field unscrubbed — so one repeated error yields a new signature every
+  // iteration and consecutive_same_error can never reach its threshold.
   s = s.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?/g, '<TS>');
+
+  // Rule 3: Replace line:column patterns :N:N
+  s = s.replace(/:\d+:\d+/g, ':<N>:<N>');
 
   // Rule 4: Replace UUIDs
   s = s.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<UUID>');
