@@ -155,7 +155,15 @@ declared_tier() {
 #   N <= FAIL_THRESHOLD            -> prints "FAIL <reason>", exit 0
 #   FAIL_THRESHOLD < N <= WARN     -> prints "WARN <reason>", exit 0
 #   N > WARN                       -> not a candidate, exit 1
+#   file could not be read         -> prints "UNMEASURED <code>", exit 2
 # FAIL takes precedence over WARN when both bands are present in one file.
+#
+# Exit 1 means MEASURED and clean; anything above it means the file has no verdict at all.
+# node exits 1 for an uncaught throw too, so without the split a file this scan could not read
+# scored exactly like a file it read and cleared -- AP-EXT-ITER224-01's rule (nothing measured is
+# not a clean verdict) one level down, at the per-FILE arm rather than the whole-run one. The 1-vs-2
+# idiom is the one bin/release-gate.sh already uses for the same defect class. The caller tests
+# `> 1` rather than `= 2`, so an OOM or a signal (134/137) is unmeasured too without enumerating it.
 find_heavy_candidate() {
   local file="$1"
   local fail_ms="$2"
@@ -165,7 +173,15 @@ const fs = require('fs');
 const [, , filePath, failMs, warnMs] = process.argv;
 const FAIL_THRESHOLD = parseInt(failMs, 10);
 const WARN_THRESHOLD = parseInt(warnMs, 10);
-const content = fs.readFileSync(filePath, 'utf8');
+let content;
+try {
+  content = fs.readFileSync(filePath, 'utf8');
+} catch (err) {
+  // stdout, not stderr: the caller captures stdout and discards stderr, so this is the one
+  // channel that can carry WHY the file has no verdict back to the operator.
+  process.stdout.write(`UNMEASURED ${(err && err.code) || 'read failed'}\n`);
+  process.exit(2);
+}
 
 // Skip @tier: expensive — not part of the --test-concurrency=8 surface.
 const firstLine = content.split('\n')[0];
@@ -236,6 +252,12 @@ audit_file() {
   # Output is "<TAG> <reason>" where TAG is FAIL (N <= 5000) or WARN (5000 < N <= 15000).
   candidate_out="$(find_heavy_candidate "$file" "$SUBPROCESS_HEAVY_TIMEOUT_MS" "$SUBPROCESS_HEAVY_WARN_MS" 2>/dev/null)"
   candidate_exit=$?
+  # LOCAL refusal only: this script's own exit code. It breaks no loop (PRIME DIRECTIVE).
+  if [ "$candidate_exit" -gt 1 ]; then
+    echo "$file_rel: subprocess-heavy classification could not read the file (${candidate_out:-no diagnostic}) - nothing was measured, so this file has no verdict" >&2
+    status=1
+    return
+  fi
   [ "$candidate_exit" -ne 0 ] && return
 
   local candidate_tag="${candidate_out%% *}"      # FAIL | WARN

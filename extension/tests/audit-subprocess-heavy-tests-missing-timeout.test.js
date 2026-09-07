@@ -160,6 +160,81 @@ for (const producer of NOTHING_MEASURED_PRODUCERS) {
   });
 }
 
+// AP-EXT-ITER225-01. The per-FILE arm of AP-EXT-ITER224-01's rule. The whole-run rule above
+// asks whether the audit measured ANY file; this asks whether it measured THE file it just
+// cleared. `find_heavy_candidate` spends exit 1 on "measured, not a candidate", and node spends
+// the same 1 on an uncaught throw, so a file the classifier could not read scored identically to
+// one it read and cleared. MEASURED on the shipped script before the fix: the pair below differed
+// only in the target's mode and BOTH produced no per-file line — at mode 000 the run exited 1
+// carrying not one word of diagnostic, because the two sibling scanners crash on the same file
+// and their stderr is discarded. Fail-closed by accident, unactionable by construction.
+//
+// The pair is disjoint on the mode alone: same two fixture files, same contents, same scan root
+// shape, both flatly non-candidates (timeout 30000 > SUBPROCESS_HEAVY_WARN_MS). A gate rejecting
+// on anything but "could not read this file" reds the control too.
+const UNREADABLE_MODE = 0o000;
+
+function seedUnreadablePair(dir, targetMode) {
+  const source = fixtureSource('execFileSync', "'git', ['status']", true).replace(
+    'timeout: 15000',
+    'timeout: 30000',
+  );
+  fs.writeFileSync(path.join(dir, 'readable.test.js'), source);
+  const target = path.join(dir, 'target.test.js');
+  fs.writeFileSync(target, source);
+  fs.chmodSync(target, targetMode);
+  return target;
+}
+
+// chmod is advisory to uid 0, so under a root-owned container this row would measure the readable
+// case twice and pass vacuously. Ask the filesystem whether the fixture actually took, and say so
+// instead of scoring the silence as agreement — an honest not-run beats a green that proves nothing.
+function fixtureIsUnreadable(target) {
+  try {
+    fs.readFileSync(target, 'utf-8');
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+test('AP-EXT-ITER225-01: a file the classifier could not read has no verdict, not a clean one', (t) => {
+  const dir = tmpScanRoot();
+  try {
+    const target = seedUnreadablePair(dir, UNREADABLE_MODE);
+    if (!fixtureIsUnreadable(target)) {
+      t.skip(`mode ${UNREADABLE_MODE.toString(8)} is advisory to this uid (${process.getuid?.()}); the unreadable arm cannot be measured here`);
+      return;
+    }
+
+    const result = runAudit(dir);
+    assert.equal(
+      result.status,
+      1,
+      `expected exit 1 for a file that could not be classified; stderr=${result.stderr}`,
+    );
+    assert.match(result.stderr, /nothing was measured, so this file has no verdict/);
+    assert.match(result.stderr, /target\.test\.js/);
+    assert.doesNotMatch(result.stderr, /audit-subprocess-heavy-tests: OK/);
+  } finally {
+    fs.chmodSync(path.join(dir, 'target.test.js'), 0o644);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER225-01 control: the same pair, readable, is clean', () => {
+  const dir = tmpScanRoot();
+  try {
+    seedUnreadablePair(dir, 0o644);
+
+    const result = runAudit(dir);
+    assert.equal(result.status, 0, `expected exit 0 for the readable pair; stderr=${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /has no verdict/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Receiver qualification. `RegExp.prototype.exec` shares its name with
 // `child_process.exec`, so the candidate matcher classifies by receiver. These
 // fixtures pin BOTH directions in one test, which is what stops the fix from
