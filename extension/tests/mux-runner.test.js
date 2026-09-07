@@ -1664,12 +1664,19 @@ test('classifyIterationExit: continue with rate_limit_event JSON returns api_lim
     }
 });
 
-test('mux-runner source (TIER-1.2 gh-11): closer_handoff_terminal still halts; manager_handoff_pending never does', () => {
+test('mux-runner source (TIER-1.2 gh-11): closer_handoff_terminal still halts; manager_handoff_pending never does', async () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../src/bin/mux-runner.ts'), 'utf-8');
     assert.match(source, /closer_handoff_terminal/);
-    const isHaltExitLine = source.match(/const isHaltExit = \(r: ExitReason\).*$/m)[0];
-    assert.match(isHaltExitLine, /closer_handoff_terminal/);
-    assert.doesNotMatch(isHaltExitLine, /manager_handoff_pending/);
+    // ROOT 0 (1428cbe9): re-pointed to the collapsed seam. `isHaltExit` no longer carries
+    // its own membership — it derives from EXIT_DISPOSITIONS (types/index.ts) — so grepping
+    // its one-line body for a reason can no longer express this intent. Asserting the
+    // BEHAVIOUR is strictly stronger than the source-text form it replaces: it holds
+    // wherever the membership lives.
+    const { isHaltExit } = await import('../bin/mux-runner.js');
+    assert.equal(isHaltExit('closer_handoff_terminal'), true,
+        'closer_handoff_terminal must remain a halt exit');
+    assert.equal(isHaltExit('manager_handoff_pending'), false,
+        'manager_handoff_pending must never be a halt exit — it is a residual, not an exit');
     // The reason string survives only as a non-halting residual payload value.
     assert.match(source, /reason: 'manager_handoff_pending'/);
 

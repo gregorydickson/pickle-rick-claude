@@ -35,8 +35,14 @@ test('closer-handoff-terminal source: done-plus-manager-handoff is parked and fl
 
   // AC-1: the reason must not be reachable as a `CloserTerminalDecision` exit action —
   // it survives only as the residual payload's `reason` value.
-  const isHaltExitLine = muxRunnerSource.match(/const isHaltExit = \(r: ExitReason\).*$/m)[0];
-  assert.doesNotMatch(isHaltExitLine, /manager_handoff_pending/);
+  // ROOT 0 (1428cbe9): re-pointed to the collapsed seam. Halt-eligibility is no longer a
+  // literal on the `isHaltExit` line; it is the `haltEligible` axis of EXIT_DISPOSITIONS
+  // (types/index.ts). The reason must not appear in that record at all — it is not an
+  // ExitReason, so it can carry no disposition.
+  const typesSource = fs.readFileSync(path.resolve(__dirname, '../../src/types/index.ts'), 'utf-8');
+  const exitDispositions = typesSource.match(/const EXIT_DISPOSITIONS[\s\S]*?\n};/)[0];
+  assert.doesNotMatch(exitDispositions, /manager_handoff_pending/);
+  assert.match(exitDispositions, /closer_handoff_terminal: \{ verdict: 'halt', haltEligible: true/);
   const closerTerminalDecisionType = muxRunnerSource.match(/type CloserTerminalDecision =[\s\S]*?;/)[0];
   assert.doesNotMatch(closerTerminalDecisionType, /manager_handoff_pending/);
 });

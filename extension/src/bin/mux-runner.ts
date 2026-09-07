@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -5333,56 +5333,28 @@ export function appendPipelineRunnerMarker(sessionDir: string, message: string):
 export type ExitReason = typeof EXIT_REASONS[number];
 
 /**
- * R-CNAR-4(c): halt exits pause/defer — auto-resume.sh may retry. Does NOT include
- * 'recovery_exhausted' (fatal, non-recoverable).
+ * ROOT 0 (1428cbe9): the three predicates below are DERIVATIONS of the ONE disposition
+ * vocabulary, `EXIT_DISPOSITIONS` in `types/index.ts`, read through `classifyExitReason`.
+ * They hold no membership of their own.
  *
- * B-GTRUTH WS-A2: 'done_without_commit_evidence' is NOT a member. It is a
- * TICKET-scoped condition ("this ticket produced no attributable commit"), not a
- * session-scoped pause, and it now routes into the PhaseIncomplete contract via
- * exit code 3 (see the exit map in `main`). Demoted in lockstep with
- * FAILURE_EXIT_REASONS below and `isFatalPhaseFailure` in pipeline-runner.ts, so
- * the three classifiers cannot disagree. 'state_schema_version_ahead' is likewise
- * not a member — do not add it.
- */
-export const isHaltExit = (r: ExitReason): boolean => r === 'cancelled' || r === 'limit' || r === 'timeout_repeat' || r === 'closer_handoff_terminal';
-/**
- * R-CNAR-4(c): failure exits stop auto-resume.sh. Includes 'recovery_exhausted' — a
- * non-recoverable terminal state.
+ * They used to be three hand-maintained subsets of the same 20-member domain — an inline
+ * literal disjunction, `FAILURE_EXIT_REASONS` and `INCOMPLETE_EXIT_REASONS` — none of them
+ * exhaustive. A reason matching none fell through to the SUCCESS arm, which is how
+ * `done_without_commit_evidence` printed a green "mux-runner Complete" panel for a bundle
+ * that halted mid-flight. The three sets' comments answered that hazard with an instruction
+ * to remember to edit the other lists in the same commit; the total `Record` in
+ * `types/index.ts` makes the compiler answer it instead (an omitted member is TS2741).
  *
- * B-GTRUTH WS-A2: 'done_without_commit_evidence' removed — a run that reaches it is
- * INCOMPLETE, not failed, so the completion panel must not render RED
- * (`deriveCompletionVerdict`). Removing it here alone would send the run to exit
- * code 0 (a silent fake-green); the exit map in `main` maps it to 3 instead, and
- * `INCOMPLETE_EXIT_REASONS` below keeps the panel from claiming "Complete".
+ * The three properties they read remain distinct and are documented on the record:
+ * `haltEligible` is R-CNAR-4(c) pause/defer, `verdict: 'failure'` stops auto-resume.sh, and
+ * `verdict: 'incomplete'` is the third class — the run neither failed nor finished — which
+ * a binary verdict could not express. Membership questions belong to the record; only the
+ * NAMES live here, because two of them are pinned as canonical by trap-door INVARIANTs
+ * (`src/types/CLAUDE.md`).
  */
-const FAILURE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
-  'error', 'stall', 'circuit_open', 'rate_limit_exhausted', 'timeout_repeat',
-  'manager_persistent_hallucination', 'iteration_cap_exhausted', 'codex_unhealthy_consecutive_failures',
-  'working_tree_modified_externally', 'state_schema_version_ahead',
-  'codex_manager_no_progress', 'recovery_exhausted',
-  'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
-]);
-export const isFailureExit = (r: ExitReason): boolean => FAILURE_EXIT_REASONS.has(r);
+export const isHaltExit = (r: ExitReason): boolean => classifyExitReason(r).haltEligible;
+export const isFailureExit = (r: ExitReason): boolean => classifyExitReason(r).verdict === 'failure';
 
-/**
- * Exits that are NEITHER a failure NOR a completion — the run did not fail, and it
- * did not finish. This is the THIRD class WS-A2 created and the binary verdict could
- * not express.
- *
- * Membership is an explicit declaration, never the absence of failure-membership: a
- * reason demoted out of `FAILURE_EXIT_REASONS` for routing reasons otherwise lands in
- * the success arm by default, which is how `done_without_commit_evidence` came to
- * print a green "mux-runner Complete" panel for a bundle that halted mid-flight. A
- * future reason demoted the same way must be listed here in the same commit.
- *
- * Deliberately disjoint from `isHaltExit`: a halt ('cancelled', 'limit', …) is an
- * operator-or-budget decision to stop, which the panel already reports honestly as
- * "Stopped: <reason>". An incomplete exit is the runner reporting that it could not
- * account for the work it was asked to do.
- */
-const INCOMPLETE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
-  'done_without_commit_evidence',
-]);
 /**
  * Shared classification: a reason that is a per-ticket verdict ("this ticket
  * produced no attributable commit"), not a session-scoped halt. mux-runner's
@@ -5390,10 +5362,10 @@ const INCOMPLETE_EXIT_REASONS: ReadonlySet<ExitReason> = new Set<ExitReason>([
  * routing both consume this ONE predicate so the two runtimes cannot
  * disagree (ticket 96444430). Loose input type so callers holding a raw
  * `state.exit_reason: string | null` read (e.g. pipeline-runner.ts) don't
- * need to narrow first.
+ * need to narrow first — `classifyExitReason` accepts the same loose input.
  */
 export const isPerTicketVerdictReason = (r: string | null | undefined): boolean =>
-  typeof r === 'string' && INCOMPLETE_EXIT_REASONS.has(r as ExitReason);
+  classifyExitReason(r).verdict === 'incomplete';
 export const isIncompleteExit = (r: ExitReason): boolean => isPerTicketVerdictReason(r);
 
 /**

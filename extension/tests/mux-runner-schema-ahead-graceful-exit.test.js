@@ -168,10 +168,26 @@ test('AC5: every non-cap-check sm.read(statePath) call site routes through readR
 });
 
 test('AC6: state_schema_version_ahead is in ExitReason union AND isFailureExit set', async () => {
-  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
+  // AP-EXT-ITER172-01 (was OPEN in extension/CLAUDE.md, closed by ROOT 0 / 1428cbe9):
+  // this used to grep `/export type ExitReason =[\s\S]*'state_schema_version_ahead'/`
+  // over mux-runner.ts. `ExitReason` there is `typeof EXIT_REASONS[number]` and the
+  // members live in types/index.ts, so that span could never reach a member — it was
+  // answered by the unrelated FAILURE_EXIT_REASONS literal that happened to sit below
+  // the alias, and deleting the member from EXIT_REASONS left this file GREEN.
+  // A membership pin must read the file that HOLDS the members.
+  const { EXIT_REASONS } = await import('../types/index.js');
   assert.ok(
-    /export type ExitReason =[\s\S]*'state_schema_version_ahead'/.test(source),
-    'ExitReason union must include state_schema_version_ahead',
+    EXIT_REASONS.includes('state_schema_version_ahead'),
+    'EXIT_REASONS (types/index.ts) must include state_schema_version_ahead — it is the '
+    + 'array ExitReason derives from, so this is the membership the union actually has',
+  );
+  // ...and the union must still DERIVE from that array, or the check above is about a
+  // list mux-runner no longer uses.
+  const source = fs.readFileSync(MUX_RUNNER_TS, 'utf-8');
+  assert.match(
+    source,
+    /export type ExitReason = typeof EXIT_REASONS\[number\];/,
+    'ExitReason must derive from EXIT_REASONS, or the membership assertion above is vacuous',
   );
   // Behavioral check (refactor-proof): isFailureExit may be an inline `r === ...`
   // chain OR a FAILURE_EXIT_REASONS set membership — assert the classification,
