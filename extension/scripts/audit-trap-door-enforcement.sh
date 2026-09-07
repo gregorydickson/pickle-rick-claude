@@ -824,15 +824,31 @@ if ! bash "$SCRIPT_DIR/audit-phantom-done-call-sites.sh"; then
   audit_exit_code=1
 fi
 
-# B-CIGREEN ROOT A / AC-M4: `rg` is provisioned on this dev box but NOT installed by
-# ci.yml or release.yml, so a bare `if rg ...; then fail; fi` silently no-ops in CI
-# ("rg: command not found" on stderr, non-zero exit) and the audit reports OK having
-# measured nothing. Route the result through the SAME `isUnrunnableCheckResult`
-# fail-closed classifier (R-SZGB-D, convergence-gate.ts) every other unrunnable-check
-# call site uses, rather than inventing a second detector: a preflight
-# `detectMissingTools` miss produces the identical `tool not installed: <bin>` sentinel
-# `runCheckCommand` emits, so one classifier covers both "never spawned" and "spawned
-# and failed to run" without a bash-native reimplementation of that logic.
+# B-CIGREEN ROOT A / AC-M4: a bare `if rg ...; then fail; fi` silently no-ops when `rg` is
+# absent ("rg: command not found" on stderr, non-zero exit) and the audit reports OK having
+# measured nothing — beta.21 CI hit exactly this at (then) line 576. Route the result through
+# the SAME `isUnrunnableCheckResult` fail-closed classifier (R-SZGB-D, convergence-gate.ts)
+# every other unrunnable-check call site uses, rather than inventing a second detector: a
+# preflight `detectMissingTools` miss produces the identical `tool not installed: <bin>`
+# sentinel `runCheckCommand` emits, so one classifier covers both "never spawned" and "spawned
+# and failed to run" without a bash-native reimplementation of that logic. `ci.yml` and
+# `release.yml` each provision `rg` (an "Install ripgrep" step, since ubuntu-latest does not
+# ship it) alongside this fail-closed check — the two halves shipped together in 2bf16f30 and
+# must stay together, or every CI run reds on this line.
+#
+# A3 (18cbeb65) tool census, re-verified from HEAD: `rg` is the only external tool any
+# release-gate-invoked script depends on beyond node/git/bash — the other nine `&&`-chained
+# audit scripts (audit-test-tiers.sh, audit-test-isolation.sh, audit-subprocess-heavy-tests.sh,
+# audit-fix-commits.sh, audit-bundle-thesis.sh, audit-quarantine.sh, audit-guarded-reset.sh,
+# audit-un-terminalize-single-path.sh, audit-did-we-count.sh) and this script's own internal
+# call to audit-phantom-done-call-sites.sh shell out to nothing else. `jq`/`python3`/`gh`/
+# `shellcheck` appear only in scripts NOT invoked by ci.yml or release.yml (audit-deploy-
+# content-drift.sh, audit-subsystem-claude-md.sh, audit-closer-template-compliance.sh,
+# capture-pkgjson-revert-forensic.sh, ci-repro.sh, reconcile-release-tags.sh, verify-release-
+# tag.sh, smoke-deployed-hooks.sh, coverage-delta.sh) — their provisioning does not affect the
+# release gate. `jq`/`python3`/`git` are already part of the `ubuntu-latest` runner image's own
+# baseline (see ci-repro.sh's `CI_RUNNER_BASELINE_PACKAGES`), which is why only `rg` — never
+# preinstalled — needed an explicit install step.
 if ! node - "$EXTENSION_ROOT" "$EXTENSION_ROOT/src/bin/spawn-morty.ts" "$EXTENSION_ROOT/src/bin/mux-runner.ts" <<'NODE'
 const path = require('path');
 const { spawnSync } = require('child_process');
