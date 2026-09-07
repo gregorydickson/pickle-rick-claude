@@ -244,8 +244,9 @@ const UNPINNED_WORKFLOW =
  * only one that can express AP-EXT-ITER79-TD1, where a healthy sibling's pins
  * carry the aggregate over an uncounted workflow.
  */
-function runDidWeCount({ workflow, catalog = true, extraWorkflows = {} }) {
+function runDidWeCount({ workflow, catalog = true, extraWorkflows = {}, subdir = null }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'did-we-count-'));
+  const subdirPath = subdir ? path.join(root, subdir.name) : null;
   try {
     fs.mkdirSync(path.join(root, 'extension'), { recursive: true });
     fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
@@ -262,15 +263,94 @@ function runDidWeCount({ workflow, catalog = true, extraWorkflows = {} }) {
     if (catalog) {
       fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# fixture catalog\n');
     }
+    if (subdir) {
+      fs.mkdirSync(subdirPath, { recursive: true });
+      fs.writeFileSync(path.join(subdirPath, 'CLAUDE.md'), subdir.content);
+      fs.chmodSync(subdirPath, subdir.mode);
+    }
     return spawnSync('bash', [DID_WE_COUNT_SCRIPT], {
       encoding: 'utf8',
       timeout: DID_WE_COUNT_TIMEOUT_MS,
       env: { ...process.env, DID_WE_COUNT_REPO_ROOT_OVERRIDE: root },
     });
   } finally {
+    // rm cannot descend a mode-000 directory either; restore before cleanup.
+    if (subdirPath) fs.chmodSync(subdirPath, 0o755);
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+
+// AP-EXT-ITER226-01. The per-DIRECTORY arm of the rule the two arms above enforce per
+// comparison and per file. `findClaudeMdFiles` swallowed the readdir error for a directory it
+// could not enter, so every catalog beneath it went uncompared while `claudeMdFiles.length` —
+// the honesty counter `requireCounted` reads — stayed satisfied by the readable siblings. The
+// counter counts what the walk FOUND, and nothing invalidated it. That is AP-EXT-ITER79-TD1's
+// shape one check over: a healthy sibling carrying the aggregate past an uncounted unit.
+//
+// MEASURED on the pre-fix script: the RED arm below exited 0 printing "no drift found" over an
+// EMPTY catalog — the 2c857117 shape check 2 exists to catch — buried one mode-000 directory deep.
+const DARK_DIR_MODE = 0o000;
+
+// chmod is advisory to uid 0, so under a root-owned container this row would measure the
+// readable case twice and pass vacuously. Ask the filesystem whether the mode took, and report
+// an honest skip rather than scoring the silence as agreement.
+function darkDirTakes(t) {
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'did-we-count-probe-'));
+  try {
+    fs.chmodSync(probe, DARK_DIR_MODE);
+    try {
+      fs.readdirSync(probe);
+    } catch {
+      return true;
+    }
+    t.skip(`mode 000 is advisory to this uid (${process.getuid?.()}); the dark-subtree arm cannot be measured here`);
+    return false;
+  } finally {
+    fs.chmodSync(probe, 0o755);
+    fs.rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER226-01: a subtree the walk cannot enter is not a clean tree', (t) => {
+  if (!darkDirTakes(t)) return;
+
+  const res = runDidWeCount({
+    workflow: pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE),
+    subdir: { name: 'dark', content: '   \n\n', mode: DARK_DIR_MODE },
+  });
+
+  assert.equal(res.status, 1, `an unreadable subtree must not report clean; stdout: ${res.stdout}`);
+  assert.match(res.stderr, /dark: unreadable directory — any CLAUDE\.md beneath it was never compared/);
+  assert.doesNotMatch(res.stdout, /no drift found/);
+  // The aggregate arm cannot be what fired: the root catalog was compared.
+  assert.doesNotMatch(res.stderr, /check 2 \(CLAUDE\.md catalog reachability\): zero comparisons made/);
+  // Nor could the empty-catalog arm — the walk never reached it. Darkness IS the verdict.
+  assert.doesNotMatch(res.stderr, /2c857117 defect shape/);
+});
+
+test('AP-EXT-ITER226-01 control: the same buried catalog, readable, is caught on its own merits', () => {
+  // Disjoint on the directory MODE alone — same tree, same contents, same workflow. A gate
+  // rejecting on anything but "could not enter this directory" reds this row too.
+  const res = runDidWeCount({
+    workflow: pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE),
+    subdir: { name: 'dark', content: '   \n\n', mode: 0o755 },
+  });
+
+  assert.equal(res.status, 1, `a reachable empty catalog must still fail; stdout: ${res.stdout}`);
+  assert.match(res.stderr, /dark\/CLAUDE\.md: empty catalog file/);
+  assert.doesNotMatch(res.stderr, /unreadable directory/);
+});
+
+test('AP-EXT-ITER226-01 non-vacuity: a healthy nested catalog still passes', () => {
+  // The walk must descend and the new report must not degrade into "any subdirectory reds".
+  const res = runDidWeCount({
+    workflow: pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE),
+    subdir: { name: 'nested', content: '# nested catalog\n', mode: 0o755 },
+  });
+
+  assert.equal(res.status, 0, `a readable non-empty nested catalog must pass; stderr: ${res.stderr}`);
+  assert.match(res.stdout, /2 CLAUDE\.md catalog\(s\) compared/);
+});
 
 test('AP-EXT-ITER57-01 control: a matching pin passes and the summary reports pins COMPARED', () => {
   const res = runDidWeCount({ workflow: pinnedWorkflow(DID_WE_COUNT_ENGINE_NODE) });

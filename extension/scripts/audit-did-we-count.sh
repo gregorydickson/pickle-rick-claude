@@ -107,11 +107,21 @@ for (const wf of workflowFiles) {
 
 // --- Check 2: CLAUDE.md catalog reachability (9e89e360 / 2c857117 class) ---
 
+// A directory the walk cannot enter is a DARK subtree, not an empty one. Swallowing the
+// error drops every catalog beneath it while `claudeMdFiles.length` stays satisfied by the
+// readable siblings, so `requireCounted` — the honesty gate — cannot fire: the counter counts
+// what the walk FOUND and nothing invalidates it. That is AP-EXT-ITER79-TD1's shape one check
+// over (a healthy sibling carrying the aggregate past an uncounted unit), and check 1's own
+// `readdirSync` above already reports the identical failure through `fail`. One rule, both walks.
 function findClaudeMdFiles(dir, acc = []) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    fail(
+      `${path.relative(repoRoot, dir) || dir}: unreadable directory — any CLAUDE.md beneath it ` +
+        `was never compared (${err instanceof Error ? err.message : String(err)})`,
+    );
     return acc;
   }
   for (const entry of entries) {
