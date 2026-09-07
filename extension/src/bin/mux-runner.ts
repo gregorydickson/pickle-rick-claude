@@ -914,9 +914,66 @@ function recordCrossTicketRegression(
   });
 }
 
+/**
+ * B-OFFREPO (AC-G1-2): does THIS directory declare the between-ticket gate?
+ *
+ * The script name is spelled again here rather than hoisted into a shared constant
+ * with the spawn in `runBetweenTicketFastTests`. That spawn's trap door (`src/bin/
+ * CLAUDE.md`, the maxBuffer invariant) anchors its PATTERN_SHAPE on the exact source
+ * text of the argv it passes, so hoisting the literal would leave a catalogued shape
+ * matching nothing while the audit stayed green. A duplicated nine-character string
+ * is the cheaper of the two. The argv is deliberately NOT restated in this comment:
+ * a grep for that shape must match the spawn, never this prose.
+ *
+ * Total: an absent, unreadable or malformed manifest is `false`, never a throw.
+ */
+function declaresBetweenTicketGateScript(dir: string): boolean {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as
+      { scripts?: Record<string, unknown> } | null;
+    return typeof pkg?.scripts?.['test:fast'] === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * B-OFFREPO (AC-G1-2/3/4): WHERE does the between-ticket gate run for this working dir?
+ *
+ * The question used to be answered by asserting this repo's layout — `<workingDir>/extension`
+ * or nothing — which is why the gate did not exist on any repo that is not pickle-rick. It is
+ * now derived FROM the target repo, in three rungs:
+ *
+ *  1. `<workingDir>/extension` exists → that dir. pickle-rick is unchanged, and so is every
+ *     fixture that builds applicability with a bare `mkdirSync(<workingDir>/extension)` and no
+ *     manifest inside. This rung is the AC-G1-3 negative control: the fix did not RELOCATE the
+ *     assumption, it added a rung beneath it.
+ *  2. otherwise `workingDir` itself, when the target repo declares the gate script. The probe is
+ *     for the SCRIPT, not for a project type: this gate spawns the fixed name `test:fast`, so on
+ *     a repo that does not declare it the package manager exits non-zero and `status === 0`
+ *     reports a RED — trading the old silent false-green for a loud false-red. Asking the repo
+ *     whether it declares the gate is what makes this rung truthful.
+ *  3. otherwise `null` — no gate is applicable here. Callers must report that, not pass over it:
+ *     an unrunnable gate may not print OK (AC-G1-4).
+ *
+ * Deliberately NOT applied to `resolveWorkerGateVerdict`'s probe, which answers a different
+ * question ("is this target repo pickle-rick-like") and whose trap door records that laddering
+ * it would make an off-repo run fail CLOSED.
+ */
+function resolveGateProjectDir(workingDir: string): string | null {
+  if (workingDir.trim() === '') return null;
+  const extensionDir = path.join(workingDir, 'extension');
+  if (fs.existsSync(extensionDir)) return extensionDir;
+  return declaresBetweenTicketGateScript(workingDir) ? workingDir : null;
+}
+
 export function runBetweenTicketFastGate(input: RunBetweenTicketFastGateInput): BetweenTicketGateResult | null {
-  const extensionDir = path.join(input.workingDir, 'extension');
-  if (!fs.existsSync(extensionDir)) return null;
+  // B-OFFREPO F4: the gate's directory is derived from the target repo, not asserted to be
+  // `<workingDir>/extension`. `null` is still "no gate applicable here" — the honest skip this
+  // site already returned — but it is now reached only when the TARGET declares no gate, rather
+  // than whenever the target is not shaped like pickle-rick.
+  const extensionDir = resolveGateProjectDir(input.workingDir);
+  if (extensionDir === null) return null;
 
   const runTestFast = resolvePostFinalRunTestFastAdapter(input.runTestFast);
   const ts = (input.now ?? Date.now)();
@@ -1167,8 +1224,13 @@ function probePostFinalMeasurement(
   // non-degraded, i.e. success. An unwritten verdict is the same fake-green as a green one.
   try {
     workingDirKnown = input.workingDir.trim() !== '';
+    // B-OFFREPO: this probe DOMINATES F4 — `measureApplicablePostFinalTier` (and so
+    // `runBetweenTicketFastGate`) is reached only when `applicable` is true, so deriving the
+    // gate dir at F4 while still asserting this repo's layout HERE would leave F4 unreachable
+    // off-repo and the fix inert on the production wire. Same resolver, same three rungs, so
+    // the two sites cannot disagree about where the gate lives.
     applicable = workingDirKnown
-      && fs.existsSync(path.join(input.workingDir, 'extension'));
+      && resolveGateProjectDir(input.workingDir) !== null;
 
     if (applicable) {
       const measured = measureApplicablePostFinalTier(input);
@@ -6707,8 +6769,13 @@ export function commitGatePassingDeliverableOnExitPath(
       return { committed: false, reason: 'already-terminal' };
     }
     if (!isWorkingTreeDirty(workingDir)) return { committed: false, reason: 'clean-tree' };
-    const extensionDir = path.join(workingDir, 'extension');
-    if (!fs.existsSync(extensionDir)) return { committed: false, reason: 'no-extension-dir' };
+    // B-OFFREPO F5: the gate dir comes from the target repo. This site's refusal was honest but
+    // it STRANDED work — a target repo with a perfectly runnable gate had its deliverable left
+    // uncommitted purely because it is not shaped like pickle-rick. The refusal survives for the
+    // case it actually describes (no gate is applicable at all); `'no-extension-dir'` is a member
+    // of the exported `CommitGatePassingDeliverableReason` union and is deliberately not renamed.
+    const extensionDir = resolveGateProjectDir(workingDir);
+    if (extensionDir === null) return { committed: false, reason: 'no-extension-dir' };
     let stagePaths: string[] | undefined;
     try {
       const dirtyPaths = listWorkingTreeDirtyPaths(workingDir);

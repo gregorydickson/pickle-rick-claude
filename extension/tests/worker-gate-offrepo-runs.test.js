@@ -17,6 +17,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
+import { execFileSync } from 'node:child_process';
 
 import { runWorkerGate } from '../bin/spawn-morty.js';
 import { isAdvisoryWorkerGateVerdict } from '../bin/mux-runner.js';
@@ -875,4 +876,169 @@ test('AC-D3-1: mux-runner.ts runBetweenTicketFastTests is the documented D3 resi
   const hit = census.find((h) => h.file === 'src/bin/mux-runner.ts' && h.calleeName === 'spawnSync');
   assert.ok(hit, `expected the runBetweenTicketFastTests spawnSync call site; census: ${JSON.stringify(census, null, 2)}`);
   assert.equal(hit.stallDetected, false, 'runBetweenTicketFastTests became stall-detected — update this pin AND the D3 ticket/plan docs to reflect the residual closing, do not just flip this assertion');
+});
+
+// ---------------------------------------------------------------------------
+// G1 / B-OFFREPO (fa96d062) — the between-ticket gate's DIRECTORY, off-repo.
+//
+// Ticket 10 stopped the off-repo exits CLAIMING a pass; ticket 20 made the per-ticket
+// worker gate actually RUN the target's toolchain. Two mux-runner sites were still keyed
+// on `<workingDir>/extension` and so still did not APPLY off-repo:
+//   F4 `runBetweenTicketFastGate`                 — silent `return null`
+//   F5 `commitGatePassingDeliverableOnExitPath`   — `reason: 'no-extension-dir'`, stranding work
+//
+// Honesty and applicability are DIFFERENT properties and a site can have one without the
+// other: both of these degraded honestly the whole time, and neither ever ran. These cases
+// pin applicability (AC-G1-2), the negative control that pickle-rick's own layout still wins
+// (AC-G1-3), and that a repo with no runnable gate is reported rather than passed over
+// (AC-G1-4).
+// ---------------------------------------------------------------------------
+
+import {
+  runBetweenTicketFastGate,
+  runPostFinalMeasurement,
+  commitGatePassingDeliverableOnExitPath,
+} from '../bin/mux-runner.js';
+
+const GREEN_GATE = { ok: true, failures: [], timed_out: false, timeout_ms: 1000, measured: true };
+
+/** Records the directory the gate was asked to run in, and reports green. */
+function recordingRunner() {
+  const calls = [];
+  const fn = (dir) => { calls.push(dir); return { ...GREEN_GATE }; };
+  fn.calls = calls;
+  return fn;
+}
+
+/**
+ * A target repo that DECLARES the between-ticket gate but is NOT laid out like pickle-rick:
+ * `test:fast` lives in the root manifest and there is no `extension/` directory anywhere.
+ */
+function makeFlatGateFixture({ withExtensionDir = false, declareGate = true } = {}) {
+  const root = makeTmp();
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+    name: 'flat-target-repo',
+    version: '1.0.0',
+    scripts: declareGate ? { 'test:fast': 'node -e "process.exit(0)"' } : { build: 'node -e "0"' },
+  }, null, 2));
+  fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
+  if (withExtensionDir) fs.mkdirSync(path.join(root, 'extension'), { recursive: true });
+  return { root, statePath: writeState(root) };
+}
+
+function betweenTicketArgs({ root, statePath }, runTestFast) {
+  return {
+    statePath,
+    workingDir: root,
+    completedTicketId: 'ggg11111',
+    nextTicketId: null,
+    landedStatus: null,
+    log: () => {},
+    runTestFast,
+  };
+}
+
+test('AC-G1-2: the between-ticket gate RUNS on a repo whose layout is not <workingDir>/extension', () => {
+  const fixture = makeFlatGateFixture();
+  const runner = recordingRunner();
+
+  const result = runBetweenTicketFastGate(betweenTicketArgs(fixture, runner));
+
+  assert.notEqual(result, null, 'a flat target repo that declares test:fast must not be skipped');
+  assert.equal(runner.calls.length, 1, 'the gate must actually be issued, not merely deemed applicable');
+  // The load-bearing assertion: the directory is DERIVED from the target repo. Before the fix
+  // this site could only ever hand out `<workingDir>/extension`, a path that does not exist here.
+  assert.equal(runner.calls[0], fixture.root);
+  assert.equal(result.ok, true);
+});
+
+test('AC-G1-3 NEGATIVE CONTROL: pickle-rick\'s own <workingDir>/extension still wins', () => {
+  // Same fixture, plus an `extension/` dir — which carries NO manifest of its own, exactly as
+  // the existing corpus builds applicability. If the fix had merely RELOCATED the assumption
+  // (probing the repo root instead of `extension/`), this would resolve to the root and the
+  // assertion below would catch it.
+  const fixture = makeFlatGateFixture({ withExtensionDir: true });
+  const runner = recordingRunner();
+
+  const result = runBetweenTicketFastGate(betweenTicketArgs(fixture, runner));
+
+  assert.notEqual(result, null);
+  assert.equal(runner.calls.length, 1);
+  assert.equal(runner.calls[0], path.join(fixture.root, 'extension'));
+});
+
+test('AC-G1-4 FAIL-CLOSED: a repo with no runnable gate reports not-applicable and never OK', () => {
+  const fixture = makeFlatGateFixture({ declareGate: false });
+  const runner = recordingRunner();
+
+  const gate = runBetweenTicketFastGate(betweenTicketArgs(fixture, runner));
+
+  assert.equal(gate, null, 'no gate is applicable here');
+  assert.equal(runner.calls.length, 0, 'an inapplicable gate must issue no command');
+
+  // An unrunnable gate may not print OK. The disposition is the POSITIVE fact "we looked and
+  // this repo ships no gate" — not a pass, and not the `absent` unknown either.
+  const verdict = runPostFinalMeasurement({
+    statePath: fixture.statePath,
+    workingDir: fixture.root,
+    completedTicketId: 'ggg11111',
+    log: () => {},
+    runTestFast: runner,
+  });
+  assert.deepEqual(verdict, { state: 'not_applicable', degraded: false, dimensions: [] });
+  assert.notEqual(verdict.state, 'green');
+  assert.equal(runner.calls.length, 0, 'still no command issued via the post-final wire');
+});
+
+/** A git repo with one untracked file, so `isWorkingTreeDirty` is true at the exit committer. */
+function initDirtyGitRepo(root) {
+  const git = (...args) => execFileSync('git', args, { cwd: root, timeout: 30000, stdio: 'pipe' });
+  git('init', '-q');
+  // Explicit identity: an inherited/absent global config makes the fixture's behaviour
+  // depend on the machine it runs on.
+  git('config', 'user.email', 'g1@example.invalid');
+  git('config', 'user.name', 'G1 Fixture');
+  git('config', 'commit.gpgsign', 'false');
+  fs.writeFileSync(path.join(root, 'deliverable.txt'), 'work the worker left behind\n');
+}
+
+function exitCommitArgs({ root, statePath }) {
+  return {
+    sessionDir: root,
+    statePath,
+    workingDir: root,
+    ticketId: 'ggg11111',
+    extensionRoot: root,
+    flags: null,
+    log: () => {},
+    runGate: () => ({ ...GREEN_GATE }),
+  };
+}
+
+test('AC-G1-2 (F5): the exit-path committer no longer strands work on a non-pickle layout', () => {
+  const fixture = makeFlatGateFixture();
+  initDirtyGitRepo(fixture.root);
+  writeTicket(fixture.root, 'ggg11111');
+
+  const result = commitGatePassingDeliverableOnExitPath(exitCommitArgs(fixture));
+
+  // The claim under test is narrow and exact: this site no longer refuses PURELY because the
+  // target repo is not shaped like pickle-rick. Whatever it goes on to decide about ownership
+  // and staging is the B-PCOMP contract and is not this ticket's business.
+  assert.notEqual(
+    result.reason,
+    'no-extension-dir',
+    'a target repo that declares a runnable gate must get past the applicability refusal',
+  );
+});
+
+test('AC-G1-4 (F5) FAIL-CLOSED: a repo with no runnable gate still refuses, honestly', () => {
+  const fixture = makeFlatGateFixture({ declareGate: false });
+  initDirtyGitRepo(fixture.root);
+  writeTicket(fixture.root, 'ggg11111');
+
+  const result = commitGatePassingDeliverableOnExitPath(exitCommitArgs(fixture));
+
+  assert.equal(result.committed, false);
+  assert.equal(result.reason, 'no-extension-dir');
 });
