@@ -360,6 +360,38 @@ zeroes its own bound ($13.21 burned).
 `state.rate_limit_park` accumulator (`microverse-runner.ts`), do not grow a second ledger.
 **C5 — R-EROS** — an In-Progress ticket is reported "all-Failed" and stamped `recovery_exhausted`.
 
+**C6 — B-APNC ceiling stops a HEALTHY loop at 8 (operator-set 2026-09-07: raise the DEFAULT to 50).**
+`APNC_MAX_PASSES_WITHOUT_CLEAN = 8` (`mux-runner.ts:264`) ends anatomy-park as `anatomy_non_convergent`
+when one subsystem reaches 8 passes having never once passed clean. **Measured on session
+`2026-09-06-f625727a` (2026-09-07 01:55Z):** `bin` hit exactly 8, `extension` was at 7,
+`consecutive_clean {0,0}`, `stall_counts {0,0}/3` — **no stall, and every one of the 15 passes landed a
+real fix** (pass 8 alone closed `AP-BIN-ITER29-01`, three `install.sh` deploy sources reaching no release
+asset). 14 trap doors added / 13 committed. The phase ended while the loop was still producing CRITICALs
+at a steady rate, and because `finalizePhaseSuccess` counts only the single success disposition, the run
+withheld its release verdict — `completed_phases` stayed at 2 and beta.26 was not cut.
+
+**Operator ruling (2026-09-07):** *"there is no reason for limiting these if they are healthy."* The
+bound is not measuring health — `stall_counts`/3 already does that, and it read 0. A pass that lands a
+real fix is the loop WORKING; ending on a count of such passes is the enumerated-bound failure the PRIME
+DIRECTIVE names, and it converts a healthy run into a withheld release.
+
+**The env override is already live on this host** (`PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN=50`, `~/.zshrc`,
+`c004ae0c`). This ticket moves the SOURCE default so an unconfigured host, CI, and every fresh install
+inherit it — an env-only fix leaves the shipped default wrong for everyone else.
+
+### C6 acceptance criteria (machine-checkable)
+- `APNC_MAX_PASSES_WITHOUT_CLEAN` in `extension/src/bin/mux-runner.ts` is `50`, not `8`.
+- `resolveApncMaxPassesWithoutClean({})` returns `50`; `resolveApncMaxPassesWithoutClean({PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN:'3'})` returns `3` — the env override still wins in BOTH directions (a value above AND below the default), so the raise cannot have silently become a floor.
+- Invalid input still falls back to the NEW default: absent / blank / `'0'` / `'-1'` / `'1.5'` / `'abc'` each return `50`.
+- The `anatomy_park_non_convergent_halt` path is UNCHANGED in kind — still non-fatal, still routes to a phase end that continues to szechuan (`R-PHC-6`). This ticket moves a number; it must not touch the disposition wiring.
+- Doc parity: the `PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN` row in root `CLAUDE.md` and Tune-Back CUJ #4 both state the new default, and no doc still says `default 8`. (`grep -rn 'default 8' CLAUDE.md` returns nothing for this var.)
+- Mutation check: restore `8` in the compiled mirror and the new pin RED; restore `50` and it is GREEN — the test must fail for the right reason rather than passing on an unrelated assertion.
+
+**C6 non-goal:** do NOT touch `anatomy_max_iterations` (100) or `szechuan_max_iterations` (50) in
+`pipeline-runner.ts:243-244`, and do NOT touch `stall_limit` (3). They are different bounds on different
+axes; the operator ruling named this ceiling. Changing them here would make the bundle's diff unreviewable
+against its own thesis.
+
 ## 🧟 ROOT D — PROCESS LIFECYCLE: ORPHANS, WEDGES, AND THE LINUX-ONLY SUBPROCESS REDS
 
 **D1 — R-ORCG (supersedes R-WGTORPH's scope).** The orphan reaper's own test suite is the box's biggest
