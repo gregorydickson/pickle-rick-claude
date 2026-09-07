@@ -1128,12 +1128,12 @@ describe('parsePipelineConfig', () => {
 // regression hide behind the other's failure.
 // ---------------------------------------------------------------------------
 
+const C7_EXTENSION_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
+
 // Every KIND 2 no-progress detector, with the channel through which its value is
 // observable. `config` bounds are read by calling parsePipelineConfig; `export`
 // bounds are imported; `source` bounds are module-private, so the compiled
 // mirror is the only place their value is visible.
-const C7_EXTENSION_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
-
 const C7_KIND2_CONFIG_BOUNDS = [
   { name: 'anatomy_stall_limit', value: 3 },
   { name: 'szechuan_stall_limit', value: 5 },
