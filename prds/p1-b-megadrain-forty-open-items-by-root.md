@@ -396,6 +396,21 @@ against its own thesis.
 should be very, very large if they should exist at all).** Full census of every bound that can end a
 loop or phase, taken at HEAD. They fall into two kinds, and only the first kind is in scope:
 
+**⚠ C7 PREMISE CORRECTED 2026-09-07 (measured before dispatch — do NOT re-derive the wrong version).**
+The compiled defaults are NOT what live runs use. `2026-09-06-f625727a/pipeline.json` reads
+`anatomy_max_iterations: 500`, `szechuan_max_iterations: 500`, `scope: "branch"` — the `/pickle-pipeline`
+launch path writes 500/500 into `pipeline.json`, and `pipeline-runner.ts:243-244` only supplies 100/50
+when those keys are ABSENT. So **the "pickle 500 vs szechuan 50, 10x gap" framing is wrong for
+skill-launched runs**, and szechuan's `stalled_below_target` on that session was NOT an iteration-cap
+hit — it ran 6 iterations of 500.
+
+**What survives the correction, and it is still worth fixing:** the compiled fallbacks (100/50) are a
+LATENT default that applies to any launch path which omits the keys — a hand-written `pipeline.json`, a
+resumed session, a CI harness, a future caller. A default that is only correct because every current
+caller overrides it is a trap door, not a setting. The `setup.ts:283` / `pickle_settings.json:19`
+disagreement (100 vs 500) is real and unconditional. `APNC_MAX_PASSES_WITHOUT_CLEAN = 8` is real and
+unconditional — it has no `pipeline.json` override at all, which is exactly why it FIRED.
+
 **KIND 1 — LENGTH bounds. They count passes that DID work. In scope; raise.**
 
 | bound | default | source |
