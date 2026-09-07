@@ -626,7 +626,7 @@ export const MICROVERSE_FATAL_REASONS = [
  *
  * It IS the single source of truth: `mux-runner.ts` derives `export type ExitReason =
  * typeof EXIT_REASONS[number]` from this array, so the runtime's exit-reason plumbing
- * (`FAILURE_EXIT_REASONS`, `isFailureExit`) is typed against these members and cannot drift from
+ * (`EXIT_DISPOSITIONS`, `isFailureExit`) is typed against these members and cannot drift from
  * them. Adding a reason here is the ONE edit; the union follows. The dependency is one-way by
  * necessity — `types/index.ts` cannot import from `mux-runner.ts` without a cycle — so the array
  * must stay here and the type must stay derived there. Restating the members as a literal union in

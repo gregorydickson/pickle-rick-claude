@@ -14805,7 +14805,7 @@ async function runMuxRunnerMain() {
   // pipeline-runner routes it through `reportPhaseIncomplete` (which consults the
   // completion oracle to separate committed-but-unflipped from genuinely-unfinished)
   // instead of fataling the whole pipeline over one ticket. Its own branch is
-  // REQUIRED: having been demoted out of FAILURE_EXIT_REASONS it would otherwise
+  // REQUIRED: carrying verdict 'incomplete' rather than 'failure', it would otherwise
   // reach the trailing success default and graduate the phase silently.
   // (Deliberately phrased without the literal assignment text — the exit-map
   // ordering pin in mux-runner-iteration-cap-exit.test.js locates the branches by

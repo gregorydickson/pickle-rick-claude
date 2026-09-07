@@ -2691,7 +2691,7 @@ function isMicroverseArmFatal(reason) {
  * by a BETTER mechanism: mux-runner now exits code 3, so `runPhaseIteration` routes it to
  * `reportPhaseIncomplete` BEFORE reaching this function, and that path consults the completion
  * oracle instead of the session-wide commit count. Demoted in lockstep with `isHaltExit` and
- * `FAILURE_EXIT_REASONS` (mux-runner.ts) so the three classifiers agree.
+ * the failure verdict class (mux-runner.ts) so the three classifiers agree.
  *
  * B-NOSTOP-GATES WS-1: the former `countCommitsSince === 0` arm was a SECOND demotion. Zero commits
  * since baseline is a QUALITY signal — reported via `maybeStampPhaseGraduation`'s
@@ -2709,7 +2709,7 @@ export function isFatalPhaseFailure(phase, runtime) {
             // B-CRASHFLOOR: cannot-physically-continue reasons (toolchain_unavailable,
             // state_working_dir_missing, state_schema_version_ahead) halt the pickle phase, mirroring
             // how the microverse arm consults MICROVERSE_FATAL_REASONS. Deliberately NOT
-            // FAILURE_EXIT_REASONS (mux-runner.ts) — that set is quality/measurement verdicts CLAUDE.md
+            // the broad failure verdict class (mux-runner.ts) — those are quality/measurement verdicts CLAUDE.md
             // binds to park-and-flag, not the crash floor.
             if (isCrashFloorExitReason(runnerState.exit_reason))
                 return true;

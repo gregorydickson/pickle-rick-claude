@@ -189,8 +189,8 @@ test('AC6: state_schema_version_ahead is in ExitReason union AND isFailureExit s
     /export type ExitReason = typeof EXIT_REASONS\[number\];/,
     'ExitReason must derive from EXIT_REASONS, or the membership assertion above is vacuous',
   );
-  // Behavioral check (refactor-proof): isFailureExit may be an inline `r === ...`
-  // chain OR a FAILURE_EXIT_REASONS set membership — assert the classification,
+  // Behavioral check (refactor-proof): isFailureExit derives from EXIT_DISPOSITIONS
+  // (types/index.ts) and its shape may change again — assert the classification,
   // not the syntax, so auto-resume.sh R-CNAR-4(c) stops on this exit.
   const { isFailureExit } = await import(pathToFileURL(MUX_RUNNER_JS).href);
   assert.equal(
