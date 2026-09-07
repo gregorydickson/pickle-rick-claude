@@ -11,12 +11,15 @@ import {
   _deps,
   appendGapAnalysisFixedBlock,
   buildMicroverseHandoff,
+  buildJudgePrompt,
+  selectLedgerEntriesForPrompt,
+  classifyMicroverseDisposition,
   autoRescueDirtyTree,
   classifyNoCommitExit,
   handleIterationOutcome,
   handleNoCommitStall,
 } from '../bin/microverse-runner.js';
-import { createMicroverseState } from '../services/microverse-state.js';
+import { createMicroverseState, updateViolationLedger, compareMetric } from '../services/microverse-state.js';
 
 const TEST_METRIC = {
   description: 'quality score',
@@ -649,4 +652,134 @@ test('AP-EXT-ITER184-01 control: a clean worker-managed iteration commits nothin
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- H7: the worked set IS the scored set ---
+//
+// Field evidence (session 2026-09-06-f625727a): a 23-entry `violation_ledger`, a brief naming
+// ZERO of them, four consecutive `held` passes at exactly 23, terminating `stalled_below_target`.
+// The worker re-derived its own candidate pool each iteration and optimised a set the metric did
+// not score. These pins hold the two sets together at the one place they can diverge: the
+// `selectLedgerEntriesForPrompt` call that both `buildJudgePrompt` and the handoff make.
+
+function ledgerEntry(i, over = {}) {
+  return {
+    id: `v${i}`,
+    path: `src/mod${i}.ts`,
+    line: 100 + i,
+    rule: `rule-${i}`,
+    first_seen_iter: 1,
+    last_seen_iter: 1,
+    severity: 'med',
+    description: `violation number ${i}`,
+    ...over,
+  };
+}
+
+function seededState(ledger) {
+  const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+  state.violation_ledger = ledger;
+  return state;
+}
+
+// AC-H7-1 (metric arm — the one szechuan takes: no `convergence_mode` field).
+test('AC-H7-1 metric handoff names every entry of the ledger the judge scores', () => {
+  const ledger = [ledgerEntry(1), ledgerEntry(2), ledgerEntry(3)];
+  const handoff = buildMicroverseHandoff(seededState(ledger), 4, '/tmp/work', '/tmp/session');
+
+  assert.match(handoff, /## Open Violations/);
+  for (const entry of ledger) {
+    assert.ok(handoff.includes(entry.id), `brief must name ledger id ${entry.id}`);
+    assert.ok(handoff.includes(entry.description), `brief must carry ${entry.id}'s description`);
+    assert.ok(handoff.includes(`${entry.path}:${entry.line}`), `brief must locate ${entry.id}`);
+  }
+});
+
+// AC-H7-1 (worker-managed arm). Both arms, one shared helper — no mode branch may reintroduce
+// the asymmetry on one side only.
+test('AC-H7-1 worker-managed handoff names every entry of the scored ledger too', () => {
+  const state = seededState([ledgerEntry(7), ledgerEntry(8)]);
+  state.convergence_mode = 'worker';
+  state.convergence_file = 'convergence.json';
+  const handoff = buildMicroverseHandoff(state, 2, '/tmp/work', '/tmp/session');
+
+  assert.match(handoff, /## Open Violations/);
+  assert.ok(handoff.includes('v7') && handoff.includes('v8'));
+});
+
+// The brief and the judge prompt must render the SAME selection — same cap, same ordering.
+// A ledger past the cap is where two independently-maintained selections would drift.
+test('AC-H7-1 brief and judge prompt select the identical ledger subset past the cap', () => {
+  const ledger = [];
+  for (let i = 0; i < 60; i++) ledger.push(ledgerEntry(i, { last_seen_iter: i }));
+
+  const selected = selectLedgerEntriesForPrompt(ledger);
+  assert.equal(selected.length, 50, 'cap applies');
+  assert.equal(selected[0].last_seen_iter, 59, 'most-recent first');
+
+  const handoff = buildMicroverseHandoff(seededState(ledger), 3, '/tmp/work', '/tmp/session');
+  const judge = buildJudgePrompt({ goal: 'g', cwd: '/tmp/work', priorViolations: ledger });
+
+  for (const entry of selected) {
+    assert.ok(handoff.includes(entry.id), `briefed set must contain ${entry.id}`);
+    assert.ok(judge.includes(entry.id), `scored set must contain ${entry.id}`);
+  }
+  const dropped = ledger.filter((e) => !selected.some((s) => s.id === e.id));
+  for (const entry of dropped) {
+    assert.ok(!handoff.includes(`[${entry.id}]`), `${entry.id} is outside the scored set`);
+    assert.ok(!judge.includes(`[${entry.id}]`), `${entry.id} is outside the briefed set`);
+  }
+});
+
+// AC-H7-2: end-to-end over a fixture ledger. Fixing an entry the brief NAMED moves the metric,
+// because that entry was in the scored set. Runs the real producer + the real classifier.
+test('AC-H7-2 fixing a briefed ledger entry measurably moves the metric', () => {
+  const ledger = [ledgerEntry(1), ledgerEntry(2), ledgerEntry(3)];
+  const state = seededState(ledger);
+
+  const briefBefore = buildMicroverseHandoff(state, 4, '/tmp/work', '/tmp/session');
+  const target = ledger[1];
+  assert.ok(briefBefore.includes(target.id), 'precondition: the worker was briefed on this entry');
+
+  // The worker fixes it; the next full judge pass reports the remaining two.
+  const remaining = [ledger[0], ledger[2]].map((e) => ({
+    id: e.id, path: e.path, line: e.line, rule: e.rule,
+    severity: e.severity, description: e.description,
+  }));
+  const scoreBefore = state.violation_ledger.length;
+  updateViolationLedger(state, { score: remaining.length, violations: remaining, resolved: [target.id], new: [], remaining: remaining.map((v) => v.id) }, 5);
+  const scoreAfter = state.violation_ledger.length;
+
+  assert.equal(scoreAfter, scoreBefore - 1, 'the scored set shrank by the entry that was worked');
+  assert.ok(!state.violation_ledger.some((e) => e.id === target.id), 'fixed entry left the ledger');
+  assert.equal(
+    compareMetric(scoreAfter, scoreBefore, 0, 'lower'),
+    'improved',
+    'a fixed briefed entry registers as metric improvement, not a stall',
+  );
+  assert.ok(
+    !buildMicroverseHandoff(state, 6, '/tmp/work', '/tmp/session').includes(target.id),
+    'the next brief no longer re-briefs the fixed entry',
+  );
+});
+
+// AC-H7-5: the disposition stays REPORTING. It parks and flags; it must never become a halt.
+test('AC-H7-5 stalled_below_target remains a non-convergent reporting disposition', () => {
+  assert.deepEqual(
+    classifyMicroverseDisposition('stalled_below_target'),
+    { reportAs: 'non-convergent', exitCode: 1 },
+  );
+});
+
+// NEGATIVE CONTROL. Iteration 1 and every clean run have no ledger yet; those briefs must stay
+// exactly as they were. Without this, the pins above would pass on a helper that emitted the
+// heading unconditionally.
+test('AC-H7 control: an absent, empty or malformed ledger adds no Open Violations section', () => {
+  for (const ledger of [undefined, [], null, 'nonsense', { id: 'x' }]) {
+    const state = seededState(ledger);
+    const handoff = buildMicroverseHandoff(state, 1, '/tmp/work', '/tmp/session');
+    assert.doesNotMatch(handoff, /## Open Violations/, `no section for ledger=${JSON.stringify(ledger)}`);
+  }
+  assert.deepEqual(selectLedgerEntriesForPrompt(undefined), []);
+  assert.deepEqual(selectLedgerEntriesForPrompt('nonsense'), []);
 });
