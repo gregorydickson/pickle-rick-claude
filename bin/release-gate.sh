@@ -226,20 +226,47 @@ listing_has_link_entries() {
 # archive is SAFE or uniquely rooted; none asks whether the runtime it carries can LOAD, so
 # `--post-tag` printed `ok:` for four months over an asset missing `extension/lib/` entirely. A
 # member allow-list here would rot exactly the way the workflow's did, so derive the requirement
-# from the payload's OWN bytes: every relative static specifier in every shipped `.js` must name a
-# file the same payload carries. A runtime directory added later needs no edit here.
-# grep exits 1 for a MEASURED "this module imports nothing relative" and >= 2 for a READ error.
+# from the payload's OWN bytes: every relative path literal in every shipped `.js` must name a file
+# the same payload carries. A runtime directory added later needs no edit here.
+# grep exits 1 for a MEASURED "this module names nothing relative" and >= 2 for a READ error.
 # The trailing `|| true` this replaces swallowed both, so a module the gate could not OPEN scored
 # as one holding no imports and the sweep printed the clean verdict over it (measured: a mode-000
 # `.js` importing a member the payload lacks yielded status 1, the same status a complete module
 # yields). Same no-measurement-is-not-a-verdict rule the caller applies one level up.
+#
+# The literal names a file the payload must carry whatever SYNTAX reaches it, so this matches on
+# the literal alone. Requiring a `from|import|require` keyword made the sweep's verdict a function
+# of import syntax: every reference to `extension/data/` in the shipped runtime is
+# `path.resolve(__dirname, ...)` or `new URL(..., import.meta.url)`, so amputating that directory
+# from a real payload left this sweep MEASURED-clean while `convergence-gate.js` and
+# `engine-keys-registry.js` both throw on load. `extension/lib/` and `extension/data/` are the two
+# directories no asset carried for four months; a keyword list saw exactly one of them, which is
+# what a keyword list does -- the payload's own bytes decide, not a catalog of the ways to spell a
+# read.
 payload_relative_specifiers() {
   local file="$1"
   local matches
   local status=0
-  matches="$(grep -Eo "(from|import|require)[[:space:]]*\(?[[:space:]]*['\"]\.\.?/[^'\"\${]*\.(js|json)['\"]" "$file")" || status=$?
+  matches="$(grep -Eo "['\"]\.\.?/[^'\"\${]*\.(js|json)['\"]" "$file")" || status=$?
   [ "$status" -le 1 ] || return 2
   printf '%s\n' "$matches" | sed -E "s/^.*['\"](.*)['\"]$/\1/"
+}
+
+# A module may name SEVERAL paths for ONE file and try them in order: `bin/log-activity.js` reads
+# its schema from `../src/types/` when a git-mode deploy carries `src/` and from `../` when the
+# asset (which excludes `src`) does not. The runtime needs one of those to resolve, not all, so an
+# unresolved reference is a violation only when the module names no alternative for the same file
+# that DOES resolve. One uniform rule rather than a carve-out per call shape -- a candidate list is
+# exactly a set of references to one basename, which is decidable from the same specifier list the
+# caller already holds.
+module_resolves_alternative() {
+  local dir="$1" base="$2" specs="$3" alternative
+  while IFS= read -r alternative; do
+    [ -n "$alternative" ] || continue
+    [ "${alternative##*/}" = "$base" ] || continue
+    [ ! -f "$dir/$alternative" ] || return 0
+  done <<< "$specs"
+  return 1
 }
 
 # Materialize the file list and each specifier list before consuming them, and decide in the
@@ -256,7 +283,7 @@ payload_relative_specifiers() {
 payload_unresolved_import() {
   local payload_dir="$1"
   local -a files=()
-  local file spec specs listing
+  local file dir spec specs listing
 
   # A process substitution's exit status is unreachable, and `find` prints everything it DID reach
   # before exiting non-zero for a directory it could not walk — so a PARTIAL enumeration arrived
@@ -281,9 +308,11 @@ payload_unresolved_import() {
       printf 'ships %s but the gate could not read it\n' "${file#"$payload_dir"/}"
       return 2
     }
+    dir="$(dirname "$file")"
     while IFS= read -r spec; do
       [ -n "$spec" ] || continue
-      if [ ! -f "$(dirname "$file")/$spec" ]; then
+      [ ! -f "$dir/$spec" ] || continue
+      if ! module_resolves_alternative "$dir" "${spec##*/}" "$specs"; then
         printf '%s -> %s\n' "${file#"$payload_dir"/}" "$spec"
         return 0
       fi

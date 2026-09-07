@@ -159,7 +159,21 @@ function storedPermissions(mode) {
 // headers with their own stored modes, and a fixture naming files alone leaves that member class,
 // and every gate behaviour keyed on it, unfixtured. `dirMode` is `moduleMode`'s sibling: the same
 // ustar rewrite, applied to the `extension/services/` header.
-function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule, moduleMode, dirMode } = {}) {
+//
+// AP-BIN-ITER34-01. `importerSource` is a PARAMETER because hard-coding it made every completeness
+// case exercise one spelling of one reference — a static `import` — and the sweep's verdict turned
+// out to be a function of that spelling. The default is the shape the shipped defect had, so the
+// pre-existing cases are unchanged; a case that needs another spelling names it rather than
+// inheriting this one.
+const STATIC_IMPORT_IMPORTER = "import { isRecord } from '../lib/is-record.js';\nexport const readState = isRecord;\n";
+
+function makeRuntimePayloadTarball({
+  version = '1.67.0',
+  carryImportedModule,
+  moduleMode,
+  dirMode,
+  importerSource = STATIC_IMPORT_IMPORTER,
+} = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-runtime-'));
   const payload = path.join(dir, 'payload');
   writePackage(payload, version);
@@ -167,7 +181,7 @@ function makeRuntimePayloadTarball({ version = '1.67.0', carryImportedModule, mo
   mkdirSync(path.join(payload, 'extension', 'services'), { recursive: true });
   writeFileSync(
     path.join(payload, 'extension', 'services', 'state-manager.js'),
-    "import { isRecord } from '../lib/is-record.js';\nexport const readState = isRecord;\n",
+    importerSource,
   );
   const members = ['extension/package.json', 'install.sh', 'extension/services'];
   if (carryImportedModule) {
@@ -660,6 +674,92 @@ describe('release-gate.post-tag', () => {
   test('passes when the release asset carries every module its own payload imports', () => {
     const { dir: repoDir, tagName } = makeGitFixture();
     const tarFixture = makeRuntimePayloadTarball({ carryImportedModule: true });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 0, result.stdout || result.stderr);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER34-01. The sweep's verdict was a function of import SYNTAX, not of what the payload
+  // carries. `payload_relative_specifiers` required a `from|import|require` keyword, and every
+  // reference to `extension/data/` in the shipped runtime is `path.resolve(__dirname, ...)` or
+  // `new URL(..., import.meta.url)` — so amputating that directory from a REAL payload left the
+  // sweep at status 1, MEASURED-clean, while `services/convergence-gate.js` threw
+  // GATE_COMMANDS_UNREADABLE and `lib/engine-keys-registry.js` threw ENOENT on load. The workflow
+  // omitted exactly two runtime directories for four months, `extension/lib/` and
+  // `extension/data/`, and a keyword list saw one of them.
+  //
+  // Disjoint by construction from the static-import pair above: SAME missing member, SAME two
+  // sentinels, SAME payload shape — the only difference is how `state-manager.js` spells the
+  // reference. That is the whole point: pre-fix the static spelling died 21 and this one printed
+  // `ok:` over the identical asset.
+  const RUNTIME_PATH_IMPORTER =
+    "import path from 'node:path';\n"
+    + "export const readState = () => path.resolve(__dirname, '../lib/is-record.js');\n";
+
+  test('exits 21 when the release asset ships a module that reads a member it does not carry through a runtime path', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({
+      carryImportedModule: false,
+      importerSource: RUNTIME_PATH_IMPORTER,
+    });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /ships a runtime that cannot load/);
+      assert.match(result.stderr, /state-manager\.js -> \.\.\/lib\/is-record\.js/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  test('passes when the release asset carries the member a runtime path reads', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({
+      carryImportedModule: true,
+      importerSource: RUNTIME_PATH_IMPORTER,
+    });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 0, result.stdout || result.stderr);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // The ACCEPT arm of the same rule, and the reason the sweep cannot simply require EVERY relative
+  // literal to resolve. `bin/log-activity.js` names two paths for one schema and reads whichever
+  // exists; its first candidate lives under `src/`, which `--exclude='src'` prunes from every
+  // asset. A sweep without this arm reds that module on every legitimate release — fail-CLOSED, a
+  // gate that blocks all shipping — so this case is load-bearing in the opposite direction from
+  // the two above. Verified against the REAL payload as well: the widened sweep reports zero
+  // unresolved references over the asset release.yml builds today.
+  const CANDIDATE_LIST_IMPORTER =
+    'const candidates = [\n'
+    + "  new URL('../src/lib/is-record.js', import.meta.url),\n"
+    + "  new URL('../lib/is-record.js', import.meta.url),\n"
+    + '];\nexport const readState = () => candidates;\n';
+
+  test('passes when a shipped module names several paths for one file and one of them resolves', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({
+      carryImportedModule: true,
+      importerSource: CANDIDATE_LIST_IMPORTER,
+    });
     const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
     try {
       const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
@@ -1405,19 +1505,36 @@ function workflowPayloadMembers() {
   );
 }
 
-const RELATIVE_SPECIFIER_RE =
-  /(?:from|import|require)\s*\(?\s*['"](\.\.?\/[^'"${]*\.(?:js|json))['"]/g;
+// AP-BIN-ITER34-01. Matches the literal alone, exactly as `payload_relative_specifiers` does:
+// keying on a `from|import|require` keyword made this oracle's verdict a function of import
+// SYNTAX, and every reference to `extension/data/` in the shipped runtime is
+// `path.resolve(__dirname, ...)` or `new URL(..., import.meta.url)`. Measured on the replayed
+// asset: amputating `extension/data/` left this oracle reporting ZERO unresolved references while
+// the identical amputation of `extension/lib/` reported 25 — the two directories the operand list
+// omitted for four months, and only one of them was visible here.
+const RELATIVE_SPECIFIER_RE = /['"](\.\.?\/[^'"${]*\.(?:js|json))['"]/g;
 
+function memberSpecifiers(member) {
+  const source = readFileSync(path.join(REPO_ROOT, member), 'utf8');
+  return [...source.matchAll(RELATIVE_SPECIFIER_RE)].map((match) => match[1]);
+}
+
+// A module may name SEVERAL paths for ONE file and try them in order (`bin/log-activity.js` reads
+// its schema from `../src/types/` on a git-mode deploy and from `../` on an asset, which excludes
+// `src`). The runtime needs one of them, so an unresolved reference counts only when the module
+// names no alternative for the same file that resolves — the same uniform rule the gate applies,
+// not a carve-out per call shape.
 function unresolvedPayloadImports(members) {
   const unresolved = [];
   for (const member of [...members].filter((name) => name.endsWith('.js'))) {
-    const source = readFileSync(path.join(REPO_ROOT, member), 'utf8');
-    for (const match of source.matchAll(RELATIVE_SPECIFIER_RE)) {
-      const target = path.relative(
-        REPO_ROOT,
-        path.resolve(path.dirname(path.join(REPO_ROOT, member)), match[1]),
-      );
-      if (!members.has(target)) unresolved.push(`${member} -> ${match[1]}`);
+    const dir = path.dirname(path.join(REPO_ROOT, member));
+    const specifiers = memberSpecifiers(member);
+    const resolves = (spec) => members.has(path.relative(REPO_ROOT, path.resolve(dir, spec)));
+    for (const spec of specifiers) {
+      if (resolves(spec)) continue;
+      const base = path.basename(spec);
+      if (specifiers.some((alt) => path.basename(alt) === base && resolves(alt))) continue;
+      unresolved.push(`${member} -> ${spec}`);
     }
   }
   return unresolved;
@@ -1561,6 +1678,29 @@ test('release-gate.the payload sweep is disjoint from the two-sentinel post-tag 
   assert.ok(
     unresolvedPayloadImports(withoutLib).length > 0,
     'amputating extension/lib/ left every import resolvable — the sweep would not have caught the shipped defect',
+  );
+});
+
+test('release-gate.the payload sweep sees a data-only runtime directory, not just imported modules', () => {
+  // Negative control for AP-BIN-ITER34-01. `extension/lib/` is reached by static imports and
+  // `extension/data/` only by `path.resolve(__dirname, ...)` / `new URL(..., import.meta.url)`;
+  // both were absent from every published asset for four months. Amputating either must red the
+  // sweep, or the oracle above is keyed on import syntax rather than on what the payload carries.
+  const members = workflowPayloadMembers();
+  const withoutData = new Set([...members].filter((name) => !name.startsWith('extension/data/')));
+
+  assert.ok(
+    members.size - withoutData.size > 0,
+    'the replayed payload carries no extension/data/ members — the control cannot fire',
+  );
+  assert.ok(
+    withoutData.has('extension/package.json') && withoutData.has('install.sh'),
+    'the two members post-tag actually checks must survive the amputation, or the control proves nothing',
+  );
+  assert.ok(
+    unresolvedPayloadImports(withoutData).length > 0,
+    'amputating extension/data/ left every reference resolvable — the sweep is keyed on import'
+      + ' syntax, so a runtime directory no module imports rides in no asset silently',
   );
 });
 
