@@ -470,16 +470,8 @@ const REJECTION_ARMS = Object.freeze([
   },
   // The `evidence` arm is NOT listed here — see the JSON-value-shape sweep below. One row per
   // arm cannot pin a guard whose conjuncts outnumber its messages.
-  {
-    arm: 'failure_reason must be a string or null',
-    acId: 'AC-DR-12',
-    payload: (acId) => artifact(acId, { failure_reason: 42 }),
-  },
-  {
-    arm: 'remediation_hint must be a string or null',
-    acId: 'AC-DR-13',
-    payload: (acId) => artifact(acId, { remediation_hint: {} }),
-  },
+  // `failure_reason` and `remediation_hint` are NOT listed here either — same reason, same
+  // sweep below. Their guard has THREE conjuncts and one message too.
   // Identity check in verifyBundle, not validateBundleArtifact: one AC's evidence copied into
   // another AC's slot. Without this arm the forged file satisfies the AC it was never checked for.
   { arm: 'ac_id must equal AC-DR-14', acId: 'AC-DR-14', payload: () => artifact('AC-DR-08') },
@@ -522,25 +514,29 @@ test('verify-bundle.rejection-arms each reject their own malformed artifact', ()
 // both redden it. A top-level non-object artifact is not covered here: verifyBundle dereferences
 // `artifact.ac_id` before reading the error list, so it throws (exit 1, fails closed).
 const JSON_VALUE_SHAPES = Object.freeze([
-  { label: 'null', evidence: null },
-  { label: 'array', evidence: [] },
-  { label: 'number', evidence: 42 },
-  { label: 'string', evidence: 'collected' },
-  { label: 'boolean', evidence: true },
-  { label: 'object', evidence: { note: 'collected' } },
+  { label: 'null', value: null },
+  { label: 'array', value: [] },
+  { label: 'number', value: 42 },
+  { label: 'string', value: 'collected' },
+  { label: 'boolean', value: true },
+  { label: 'object', value: { note: 'collected' } },
 ]);
 
-test('verify-bundle.evidence accepts exactly one of the six JSON value shapes', () => {
+// Drives all six shapes through ONE artifact field and returns the labels the gate greened.
+// Callers assert the accepted SET, so a shape wrongly accepted and a shape wrongly rejected
+// redden this equally — and a rejection that does not NAME its arm reddens it too, so an
+// artifact cannot be failed for the wrong reason and read as a pass for this contract.
+function acceptedShapesForField(field, acId, arm) {
   const accepted = [];
-  for (const { label, evidence } of JSON_VALUE_SHAPES) {
+  for (const { label, value } of JSON_VALUE_SHAPES) {
     const fixture = makeFixture(({ bundleDir }) => {
       writeFileSync(
-        path.join(bundleDir, acFileName('AC-DR-11')),
-        `${JSON.stringify(artifact('AC-DR-11', { evidence }), null, 2)}\n`,
+        path.join(bundleDir, acFileName(acId)),
+        `${JSON.stringify(artifact(acId, { [field]: value }), null, 2)}\n`,
       );
     });
     try {
-      const result = verifyBundle({ repoRoot: fixture, ac: 'AC-DR-11' });
+      const result = verifyBundle({ repoRoot: fixture, ac: acId });
       if (result.exitCode === 0) {
         accepted.push(label);
         continue;
@@ -548,21 +544,44 @@ test('verify-bundle.evidence accepts exactly one of the six JSON value shapes', 
       assert.equal(
         result.exitCode,
         1,
-        `evidence:${label}: expected exit 1, got ${result.exitCode} — ${result.stdout.trim()}`,
+        `${field}:${label}: expected exit 1, got ${result.exitCode} — ${result.stdout.trim()}`,
       );
       assert.ok(
-        result.stderr.includes('evidence must be an object'),
-        `evidence:${label}: rejected without naming the arm — ${result.stderr.trim()}`,
+        result.stderr.includes(arm),
+        `${field}:${label}: rejected without naming the arm — ${result.stderr.trim()}`,
       );
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
   }
+  return accepted;
+}
+
+test('verify-bundle.evidence accepts exactly one of the six JSON value shapes', () => {
   assert.deepEqual(
-    accepted,
+    acceptedShapesForField('evidence', 'AC-DR-11', 'evidence must be an object'),
     ['object'],
-    `exactly the object shape may green the bundle gate; accepted ${JSON.stringify(accepted)}`,
+    'exactly the object shape may green the bundle gate for evidence',
   );
+});
+
+// The nullable diagnostic fields are the SAME shape as `evidence` and shipped the SAME way:
+// `field in artifact && artifact[field] !== null && typeof artifact[field] !== 'string'` is
+// three conjuncts sharing one message, so the source-derived arm audit is satisfied by a
+// single fixture and one hand-written row pins only whichever conjunct fires first. The `!==
+// null` arm carried both rows, leaving the `typeof` arm unpinned in the ACCEPT direction — a
+// direction no rejection row can ever reach. Measured on the shipped verifier: deleted, a
+// PASSING artifact carrying `remediation_hint: 'see runbook'` flips exit 0 to exit 1 while the
+// suite stays green, spuriously reddening the release gate over valid evidence. So enumerate
+// the input space here too: six shapes, exactly two accepted, both directions load-bearing.
+test('verify-bundle.nullable diagnostic fields accept exactly the null and string shapes', () => {
+  for (const [field, acId] of [['failure_reason', 'AC-DR-12'], ['remediation_hint', 'AC-DR-13']]) {
+    assert.deepEqual(
+      acceptedShapesForField(field, acId, `${field} must be a string or null`),
+      ['null', 'string'],
+      `${field} must green the gate for exactly the null and string shapes`,
+    );
+  }
 });
 
 // The in-process cases above prove each arm fires; this proves the arm that matters most
