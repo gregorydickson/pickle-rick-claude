@@ -1,6 +1,5 @@
 import * as path from 'path';
 import { runCmd, writeStateFile, safeErrorMessage } from './pickle-utils.js';
-import { StateManager } from './state-manager.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
 const CONSTRAINT_DISCOVERY_PATTERN = /\b(constraint|invariant|assumption|requirement|contract|blocked by|discovered)\b/i;
 const CORRECT_COURSE_SUGGESTION = 'Suggested recovery: run /pickle-correct-course "<discovery>"';
@@ -8,7 +7,6 @@ const CORRECT_COURSE_SUGGESTION = 'Suggested recovery: run /pickle-correct-cours
 // Module state
 // ---------------------------------------------------------------------------
 let warned = false;
-const sm = new StateManager();
 // ---------------------------------------------------------------------------
 // Functions
 // ---------------------------------------------------------------------------
@@ -114,25 +112,17 @@ export function loadSettings(extensionRoot) {
 }
 export function initCircuitBreaker(sessionDir, _settings) {
     try {
-        const raw = readCircuitBreakerState(sessionDir);
-        // Validate structure — must have a valid state field
-        if (!raw) {
-            return freshState();
-        }
-        // Staleness check: if last_progress_iteration is wildly out of range
-        // compared to state.json iteration, re-create fresh
-        const statePath = path.join(sessionDir, 'state.json');
-        try {
-            const stateIter = Number(sm.read(statePath).iteration);
-            const cbLastProgress = Number(raw.last_progress_iteration);
-            if (Number.isFinite(stateIter) && Number.isFinite(cbLastProgress) && cbLastProgress > stateIter + 1) {
-                return freshState();
-            }
-        }
-        catch {
-            // Can't read state.json — trust the CB file as-is
-        }
-        return raw;
+        // `state.json`'s `iteration` field is shared across every phase runner in the
+        // session (mux-runner, microverse-runner) and is reset at phase boundaries
+        // (resetStateForPhase) and on `setup.js --resume --reset`, independently of the
+        // breaker's own accumulated progress. Comparing the breaker's
+        // `last_progress_iteration` against it cannot distinguish "this file is a foreign
+        // leftover" from "a legitimate boundary moved iteration out from under the
+        // breaker" — it only ever fires on the latter, silently discarding real
+        // accumulated no-progress/error state. Trust a structurally valid
+        // circuit_breaker.json as-is; corruption is handled by readCircuitBreakerState's
+        // isCircuitState check and the outer catch below.
+        return readCircuitBreakerState(sessionDir) ?? freshState();
     }
     catch {
         // Corrupted or missing — start fresh

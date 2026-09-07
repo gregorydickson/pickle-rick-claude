@@ -200,64 +200,20 @@ test('initCircuitBreaker: recovers from corrupted JSON', () => {
     }
 });
 
-test('initCircuitBreaker: detects stale state and returns fresh', () => {
+test('initCircuitBreaker: a state.json iteration regression does not discard accumulated breaker state (C3)', () => {
+    // state.json's iteration is a session-wide field other runners (microverse-runner) and
+    // phase-boundary resets (resetStateForPhase, setup.js --resume --reset) can move
+    // independently of the breaker's own progress. CB's last_progress_iteration=50 with
+    // state.json at iteration=10 must NOT be read as "foreign/stale" and discarded.
     const tmpDir = makeTmpDir();
     try {
-        // CB says last_progress_iteration=50, but state.json says iteration=10
-        const stale = makeFreshState({ state: 'HALF_OPEN', last_progress_iteration: 50 });
-        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(stale));
+        const accumulated = makeFreshState({ state: 'HALF_OPEN', consecutive_no_progress: 4, last_progress_iteration: 50 });
+        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(accumulated));
         fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 10 }));
         const state = initCircuitBreaker(tmpDir, makeSettings());
-        assert.equal(state.state, 'CLOSED');
-        assert.equal(state.last_progress_iteration, 0);
-    } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-});
-
-test('initCircuitBreaker: uses recovered orphan tmp state before staleness reset', () => {
-    const tmpDir = makeTmpDir();
-    try {
-        const cbState = makeFreshState({
-            state: 'OPEN',
-            consecutive_no_progress: 4,
-            last_progress_iteration: 7,
-            reason: 'No progress in 4 iterations',
-        });
-        const statePath = path.join(tmpDir, 'state.json');
-        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(cbState));
-        // state.json snapshots must satisfy isRecoverableStateSnapshotCandidate to be
-        // promoted from orphan tmp by StateManager.read (see anatomy-park 47095472).
-        const baseState = {
-            working_dir: tmpDir,
-            backend: 'claude',
-            step: 'research',
-            iteration: 3,
-            max_iterations: 50,
-            max_time_minutes: 720,
-            worker_timeout_seconds: 1200,
-            start_time_epoch: 1700000000,
-            original_prompt: 'test',
-            session_dir: tmpDir,
-            started_at: '2026-01-01T00:00:00Z',
-            history: [],
-            completion_promise: null,
-            schema_version: 3,
-            active: true,
-            pid: 99999999,
-        };
-        fs.writeFileSync(statePath, JSON.stringify(baseState));
-        fs.writeFileSync(`${statePath}.tmp.99999999`, JSON.stringify({ ...baseState, iteration: 8 }));
-
-        const state = initCircuitBreaker(tmpDir, makeSettings());
-
-        assert.equal(state.state, 'OPEN', 'recovered higher-iteration state must preserve breaker state');
-        assert.equal(state.last_progress_iteration, 7, 'recovered state should prevent false staleness reset');
-        assert.equal(
-            JSON.parse(fs.readFileSync(statePath, 'utf-8')).iteration,
-            8,
-            'StateManager.read should promote the higher-iteration orphan tmp before comparison'
-        );
+        assert.equal(state.state, 'HALF_OPEN', 'accumulated breaker state must survive an iteration regression');
+        assert.equal(state.consecutive_no_progress, 4);
+        assert.equal(state.last_progress_iteration, 50);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1047,7 +1003,7 @@ test('CB last_progress_iteration stays in sync with state.json iteration — no 
         // Write CB file (simulating mux-runner's sm.update-protected write)
         fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(cbState));
 
-        // Reload: staleness check → last_progress_iteration(7) > stateIter+1(8) → false → no reset
+        // Reload: initCircuitBreaker trusts the on-disk breaker state as-is (C3).
         const reloaded = initCircuitBreaker(tmpDir, settings);
         assert.equal(reloaded.last_progress_iteration, stateIter,
             'CB last_progress_iteration should match state.json iteration after synced write');
@@ -1059,26 +1015,58 @@ test('CB last_progress_iteration stays in sync with state.json iteration — no 
     }
 });
 
-test('CB iteration ahead of state.json triggers staleness reset (desync protection)', () => {
-    // Complement to the above: when CB is desync'd (last_progress_iteration >> state iteration),
-    // initCircuitBreaker must reset to prevent phantom-progress decisions.
+test('AC-C3-1: a breaker count accumulated in phase N is still visible in phase N+1', () => {
+    // Drives two phases: phase N accumulates real progress at a high state.iteration
+    // (mirrors mux-runner's pickle-phase loop); phase N+1 simulates the session's
+    // iteration counter being taken over by a different phase runner (e.g.
+    // resetStateForPhase / setup.js --resume --reset / microverse-runner's own loop
+    // driving state.iteration back down) with NO circuit_breaker.json write in between —
+    // exactly the shape a worker cannot script directly (circuit_breaker.json is
+    // R-WSRC-forbidden in a live session), so it is driven at the service seam here.
     const tmpDir = makeTmpDir();
     try {
-        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 3 }));
+        // Phase N: state.json at iteration 20, CB claims progress up to iteration 20.
+        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 20 }));
+        const phaseN = makeFreshState({
+            state: 'CLOSED', consecutive_no_progress: 3, last_progress_iteration: 20,
+        });
+        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(phaseN));
 
-        // Simulate a desync: CB claims progress at iteration 20 but state.json is at 3
-        const desynced = {
-            state: 'CLOSED', last_change: new Date().toISOString(),
-            consecutive_no_progress: 3, consecutive_same_error: 0,
-            last_error_signature: null, last_known_head: 'abc', last_known_step: null,
-            last_known_ticket: null, last_progress_iteration: 20,
-            total_opens: 0, reason: '', opened_at: null, history: [],
-        };
-        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(desynced));
+        // Phase N+1: the session's iteration counter regresses (a different phase runner
+        // or a resumed run now owns state.json), with circuit_breaker.json untouched.
+        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 2 }));
 
         const reloaded = initCircuitBreaker(tmpDir, makeSettings());
-        assert.equal(reloaded.last_progress_iteration, 0, 'desync must reset last_progress_iteration');
-        assert.equal(reloaded.consecutive_no_progress, 0, 'desync must reset no-progress counter');
+        assert.equal(reloaded.last_progress_iteration, 20, 'phase N+1 must still see phase N\'s accumulated progress marker');
+        assert.equal(reloaded.consecutive_no_progress, 3, 'phase N+1 must still see phase N\'s accumulated no-progress count');
+        assert.equal(reloaded.state, 'CLOSED');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('AC-C3-2: a run that would trip the breaker mid-phase still trips it when failures straddle a phase boundary', () => {
+    const tmpDir = makeTmpDir();
+    try {
+        const settings = makeSettings({ noProgressThreshold: 5 });
+
+        // Phase N: 4 consecutive no-progress iterations accumulate at a high iteration.
+        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 50 }));
+        const phaseN = makeFreshState({
+            state: 'CLOSED', consecutive_no_progress: 4, last_progress_iteration: 50,
+        });
+        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(phaseN));
+
+        // Boundary: state.json's iteration regresses to a low value with no CB write.
+        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 3 }));
+
+        // Phase N+1's mux-runner starts, loads the breaker, and records the 5th
+        // consecutive no-progress iteration at ITS OWN (lower) iteration number.
+        let cbState = initCircuitBreaker(tmpDir, settings);
+        cbState = recordIterationResult(cbState, { hasProgress: false, errorSignature: null }, 4, settings);
+
+        assert.equal(cbState.state, 'OPEN', 'the 5th consecutive no-progress iteration must trip the breaker across the boundary');
+        assert.equal(cbState.consecutive_no_progress, 5);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
