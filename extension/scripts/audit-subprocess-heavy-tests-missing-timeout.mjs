@@ -144,4 +144,17 @@ function main(argv) {
   process.exit(newFindings.length > 0 ? 1 : 0);
 }
 
-main(process.argv.slice(2));
+// Unmeasured contract (AP-EXT-ITER225-01's rule, at the PREDICATE arm). Exit 1 is spent on
+// "measured, findings on stdout", and node spends that same 1 on an uncaught throw -- so a scan
+// that CRASHED scored identically to one that completed and found nothing un-baselined, while the
+// caller discarded the stack that said why. Every did-not-complete cause (an unreadable input, a
+// malformed baseline, OOM) collapses into ONE exit 2 with a named reason, so the shell arm stays
+// honest without a catalogue of crash kinds to maintain.
+try {
+  main(process.argv.slice(2));
+} catch (err) {
+  process.stderr.write(
+    `missing-timeout scan did not complete: ${(err && err.message) || String(err)}\n`,
+  );
+  process.exit(2);
+}

@@ -247,5 +247,16 @@ export function main(argv) {
 // CLI guard: the tests import this module to drive `deriveProvisionedTools` directly,
 // and a bare top-level exit would kill the test runner on import.
 if (process.argv[1] && path.basename(process.argv[1]) === 'audit-unprovisioned-binary-spawns.mjs') {
-  process.exit(main(process.argv.slice(2)));
+  // Unmeasured contract, same split `main` already spends on a usage error: 0/1 are the two
+  // MEASURED verdicts and anything above them means the scan has no verdict at all. Without the
+  // catch an uncaught throw exits 1 -- the "findings on stdout" code -- with an empty stdout, so
+  // a crashed scan reddened the gate carrying no reason for it.
+  try {
+    process.exit(main(process.argv.slice(2)));
+  } catch (err) {
+    process.stderr.write(
+      `unprovisioned-binary scan did not complete: ${(err && err.message) || String(err)}\n`,
+    );
+    process.exit(2);
+  }
 }

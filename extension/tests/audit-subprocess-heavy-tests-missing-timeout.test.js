@@ -235,6 +235,88 @@ test('AP-EXT-ITER225-01 control: the same pair, readable, is clean', () => {
   }
 });
 
+// AP-EXT-ITER225-01, the RESIDUAL arm. The comment above records what the fix at the per-file
+// arm left behind: on that same unreadable fixture "the two sibling scanners crash on the same
+// file and their stderr is discarded". Both spend node's uncaught-throw exit 1 -- the very code
+// the caller reads as "findings arrived on stdout" -- so a crashed scan set status=1 with an
+// EMPTY stdout, the `while read` over "" emitted nothing, and the release gate reddened carrying
+// not one word naming a cause. MEASURED before the fix: both scanners exit=1, stdout_len=0,
+// stderr an EACCES stack thrown away by `2>/dev/null`.
+//
+// Two wires, pinned separately because either alone stays green while the other regresses: the
+// PRODUCER must spend a code above 1 on a scan that did not complete, and the CONSUMER must read
+// that code as "no verdict" rather than folding it into the findings branch.
+const PREDICATE_SCANNERS = [
+  {
+    name: 'missing-timeout',
+    script: 'audit-subprocess-heavy-tests-missing-timeout.mjs',
+    reason: /missing-timeout scan did not complete: EACCES/,
+    verdict: /missing-timeout predicate did not complete \(exit 2\)/,
+  },
+  {
+    name: 'unprovisioned-binary',
+    script: 'audit-unprovisioned-binary-spawns.mjs',
+    reason: /unprovisioned-binary scan did not complete: EACCES/,
+    verdict: /unprovisioned-binary predicate did not complete \(exit 2\)/,
+  },
+];
+
+function runScanner(script, args) {
+  return spawnSync(process.execPath, [path.resolve(__dirname, '../scripts', script), ...args], {
+    encoding: 'utf-8',
+    timeout: 15000,
+  });
+}
+
+for (const scanner of PREDICATE_SCANNERS) {
+  test(`SZ-PREDUNMEAS-01 (AP-EXT-ITER225-01 residual): the ${scanner.name} scanner spends exit 2, not the findings code, on a scan it could not complete`, (t) => {
+    const dir = tmpScanRoot();
+    try {
+      const target = seedUnreadablePair(dir, UNREADABLE_MODE);
+      if (!fixtureIsUnreadable(target)) {
+        t.skip(`mode ${UNREADABLE_MODE.toString(8)} is advisory to this uid (${process.getuid?.()}); the unreadable arm cannot be measured here`);
+        return;
+      }
+
+      const result = runScanner(scanner.script, ['--base', path.resolve(__dirname, '..'), target]);
+      assert.equal(
+        result.status,
+        2,
+        `expected exit 2 (unmeasured), not 1 (findings on stdout); stdout=${result.stdout} stderr=${result.stderr}`,
+      );
+      assert.equal(result.stdout, '', 'an unmeasured scan reports no findings');
+      assert.match(result.stderr, scanner.reason);
+    } finally {
+      fs.chmodSync(path.join(dir, 'target.test.js'), 0o644);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test('SZ-PREDUNMEAS-01 (AP-EXT-ITER225-01 residual): a predicate that did not complete is named, not folded into a silent red', (t) => {
+  const dir = tmpScanRoot();
+  try {
+    const target = seedUnreadablePair(dir, UNREADABLE_MODE);
+    if (!fixtureIsUnreadable(target)) {
+      t.skip(`mode ${UNREADABLE_MODE.toString(8)} is advisory to this uid (${process.getuid?.()}); the unreadable arm cannot be measured here`);
+      return;
+    }
+
+    const result = runAudit(dir);
+    assert.equal(result.status, 1, `expected exit 1; stderr=${result.stderr}`);
+    for (const scanner of PREDICATE_SCANNERS) {
+      assert.match(result.stderr, scanner.verdict);
+      // The scanner's own reason survives too: discarding its stderr is what made the red
+      // unactionable, so a verdict line with no cause behind it is only half the fix.
+      assert.match(result.stderr, scanner.reason);
+    }
+    assert.doesNotMatch(result.stderr, /audit-subprocess-heavy-tests: OK/);
+  } finally {
+    fs.chmodSync(path.join(dir, 'target.test.js'), 0o644);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Receiver qualification. `RegExp.prototype.exec` shares its name with
 // `child_process.exec`, so the candidate matcher classifies by receiver. These
 // fixtures pin BOTH directions in one test, which is what stops the fix from

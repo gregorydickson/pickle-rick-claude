@@ -341,9 +341,18 @@ fi
 # family, grandfathered against a committed baseline so pre-existing debt
 # does not redden this gate. Only callsites absent from the baseline fail.
 if command -v node >/dev/null 2>&1; then
-  missing_timeout_out="$(node "$MISSING_TIMEOUT_SCANNER" --baseline "$MISSING_TIMEOUT_BASELINE" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}" 2>/dev/null)"
+  # stderr is NOT discarded: it is the only channel carrying WHY a scan did not complete, and
+  # the scanner writes nothing to it on a run that did.
+  missing_timeout_out="$(node "$MISSING_TIMEOUT_SCANNER" --baseline "$MISSING_TIMEOUT_BASELINE" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}")"
   missing_timeout_exit=$?
-  if [ "$missing_timeout_exit" -ne 0 ]; then
+  # Measured-vs-unmeasured split, as `find_heavy_candidate` spends it one arm up: exit 1 means the
+  # scan completed and put its findings on stdout, anything above it means it did not complete.
+  # Folding the two together printed nothing at all for a crash -- status=1 with no line naming a
+  # cause. LOCAL refusal only: this sets this script's exit code and breaks no loop (PRIME DIRECTIVE).
+  if [ "$missing_timeout_exit" -gt 1 ]; then
+    echo "[error: missing-timeout predicate did not complete (exit $missing_timeout_exit) - nothing was measured, so this predicate has no verdict]" >&2
+    status=1
+  elif [ "$missing_timeout_exit" -ne 0 ]; then
     while IFS=$'\t' read -r mt_file mt_fn mt_key; do
       [ -z "$mt_file" ] && continue
       echo "$mt_file: new missing-timeout $mt_fn(...) callsite not in baseline ($mt_key)" >&2
@@ -367,9 +376,13 @@ if [ ! -f "$UNPROVISIONED_SCANNER" ]; then
   echo "[error: $UNPROVISIONED_SCANNER not found — unprovisioned-binary predicate cannot run]" >&2
   status=1
 else
-  unprovisioned_out="$(node "$UNPROVISIONED_SCANNER" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}" 2>/dev/null)"
+  # stderr kept for the same reason as the missing-timeout arm above.
+  unprovisioned_out="$(node "$UNPROVISIONED_SCANNER" --base "$EXTENSION_ROOT" "${AUDITED_FILES[@]}")"
   unprovisioned_exit=$?
-  if [ "$unprovisioned_exit" -ne 0 ]; then
+  if [ "$unprovisioned_exit" -gt 1 ]; then
+    echo "[error: unprovisioned-binary predicate did not complete (exit $unprovisioned_exit) - nothing was measured, so this predicate has no verdict]" >&2
+    status=1
+  elif [ "$unprovisioned_exit" -ne 0 ]; then
     while IFS=$'\t' read -r up_file up_tool up_line; do
       [ -z "$up_file" ] && continue
       echo "$up_file:$up_line: spawns unprovisioned binary '$up_tool' (not provisioned by .github/workflows/*.yml); remove the dependency or mark the guarded call site PROVISIONED-OK" >&2
