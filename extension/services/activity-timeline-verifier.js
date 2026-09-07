@@ -24,11 +24,13 @@ function parseTs(e) {
 }
 /**
  * Manager-side events that PROVE the prior ticket's worker is no longer running.
- * Both arms are written after the worker process exits: `worker_gate_failed` on the
- * gate-red branch and `boundary_commit_resolved` on the clean branch
- * (`mux-runner.ts:commitGatePassingDeliverableAtBoundary`, emitted exactly once per
- * boundary). A ticket that finishes cleanly emits ONLY the latter, so a
- * gate-failure-only set reads every healthy hand-off as an unresolved overlap.
+ *
+ * The membership rule is the WRITER's, not a taste: `spawn-morty.ts:finalizeWorkerTurn`
+ * runs on the child's `close`, and the worker gate it then runs finalizes through exactly
+ * two branches — `finalizeFailedWorkerGate` writes `worker_gate_failed`,
+ * `finalizePassingWorkerGate` writes `worker_lint_gate_passed`. Both are post-exit by
+ * construction, so BOTH belong here; `boundary_commit_resolved` is the manager's own
+ * later boundary (`mux-runner.ts:commitGatePassingDeliverableAtBoundary`).
  *
  * Deliberately EXCLUDES `worker_completion_commit_announced`: `spawn-morty.ts`
  * writes it from the LIVE worker's stdout stream, so it lands while that worker is
@@ -42,9 +44,17 @@ function parseTs(e) {
  * one vocabulary twice is how they drifted apart in the first place.
  */
 const CLEAN_TERMINAL_EVENT = 'boundary_commit_resolved';
-/** The manager-side GATE-RED branch, written after the worker process exits. */
+/** The worker gate's GATE-RED branch (`spawn-morty.ts:finalizeFailedWorkerGate`). */
 const GATE_FAILED_EVENT = 'worker_gate_failed';
-const WORKER_TERMINAL_EVENTS = new Set([GATE_FAILED_EVENT, CLEAN_TERMINAL_EVENT]);
+/**
+ * The worker gate's PASSING branch (`spawn-morty.ts:finalizePassingWorkerGate`) — the
+ * sibling of `GATE_FAILED_EVENT` in the same finalize pair, and the exit channel most
+ * real runs take. It proves the run ENDED; it is not read as the clean-completion
+ * terminal, because a gate that passed with `test:fast` skipped still writes it and
+ * `classifyTicketGate` owns that distinction through its own `skipped` precondition.
+ */
+const GATE_PASSED_EVENT = 'worker_lint_gate_passed';
+const WORKER_TERMINAL_EVENTS = new Set([GATE_FAILED_EVENT, GATE_PASSED_EVENT, CLEAN_TERMINAL_EVENT]);
 export function findOverlapViolations(activity) {
     const spawns = activity
         .map((e, index) => ({ e, index, ts: parseTs(e) }))

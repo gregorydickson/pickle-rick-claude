@@ -4,12 +4,15 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   findOverlapViolations,
   buildGateCompletionReport,
   unspawnedTerminalTickets,
 } from '../services/activity-timeline-verifier.js';
 import { runVerifyActivityTimeline } from '../bin/verify-activity-timeline.js';
+
+const REPO_ROOT_ATV = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function spawnEvt(ts, ticket) {
   return { event: 'worker_spawn_backend_resolved', ts, backend: 'claude', source: 'default', pid: 1, ticket };
@@ -827,5 +830,123 @@ test('AP-EXT-ITER220-01: a spawn with an unparseable timestamp cannot fabricate 
   assert.deepEqual(
     findOverlapViolations(activity), [],
     'an unparseable spawn timestamp is not evidence of an overlap',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER229-01: the terminal VOCABULARY missed the worker gate's passing branch.
+//
+// `worker_gate_failed` and `worker_lint_gate_passed` are the two branches of ONE
+// finalize pair in `spawn-morty.ts`, both written from `finalizeWorkerTurn` — which
+// runs on the worker child's `close` — so both are post-exit by construction. The set
+// carried only the failing one plus `boundary_commit_resolved`, so a ticket whose gate
+// PASSED and which resolved no boundary commit had no terminal at all.
+//
+// MEASURED on the shipped compiled mirror over the 6 real sessions on this box: 78
+// reported overlap violations, 25 with the passing branch admitted — 53 of 78 (68%)
+// named a prior ticket whose gate had positively passed. Live counts: 61
+// `worker_lint_gate_passed` against 5 `boundary_commit_resolved` and 7
+// `worker_gate_failed`; two of the six sessions carry ZERO boundary commits and were
+// therefore 100% false. No fixture in this file had ever used the event.
+// ---------------------------------------------------------------------------
+
+function lintGatePassedEvt(ts, ticket) {
+  return { event: 'worker_lint_gate_passed', ts, ticket_id: ticket, file_list: ['extension/src/x.ts'] };
+}
+
+test('AP-EXT-ITER229-01: a hand-off proved by the gate-PASSED branch alone is not an overlap', () => {
+  // Ground truth, session 2026-09-01-6a67c80b: f0fd4ec4 spawned 19:17:55, its worker
+  // gate passed at 19:38:47 (written after the child exited), 6867f80f spawned 58s
+  // later at 19:39:45. The shipped predicate reported "still had no terminal event".
+  const activity = [
+    spawnEvt('2026-09-01T19:17:55.598Z', 'f0fd4ec4'),
+    lintGatePassedEvt('2026-09-01T19:38:47.288Z', 'f0fd4ec4'),
+    spawnEvt('2026-09-01T19:39:45.446Z', '6867f80f'),
+  ];
+  assert.deepEqual(
+    findOverlapViolations(activity), [],
+    'a passing worker gate is written after the child exits — it closes the hand-off window',
+  );
+});
+
+test('AP-EXT-ITER229-01: the gate-PASSED branch is admitted by the CLI verdict too', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-atv-iter229-'));
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'state.json'),
+      JSON.stringify({
+        activity: [
+          spawnEvt('2026-09-01T19:17:55.598Z', 'f0fd4ec4'),
+          lintGatePassedEvt('2026-09-01T19:38:47.288Z', 'f0fd4ec4'),
+          spawnEvt('2026-09-01T19:39:45.446Z', '6867f80f'),
+        ],
+      }),
+    );
+    const { exitCode, output } = runVerifyActivityTimeline(dir);
+    assert.equal(exitCode, 0, output);
+    assert.match(output, /OVERLAP: none/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER229-01: EVERY branch of the worker-gate finalize pair closes a hand-off', () => {
+  // The anti-rot arm. The set's membership rule belongs to the WRITER, so the event
+  // names are DERIVED from `spawn-morty.ts` rather than re-spelled here: adding or
+  // renaming a finalize branch without telling this reader reds the case instead of
+  // rotting it green. A conjunct-mutation census cannot see a MISSING set member —
+  // that is why seven prior rounds over this file walked past it.
+  const src = fs.readFileSync(path.join(REPO_ROOT_ATV, 'src', 'bin', 'spawn-morty.ts'), 'utf8');
+  const branchNames = ['finalizeFailedWorkerGate', 'finalizePassingWorkerGate'];
+  const written = branchNames.map((fn) => {
+    const start = src.indexOf(`\nfunction ${fn}(`);
+    assert.notEqual(start, -1, `${fn} must exist in spawn-morty.ts — this oracle is keyed on it`);
+    const end = src.indexOf('\n}\n', start);
+    assert.notEqual(end, -1, `could not bound the body of ${fn}`);
+    const body = src.slice(start, end);
+    const m = /event:\s*'([a-z_]+)'/.exec(body);
+    assert.ok(m, `${fn} must write exactly one activity event literal`);
+    return m[1];
+  });
+  assert.equal(new Set(written).size, 2, `the finalize pair must write two distinct events, got ${written.join(', ')}`);
+
+  for (const eventName of written) {
+    const activity = [
+      spawnEvt('2026-09-07T10:00:00.000Z', 'aaaa0001'),
+      { event: eventName, ts: '2026-09-07T10:05:00.000Z', ticket_id: 'aaaa0001', gate_phase: 'test:fast', failures: [] },
+      spawnEvt('2026-09-07T10:06:00.000Z', 'bbbb0002'),
+    ];
+    assert.deepEqual(
+      findOverlapViolations(activity), [],
+      `${eventName} is written after the worker child exits, so it must close the hand-off window`,
+    );
+  }
+});
+
+test('AP-EXT-ITER229-01 control: a prior ticket with no terminal is still a violation', () => {
+  // Over-acceptance control: the widening must not make the terminal filter
+  // carry-anything. An unrelated post-spawn event closes nothing.
+  const activity = [
+    spawnEvt('2026-09-07T10:00:00.000Z', 'cccc0003'),
+    { event: 'codegraph_context_injected', ts: '2026-09-07T10:01:00.000Z', ticket_id: 'cccc0003' },
+    spawnEvt('2026-09-07T10:06:00.000Z', 'dddd0004'),
+  ];
+  const violations = findOverlapViolations(activity);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].priorTicket, 'cccc0003');
+  assert.equal(violations[0].nextTicket, 'dddd0004');
+});
+
+test('AP-EXT-ITER229-01: a gate-PASSED terminal with no spawn marks the window incomplete', () => {
+  // `unspawnedTerminalTickets` reads the same vocabulary, so admitting the dominant
+  // live exit channel widens eviction detection as well as the overlap predicate.
+  const activity = [
+    lintGatePassedEvt('2026-09-07T10:01:00.000Z', 'eeee0005'),
+    spawnEvt('2026-09-07T10:02:00.000Z', 'ffff0006'),
+    lintGatePassedEvt('2026-09-07T10:03:00.000Z', 'ffff0006'),
+  ];
+  assert.deepEqual(
+    unspawnedTerminalTickets(activity), ['eeee0005'],
+    'a terminal naming a ticket with no spawn in this window is positive proof of eviction',
   );
 });
