@@ -123,6 +123,12 @@ function baseState(history = HISTORY_WINDOW_HIT, extra = {}) {
   return { history, ...extra };
 }
 
+// AP-EXT-ITER224-01: this is the PRODUCTION-DEFAULT state shape, and `max_time_minutes` is
+// deliberately absent from it. The field is optional in `State` and setup.ts deletes it
+// whenever --max-time is not passed (reporting `time_cap_disabled_default`), so every real
+// session omits it. Carrying it here made every orphan-tmp case below exercise the rare
+// opt-in shape, which is why a candidacy check that REQUIRED the field stayed invisible.
+// Re-adding it silences all of them at once — leave it out.
 function recoverableState(history, extra = {}) {
   return {
     active: false,
@@ -130,7 +136,6 @@ function recoverableState(history, extra = {}) {
     step: 'anatomy-park',
     iteration: 7,
     max_iterations: 100,
-    max_time_minutes: 720,
     worker_timeout_seconds: 1200,
     start_time_epoch: 1,
     completion_promise: null,
@@ -650,6 +655,36 @@ test('verify-recapture.promotes an equal-mtime dead orphan tmp over a readable b
     rmSync(session, { recursive: true, force: true });
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+test('verify-recapture.orphan-tmp candidacy is a projection of the REQUIRED half of State (AP-EXT-ITER224-01)', async () => {
+  const { REQUIRED_SNAPSHOT_STRING_FIELDS, REQUIRED_SNAPSHOT_NUMERIC_FIELDS } = await import(
+    pathToFileURL(path.join(REPO_ROOT, 'extension', 'services', 'state-manager.js')).href
+  );
+  const required = [...REQUIRED_SNAPSHOT_STRING_FIELDS, ...REQUIRED_SNAPSHOT_NUMERIC_FIELDS];
+
+  // Derive the contract from the `State` interface instead of restating it here. A member
+  // written `name?:` is one no producer is obliged to write, so demanding it in orphan-tmp
+  // candidacy rejects legitimate snapshots — a newer tmp is reaped and a corrupt base cannot be
+  // recovered at all. `max_time_minutes` is the member that drifted in: it is optional by
+  // design, deleted by setup.ts whenever --max-time is absent.
+  const stateTs = readFileSync(path.join(REPO_ROOT, 'extension', 'src', 'types', 'index.ts'), 'utf8');
+  const start = stateTs.indexOf('export interface State {');
+  const iface = stateTs.slice(start, stateTs.indexOf('\n}', start));
+  const members = [...iface.matchAll(/^ {2}(\w+)(\??):/gm)].map(([, name, opt]) => ({ name, optional: opt === '?' }));
+  const declared = new Set(members.map((m) => m.name));
+  const optional = new Set(members.filter((m) => m.optional).map((m) => m.name));
+
+  // Negative controls — a broken parse or a collapsed contract must RED here, never read as agreement.
+  assert.ok(start !== -1, 'could not locate the State interface');
+  assert.ok(optional.has('max_time_minutes'), 'premise: max_time_minutes is optional in State');
+  assert.ok(declared.has('iteration') && !optional.has('iteration'), 'premise: the member scan resolves required members too');
+  assert.ok(required.length >= 8, `candidacy contract collapsed to ${required.length} fields`);
+
+  const undeclared = required.filter((field) => !declared.has(field));
+  assert.deepEqual(undeclared, [], `candidacy names fields State does not declare: ${undeclared.join(', ')}`);
+  const drifted = required.filter((field) => optional.has(field));
+  assert.deepEqual(drifted, [], `candidacy demands OPTIONAL State members: ${drifted.join(', ')}`);
 });
 
 test('verify-recapture.does NOT clobber a good readable base with a future-schema orphan tmp (state-candidacy guard)', () => {

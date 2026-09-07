@@ -897,19 +897,32 @@ function classifyOrphanTmp(
   return { kind: 'snapshot', state: parsed, mtimeMs: readMtimeMs(tmpPath) };
 }
 
+/**
+ * The `State` members a recoverable orphan-`.tmp` snapshot must carry.
+ *
+ * AP-EXT-ITER224-01: these lists are a PROJECTION of the REQUIRED half of the `State`
+ * interface, so a member declared optional there (`?:`) may never appear here. They are
+ * exported for exactly that cross-check — a required-field list is a hand-maintained
+ * enumeration, and this one silently drifted: `max_time_minutes` is optional by design
+ * (`setup.ts` deletes it whenever `--max-time` is absent and reports
+ * `time_cap_disabled_default`), so requiring it rejected EVERY production snapshot.
+ */
+export const REQUIRED_SNAPSHOT_STRING_FIELDS = [
+  'working_dir', 'original_prompt', 'started_at', 'session_dir',
+] as const;
+
+export const REQUIRED_SNAPSHOT_NUMERIC_FIELDS = [
+  'iteration', 'max_iterations', 'worker_timeout_seconds', 'start_time_epoch',
+] as const;
+
 function isRecoverableStateSnapshotCandidate(
   value: unknown,
   maxSupportedSchemaVersion: number,
 ): value is State {
   if (!isRecord(value)) return false;
-  const requiredStringFields = ['working_dir', 'original_prompt', 'started_at', 'session_dir'] as const;
-  if (requiredStringFields.some((field) => typeof value[field] !== 'string')) return false;
+  if (REQUIRED_SNAPSHOT_STRING_FIELDS.some((field) => typeof value[field] !== 'string')) return false;
   if (!(typeof value.step === 'string' || value.step === null)) return false;
-  if (!Number.isFinite(Number(value.iteration))) return false;
-  if (!Number.isFinite(Number(value.max_iterations))) return false;
-  if (!Number.isFinite(Number(value.max_time_minutes))) return false;
-  if (!Number.isFinite(Number(value.worker_timeout_seconds))) return false;
-  if (!Number.isFinite(Number(value.start_time_epoch))) return false;
+  if (REQUIRED_SNAPSHOT_NUMERIC_FIELDS.some((field) => !Number.isFinite(Number(value[field])))) return false;
   if (!Array.isArray(value.history)) return false;
   if (!('completion_promise' in value)) return false;
   if (
