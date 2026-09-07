@@ -260,8 +260,8 @@ export function resolveExitDrainFallbackMs(env: NodeJS.ProcessEnv = process.env)
 // B-APNC WS-1: max passes a subsystem may run WITHOUT a clean pass before anatomy-park's
 // worker-mode loop halts-and-reports it as non-convergent (rather than grinding to the
 // iteration cap). Tunable per-machine via PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN (strict
-// positive integer); invalid / absent / non-positive falls back to this 8 default.
-const APNC_MAX_PASSES_WITHOUT_CLEAN = 8;
+// positive integer); invalid / absent / non-positive falls back to this 50 default.
+const APNC_MAX_PASSES_WITHOUT_CLEAN = 50;
 export const APNC_MAX_PASSES_ENV_VAR = 'PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN';
 
 // Resolve the anatomy-park non-convergence pass ceiling. Env override wins when it parses

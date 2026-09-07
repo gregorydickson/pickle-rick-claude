@@ -3,7 +3,7 @@
  * anatomy-park-convergence-guard.test.js  (B-APNC WS-1 + WS-2)
  *
  * WS-1: anatomy-park halts-and-reports a non-convergent subsystem after N passes
- *       (default 8, env PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN) without a clean pass,
+ *       (default 50, env PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN) without a clean pass,
  *       as a NON-FATAL phase end (pipeline continues to szechuan per R-PHC-6).
  * WS-2: a worker pass whose committed fix RAISES the subsystem's lint complexity-rule
  *       count (eslint complexity / max-lines-per-function) over the pass-start baseline
@@ -62,20 +62,20 @@ function withCapturedActivity(fn) {
 }
 
 // ---------------------------------------------------------------------------
-// AC-APNC-1: pass_counts >= 8 with consecutive_clean === 0 → halt; 7 → continue.
+// AC-APNC-1: pass_counts >= default (50) with consecutive_clean === 0 → halt; below → continue.
 // ---------------------------------------------------------------------------
 
-test('AC-APNC-1: pass_counts=8 & consecutive_clean=0 → non-convergent halt disposition', () => {
+test('AC-APNC-1: pass_counts=50 & consecutive_clean=0 → non-convergent halt disposition', () => {
     const config = {
         subsystems: ['extension'],
         current_index: 0,
-        pass_counts: { extension: 8 },
+        pass_counts: { extension: 50 },
         consecutive_clean: { extension: 0 },
     };
     const hit = classifyAnatomyNonConvergence(config, resolveApncMaxPassesWithoutClean());
     assert.ok(hit, 'expected a non-convergent halt disposition (not continue)');
     assert.equal(hit.subsystem, 'extension');
-    assert.equal(hit.passCount, 8);
+    assert.equal(hit.passCount, 50);
 });
 
 test('AC-APNC-1: pass_counts=7 still continues (null disposition)', () => {
@@ -99,13 +99,16 @@ test('AC-APNC-1: a clean pass (consecutive_clean > 0) is NOT non-convergent even
 });
 
 test('AC-APNC-1: env override PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN tunes the ceiling', () => {
-    assert.equal(resolveApncMaxPassesWithoutClean({}), 8, 'default is 8');
+    assert.equal(resolveApncMaxPassesWithoutClean({}), 50, 'default is 50');
+    // env override wins in BOTH directions — below the default...
     assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: '3' }), 3);
+    // ...and above it, so the raise cannot have silently become a floor.
+    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: '75' }), 75);
     // invalid / non-positive / fractional fall back to the default
-    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: '0' }), 8);
-    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: '-2' }), 8);
-    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: '2.5' }), 8);
-    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: 'oops' }), 8);
+    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: '0' }), 50);
+    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: '-2' }), 50);
+    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: '2.5' }), 50);
+    assert.equal(resolveApncMaxPassesWithoutClean({ PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN: 'oops' }), 50);
 });
 
 test('AC-APNC-1: malformed/absent config yields null (defensive)', () => {
@@ -138,7 +141,7 @@ test('AC-APNC-2: halt emits exactly ONE anatomy_park_non_convergent_halt naming 
         JSON.stringify({
             subsystems: ['extension'],
             current_index: 0,
-            pass_counts: { extension: 8 },
+            pass_counts: { extension: 50 },
             consecutive_clean: { extension: 0 },
         }),
     );
@@ -151,7 +154,7 @@ test('AC-APNC-2: halt emits exactly ONE anatomy_park_non_convergent_halt naming 
     const halts = events.filter((e) => e.event === 'anatomy_park_non_convergent_halt');
     assert.equal(halts.length, 1, 'exactly one operator-visible halt event');
     assert.equal(halts[0].gate_payload.subsystem, 'extension');
-    assert.equal(halts[0].gate_payload.pass_count, 8);
+    assert.equal(halts[0].gate_payload.pass_count, 50);
     assert.ok(typeof halts[0].ts === 'string' && halts[0].ts.length > 0, 'event carries ts');
 });
 
