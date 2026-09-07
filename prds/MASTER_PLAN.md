@@ -113,6 +113,38 @@ isolated) and is struck from `CLAUDE.md` and `prds/CLAUDE.md`.
 
 ---
 
+## 🏁 B-UNATTENDED RUN OUTCOME — session `2026-09-06-f625727a` ENDED 2026-09-07 03:39Z (measured)
+
+**Terminal state, read off `pipeline-status.json` + `state.json` after the runners exited:**
+`status: failed` · `current_phase: null` · `completed_phases: 2/4` · `skipped_phases: 0` ·
+`state.active: false` · `state.exit_reason: stalled_below_target` · `step: completed` ·
+`iteration: 6/500` · no `pipeline-runner`/`microverse-runner` processes remain.
+
+```
+phase_dispositions: { "anatomy-park": "anatomy_non_convergent",
+                      "szechuan-sauce": "stalled_below_target" }
+citadel_advisory_findings: 131
+```
+
+**BOTH review phases degraded, so NO release was cut and none should be.** Root `CLAUDE.md`: a degraded
+run executes every phase, reports the degradation honestly and withholds the success verdict. That is
+what happened — the phase loop never broke, each phase ran, and the verdict was withheld. **This is the
+designed behaviour, not a failure of the run.**
+
+**B-UNATTENDED's own acceptance is NOT met.** It required *a live 4/4 run with zero human interventions*;
+this was 2/4. The bundle's fixes DID land (the branch carries them, pushed through `78145d62`), so the
+work is not lost — but the bundle cannot be marked shipped on this evidence.
+
+**What the run still produced, and it is the useful half:** 15 anatomy-park passes across `bin` and
+`extension`, every one landing a real fix, 14 trap doors added / 13 committed. See the trigger section
+below for why `completed_phases` correctly stayed at 2.
+
+**Do not re-derive:** `completed_phases: 2` with all phases having RUN is the `finalizePhaseSuccess`
+honesty gate (AP-EXT-ITER5-01), which counts only the single success disposition. It is not a lost
+counter and not a crash.
+
+---
+
 ## ⛔ STANDING RELEASE TRIGGER — **DID NOT FIRE**; premise falsified by measurement 2026-09-07 01:55Z
 
 **The trigger below is NOT satisfied and cannot become satisfied by anatomy-park.** Measured at the
