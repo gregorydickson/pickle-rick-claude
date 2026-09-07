@@ -10,7 +10,6 @@ import {
     loadSettings,
     initCircuitBreaker,
     canExecute,
-    countFilesChanged,
     detectProgress,
     extractErrorSignature,
     isConstraintDiscoverySignature,
@@ -344,6 +343,73 @@ test('R-DEFCHURN #127: an EMPTY commit (HEAD changed, tree unchanged) is NOT pro
         assert.notEqual(head2, head, 'sanity: the empty commit advanced HEAD');
         const result = detectProgress(tmpDir, head, 'implement', 'implement', null, null);
         assert.equal(result.hasProgress, false, 'empty commit must not count as progress (else the no-progress breaker never trips)');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER222-01 — the breaker's uncommitted-work read must see UNTRACKED files.
+//
+// `git diff --stat` + `--stat --cached` covers tracked modifications only, so a
+// worker whose entire output is NEW files read as a clean tree HERE, in the breaker
+// itself: `noProgressThreshold` such iterations trip OPEN and exit the run
+// `circuit_open` over real work on disk. These cases assert the whole SHAPE of the
+// work set rather than one hand-picked payload, so a future reader that regresses to
+// any tracked-only probe reds on the untracked row while the controls stay green.
+// ---------------------------------------------------------------------------
+
+const UNCOMMITTED_WORK_SHAPES = [
+    { name: 'untracked file at the repo root', apply: (dir) => { fs.writeFileSync(path.join(dir, 'new-a.js'), 'a'); } },
+    { name: 'untracked file in a wholly-untracked subdirectory', apply: (dir) => { fs.mkdirSync(path.join(dir, 'sub')); fs.writeFileSync(path.join(dir, 'sub', 'new-c.ts'), 'c'); } },
+    { name: 'tracked modification, unstaged', apply: (dir) => { fs.writeFileSync(path.join(dir, 'file.txt'), 'modified'); } },
+    { name: 'tracked modification, staged', apply: (dir) => { fs.writeFileSync(path.join(dir, 'file.txt'), 'modified'); spawnSync('git', ['add', '.'], { cwd: dir }); } },
+    { name: 'untracked file, staged', apply: (dir) => { fs.writeFileSync(path.join(dir, 'new-a.js'), 'a'); spawnSync('git', ['add', '.'], { cwd: dir }); } },
+    { name: 'tracked deletion', apply: (dir) => { fs.rmSync(path.join(dir, 'file.txt')); } },
+];
+
+test('AP-EXT-ITER222-01: every shape of uncommitted work counts as progress', () => {
+    const sawProgress = [];
+    for (const shape of UNCOMMITTED_WORK_SHAPES) {
+        const tmpDir = makeTmpDir();
+        try {
+            const head = initGitRepo(tmpDir);
+            assert.equal(
+                detectProgress(tmpDir, head, 'implement', 'implement', 'ticket-A', 'ticket-A').hasProgress,
+                false,
+                `sanity: the clean tree before "${shape.name}" must read as no progress, else the row proves nothing`,
+            );
+            shape.apply(tmpDir);
+            const result = detectProgress(tmpDir, head, 'implement', 'implement', 'ticket-A', 'ticket-A');
+            if (result.hasProgress) sawProgress.push(shape.name);
+            assert.ok(
+                result.filesChanged > 0,
+                `filesChanged must count "${shape.name}" — it is derived from the same read as hasProgress, so a zero here means the two disagree`,
+            );
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    }
+    assert.deepEqual(
+        sawProgress,
+        UNCOMMITTED_WORK_SHAPES.map((shape) => shape.name),
+        'a worker that produced ANY of these and did not commit must not advance the no-progress counter — that path ends in circuit_open with the work still on disk',
+    );
+});
+
+test('AP-EXT-ITER222-01: a regenerable .codegraph artifact is NOT work', () => {
+    const tmpDir = makeTmpDir();
+    try {
+        const head = initGitRepo(tmpDir);
+        fs.mkdirSync(path.join(tmpDir, '.codegraph'));
+        fs.writeFileSync(path.join(tmpDir, '.codegraph', 'index.json'), '{}');
+        const result = detectProgress(tmpDir, head, 'implement', 'implement', 'ticket-A', 'ticket-A');
+        // `.codegraph/` is ignored only through the local, unversioned `.git/info/exclude`,
+        // so on a fresh clone it is plain untracked dirt. Counting it as progress would
+        // reset the no-progress counter every stagnant iteration and the breaker could
+        // never trip at all — the filter is load-bearing, not hygiene.
+        assert.equal(result.hasProgress, false, 'a regenerable codegraph artifact must not read as worker progress');
+        assert.equal(result.filesChanged, 0);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -776,26 +842,6 @@ test('buildTmuxNotification: circuit_open shows "Failed" with isFailure semantic
     assert.equal(n.title, '🥒 Pickle Run Failed');
     assert.ok(n.subtitle.includes('Exit: circuit_open'), `Expected "Exit: circuit_open" in subtitle, got: ${n.subtitle}`);
     assert.ok(n.subtitle.includes('phase: implement'), `Expected phase in subtitle, got: ${n.subtitle}`);
-});
-
-// ---------------------------------------------------------------------------
-// Gap 1: countFilesChanged — zero test coverage
-// ---------------------------------------------------------------------------
-
-test('countFilesChanged: parses plural "files changed" from diff --stat output', () => {
-    assert.equal(countFilesChanged(' 3 files changed, 10 insertions(+)'), 3);
-});
-
-test('countFilesChanged: parses singular "file changed" from diff --stat output', () => {
-    assert.equal(countFilesChanged(' 1 file changed'), 1);
-});
-
-test('countFilesChanged: returns 0 for empty string', () => {
-    assert.equal(countFilesChanged(''), 0);
-});
-
-test('countFilesChanged: returns 0 for unrelated text', () => {
-    assert.equal(countFilesChanged('no matches here'), 0);
 });
 
 // ---------------------------------------------------------------------------

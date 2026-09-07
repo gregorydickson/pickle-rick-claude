@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { runCmd, writeStateFile, safeErrorMessage } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
+import { isCodegraphArtifact, listWorkingTreeDirtyPaths } from './git-utils.js';
 
 // ---------------------------------------------------------------------------
 // Feature-local types
@@ -227,11 +228,29 @@ export function detectProgress(
     return { hasProgress: true, currentHead, filesChanged: 0, stepChanged, ticketChanged };
   }
 
-  const diffOutput = runCmd(['git', 'diff', '--stat'], { cwd: workingDir, check: false });
-  const hasUncommittedChanges = diffOutput.length > 0;
-
-  const stagedOutput = runCmd(['git', 'diff', '--stat', '--cached'], { cwd: workingDir, check: false });
-  const hasStagedChanges = stagedOutput.length > 0;
+  // AP-EXT-ITER222-01: ONE dirty-tree read, not a pair of `git diff` reads. `git diff
+  // --stat` plus `--stat --cached` covers tracked modifications staged and unstaged and
+  // NOTHING untracked, so a worker whose entire output is NEW files was byte-identical
+  // to a clean tree here — and this is the BREAKER, so `noProgressThreshold` such
+  // iterations trip OPEN and exit the run `circuit_open` over work sitting on disk.
+  // `-uall` inside `listWorkingTreeDirtyPaths` (AP-EXT-ITER98-01) makes new files
+  // visible and the union it returns is a SUPERSET of the two diffs it replaces, so
+  // this is one read, one branch, one definition of "uncommitted work" — the same one
+  // `mux-runner.ts:commitPendingProbe` already uses (AP-EXT-ITER99-01), which is why
+  // the rescue probe and the breaker could previously answer the SAME tree oppositely.
+  // `.codegraph/` is untracked dirt on a fresh clone (ignored only through the local,
+  // unversioned `.git/info/exclude`); unfiltered it would read as progress on every
+  // stagnant iteration and the no-progress breaker could never trip at all.
+  let dirtyPaths: string[];
+  try {
+    dirtyPaths = listWorkingTreeDirtyPaths(workingDir).filter((p) => !isCodegraphArtifact(p));
+  } catch {
+    // The working tree could not be measured. Assume progress: advancing the
+    // no-progress counter on a measurement that never happened walks the run toward
+    // `circuit_open`, and a halt is the one outcome with no recovery.
+    return { hasProgress: true, currentHead, filesChanged: 0, stepChanged, ticketChanged };
+  }
+  const hasUncommittedWork = dirtyPaths.length > 0;
 
   let headChanged = currentHead !== lastKnownHead;
 
@@ -253,9 +272,9 @@ export function detectProgress(
   }
 
   return {
-    hasProgress: hasUncommittedChanges || hasStagedChanges || headChanged || stepChanged || ticketChanged,
+    hasProgress: hasUncommittedWork || headChanged || stepChanged || ticketChanged,
     currentHead,
-    filesChanged: countFilesChanged(diffOutput),
+    filesChanged: dirtyPaths.length,
     stepChanged,
     ticketChanged,
   };
@@ -422,9 +441,4 @@ export function resetCircuitBreaker(sessionDir: string, reason: string): void {
     const msg = safeErrorMessage(err);
     console.error(`[circuit-breaker] Failed to write reset state: ${msg}`);
   }
-}
-
-export function countFilesChanged(diffStatOutput: string): number {
-  const match = diffStatOutput.match(/(\d+) files? changed/);
-  return match ? parseInt(match[1], 10) : 0;
 }
