@@ -3217,16 +3217,29 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     }
   });
 
-  // AC-CF-17: net-subtractive — the new exports exist, and the halt predicate used
+  // AC-CF-17: net-subtractive — the exports exist, and the halt predicate used
   // is not isFailureExit. (No new state field / exit reason / skip flag is asserted
   // by code review + the AC-CF-01/02 exhaustive sweeps above, which would fail if a
   // stray reason were added without updating both exported consts together.)
-  test('AC-CF-17: types/index.ts exports both new consts; halt predicate is not isFailureExit', () => {
+  //
+  // ROOT 0 (1428cbe9): re-pointed to the collapsed seam. This used to assert the
+  // literal shape `CRASH_FLOOR_EXIT_REASONS = [`, which is precisely the hand-listed
+  // form trap door AP-EXT-ITER77-01 (`src/types/CLAUDE.md`) forbids for this module:
+  // a subset of a union annotated as a literal can omit a member and still compile.
+  // The const is now DERIVED from the total `EXIT_DISPOSITIONS` record, so the
+  // assertion pins the derivation — strictly stronger than pinning its existence,
+  // and the `doesNotMatch` arm is what stops a regression to the literal form.
+  test('AC-CF-17: types/index.ts exports both consts, the crash floor is DERIVED; halt predicate is not isFailureExit', () => {
     const typesSrc = fs.readFileSync(
       new URL('../src/types/index.ts', import.meta.url),
       'utf-8',
     );
-    assert.match(typesSrc, /export const CRASH_FLOOR_EXIT_REASONS = \[/);
+    assert.match(typesSrc, /export const CRASH_FLOOR_EXIT_REASONS = EXIT_REASONS\.filter\(/);
+    assert.doesNotMatch(
+      typesSrc,
+      /export const CRASH_FLOOR_EXIT_REASONS = \[/,
+      'the crash floor must not regress to a hand-listed literal (AP-EXT-ITER77-01)',
+    );
     assert.match(typesSrc, /export const EXIT_REASONS = \[/);
 
     const prSrc = fs.readFileSync(new URL('../src/bin/pipeline-runner.ts', import.meta.url), 'utf-8');

@@ -1550,15 +1550,95 @@ export const EXIT_REASONS = [
 ] as const;
 
 /**
- * B-CRASHFLOOR: the pickle-phase crash floor — exit reasons meaning the runner cannot physically
- * continue. Consulted by `isFatalPhaseFailure`'s pickle arm in pipeline-runner.ts, mirroring how the
- * microverse arm consults `MICROVERSE_FATAL_REASONS`. MUST NOT be `FAILURE_EXIT_REASONS`
- * (mux-runner.ts) — that set includes quality/measurement verdicts (error, stall, circuit_open,
- * rate_limit_exhausted, timeout_repeat, ...) which CLAUDE.md's park-and-flag rule forbids halting on.
+ * ROOT 0 (1428cbe9): THE disposition vocabulary for the pickle-phase exit reasons. Every
+ * "what does this exit mean?" question is answered by reading a field of THIS record; no
+ * consumer keeps a second membership list.
+ *
+ * It replaces four hand-maintained subsets of the same 20-member domain — `isHaltExit`'s inline
+ * literal disjunction, `FAILURE_EXIT_REASONS`, `INCOMPLETE_EXIT_REASONS` (all mux-runner.ts) and a
+ * hand-listed `CRASH_FLOOR_EXIT_REASONS` here. None was exhaustive, so a newly added reason
+ * matched none of them and fell through to the SUCCESS arm: that is how
+ * `done_without_commit_evidence` printed a green "mux-runner Complete" panel for a bundle that
+ * halted mid-flight. The old comments answered this with an instruction to remember to update a
+ * second list in the same commit. `Record<typeof EXIT_REASONS[number], …>` is total, so tsc now
+ * demands a disposition for every member and the omission is TS2741 instead of a silent fake-green.
+ *
+ * This is the shape trap door AP-EXT-ITER77-01 (`src/types/CLAUDE.md`) already mandates for this
+ * module and `FAILURE_REASON_IS_NO_PROGRESS` above already follows: a subset of a union is DERIVED
+ * from a total classification, never restated as a literal.
+ *
+ * Three fields because the domain genuinely has three axes, not because there are three vocabularies:
+ *  - `verdict`      — mutually exclusive reporting class. Drives the completion panel via
+ *                     `deriveCompletionVerdict`. `'unknown'` is the DEFAULT for an unrecognized
+ *                     string only; no row below may carry it.
+ *  - `haltEligible` — R-CNAR-4(c) pause/defer: auto-resume.sh may retry. Independent of `verdict`
+ *                     because `timeout_repeat` is BOTH a failure and retry-eligible. That overlap
+ *                     is pre-existing and inert (auto-resume.sh keys on a literal and reads
+ *                     neither set); it is carried forward unchanged rather than silently
+ *                     normalised, which would be an unnamed behaviour change.
+ *  - `crashFloor`   — B-CRASHFLOOR cannot-physically-continue. A strict subset of `verdict:
+ *                     'failure'`. This is the ONLY axis that may halt the pickle phase, and it
+ *                     MUST NOT be widened to the whole failure class: that class holds
+ *                     quality/measurement verdicts (error, stall, circuit_open, ...) which the root
+ *                     CLAUDE.md's park-and-flag rule forbids halting on.
  */
-export const CRASH_FLOOR_EXIT_REASONS = [
-  'toolchain_unavailable', 'state_working_dir_missing', 'state_schema_version_ahead',
-] as const;
+export interface ExitDisposition {
+  verdict: 'success' | 'halt' | 'failure' | 'incomplete' | 'unknown';
+  haltEligible: boolean;
+  crashFloor: boolean;
+}
+
+const EXIT_DISPOSITIONS: Record<typeof EXIT_REASONS[number], ExitDisposition> = {
+  success: { verdict: 'success', haltEligible: false, crashFloor: false },
+  cancelled: { verdict: 'halt', haltEligible: true, crashFloor: false },
+  limit: { verdict: 'halt', haltEligible: true, crashFloor: false },
+  closer_handoff_terminal: { verdict: 'halt', haltEligible: true, crashFloor: false },
+  timeout_repeat: { verdict: 'failure', haltEligible: true, crashFloor: false },
+  error: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  iteration_cap_exhausted: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  stall: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  circuit_open: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  rate_limit_exhausted: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  manager_persistent_hallucination: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  codex_unhealthy_consecutive_failures: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  working_tree_modified_externally: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  codex_manager_no_progress: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  recovery_exhausted: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  idle_stall_unrecoverable: { verdict: 'failure', haltEligible: false, crashFloor: false },
+  state_schema_version_ahead: { verdict: 'failure', haltEligible: false, crashFloor: true },
+  state_working_dir_missing: { verdict: 'failure', haltEligible: false, crashFloor: true },
+  toolchain_unavailable: { verdict: 'failure', haltEligible: false, crashFloor: true },
+  done_without_commit_evidence: { verdict: 'incomplete', haltEligible: false, crashFloor: false },
+};
+
+/**
+ * The DEFAULT for a string that is not an `EXIT_REASONS` member (a corrupted `state.exit_reason`,
+ * or a synthetic probe). Every axis is off, so an unrecognized reason is classified by none of the
+ * derived predicates — matching the shipped behaviour exactly. It is labelled `'unknown'` rather
+ * than `'success'` so the record never asserts a success it did not measure. Mirrors
+ * `DEFAULT_MICROVERSE_DISPOSITION` (microverse-runner.ts).
+ */
+const DEFAULT_EXIT_DISPOSITION: ExitDisposition = { verdict: 'unknown', haltEligible: false, crashFloor: false };
+
+/**
+ * The ONE reader of `EXIT_DISPOSITIONS`. Loose input type so callers holding a raw
+ * `state.exit_reason: string | null` need not narrow first.
+ */
+export function classifyExitReason(reason: string | null | undefined): ExitDisposition {
+  if (typeof reason !== 'string') return DEFAULT_EXIT_DISPOSITION;
+  return (EXIT_DISPOSITIONS as Record<string, ExitDisposition>)[reason] ?? DEFAULT_EXIT_DISPOSITION;
+}
+
+/**
+ * B-CRASHFLOOR: the pickle-phase crash floor — exit reasons meaning the runner cannot physically
+ * continue. Consulted by `isFatalPhaseFailure`'s pickle arm in pipeline-runner.ts via
+ * `isCrashFloorExitReason`, mirroring how the microverse arm consults `MICROVERSE_FATAL_REASONS`.
+ * DERIVED from the `crashFloor` axis above (AP-EXT-ITER77-01) — a hand-listed literal here could
+ * omit a member and still compile.
+ */
+export const CRASH_FLOOR_EXIT_REASONS = EXIT_REASONS.filter(
+  (reason) => EXIT_DISPOSITIONS[reason].crashFloor,
+);
 
 /**
  * R-WSRC-2 — Forward-schema state.json exit reason consumed by mux-runner.
