@@ -113,6 +113,45 @@ isolated) and is struck from `CLAUDE.md` and `prds/CLAUDE.md`.
 
 ---
 
+## ⛔ STANDING RELEASE TRIGGER — **DID NOT FIRE**; premise falsified by measurement 2026-09-07 01:55Z
+
+**The trigger below is NOT satisfied and cannot become satisfied by anatomy-park.** Measured at the
+phase boundary, do not re-derive:
+
+- `pipeline-status.json` went `current_phase: anatomy-park` → `szechuan-sauce` at `01:55:32Z` while
+  **`completed_phases` stayed at 2**, and now carries
+  `phase_dispositions: {"anatomy-park": "anatomy_non_convergent"}`.
+- Activity records `anatomy_park_non_convergent_halt` (`subsystem: bin`, `pass_count: 8`) then
+  `phase_transition` with `previous_exit_reason: "anatomy_non_convergent"`.
+- `anatomy-park.json`: `converged: false`, `pass_counts {bin: 8, extension: 7}`,
+  `consecutive_clean {0, 0}` — **not one clean pass on either subsystem in fifteen**;
+  `stall_counts {0,0}/3` (no stall); 14 trap doors added, 13 committed, 6 findings still open.
+- `completed_phases` staying at 2 is CORRECT, not a bug: per AP-EXT-ITER5-01 `finalizePhaseSuccess`
+  counts a phase completed only when its disposition is the single success value. The honesty gate
+  did exactly its job.
+
+**Therefore beta.26 was NOT cut, and the trigger's own stated rationale is what rules it out.** The
+trigger reads *“releasing at the phase-3 boundary is not a bypass … at that point there is no
+degradation yet to withhold on.”* There IS now a degradation to withhold on, and it is anatomy-park's
+own — arriving one phase earlier than the szechuan degradation the trigger was written to outrun.
+Root `CLAUDE.md` is unambiguous: a degraded run reports the degradation honestly and **withholds the
+success verdict (no auto-release)**. Both the literal condition (`completed_phases: 3`) and the
+premise fail, so the release is withheld. This is a DISPOSITION, not a halt: the pipeline continued
+into szechuan-sauce on its own and the loop is unaffected.
+
+**`anatomy_non_convergent` is a THRESHOLD, not a crash** — non-fatal, tunable via
+`PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN`. The 8-pass cap on `bin` is what ended the phase, not a
+failure to make progress: every one of the 15 passes landed a real fix (pass 8 alone closed
+`AP-BIN-ITER29-01`, three `install.sh` deploy sources in no release asset). A 0-for-15 clean rate on
+a bundle this size is the finding worth carrying forward — each pass's own fix becomes the next
+pass's review surface, so the loop may not converge on a large diff by this rule at all.
+
+**What would make a beta.26 release correct:** an operator decision to ship a knowingly-degraded
+bundle, or a later phase boundary that yields a genuine non-degraded success verdict. Neither is
+inferable from the trigger as written, so the babysitter does not tag on this signal.
+
+---
+
 ## 🚢 STANDING RELEASE TRIGGER (operator-set 2026-09-06) — cut beta.26 when B-UNATTENDED's ANATOMY-PARK completes
 
 **Trigger:** `pipeline-status.json` for session `2026-09-06-f625727a` shows `Phase anatomy-park completed`
