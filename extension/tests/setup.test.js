@@ -1445,13 +1445,53 @@ test('setup: ignores fractional numeric settings and backend budgets', () => {
     const sessionPath = output.match(/SESSION_ROOT=(.+)/)[1].trim();
     try {
         const state = JSON.parse(fs.readFileSync(path.join(sessionPath, 'state.json'), 'utf-8'));
-        assert.equal(state.max_iterations, 100, 'fractional max_iterations and backend budgets must fall back to defaults');
+        assert.equal(state.max_iterations, 500, 'fractional max_iterations and backend budgets must fall back to the compiled default');
         assert.equal('max_time_minutes' in state, false, 'fractional max_time setting should be ignored and no default cap should be written');
         assert.equal(state.worker_timeout_seconds, 3600, 'fractional worker timeout must fall back to defaults');
     } finally {
         codexEnv.cleanup();
         fs.rmSync(extRoot, { recursive: true, force: true });
         fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// C7 (3b3d9882) — the compiled manager-loop LENGTH bound and the shipped
+// setting must not disagree. Both sides are DERIVED: the left by RUNNING
+// parseArguments against an extension root that has the sentinel but no
+// settings file (loadSettings returns early, so loopLimit is still whatever
+// createSetupConfig seeded), the right by reading pickle_settings.json. No
+// literal appears in this test — restating the number on both sides would pass
+// against two stale copies of it.
+// ---------------------------------------------------------------------------
+
+test('C7: the compiled loopLimit fallback equals pickle_settings.json default_max_iterations', () => {
+    const extRoot = makeExtensionRootWithSettings({});
+    fs.rmSync(path.join(extRoot, 'pickle_settings.json'));
+    const previousExtensionDir = process.env.EXTENSION_DIR;
+    try {
+        process.env.EXTENSION_DIR = extRoot;
+        const compiledFallback = parseArguments(['--task', 'c7-loop-limit-parity']).loopLimit;
+
+        const shipped = JSON.parse(
+            fs.readFileSync(path.join(REPO_ROOT, 'pickle_settings.json'), 'utf-8'),
+        ).default_max_iterations;
+
+        // Without this guard a renamed or deleted key makes the equality below
+        // vacuous the moment both sides read undefined.
+        assert.ok(
+            Number.isInteger(shipped) && shipped > 0,
+            `pickle_settings.json default_max_iterations must be a positive integer, got ${shipped}`,
+        );
+        assert.equal(
+            compiledFallback,
+            shipped,
+            'setup.ts createSetupConfig loopLimit must equal pickle_settings.json default_max_iterations',
+        );
+    } finally {
+        if (previousExtensionDir === undefined) delete process.env.EXTENSION_DIR;
+        else process.env.EXTENSION_DIR = previousExtensionDir;
+        fs.rmSync(extRoot, { recursive: true, force: true });
     }
 });
 

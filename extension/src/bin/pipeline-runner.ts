@@ -240,8 +240,15 @@ export function parsePipelineConfig(raw: Record<string, unknown>): PipelineConfi
     child_mux_runner_stall_seconds: parsePositiveInteger(raw.child_mux_runner_stall_seconds, 1800),
     anatomy_stall_limit: parsePositiveInteger(raw.anatomy_stall_limit, 3),
     szechuan_stall_limit: parsePositiveInteger(raw.szechuan_stall_limit, 5),
-    anatomy_max_iterations: parsePositiveInteger(raw.anatomy_max_iterations, 100),
-    szechuan_max_iterations: parsePositiveInteger(raw.szechuan_max_iterations, 50),
+    // The two stall limits above count CONSECUTIVE passes that advanced nothing, so they are the
+    // health measurement itself and stay small. The two below are LENGTH bounds counting passes that
+    // DID land work; they are held EQUAL to each other and to the pickle cap
+    // (`pickle_settings.json` `default_max_iterations`), so no phase's runway is shorter than
+    // another's. 500 is the value `/pickle-pipeline` already writes into `pipeline.json`
+    // (`.claude/commands/pickle-pipeline.md`) — these fallbacks apply only when a caller omits the
+    // keys, and they used to disagree with that launch path. Raise them together or not at all.
+    anatomy_max_iterations: parsePositiveInteger(raw.anatomy_max_iterations, 500),
+    szechuan_max_iterations: parsePositiveInteger(raw.szechuan_max_iterations, 500),
     citadel_strict: raw.citadel_strict === true || raw.strict === true,
     backend,
     dirty_exempt_segments,

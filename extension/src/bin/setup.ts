@@ -280,7 +280,11 @@ function buildSetupPaths(): SetupPaths {
 
 function createSetupConfig(): SetupArgs {
   return {
-    loopLimit: 100,
+    // Compiled fallback for the manager-loop LENGTH bound, used only when `pickle_settings.json` is
+    // absent or unparseable (`loadSettings` returns early in both cases). It MUST equal that file's
+    // `default_max_iterations`, or the documented cap and the cap an operator actually gets diverge
+    // silently. Pinned by deriving both sides in extension/tests/setup.test.js.
+    loopLimit: 500,
     timeLimit: 0,
     workerTimeout: DEFAULT_WORKER_TIMEOUT_SECONDS,
     pipelineContinueOnPhaseFail: true,

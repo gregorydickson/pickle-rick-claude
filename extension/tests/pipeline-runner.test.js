@@ -977,8 +977,8 @@ describe('parsePipelineConfig', () => {
     assert.equal(config.child_mux_runner_stall_seconds, 1800);
     assert.equal(config.anatomy_stall_limit, 3);
     assert.equal(config.szechuan_stall_limit, 5);
-    assert.equal(config.anatomy_max_iterations, 100);
-    assert.equal(config.szechuan_max_iterations, 50);
+    assert.equal(config.anatomy_max_iterations, 500);
+    assert.equal(config.szechuan_max_iterations, 500);
   });
 
   test('defaults numeric fields when NaN', () => {
@@ -988,7 +988,7 @@ describe('parsePipelineConfig', () => {
       szechuan_max_iterations: 'also_garbage',
     });
     assert.equal(config.anatomy_stall_limit, 3);
-    assert.equal(config.szechuan_max_iterations, 50);
+    assert.equal(config.szechuan_max_iterations, 500);
   });
 
   test('defaults numeric fields when null or non-positive', () => {
@@ -1003,8 +1003,8 @@ describe('parsePipelineConfig', () => {
     assert.equal(config.child_mux_runner_stall_seconds, 1800);
     assert.equal(config.anatomy_stall_limit, 3);
     assert.equal(config.szechuan_stall_limit, 5);
-    assert.equal(config.anatomy_max_iterations, 100);
-    assert.equal(config.szechuan_max_iterations, 50);
+    assert.equal(config.anatomy_max_iterations, 500);
+    assert.equal(config.szechuan_max_iterations, 500);
   });
 
   test('defaults numeric fields when Infinity', () => {
@@ -1029,8 +1029,8 @@ describe('parsePipelineConfig', () => {
     assert.equal(config.child_mux_runner_heartbeat_ms, 60_000);
     assert.equal(config.anatomy_stall_limit, 3);
     assert.equal(config.szechuan_stall_limit, 5);
-    assert.equal(config.anatomy_max_iterations, 100);
-    assert.equal(config.szechuan_max_iterations, 50);
+    assert.equal(config.anatomy_max_iterations, 500);
+    assert.equal(config.szechuan_max_iterations, 500);
   });
 
   test('disables child heartbeat when configured with a non-positive integer', () => {
@@ -1115,6 +1115,103 @@ describe('parsePipelineConfig', () => {
     const config = parsePipelineConfig({ phases: [], target: '', dirty_exempt_segments: ['prds', 42] });
     assert.deepEqual(config.dirty_exempt_segments, ['prds', 'docs']);
   });
+});
+
+// ---------------------------------------------------------------------------
+// C7 (3b3d9882) — loop-bound taxonomy.
+//
+// KIND 1 bounds count passes that DID land work, so bounding them converts
+// progress into a withheld verdict; they are held equal at 500. KIND 2 bounds
+// count CONSECUTIVE passes that advanced NOTHING, so they ARE the health
+// measurement and must stay where they are. The pins below are deliberately one
+// `test()` per bound: a single assertion covering two bounds would let one
+// regression hide behind the other's failure.
+// ---------------------------------------------------------------------------
+
+// Every KIND 2 no-progress detector, with the channel through which its value is
+// observable. `config` bounds are read by calling parsePipelineConfig; `export`
+// bounds are imported; `source` bounds are module-private, so the compiled
+// mirror is the only place their value is visible.
+const C7_EXTENSION_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
+
+const C7_KIND2_CONFIG_BOUNDS = [
+  { name: 'anatomy_stall_limit', value: 3 },
+  { name: 'szechuan_stall_limit', value: 5 },
+];
+
+const C7_KIND2_EXPORTED_BOUNDS = [
+  { name: 'DEFAULT_SILENT_DEATH_RESPAWN_CAP', value: 1 },
+  { name: 'DEFAULT_FAILED_FLIP_SUPPRESSION_CAP', value: 2 },
+  { name: 'DEFAULT_BOUNDED_TERMINAL_ESCAPE_CAP', value: 3 },
+];
+
+const C7_KIND2_SOURCE_BOUNDS = [
+  { name: 'DEFAULT_MUX_IDLE_STALL_RECOVERY_CAP', value: 3, file: 'bin/mux-runner.js' },
+  { name: 'PHANTOM_DONE_RECHECK_CAP', value: 2, file: 'bin/mux-runner.js' },
+  { name: 'POST_CONVERGENCE_GATE_DEFERRAL_LIMIT', value: 3, file: 'bin/microverse-runner.js' },
+  { name: 'READINESS_MAX_RECYCLE_CYCLES', value: 3, file: 'bin/check-readiness.js' },
+  { name: 'MCP_STARTUP_MAX_RETRIES', value: 2, file: 'services/codegraph-service.js' },
+];
+
+describe('C7 loop-bound taxonomy', () => {
+  test('KIND 1: anatomy_max_iterations default is 500', () => {
+    assert.equal(parsePipelineConfig({ phases: [], target: '' }).anatomy_max_iterations, 500);
+  });
+
+  test('KIND 1: szechuan_max_iterations default is 500', () => {
+    assert.equal(parsePipelineConfig({ phases: [], target: '' }).szechuan_max_iterations, 500);
+  });
+
+  // Derived on both sides — no literal. A one-sided raise that also updated the
+  // matching literal pin above would still red here.
+  test('KIND 1: no phase length bound is shorter than another', () => {
+    const config = parsePipelineConfig({ phases: [], target: '' });
+    assert.equal(
+      config.anatomy_max_iterations,
+      config.szechuan_max_iterations,
+      'anatomy and szechuan length bounds must move together; a gap needs a comment citing its measurement',
+    );
+  });
+
+  for (const key of ['anatomy_max_iterations', 'szechuan_max_iterations']) {
+    test(`KIND 1: ${key} honours an explicit override in both directions`, () => {
+      const below = parsePipelineConfig({ phases: [], target: '', [key]: 1 });
+      const above = parsePipelineConfig({ phases: [], target: '', [key]: 9999 });
+      const invalid = parsePipelineConfig({ phases: [], target: '', [key]: 'garbage' });
+      assert.equal(below[key], 1, 'an explicit 1 must survive, not clamp up to the default');
+      assert.equal(above[key], 9999, 'an explicit 9999 must survive, not clamp down to the default');
+      assert.equal(invalid[key], 500, 'an invalid value must fall back to the NEW default');
+    });
+  }
+
+  for (const bound of C7_KIND2_CONFIG_BOUNDS) {
+    test(`KIND 2 unchanged: ${bound.name} is ${bound.value}`, () => {
+      assert.equal(parsePipelineConfig({ phases: [], target: '' })[bound.name], bound.value);
+    });
+  }
+
+  for (const bound of C7_KIND2_EXPORTED_BOUNDS) {
+    test(`KIND 2 unchanged: ${bound.name} is ${bound.value}`, async () => {
+      const mod = await import('../services/pickle-utils.js');
+      assert.equal(mod[bound.name], bound.value);
+    });
+  }
+
+  for (const bound of C7_KIND2_SOURCE_BOUNDS) {
+    test(`KIND 2 unchanged: ${bound.name} is ${bound.value}`, () => {
+      const source = fs.readFileSync(path.join(C7_EXTENSION_ROOT, bound.file), 'utf-8');
+      const matches = source.match(new RegExp(`\\bconst ${bound.name} = (\\d+);`, 'g')) || [];
+      // A missing declaration must FAIL, not read as agreement: a rename or a
+      // deletion produces zero matches, and zero matches trivially satisfy any
+      // "every match has the right value" check.
+      assert.equal(
+        matches.length,
+        1,
+        `${bound.name} must have exactly one declaration in ${bound.file} (found ${matches.length})`,
+      );
+      assert.equal(Number(matches[0].match(/(\d+);$/)[1]), bound.value);
+    });
+  }
 });
 
 describe('armChildMuxRunnerHeartbeat', () => {
