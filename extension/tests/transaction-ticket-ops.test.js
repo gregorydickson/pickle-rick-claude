@@ -11,7 +11,7 @@ import {
   replayReverseLedger,
   updateTicketStatusInTransaction,
 } from '../services/transaction-ticket-ops.js';
-import { markTicketDone, markTicketSkipped } from '../services/pickle-utils.js';
+import { markTicketDone, markTicketSkipped, markTicketWithStatus } from '../services/pickle-utils.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'transaction-ticket-ops-'));
@@ -856,5 +856,66 @@ test('AP-EXT-ITER197-01: a bare JSON-array ledger is read as a container', () =>
 
     assert.equal(fs.readFileSync(updatedPath, 'utf-8'), 'old');
     assert.deepEqual(restored, [{ path: updatedPath, content: 'old' }]);
+  });
+});
+
+/**
+ * AP-EXT-ITER223-01: `markTicketWithStatus` is THE ticket-status writer (`markTicketDone`,
+ * `markTicketSkipped`, `setup.ts` and `mux-runner.ts` all route through it), and its boolean is
+ * every caller's "did the status land?" oracle. The wrapper catches everything and otherwise
+ * returns `true`, so the ONLY thing that can report a no-op is `assertStatusWasUpdated`'s throw.
+ * That guard covers two no-op modes -- the status already equals the target, and the file carries
+ * NO `status:` line so the rewrite regex never matched -- and only the first had a fixture
+ * (`pickle-utils.test.js`, "no-op when already Done"). Narrowing the guard to the already-equal
+ * case alone therefore survived the entire fast tier while `markTicketDone` returned `true` over a
+ * file whose status stayed `null`; downstream, `norm(null)` is never `done`, so the ticket is
+ * permanently non-terminal and `EPIC_COMPLETED` never fires. Absent LLM-authored frontmatter is a
+ * measured class here, not a hypothetical -- see R-TIDNULL in `collectTickets` for `id`.
+ *
+ * Pinned as a DERIVED biconditional over a case table rather than as hand-picked expectations:
+ * a third no-op mode is covered the moment it exists, with no row to remember to add.
+ */
+test('AP-EXT-ITER223-01: markTicketWithStatus returns true exactly when the status changed to the target', () => {
+  const CASES = [
+    { name: 'no status line in frontmatter', frontmatter: ['title: "x"'], target: 'Done' },
+    { name: 'status already the target', frontmatter: ['status: "Done"', 'title: "x"'], target: 'Done' },
+    { name: 'status differs, terminal target', frontmatter: ['status: "Todo"', 'title: "x"'], target: 'Done' },
+    { name: 'status differs, non-terminal target', frontmatter: ['status: "Todo"', 'title: "x"'], target: 'In Progress' },
+  ];
+
+  withDir((sessionDir) => {
+    const observed = CASES.map((testCase, index) => {
+      const ticketId = `apiter223${index}`;
+      fs.mkdirSync(path.join(sessionDir, ticketId), { recursive: true });
+      const ticketPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
+      fs.writeFileSync(ticketPath, `---\nid: ${ticketId}\n${testCase.frontmatter.join('\n')}\n---\n\n# body\n`);
+
+      const readStatus = () => {
+        const match = fs.readFileSync(ticketPath, 'utf-8').match(/^status:\s*"?([^"\n]*)"?$/m);
+        return match ? match[1] : null;
+      };
+      const before = readStatus();
+      const returned = markTicketWithStatus(sessionDir, ticketId, testCase.target);
+      return {
+        name: testCase.name,
+        returned,
+        landed: before !== testCase.target && readStatus() === testCase.target,
+      };
+    });
+
+    // The contract, uniformly: the boolean claims the status CHANGED to the target. A no-op --
+    // for any reason -- must report false, and a real transition must report true.
+    for (const row of observed) {
+      assert.equal(
+        row.returned,
+        row.landed,
+        `${row.name}: markTicketWithStatus returned ${row.returned} but landed=${row.landed}`,
+      );
+    }
+
+    // Both sides must be populated, or a constant-returning writer would satisfy the
+    // biconditional vacuously.
+    assert.ok(observed.some(row => row.landed), 'no case exercised a real transition');
+    assert.ok(observed.some(row => !row.landed), 'no case exercised a no-op');
   });
 });
