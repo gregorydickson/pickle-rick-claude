@@ -71,6 +71,7 @@ import {
   EXIT_REASONS,
   MICROVERSE_EXIT_REASONS,
   MICROVERSE_FATAL_REASONS,
+  classifyExitReason,
 } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -907,5 +908,138 @@ describe('AC-6 (0d579ec5) — the abort channel is bounded and the bound is meas
         'the residual is still recorded even when the operator cancels');
       fs.rmSync(repo, { recursive: true, force: true });
     });
+  });
+});
+
+/**
+ * ROOT 0 (1428cbe9) — the collapsed seam.
+ *
+ * `AC-OA-3b — channel 1` above asserts every union member is classified by at least one
+ * of the three predicates. That property USED to be the only thing standing between the
+ * codebase and the fake-green class: four hand-maintained subsets of one 20-member domain,
+ * none exhaustive, so a reason matching none fell through to the success arm.
+ *
+ * It is now a consequence of the type system: `EXIT_DISPOSITIONS` is a total
+ * `Record<typeof EXIT_REASONS[number], ExitDisposition>`, so omitting a member is TS2741.
+ * The tests here pin the properties tsc CANNOT express — that the predicates actually read
+ * that record rather than reintroducing a local list, and that the default arm stays
+ * unreachable from the record itself.
+ */
+describe('ROOT 0 — one disposition vocabulary, every predicate a derivation', () => {
+  const MUX_SRC_TEXT = fs.readFileSync(path.resolve(__dirname, '../src/bin/mux-runner.ts'), 'utf-8');
+  const TYPES_SRC_TEXT = fs.readFileSync(path.resolve(__dirname, '../src/types/index.ts'), 'utf-8');
+
+  test('the record is TOTAL over EXIT_REASONS — every member has a real disposition', () => {
+    for (const reason of EXIT_REASONS) {
+      const d = classifyExitReason(reason);
+      assert.notEqual(
+        d.verdict,
+        'unknown',
+        `${reason} fell through to the DEFAULT disposition, so it is an EXIT_REASONS member `
+        + 'with no row in EXIT_DISPOSITIONS — the fake-green class this collapse closed',
+      );
+    }
+  });
+
+  test("no EXIT_DISPOSITIONS row may carry verdict 'unknown' — it is the default arm only", () => {
+    const record = TYPES_SRC_TEXT.match(/const EXIT_DISPOSITIONS[\s\S]*?\n};/)[0];
+    assert.doesNotMatch(
+      record,
+      /'unknown'/,
+      "'unknown' is reserved for DEFAULT_EXIT_DISPOSITION (an unrecognized string). A row "
+      + 'carrying it would classify a KNOWN reason as unclassifiable.',
+    );
+  });
+
+  test('an unrecognized reason is classified by NO predicate, and says so', () => {
+    // Parity with the shipped behaviour: all three answer false. The disposition labels it
+    // 'unknown' rather than 'success' so the record never asserts a success it never measured.
+    const d = classifyExitReason('__not_an_exit_reason__');
+    assert.equal(d.verdict, 'unknown');
+    assert.equal(d.haltEligible, false);
+    assert.equal(d.crashFloor, false);
+    assert.equal(isHaltExit('__not_an_exit_reason__'), false);
+    assert.equal(isFailureExit('__not_an_exit_reason__'), false);
+    assert.equal(isIncompleteExit('__not_an_exit_reason__'), false);
+  });
+
+  test('mux-runner holds NO exit-reason membership list of its own', () => {
+    // The whole defect was two vocabularies. A local set here would be a third.
+    for (const banned of ['FAILURE_EXIT_REASONS', 'INCOMPLETE_EXIT_REASONS']) {
+      assert.doesNotMatch(
+        MUX_SRC_TEXT,
+        new RegExp(`const ${banned}`),
+        `${banned} is back in mux-runner.ts — membership belongs to EXIT_DISPOSITIONS alone`,
+      );
+    }
+    for (const pred of ['isHaltExit', 'isFailureExit']) {
+      const line = MUX_SRC_TEXT.match(new RegExp(`export const ${pred} = .*$`, 'm'))[0];
+      assert.match(
+        line,
+        /classifyExitReason\(r\)/,
+        `${pred} must derive from classifyExitReason, not restate membership`,
+      );
+    }
+  });
+
+  test('crashFloor is a strict subset of the failure verdict, and stays at 3', () => {
+    // AC-0c: the crash floor is the ONLY axis that may halt the pickle phase. It must never
+    // widen to the failure class, which holds quality/measurement verdicts the root
+    // CLAUDE.md binds to park-and-flag.
+    for (const reason of CRASH_FLOOR_EXIT_REASONS) {
+      assert.equal(classifyExitReason(reason).verdict, 'failure',
+        `${reason} is on the crash floor but is not a failure verdict`);
+    }
+    assert.equal(CRASH_FLOOR_EXIT_REASONS.length, 3, 'the crash floor must not grow');
+    assert.ok(
+      CRASH_FLOOR_EXIT_REASONS.length < EXIT_REASONS.filter((r) => isFailureExit(r)).length,
+      'the crash floor must stay a STRICT subset of the failure class',
+    );
+  });
+
+  /**
+   * The AC-0b parity table, pinned as DATA. Every row was extracted from the SHIPPED runtime
+   * before the collapse; the diff after it was empty. Pinning it here means a future edit to
+   * EXIT_DISPOSITIONS that changes what an exit reason MEANS has to say so here, in a diff a
+   * reviewer reads, instead of silently re-routing a halt.
+   */
+  describe('AC-0b — the (exit_reason x predicate) table is frozen', () => {
+    const EXPECTED = {
+      success: [false, false, false, false],
+      cancelled: [true, false, false, false],
+      limit: [true, false, false, false],
+      closer_handoff_terminal: [true, false, false, false],
+      timeout_repeat: [true, true, false, false],
+      error: [false, true, false, false],
+      iteration_cap_exhausted: [false, true, false, false],
+      stall: [false, true, false, false],
+      circuit_open: [false, true, false, false],
+      rate_limit_exhausted: [false, true, false, false],
+      manager_persistent_hallucination: [false, true, false, false],
+      codex_unhealthy_consecutive_failures: [false, true, false, false],
+      working_tree_modified_externally: [false, true, false, false],
+      codex_manager_no_progress: [false, true, false, false],
+      recovery_exhausted: [false, true, false, false],
+      idle_stall_unrecoverable: [false, true, false, false],
+      state_schema_version_ahead: [false, true, false, true],
+      state_working_dir_missing: [false, true, false, true],
+      toolchain_unavailable: [false, true, false, true],
+      done_without_commit_evidence: [false, false, true, false],
+    };
+
+    test('the table covers EXIT_REASONS exactly — no member unpinned, none invented', () => {
+      assert.deepEqual([...EXIT_REASONS].sort(), Object.keys(EXPECTED).sort());
+    });
+
+    for (const [reason, [halt, failure, incomplete, crashFloor]] of Object.entries(EXPECTED)) {
+      test(`${reason} classifies exactly as it did before the collapse`, () => {
+        assert.deepEqual(
+          [isHaltExit(reason), isFailureExit(reason), isIncompleteExit(reason),
+            CRASH_FLOOR_EXIT_REASONS.includes(reason)],
+          [halt, failure, incomplete, crashFloor],
+          `${reason} changed meaning — that is a behaviour change, not a simplification`,
+        );
+      });
+    }
   });
 });
