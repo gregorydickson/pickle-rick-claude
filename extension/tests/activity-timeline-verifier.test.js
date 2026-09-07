@@ -724,3 +724,108 @@ test('AP-EXT-ITER211-01 control: an unparseable spawn timestamp is not eviction'
   ];
   assert.deepEqual(unspawnedTerminalTickets(activity), []);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER220-01 — the conjuncts this module's own thesis rests on had no fixture.
+//
+// Found by mutation over the compiled mirror: 14 conjunct deletions, 10 of which left
+// the suite 34/34 GREEN. Four of those ten are EQUIVALENT and are deliberately not
+// pinned (see the trap door): the two `getEventTicketId(...) !== null` / `!Number.isNaN`
+// guards on the TERMINAL filter are pre-filters for a comparison that already rejects
+// the same rows, `currentRunEvents`' `!Number.isNaN(ms)` is subsumed by `ms >= n`
+// (NaN >= n is false), and `computeWallClockMs`' `spawnMs <= terminalMs` bound is
+// unreachable because `currentRunEvents` has already bounded every terminal to
+// `>= latestSpawnMs`. Pinning an equivalent mutant buys a test that cannot fail.
+//
+// The five below each change an OBSERVABLE verdict. Each is mutation-verified in
+// isolation on the compiled mirror.
+// ---------------------------------------------------------------------------
+
+function skippedEvt(ts, ticket, phases) {
+  return { event: 'tier_phase_skipped', ts, ticket_id: ticket, tier: 'small', skipped_phases: phases };
+}
+
+test('AP-EXT-ITER220-01: a ticket whose test:fast was SKIPPED is not an observed completion, even with a clean boundary', () => {
+  // The headline, and the fail-OPEN direction. Every pre-existing skip fixture stops at
+  // the skip event, so `observedCompletion`'s `!skipped` conjunct had never been crossed
+  // with the positive clean-terminal evidence it guards. Dropping it flips this ticket to
+  // `observed`/true — a gate that never ran, reported as a clean run, which is the exact
+  // absence-is-evidence reading this module exists to report ON rather than commit.
+  const activity = [
+    spawnEvt('2026-09-07T10:00:00.000Z', 'eeee5555'),
+    skippedEvt('2026-09-07T10:00:01.000Z', 'eeee5555', ['test:fast']),
+    boundaryCommitEvt('2026-09-07T10:05:00.000Z', 'eeee5555'),
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'eeee5555');
+  assert.equal(t.skipped, true);
+  assert.equal(t.observedCompletion, false, 'a skipped gate is never an observed completion');
+  assert.equal(t.reason, 'skipped');
+  assert.equal(
+    buildGateCompletionReport(activity).summary.observedCompletions, 0,
+    'the headline count must not absorb a skipped ticket',
+  );
+});
+
+test('AP-EXT-ITER220-01: only a test:fast skip suppresses the observed verdict, not any tier_phase_skipped', () => {
+  // The over-rejection control for the arm above AND the pin for the `.includes('test:fast')`
+  // member test. A trivial/small tier legitimately skips `research`; reading that as "the
+  // gate did not run" would report every reduced-lifecycle ticket as unverified.
+  const activity = [
+    spawnEvt('2026-09-07T10:00:00.000Z', 'ffff6666'),
+    skippedEvt('2026-09-07T10:00:01.000Z', 'ffff6666', ['research', 'plan_review']),
+    boundaryCommitEvt('2026-09-07T10:05:00.000Z', 'ffff6666'),
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'ffff6666');
+  assert.equal(t.skipped, false, 'a non-test:fast skip is not a test:fast skip');
+  assert.equal(t.observedCompletion, true);
+  assert.equal(t.reason, 'observed');
+});
+
+test('AP-EXT-ITER220-01: a worker_gate_failed from another gate phase is not a test:fast failure', () => {
+  // `gate_phase` is a REQUIRED field on this event and its enum covers lint/tsc/
+  // test:fast/test:integration, so a lint red is a routine member of the stream.
+  // Without the `gate_phase === 'test:fast'` conjunct it is read as this ticket's
+  // test:fast verdict and the row reports `failed` over a gate whose result is unknown.
+  const activity = [
+    spawnEvt('2026-09-07T10:00:00.000Z', 'aaaa7777'),
+    gateFailedEvt('2026-09-07T10:05:00.000Z', 'aaaa7777', 'lint', []),
+  ];
+  const t = buildGateCompletionReport(activity).tickets.find((x) => x.ticket === 'aaaa7777');
+  assert.equal(t.failedNonTimeout, false);
+  assert.equal(t.reason, 'unresolved', 'an unrelated gate phase leaves test:fast unmeasured, not failed');
+});
+
+test('AP-EXT-ITER220-01: a spawn event carrying no ticket id cannot narrow an overlap window', () => {
+  // `worker_spawn_backend_resolved` requires only event/ts/backend/source/pid — a ticket
+  // id is NOT in its schema-required set, so a ticket-less spawn is a schema-legal member
+  // of the stream. Admitting it makes it the window's right edge: the prior ticket's real
+  // terminal (10:01:30) falls outside [10:00:00, 10:01:00] and a resolved hand-off is
+  // reported as an overlap violation.
+  const activity = [
+    spawnEvt('2026-09-07T10:00:00.000Z', 'bbbb8888'),
+    boundaryCommitEvt('2026-09-07T10:01:30.000Z', 'bbbb8888'),
+    spawnEvt('2026-09-07T10:01:00.000Z', undefined),
+    spawnEvt('2026-09-07T10:02:00.000Z', 'cccc9999'),
+  ];
+  assert.deepEqual(
+    findOverlapViolations(activity), [],
+    'a ticket-less spawn is not a hand-off boundary',
+  );
+});
+
+test('AP-EXT-ITER220-01: a spawn with an unparseable timestamp cannot fabricate an overlap', () => {
+  // Its `ts` is NaN, so every `t.ts >= lastSpawnMs` comparison against it is false and
+  // NO terminal can ever close its window — the predicate would report a violation
+  // against a ticket that demonstrably resolved. `collectSpawnMsByTicket` already
+  // contemplates this input shape (AP-EXT-ITER155-01); this is the same fact one
+  // reader over.
+  const activity = [
+    spawnEvt('not-a-timestamp', 'dddd1010'),
+    boundaryCommitEvt('2026-09-07T10:01:00.000Z', 'dddd1010'),
+    spawnEvt('2026-09-07T10:02:00.000Z', 'eeee1111'),
+  ];
+  assert.deepEqual(
+    findOverlapViolations(activity), [],
+    'an unparseable spawn timestamp is not evidence of an overlap',
+  );
+});
