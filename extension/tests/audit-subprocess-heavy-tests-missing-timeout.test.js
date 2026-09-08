@@ -136,10 +136,13 @@ function argsArraySpawnersFromNode() {
 
 // Assembled from split tokens for the same reason `fixtureSource` is: this file lives in the real
 // extension/tests corpus and must never itself read as a candidate to the audit it drives.
-function shellSpawnFixtureSource(fn) {
+// The script path carries no '-': the scan's first-array-argument exclusion drops a candidate whose
+// first arg looks like a flag, and any hyphen in the path satisfies it, so a hyphenated fixture
+// would read as clean for a reason that has nothing to do with what is under test.
+function shellSpawnFixtureSource(fn, program = 'bash') {
   return [
     '// @tier: integration',
-    fn + "('bash', ['/some/script.sh'], { encoding: 'utf-8', timeout: 3000 });",
+    fn + "('" + program + "', ['/some/script.sh'], { encoding: 'utf-8', timeout: 3000 });",
     '',
   ].join('\n');
 }
@@ -172,6 +175,63 @@ test('AP-EXT-ITER67-01: every child_process spawner taking an args array is a su
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  }
+});
+
+// AP-EXT-ITER70-01. `SHELL_PROGRAM_RE` decides which PROGRAMS the hard-FAIL band covers, and it is
+// the same enumerated-set shape as `SPAWN_FNS` one line above it -- at two members instead of five.
+// Every fixture this repo ships names bash; nothing anywhere drives sh. Measured on the real CLI:
+// shipped, a short-timeout sh spawn is `subprocess-heavy candidate not serialized` at exit 1; drop
+// the sh member and the identical fixture degrades to a non-failing WARN at exit 0, with all four
+// suites that touch this script byte-identically GREEN -- including the canonical one. That FAIL
+// band is what the release gate and `pretest:integration` read with `&&`.
+//
+// The expected members are NOT read off `SHELL_PROGRAM_RE`: an expectation taken from the artifact
+// under test shrinks with the amputation and stays green over the defect (AP-EXT-ITER67-01's rule).
+// They are the two the catalog INVARIANT states for this script, and they are deliberately only two
+// -- the FAIL band's narrowing is load-bearing, so this pin is a FLOOR on that set, not a ceiling.
+const HARD_FAIL_SHELL_PROGRAMS = ['bash', 'sh'];
+
+test('AP-EXT-ITER70-01: every program in the hard-FAIL shell set is a violation, and a non-shell program is not', () => {
+  for (const program of HARD_FAIL_SHELL_PROGRAMS) {
+    const dir = tmpScanRoot();
+    try {
+      fs.writeFileSync(
+        path.join(dir, 'shell-program.test.js'),
+        shellSpawnFixtureSource('spawnSync', program),
+      );
+      const result = runAudit(dir);
+      assert.equal(
+        result.status,
+        1,
+        `a short-timeout ${program} spawn read as clean - that program is missing from the hard-FAIL band; stderr=${result.stderr}`,
+      );
+      assert.match(result.stderr, /subprocess-heavy candidate not serialized/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // The control, and the reason the loop above is not vacuous: these fixtures differ from the ones
+  // above in the PROGRAM NAME alone. The FAIL band deliberately does not cover other programs -- a
+  // short timeout on one degrades to the gentler "serialize this" WARN -- so a scanner that hard
+  // -failed every program would satisfy the loop and red here.
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'shell-program.test.js'),
+      shellSpawnFixtureSource('spawnSync', 'node'),
+    );
+    const result = runAudit(dir);
+    assert.equal(
+      result.status,
+      0,
+      `a short-timeout non-shell spawn hard-failed - the FAIL band stopped discriminating by program; stderr=${result.stderr}`,
+    );
+    assert.match(result.stderr, /load-sensitive subprocess spawn/);
+    assert.doesNotMatch(result.stderr, /subprocess-heavy candidate not serialized/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
