@@ -357,9 +357,13 @@ the AC-G3 net-LOC number whatever it says.
 
 ---
 
-## 🐙 GITHUB ISSUES → BUNDLE MAP (verified against HEAD 2026-09-05; nothing closed)
+## 🐙 GITHUB ISSUES → BUNDLE MAP (rows #5–#11 verified against HEAD 2026-09-05; #14 verified 2026-09-08)
 
-All open issues were re-measured at HEAD before this map was written. **None qualifies as won't-fix.**
+Rows #5–#11 were re-measured at HEAD on 2026-09-05. **#14 was filed AFTER that sweep and is verified
+separately below** — the 2026-09-05 header used to claim the map covered every open issue, which stopped
+being true the moment a new one was filed. **Re-run `gh issue list --state open` against this table
+before trusting it as complete; a catalog that asserts completeness is exactly the shape that rots green.**
+**None qualifies as won't-fix.**
 
 | # | premise verified live by | disposition |
 |---|---|---|
@@ -370,6 +374,7 @@ All open issues were re-measured at HEAD before this map was written. **None qua
 | **#10** | `all_success` live at `spawn-refinement-team.ts:2568` | B-UNATTENDED **TIER 2** |
 | **#11** | shipped-predicate replay over the live corpus: 10 of 26 artifacts halt = **24% of all tickets** | B-UNATTENDED **TIER 1** |
 | **#5** | architecture review; already concludes *"do not migrate"* | **OPEN, not scoped — and now MORE relevant** |
+| **#14** | verified at HEAD 2026-09-08: `grep -c "subsystems.push({ name: entry.name"` = **1** (subsystem identity IS a top-level `readdirSync` entry), `grep -cE "pnpm-workspace\|workspaces"` = **0** (no workspace awareness). Operator evidence: 4 of 6 runs `anatomy_non_convergent`, ~11.5h. | [[B-MEGADRAIN]] **ROOT W** — and it **interacts with C6**: those runs died at the OLD APNC cap of 8, so the raise to 50 makes a structurally-unconvergeable run ~6x costlier. Compose with **#8** (same monorepo-shape family). |
 
 **#5 is deliberately left open and unscheduled.** It is not a bug and it is not won't-fix. It states
 that of four ideas worth taking from Genesis, *"one of them is arguably the whole thesis of this project
