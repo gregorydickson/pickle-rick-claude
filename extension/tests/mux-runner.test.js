@@ -7296,3 +7296,53 @@ test('AP-EXT-ITER240-01: prose ahead of the first heading is still preamble', ()
 
     assert.ok(result.includes('SESSION 2026-09-08 handoff header line'), 'prose before the first heading must still be preserved as preamble');
 });
+
+// --- AP-EXT-ITER238-R2: the `^` anchor on parseTaskNoteSections' heading regex ---
+//
+// `/^## .+$/gm` splits TASK_NOTES.md into priority-ranked sections. Only the
+// `^` distinguishes a real `## ` heading from the two shapes that merely
+// CONTAIN one: a `### ` sub-heading (chars 1..3 spell `## `) and an indented
+// `  ## ` line. Drop the anchor and both become section boundaries, so the
+// remainder of a `## Next` or `## Dead Ends` body is re-filed under a new
+// priority-3 name and evicted by the very truncation pass that exists to
+// preserve it. On the live handoff the anchor decides 23 headings vs 185
+// matches; amputating it cuts the injected notes from 2000 to 625 chars.
+// The anchor fails OPEN — over-matching costs content, never an error.
+
+const iter238Stale = '## Progress\n' + '- stale entry from an old iteration, padding padding\n'.repeat(60);
+
+test('AP-EXT-ITER238-R2: a ### sub-heading inside ## Next does not end the section', () => {
+    const body =
+        '## Next\n- take the deferred anchor finding\n\n' +
+        '### Method notes\n- the sub-heading body belongs to Next, not to a new section\n\n' +
+        '## Dead Ends\n- do not retry the salvage path\n\n' +
+        iter238Stale;
+    assert.ok(body.length > 2000, 'fixture must exceed the budget or truncation never runs');
+    assert.ok(/\n### Method notes$/m.test(body), 'fixture must carry a ### sub-heading — that is the discriminator');
+
+    const result = truncateTaskNotes(body, 2000);
+
+    assert.ok(result.includes('- take the deferred anchor finding'), 'Next body before the sub-heading must survive');
+    assert.ok(
+        result.includes('the sub-heading body belongs to Next, not to a new section'),
+        'a ### sub-heading must not split ## Next into a droppable priority-3 section',
+    );
+    assert.ok(result.includes('- do not retry the salvage path'), 'Dead Ends must still survive');
+});
+
+test('AP-EXT-ITER238-R2: an indented ## line inside a body does not end the section', () => {
+    const body =
+        '## Dead Ends\n- do not retry the salvage path\n' +
+        '  ## quoted heading from a prior log line\n' +
+        '- the line after the indented heading belongs to Dead Ends\n\n' +
+        iter238Stale;
+    assert.ok(body.length > 2000, 'fixture must exceed the budget or truncation never runs');
+    assert.ok(/\n {2}## quoted heading/.test(body), 'fixture must carry an INDENTED ## line — that is the discriminator');
+
+    const result = truncateTaskNotes(body, 2000);
+
+    assert.ok(
+        result.includes('the line after the indented heading belongs to Dead Ends'),
+        'an indented ## line must not split ## Dead Ends into a droppable priority-3 section',
+    );
+});
