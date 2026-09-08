@@ -424,6 +424,11 @@ test('AC-PCOMP-4 sandbox: the fixture git env is constructed by a GIT_ prefix ru
   // (2) Live process. Whatever this host exported, the ONLY GIT_* keys visible to the git that
   // production spawns (mux-runner's commit inherits process.env wholesale — it passes no `env`)
   // are the ones this fixture constructed.
+  //
+  // The GIT_ predicate is restated here rather than shared with scrubAmbientGitEnv ON PURPOSE. Do
+  // NOT "DRY" the two together: a pin that measures the subject with the subject's own selector
+  // goes green when that selector is mutated, which is precisely the failure this pin exists to
+  // catch.
   assert.deepEqual(
     Object.keys(process.env).filter((key) => key.startsWith('GIT_')).sort(),
     Object.keys(SANDBOX_GIT_ENV).sort(),
