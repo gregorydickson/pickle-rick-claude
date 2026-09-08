@@ -16,6 +16,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import * as childProcess from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -103,6 +104,74 @@ test('audit-subprocess-heavy-tests --scan-root: clean scan root (no candidates) 
     assert.equal(result.status, 0, `expected exit 0 for a clean scan root; stderr=${result.stderr}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// AP-EXT-ITER67-01. `SPAWN_FNS` in scripts/audit-subprocess-heavy-tests.sh is a hand-maintained
+// alternation of call spellings feeding the scan, and every shipped fixture drives ONE of its five
+// members. Measured on the real CLI, one scan root per spelling: narrow that alternation to
+// `spawnSync` alone and a short-timeout bash spawn written with any of the other four -- a hard
+// FAIL in the shipped scope -- reads `audit-subprocess-heavy-tests: OK` exit 0, with all three
+// suites GREEN. Dropping any ONE of the four is equally invisible.
+//
+// The required set is deliberately NOT read off `SPAWN_FNS`: amputating a member would shrink the
+// derived set with it and this pin would stay green over the exact defect. It comes from
+// `node:child_process` itself -- a spawner takes an argv ARRAY as its second argument iff its
+// second DECLARED PARAMETER is named `args`. That is what separates the array-form entry points
+// from the command-string ones, whose second parameter is `options`. The derivation needs no
+// exemption list and reds if node grows a sixth array-form spawner.
+function argsArraySpawnersFromNode() {
+  const names = [];
+  for (const name of Object.keys(childProcess)) {
+    if (name.startsWith('_')) continue;
+    const fn = childProcess[name];
+    if (typeof fn !== 'function') continue;
+    const signature = /^\s*(?:async\s+)?function[^(]*\(([^)]*)\)/.exec(String(fn));
+    if (!signature) continue; // a class export carries no function signature
+    const second = (signature[1].split(',')[1] ?? '').split('=')[0].trim();
+    if (second === 'args') names.push(name);
+  }
+  return names.sort();
+}
+
+// Assembled from split tokens for the same reason `fixtureSource` is: this file lives in the real
+// extension/tests corpus and must never itself read as a candidate to the audit it drives.
+function shellSpawnFixtureSource(fn) {
+  return [
+    '// @tier: integration',
+    fn + "('bash', ['/some/script.sh'], { encoding: 'utf-8', timeout: 3000 });",
+    '',
+  ].join('\n');
+}
+
+test('AP-EXT-ITER67-01: every child_process spawner taking an args array is a subprocess-heavy candidate', () => {
+  const spawners = argsArraySpawnersFromNode();
+  assert.ok(
+    spawners.length >= 5,
+    `the node derivation went vacuous - it named ${spawners.length} spawner(s): ${spawners.join(', ')}`,
+  );
+  // Two-sided, so a discriminator that admitted everything could not pass as one that discriminates:
+  // the command-string entry points take options second and must stay OUT of the derived set.
+  assert.deepEqual(
+    spawners.filter((n) => n === 'exec' || n === 'execSync'),
+    [],
+    'the second-parameter discriminator is not discriminating - it admitted a command-string entry point',
+  );
+
+  for (const fn of spawners) {
+    const dir = tmpScanRoot();
+    try {
+      fs.writeFileSync(path.join(dir, 'shell-spawn.test.js'), shellSpawnFixtureSource(fn));
+      const result = runAudit(dir);
+      assert.equal(
+        result.status,
+        1,
+        `a short-timeout bash spawn spelled ${fn} read as clean - that spelling is missing from the scan; stderr=${result.stderr}`,
+      );
+      assert.match(result.stderr, /subprocess-heavy candidate not serialized/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 
