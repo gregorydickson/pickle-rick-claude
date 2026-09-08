@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import * as childProcess from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -590,4 +591,113 @@ test('no test in the repo spawns a binary the workflows do not provision', async
     [],
     'a test spawns a binary the workflows do not install; it will ENOENT in CI',
   );
+});
+
+// ===========================================================================
+// AP-EXT-ITER51-01: the covered-shape enumeration was fixtured at ONE member.
+//
+// The block above drives the argv0 form of a single spawn function, so the
+// other four argv0 names and the whole shell-string matcher were
+// verdict-identical present or absent. MEASURED on the shipped CLI over a
+// one-call fixture per spelling: narrowing the argv0 alternation to that one
+// name leaves four spellings reporting CLEAN, and deleting the shell-string
+// matcher leaves two more, while every suite that touches this scanner stays
+// GREEN. A test spawning an unprovisioned tool through any of those six then
+// ships and ENOENTs in CI -- the exact defect the scanner exists to catch.
+//
+// Two arms, because a member fails in two ways. Arm 2 is LISTED: the covered
+// set is derived from node's own child_process surface, so a deletion leaves a
+// hole nothing has to remember. Arm 1 is LIVE: each covered name is driven end
+// to end through the shipped matchers, so a name that is listed but whose
+// matcher can no longer fire is a red rather than a decoration. Neither arm
+// mirrors the scanner's list -- arm 1 reads it off the compiled matchers, arm 2
+// answers it from node.
+//
+// Fixture call text is assembled from the derived name at run time, so this
+// file never spells a call whose argv0 is an unprovisioned tool -- the same
+// constraint, for the same reason, as the block above.
+// ===========================================================================
+
+const UNPROVISIONED_EXEMPLAR = 'jq';
+
+// The one public child_process spawner excluded from the covered set: its first
+// argument is a JS module path, never a binary name, so a tool name there is not
+// a dependency any workflow could provision.
+const NOT_A_BINARY_SPAWNER = ['fork'];
+
+// Node's own spawning surface, read off the module: public (no leading `_`),
+// callable, and not a class (a class export carries prototype methods beyond its
+// constructor). Derived rather than mirrored, so a child_process entry point
+// added upstream lands in the required set instead of being forgotten.
+function nodeBinarySpawnFns() {
+  return Object.keys(childProcess)
+    .filter((name) => !name.startsWith('_'))
+    .filter((name) => typeof childProcess[name] === 'function')
+    .filter((name) => Object.getOwnPropertyNames(childProcess[name].prototype ?? {}).length <= 1)
+    .filter((name) => !NOT_A_BINARY_SPAWNER.includes(name))
+    .sort();
+}
+
+// The names the SHIPPED matchers recognise, recovered from the compiled RegExp
+// sources rather than the file's text: a comment cannot answer a `.source`, and
+// a reflow cannot break reading one.
+function coveredSpawnFns(matchers) {
+  const names = new Set();
+  for (const matcher of matchers) {
+    const alternation = /\\b\(\?:([^)]+)\)/.exec(matcher.source);
+    if (alternation) for (const name of alternation[1].split('|')) names.add(name);
+  }
+  return names;
+}
+
+async function loadUnprovisionedScanner() {
+  const mod = await import(pathToFileURL(UNPROVISIONED_SCANNER).href);
+  const matchers = mod.buildMatchers(mod.deriveProvisionedTools(mod.defaultWorkflowsDir(EXTENSION_ROOT)));
+  return { mod, matchers };
+}
+
+test('AP-EXT-ITER51-01 arm 1: every covered spawn spelling fires', async () => {
+  const { mod, matchers } = await loadUnprovisionedScanner();
+  const covered = [...coveredSpawnFns(matchers)].sort();
+  assert.ok(covered.length > 1, `expected an alternation of spawn names, got ${covered.join(',')}`);
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'unprovisioned-shapes-')));
+  try {
+    const inert = [];
+    for (const fn of covered) {
+      const fixture = path.join(dir, 'probe.test.js');
+      // Both call shapes; a name is live if EITHER reaches a finding. Which
+      // matcher owns which shape is the scanner's business, not this pin's.
+      const forms = [
+        `${fn}('${UNPROVISIONED_EXEMPLAR}', ['-r', '.version'], { timeout: 30000 })`,
+        `${fn}('${UNPROVISIONED_EXEMPLAR} -r .version')`,
+      ];
+      const caught = forms.some((form) => {
+        fs.writeFileSync(fixture, `// @tier: fast\nexport function run() { return ${form}; }\n`);
+        return mod.scanFile(fixture, dir, matchers).length > 0;
+      });
+      if (!caught) inert.push(fn);
+    }
+    assert.deepEqual(inert, [], 'a covered spawn name whose matcher cannot fire is a silent hole');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER51-01 arm 2: the covered set is complete against node', async () => {
+  const { matchers } = await loadUnprovisionedScanner();
+  const covered = coveredSpawnFns(matchers);
+  const required = nodeBinarySpawnFns();
+
+  // Not vacuous: node exposes six public binary spawners besides the exemption.
+  assert.ok(required.length >= 6, `expected node's spawn surface, got ${required.join(',')}`);
+  assert.deepEqual(
+    required.filter((fn) => !covered.has(fn)),
+    [],
+    'a child_process spawner the scanner does not recognise is a call shape it reports CLEAN',
+  );
+
+  // The exemption cannot grow silently, and cannot name something node does not export.
+  assert.deepEqual(NOT_A_BINARY_SPAWNER, ['fork']);
+  for (const fn of NOT_A_BINARY_SPAWNER) assert.equal(typeof childProcess[fn], 'function');
 });
