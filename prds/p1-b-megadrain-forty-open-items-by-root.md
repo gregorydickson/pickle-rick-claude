@@ -457,6 +457,43 @@ NOT attempted in the same diff.
 every output-truncation cap (`UNFINISHED_TICKETS_PRINT_CAP`, `MAX_PRIOR_VIOLATIONS_IN_PROMPT`, word/byte
 caps), which bound rendering, not looping.
 
+## 🌶 ROOT S — SZECHUAN: FOUR BUNDLES, FOUR DISTINCT CAUSES, ONE DISPOSITION (filed 2026-09-08 from measurement)
+
+**szechuan-sauce has withheld the release verdict on FOUR consecutive bundles. Each failed for a
+DIFFERENT reason. That is the finding.** Measured, one per bundle:
+
+| bundle | cause | evidence |
+|---|---|---|
+| B-ARGMAX | `judge timed out after 600s` | 4 attempts, 1 iteration / 44m |
+| B-FRESHWIN | malformed `Write(.claude/commands/**)` permission rule | **fixed** `e4edb6f9` |
+| B-UNATTENDED | `Autocompact is thrashing` (judge prompt CONTEXT size) | `stalled_below_target` |
+| B-MEGADRAIN | `baseline_unmeasurable_unrecoverable` | session `2026-09-06-27819a21`, 2026-09-08 05:20Z |
+
+**Why this kept reading as one recurring defect:** four distinct mechanisms wore one operator-visible
+disposition (szechuan degraded → verdict withheld). Every attempt to fix "the szechuan bug" targeted
+whichever cause was last seen, and the next bundle produced a different one. **A recurring disposition
+is not a recurring cause** — this is the same shape as B-JUDGETO's "two DIFFERENT causes wore one
+disposition" note, now with four members and a fifth surely available.
+
+**The subtraction to aim at, NOT another per-cause guard.** Adding a fix per cause is the enumerated-set
+liability the PRIME DIRECTIVE names: four members so far, each scheduling the next. The formulation that
+needs no list is to make the judge's INPUT bounded and MEASURABLE by construction, so timeout, context
+thrash and unmeasurable-baseline stop being separate failure modes of one unbounded read. B-MEGADRAIN
+ROOT 4 already proposed splitting szechuan's generator from its loop; this root is the evidence that it
+is the right cut, and that per-cause patching is not.
+
+**Do NOT raise the judge timeout.** `R-SJWT` (#95, archived) shipped exactly that in v1.98.0 (300 → 600)
+and bought about three months. It is the standing receipt for why that approach does not hold.
+
+**Verify-first:** re-measure each row against HEAD before scoping a ticket. The B-FRESHWIN row is
+already fixed and is listed only to make the pattern legible; two of the remaining three predate the
+2026-09-04 `claude` CLI auto-update (2.1.252 → 2.1.260) that disabled szechuan for five days, so the
+CLI coupling is a live confound to rule out, not an assumption to carry.
+
+**Standing consequence for the operator:** four bundles have now completed real work and released
+nothing. The fixes are on the branch; the RELEASE is what szechuan has been gating. Composing this root
+is what unblocks the cadence.
+
 ## 🧟 ROOT D — PROCESS LIFECYCLE: ORPHANS, WEDGES, AND THE LINUX-ONLY SUBPROCESS REDS
 
 **D1 — R-ORCG (supersedes R-WGTORPH's scope).** The orphan reaper's own test suite is the box's biggest
