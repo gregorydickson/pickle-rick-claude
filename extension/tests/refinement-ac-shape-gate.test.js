@@ -501,3 +501,84 @@ test('FR-C2: the repo idiom (describeEach) still satisfies isParametrizedTicket'
   };
   assert.ok(isParametrizedTicket(ticket), 'describeEach([...]) over a table must still satisfy the parametrized-ticket predicate');
 });
+
+// AP-EXT-ITER234-01: `ticketsForSmell` reaches a smell's tickets through TWO
+// independent channels — the smell's own `ticket_ids` cross-reference and the
+// ticket's `source_ac_ids` back-reference, OR'd. Every fixture above sets BOTH,
+// so `source_ac_ids` decided all of them and the `ticket_ids` arm was never the
+// deciding one: deleting it left the whole suite green while a smell that names
+// its tickets only through `ticket_ids` (the schema's own
+// `"ticket_ids": ["ticket-id-if-known"]` channel, and the only reader of that
+// field) matched nothing, took the zero-match branch and returned exit 2 —
+// `main()` process.exit(2)s on that, so `/pickle-refine-prd` halts before it
+// emits REFINEMENT_DIR=/MANIFEST=.
+//
+// DERIVED from the channel space, not hand-picked rows: a future third channel
+// gets a row here by construction rather than leaving a blind arm behind. Both
+// directions are load-bearing — the two single-channel rows kill an arm
+// deletion, and the no-channel row kills a matcher that accepts everything.
+const SMELL_MATCH_CHANNELS = [
+  { name: 'neither channel', byTicketIds: false, bySourceAcIds: false, matches: false },
+  { name: 'ticket_ids only', byTicketIds: true, bySourceAcIds: false, matches: true },
+  { name: 'source_ac_ids only', byTicketIds: false, bySourceAcIds: true, matches: true },
+  { name: 'both channels', byTicketIds: true, bySourceAcIds: true, matches: true },
+];
+
+function channelManifest({ byTicketIds, bySourceAcIds }) {
+  return {
+    ac_shape_smells: [{
+      ac_id: 'AC-CHAN-1',
+      ...(byTicketIds ? { ticket_ids: ['T-CHAN-1'] } : { ticket_ids: [] }),
+    }],
+    tickets: [{
+      id: 'T-CHAN-1',
+      // Parametrized on purpose: the ONLY thing that can make this manifest
+      // violate is the smell failing to reach the ticket at all.
+      title: 'All handlers enforce the shared invariant',
+      source_ac_ids: bySourceAcIds ? ['AC-CHAN-1'] : [],
+      acceptance_test: "describeEach([['getA'], ['getB']]) (tests/helpers/describe-each.js) covers every target",
+    }],
+    prd_advisory_shape_concerns: [],
+  };
+}
+
+for (const channel of SMELL_MATCH_CHANNELS) {
+  test(`AP-EXT-ITER234-01: smell reaches its ticket via ${channel.name} → ${channel.matches ? 'no violation' : 'zero-match violation'}`, () => {
+    const manifest = channelManifest(channel);
+    const violations = evaluateAcShapeEnforcement(manifest);
+
+    if (channel.matches) {
+      assert.deepEqual(
+        violations,
+        [],
+        `a parametrized ticket reachable via ${channel.name} must not violate — the arm carrying it is load-bearing against a halt`
+      );
+      return;
+    }
+
+    assert.equal(violations.length, 1, 'an unreachable smell must produce exactly one violation');
+    assert.equal(violations[0].ac_id, 'AC-CHAN-1');
+    assert.match(violations[0].reason, /no matching ticket entries were emitted/);
+  });
+}
+
+test('AP-EXT-ITER234-01: the halt is the consequence — runAcShapeEnforcement exit code per channel', () => {
+  // The violation list is advisory until main() reads the code: `if
+  // (acShapeStatus !== 0) process.exit(acShapeStatus)`. Assert the verdict that
+  // actually stops the pipeline, not just the finding that precedes it.
+  const codes = SMELL_MATCH_CHANNELS.map((channel) => ({
+    name: channel.name,
+    code: runAcShapeEnforcement(channelManifest(channel), {}),
+  }));
+
+  assert.deepEqual(
+    codes,
+    [
+      { name: 'neither channel', code: 2 },
+      { name: 'ticket_ids only', code: 0 },
+      { name: 'source_ac_ids only', code: 0 },
+      { name: 'both channels', code: 0 },
+    ],
+    'exactly one channel combination may halt the refinement phase'
+  );
+});
