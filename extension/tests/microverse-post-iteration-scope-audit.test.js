@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { auditPostIterationScope, _deps } from '../bin/microverse-runner.js';
 import { isUnevaluableScopeStatus } from '../bin/check-scope-diff.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
@@ -362,5 +363,111 @@ test('AP-EXT-ITER68-01: an ABSENT fence stays fully silent — no NOT-evaluated 
     events.logLines.filter((l) => l.includes('[R-SSOC]')),
     [],
     'an unscoped session is a genuine answer, not an unreadable fence — it must log nothing',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER16-01: the RENAME axis of this reader's argv, and the last member of
+// the `--no-renames` family left unfixtured by AP-EXT-ITER14-01 (which pinned the
+// sibling `check-scope-diff.ts:getStagedPaths`).
+//
+// `scope-resolver.ts:computeAllowedFromDiff` builds `allowed_paths` through
+// `git-utils.ts:getDiffFiles`, which records a rename's DESTINATION only
+// (`tokens[i + 2]` on an `R` code under `-M100`), so a rename's SOURCE is never in
+// the fence. Rename detection is git's DEFAULT (`diff.renames`, on since 2.9) and a
+// detected rename under `--name-only` emits only the destination — so `--no-renames`
+// is what keeps the staged deletion of an out-of-scope file inside this reader's
+// enumeration. Drop it and a worker that `git mv`s a file OUT of its fence and into
+// scope commits it with the R-SSOC audit reporting nothing at all: the one scope
+// check a codex worker cannot bypass goes silent, and drift reads as clean.
+//
+// Every case above FABRICATES git's stdout through the injected `_deps.spawnSync`,
+// so none of them can see this contract at all — measured: dropping `--no-renames`
+// from the shipped `bin/microverse-runner.js` left all 174 tests across the six
+// suites that touch this reader at 0 fail. These two drive the REAL
+// `listCommittedFilesInRange` over a REAL git repo and assert the emitted VERDICT,
+// never the argv — an argv oracle greens the moment someone re-tunes the flag list
+// instead of the contract.
+// ---------------------------------------------------------------------------
+
+function git(cwd, ...args) {
+  return spawnSync('git', args, { cwd, timeout: 30_000, encoding: 'utf-8' });
+}
+
+// A real two-commit repo whose second commit is a pure R100 rename (content carried
+// verbatim), returning the pre/post SHAs the audit diffs between.
+function makeRenameRepo(fromPath, toPath) {
+  const repo = makeTmp();
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 'test@test.com');
+  git(repo, 'config', 'user.name', 'Test');
+  for (const p of [fromPath, 'extension/src/keep.ts']) {
+    fs.mkdirSync(path.join(repo, path.dirname(p)), { recursive: true });
+    fs.writeFileSync(path.join(repo, p), 'export {};');
+  }
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-qm', 'base');
+  const preSha = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+  fs.mkdirSync(path.join(repo, path.dirname(toPath)), { recursive: true });
+  git(repo, 'mv', fromPath, toPath);
+  git(repo, 'commit', '-qm', 'move');
+  const postSha = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+  return { repo, preSha, postSha };
+}
+
+// Drives the audit with the REAL `_deps.spawnSync` — only `logActivity` is captured.
+function runRealGitAudit({ fromPath, toPath, allowedPaths }) {
+  const { repo, preSha, postSha } = makeRenameRepo(fromPath, toPath);
+  const sessionDir = makeTmp();
+  const captured = [];
+  const logLines = [];
+  const origLog = _deps.logActivity;
+  try {
+    writeScopeJson(sessionDir, allowedPaths);
+    _deps.logActivity = (ev) => { captured.push(ev); };
+    auditPostIterationScope(
+      { sessionDir, workingDir: repo, preIterSha: preSha, postIterSha: postSha, log: (m) => { logLines.push(m); } },
+      { current_subsystem: 'extension' },
+    );
+  } finally {
+    _deps.logActivity = origLog;
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+  const events = captured.filter((e) => e.event === 'worker_edit_outside_scope');
+  events.logLines = logLines;
+  return events;
+}
+
+test('AP-EXT-ITER16-01: a committed rename that moves an out-of-scope file INTO the fence is still flagged on its source path', () => {
+  const events = runRealGitAudit({
+    fromPath: 'unrelated/secret.ts',
+    toPath: 'extension/src/moved.ts',
+    allowedPaths: ['extension/src'],
+  });
+  assert.equal(events.length, 1, 'the rename SOURCE is a committed deletion outside the fence — exactly one drift event');
+  assert.deepEqual(
+    events[0].gate_payload.staged_paths_outside_scope,
+    ['unrelated/secret.ts'],
+    'the audit must name the out-of-scope source, not just the in-scope destination',
+  );
+});
+
+// The ACCEPT control, without which the case above is satisfied by an audit that
+// flags every rename: a rename wholly INSIDE the allowlist stays silent. The empty
+// log line assertion is what keeps it non-vacuous — a `null` enumeration would also
+// emit zero events, but it would log "NOT evaluated" while a real `ok` verdict logs
+// nothing at all.
+test('AP-EXT-ITER16-01: a committed rename wholly inside the fence is not drift', () => {
+  const events = runRealGitAudit({
+    fromPath: 'extension/src/a.ts',
+    toPath: 'extension/src/b.ts',
+    allowedPaths: ['extension/src'],
+  });
+  assert.equal(events.length, 0, 'an in-fence rename must not read as drift');
+  assert.deepEqual(
+    events.logLines.filter((l) => l.includes('[R-SSOC]')),
+    [],
+    'a real in-scope verdict logs nothing — an unevaluable enumeration would log "NOT evaluated"',
   );
 });
