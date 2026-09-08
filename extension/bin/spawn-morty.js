@@ -2611,10 +2611,27 @@ function readTicketInfo(ticketFilePath) {
         return null;
     }
 }
+/**
+ * AP-EXT-ITER244-01: slice the Acceptance Criteria section out of ticket markdown.
+ *
+ * Both boundaries are set-membership discriminators and both are explicit here:
+ * the section opens ONLY on a heading LINE (any depth >= 2, so `### Acceptance
+ * criteria` still opens it) and closes on the next heading at the SAME OR
+ * SHALLOWER depth, so a deeper sub-heading inside the list does not truncate it.
+ * Returns '' when no heading opens the section.
+ */
+function sliceAcceptanceCriteriaSection(content) {
+    const head = /^(#{2,})[ \t]+Acceptance Criteria\b[^\n]*\n?/im.exec(content);
+    if (!head)
+        return '';
+    const rest = content.slice(head.index + head[0].length);
+    const end = new RegExp(`^#{1,${head[1].length}}[ \\t]`, 'm').exec(rest);
+    return end ? rest.slice(0, end.index) : rest;
+}
 /** Build classifier inputs from raw ticket file content. */
 function buildClassifierInfoFromContent(content) {
     // Count AC bullet points after the Acceptance Criteria heading
-    const acSection = /##\s+Acceptance Criteria\b([\s\S]*?)(?=\n##|$)/i.exec(content)?.[1] ?? '';
+    const acSection = sliceAcceptanceCriteriaSection(content);
     const acCount = (acSection.match(/^\s*[-*•]\s+\S/gm) ?? []).length;
     // Count distinct backtick-enclosed file references
     const fileRefs = new Set();

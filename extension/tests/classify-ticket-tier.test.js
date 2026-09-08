@@ -282,3 +282,138 @@ test('R-TCVC: an expensive-verify keyword combined with a CLASSIFIER_LARGER_KEYW
   });
   assert.equal(tier, 'large', 'two larger-keyword hits clamp to the same +1 delta as one');
 });
+
+// --- AP-EXT-ITER244-01: the Acceptance Criteria section slicer's two boundaries ---
+//
+// `buildClassifierInfoFromContent` slices the AC section out of raw ticket markdown
+// and its bullet count becomes `acCount`, one of the three dimensions that pick the
+// per-ticket spawn budget. Both boundaries are set-membership discriminators and
+// BOTH were wholly unfixtured: every other acCount fixture in this file hands
+// `classifyTicketTier` a pre-built literal `info`, so nothing drove the extraction
+// from markdown at all.
+//
+// Each fixture carries 5 real ACs (acScore 2 -> medium) plus a trailing `## Notes`
+// list of 4 bullets that must stay OUT of the section. That trailing list is the
+// negative control: a degenerate "never slice, count the whole document" mutant
+// counts 9 (-> large) and reds BOTH cases, so neither can be satisfied by a collapse.
+
+test('AP-EXT-ITER244-01: a prose mention of the heading does not open the AC section early', () => {
+  // HEAD discriminator: the section may only open on a heading LINE. Without the
+  // start-of-line anchor the mid-line "## Acceptance Criteria" in the Problem prose
+  // opens the section, which then closes at the real heading with zero bullets
+  // inside it -> acCount 0 -> trivial, under-tiering a 5-AC ticket.
+  const content = [
+    '---',
+    'id: apext244a',
+    'title: Section slicer head boundary fixture',
+    'status: Todo',
+    'order: 1',
+    '---',
+    '',
+    '# Description',
+    '',
+    '## Problem',
+    '',
+    'Authors sometimes point at the ## Acceptance Criteria heading from prose above it.',
+    '',
+    '## Acceptance Criteria',
+    '',
+    '- AC-244-1: first criterion',
+    '- AC-244-2: second criterion',
+    '- AC-244-3: third criterion',
+    '- AC-244-4: fourth criterion',
+    '- AC-244-5: fifth criterion',
+    '',
+    '## Notes',
+    '',
+    '- note one',
+    '- note two',
+    '- note three',
+    '- note four',
+    '',
+  ].join('\n');
+
+  withTempTicket(content, (file) => {
+    const tier = resolveEffectiveTierForTicket(file);
+    assert.equal(
+      tier,
+      'medium',
+      'all 5 ACs must be counted from the real heading (0 -> trivial means the prose mention opened the section)',
+    );
+  });
+});
+
+test('AP-EXT-ITER244-01: a deeper sub-heading inside the AC list does not close the section early', () => {
+  // END discriminator: the section closes on the next heading at the SAME OR
+  // SHALLOWER depth. A depth-blind close treats the `### Verification steps`
+  // sub-heading as the end of the list, dropping the 3 ACs below it -> acCount 2
+  // -> small, under-tiering the same 5-AC ticket.
+  const content = [
+    '---',
+    'id: apext244b',
+    'title: Section slicer end boundary fixture',
+    'status: Todo',
+    'order: 2',
+    '---',
+    '',
+    '# Description',
+    '',
+    '## Acceptance Criteria',
+    '',
+    '- AC-244-6: first criterion',
+    '- AC-244-7: second criterion',
+    '',
+    '### Verification steps',
+    '',
+    '- AC-244-8: third criterion',
+    '- AC-244-9: fourth criterion',
+    '- AC-244-10: fifth criterion',
+    '',
+    '## Notes',
+    '',
+    '- note one',
+    '- note two',
+    '- note three',
+    '- note four',
+    '',
+  ].join('\n');
+
+  withTempTicket(content, (file) => {
+    const tier = resolveEffectiveTierForTicket(file);
+    assert.equal(
+      tier,
+      'medium',
+      'the 3 ACs under the sub-heading must stay in the section (2 -> small means the sub-heading closed it)',
+    );
+  });
+});
+
+test('AP-EXT-ITER244-01: a level-3 Acceptance Criteria heading still opens the section', () => {
+  // The head anchor is depth-TOLERANT on purpose: the live corpus contains a
+  // ticket whose section opens at `### Acceptance criteria`. Anchoring the head
+  // to exactly `##` would silently stop counting its ACs.
+  const content = [
+    '---',
+    'id: apext244c',
+    'title: Section slicer depth tolerance fixture',
+    'status: Todo',
+    'order: 3',
+    '---',
+    '',
+    '# Description',
+    '',
+    '### Acceptance criteria',
+    '',
+    '- AC-244-11: first criterion',
+    '- AC-244-12: second criterion',
+    '- AC-244-13: third criterion',
+    '- AC-244-14: fourth criterion',
+    '- AC-244-15: fifth criterion',
+    '',
+  ].join('\n');
+
+  withTempTicket(content, (file) => {
+    const tier = resolveEffectiveTierForTicket(file);
+    assert.equal(tier, 'medium', 'a level-3 AC heading must still open the section');
+  });
+});
