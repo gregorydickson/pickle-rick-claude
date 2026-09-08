@@ -276,8 +276,10 @@ bash extension/scripts/ci-repro.sh --ref "$(git rev-parse HEAD)" --cmd 'node bin
   wall-clock does not — **timing-sensitive reds under it are suspect**, and a whole tier will not finish
   in a normal budget. Drive **specific FILES** via `--cmd`, not tiers.
 - **Only COMMITTED state at `--ref` is measured** — commit first.
-- Exit codes: `0` pass · `1..` inner command failed · `2` harness refused · `3` UNTRUSTED (completed, but
-  a provisioning gap makes the number inadmissible) · `90`/`91` preflight.
+- Exit codes: `0` pass · `1..` inner command failed · `2` harness refused (not retryable) ·
+  `3` UNTRUSTED (completed, but a provisioning gap makes the number inadmissible) ·
+  `4` provisioning flake building/installing into the image (retryable — apt/network/registry,
+  distinct from a `2` refusal) · `90`/`91` preflight.
 - **Trust a green only while the measured noise baseline is 0.** Re-measure it before relying on a green;
   a harness that is mostly noise falsifies nothing.
 ## Architecture

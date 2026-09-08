@@ -106,8 +106,12 @@
 # EXIT CODES
 #   0     the command under test passed
 #   1..   the command under test failed (container's own exit code)
-#   2     harness refused to run (underivable field, missing docker, bad option)
+#   2     harness refused to run (underivable field, missing docker, bad option) -- NOT retryable;
+#         re-running with the same inputs will refuse again
 #   3     the run completed but is UNTRUSTED: a provisioning gap was detected
+#   4     provisioning failed while building the base image or installing into it (apt, network,
+#         registry) -- retryable; distinct from 2 because the harness DID know what to build, the
+#         build itself flaked
 #   90/91 preflight failed: a credential was present, or the API was reachable
 #
 # USAGE
@@ -137,6 +141,11 @@
 set -euo pipefail
 
 die() { printf 'ci-repro: %s\n' "$*" >&2; exit 2; }
+# Distinct from die(): a provisioning failure means the harness knew exactly what to build and the
+# BUILD flaked (apt mirror, registry, network) -- retryable, unlike a die() refusal. Keeping this
+# on its own exit code is what lets a caller decide retry vs stop; folding it into die()'s exit 2
+# is the defect this function exists to remove.
+provisioning_die() { printf 'ci-repro: %s\n' "$*" >&2; exit 4; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
@@ -155,6 +164,15 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 #           interpreter and prints a custom error never emits that string. A tool absence is
 #           only self-reporting when nothing catches it first.
 CI_RUNNER_BASELINE_PACKAGES="git jq python3 rsync"
+
+# How many recent COMPLETED runs of the workflow resolve_runner_release is willing to open before
+# refusing. `gh run list` with no --status filter returns the single most recent run regardless of
+# status, and a queued/in_progress run's "Set up job" step -- the one that prints the Image line --
+# may not have run yet or may still be streaming, so it legitimately carries no Image line. This is
+# a selection bug, not evidence that no CI log has the line: the very next completed run reliably
+# does. Scanning a few completed candidates fixes the selection without adding a hand-maintained
+# fallback table.
+RUNNER_RELEASE_RUN_CANDIDATES=5
 
 WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
 REF="HEAD"
@@ -208,20 +226,30 @@ resolve_runner_release() {
   esac
 
   # `-latest`: ask the runs themselves. `grep -m1` closes the pipe, so gh stops early and this
-  # costs about a second rather than a full log download.
+  # costs about a second rather than a full log download. Only COMPLETED runs are candidates --
+  # see RUNNER_RELEASE_RUN_CANDIDATES above for why an unfiltered `--limit 1` starves resolution.
   command -v gh >/dev/null 2>&1 || die "runs-on is '$CI_RUNS_ON', whose release only GitHub \
 defines, and 'gh' is not on PATH to ask. Re-run with --runner-release <ver> (e.g. 24.04)."
-  local wf run_id observed
+  local wf run_ids run_id observed checked
   wf="$(basename "$WORKFLOW")"
-  run_id="$(gh run list --workflow="$wf" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
-  [ -n "$run_id" ] || die "no completed run of $wf found to resolve '$CI_RUNS_ON' against \
-(gh run list returned nothing). Re-run with --runner-release <ver>."
-  observed="$( { gh run view "$run_id" --log 2>/dev/null || true; } \
-    | grep -m1 -oE 'Image: ubuntu-[0-9]+\.[0-9]+' || true)"
-  [ -n "$observed" ] || die "run $run_id of $wf prints no 'Image: ubuntu-<release>' line to \
+  run_ids="$(gh run list --workflow="$wf" --status completed \
+    --limit "$RUNNER_RELEASE_RUN_CANDIDATES" --json databaseId --jq '.[].databaseId' 2>/dev/null || true)"
+  [ -n "$run_ids" ] || die "no completed run of $wf found to resolve '$CI_RUNS_ON' against \
+(gh run list --status completed returned nothing). Re-run with --runner-release <ver>."
+  checked=0
+  while IFS= read -r run_id; do
+    [ -n "$run_id" ] || continue
+    checked=$((checked + 1))
+    observed="$( { gh run view "$run_id" --log 2>/dev/null || true; } \
+      | grep -m1 -oE 'Image: ubuntu-[0-9]+\.[0-9]+' || true)"
+    if [ -n "$observed" ]; then
+      CI_RUNNER_RELEASE="${observed#Image: ubuntu-}"
+      CI_RUNNER_RELEASE_BASIS="observed as '$observed' in run $run_id of $wf"
+      return 0
+    fi
+  done <<<"$run_ids"
+  die "checked $checked completed run(s) of $wf, none print a 'Image: ubuntu-<release>' line to \
 resolve '$CI_RUNS_ON' from. Re-run with --runner-release <ver>."
-  CI_RUNNER_RELEASE="${observed#Image: ubuntu-}"
-  CI_RUNNER_RELEASE_BASIS="observed as '$observed' in run $run_id of $wf"
 }
 
 derive_ci_env() {
@@ -387,7 +415,8 @@ COPY --from=node:$CI_NODE_MAJOR /opt /opt
 DOCKERFILE
   then
     rmdir "$ctx" 2>/dev/null || true
-    die "could not build base image $BASE_IMAGE (ubuntu:$CI_RUNNER_RELEASE + node:$CI_NODE_MAJOR)"
+    provisioning_die "could not build base image $BASE_IMAGE (ubuntu:$CI_RUNNER_RELEASE + node:$CI_NODE_MAJOR) \
+-- retryable (network/registry pulling ubuntu:$CI_RUNNER_RELEASE or node:$CI_NODE_MAJOR)"
   fi
   rmdir "$ctx" 2>/dev/null || true
 }
@@ -437,7 +466,7 @@ su - "$JOB_USER" -c 'cd /work/repo/extension && npm ci'
 PROVISION
   then
     docker rm -f "$container" >/dev/null 2>&1 || true
-    die "provisioning failed (see output above)"
+    provisioning_die "provisioning failed (see output above) -- retryable (apt/checkout/npm ci network flake)"
   fi
 
   docker commit "$container" "$IMAGE" >/dev/null
