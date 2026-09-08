@@ -3311,7 +3311,7 @@ function writeAutoMarkTicketWithStatus(sessionDir, ticketId, status, checked = t
     );
 }
 
-function writeAutoMarkTicketWithCriteria(sessionDir, ticketId, status, criteriaLines) {
+function writeAutoMarkTicketWithCriteria(sessionDir, ticketId, status, criteriaLines, bodyLines = ['# Description', '']) {
     const ticketDir = path.join(sessionDir, ticketId);
     fs.mkdirSync(ticketDir, { recursive: true });
     fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
@@ -3321,8 +3321,7 @@ function writeAutoMarkTicketWithCriteria(sessionDir, ticketId, status, criteriaL
         `status: ${status}`,
         'order: 1',
         '---',
-        '# Description',
-        '',
+        ...bodyLines,
         '## Acceptance Criteria',
         ...criteriaLines,
         '',
@@ -3440,6 +3439,71 @@ test('auto-mark-done.worker-tagged-ac: unchecked worker criteria still block com
         );
 
         assert.deepEqual(verdict, { action: 'skip', reason: 'acceptance_criteria_not_checked' });
+        assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'In Progress');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER243-01: a ### sub-heading inside the criteria does not end the Acceptance Criteria section', () => {
+    const tmpDir = makeTmpRoot();
+    try {
+        initGitRepo(tmpDir);
+        const startCommit = gitHead(tmpDir);
+        const sessionDir = path.join(tmpDir, 'session');
+        const ticketId = 'auto-ac-subheading-ticket';
+        writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'In Progress', [
+            '- [x] the first criterion is delivered',
+            '',
+            '### Verification detail',
+            '- [ ] the second criterion is NOT delivered',
+        ]);
+
+        const verdict = validateAutoTicketCompletion(
+            sessionDir,
+            ticketId,
+            tmpDir,
+            startCommit,
+        );
+
+        // The end boundary must be a LINE-START `## ` heading. Without the
+        // anchor a `### ` line closes the section, the unchecked criterion
+        // below it drops out of `.every(checked)`, and the ticket reads
+        // complete on a half-done acceptance list.
+        assert.deepEqual(verdict, { action: 'skip', reason: 'acceptance_criteria_not_checked' });
+        assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'In Progress');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER243-01: an inline mention of the heading text does not open the Acceptance Criteria section', () => {
+    const tmpDir = makeTmpRoot();
+    try {
+        initGitRepo(tmpDir);
+        const startCommit = gitHead(tmpDir);
+        const sessionDir = path.join(tmpDir, 'session');
+        const ticketId = 'auto-ac-inline-mention-ticket';
+        writeAutoMarkTicketWithCriteria(
+            sessionDir,
+            ticketId,
+            'In Progress',
+            ['- [x] the only criterion is delivered'],
+            ['# Description', '', 'Land the work described under ## Acceptance Criteria', ''],
+        );
+
+        const verdict = validateAutoTicketCompletion(
+            sessionDir,
+            ticketId,
+            tmpDir,
+            startCommit,
+        );
+
+        // The section head must be a LINE-START heading. Without the anchor the
+        // prose mention opens the section, the real criteria fall outside it,
+        // and a fully-checked ticket is rejected as unchecked. Reaching the
+        // commit-evidence verdict proves the checkbox scan saw the real list.
+        assert.deepEqual(verdict, { action: 'skip', reason: 'no_commit_referencing_ticket_since_current_set' });
         assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'In Progress');
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
