@@ -71,34 +71,60 @@ import { getTicketStatus, collectTickets } from '../../services/pickle-utils.js'
 //
 // Do NOT "simplify" this by giving the fixture's commits an identity via GIT_AUTHOR_*/env: that
 // supplies the very thing production does not supply, and re-masks the gap.
-process.env.GIT_CONFIG_GLOBAL = '/dev/null';
-process.env.GIT_CONFIG_SYSTEM = '/dev/null';
-process.env.GIT_CONFIG_COUNT = '1';
-process.env.GIT_CONFIG_KEY_0 = 'user.useConfigOnly';
-process.env.GIT_CONFIG_VALUE_0 = 'true';
-// Pointing the config FILES at /dev/null is only part of the sandbox — git takes an identity from
-// three independent channels, and each one that stays ambient can hand production the very identity
-// this property exists to withhold. Each deletion below was measured by reverting makeBundleRepo's
-// repo-local user.name/user.email and checking the run still goes RED:
+//
+// The sandbox below is DERIVED, not enumerated. Pointing the config FILES at /dev/null is only
+// part of it — git takes an identity from several independent channels, and each one left ambient
+// can hand production the very identity this property exists to withhold. This fixture tried to
+// close those channels by naming them and was wrong three times (dce84454 -> 1b1eb030 -> e59464d6
+// -> GIT_TEMPLATE_DIR): a hand-maintained deny-list is correct only until git or a host adds a
+// member, and it fails SILENTLY, because a missing member looks exactly like one that does not
+// apply. So the rule is a prefix, and it needs no list: delete EVERY ambient GIT_* key, then set
+// exactly the keys the property needs.
+//
+// The three channels measured live, by reverting makeBundleRepo's repo-local user.name/user.email
+// and checking the run still goes RED:
 //
 //   GIT_AUTHOR_*/GIT_COMMITTER_*  identity direct from the environment, preferred OVER config.
 //   GIT_CONFIG_PARAMETERS         a SECOND config-injection channel, independent of the
-//                                 GIT_CONFIG_COUNT/KEY_0 pair set above — that pair does not
+//                                 GIT_CONFIG_COUNT/KEY_0 pair set below — that pair does not
 //                                 displace it, so it survived the first fix.
+//   GIT_TEMPLATE_DIR              a THIRD channel, structurally unlike the other two: `git init`
+//                                 COPIES the template dir into the new .git/, so a template
+//                                 `config` naming an identity lands as the repo's LOCAL config.
+//                                 GIT_CONFIG_GLOBAL/SYSTEM=/dev/null cannot reach it (different
+//                                 config scope), and user.useConfigOnly cannot block it (the
+//                                 injected identity IS config, which is what useConfigOnly wants).
 //
-// With either channel left ambient the reverted fixture went GREEN: path (b) then passes vacuously,
+// With ANY of them left ambient the reverted fixture went GREEN: path (b) then passes vacuously,
 // never exercising the config it asserts production needs, and a revert of the dce84454 fix would
-// not be caught on that host. EMAIL and GIT_AUTHOR_DATE are deliberately NOT deleted — measured
-// RED with each set, since `user.useConfigOnly` already blocks EMAIL's fallback and a commit date
-// is not an identity.
+// not be caught on that host. EMAIL and GIT_AUTHOR_DATE need no special case — EMAIL is measured
+// non-masking (user.useConfigOnly already blocks its fallback) and is not GIT_-prefixed, so the
+// prefix rule leaves it alone; GIT_AUTHOR_DATE is a date, not an identity, and the prefix rule
+// removes it at no cost.
+//
+// `scrubAmbientGitEnv` is pure over its argument so the property can be asserted against a
+// synthetic env, independently of whatever the host running the suite happens to export. The
+// pairing is pinned by the property test at the bottom of this file.
 //
 // The git() helper below is unaffected by any of this: it passes its own identity per call, after
 // the process.env spread, and never reads these back.
-delete process.env.GIT_AUTHOR_NAME;
-delete process.env.GIT_AUTHOR_EMAIL;
-delete process.env.GIT_COMMITTER_NAME;
-delete process.env.GIT_COMMITTER_EMAIL;
-delete process.env.GIT_CONFIG_PARAMETERS;
+const SANDBOX_GIT_ENV = {
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_SYSTEM: '/dev/null',
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'user.useConfigOnly',
+  GIT_CONFIG_VALUE_0: 'true',
+};
+
+function scrubAmbientGitEnv(env) {
+  const removed = Object.keys(env).filter((key) => key.startsWith('GIT_')).sort();
+  for (const key of removed) delete env[key];
+  return removed;
+}
+
+// Order matters: scrub every ambient GIT_* first, THEN set the constructed sandbox.
+scrubAmbientGitEnv(process.env);
+Object.assign(process.env, SANDBOX_GIT_ENV);
 
 function git(args, cwd) {
   return execFileSync('git', args, {
@@ -362,4 +388,44 @@ test('AC-PCOMP-4: a synthetic 4-ticket additive bundle completes 4/4 hands-off, 
   } finally {
     cleanup(repo);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The sandbox property itself: CONSTRUCTED, not inherited.
+//
+// The AC-PCOMP-4 test above was GREEN on a host exporting GIT_TEMPLATE_DIR while the channel was
+// wide open — a green suite therefore does NOT prove the sandbox holds. This pin is what proves it.
+// ---------------------------------------------------------------------------
+
+test('AC-PCOMP-4 sandbox: the fixture git env is constructed by a GIT_ prefix rule, needing no key list', () => {
+  // (1) Ambient-independent. The scrub is a DERIVATION over the env, so it also removes keys nobody
+  // enumerated. GIT_TEMPLATE_DIR is the third channel this fixture's deny-list missed;
+  // GIT_NOT_A_REAL_VAR_YET names nothing git defines today — no deny-list formulation could remove
+  // it, and that is precisely the evidence that this one needs no list. GITHUB_ACTIONS is the
+  // negative control for the underscore: the rule is the GIT_ prefix, not the letters GIT.
+  const synthetic = {
+    GIT_AUTHOR_NAME: 'ambient',
+    GIT_CONFIG_PARAMETERS: 'ambient',
+    GIT_TEMPLATE_DIR: '/tmp/ambient-template',
+    GIT_NOT_A_REAL_VAR_YET: 'ambient',
+    EMAIL: 'keep@me.invalid',
+    HOME: '/keep',
+    GITHUB_ACTIONS: 'keep',
+    GIT: 'keep',
+  };
+  assert.deepEqual(scrubAmbientGitEnv(synthetic), [
+    'GIT_AUTHOR_NAME',
+    'GIT_CONFIG_PARAMETERS',
+    'GIT_NOT_A_REAL_VAR_YET',
+    'GIT_TEMPLATE_DIR',
+  ]);
+  assert.deepEqual(Object.keys(synthetic).sort(), ['EMAIL', 'GIT', 'GITHUB_ACTIONS', 'HOME']);
+
+  // (2) Live process. Whatever this host exported, the ONLY GIT_* keys visible to the git that
+  // production spawns (mux-runner's commit inherits process.env wholesale — it passes no `env`)
+  // are the ones this fixture constructed.
+  assert.deepEqual(
+    Object.keys(process.env).filter((key) => key.startsWith('GIT_')).sort(),
+    Object.keys(SANDBOX_GIT_ENV).sort(),
+  );
 });
