@@ -2870,7 +2870,14 @@ function bestEffortFdatasync(logPath) {
     }
     catch { /* best-effort */ }
 }
-function attachCompletionCommitAckListener(proc, ticketId, workerActivityStatePath) {
+/**
+ * Exported so tests can drive the REAL stdout->ack->activity wire with a fake
+ * `proc` instead of spawning a backend: the line anchors on
+ * COMPLETION_COMMIT_ACK_RE are the only thing separating an ack the worker
+ * EMITTED from one it merely CITED, and the announced sha is shape-validated
+ * only downstream (see `recoverFromAnnouncement`).
+ */
+export function attachCompletionCommitAckListener(proc, ticketId, workerActivityStatePath) {
     // R-CCC-1: Detect COMPLETION_COMMIT_RECORDED: <sha> token in worker stdout.
     // The announced SHA is recorded as a `worker_completion_commit_announced`
     // activity event; the manager's Done-flip guard (mux-runner

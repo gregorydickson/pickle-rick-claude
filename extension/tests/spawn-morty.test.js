@@ -6,7 +6,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { tierToModel, resolveCodexModel, buildTierLifecycleSections } from '../bin/spawn-morty.js';
+import { EventEmitter } from 'node:events';
+import { tierToModel, resolveCodexModel, buildTierLifecycleSections, attachCompletionCommitAckListener } from '../bin/spawn-morty.js';
 import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
 import {
     resolveAssertionCap,
@@ -2321,4 +2322,78 @@ test('buildWorkerPrompt: a codegraph section carrying $-substitution sequences i
         'a $-backtick in the codegraph section duplicated the template prefix');
     assert.equal(prompt.split('CG_SUFFIX_SENTINEL').length - 1, 1,
         'a $-quote in the codegraph section duplicated the template suffix');
+});
+
+
+/**
+ * AP-EXT-ITER238-01 — the ack grammar's LINE ANCHORS.
+ *
+ * `COMPLETION_COMMIT_ACK_RE` (bin/spawn-morty.ts) is the whole boundary between
+ * a sha the worker EMITTED and one it merely CITED: the announced value is
+ * shape-validated only (`readAnnouncedCompletionSha`), and
+ * `recoverFromAnnouncement` stamps it as `completion_commit_inferred` on the
+ * absent-evidence rung of the Done-flip ladder. Both anchors therefore fail
+ * OPEN, and the single pre-existing end-to-end case only ever drives a
+ * well-formed emission, so neither had a fixture on its negative side.
+ *
+ * Drives the REAL listener (buffering + regex + activity write) with a fake
+ * `proc`; asserts the ANNOUNCED SET, never a count, since every mutant still
+ * leaves a well-formed activity array.
+ */
+const ACK_PIN_TICKET = 'a1b2c3d4';
+const ACK_PIN_SHA = '3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3';
+const ACK_TOKEN = 'COMPLETION_COMMIT_RECORDED:';
+
+function driveAckListener(chunks) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-ext-iter238-'));
+    try {
+        const statePath = path.join(dir, 'state.json');
+        fs.writeFileSync(statePath, JSON.stringify({
+            active: true, schema_version: 3, step: 'implement', iteration: 1,
+            current_ticket: ACK_PIN_TICKET, session_dir: dir, working_dir: dir, activity: [],
+        }, null, 2));
+        const proc = { stdout: new EventEmitter() };
+        attachCompletionCommitAckListener(proc, ACK_PIN_TICKET, statePath);
+        for (const chunk of chunks) proc.stdout.emit('data', Buffer.from(chunk, 'utf8'));
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        return (state.activity || [])
+            .filter(e => e && e.event === 'worker_completion_commit_announced')
+            .map(e => e.sha);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+test('AP-EXT-ITER238-01 a line-anchored ack is announced (positive control)', () => {
+    assert.deepEqual(
+        driveAckListener([`worker preamble\n${ACK_TOKEN} ${ACK_PIN_SHA}\ntrailing log\n`]),
+        [ACK_PIN_SHA],
+        'a worker-emitted ack on its own line must reach state.activity',
+    );
+    assert.deepEqual(
+        driveAckListener([`${ACK_TOKEN} ${ACK_PIN_SHA.slice(0, 12)}`, '\nmore output\n']),
+        [ACK_PIN_SHA.slice(0, 12)],
+        'the ack is announced even when its newline arrives in a later chunk',
+    );
+});
+
+test('AP-EXT-ITER238-01 a sha the worker only CITES mid-line is never announced', () => {
+    assert.deepEqual(
+        driveAckListener([`next I will print ${ACK_TOKEN} ${ACK_PIN_SHA}\n`]),
+        [],
+        'prose ending in the ack token must not announce a sha the worker never emitted',
+    );
+    assert.deepEqual(
+        driveAckListener([`> ${ACK_TOKEN} ${ACK_PIN_SHA}\n  ${ACK_TOKEN} ${ACK_PIN_SHA}\n`]),
+        [],
+        'a quoted or indented echo of the instruction is a citation, not an emission',
+    );
+});
+
+test('AP-EXT-ITER238-01 an ack line carrying trailing prose is never announced', () => {
+    assert.deepEqual(
+        driveAckListener([`${ACK_TOKEN} ${ACK_PIN_SHA} is what I would print if I had committed\n`]),
+        [],
+        'the closing anchor is what makes the sha the whole rest of the line',
+    );
 });

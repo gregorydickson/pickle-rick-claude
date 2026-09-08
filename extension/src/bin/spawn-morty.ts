@@ -3329,7 +3329,14 @@ function bestEffortFdatasync(logPath: string) {
   } catch { /* best-effort */ }
 }
 
-function attachCompletionCommitAckListener(
+/**
+ * Exported so tests can drive the REAL stdout->ack->activity wire with a fake
+ * `proc` instead of spawning a backend: the line anchors on
+ * COMPLETION_COMMIT_ACK_RE are the only thing separating an ack the worker
+ * EMITTED from one it merely CITED, and the announced sha is shape-validated
+ * only downstream (see `recoverFromAnnouncement`).
+ */
+export function attachCompletionCommitAckListener(
   proc: ReturnType<typeof spawn>,
   ticketId: string,
   workerActivityStatePath: string,
