@@ -14,7 +14,7 @@ import {
   execTokenIndex,
   isShellWrapper,
   SHELL_PATTERN_CHARS,
-  shellPatternToRegex,
+  patternNamesACommand,
   shellWordWitness,
   splitShellSegments,
   tokenizeShellCommand,
@@ -275,13 +275,39 @@ function isProtectedFile(filePath: string): boolean {
   return PROTECTED_PATTERNS.some(p => p.test(base));
 }
 
+/**
+ * True when the shell word `token` is a PATTERN bash may expand onto a protected
+ * config filename.
+ *
+ * AP-EXT-ITER232-01: the FOURTH reader of the one glob question, and the one that
+ * carried no bound. `matchProtectedStateBasename` keeps COVERAGE, `execNameIs`
+ * keeps `patternNamesACommand`, `isInsideRuntimeRoot` deliberately keeps neither
+ * — and this arm, alone, translated the pattern itself and asked THIRTY-NINE
+ * names at once with nothing bounding the answer. A word of pure wildcards names
+ * every member equally, so it names none; unbounded it named all thirty-nine, and
+ * `cp -R "$SESS"/* /tmp/fixture/` blocked on the matched name `*` (live block in
+ * the 2026-09-06 session log, which cost a worker the copy and a workaround).
+ * Over 12180 real worker Bash commands the bound drops 16 blocks to 11 — exactly
+ * the five pure-wildcard anchors (`*` x4, `**` x1), none of which names a config
+ * file, and zero real spellings: `*.js`, `*.ts` and `*.mjs` still block because
+ * they still SPELL something. COVERAGE is deliberately NOT the bound here even
+ * though the state domain uses it: measured on the same corpus it drops those six
+ * too (`*.js` scores 3*2 < 16 against `eslint.config.js`), and bash really does
+ * expand `*.js` onto `eslint.config.js` — the under-block direction this module
+ * does not trade into. Third statement of the AP-EXT-ITER96-01 law: a bound is
+ * valid only in the domain it was MEASURED in.
+ *
+ * Reads through the shared `wordExpandsTo` rather than calling
+ * `shellPatternToRegex` directly, so this file no longer holds a second direct
+ * reader of the translator — the drift shape the ITER73-01 entry named this
+ * function as already sharing, and did not.
+ */
 function isProtectedShellPattern(token: string): boolean {
   const base = path.basename(token);
-  if (!SHELL_PATTERN_CHARS.test(base)) {
+  if (!SHELL_PATTERN_CHARS.test(base) || !patternNamesACommand(base)) {
     return false;
   }
-  const candidatePattern = shellPatternToRegex(base);
-  return PROTECTED_BASH_CANDIDATES.some((candidate) => candidatePattern.test(candidate));
+  return PROTECTED_BASH_CANDIDATES.some((candidate) => wordExpandsTo(base, candidate));
 }
 
 /** A token names a protected config file directly or via a shell glob/brace/bracket pattern. */

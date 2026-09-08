@@ -532,8 +532,14 @@ export function shellPatternToRegex(pattern) {
  * fails OPEN), so its body is not read as characters here either. RESIDUAL,
  * recorded rather than claimed closed: an all-bracket spelling (`/usr/bin/[g][i][t]`)
  * therefore reads as unnamed and approves.
+ *
+ * EXPORTED because the bound is not command-word-specific: it is the tautology
+ * test for any read that asks a SET of names "which of you does this word name?".
+ * `isProtectedShellPattern` asks that of 39 config filenames and had no bound at
+ * all, so a bare `*` named every one of them (AP-EXT-ITER232-01). Sharing the
+ * declaration is what keeps the two domains from re-forking the same measurement.
  */
-function patternNamesACommand(pattern) {
+export function patternNamesACommand(pattern) {
     return /[^*?]/.test(pattern.replace(/\[[^\]]*\]/g, ''));
 }
 /**

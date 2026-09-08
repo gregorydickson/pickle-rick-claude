@@ -3877,15 +3877,95 @@ test('AP-EXT-ITER73-01: execNameIs reads a pattern, and an all-wildcard word nam
 // repeatedly. The bracket arm's fixed `[^/]` is load-bearing: a copied class body
 // can throw `Range out of order`, and that SyntaxError reaches the entrypoint
 // catch, which approves (AP-EXT-ITER5-01).
+//
+// AP-EXT-ITER232-01 STRENGTHENED the handler half. It used to assert the handler
+// IMPORTS `shellPatternToRegex` — a proxy for "no private copy" that a direct
+// second reader satisfies just as well as a shared one, and the handler WAS that
+// second reader. It now holds no `shellPatternToRegex(` call at all and asks the
+// question through `wordExpandsTo`, the same reader the state and path domains
+// use, so the assertion is the absence of any direct call rather than the
+// presence of an import. Strictly stronger: the old form is implied by the new
+// one for every tree where a private copy would have been introduced.
 test('AP-EXT-ITER73-01: one glob translator, and its bracket arm stays constructible', () => {
   const shellExec = readCode(SHELL_EXEC_TS);
   const handler = readCode(CONFIG_PROTECTION_TS);
   assert.match(shellExec, /export function shellPatternToRegex\(/);
   assert.doesNotMatch(handler, /function shellPatternToRegex\(/);
-  assert.match(handler, /shellPatternToRegex,/);
+  assert.doesNotMatch(handler, /shellPatternToRegex\(/);
+  assert.match(handler, /wordExpandsTo\(base, candidate\)/);
   // A descending range inside a bracket expression must not reach `new RegExp`.
   assert.doesNotThrow(() => execNameIs('[anatomy-park]git', 'git'));
   assert.doesNotThrow(() => execNameIs('gi[x-a]', 'git'));
+});
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER232-01: the config write-DESTINATION domain had no bound at all
+//
+// FOUR readers ask "could this glob name a protected X?", and AP-EXT-ITER96-01
+// wrote down the law they follow -- a bound is valid only in the domain it was
+// MEASURED in. `execNameIs` keeps `patternNamesACommand`,
+// `matchProtectedStateBasename` keeps COVERAGE, `isInsideRuntimeRoot`
+// deliberately keeps neither. `isProtectedShellPattern` is the fourth, the one
+// that entry names as already sharing the question, and it kept NO bound while
+// asking THIRTY-NINE names at once -- so a word of pure wildcards, which names
+// every member equally and therefore names none, named all thirty-nine.
+//
+// MEASURED, not hypothetical: `cp -R "$SESS"/* /tmp/fullsess/` was really
+// BLOCKED in the 2026-09-06 session (`Config file protected: *`, is_error), and
+// the worker recorded the workaround it had to invent. Over 12180 real worker
+// Bash commands the bound drops the config guard from 16 blocks to 11 -- exactly
+// the five pure-wildcard anchors (`*` x4, `**` x1), zero real spellings lost.
+//
+// COVERAGE (the state domain's bound) is the wrong bound HERE and this test pins
+// that too: on the same corpus it drops six more, because `*.js` scores
+// 3*2 < 16 against `eslint.config.js` while bash really does expand it there.
+// Over-block is this module's direction; the swap would be an UNDER-block.
+test('AP-EXT-ITER232-01: a pure-wildcard word names no config file, a spelling still does', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const decide = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+  }).decision;
+
+  // Over-block half: every anchor here is a pure-wildcard word taken from the
+  // live corpus, sitting beside a WRITE command that targets something else.
+  const approves = [
+    'SESS=/x\nrm -rf /tmp/fullsess && mkdir -p /tmp/fullsess && cp -R "$SESS"/* /tmp/fullsess/ 2>/dev/null',
+    "cp -R repo repo2 && cat > /tmp/p.mjs <<'EOF'\n// **bold** notes\nEOF",
+    "cp a.txt /tmp/b.txt && echo 'release/**'",
+    'cp tests/x.test.js /tmp/x.bak && grep -c "?" /tmp/x.bak',
+  ];
+  for (const command of approves) {
+    assert.equal(decide(command), 'approve', `over-block: ${command}`);
+  }
+
+  // Under-block half: a word that still SPELLS a protected name must still
+  // block, through every write seam. `*.js` / `*.ts` are the cases COVERAGE
+  // would have lost -- they are controls against swapping in the wrong bound.
+  const blocks = [
+    'cp x tsconfig.json',
+    'cp x tsconfig.jso?',
+    'cp x tsconfi?.json',
+    'cp x *.js',
+    'cp x *.ts',
+    "sed -i '' s/a/b/ .eslintr?",
+    'echo hi > eslint.config.j?',
+    'tee vitest.config.t? < /dev/null',
+  ];
+  for (const command of blocks) {
+    assert.equal(decide(command), 'block', `under-block: ${command}`);
+  }
+});
+
+// The bound is SHARED, not copied: a second declaration is the drift shape this
+// module has collapsed repeatedly, and a copy would let one domain's measurement
+// silently stop governing the other's.
+test('AP-EXT-ITER232-01: one declaration of the tautology bound, read by both domains', () => {
+  const shellExec = readCode(SHELL_EXEC_TS);
+  const handler = readCode(CONFIG_PROTECTION_TS);
+  assert.match(shellExec, /export function patternNamesACommand\(/);
+  assert.doesNotMatch(handler, /function patternNamesACommand\(/);
+  assert.match(handler, /patternNamesACommand\(base\)/);
 });
 
 
