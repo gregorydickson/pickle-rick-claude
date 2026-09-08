@@ -426,8 +426,9 @@ const anchorAbsenceAllowlist = new Map([
  *    literal, so a corpus containing this file resolves all of them — and, worse, would resolve
  *    any dead symbol the moment someone allowlisted it, making the whole sweep vacuous.
  *
- * Trap 1 is excluded by kind: the corpus glob admits no markdown, and the basename filter is the
- * backstop that keeps re-adding `'*.md'` from making the sweep vacuous rather than merely wrong.
+ * Trap 1 is excluded by kind: `isLivenessChannel` admits no markdown. It used to take two checks —
+ * an extension glob plus a basename backstop against someone re-adding `'*.md'` to it — and one
+ * rule that cannot name markdown at all subsumes both.
  *
  * Trap 2 USED to be excluded by PATH, and a path list is the incomplete-set shape — it named this
  * one file and was blind to every other file that spells a name in order to assert the name is
@@ -477,6 +478,38 @@ function nonLiteralText(content) {
     .join('\n');
 }
 
+// The THIRD spell medium, and the one that needs no list: a unified diff is a RECORD of code, so
+// it spells every name it carries and uses none. The line proving a symbol DELETED is byte-
+// identical to the one proving it live but for a leading `-`, so an anchor resolves off the very
+// hunk recording its deletion. Detected by CONTENT — the same rule, and the same regex, as
+// `nonDiffText` in `extension/scripts/audit-trap-door-enforcement.sh`, because naming `.patch` and
+// `.diff` is the incomplete-set shape `isLivenessChannel` below exists to refuse.
+//
+// Whole-file, not hunk-local: git writes the enclosing declaration's signature into the
+// `@@ ... @@` header itself, so stripping only `^[-+]` lines leaves a removed `export function`
+// standing. Measured in the shell arm: that formulation produced ZERO verdict changes.
+const DIFF_HUNK_HEADER_RE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m;
+
+function nonDiffText(content) {
+  return DIFF_HUNK_HEADER_RE.test(content) ? '' : content;
+}
+
+/**
+ * ONE membership rule for "may this tracked file answer the question the corpus asks" — spelled
+ * and named identically to the shell arm's, because the two wires read ONE contract.
+ *
+ * This used to be an extension pathspec (`*.ts *.js *.sh *.json *.yml`) plus a basename backstop.
+ * An enumerated set is correct only until the tree grows a member, and it fails SILENTLY: 92
+ * tracked files sat outside it, 9 of them executable `.mjs` audits, so a symbol declared and used
+ * only there read ABSENT FROM THE TREE and gated. Measured instance: `PROBE_SOURCE`
+ * (`scripts/audit-exit-reason-parity.mjs`). The catalog entry for this sweep had asserted the
+ * corpus "excludes markdown and nothing else" since the pass that wrote it — false at birth, and
+ * green, because nothing derived the breadth from the tree.
+ */
+function isLivenessChannel(rel) {
+  return !rel.endsWith('.md');
+}
+
 /**
  * ONE indexing routine, shared by the repo sweep and every fixture below, so a fixture can never
  * assert a rule the repo sweep does not run.
@@ -491,7 +524,7 @@ function buildSymbolIndex(sources) {
   const usedInFiles = new Map();
 
   for (const { file, text } of sources) {
-    const commentFree = nonCommentText(text);
+    const commentFree = nonDiffText(nonCommentText(text));
     const useText = file.endsWith('.json') ? commentFree : nonLiteralText(commentFree);
     const spelledHere = new Set();
     const usedHere = new Set();
@@ -554,25 +587,18 @@ const ANCHOR_GIT_TIMEOUT_MS = 30000;
 function buildAnchorCorpus(cwd = repoRoot) {
   let listing;
   try {
-    listing = execFileSync(
-      'git',
-      ['ls-files', '-z', '--', '*.ts', '*.js', '*.sh', '*.json', '*.yml'],
-      {
-        cwd,
-        encoding: 'utf8',
-        maxBuffer: 256 * 1024 * 1024,
-        timeout: ANCHOR_GIT_TIMEOUT_MS,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
+    listing = execFileSync('git', ['ls-files', '-z'], {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: ANCHOR_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
   } catch (error) {
     return { ok: false, reason: `git ls-files failed: ${error?.message ?? error}` };
   }
 
-  const files = listing
-    .split('\0')
-    .filter(Boolean)
-    .filter(file => path.basename(file) !== 'CLAUDE.md');
+  const files = listing.split('\0').filter(Boolean).filter(isLivenessChannel);
   if (files.length === 0) {
     return { ok: false, reason: 'git ls-files returned zero files — corpus would match nothing' };
   }
@@ -801,6 +827,87 @@ describe('trap-door catalog anchor liveness (fixture parser)', () => {
     );
   });
 
+  // --- AP-EXT-ITER48-01: the corpus membership rule is not an extension list ---
+
+  test('AP-EXT-ITER48-01: a code file whose extension no list could name is still in the corpus', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'anchor-liveness-nolist-'));
+    try {
+      // The extension is generated, so no hand-maintained pathspec — the one this replaced, or any
+      // successor — can be what admits this file. Only a rule that names markdown and nothing else
+      // lets it in. That is the property; `.mjs` was merely the member that happened to be missing.
+      const ext = `x${Math.random().toString(36).slice(2, 8)}`;
+      execFileSync('git', ['init', '-q'], { cwd: fixture, stdio: 'ignore', timeout: ANCHOR_GIT_TIMEOUT_MS });
+      fs.writeFileSync(path.join(fixture, `audit.${ext}`), 'export function auditedHelper() {}\nauditedHelper();\n');
+      fs.writeFileSync(path.join(fixture, 'NOTES.md'), 'buriedHelper was deleted in the refactor\n');
+      execFileSync('git', ['add', `audit.${ext}`, 'NOTES.md'], { cwd: fixture, stdio: 'ignore', timeout: ANCHOR_GIT_TIMEOUT_MS });
+
+      const result = buildAnchorCorpus(fixture);
+      assert.equal(result.ok, true, result.ok ? '' : result.reason);
+
+      const content = '- `a.ts` — INVARIANT: `auditedHelper` replaced `buriedHelper`. BREAKS: x. ENFORCE: y.';
+      const dead = findDeadAnchors(collectAnchorTokens(catalog, content), result.index);
+
+      assert.deepEqual(
+        dead.map(entry => entry.token),
+        ['buriedHelper'],
+        'the corpus membership rule is an extension list again — a symbol declared and used in a '
+        + 'tracked file the list does not name reads ABSENT FROM THE TREE and gates, which is a '
+        + 'false RED no author can act on; the markdown control in the same fixture must still gate',
+      );
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  // --- AP-EXT-ITER48-02: dropping the list re-admits diff media, so the content strip comes with it ---
+
+  test('AP-EXT-ITER48-02: a tracked unified diff spells a symbol but never resolves it as code', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'anchor-liveness-diff-'));
+    try {
+      const ext = `x${Math.random().toString(36).slice(2, 8)}`;
+      execFileSync('git', ['init', '-q'], { cwd: fixture, stdio: 'ignore', timeout: ANCHOR_GIT_TIMEOUT_MS });
+      fs.writeFileSync(path.join(fixture, 'live.ts'), 'export function livingHelper() {}\nlivingHelper();\n');
+      // A recorded REMOVAL. Note the signature also appears in the hunk header, which is why a
+      // `^[-+]`-only strip cannot be what excludes it. The extension is generated for the same
+      // reason as above: excluding this file BY NAME is the shape the fix removed.
+      fs.writeFileSync(
+        path.join(fixture, `replay.${ext}`),
+        [
+          'diff --git a/src/probe.ts b/src/probe.ts',
+          '--- a/src/probe.ts',
+          '+++ b/src/probe.ts',
+          '@@ -1,3 +1,2 @@ export async function exhumedHelper(cwd) {',
+          '-export async function exhumedHelper(cwd) {',
+          '-  return cwd;',
+          '-}',
+          '',
+        ].join('\n'),
+      );
+      execFileSync('git', ['add', 'live.ts', `replay.${ext}`], { cwd: fixture, stdio: 'ignore', timeout: ANCHOR_GIT_TIMEOUT_MS });
+
+      const result = buildAnchorCorpus(fixture);
+      assert.equal(result.ok, true, result.ok ? '' : result.reason);
+
+      const content = '- `live.ts` — INVARIANT: `livingHelper` replaced `exhumedHelper`. BREAKS: x. ENFORCE: y.';
+      const tiers = classifyAnchors(collectAnchorTokens(catalog, content), result.index);
+
+      assert.deepEqual(
+        tiers.proseOnly.map(entry => entry.token),
+        ['exhumedHelper'],
+        'a unified diff answered "does this identifier exist as code" — the removal line is byte-'
+        + 'identical to a live declaration but for its leading `-`, so the anchor resolves off the '
+        + 'very hunk recording the deletion and reads verified',
+      );
+      assert.deepEqual(
+        tiers.dead.concat(tiers.spelledOnly).map(entry => entry.token),
+        [],
+        'the live sibling must not move: the diff strip costs recall on a name only a diff carries, never a real declaration',
+      );
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   test('AP-EXT-ITER145-01: prose naming a deleted symbol does not resolve it as live code', () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'anchor-liveness-md-'));
     try {
@@ -847,6 +954,43 @@ describe('trap-door catalog anchor liveness (repo)', () => {
     assert.ok(
       tokens.length > 100,
       `only ${tokens.length} anchor tokens scanned across ${anchorCatalogs.length} catalogs — the extractor matched almost nothing, which reads clean for the wrong reason`,
+    );
+  });
+
+  // AP-EXT-ITER48-01: the breadth is DERIVED from the tree, never asserted as a number. A count
+  // pinned to a constant agrees with any list that happens to total the same; this one disagrees
+  // with every list, because the only file set that satisfies it is "all tracked, minus markdown"
+  // — the shell arm's set, exactly. That is what makes the two wires one contract rather than two
+  // that merely resemble each other, and it is what nothing checked when the catalog first claimed
+  // the corpus "excludes markdown and nothing else" while a five-extension pathspec dropped 92
+  // tracked files, 9 of them executable audits.
+  test('AP-EXT-ITER48-01: the corpus is every tracked non-markdown file, derived from the tree', () => {
+    if (!corpusResult.ok) {
+      assert.fail(corpusResult.reason);
+    }
+
+    const tracked = execFileSync('git', ['ls-files', '-z'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      timeout: ANCHOR_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).split('\0').filter(Boolean);
+
+    const expected = tracked.filter(rel => !rel.endsWith('.md'));
+    const excluded = tracked.length - expected.length;
+
+    assert.ok(
+      excluded > 0 && expected.length > 100,
+      `the derivation is vacuous: ${expected.length} admitted, ${excluded} excluded — this pin only `
+      + 'discriminates while the tree actually holds markdown and non-markdown files',
+    );
+    assert.equal(
+      corpusResult.fileCount,
+      expected.length,
+      'the corpus is no longer every tracked non-markdown file — a membership filter naming an '
+      + 'extension or a path is back, and the files it drops answer "this symbol is absent from '
+      + 'the tree" for symbols that are not',
     );
   });
 
