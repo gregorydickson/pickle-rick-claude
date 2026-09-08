@@ -605,6 +605,38 @@ test('verify-bundle.non-boolean pass cannot false-green the CLI gate', () => {
   }
 });
 
+// An interrupted atomic write leaves the artifact PRESENT but unparseable, so it reaches
+// neither the `missing` arm nor `validateBundleArtifact`: the JSON.parse throw lands in the
+// single `catch` in verifyBundle, and that catch's `failures.push` is the only thing between a
+// half-written receipt and `bundle PASS`. Amputated, this exact fixture exits 0
+// `bundle PASS checked=15 missing=0 failures=0` on the real CLI. The source-derived arm sweep
+// below cannot reach it: its domain is `errors.push` / `return [...]`, and this arm's message is
+// fully interpolated, so its longest static run is `": "` — a substring of every test file.
+test('verify-bundle.a torn artifact fails the gate instead of reading as a clean bundle', () => {
+  const torn = `${JSON.stringify(artifact('AC-DR-08'), null, 2)}\n`.slice(0, 60);
+  // Without this the fixture can silently decay into a valid-JSON artifact and pin nothing.
+  assert.throws(() => JSON.parse(torn), SyntaxError);
+  const fixture = makeFixture(({ bundleDir }) => {
+    writeFileSync(path.join(bundleDir, acFileName('AC-DR-08')), torn);
+  });
+  try {
+    const result = runVerifier(fixture);
+    // `missing=0` is the disjointness half: the artifact is PRESENT, so neither the missing arm
+    // nor the orphan-tmp recovery can be what reddens this — only the catch can. Asserted as a
+    // whole line because an unanchored /failures=1/ also matches `failures=15`.
+    assert.equal(
+      result.stdout.trim(),
+      `bundle FAIL checked=${EXPECTED_BUNDLE_AC_IDS.length} missing=0 failures=1`,
+      result.stderr,
+    );
+    assert.equal(result.status, 1, `expected FAIL, got exit=${result.status}`);
+    // The parser's own wording is engine-versioned; the AC id is what this arm contributes.
+    assert.match(result.stderr, /^verify-bundle: AC-DR-08: /m);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 // Forward-protection: the arms above are a hand-written list, and a hand-written list is
 // exactly what let eight arms ship unpinned. This derives the arm set from the verifier's own
 // source, so a NEW rejection arm added without a fixture reddens here instead of shipping
