@@ -179,6 +179,22 @@ export const DEFAULT_TIER_STALL_THRESHOLD_MS = 600_000;
 export const TIER_STALL_THRESHOLD_FLOOR_MS = 60_000;
 export const TIER_STALL_THRESHOLD_ENV_VAR = 'PICKLE_TIER_STALL_THRESHOLD_MS';
 
+// B2 rate-limit probe: the ONE declaration of the operator knob "how often does a rate-limit
+// wait re-ask the API", and of the probe protocol the two waiting runners speak. Both
+// `mux-runner.ts` and `microverse-runner.ts` park on a rate limit and both re-probe; each had
+// grown its own verbatim copy of these six values and of the resolver body below, so the single
+// documented knob had two compiled definitions and a change to either one's default or floor
+// would have left the two runners disagreeing about the same env var with nothing to notice.
+// Neither runner could own it — `microverse-runner.ts` imports FROM `mux-runner.ts`, so the
+// reverse import is a cycle — which is precisely why it belongs in a module both already import.
+export const RATE_LIMIT_PROBE_INTERVAL_ENV_VAR = 'PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS';
+export const DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS = 10 * 60 * 1000;
+export const MIN_RATE_LIMIT_PROBE_INTERVAL_MS = 60_000;
+export const RATE_LIMIT_PROBE_TIMEOUT_MS = 120_000;
+export const RATE_LIMIT_PROBE_LOG_FILENAME = 'rate_limit_probe.log';
+/** Smallest prompt that still forces a real API round trip. */
+export const RATE_LIMIT_PROBE_PROMPT = 'Reply with exactly: ok';
+
 // The two scrubbed keys the trailer compose site (`backend-spawn.ts`) also WRITES.
 // Named here so that file can import the binding instead of restating the literal:
 // dropping either from the array below is then a compile error at the compose site,
@@ -1062,6 +1078,22 @@ export function resolveTierStallThresholdMs(
     }
   }
   return DEFAULT_TIER_STALL_THRESHOLD_MS;
+}
+
+/**
+ * How often a rate-limit wait re-asks. Clamped UP to `MIN_RATE_LIMIT_PROBE_INTERVAL_MS` so an
+ * operator override cannot turn the park into a spawn-burn; absent/garbage falls back to the
+ * compiled default.
+ *
+ * The `parseInt` parse is carried over verbatim from the two copies this replaces — deliberately
+ * looser than the sibling `resolveTierStallThresholdMs` above, which rejects a fractional or
+ * trailing-garbage value rather than truncating it. Tightening it here would be a behaviour
+ * change to both runners wearing the clothes of a move.
+ */
+export function resolveRateLimitProbeIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = parseInt(env[RATE_LIMIT_PROBE_INTERVAL_ENV_VAR] ?? '', 10);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS;
+  return Math.max(raw, MIN_RATE_LIMIT_PROBE_INTERVAL_MS);
 }
 
 export function resolveJudgeBackend(

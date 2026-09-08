@@ -55,6 +55,10 @@ import {
   resolveJudgeBackend,
   loadPickleSettingsBag,
   resolveRateLimitSettings,
+  resolveRateLimitProbeIntervalMs,
+  RATE_LIMIT_PROBE_TIMEOUT_MS,
+  RATE_LIMIT_PROBE_LOG_FILENAME,
+  RATE_LIMIT_PROBE_PROMPT,
   DEFAULT_MAX_PARK_MINUTES,
 } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
@@ -3094,24 +3098,6 @@ export async function probeJudgeBackendAvailability(backend: ProbeJudgeBackend, 
  * distinction, deliberately not a second control path.
  */
 type RateLimitProbeVerdict = 'cleared' | 'limited' | 'unknown';
-
-const RATE_LIMIT_PROBE_INTERVAL_ENV_VAR = 'PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS';
-const DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS = 10 * 60 * 1000;
-const MIN_RATE_LIMIT_PROBE_INTERVAL_MS = 60_000;
-const RATE_LIMIT_PROBE_TIMEOUT_MS = 120_000;
-const RATE_LIMIT_PROBE_LOG_FILENAME = 'rate_limit_probe.log';
-/** Smallest prompt that still forces a real API round trip. */
-const RATE_LIMIT_PROBE_PROMPT = 'Reply with exactly: ok';
-
-/**
- * How often the wait re-asks. Clamped UP to a 60s floor so an operator override cannot turn the
- * park into a spawn-burn; absent/garbage falls back to the compiled default.
- */
-export function resolveRateLimitProbeIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = parseInt(env[RATE_LIMIT_PROBE_INTERVAL_ENV_VAR] ?? '', 10);
-  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS;
-  return Math.max(raw, MIN_RATE_LIMIT_PROBE_INTERVAL_MS);
-}
 
 /**
  * One re-probe step of the rate-limit wait: ask again, tell the operator what came back, and

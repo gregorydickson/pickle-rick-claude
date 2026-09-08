@@ -12,7 +12,7 @@ import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, r
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
-import { writeStateFile, getExtensionRoot, getDataRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, loadPickleSettingsBag, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, } from '../services/pickle-utils.js';
+import { writeStateFile, getExtensionRoot, getDataRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, loadPickleSettingsBag, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 const sm = new StateManager();
 import { runIteration, loadRateLimitSettings, classifyIterationExit, computeRateLimitAction, killCurrentChild, wouldResetOrphanCommit, resolveApncMaxPassesWithoutClean, classifyMuxIteration, isParkExhausted, foldParkIntoEpisode, } from './mux-runner.js';
@@ -2279,23 +2279,6 @@ export async function probeJudgeBackendAvailability(backend, cwd) {
         }
         return { kind, message };
     }
-}
-const RATE_LIMIT_PROBE_INTERVAL_ENV_VAR = 'PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS';
-const DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS = 10 * 60 * 1000;
-const MIN_RATE_LIMIT_PROBE_INTERVAL_MS = 60_000;
-const RATE_LIMIT_PROBE_TIMEOUT_MS = 120_000;
-const RATE_LIMIT_PROBE_LOG_FILENAME = 'rate_limit_probe.log';
-/** Smallest prompt that still forces a real API round trip. */
-const RATE_LIMIT_PROBE_PROMPT = 'Reply with exactly: ok';
-/**
- * How often the wait re-asks. Clamped UP to a 60s floor so an operator override cannot turn the
- * park into a spawn-burn; absent/garbage falls back to the compiled default.
- */
-export function resolveRateLimitProbeIntervalMs(env = process.env) {
-    const raw = parseInt(env[RATE_LIMIT_PROBE_INTERVAL_ENV_VAR] ?? '', 10);
-    if (!Number.isFinite(raw) || raw <= 0)
-        return DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS;
-    return Math.max(raw, MIN_RATE_LIMIT_PROBE_INTERVAL_MS);
 }
 /**
  * One re-probe step of the rate-limit wait: ask again, tell the operator what came back, and

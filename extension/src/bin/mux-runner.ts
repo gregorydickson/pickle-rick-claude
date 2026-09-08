@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
-import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
@@ -9216,22 +9216,6 @@ async function waitThroughRateLimit(
 /** B2 (ticket a7a029df): result of re-asking the API whether a rate limit still holds. */
 export type RateLimitProbeVerdict = 'cleared' | 'limited' | 'unknown';
 
-const RATE_LIMIT_PROBE_TIMEOUT_MS = 120_000;
-const RATE_LIMIT_PROBE_LOG_FILENAME = 'rate_limit_probe.log';
-const RATE_LIMIT_PROBE_PROMPT = 'Reply with exactly: ok';
-/** Same env var microverse-runner.ts's resolveRateLimitProbeIntervalMs reads — one operator knob for
- * "how often does a rate-limit wait re-probe", not two. Duplicated here (not imported) because
- * microverse-runner.ts imports FROM mux-runner.ts, so the reverse import would be circular. */
-const RATE_LIMIT_PROBE_INTERVAL_ENV_VAR = 'PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS';
-const DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS = 10 * 60 * 1000;
-const MIN_RATE_LIMIT_PROBE_INTERVAL_MS = 60_000;
-
-function resolveMuxRateLimitProbeIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = parseInt(env[RATE_LIMIT_PROBE_INTERVAL_ENV_VAR] ?? '', 10);
-  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS;
-  return Math.max(raw, MIN_RATE_LIMIT_PROBE_INTERVAL_MS);
-}
-
 /** Minimal spawn-and-capture with a timeout — the mux-runner-local twin of
  * microverse-runner.ts's private (unexported) spawnWithClosedStdin. */
 function spawnRateLimitProbe(
@@ -9358,7 +9342,7 @@ async function waitOutRateLimitParkWithProbe(
 ): Promise<boolean> {
   const { statePath, sessionDir, state } = input;
   const probeFn = input.probeApiCleared ?? probeMuxRateLimitCleared;
-  const probeIntervalMs = input.probeIntervalMs ?? resolveMuxRateLimitProbeIntervalMs();
+  const probeIntervalMs = input.probeIntervalMs ?? resolveRateLimitProbeIntervalMs();
   let lastProbeMs = parkStartMs;
   while (now() < resumeTargetMs) {
     await sleepFn(Defaults.RATE_LIMIT_POLL_MS);

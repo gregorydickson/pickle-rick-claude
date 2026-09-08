@@ -721,10 +721,10 @@ test('runIteration is exported from mux-runner', () => {
 
 // --- microverse-runner tests ---
 
-import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, handleRateLimitExit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD, resolveRateLimitProbeIntervalMs } from '../bin/microverse-runner.js';
+import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, handleRateLimitExit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD } from '../bin/microverse-runner.js';
 import { resetToSha } from '../services/git-utils.js';
 import { StateManager } from '../services/state-manager.js';
-import { writeStateFile } from '../services/pickle-utils.js';
+import { writeStateFile, resolveRateLimitProbeIntervalMs } from '../services/pickle-utils.js';
 import { resolveBackend } from '../services/backend-spawn.js';
 import { Defaults, LockError } from '../types/index.js';
 
