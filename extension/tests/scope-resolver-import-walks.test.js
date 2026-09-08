@@ -547,3 +547,62 @@ test('A2: the host rg finds the importer — the union of the pattern branches i
         cleanup(repo);
     }
 });
+
+// AP-EXT-ITER73-01 — the `diff:` one-hop arm's NEGATIVE side.
+//
+// Measured over the complete input domain the whole scope test surface drives
+// through parseScope (22 distinct flags, recovered by instrumenting the shipped
+// function and running all 37 suites that reach it): the strict arm's two
+// conjuncts are both killed by a fixture, and ALL THREE of the one-hop arm's
+// are unfixtured. Only the happy path `diff:main:one-hop` is ever driven, so
+// `parts.length === 3`, `parts[1].length > 0` and `parts[2] === 'one-hop'`
+// could each be deleted with every suite green.
+//
+// The pin is the collapsed statement rather than three per-conjunct cases:
+// `diff:` admits EXACTLY two shapes and rejects every other spelling. Written
+// as one table so a fourth conjunct cannot fork a fourth escape hatch, and
+// with the accepted shapes as POSITIVE controls so a parser that refuses
+// everything fails instead of passing vacuously.
+const DIFF_FORMS = [
+    // [flag, expected] — expected is a ParsedScope, or null meaning
+    // "must throw SCOPE_BAD_FLAG".
+    ['diff:main', { mode: 'diff', strategy: 'strict', base: 'main' }],
+    ['diff:main:one-hop', { mode: 'diff', strategy: 'one-hop', base: 'main' }],
+    // arity: a fourth segment is not a suffix the one-hop arm may ignore.
+    ['diff:main:one-hop:junk', null],
+    ['diff:main:one-hop:one-hop', null],
+    // ref-nonempty: the one-hop arm needs a base as much as the strict arm.
+    ['diff::one-hop', null],
+    // the strategy token is a literal, not a prefix and not a wildcard.
+    ['diff:main:bogus', null],
+    ['diff:main:one-ho', null],
+    ['diff:main:ONE-HOP', null],
+];
+
+test('AP-EXT-ITER73-01: diff: admits exactly two shapes — every other spelling is SCOPE_BAD_FLAG', async () => {
+    const { parseScope, ScopeError } = await import('../services/scope-resolver.js');
+
+    // Not-vacuous floor: the table must carry both accepted shapes AND
+    // rejected ones, or "everything throws" and "nothing throws" both pass.
+    const accepted = DIFF_FORMS.filter(([, e]) => e !== null);
+    const rejected = DIFF_FORMS.filter(([, e]) => e === null);
+    assert.ok(accepted.length === 2, `expected exactly 2 accepted diff shapes, got ${accepted.length}`);
+    assert.ok(rejected.length >= 5, `expected >= 5 rejected diff shapes, got ${rejected.length}`);
+
+    for (const [flag, expected] of DIFF_FORMS) {
+        if (expected === null) {
+            assert.throws(
+                () => parseScope(flag),
+                (err) => err instanceof ScopeError && err.code === 'SCOPE_BAD_FLAG',
+                `parseScope(${JSON.stringify(flag)}) must throw SCOPE_BAD_FLAG — a malformed ` +
+                'diff form that parses becomes a scope fence the operator never spelled',
+            );
+        } else {
+            assert.deepStrictEqual(
+                parseScope(flag), expected,
+                `parseScope(${JSON.stringify(flag)}) must still be accepted — a guard that ` +
+                'rejects the legitimate shapes is not a fix',
+            );
+        }
+    }
+});
