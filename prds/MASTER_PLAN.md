@@ -113,6 +113,47 @@ isolated) and is struck from `CLAUDE.md` and `prds/CLAUDE.md`.
 
 ---
 
+## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
+
+**Measured, two bundles running:**
+
+| bundle | disposition at the pickle boundary | nonConvergent |
+|---|---|---|
+| B-MEGADRAIN (`2026-09-06-27819a21`) | `done_over_red_worker_gate_tests:7d47affe,f4dd43e8,0618cccd,fa96d062` | 4 |
+| B-CIGREEN (`2026-09-08-f365390b`) | `done_over_red_worker_gate_tests:0c065c63` (2026-09-08 09:34Z) | 1 |
+
+**The tension worth stating precisely.** After B-MEGADRAIN ended, the full non-expensive gate was run on
+a quiet box at HEAD and measured **GREEN on every leg**: `tsc --noEmit` 0, eslint 0 errors, emit 0 with
+no JS/TS drift, 10/10 audits, `flake-budget failures=0 runs 5/5 tests=9554`, integration 690/690,
+contract 99 (98 pass, 0 fail). So four tickets were flipped Done over a red `worker_gate_tests_verdict`,
+and the tree those tickets left behind is not red.
+
+**Two readings, NOT yet distinguished — do not assert either:**
+1. **Benign** — later tickets in the same bundle repaired what the earlier ones broke, so a per-ticket
+   red was true when taken and stale by the end. The withhold did its job and the branch converged.
+2. **Instrument** — the worker gate's `worker_gate_tests_verdict` produces reds that the release gate
+   cannot reproduce (wrong cwd, contended tier run, a timing-sensitive fast-tier flake under worker
+   load, or a tier that reported empty rather than failed). Then the withhold is firing on a
+   measurement that is not the one that matters, and it is silently costing every bundle its verdict.
+
+**The falsifying observation, for whoever scopes this:** for each named ticket id, read the recorded
+`worker_gate_tests_verdict` payload and re-run EXACTLY that tier command at that ticket's completion
+commit on a quiet box. Reading (1) predicts the red reproduces at that commit and disappears at HEAD.
+Reading (2) predicts it does not reproduce even at its own commit. A count is not enough — the verdict
+payload names the failing tests, and `npm skips posttest when the tier fails`, so an empty failure list
+is itself the second reading's signature.
+
+**Why this now outranks szechuan as the release blocker.** [[ROOT S]] records szechuan withholding four
+bundles for four distinct causes. But B-MEGADRAIN's verdict was withheld at the PICKLE boundary, before
+szechuan ran at all — fixing szechuan entirely would not have released it. If this mechanism keeps
+firing, it, not szechuan, is what stands between a completed bundle and a release. **Compose it as a
+root before the next szechuan attempt.**
+
+**Not a halt, not a defect to "fix" blind.** Both runs continued through every phase; the withhold is a
+DISPOSITION and it is behaving as designed. What is unmeasured is whether its INPUT is trustworthy.
+
+---
+
 ## 🏁 B-MEGADRAIN RUN OUTCOME — session `2026-09-06-27819a21` ENDED 2026-09-08 05:20Z at **4/4**
 
 ```
