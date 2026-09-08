@@ -524,6 +524,34 @@ function nonCommentText(content) {
   }).join('\n');
 }
 
+// A unified diff is a RECORD of code, never code, so it SPELLS every name it carries
+// and USES none of them -- the same tier markdown already sits in, reached by the same
+// reasoning: a medium that outlives the code it describes answers "does this identifier
+// still EXIST as code" with a name it merely quotes. A diff is the sharpest case,
+// because the line proving a symbol DELETED is byte-identical to the line that would
+// prove it live but for a leading `-`.
+//
+// Detected by CONTENT, never by extension or path. An extension list is the
+// incomplete-set shape this arm already refuses (AP-EXT-ITER153-01), and it would put a
+// second, weaker rule beside `isLivenessChannel` -- which stays exactly as it was. The
+// file is still READ and still counts toward the corpus census, so the breadth pin over
+// every tracked non-markdown file is untouched; only the USE half loses it.
+//
+// Stripping the hunk BODY alone is NOT enough, and was measured as insufficient: git
+// writes the enclosing function's signature into the `@@ ... @@` header itself, so a
+// removed `export function` survives a `^[-+]` line filter on that header and still
+// reads as a use. The whole file is the record.
+//
+// MEASURED on this tree: the detector fires on exactly the 3 tracked diff fixtures and
+// on no source file, and it moves exactly ONE anchor -- a judge-probe helper renamed
+// away in the same change that added the fixture, which this arm had been counting
+// among its `verified` symbols off the very hunk recording its deletion.
+const DIFF_HUNK_HEADER_RE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m;
+
+function nonDiffText(content) {
+  return DIFF_HUNK_HEADER_RE.test(content) ? '' : content;
+}
+
 // ONE rule for "may this tracked file answer the question the corpus asks" — does
 // this identifier still EXIST as code. The predicate used to name FILES, and a file
 // list is the incomplete-set shape: it excluded markdown plus ONE hand-written path
@@ -612,7 +640,7 @@ function buildSymbolCorpus() {
     }
     fileCount++;
 
-    const commentFree = nonCommentText(text);
+    const commentFree = nonDiffText(nonCommentText(text));
     const useText = rel.endsWith('.json') ? commentFree : nonLiteralText(commentFree);
     const spelledHere = new Set();
     const usedHere = new Set();

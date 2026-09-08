@@ -306,6 +306,116 @@ test('AP-EXT-ITER153-01 a live string-valued name spelled in several files still
   );
 });
 
+// AP-EXT-ITER45-01 — a unified diff is a RECORD of code, so it SPELLS names and USES none.
+//
+// A `.patch`/`.diff` fixture is the sharpest case of the medium markdown is already excluded
+// for: the line proving a symbol DELETED is byte-identical to the line that would prove it
+// live but for a leading `-`. Before the fix the corpus read those hunks as ordinary code and
+// counted the names in them among its `verified` symbols — an anchor could name a function the
+// tree had deleted and resolve it off the very hunk recording the deletion.
+//
+// The token is DERIVED at run time and never written here as a literal, for the reason the
+// sibling pins above state: a bare occurrence in this file would enter `codeWords`, lift the
+// name out of the prose-only tier and silently defuse the pin. Measured — an early draft that
+// hard-coded one did exactly that.
+const DIFF_HUNK_HEADER_RE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/m;
+const ANCHOR_SHAPED_RE = /^(?:[A-Za-z][a-zA-Z0-9]*[a-z][A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9]{2,}(?:_[A-Z0-9]+)+)$/;
+
+/** Tracked files whose CONTENT is a unified diff — found the way the audit finds them. */
+function trackedDiffFixtures() {
+  const repoRoot = path.resolve(EXTENSION_ROOT, '..');
+  const listed = spawnSync('git', ['ls-files', '-z'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return (listed.stdout || '')
+    .split('\0')
+    .filter(Boolean)
+    .filter((rel) => {
+      try {
+        return DIFF_HUNK_HEADER_RE.test(fs.readFileSync(path.join(repoRoot, rel), 'utf8'));
+      } catch {
+        return false;
+      }
+    });
+}
+
+/** An anchor-shaped name carried ONLY by a tracked diff fixture — declared by no source file. */
+function findTokenLiveOnlyInDiffFixture() {
+  const repoRoot = path.resolve(EXTENSION_ROOT, '..');
+  const fixtures = trackedDiffFixtures();
+  const seen = new Set();
+
+  for (const rel of fixtures) {
+    const text = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+    for (const match of text.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) {
+      const token = match[0];
+      if (seen.has(token) || !ANCHOR_SHAPED_RE.test(token)) continue;
+      seen.add(token);
+
+      const hits = spawnSync('git', ['grep', '-l', '-w', '-F', '--', token], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        timeout: 30_000,
+      });
+      if (hits.status !== 0 && hits.status !== 1) continue;
+      const carriers = (hits.stdout || '')
+        .split('\n')
+        .filter(Boolean)
+        .filter((f) => !f.endsWith('.md'));
+      if (carriers.length > 0 && carriers.every((f) => fixtures.includes(f))) return token;
+    }
+  }
+  return null;
+}
+
+test('AP-EXT-ITER45-01 the audit finds diff fixtures by CONTENT, not by extension or path', () => {
+  const fixtures = trackedDiffFixtures();
+  assert.ok(
+    fixtures.length > 0,
+    'precondition: the tree must track at least one unified-diff fixture, otherwise every ' +
+      'case below measures nothing'
+  );
+  assert.ok(
+    fixtures.every((f) => /\.(patch|diff)$/.test(f)),
+    `the content detector must not fire on a source file; fired on: ${fixtures.join(', ')}`
+  );
+});
+
+test('AP-EXT-ITER45-01 a name carried only by a tracked diff hunk does not resolve as a live symbol', () => {
+  const token = findTokenLiveOnlyInDiffFixture();
+  assert.ok(
+    token,
+    'precondition: a tracked diff fixture must carry at least one anchor-shaped name absent ' +
+      'from every other non-markdown file, otherwise this pin measures nothing'
+  );
+
+  const result = runAuditOverFixtureCatalog('- `x.ts` — INVARIANT: `' + token + '` is the anchor.');
+
+  assert.match(
+    result.stderr,
+    new RegExp('INVARIANT \\(prose-only\\): [^\\n]*: ' + token + ':'),
+    'a name only a diff hunk carries must NOT be counted among the verified symbols — the ' +
+      `corpus is reading the diff as code. stderr: ${result.stderr}`
+  );
+});
+
+test('AP-EXT-ITER45-01 a symbol a diff fixture mentions AND real code declares is still live', () => {
+  // Written as a literal deliberately: this name is genuinely declared in microverse-runner.ts,
+  // so spelling it here cannot manufacture the liveness the case asserts.
+  const liveToken = 'probeJudgeBackendAvailability';
+  const result = runAuditOverFixtureCatalog('- `x.ts` — INVARIANT: `' + liveToken + '` is the anchor.');
+
+  assert.doesNotMatch(
+    result.stderr,
+    new RegExp(liveToken),
+    'discounting diff hunks must not narrow the corpus for a symbol real code declares — the ' +
+      `strip is not a blanket. stderr: ${result.stderr}`
+  );
+});
+
 // B-ARGMAX AC-5 — the argv-ceiling sweep arm.
 //
 // The arm asserts that every exported invocation builder in the backend spawn service routes its
