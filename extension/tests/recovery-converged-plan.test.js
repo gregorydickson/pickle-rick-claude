@@ -391,3 +391,85 @@ test('AP-EXT-ITER228-01 control: the self-check bullet plans carry is not a veri
   ].join('\n');
   assert.equal(parsePlanPhases(md)[0].verify, 'npm run test:fast');
 });
+
+// ---- AP-EXT-ITER237-01: the grammar's STRUCTURAL properties, not its vocabulary ----
+//
+// AP-EXT-ITER227-01 and AP-EXT-ITER228-01 both widened this grammar's VOCABULARY (heading
+// levels, separators, marker decorations) and pinned each widening exhaustively. What neither
+// covers is the grammar's three remaining load-bearing STRUCTURAL properties — the two line
+// anchors and the optional title — and a 9-mutant battery over `recovery-controller.js`,
+// driven by every suite that reaches `parsePlanPhases` (368 cases), found all three amputable
+// with the suites GREEN. They are pinned here because each one lands on the SAME terminal the
+// two vocabulary findings were about: a phase whose `verify` is null stops `executePhaseLoop`
+// where it stands, and the ladder escalates to `recovery_exhausted` — abandoning the diff the
+// re-execution seam had just produced.
+//
+// These are properties, not lists: a plan citing a heading in prose must not become one, and
+// an untitled heading must stay a Phase. No spelling is enumerated, so a new authored spelling
+// needs no new row.
+
+// Plans cite their own headings in prose constantly ("redo ### Phase 1 from scratch", "this
+// bundle follows the ## Phase 3 convention"). BOTH anchors defend against it, at different
+// positions, and neither is redundant: the split anchor governs a mention INSIDE a phase
+// block, the header anchor a mention in the PREAMBLE above the first real heading.
+const ITER237_PROSE_MENTIONS = [
+  {
+    label: 'inside a phase block (the split anchor)',
+    // Unanchored split: the block is cut in two, the real Phase 1 loses its verify to the
+    // fragment below the cut, and a phantom Phase 1 titled `from scratch.` is fabricated.
+    md: [
+      '# Plan', '', '## Phases', '',
+      '### Phase 1 — structural: add the resolver',
+      'Steps: edit the resolver. If it fails, redo ## Phase 1 from scratch.',
+      '**Verify:** `./node_modules/.bin/tsc --noEmit`',
+      '',
+    ].join('\n'),
+    expected: [{ index: 1, title: 'structural: add the resolver', verify: './node_modules/.bin/tsc --noEmit' }],
+  },
+  {
+    label: 'in the preamble above the first heading (the header anchor)',
+    // Unanchored header: the preamble itself parses as a phantom `Phase 3` carrying
+    // `verify: null`, and it sorts FIRST — so the loop stops before any real phase runs.
+    md: [
+      '# Plan', '',
+      'Context: this bundle follows the ## Phase 3 convention from the prior plan.',
+      '',
+      '### Phase 1 — the only real phase',
+      '**Verify:** `npm run test:fast`',
+      '',
+    ].join('\n'),
+    expected: [{ index: 1, title: 'the only real phase', verify: 'npm run test:fast' }],
+  },
+];
+
+for (const { label, md, expected } of ITER237_PROSE_MENTIONS) {
+  test(`AP-EXT-ITER237-01: a heading cited mid-line ${label} is prose, not a Phase`, async () => {
+    const { parsePlanPhases } = await load();
+    assert.deepEqual(
+      parsePlanPhases(md),
+      expected,
+      'a mid-line mention must neither fabricate a phase nor strip the real one of its verify',
+    );
+  });
+}
+
+test('AP-EXT-ITER237-01: a title-less heading is an UNTITLED phase, never an invisible one', async () => {
+  const { parsePlanPhases } = await load();
+  // The title is optional BY CONSTRUCTION (`(.*)`), and that is load-bearing: requiring it
+  // makes a bare `### Phase 1` fail the header match, so the phase is dropped from the plan
+  // silently rather than run without a title. That is precisely the failure AP-EXT-ITER227-01
+  // measured (a heading became invisible rather than untitled) surviving in a second axis.
+  const md = [
+    '# Plan', '', '## Phases', '',
+    '### Phase 1',
+    '**Verify:** `./node_modules/.bin/tsc --noEmit`',
+    '',
+    '### Phase 2 — behavioural',
+    '**Verify:** `npm run test:fast`',
+    '',
+  ].join('\n');
+  assert.deepEqual(parsePlanPhases(md), [
+    { index: 1, title: '', verify: './node_modules/.bin/tsc --noEmit' },
+    { index: 2, title: 'behavioural', verify: 'npm run test:fast' },
+  ], 'an absent title costs a commit subject, never the phase');
+});
