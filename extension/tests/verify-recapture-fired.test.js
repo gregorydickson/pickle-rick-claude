@@ -880,6 +880,46 @@ test('verify-recapture.no-session writes runtime artifact outside the tracked re
   }
 });
 
+// AP-BIN-ITER53-01: the CLI entry-guard catch is the ONLY thing between a throw that escapes
+// verifyRecaptureFired and `exit 0` — the code the release-evidence gate reads as AC-DR-02 PASS.
+// It is reachable without any injection: writeRuntimeArtifact mkdirs <sessionRoot>/bundle
+// OUTSIDE every inner try, so a sessionRoot that is a FILE throws ENOTDIR before any verdict
+// exists. Neither an artifact nor the `AC-DR-02 PASS/FAIL` line is ever produced on that path,
+// so the exit code and stderr are the entire signal — both are asserted here.
+test('verify-recapture.a throw escaping the verifier exits 1 with a diagnostic, never a silent green', () => {
+  const enclosing = realpathSync(mkdtempSync(path.join(tmpdir(), 'verify-recapture-throw-')));
+  const sessionFile = path.join(enclosing, 'session-root-is-a-file');
+  const dataRoot = makeDataRoot();
+  writeFileSync(sessionFile, 'not a directory\n');
+
+  try {
+    const result = spawnSync(process.execPath, [CLI, sessionFile], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: SPAWN_TIMEOUT_MS,
+      env: { ...HERMETIC_ENV, PICKLE_DATA_ROOT: dataRoot },
+    });
+
+    assert.equal(
+      result.status,
+      1,
+      `a throw escaping the verifier must exit 1, never 0: stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`
+    );
+    assert.ok(
+      result.stderr.includes(path.join(sessionFile, 'bundle')),
+      `the escaping throw must be reported on stderr, naming the path it failed on: ${JSON.stringify(result.stderr)}`
+    );
+    assert.doesNotMatch(
+      result.stdout,
+      /AC-DR-02 PASS/,
+      'a run that never reached a verdict must not print the AC-DR-02 PASS line'
+    );
+  } finally {
+    rmSync(enclosing, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Orphan-tmp delete authority — THIRD scanner (scope.json).
 //
