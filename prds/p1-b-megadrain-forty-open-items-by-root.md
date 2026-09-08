@@ -499,11 +499,22 @@ structurally (subsystem never partitions, or findings never shrink) rather than 
 - The existing `sourceCount >= 3 && testCount / sourceCount <= 0.8` filter still applies per resolved subsystem.
 - Mutation check: restore the `entry.name` identity in the compiled mirror and the workspace fixture goes RED; the flat-repo control stays GREEN.
 
-**Open observation, NOT scoped as a defect (operator flagged it the same way):** `findings_history` had
-length **1** in all four sessions despite 8–9 passes. `microverse-runner.ts:5049` documents it as "one
-entry appended per pass". If that is true, a length of 1 after 9 passes is a second bug and would
-explain a stall counter that never moves — `hasRecordedCleanPass` reads that same history. **Measure
-before filing:** append-per-pass is a claim from a comment, and a comment is not a measurement.
+**Open observation — LIKELY DISSOLVED by measurement 2026-09-08, check before chasing it.**
+The issue reports `findings_history` "length 1" in all four sessions despite 8–9 passes, flagged as a
+possible second defect. Measured on the live B-CIGREEN run (`2026-09-08-f365390b`) at
+`pass_counts {bin: 6, extension: 5}`:
+
+```
+findings_history lengths = {"bin": 6, "extension": 5}      ← one entry per pass, per subsystem
+```
+
+So append-per-pass IS working, and `findings_history` is a **map keyed by subsystem**, each value an
+array of per-pass entries. On the monorepo there was exactly ONE subsystem (`packages`), so
+`Object.keys(findings_history).length === 1` is the CORRECT and expected shape — it counts subsystems,
+not passes. **Before filing anything here, establish which was measured:** the map's key count (1, and
+correct) or the `packages` array's length (should be 8–9; a 1 there would be a real bug). These are
+different numbers and only the second is a defect. This is the failed-vs-empty confusion in the
+instrument, not necessarily in the code.
 
 **Related:** GitHub #8 (anatomy-park declares convergence with no INV-NO-SELF-DISOWN evidence,
 "permanently inert on any 2+ marker monorepo") is the same monorepo-shape family. Compose them together.
