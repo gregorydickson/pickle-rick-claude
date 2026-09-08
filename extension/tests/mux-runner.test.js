@@ -3202,6 +3202,31 @@ test('stripSetupSection: returns unchanged when setup is the only/last section',
     assert.equal(stripSetupSection(input), input);
 });
 
+// AP-EXT-ITER239-01: both line anchors of the setup-strip grammar, from their NEGATIVE side.
+// Every case above places its headings at line start, so `^` never decided anything and both
+// anchors survived amputation across all 286 cases of the three suites that reach this wire.
+
+test('stripSetupSection: a ### sub-heading inside the setup body does not end the strip (AP-EXT-ITER239-01)', () => {
+    // Every live template carrying a SETUP section opens its body with a `### Step 1:` line.
+    // Unanchored, `/## \S/` matches the `## ` INSIDE `### ` at byte 3 of the body, so the strip
+    // ends immediately: the `## SETUP MODE` label is deleted and the whole body survives, now
+    // unlabelled. That is strictly worse than not stripping — the setup commands read as manager
+    // instructions with no cue that they are setup-mode-only.
+    const input = 'Header\n\n## SETUP MODE\n\n### Step 1: Check tmux\nRun `tmux new-session`.\n\n## WORKER MODE\n\nWorker stuff';
+    const result = stripSetupSection(input);
+    assert.equal(result, 'Header\n\n## WORKER MODE\n\nWorker stuff');
+    assert.ok(!result.includes('### Step 1: Check tmux'), 'the setup body must not survive the strip');
+    assert.ok(!result.includes('tmux new-session'), 'setup-only commands must not reach the manager');
+});
+
+test('stripSetupSection: a mid-line "## SETUP MODE" mention is not a section heading (AP-EXT-ITER239-01)', () => {
+    // Unanchored, `setupRe` starts the strip mid-sentence and splices the next real heading onto
+    // the tail of that sentence — `## WORKER MODE` stops being a heading, so every downstream
+    // section loses its boundary.
+    const input = 'Header\n\nSee the block titled ## SETUP MODE\n\n## WORKER MODE\n\nWorker stuff';
+    assert.equal(stripSetupSection(input), input);
+});
+
 // --- classifyTicketCompletion ---
 
 test('classifyTicketCompletion: returns completed when TASK_COMPLETED token found in log', () => {

@@ -91,6 +91,19 @@ test('composeManagerPromptFromSkill: preserves # Step 2 heading after strip', ()
   } finally { cleanup(); }
 });
 
+// AP-EXT-ITER239-01: `step1Re`'s line anchor from its NEGATIVE side. BASE_SKILL places the
+// heading at line start, so `^` never decided anything and the anchor survived amputation.
+test('stripStepOneBlock: only a line-leading "# Step 1: Initialization" is the block heading (AP-EXT-ITER239-01)', () => {
+  // Unanchored, `/# Step 1: Initialization\s*$/` matches inside a demoted `## Step 1:` heading
+  // and inside any sentence that names the block — both start the strip at a byte that is not a
+  // line start, so the splice destroys the `# Step 2:` heading it was supposed to preserve.
+  const demoted = '# Guide\n\n## Step 1: Initialization\n\nReference notes.\n\n# Step 2: Execution\n\nBody';
+  assert.equal(stripStepOneBlock(demoted), demoted, 'a ## sub-heading is not the Step 1 block');
+
+  const cited = 'Never run # Step 1: Initialization\n\n# Step 2: Execution\n\nBody';
+  assert.equal(stripStepOneBlock(cited), cited, 'a mid-line mention is not the Step 1 block');
+});
+
 // --- Optional appends ---
 test('composeManagerPromptFromSkill: appends handoffText when provided', () => {
   const { skillPath, cleanup } = makeTempSkill('Body text.');
