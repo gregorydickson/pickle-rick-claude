@@ -113,6 +113,44 @@ isolated) and is struck from `CLAUDE.md` and `prds/CLAUDE.md`.
 
 ---
 
+## ✅ ANATOMY-PARK CONVERGED under the raised APNC ceiling — the C6 raise is EMPIRICALLY VALIDATED (2026-09-08 04:32Z)
+
+**Measured at the phase boundary on session `2026-09-06-27819a21`:**
+
+```
+pipeline-status.json: completed_phases 2 -> 3, current_phase szechuan-sauce
+                      NO anatomy-park entry in phase_dispositions
+anatomy-park.json:    converged: true
+                      pass_counts {bin: 11, extension: 17}
+                      consecutive_clean {bin: 2, extension: 3}
+                      stall_counts {0, 0}   ·  trap doors 25 added / 25 committed
+reason: "All subsystems reached consecutive_clean >= 2 with stall_counts 0
+         (bin: 2 clean over passes 10-11; extension: 3 clean over passes 15-17).
+         No subsystem exited via stall_limit."
+```
+
+**`extension` needed SEVENTEEN passes.** The old `APNC_MAX_PASSES_WITHOUT_CLEAN = 8` would have ended
+this phase at pass 8 as `anatomy_non_convergent` — for the second consecutive bundle — and the phase
+would never have counted toward `completed_phases`. Raising the ceiling to 50 (operator-set 2026-09-07,
+env `PICKLE_APNC_MAX_PASSES_WITHOUT_CLEAN=50`, source default in C6) is the whole difference between
+this phase reporting `converged` and reporting non-convergent.
+
+**The hypothesis this falsifies, so it is not re-derived:** after B-UNATTENDED's 0-for-15 clean rate it
+looked plausible that a bundle this large might NEVER converge, because each pass's own fix becomes the
+next pass's review surface. **That was wrong.** Given room past 8, both subsystems came clean and
+stayed clean. The old cap was not measuring non-convergence — it was terminating the loop before
+convergence could appear. This is the PRIME DIRECTIVE's "iterations do not need to be correct, the loop
+is the correctness mechanism" demonstrated with a number: 25 trap doors, 21 findings, then quiet.
+
+**`extension` is still the deeper subsystem** (17 passes vs 11), consistent with the earlier operator
+note at MASTER_PLAN:2432 that it "carries more latent defect than one review cycle can drain."
+
+**This does NOT release the bundle.** `nonConvergent` is still 4 from the pickle-boundary
+`done_over_red_worker_gate_tests` withhold (section below), which no later phase lowers. Anatomy-park
+converging is a phase result, not a run verdict.
+
+---
+
 ## ⚠ B-MEGADRAIN (session `2026-09-06-27819a21`) — SUCCESS VERDICT ALREADY WITHHELD at the pickle boundary
 
 **Measured 2026-09-07 15:18Z**, do not re-derive. `pipeline-status.json`:
