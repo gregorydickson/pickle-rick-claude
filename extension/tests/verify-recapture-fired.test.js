@@ -1251,6 +1251,19 @@ test('verify-recapture.an unparseable CLOSING phase timestamp cannot close the a
 // half cannot decay into a tautology: the event is provably findable the moment it is written
 // to the canonical name, and `activity_count: 0` proves the corpus was empty rather than
 // merely unmatched.
+//
+// The sibling set is DERIVED from the regex's own three load-bearing parts, not sampled: one
+// name per part, each of which the day bound reads rather than skips (every basename here sorts
+// at or after the day key). A single `.jsonl.bak` name pins only the `$` anchor — it does not
+// end in `.jsonl`, so the `endsWith('.jsonl')` loosening this file's sibling reader
+// (`forEachActivityEventInWindow`) actually uses survives it, and the trap door forbidding that
+// spelling would have been prose only.
+const NON_CANONICAL_ACTIVITY_NAMES = [
+  (day) => `${day}.jsonl.bak`, // trailing `$` anchor
+  (day) => `${day}-copy.jsonl`, // the whole name is the date — not merely its suffix
+  (day) => `x${day}.jsonl`, // leading `^` anchor
+];
+
 test('verify-recapture.an event in a non-canonical activity file name is not part of the corpus', () => {
   const session = makeSession(baseState(HISTORY_WINDOW_HIT));
   const dataRoot = makeDataRoot();
@@ -1260,19 +1273,25 @@ test('verify-recapture.an event in a non-canonical activity file name is not par
   const line = `${JSON.stringify(recaptureEvent(sessionName))}\n`;
   try {
     mkdirSync(activityDir, { recursive: true });
-    writeFileSync(path.join(activityDir, `${dayKey}.jsonl.bak`), line);
+    for (const name of NON_CANONICAL_ACTIVITY_NAMES.map((build) => build(dayKey))) {
+      // Guards the fixture: a name the day bound SKIPS would be excluded by the bound rather
+      // than by the filter, and would pin nothing.
+      assert.ok(path.basename(name, '.jsonl') >= dayKey, `${name} is bounded out, not filtered out`);
+      writeFileSync(path.join(activityDir, name), line);
+    }
 
-    const sibling = runVerifier(session, dataRoot);
-    assert.equal(sibling.status, 1, sibling.stderr);
-    assert.equal(sibling.runtimeArtifact.pass, false);
-    assert.equal(sibling.runtimeArtifact.failure_reason, 'recapture-event-missing');
+    const siblings = runVerifier(session, dataRoot);
+    assert.equal(siblings.status, 1, siblings.stderr);
+    assert.equal(siblings.runtimeArtifact.pass, false);
+    assert.equal(siblings.runtimeArtifact.failure_reason, 'recapture-event-missing');
     assert.equal(
-      sibling.runtimeArtifact.evidence.activity_count,
+      siblings.runtimeArtifact.evidence.activity_count,
       0,
       'a non-canonical sibling must not contribute events to the scanned corpus',
     );
 
-    // Same session, same history, same event bytes — only the file NAME becomes canonical.
+    // Same session, same history, same event bytes — only the file NAME becomes canonical. The
+    // siblings stay on disk, so `activity_count: 1` also proves they are still excluded here.
     writeFileSync(path.join(activityDir, `${dayKey}.jsonl`), line);
     const canonical = runVerifier(session, dataRoot);
     assert.equal(canonical.status, 0, canonical.stderr);
