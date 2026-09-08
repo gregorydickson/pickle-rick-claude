@@ -88,6 +88,16 @@ function finiteIntegerOrNull(value: unknown): number | null {
   return Number.isFinite(parsed) && Number.isInteger(parsed) ? parsed : null;
 }
 
+/**
+ * The ONE definition of "this turn is a completion turn": it carries a token AND this role
+ * may act on it. Both readers of a Stop turn ask through it, so they cannot disagree about
+ * which turns belong to the token classifier — `evaluateManagerIdleBackoff` runs FIRST and
+ * returns a decision, so any turn it claims is one `classifyDecisionInternal` never sees.
+ */
+function isActionableToken(token: TokenKind, role: string): boolean {
+  return token.kind !== 'none' && roleAllowsToken(token, role);
+}
+
 function roleAllowsToken(token: TokenKind, role: string): boolean {
   if (token.kind === 'worker-done') return role === 'worker';
   if (token.kind === 'analysis-done') return role === 'refinement-worker';
@@ -356,7 +366,12 @@ export function evaluateManagerIdleBackoff(
 
   const trimmed = transcript.trim();
   const snapshot = readIdleBackoffSnapshot(state);
-  if (!isWaitPatternResponse(trimmed)) {
+  // A turn carrying a token this role may act on is a COMPLETION turn, never an idle one —
+  // it belongs to the token classifier. The wait matchers are unanchored substrings
+  // (`worker still`, `continuing to wait`), so without this a manager that narrates a worker
+  // mid-report and signs off in the same turn is claimed here: the token is never read, no
+  // completion activity is emitted, and the turn is BLOCKED back into the model.
+  if (!isWaitPatternResponse(trimmed) || isActionableToken(detectCompletionTokens(transcript, state), role)) {
     if (snapshot) writeIdleBackoffSnapshot(state, null);
     return null;
   }
@@ -470,7 +485,7 @@ export function classifyDecision(state: State, transcript: string, role: string)
 function classifyDecisionInternal(state: State, transcript: string, role: string): ClassifiedResult {
   const token = detectCompletionTokens(transcript, state);
   const isWorkerRole = role === 'worker' || role === 'refinement-worker';
-  if (roleAllowsToken(token, role) && token.kind !== 'none') {
+  if (isActionableToken(token, role)) {
     const tokenDecision = classifyTokenDecision(state, token, isWorkerRole);
     if (tokenDecision) return tokenDecision;
   }

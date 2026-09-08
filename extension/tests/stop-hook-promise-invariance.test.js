@@ -21,7 +21,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { applyAllTicketsDoneCompletion } from '../bin/mux-runner.js';
-import { detectCompletionTokens } from '../hooks/handlers/stop-hook.js';
+import { detectCompletionTokens, evaluateManagerIdleBackoff } from '../hooks/handlers/stop-hook.js';
 
 /** The keys the promise carries, and the only keys it may ever carry. */
 const PROMISE_KEYS = ['kind', 'reason', 'ts'];
@@ -226,4 +226,70 @@ test('AP-EXT-ITER4-01: the stop hook still emits a decision through a symlinked 
   // regression is attributable to the symlink axis and not to the hermetic env.
   const throughRealPath = runShippedStopHook(SHIPPED_STOP_HOOK, tmp);
   assert.deepEqual(JSON.parse(throughSymlink), JSON.parse(throughRealPath));
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER233-01: the idle-backoff gate must not claim a COMPLETION turn.
+//
+// `evaluateManagerIdleBackoff` runs BEFORE `classifyDecisionInternal` and the two are joined
+// by `??`, so any turn the gate returns a decision for is a turn the token reader NEVER sees.
+// Its wait matchers are unanchored substrings, so a manager that narrates a worker and signs
+// off in the same response was claimed by the gate: token unread, no completion activity,
+// and the turn BLOCKED back into the model. Measured live in session 2026-09-06-f625727a
+// (15:19:14.666): `isTaskFinished=true` and `Decision: BLOCK` on the same 2638-char turn.
+//
+// Asserted against the REAL exported gate, not a source grep — the null/decision return IS
+// the observable, and a source oracle greens on any respelling of the guard.
+
+/** A session dir shaped the way the gate requires: a current ticket and a real session_dir. */
+function makeIdleBackoffState() {
+  const sessionDir = tmpDir('idle-backoff-session-');
+  fs.mkdirSync(path.join(sessionDir, 'ticket-a'), { recursive: true });
+  const stateFile = path.join(sessionDir, 'state.json');
+  fs.writeFileSync(stateFile, JSON.stringify({ active: true }));
+  return { sessionDir, stateFile, state: { session_dir: sessionDir, current_ticket: 'ticket-a' } };
+}
+
+// The live shape: narration that trips the unanchored `worker still` matcher, plus a sign-off.
+const NARRATED_COMPLETION =
+  'The worker still had a failing assertion, so I re-ran the tier and it is green now.\n\n' +
+  '<promise>TASK_COMPLETED</promise>';
+
+test('AP-EXT-ITER233-01: a wait-matching turn that carries an actionable token is left to the token classifier', () => {
+  const { stateFile, state } = makeIdleBackoffState();
+
+  // Precondition: the token reader really does see a completion token in this transcript,
+  // so a null return below cannot be explained by the transcript lacking one.
+  assert.equal(detectCompletionTokens(NARRATED_COMPLETION, state).kind, 'task-completed');
+
+  const decision = evaluateManagerIdleBackoff(state, stateFile, NARRATED_COMPLETION, '');
+  assert.equal(
+    decision,
+    null,
+    'idle-backoff gate claimed a turn carrying TASK_COMPLETED — the token reader never runs and the completion is blocked',
+  );
+});
+
+test('AP-EXT-ITER233-01: a genuine idle wait turn is still claimed and still blocks', () => {
+  const { stateFile, state } = makeIdleBackoffState();
+
+  // Narrowness control: strip ONLY the token and the gate must resume owning the turn.
+  const idleOnly = NARRATED_COMPLETION.replace('<promise>TASK_COMPLETED</promise>', '');
+  const decision = evaluateManagerIdleBackoff(state, stateFile, idleOnly, '');
+  assert.notEqual(decision, null, 'gate stopped claiming a real idle wait turn — the backoff is now dead machinery');
+  assert.equal(decision.decision, 'block');
+});
+
+test('AP-EXT-ITER233-01: a token this role may NOT act on does not release the gate', () => {
+  const { stateFile, state } = makeIdleBackoffState();
+
+  // `I AM DONE` is worker-only. A manager turn carrying it is NOT a completion turn, so a
+  // bare `kind !== 'none'` release would wrongly hand this turn to the token classifier —
+  // which would drop it too, since `roleAllowsToken` rejects it. This pins the conjunction.
+  const workerToken = NARRATED_COMPLETION.replace('TASK_COMPLETED', 'I AM DONE');
+  assert.equal(detectCompletionTokens(workerToken, state).kind, 'worker-done');
+
+  const decision = evaluateManagerIdleBackoff(state, stateFile, workerToken, '');
+  assert.notEqual(decision, null, 'gate released on a token the manager role cannot act on');
+  assert.equal(decision.decision, 'block');
 });
