@@ -841,6 +841,50 @@ describe('release-gate.post-tag', () => {
     }
   });
 
+  // AP-BIN-ITER50-01. The REJECT arm of that same rule, and the conjunct that separates the two:
+  // `module_resolves_alternative` excuses an unresolved specifier only when a specifier for the
+  // SAME basename resolves. Drop that equality and the accept arm swallows the reject arm whole —
+  // any module naming one reference the payload carries excuses every reference it does not.
+  // Nothing could see it: every completeness fixture above ships an importer whose specifiers are
+  // all one basename (`is-record.js`), so the conjunct is verdict-identical present or absent, and
+  // amputating it left all four release-gate suites GREEN. Measured over a payload replayed from
+  // release.yml's own tar operands: of the 103 members that payload's runtime references, 81 are
+  // caught when amputated and MISSED without this conjunct — `extension/bin/setup.js` among them,
+  // where the shipped sweep dies 21 on `mux-runner.js -> ./setup.js` and the amputated one reports
+  // MEASURED-clean and `post_tag` prints `ok:`.
+  //
+  // Disjoint by construction from the accept arm above: same fixture, same carried member, same
+  // two sentinels, and this importer names its second path under a DIFFERENT basename. That is the
+  // only difference, so a gate rejecting on anything else reds the accept arm too.
+  const MIXED_BASENAME_IMPORTER =
+    "import { isRecord } from '../lib/is-record.js';\n"
+    + "import { engineKeys } from '../lib/engine-keys-registry.js';\n"
+    + 'export const readState = () => [isRecord, engineKeys];\n';
+
+  test('exits 21 when a shipped module resolves one import and the payload lacks the other', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({
+      carryImportedModule: true,
+      importerSource: MIXED_BASENAME_IMPORTER,
+    });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /ships a runtime that cannot load/);
+      // The gate must name the MISSING member. Asserting only the exit code would also hold for a
+      // sweep that rejects any module carrying more than one specifier, and the resolving sibling
+      // must stay unnamed or the fixture is not measuring the alternative rule at all.
+      assert.match(result.stderr, /state-manager\.js -> \.\.\/lib\/engine-keys-registry\.js/);
+      assert.doesNotMatch(result.stderr, /-> \.\.\/lib\/is-record\.js/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
   // AP-BIN-ITER25-01. The sweep AP-BIN-ITER23-01 built resolves specifiers `grep` reports, and
   // `payload_relative_specifiers` ended `|| true` — which swallows grep's exit 2 (READ error)
   // alongside its exit 1 (measured, no match). A member the extractor writes mode 000 therefore
