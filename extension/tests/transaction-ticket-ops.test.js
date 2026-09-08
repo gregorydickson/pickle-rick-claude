@@ -1,5 +1,5 @@
 // @tier: fast
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -12,6 +12,7 @@ import {
   updateTicketStatusInTransaction,
 } from '../services/transaction-ticket-ops.js';
 import { markTicketDone, markTicketSkipped, markTicketWithStatus } from '../services/pickle-utils.js';
+import { validateCourseCorrectionProposal } from '../bin/correct-course.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'transaction-ticket-ops-'));
@@ -917,5 +918,88 @@ test('AP-EXT-ITER223-01: markTicketWithStatus returns true exactly when the stat
     // biconditional vacuously.
     assert.ok(observed.some(row => row.landed), 'no case exercised a real transition');
     assert.ok(observed.some(row => !row.landed), 'no case exercised a no-op');
+  });
+});
+
+// AP-EXT-ITER242-01: the upstream gate of applyCourseCorrectionRestructure is
+// validateCourseCorrectionProposal, and it slices its three inputs out of the proposal
+// markdown with SECTION_HEADING_PATTERN (correct-course.ts). Two of that pattern's
+// set-membership discriminators -- the start-of-line anchor and the {2,3} hash-count
+// upper bound -- decide which lines close a section, and both were wholly unfixtured:
+// amputating either left all 128 cases across the eight reachers GREEN. Over-matching
+// fails OPEN in the truncating direction (an extra boundary can only SHORTEN a section,
+// never extend it), so an Impact Map whose ticket ids sit below a sub-heading loses them
+// and a VALID proposal is rejected for "must enumerate at least one ticket" -- the
+// restructure below never runs. Each arm gets its own case so a red names the discriminator.
+describe('validateCourseCorrectionProposal section boundaries (AP-EXT-ITER242-01)', () => {
+  const DISCOVERY = 'the ticket plan assumed a single writer';
+
+  function buildProposal(impactMapBody) {
+    return [
+      '## Discovery Summary',
+      '',
+      DISCOVERY,
+      '',
+      '## Impact Map',
+      '',
+      ...impactMapBody,
+      '',
+      '## Restart Point',
+      '',
+      'ticket_id: keep123',
+      '',
+    ].join('\n');
+  }
+
+  function validate(sessionDir, impactMapBody) {
+    return validateCourseCorrectionProposal({
+      proposalContent: buildProposal(impactMapBody),
+      discoveryStatement: DISCOVERY,
+      sessionRoot: sessionDir,
+      killedTicketIds: [],
+    });
+  }
+
+  // Positive control: with no sub-heading shapes in the body, every arm of the pattern is
+  // irrelevant and the proposal passes. Without this a mutant that rejected EVERYTHING
+  // would satisfy the two negative cases vacuously.
+  test('a proposal whose Impact Map carries no sub-heading shapes passes', () => {
+    withDir((sessionDir) => {
+      writeTicket(sessionDir, 'keep123');
+      const result = validate(sessionDir, ['- ticket_id: keep123']);
+      assert.deepEqual(result.failures, []);
+      assert.equal(result.passed, true);
+      assert.deepEqual(result.referencedTicketIds, ['keep123']);
+    });
+  });
+
+  // Hash-count arm: `#### ` is four markers, so it is BODY, not a section boundary.
+  // Widen {2,3} to {2,} and it becomes one -- Impact Map ends above the ticket id.
+  test('a #### sub-heading inside the Impact Map does not close the section', () => {
+    withDir((sessionDir) => {
+      writeTicket(sessionDir, 'keep123');
+      const result = validate(sessionDir, [
+        '#### Kept tickets',
+        '',
+        '- ticket_id: keep123',
+      ]);
+      assert.deepEqual(result.referencedTicketIds, ['keep123']);
+      assert.equal(result.passed, true);
+    });
+  });
+
+  // Anchor arm: an INDENTED `## ` is a line that merely contains a heading marker.
+  // Drop the `^` and it becomes a boundary -- same truncation, different spelling.
+  test('an indented ## line inside the Impact Map does not close the section', () => {
+    withDir((sessionDir) => {
+      writeTicket(sessionDir, 'keep123');
+      const result = validate(sessionDir, [
+        '  ## quoting the old plan heading',
+        '',
+        '- ticket_id: keep123',
+      ]);
+      assert.deepEqual(result.referencedTicketIds, ['keep123']);
+      assert.equal(result.passed, true);
+    });
   });
 });
