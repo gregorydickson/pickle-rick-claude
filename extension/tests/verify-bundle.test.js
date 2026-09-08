@@ -702,6 +702,49 @@ test('verify-bundle.unknown two-token flag errors instead of silently narrowing 
   }
 });
 
+// `argv[0] === '--ac'` (pinned above) rejects a two-token invocation whose FLAG is wrong; this
+// conjunct is its disjoint sibling — it rejects an invocation whose flag is RIGHT and whose token
+// COUNT is wrong. Deleted, `--ac A --ac B` and `--ac A --verbose` both stop erroring and instead
+// bind `ac` to the first value, silently narrowing a fifteen-AC contract run to one: measured on
+// the real CLI against this fixture, `bundle PASS checked=1 missing=0 failures=0` exit 0 while the
+// shipped parser exits 2 and a full run reports `FAIL checked=15 failures=1`. The failing AC is
+// deliberately NOT the one the narrowed run would keep, so the mutant's verdict is a false-green,
+// not merely a narrower true one.
+test('verify-bundle.a right-flag wrong-arity invocation errors instead of silently narrowing the bundle', () => {
+  const fixture = makeFixture(({ bundleDir }) => {
+    writeFileSync(
+      path.join(bundleDir, acFileName('AC-DR-12')),
+      `${JSON.stringify(artifact('AC-DR-12', { pass: false, failure_reason: 'unverified by a narrowed run' }), null, 2)}\n`,
+    );
+  });
+  try {
+    // Control: the fixture is one a narrowed run would green and a full run would red, so the
+    // assertions below cannot pass vacuously against a bundle that is failing either way.
+    const narrowed = runVerifier(fixture, ['--ac', 'AC-DR-01']);
+    assert.equal(narrowed.status, 0, narrowed.stderr);
+    assert.equal(narrowed.stdout.trim(), 'bundle PASS checked=1 missing=0 failures=0');
+    const full = runVerifier(fixture, []);
+    assert.equal(full.status, 1, full.stdout);
+    assert.equal(
+      full.stdout.trim(),
+      `bundle FAIL checked=${EXPECTED_BUNDLE_AC_IDS.length} missing=0 failures=1`,
+    );
+
+    for (const argv of [['--ac', 'AC-DR-01', '--ac', 'AC-DR-02'], ['--ac', 'AC-DR-01', '--verbose']]) {
+      const result = runVerifier(fixture, argv);
+      assert.equal(
+        result.status,
+        2,
+        `expected usage error for ${JSON.stringify(argv)}, got exit=${result.status} stdout=${JSON.stringify(result.stdout)}`,
+      );
+      assert.match(result.stderr, /usage: bin\/verify-bundle\.js/);
+      assert.doesNotMatch(result.stdout, /bundle PASS/);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 // `checked=` is the coverage claim a reader takes the verdict's scope from, so it must count the
 // ACs THIS run verified (`expectedIds`), not the whole contract: sourced from
 // EXPECTED_BUNDLE_AC_IDS it reports `checked=15` for a one-AC run. Asserted as whole lines
