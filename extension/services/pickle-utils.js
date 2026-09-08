@@ -356,7 +356,7 @@ function writeExtensionDirFallbackActivity(requestedPath, fallbackPath, reason) 
 function writePhantomSessionDemotedActivity(cwd, sessionPath) {
     try {
         const ts = new Date();
-        const activityDir = path.join(getCanonicalActivityDataRoot(), 'activity');
+        const activityDir = path.join(getDataRoot(), 'activity');
         fs.mkdirSync(activityDir, { recursive: true });
         const event = {
             ts: ts.toISOString(),
@@ -374,6 +374,16 @@ function writePhantomSessionDemotedActivity(cwd, sessionPath) {
         process.stderr.write(`[pickle-rick] Failed to log phantom_session_demoted: ${safeErrorMessage(err)}\n`);
     }
 }
+/**
+ * The data root resolved WITHOUT `getDataRoot()`'s `EXTENSION_DIR` arm. Exactly ONE caller may
+ * use this: `writeExtensionDirFallbackActivity`, whose whole subject is that `EXTENSION_DIR` was
+ * just REJECTED — resolving its own diagnostic through the value it is reporting as bad would
+ * file the record under the broken root. Every other activity write goes through `getDataRoot()`,
+ * the same resolver `activity-logger.ts` uses, so it honours the `EXTENSION_DIR` isolation
+ * dialect. Do NOT add callers: an emitter that is not ABOUT `EXTENSION_DIR` has no reason to
+ * ignore it, and each one that does writes into the operator's real `~/.local/share/pickle-rick`
+ * from any test that isolates via `EXTENSION_DIR`.
+ */
 function getCanonicalActivityDataRoot() {
     if (process.env.PICKLE_DATA_ROOT)
         return process.env.PICKLE_DATA_ROOT;
@@ -2220,7 +2230,7 @@ export function validateSessionDirOrSkip(sessionDir, caller) {
     appendWatcherRestartLog(sessionDir, `validateSessionDirOrSkip WARN: ${caller} skipped — sessionDir ${reason} (${sessionDir})`);
     try {
         const ts = new Date();
-        const activityDir = path.join(getCanonicalActivityDataRoot(), 'activity');
+        const activityDir = path.join(getDataRoot(), 'activity');
         fs.mkdirSync(activityDir, { recursive: true });
         const event = {
             ts: ts.toISOString(),

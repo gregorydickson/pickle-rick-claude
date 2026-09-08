@@ -1,5 +1,5 @@
 // @tier: fast
-import { test } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -56,6 +56,34 @@ function makeExtRoot(tmpRoot) {
 function makeTmpRoot(prefix = 'pickle-sdv-') {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
+
+// AP-EXT-ITER235-01: `validateSessionDirOrSkip` EMITS an activity event on every invalid path, and
+// the three entry points below reach it INDIRECTLY, so a case that only asserts "no tmux spawn"
+// still appends JSONL to whatever data root is ambient. Un-sandboxed, this file wrote 10 records
+// per run into the operator's real ~/.local/share/pickle-rick/activity — including a
+// `sessionDir: undefined` shape no production caller can produce (the parameter is typed `string`),
+// which then reads back as a producer defect to anything replaying that corpus.
+//
+// This is a file-wide beforeEach, deliberately NOT a per-test wrapper: a wrapper is a list of the
+// cases someone remembered, and the five that leaked after the direct-caller cases were wrapped
+// were exactly the ones reaching the emitter through `restartDeadWatcherPanes` /
+// `respawnMonitorWindowForMode`. Sandboxing the whole file covers the next case by construction.
+// Cases that need a specific dialect (see `withDataRootDialects`) still override it locally.
+let sandboxDataRoot = null;
+let savedSandboxDataRoot;
+
+beforeEach(() => {
+    sandboxDataRoot = makeTmpRoot('pickle-sdv-dataroot-');
+    savedSandboxDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = sandboxDataRoot;
+});
+
+afterEach(() => {
+    if (savedSandboxDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = savedSandboxDataRoot;
+    if (sandboxDataRoot) fs.rmSync(sandboxDataRoot, { recursive: true, force: true });
+    sandboxDataRoot = null;
+});
 
 function noOpSpawnSync() {
     return { status: 0, stdout: '', stderr: '' };
@@ -168,6 +196,86 @@ test('validateSessionDirOrSkip: emits activity event on invalid sessionDir', () 
         else process.env.PICKLE_DATA_ROOT = savedDataRoot;
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
+});
+
+// ─── AP-EXT-ITER235-01: the emitter must resolve the data root like every other one ──────────
+
+/**
+ * Runs `fn` with the three data-root dialects under our control: `HOME` points at a private dir
+ * (so the `os.homedir()` fallback lands somewhere observable instead of the operator's real root),
+ * `EXTENSION_DIR` at another, and both explicit overrides deleted. Returns both roots so a case can
+ * assert WHICH ONE the write reached — the discriminator, not merely that some write happened.
+ */
+function withDataRootDialects(fn) {
+    const home = makeTmpRoot('pickle-sdv-home-');
+    const extDir = makeTmpRoot('pickle-sdv-extdir-');
+    const saved = {
+        HOME: process.env.HOME,
+        EXTENSION_DIR: process.env.EXTENSION_DIR,
+        PICKLE_DATA_ROOT: process.env.PICKLE_DATA_ROOT,
+        PICKLE_DATA_DIR: process.env.PICKLE_DATA_DIR,
+    };
+    process.env.HOME = home;
+    process.env.EXTENSION_DIR = extDir;
+    delete process.env.PICKLE_DATA_ROOT;
+    delete process.env.PICKLE_DATA_DIR;
+    try {
+        return fn({ home, extDir });
+    } finally {
+        for (const [key, value] of Object.entries(saved)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+        fs.rmSync(home, { recursive: true, force: true });
+        fs.rmSync(extDir, { recursive: true, force: true });
+    }
+}
+
+function jsonlFilesUnder(dir) {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
+}
+
+test('AP-EXT-ITER235-01: validateSessionDirOrSkip resolves its activity root through getDataRoot, honouring EXTENSION_DIR', () => {
+    withDataRootDialects(({ home, extDir }) => {
+        _resetSessionDirInvalidEmittedForTests();
+        validateSessionDirOrSkip('', 'restartDeadWatcherPanes');
+
+        // The isolated root the EXTENSION_DIR dialect names — where activity-logger.ts already writes.
+        assert.deepEqual(
+            jsonlFilesUnder(path.join(extDir, 'activity')).length > 0,
+            true,
+            'event must land under the EXTENSION_DIR-derived data root',
+        );
+        // The production root. Pre-fix this emitter used an EXTENSION_DIR-blind resolver and wrote
+        // HERE, so every un-sandboxed test appended fabricated records to the operator's corpus.
+        assert.deepEqual(
+            jsonlFilesUnder(path.join(home, '.local/share/pickle-rick/activity')),
+            [],
+            'nothing may reach the os.homedir() data root while an isolation dialect is active',
+        );
+    });
+});
+
+test('AP-EXT-ITER235-01 precedence control: PICKLE_DATA_ROOT still outranks EXTENSION_DIR', () => {
+    withDataRootDialects(({ home, extDir }) => {
+        const explicit = makeTmpRoot('pickle-sdv-explicit-');
+        process.env.PICKLE_DATA_ROOT = explicit;
+        try {
+            _resetSessionDirInvalidEmittedForTests();
+            validateSessionDirOrSkip('', 'restartDeadWatcherPanes');
+
+            assert.ok(
+                jsonlFilesUnder(path.join(explicit, 'activity')).length > 0,
+                'the explicit override must win',
+            );
+            assert.deepEqual(jsonlFilesUnder(path.join(extDir, 'activity')), []);
+            assert.deepEqual(jsonlFilesUnder(path.join(home, '.local/share/pickle-rick/activity')), []);
+        } finally {
+            delete process.env.PICKLE_DATA_ROOT;
+            fs.rmSync(explicit, { recursive: true, force: true });
+        }
+    });
 });
 
 // ─── validateSessionDirOrSkip: dedup ──────────────────────────────────────────
