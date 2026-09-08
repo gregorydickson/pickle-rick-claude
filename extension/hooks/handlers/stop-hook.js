@@ -13,7 +13,6 @@ const sm = new StateManager();
 export const DEFAULT_MANAGER_IDLE_BACKOFF_FALLBACK_MS = 60_000;
 export const MANAGER_IDLE_BACKOFF_THRESHOLD = 3;
 const IDLE_BACKOFF_STATE_FILE = '.manager-idle-backoff.json';
-const WORKER_ARTIFACT_PREFIXES = ['research_', 'plan_', 'conformance_', 'code_review_'];
 export const WAIT_PATTERN_REGEXES = [
     /waiting for monitor signal\.?$/i,
     /worker still/i,
@@ -144,6 +143,23 @@ function getTicketDir(state) {
         return null;
     return path.join(state.session_dir, state.current_ticket);
 }
+/**
+ * Newest ticket-dir artifact mtime, feeding the idle backoff's `artifact_landed` release.
+ *
+ * AP-EXT-ITER245-01: selects on the `.md` SUFFIX alone, never on a lifecycle-phase prefix list.
+ * Every `.md` in a ticket dir is written by the worker or by the manager acting on that ticket,
+ * so "a .md changed" and "the turn is progressing" are one fact, while a phase list is one
+ * lifecycle phase from going blind. The four-prefix list this replaces was incomplete at birth
+ * (162c226f, never revised) and named neither `handoff_notes.md` nor `rick_ticket_<hash>.md`:
+ * across 71 live ticket dirs the NEWEST `.md` matched no prefix in 71 of them, median blind
+ * window 6.9 minutes, so real progress released nothing and the 60s fallback timer ended the
+ * window instead — leaving the warm snapshot a progress release would have cleared.
+ *
+ * The suffix is still load-bearing in the other direction: `worker_session_<pid>.log` is
+ * appended to continuously while the worker runs, so dropping the predicate entirely would
+ * release on every turn. Same shape and same resolution as AP-EXT-ITER108-01's
+ * `maybeEmitManagerTurnProgress`; the two stay separate because that one compares SECONDS.
+ */
 function getWorkerArtifactMtimeMs(state) {
     const ticketDir = getTicketDir(state);
     if (!ticketDir)
@@ -152,7 +168,7 @@ function getWorkerArtifactMtimeMs(state) {
         const entries = fs.readdirSync(ticketDir);
         let maxMtime = 0;
         for (const entry of entries) {
-            if (!WORKER_ARTIFACT_PREFIXES.some((prefix) => entry.startsWith(prefix)) || !entry.endsWith('.md'))
+            if (!entry.endsWith('.md'))
                 continue;
             const mtime = readFileMtimeMs(path.join(ticketDir, entry));
             if (mtime > maxMtime)

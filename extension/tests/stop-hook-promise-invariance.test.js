@@ -293,3 +293,66 @@ test('AP-EXT-ITER233-01: a token this role may NOT act on does not release the g
   assert.notEqual(decision, null, 'gate released on a token the manager role cannot act on');
   assert.equal(decision.decision, 'block');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER245-01: the idle-backoff artifact scanner selects by SUFFIX, never by a
+// lifecycle-phase prefix list.
+//
+// `getWorkerArtifactMtimeMs` takes the MAX MTIME of the ticket dir and feeds the
+// `artifact_landed` release, so "an artifact this list cannot name" and "the worker made no
+// progress" were one answer. Same shape AP-EXT-ITER108-01 fixed in `maybeEmitManagerTurnProgress`.
+//
+// Asserted through the REAL exported gate — the release/block return IS the observable, and the
+// `.log` control below is what keeps the fix from degenerating into "any file counts".
+
+/** An engaged backoff snapshot whose ONLY unmet release condition is `artifact_landed`. */
+function engagedBackoff(artifactMtimeMs) {
+  const { sessionDir, stateFile, state } = makeIdleBackoffState();
+  const engagedAtMs = Date.now();
+  fs.writeFileSync(
+    path.join(sessionDir, '.manager-idle-backoff.json'),
+    JSON.stringify({
+      consecutive_wait_turns: 3,
+      engaged_at_ms: engagedAtMs,
+      // Baselines the OTHER four release reasons out: state mtime unchanged, ticket unchanged,
+      // pid alive (our own), and `nowMs` well inside the 60s fallback window.
+      state_mtime_ms: fs.statSync(stateFile).mtimeMs,
+      artifact_mtime_ms: artifactMtimeMs,
+      worker_pid: process.pid,
+      ticket: 'ticket-a',
+    }),
+  );
+  return { ticketDir: path.join(sessionDir, 'ticket-a'), stateFile, state, nowMs: engagedAtMs + 1_000 };
+}
+
+const IDLE_TURN = 'Worker still running — continuing to wait for the monitor signal.';
+
+// The blind names, measured: across 71 live ticket dirs the newest `.md` matched NO prefix in
+// 71 of them — `rick_ticket_<hash>.md` in 68, `handoff_notes.md` in 3.
+for (const artifact of ['handoff_notes.md', 'rick_ticket_ticket-a.md']) {
+  test(`AP-EXT-ITER245-01: a landed ${artifact} releases the idle backoff`, () => {
+    const { ticketDir, stateFile, state, nowMs } = engagedBackoff(1_000);
+    fs.writeFileSync(path.join(ticketDir, artifact), '# progress\n');
+
+    const decision = evaluateManagerIdleBackoff(state, stateFile, IDLE_TURN, '', () => {}, nowMs);
+    assert.notEqual(decision, null, 'gate stopped claiming a real idle wait turn');
+    assert.equal(
+      decision.decision,
+      'approve',
+      `${artifact} landed and the backoff did not release — the scanner cannot name this artifact`,
+    );
+    assert.match(decision.logMessage, /artifact_landed/);
+  });
+}
+
+test('AP-EXT-ITER245-01: a non-markdown ticket-dir file does NOT release the idle backoff', () => {
+  // Narrowness control. `worker_session_<pid>.log` is appended to continuously while the worker
+  // runs, so a scanner that dropped the suffix predicate entirely would release on every turn
+  // and the backoff would be dead machinery.
+  const { ticketDir, stateFile, state, nowMs } = engagedBackoff(1_000);
+  fs.writeFileSync(path.join(ticketDir, `worker_session_${process.pid}.log`), 'chatter\n');
+
+  const decision = evaluateManagerIdleBackoff(state, stateFile, IDLE_TURN, '', () => {}, nowMs);
+  assert.notEqual(decision, null, 'gate stopped claiming a real idle wait turn');
+  assert.equal(decision.decision, 'block', 'a worker log counted as a landed artifact — the backoff never engages');
+});
