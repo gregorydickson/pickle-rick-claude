@@ -457,6 +457,57 @@ NOT attempted in the same diff.
 every output-truncation cap (`UNFINISHED_TICKETS_PRINT_CAP`, `MAX_PRIOR_VIOLATIONS_IN_PROMPT`, word/byte
 caps), which bound rendering, not looping.
 
+## 📦 ROOT W — SUBSYSTEM DISCOVERY IS TOP-LEVEL-DIRECTORY-SHAPED (GitHub #14, operator-filed 2026-09-07)
+
+**Verified at HEAD before scoping** (`extension/src/bin/pipeline-runner.ts:362`):
+`grep -c "subsystems.push({ name: entry.name"` = **1** — subsystem IDENTITY is a top-level
+`readdirSync` entry name. The inner `walk` recurses only to COUNT files.
+`grep -cE "pnpm-workspace|\"workspaces\"|workspaces:"` = **0** — nothing consults a workspace
+manifest, a root `workspaces` field, or nested `package.json` markers. The operator's premise is
+intact, not stale.
+
+**Consequence:** on a pnpm monorepo whose source lives under `packages/`, discovery returns exactly ONE
+subsystem named `packages`. Anatomy-park is a ROTATION over subsystems; with one subsystem spanning the
+repo the rotation degenerates into a single target it never finishes. Operator evidence: **4 of 6 runs**
+on that machine, four unrelated tickets, **~11.5 hours** of wall clock, every one
+`anatomy_non_convergent`. Runner log confirms `anatomy-park: scope filtered 1 → 1 subsystems: packages`.
+`packages/api/src` alone is 3,430 `.ts` files. A fifth run completed 4/4, so this is shape-dependent,
+not universal.
+
+### ⚠ THIS ROOT INTERACTS WITH C6 — READ BEFORE TREATING EITHER AS DONE
+
+The four failing runs recorded **8, 8, 8 and 9 passes with `consecutive_clean: 0` throughout**. That is
+`APNC_MAX_PASSES_WITHOUT_CLEAN` firing at its OLD default of 8 — it is what ended those phases, and the
+operator's own note that `stall_counts` stayed at 0 in all four is the proof that the stall detector was
+NOT the mechanism that stopped them.
+
+**C6 raised that default to 50 (built at HEAD, `mux-runner.ts:264` reads 50).** On a repo where
+convergence is ACHIEVABLE the raise is validated — this repo's anatomy-park needed 17 passes on
+`extension` and converged only because of it. **On a repo where convergence is STRUCTURALLY IMPOSSIBLE,
+the same raise makes the waste ~6x worse: 2–4 hours per run becomes plausibly 12–25.**
+
+**The two facts together say the pass cap was doing two different jobs and now does neither well:**
+distinguishing *"has not converged YET"* (needs more passes — C6 is right) from *"CANNOT converge"*
+(needs abandoning cheaply — C6 is wrong). A single count cannot separate those. **Do not resolve this by
+lowering the cap again** — that re-breaks the achievable case R-SJWT-style. Fix the SHAPE (this root) so
+the impossible case stops existing, and if a bound is still wanted, make it detect non-convergence
+structurally (subsystem never partitions, or findings never shrink) rather than by counting passes.
+
+### Acceptance criteria (machine-checkable)
+- `discoverSubsystems` resolves workspace layouts: given a target with `pnpm-workspace.yaml` (or a root `package.json` `workspaces` field, or nested `package.json` markers), subsystems are the WORKSPACE PACKAGES, not the single top-level directory containing them.
+- Fixture: a synthetic `packages/{a,b,c}` tree with a `pnpm-workspace.yaml` yields 3 subsystems, not 1 named `packages`. A NEGATIVE control — a flat non-workspace repo — still yields its top-level directories unchanged, so the widening cannot over-trigger.
+- The existing `sourceCount >= 3 && testCount / sourceCount <= 0.8` filter still applies per resolved subsystem.
+- Mutation check: restore the `entry.name` identity in the compiled mirror and the workspace fixture goes RED; the flat-repo control stays GREEN.
+
+**Open observation, NOT scoped as a defect (operator flagged it the same way):** `findings_history` had
+length **1** in all four sessions despite 8–9 passes. `microverse-runner.ts:5049` documents it as "one
+entry appended per pass". If that is true, a length of 1 after 9 passes is a second bug and would
+explain a stall counter that never moves — `hasRecordedCleanPass` reads that same history. **Measure
+before filing:** append-per-pass is a claim from a comment, and a comment is not a measurement.
+
+**Related:** GitHub #8 (anatomy-park declares convergence with no INV-NO-SELF-DISOWN evidence,
+"permanently inert on any 2+ marker monorepo") is the same monorepo-shape family. Compose them together.
+
 ## 🌶 ROOT S — SZECHUAN: FOUR BUNDLES, FOUR DISTINCT CAUSES, ONE DISPOSITION (filed 2026-09-08 from measurement)
 
 **szechuan-sauce has withheld the release verdict on FOUR consecutive bundles. Each failed for a
