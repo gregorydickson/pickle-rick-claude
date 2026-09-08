@@ -167,12 +167,22 @@ function storedPermissions(mode) {
 // inheriting this one.
 const STATIC_IMPORT_IMPORTER = "import { isRecord } from '../lib/is-record.js';\nexport const readState = isRecord;\n";
 
+// AP-BIN-ITER39-01. `importedMember` is a PARAMETER for the same reason `importerSource` is: the
+// carried member was hard-coded to a `.js` file, so every completeness case asked about one
+// EXTENSION and the sweep's verdict turned out to be a function of that extension too. The default
+// is the member the pre-existing cases already used, so they are unchanged.
+const DEFAULT_IMPORTED_MEMBER = {
+  rel: 'extension/lib/is-record.js',
+  source: 'export const isRecord = (value) => typeof value === "object";\n',
+};
+
 function makeRuntimePayloadTarball({
   version = '1.67.0',
   carryImportedModule,
   moduleMode,
   dirMode,
   importerSource = STATIC_IMPORT_IMPORTER,
+  importedMember = DEFAULT_IMPORTED_MEMBER,
 } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-runtime-'));
   const payload = path.join(dir, 'payload');
@@ -185,12 +195,10 @@ function makeRuntimePayloadTarball({
   );
   const members = ['extension/package.json', 'install.sh', 'extension/services'];
   if (carryImportedModule) {
-    mkdirSync(path.join(payload, 'extension', 'lib'), { recursive: true });
-    writeFileSync(
-      path.join(payload, 'extension', 'lib', 'is-record.js'),
-      'export const isRecord = (value) => typeof value === "object";\n',
-    );
-    members.push('extension/lib');
+    const memberPath = path.join(payload, importedMember.rel);
+    mkdirSync(path.dirname(memberPath), { recursive: true });
+    writeFileSync(memberPath, importedMember.source);
+    members.push(path.dirname(importedMember.rel));
   }
   const tarball = path.join(dir, 'pickle-release.tar.gz');
   run('tar', ['-czf', tarball, '-C', payload, ...members]);
@@ -200,7 +208,7 @@ function makeRuntimePayloadTarball({
   assert.match(listing, /^extension\/package\.json$/m, `fixture lost the package sentinel:\n${listing}`);
   assert.match(listing, /^install\.sh$/m, `fixture lost the installer sentinel:\n${listing}`);
   assert.equal(
-    /^extension\/lib\/is-record\.js$/m.test(listing),
+    new RegExp(`^${importedMember.rel.replace(/[.]/g, '\\.')}$`, 'm').test(listing),
     Boolean(carryImportedModule),
     `fixture carried the wrong module set:\n${listing}`,
   );
@@ -728,6 +736,67 @@ describe('release-gate.post-tag', () => {
     const tarFixture = makeRuntimePayloadTarball({
       carryImportedModule: true,
       importerSource: RUNTIME_PATH_IMPORTER,
+    });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 0, result.stdout || result.stderr);
+      assert.match(result.stdout, /ok: release .* tarball has extension\/package\.json version 1\.67\.0/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER39-01. The sweep's verdict was ALSO a function of the referenced member's EXTENSION.
+  // `payload_relative_specifiers` matched only `\.(js|json)`, a hand-maintained list of which
+  // payload members are allowed to matter, so a member spelled outside it was indistinguishable
+  // from a module naming nothing at all. `services/backend-spawn.js` resolves
+  // `../data/kimi-no-swarm.yaml` and passes it to kimi as `--agent-file` -- the only way
+  // INV-SWARM-OFF disables kimi's swarm. MEASURED on a payload built from release.yml's own tar
+  // operands: amputating that one member left the shipped sweep at status 1, MEASURED-clean, while
+  // the widened match named it; over the intact payload the widened match adds exactly ONE
+  // specifier, so it cannot false-RED what the asset already carries.
+  //
+  // Disjoint from the pair above by EXTENSION, not by spelling: same runtime-path syntax, same two
+  // sentinels, same payload shape. Pre-fix that pair died 21 and this one printed `ok:`.
+  const YAML_RUNTIME_IMPORTER =
+    "import path from 'node:path';\n"
+    + "export const agentFile = () => path.resolve(__dirname, '../data/kimi-no-swarm.yaml');\n";
+
+  const YAML_DATA_MEMBER = {
+    rel: 'extension/data/kimi-no-swarm.yaml',
+    source: 'agents: []\n',
+  };
+
+  test('exits 21 when the release asset ships a module that reads a non-js member it does not carry', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({
+      carryImportedModule: false,
+      importerSource: YAML_RUNTIME_IMPORTER,
+      importedMember: YAML_DATA_MEMBER,
+    });
+    const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
+    try {
+      const result = gate(['--post-tag', tagName], { cwd: repoDir, pathPrefix: ghDir });
+      assert.equal(result.status, 21, result.stdout || result.stderr);
+      assert.match(result.stderr, /ships a runtime that cannot load/);
+      assert.match(result.stderr, /state-manager\.js -> \.\.\/data\/kimi-no-swarm\.yaml/);
+      assert.doesNotMatch(result.stdout, /^ok:/m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(tarFixture.dir, { recursive: true, force: true });
+      rmSync(ghDir, { recursive: true, force: true });
+    }
+  });
+
+  test('passes when the release asset carries the non-js member a runtime path reads', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    const tarFixture = makeRuntimePayloadTarball({
+      carryImportedModule: true,
+      importerSource: YAML_RUNTIME_IMPORTER,
+      importedMember: YAML_DATA_MEMBER,
     });
     const ghDir = makeGhFixture({ tarball: tarFixture.tarball });
     try {

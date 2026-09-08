@@ -243,11 +243,21 @@ listing_has_link_entries() {
 # directories no asset carried for four months; a keyword list saw exactly one of them, which is
 # what a keyword list does -- the payload's own bytes decide, not a catalog of the ways to spell a
 # read.
+#
+# The EXTENSION pair was that same catalog on a second axis and outlived the first: `(js|json)` is a
+# hand-maintained list of which payload members are allowed to matter, and a member spelled outside
+# it fails SILENTLY, because an unlisted extension looks exactly like a module naming nothing.
+# `backend-spawn.js` resolves `../data/kimi-no-swarm.yaml` and hands it to kimi as `--agent-file`,
+# the only way INV-SWARM-OFF disables kimi's swarm. Measured on a payload built from the workflow's
+# own tar operands: amputating that member left this sweep at status 1, MEASURED-clean, the same
+# false-green the static-import and runtime-path arms above already close for `.js`. Any extension
+# decides the axis with no list, and cannot false-RED what the payload already carries -- over that
+# same real payload the widened match adds exactly ONE specifier, the yaml one.
 payload_relative_specifiers() {
   local file="$1"
   local matches
   local status=0
-  matches="$(grep -Eo "['\"]\.\.?/[^'\"\${]*\.(js|json)['\"]" "$file")" || status=$?
+  matches="$(grep -Eo "['\"]\.\.?/[^'\"\${]*\.[A-Za-z0-9]+['\"]" "$file")" || status=$?
   [ "$status" -le 1 ] || return 2
   printf '%s\n' "$matches" | sed -E "s/^.*['\"](.*)['\"]$/\1/"
 }
