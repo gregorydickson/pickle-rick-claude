@@ -576,3 +576,89 @@ test('AP-BIN-ITER33-01: a staged path that merely name-prefixes an allowed path 
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER14-01: `--no-renames` (`check-scope-diff.ts:86`) is the flag that
+// keeps a rename's SOURCE path inside the enumeration, and nothing judged it.
+//
+// The producer and this reader cross the same git contract asymmetrically, by
+// design: `scope-resolver.ts:computeAllowedFromDiff` reads `--name-status -M100`
+// and `git-utils.ts:getDiffFiles` records a rename's DESTINATION only
+// (`tokens[i + 2]`), so a rename's source is never in `allowed_paths`. Rename
+// detection is git's DEFAULT (`diff.renames`, on since 2.9), so `--no-renames`
+// is not decoration — it disables that default, and a detected rename under
+// `--name-only` emits only the destination. Drop the flag and moving an
+// out-of-scope file INTO the fence erases the source path from the enumeration
+// entirely: the staged deletion the fence exists to catch reports `ok` at
+// exit 0.
+//
+// The `-z` sibling in the same argv array is fixtured (AP-EXT-ITER31-01) and
+// documented; this one was neither. Both cases drive the SHIPPED CLI over a REAL
+// git repo and assert the emitted VERDICT, never the argv — an argv oracle
+// greens the moment someone re-tunes the flag list instead of the contract.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER14-01: a rename that moves an out-of-scope file INTO the fence is still flagged on its source path', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp, timeout: 30_000 });
+
+    fs.mkdirSync(path.join(tmp, 'unrelated'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'extension', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'unrelated', 'secret.ts'), 'export {};');
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'in.ts'), 'export {};');
+    spawnSync('git', ['add', '-A'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['commit', '-qm', 'base'], { cwd: tmp, timeout: 30_000 });
+
+    // Content is carried verbatim, so git scores this R100 — the strongest form
+    // of the rename it would otherwise collapse to a single destination entry.
+    spawnSync('git', ['mv', 'unrelated/secret.ts', 'extension/src/moved.ts'], { cwd: tmp, timeout: 30_000 });
+
+    const scopePath = writeScopeJson(tmp, ['extension/src']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 1, `expected exit 1, got ${result.status}. stdout: ${result.stdout} stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'outside_scope');
+    assert.deepEqual(
+      output.staged_paths_outside_scope,
+      ['unrelated/secret.ts'],
+      'the rename SOURCE is the staged deletion of an out-of-scope file and must be named',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// The ACCEPT control, without which the case above is satisfied by a fence that
+// refuses every rename: a rename wholly INSIDE the allowlist stays green, and
+// both of its halves are counted.
+test('AP-EXT-ITER14-01: a rename wholly inside the fence is not drift, and both halves are enumerated', () => {
+  const tmp = makeTmp();
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmp, timeout: 30_000 });
+
+    fs.mkdirSync(path.join(tmp, 'extension', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'extension', 'src', 'a.ts'), 'export {};');
+    spawnSync('git', ['add', '-A'], { cwd: tmp, timeout: 30_000 });
+    spawnSync('git', ['commit', '-qm', 'base'], { cwd: tmp, timeout: 30_000 });
+
+    spawnSync('git', ['mv', 'extension/src/a.ts', 'extension/src/b.ts'], { cwd: tmp, timeout: 30_000 });
+
+    const scopePath = writeScopeJson(tmp, ['extension/src']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stdout: ${result.stdout} stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'ok', 'an in-fence rename must not read as drift');
+    // 2, not 1: the source half must still reach the allowlist filter. A reader
+    // that collapsed the rename would count 1 and pass this case vacuously.
+    assert.equal(output.staged_count, 2, 'both halves of the rename must be enumerated');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
