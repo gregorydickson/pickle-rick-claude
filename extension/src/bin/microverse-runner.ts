@@ -5,7 +5,7 @@ import * as path from 'path';
 import { execFileSync, execFile, spawn, spawnSync, type ChildProcess } from 'child_process';
 import { pathToFileURL } from 'node:url';
 import { State, Defaults, MicroverseExitReason, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
-import type { ActivityEventType, Backend, IterationExitType, MicroverseSessionState, MicroverseHistoryEntry, ViolationLedger, FailureClass, GateResult, GateFailure, GateBaselineFile, StallClassification, StallRecoveryAction, JudgeResult, Violation, PickleSettings, RateLimitPark, RateLimitAction } from '../types/index.js';
+import type { ActivityEventType, Backend, IterationExitType, MicroverseSessionState, MicroverseHistoryEntry, ViolationLedger, FailureClass, GateResult, GateFailure, GateBaselineFile, StallClassification, StallRecoveryAction, JudgeResult, Violation, PickleSettings, RateLimitPark, RateLimitAction, RateLimitProbeVerdict } from '../types/index.js';
 import type { ErrorRecord } from '../types/index.js';
 import {
   resolveBackend,
@@ -3091,13 +3091,6 @@ export async function probeJudgeBackendAvailability(backend: ProbeJudgeBackend, 
     return { kind, message };
   }
 }
-
-/**
- * Three verdicts, ONE control decision: only `'cleared'` shortens a rate-limit wait. `'limited'`
- * and `'unknown'` behave identically and differ only in what the operator is told — a REPORTING
- * distinction, deliberately not a second control path.
- */
-type RateLimitProbeVerdict = 'cleared' | 'limited' | 'unknown';
 
 /**
  * One re-probe step of the rate-limit wait: ask again, tell the operator what came back, and

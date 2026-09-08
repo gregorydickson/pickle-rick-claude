@@ -1138,6 +1138,20 @@ export interface RateLimitAction {
   resetAtEpochSec?: number | null;
 }
 
+/**
+ * B2 (ticket a7a029df): the result of re-asking the API whether a rate limit still holds.
+ *
+ * Three verdicts, ONE control decision: only `'cleared'` shortens a rate-limit wait. `'limited'`
+ * and `'unknown'` behave identically and differ only in what the operator is told — a REPORTING
+ * distinction, deliberately not a second control path.
+ *
+ * Declared here, once. Both rate-limit wait loops read it — `mux-runner.ts:probeMuxRateLimitCleared`
+ * and `microverse-runner.ts:probeRateLimitCleared` — and they held byte-identical private copies of
+ * this union until the collapse. A second declaration is how the two loops come to disagree about
+ * what a probe can answer while both still typecheck.
+ */
+export type RateLimitProbeVerdict = 'cleared' | 'limited' | 'unknown';
+
 export interface ActivityEvent {
   ts: string;
   event: ActivityEventType;
