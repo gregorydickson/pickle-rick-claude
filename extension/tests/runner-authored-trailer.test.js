@@ -433,6 +433,17 @@ function occurrences(haystack, needle) {
   return haystack.split(needle).length - 1;
 }
 
+/**
+ * The committer the `commitPhase` adapter NAMES inside a source window — the routing itself,
+ * which is what the B-RATRAIL trap door claims. Null when the window declares no such adapter.
+ * Deliberately not a count of calls to the committer: a window may hold other legitimate calls
+ * to it, and how many there are is not the invariant.
+ */
+function routedCommitPhaseCallee(windowText) {
+  const routed = /commitPhase\s*[:(][\s\S]*?\b([A-Za-z_$][\w$]*)\(/.exec(windowText);
+  return routed ? routed[1] : null;
+}
+
 test('anchor: the B-RATRAIL call-site count is what a bare grep of mux-runner.ts returns', () => {
   const source = fs.readFileSync(MUX_RUNNER_TS, 'utf8');
 
@@ -477,9 +488,58 @@ test('anchor: the two call sites are the ones the trap door names', () => {
     1,
     'call site 2 lives in commitConvergedPlanPhase, the per-Phase committer',
   );
+  // AP-BIN-ITER37-01: the delegation half reads the ROUTING, never the number of calls to the
+  // committer. It shipped as `occurrences(window, 'commitConvergedPlanPhase(') === 1`, and
+  // AP-BIN-ITER36-01 then added a SECOND, legitimate call in the same window — the unphased-plan
+  // commit for a plan that parses to zero phases — so the anchor read an intact producer as a
+  // broken one and reddened the integration tier, and with it the release gate. A count is a
+  // proxy with a maintenance schedule; which committer the adapter names is the claim.
+  const routedCommitter = routedCommitPhaseCallee(
+    windowFrom('export function executeConvergedPlanAdapter('),
+  );
+  assert.ok(routedCommitter, 'executeConvergedPlanAdapter must declare a commitPhase adapter');
   assert.equal(
-    occurrences(windowFrom('export function executeConvergedPlanAdapter('), 'commitConvergedPlanPhase('),
-    1,
+    routedCommitter,
+    'commitConvergedPlanPhase',
     'executeConvergedPlanAdapter must route its commitPhase adapter through that committer',
+  );
+});
+
+// AP-BIN-ITER37-01 regression: the delegation anchor must read the routing, not a call count.
+//
+// The half this replaces was true only while `commitConvergedPlanPhase` had exactly one caller in
+// the adapter. Nothing about the invariant says that; it was an artifact of the moment the
+// committer was extracted. The sweep below runs the extractor the anchor itself uses over the
+// shape space — routing alone, routing beside an unrelated call to the same committer (the shape
+// that reddened the gate), a rewired adapter, and a window with no adapter at all — so the anchor
+// can neither be falsified by an added call site nor pass over a rewire.
+test('anchor: the delegation half reads the routing, not the number of calls to the committer', () => {
+  const routing = '    commitPhase: (phase) => commitConvergedPlanPhase(input, phase),';
+  const unrelatedCall = '    const commit = commitConvergedPlanPhase(input, null);';
+
+  assert.equal(
+    routedCommitPhaseCallee(routing),
+    'commitConvergedPlanPhase',
+    'the routing alone names the committer',
+  );
+  assert.equal(
+    routedCommitPhaseCallee([unrelatedCall, routing].join('\n')),
+    'commitConvergedPlanPhase',
+    'a second, legitimate call to the same committer must NOT falsify the routing',
+  );
+  assert.equal(
+    occurrences([unrelatedCall, routing].join('\n'), 'commitConvergedPlanPhase('),
+    2,
+    'that shape is exactly the one a call count reads as broken — the gate red this replaces',
+  );
+  assert.equal(
+    routedCommitPhaseCallee('    commitPhase: (phase) => handRolledPhaseCommit(input, phase),'),
+    'handRolledPhaseCommit',
+    'a rewired adapter names the committer it actually routes to, so the anchor reds',
+  );
+  assert.equal(
+    routedCommitPhaseCallee(unrelatedCall),
+    null,
+    'a call to the committer is not a routing — with no adapter declared there is nothing to read',
   );
 });
