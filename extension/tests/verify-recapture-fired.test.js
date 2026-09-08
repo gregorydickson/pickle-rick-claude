@@ -88,6 +88,15 @@ function extractRecaptureEmission(source) {
   return source.slice(callStart, callEnd);
 }
 
+// logActivity's own event-construction text, so the assertion reads THAT object's timestamp
+// key instead of grepping the module — `ts` appears in unrelated helpers in the same file.
+function extractActivityStamp(source) {
+  const start = source.indexOf('const fullEvent');
+  if (start === -1) return null;
+  const end = source.indexOf(';', start);
+  return end === -1 ? null : source.slice(start, end);
+}
+
 // The phase-history append in pipeline-runner, read as its OWN call text rather than by grepping
 // the file — `phase` appears ~200 times in that source (`previous_phase:`, `next_phase:`,
 // `current_phase:`), so a file-wide match cannot tell the history row's marker key from any of them.
@@ -108,6 +117,17 @@ function writeActivityEvents(dataRoot, events) {
     appendFileSync(path.join(activityDir, `${dayKey}.jsonl`), `${JSON.stringify(event)}\n`);
   }
   return activityDir;
+}
+
+// Places one event by an EXPLICIT day key. An arm whose timestamp spelling the verifier does
+// not accept has no `ts` for writeActivityEvents to derive the file name from, and must still
+// land in exactly the file the accepted arm does — the day bound must not be what separates them.
+function writeActivityEventOnDay(dataRoot, dayKey, event) {
+  const activityDir = path.join(dataRoot, 'activity');
+  mkdirSync(activityDir, { recursive: true });
+  const filepath = path.join(activityDir, `${dayKey}.jsonl`);
+  appendFileSync(filepath, `${JSON.stringify(event)}\n`);
+  return filepath;
 }
 
 function runVerifier(session, dataRoot) {
@@ -388,6 +408,75 @@ test('verify-recapture.the anatomy window opens on exactly the marker key its pr
       rmSync(dataRoot, { recursive: true, force: true });
     }
   }
+});
+
+// AP-BIN-ITER75-01. Sibling of the marker-key pin above, one function over: the consumer read
+// `entry.ts ?? entry.timestamp`, and the alias is a name nothing owns — 1,086,197 live activity
+// events are 100% `ts`, and `ActivityEvent` declares no such member. The two arms differ ONLY in
+// that key, on one session, one window and one activity file, so neither can pass for another
+// reason. The producer half is read from logActivity's own event object, in the source AND the
+// compiled mirror that actually runs.
+test('verify-recapture.the recapture event is matched on exactly the timestamp key its producer stamps', () => {
+  for (const [label, producerPath] of [
+    ['source', path.join(REPO_ROOT, 'extension', 'src', 'services', 'activity-logger.ts')],
+    ['compiled', ACTIVITY_LOGGER],
+  ]) {
+    const stamp = extractActivityStamp(readFileSync(producerPath, 'utf8'));
+    assert.ok(stamp, `${label} producer must stamp every activity event it writes`);
+    assert.match(
+      stamp,
+      /\bts:\s*new Date\(\)\.toISOString\(\)/,
+      `${label} producer must key the activity stamp on ts — the consumer reads exactly that`,
+    );
+    assert.doesNotMatch(
+      stamp,
+      /\btimestamp\s*:/,
+      `${label} producer must not mint a second timestamp spelling the consumer would have to accept`,
+    );
+  }
+
+  const dayKey = formatLocalDateKey(new Date(RECAPTURE_TS));
+  const writtenTo = new Set();
+  const arms = [
+    ['produced', (name) => recaptureEvent(name)],
+    ['unowned', (name) => {
+      const { ts, ...rest } = recaptureEvent(name);
+      return { ...rest, timestamp: ts };
+    }],
+  ];
+
+  for (const [arm, buildEvent] of arms) {
+    const session = makeSession(baseState());
+    const dataRoot = makeDataRoot();
+    try {
+      const event = buildEvent(path.basename(session));
+      writtenTo.add(path.basename(writeActivityEventOnDay(dataRoot, dayKey, event)));
+      const result = runVerifier(session, dataRoot);
+      assert.equal(
+        result.runtimeArtifact.evidence.activity_count,
+        1,
+        `${arm} arm must reach the scan with its event in the corpus`,
+      );
+      if (arm === 'produced') {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.runtimeArtifact.pass, true);
+        assert.equal(result.runtimeArtifact.failure_reason, null);
+      } else {
+        assert.equal(result.status, 1, result.stderr);
+        assert.equal(result.runtimeArtifact.pass, false);
+        assert.equal(
+          result.runtimeArtifact.failure_reason,
+          'recapture-event-missing',
+          'a timestamp key no producer stamps must not satisfy the AC',
+        );
+      }
+    } finally {
+      rmSync(session, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  }
+
+  assert.equal(writtenTo.size, 1, 'both arms must be scanned out of the same activity day file');
 });
 
 test('verify-recapture.no-event writes failing artifact when the activity log has no recapture event', () => {

@@ -108,11 +108,14 @@ function readActivityEventsSince(activityDir, files, sinceMs) {
 
 // The activity dir is shared by every session on the host, so an unscoped match would let a
 // sibling session's recapture satisfy THIS session's AC. Attribution is required, not optional.
+// EXACTLY ONE accepted timestamp spelling, for the same reason phaseName accepts one marker
+// key: every event in this sink is stamped `ts` by its only producer (logActivity), and
+// `ActivityEvent` declares no alias — a second accepted key is a name nothing owns.
 function findMatchingEvent(activity, windows, sessionName) {
   return activity.find((entry) => (
     entry?.event === 'baseline_recapture_attempted'
     && entry?.session === sessionName
-    && isInWindow(entry.ts ?? entry.timestamp, windows)
+    && isInWindow(entry.ts, windows)
   )) ?? null;
 }
 
