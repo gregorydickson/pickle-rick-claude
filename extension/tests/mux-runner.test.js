@@ -7237,3 +7237,62 @@ test('D6 (AC-D6-3): a SIGKILLed child leaves its fixture behind — the in-proce
         fs.rmSync(scanRoot, { recursive: true, force: true });
     }
 });
+
+// --- AP-EXT-ITER240-01: parseTaskNoteSections' first-section swallow ---
+//
+// `truncateTaskNotes` is documented to preserve `## Next` and `## Dead Ends`
+// and to trim `## Progress` from the oldest. `parseTaskNoteSections` tracked
+// "no heading seen yet" with `lastIndex === 0`, but 0 is also a REAL match
+// index — the index of a heading that opens the file's first byte. So when
+// TASK_NOTES.md began with a heading rather than with prose, the SECOND
+// heading's turn through the loop mistook section one for preamble: it was
+// assigned to `preamble` and never pushed to `sections`. Preamble is
+// concatenated unconditionally in every truncation phase, so the oldest
+// section became the one section that could never be trimmed — and the
+// budget it consumed came out of `## Next` and `## Dead Ends`. A single
+// leading newline inverted the priority order the function exists to enforce.
+import { truncateTaskNotes } from '../bin/mux-runner.js';
+
+const iter240Progress = '## Progress\n' + '- stale entry from iteration 1 padding padding\n'.repeat(60);
+const iter240Next = '## Next\n- CRITICAL: take the deferred anchor finding\n';
+const iter240DeadEnds = '## Dead Ends\n- do not retry the salvage path\n';
+const iter240Body = iter240Progress + '\n' + iter240Next + '\n' + iter240DeadEnds;
+
+test('AP-EXT-ITER240-01: a heading on the first byte is a section, not preamble', () => {
+    assert.ok(iter240Body.startsWith('## Progress'), 'fixture must open ON the heading — that is the discriminator');
+    assert.ok(iter240Body.length > 2000, 'fixture must exceed the budget or truncation never runs');
+
+    const result = truncateTaskNotes(iter240Body, 2000);
+
+    // The oldest Progress section must not be able to spend the whole budget:
+    // the two priority sections it precedes are what the budget is FOR.
+    assert.ok(result.includes('## Next'), 'a leading ## Progress must not evict ## Next');
+    assert.ok(result.includes('CRITICAL: take the deferred anchor finding'), 'Next body must survive, not just its heading');
+    assert.ok(result.includes('## Dead Ends'), 'a leading ## Progress must not evict ## Dead Ends');
+    assert.ok(result.includes('do not retry the salvage path'), 'Dead Ends body must survive, not just its heading');
+});
+
+test('AP-EXT-ITER240-01: one leading newline does not change which sections survive', () => {
+    // Same notes, one byte apart. Byte 0 is the only difference between them,
+    // and it must not decide whether the priority sections are kept.
+    const keptSections = (content) => {
+        const result = truncateTaskNotes(content, 2000);
+        return ['## Next', '## Dead Ends', '## Progress'].filter(name => result.includes(name));
+    };
+
+    assert.deepEqual(
+        keptSections(iter240Body),
+        keptSections('\n' + iter240Body),
+        'a heading at byte 0 and the same heading one byte in must yield the same surviving section set',
+    );
+});
+
+test('AP-EXT-ITER240-01: prose ahead of the first heading is still preamble', () => {
+    // Negative control on the same seam: the swallow fix must not stop real
+    // preamble — content that precedes every heading — from being captured.
+    const withPreamble = 'SESSION 2026-09-08 handoff header line\n\n' + iter240Body;
+
+    const result = truncateTaskNotes(withPreamble, 2000);
+
+    assert.ok(result.includes('SESSION 2026-09-08 handoff header line'), 'prose before the first heading must still be preserved as preamble');
+});

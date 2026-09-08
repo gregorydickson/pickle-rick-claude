@@ -342,12 +342,15 @@ function parseTaskNoteSections(content: string): { preamble: string; sections: T
   const sectionRegex = /^## .+$/gm;
   const sections: TaskNoteSection[] = [];
   let preamble = '';
-  let lastIndex = 0;
+  // -1, not 0, is the "no heading seen yet" sentinel: 0 is a REAL match index
+  // (a file whose first byte opens a heading), and conflating the two made the
+  // first section read as preamble — which `truncateTaskNotes` never trims.
+  let lastIndex = -1;
   let lastHeader = '';
   let match: RegExpExecArray | null;
 
   while ((match = sectionRegex.exec(content)) !== null) {
-    if (lastIndex === 0 && match.index > 0) {
+    if (lastIndex < 0) {
       preamble = content.slice(0, match.index);
     } else if (lastHeader) {
       sections.push({ name: lastHeader, body: content.slice(lastIndex, match.index) });
