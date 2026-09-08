@@ -113,6 +113,42 @@ isolated) and is struck from `CLAUDE.md` and `prds/CLAUDE.md`.
 
 ---
 
+## 🏁 B-MEGADRAIN RUN OUTCOME — session `2026-09-06-27819a21` ENDED 2026-09-08 05:20Z at **4/4**
+
+```
+status: failed · current_phase: null · completed_phases: 4/4 · skipped_phases: 0
+state.exit_reason: baseline_unmeasurable_unrecoverable · step: completed · active: false
+phase_dispositions: { pickle:         "done_over_red_worker_gate_tests:7d47affe,f4dd43e8,0618cccd,fa96d062",
+                      szechuan-sauce: "baseline_unmeasurable_unrecoverable" }
+citadel_advisory_findings: 134
+```
+
+**ALL FOUR PHASES RAN AND COMPLETED — the first 4/4 on this branch.** B-UNATTENDED reached 2/4;
+this run reached 4/4 with anatomy-park CONVERGED (section above). `status: failed` is the run VERDICT,
+not a phase failure: `nonConvergent` was already 4 from the pickle-boundary withhold, so
+`unsuccessful = pipelineFailed || nonConvergent > 0` was true before szechuan even started.
+**Ran-to-completion and reported-success are different wires (AC-OA-1c); this run is the honest case
+of the first without the second.**
+
+**szechuan-sauce failed on a NEW cause — `baseline_unmeasurable_unrecoverable`, not the context/
+autocompact thrash.** The four szechuan failure modes now measured across bundles are all DIFFERENT:
+600s judge timeout (B-ARGMAX) · malformed `Write()` permission rule (B-FRESHWIN, fixed `e4edb6f9`) ·
+`Autocompact is thrashing` (B-UNATTENDED) · **baseline unmeasurable (this run)**. Four bundles, four
+distinct causes, one recurring disposition — the shape that made this read as a single defect.
+Per the ROOT C section of [[B-MEGADRAIN]], `baseline_unmeasurable_unrecoverable` does NOT abort: it
+routes to `run-finalize-gate-incomplete` exactly as `_transient` does, which is why the phase still
+counted and the loop still terminated cleanly.
+
+**NO RELEASE, and the reason is the pickle withhold, not szechuan.** Even a perfect szechuan run would
+not have released this bundle. The ~40 fixes, 25 trap doors and the ROOT 0 verdict-layer collapse are
+on the branch and ship in a later release whose gate is green.
+
+**Next measurement owed (standing):** four tickets flipped Done over a red `worker_gate_tests_verdict`.
+Whether the branch is actually red is UNMEASURED until a full gate runs on a quiet box. Do that before
+composing the next bundle — a red tree would make every later bundle's gate red for an inherited reason.
+
+---
+
 ## ✅ ANATOMY-PARK CONVERGED under the raised APNC ceiling — the C6 raise is EMPIRICALLY VALIDATED (2026-09-08 04:32Z)
 
 **Measured at the phase boundary on session `2026-09-06-27819a21`:**
