@@ -775,3 +775,77 @@ test('AP-EXT-ITER21-01: `timeout:` really bounds a detached unref\'d child, it i
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER236-01. `FN_NAMES` in the missing-timeout scanner is the same enumerated-set shape the
+// catalog's PATTERN_SHAPE names -- an alternation of call spellings feeding a matcher -- and only
+// three of its seven members were driven by a fixture. MEASURED, one amputation per member against
+// the whole suite: dropping `execSync`, `execFile`, `spawn` or `fork` leaves 19 pass / 0 fail, and
+// end to end on the real scanner an un-timed callsite spelled with the dropped name goes from
+// `exit 1` naming it to `exit 0` clean. The corpus self-application above cannot see it -- that arm
+// only asserts NO NEW findings, so a narrowed alternation finds strictly fewer candidates and stays
+// green. This is the gate `pretest:integration` and the release chain read with `&&`, so a silently
+// narrowed alternation is exactly the un-timed spawn that blacked the integration tier out twice.
+//
+// The required set is deliberately NOT read off `FN_NAMES` (AP-EXT-ITER67-01's rule): an expectation
+// taken from the artifact under test shrinks with the amputation and stays green over the defect. It
+// comes from `node:child_process` itself -- every non-private function export EXCEPT the one that is
+// a constructor, which is the only export carrying methods on its prototype. That derivation needs no
+// exemption list and reds if node grows an eighth entry point the scanner does not cover.
+function childProcessEntryPointsFromNode() {
+  return Object.keys(childProcess)
+    .filter((name) => !name.startsWith('_'))
+    .filter((name) => typeof childProcess[name] === 'function')
+    .filter((name) => Reflect.ownKeys(childProcess[name].prototype ?? {}).length === 1)
+    .sort();
+}
+
+test('AP-EXT-ITER236-01: every child_process entry point node exports is a missing-timeout spelling, and a timed callsite of each is clean', () => {
+  const entryPoints = childProcessEntryPointsFromNode();
+  assert.ok(
+    entryPoints.length >= 7,
+    `the node derivation went vacuous - it named ${entryPoints.length} entry point(s): ${entryPoints.join(', ')}`,
+  );
+  // Two-sided on the derivation itself, so a discriminator that admitted every export could not
+  // pass as one that discriminates: the ChildProcess constructor spawns nothing on its own and
+  // must stay OUT of the derived set.
+  assert.ok(
+    !entryPoints.includes('ChildProcess'),
+    'the prototype discriminator is not discriminating - it admitted the ChildProcess constructor',
+  );
+
+  const scanner = 'audit-subprocess-heavy-tests-missing-timeout.mjs';
+  for (const fn of entryPoints) {
+    const dir = tmpScanRoot();
+    try {
+      const fixturePath = path.join(dir, 'family-member.test.js');
+
+      // REJECT: the same call, un-timed, must be a candidate that NAMES this spelling.
+      fs.writeFileSync(fixturePath, fixtureSource(fn, "'node', ['-v']", false));
+      const untimed = runScanner(scanner, ['--base', dir, fixturePath]);
+      assert.equal(
+        untimed.status,
+        1,
+        `an un-timed callsite spelled ${fn} read as clean - that spelling is missing from the scan; stdout=${untimed.stdout} stderr=${untimed.stderr}`,
+      );
+      assert.match(
+        untimed.stdout,
+        new RegExp(`\\t${fn}\\t`),
+        `the finding must name ${fn}; got:\n${untimed.stdout}`,
+      );
+
+      // ACCEPT control, and the reason the REJECT arm is not vacuous: these two fixtures differ in
+      // the `timeout:` option alone, so a scanner that flagged every callsite would satisfy the
+      // arm above and red here.
+      fs.writeFileSync(fixturePath, fixtureSource(fn, "'node', ['-v']", true));
+      const timed = runScanner(scanner, ['--base', dir, fixturePath]);
+      assert.equal(
+        timed.status,
+        0,
+        `a timed callsite spelled ${fn} read as a candidate; stdout=${timed.stdout} stderr=${timed.stderr}`,
+      );
+      assert.equal(timed.stdout.trim(), '', `expected no findings for a timed ${fn}, got:\n${timed.stdout}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
