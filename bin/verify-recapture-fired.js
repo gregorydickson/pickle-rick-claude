@@ -275,9 +275,15 @@ export function verifyRecaptureFired(sessionRoot) {
   };
 }
 
+// The session root arrives as ARGV and nothing else. `extension/layouts/monitor-pickle.kdl`
+// interpolates $PICKLE_SESSION_ROOT into the COMMAND LINE of all five sibling consumers
+// (mux-runner, monitor, log-watcher, morty-watcher, raw-morty), so the variable is a layout
+// substitution, not an input channel — and this file was its only env reader in the tree.
+// Reading it here let the ambient export `.claude/commands/pickle-zellij.md` tells the operator
+// to make silently retarget an AC-DR-02 evidence writer at whatever session was in the shell.
 if (process.argv[1] && path.basename(process.argv[1]) === 'verify-recapture-fired.js') {
   try {
-    const sessionRoot = process.argv[2] ?? process.env.PICKLE_SESSION_ROOT;
+    const sessionRoot = process.argv[2];
     const result = verifyRecaptureFired(sessionRoot);
     process.stdout.write(`AC-DR-02 ${result.artifact.pass ? 'PASS' : 'FAIL'} ${result.artifactPath}\n`);
     process.exit(result.exitCode);

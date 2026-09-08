@@ -1043,6 +1043,50 @@ test('verify-recapture.no-session writes runtime artifact outside the tracked re
   }
 });
 
+// AP-BIN-ITER75-02: the session root arrives as ARGV and nothing else. `extension/layouts/
+// monitor-pickle.kdl` interpolates $PICKLE_SESSION_ROOT into the COMMAND LINE of all five
+// sibling consumers, so the variable is a layout substitution -- this CLI was its only env
+// reader in the tree, and unfixtured (amputating the arm left all 48 tests across the three
+// suites that reach this file GREEN). Live and harmful: `.claude/commands/pickle-zellij.md`
+// tells the operator to export it to the RUNNING session, so under that launcher the ambient
+// value retargeted this AC-DR-02 evidence writer at the live session -- measured, the
+// `no-session` case above reds and the CLI writes a fabricated verdict into that session's
+// bundle tree. A/B on ONE session, one activity log and one data root: only the channel differs.
+test('verify-recapture.the session root is read from argv only, so an ambient PICKLE_SESSION_ROOT cannot retarget the writer', () => {
+  const session = makeSession(baseState());
+  const dataRoot = makeDataRoot();
+  const sessionArtifact = path.join(session, 'bundle', 'ac-dr-02.runtime.json');
+  const fallbackArtifactPath = path.join(dataRoot, 'bundle', 'ac-dr-02.runtime.json');
+  try {
+    writeActivityEvents(dataRoot, [recaptureEvent(path.basename(session))]);
+
+    // ACCEPT control: through argv this session resolves and the AC PASSES, so the rejection
+    // arm below cannot be green because the session was unusable for some unrelated reason.
+    const viaArgv = runVerifier(session, dataRoot);
+    assert.equal(viaArgv.status, 0);
+    assert.equal(viaArgv.runtimeArtifact.pass, true);
+    const acceptedEvidence = readFileSync(sessionArtifact, 'utf8');
+
+    // REJECT: same session, same activity log, same data root -- argv omitted, env supplied.
+    const viaEnv = spawnSync(process.execPath, [CLI], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: SPAWN_TIMEOUT_MS,
+      env: { ...HERMETIC_ENV, PICKLE_DATA_ROOT: dataRoot, PICKLE_SESSION_ROOT: session },
+    });
+    assert.equal(viaEnv.status, 2);
+    const fallbackArtifact = JSON.parse(readFileSync(fallbackArtifactPath, 'utf8'));
+    assert.equal(fallbackArtifact.pass, false);
+    assert.equal(fallbackArtifact.failure_reason, 'state-missing');
+    assert.equal(fallbackArtifact.evidence.state_path, null);
+    // The env-named session's own evidence is untouched, byte for byte.
+    assert.equal(readFileSync(sessionArtifact, 'utf8'), acceptedEvidence);
+  } finally {
+    rmSync(session, { recursive: true, force: true });
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 // AP-BIN-ITER53-01: the CLI entry-guard catch is the ONLY thing between a throw that escapes
 // verifyRecaptureFired and `exit 0` — the code the release-evidence gate reads as AC-DR-02 PASS.
 // It is reachable without any injection: writeRuntimeArtifact mkdirs <sessionRoot>/bundle
