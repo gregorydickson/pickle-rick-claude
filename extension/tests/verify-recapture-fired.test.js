@@ -88,6 +88,16 @@ function extractRecaptureEmission(source) {
   return source.slice(callStart, callEnd);
 }
 
+// The phase-history append in pipeline-runner, read as its OWN call text rather than by grepping
+// the file — `phase` appears ~200 times in that source (`previous_phase:`, `next_phase:`,
+// `current_phase:`), so a file-wide match cannot tell the history row's marker key from any of them.
+function extractPhaseHistoryAppend(source) {
+  const start = source.indexOf('s.history = [...history, {');
+  if (start === -1) return null;
+  const end = source.indexOf('}]', start);
+  return end === -1 ? null : source.slice(start, end);
+}
+
 // Mirrors logActivity's sink exactly: getDataRoot()/activity/<local-day>.jsonl, keyed off the
 // event's own ts. Same day-key helper the producer uses, so this holds in any TZ.
 function writeActivityEvents(dataRoot, events) {
@@ -313,6 +323,70 @@ test('verify-recapture.producer stamps the session the consumer joins on (AC-DR-
   } finally {
     rmSync(session, { recursive: true, force: true });
     rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+// AP-BIN-ITER74-01: `phaseName` decides BOTH edges of the anatomy window (open at :39, close at
+// :43), and it used to accept TWO spellings — `entry?.phase ?? entry?.step` — with the unowned one
+// at higher precedence. No producer has ever written `phase`: `State['history']` types the marker
+// as `step`, `persistPhaseTransition` is its only writer, and it landed ten days AFTER the fallback
+// was guessed. Measured, dropping the `phase` arm left all 44 tests green, so nothing would have
+// noticed the day a row grew that key and retargeted the window under AC-DR-02.
+//
+// Three arms. The producer derivation comes first so a rename of `step` reds HERE instead of
+// leaving this pin asserting a stale spelling; then the REJECT case; then its ACCEPT control,
+// without which a `phaseName` returning null for everything would satisfy the rejection alone.
+// The two behavioural halves differ in the marker KEY and nothing else.
+test('verify-recapture.the anatomy window opens on exactly the marker key its producer writes', () => {
+  for (const [label, producerPath] of [
+    ['source', path.join(REPO_ROOT, 'extension', 'src', 'bin', 'pipeline-runner.ts')],
+    ['compiled', path.join(REPO_ROOT, 'extension', 'bin', 'pipeline-runner.js')],
+  ]) {
+    const append = extractPhaseHistoryAppend(readFileSync(producerPath, 'utf8'));
+    assert.ok(append, `${label} producer must append phase rows to state.history`);
+    assert.match(
+      append,
+      /\bstep:\s*phaseConfig\.name\b/,
+      `${label} producer must key the history marker on step — the consumer reads exactly that`,
+    );
+    assert.doesNotMatch(
+      append,
+      /\bphase:\s*phaseConfig\.name\b/,
+      `${label} producer must not mint a second marker spelling the consumer would have to accept`,
+    );
+  }
+
+  const anatomyRow = HISTORY_WINDOW_HIT[1];
+  const arms = [
+    ['produced', HISTORY_WINDOW_HIT],
+    ['unowned', HISTORY_WINDOW_HIT.map((row) => (
+      row === anatomyRow ? { phase: row.step, timestamp: row.timestamp } : row
+    ))],
+  ];
+
+  for (const [arm, history] of arms) {
+    const session = makeSession(baseState(history));
+    const dataRoot = makeDataRoot();
+    try {
+      writeActivityEvents(dataRoot, [recaptureEvent(path.basename(session))]);
+      const result = runVerifier(session, dataRoot);
+      if (arm === 'produced') {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.runtimeArtifact.pass, true);
+        assert.equal(result.runtimeArtifact.failure_reason, null);
+      } else {
+        assert.equal(result.status, 1, result.stderr);
+        assert.equal(result.runtimeArtifact.pass, false);
+        assert.equal(
+          result.runtimeArtifact.failure_reason,
+          'phase-window-missing',
+          'a marker key no producer writes must not open the anatomy window',
+        );
+      }
+    } finally {
+      rmSync(session, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   }
 });
 

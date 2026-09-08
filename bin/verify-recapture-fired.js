@@ -29,8 +29,14 @@ function isoMs(value) {
   return Number.isFinite(ms) ? ms : null;
 }
 
+// EXACTLY ONE accepted spelling. `state.history` phase rows have a single producer —
+// `persistPhaseTransition` (extension/src/bin/pipeline-runner.ts) — and `State['history']`
+// types the marker as `step`, so a second accepted key is a name nothing owns. It was worse
+// than dead weight at HIGHER precedence: this value decides BOTH edges of the anatomy window
+// (open at :39, close at :43), so any row that ever grew that key would silently retarget the
+// window and AC-DR-02's verdict with it.
 function phaseName(entry) {
-  return entry?.phase ?? entry?.step ?? null;
+  return entry?.step ?? null;
 }
 
 function anatomyWindows(history) {
