@@ -192,7 +192,12 @@ export async function runCodegraphQueryBatch(
       killChildGroupOnTimeout(child, kill);
       settle({ status: 'timeout', reason: 'grandchild-kill' });
     }, opts.timeoutMs);
-    if (typeof timer.unref === 'function') { timer.unref(); }
+    // Stays REF'D: this is the SOLE settle path when the child neither errors nor closes, which
+    // is the whole case it exists for. Unlike the sibling runners there is no ref'd companion
+    // timer to lean on — `escalate` in `killChildGroupOnTimeout` is itself unref'd (correctly:
+    // nothing awaits it) — so unref'ing this one leaves the promise's fate resting entirely on
+    // the child's handle and pipes staying alive. `settle()` clears it on every path, so ref'd
+    // costs nothing once the batch resolves.
 
     const readStdout = attachChildOutputDrain(child);
 

@@ -1181,11 +1181,18 @@ function awaitAnalystSettlement(ctx: AnalystSettlementContext): Promise<WorkerRe
       resolve(result);
     };
 
-    // Safety net: force-resolve if the process hangs (mirrors spawn-morty.ts)
+    // Safety net: force-resolve if the process hangs (mirrors spawn-morty.ts).
+    //
+    // Stays REF'D, mirroring `armWorkerHangGuard` there. `ctx.hangGuardMs` is the analyst timeout
+    // plus 30s, so this fires only after the escalation's SIGTERM→SIGKILL has already failed to
+    // produce a `'close'`; at that point neither escalation timer holds the loop, and a child
+    // whose handle has been released holds nothing either. An `.unref()` would make settlement
+    // conditional on some UNRELATED handle happening to keep the loop alive, stranding this
+    // analyst's promise — and `Promise.all` over the analysts never settles either. Cleared on
+    // every settle path via `clearTimers()`, so it holds the loop only while genuinely pending.
     const hangGuard = setTimeout(() => {
       settleWith({ ...resultBase, success: false, exitCode: null });
     }, ctx.hangGuardMs);
-    hangGuard.unref();
 
     attachAnalystOutcomeHandlers(ctx, { settleWith, clearTimers, isSettled: () => settled });
   });

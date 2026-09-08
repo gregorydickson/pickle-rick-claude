@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
@@ -85,8 +86,8 @@ const TIMER_FNS = new Set(['setTimeout', 'setInterval']);
 // own negative control and reproduces the violating shape ON PURPOSE; adding `.mjs` reds the
 // gate on its own fixture. Extend the extensions only with that fixture excluded.
 const SCAN_ROOTS = [
-  { dir: 'src', exts: ['.ts'], minSettling: 5 },     // measured 10 at c75ba623
-  { dir: 'tests', exts: ['.ts', '.js'], minSettling: 30 }, // measured 76 at c75ba623
+  { dir: 'src', exts: ['.ts'], minSettling: 5 },     // measured 15 at ROOT E (was 10 at c75ba623)
+  { dir: 'tests', exts: ['.ts', '.js'], minSettling: 30 }, // measured 78 at ROOT E (was 76 at c75ba623)
 ];
 
 /** Every file with one of `exts` under `dir`. Throws rather than returning [] — an empty walk must not pass. */
@@ -135,24 +136,71 @@ function isUnrefd(node, unrefdNames) {
 }
 
 /**
+ * Grow `settlers` by the executor's OWN local helpers: a function declared inside the executor
+ * whose body calls a known settler settles the promise just as surely as calling `resolve`
+ * directly does. Iterated to a fixpoint so an `a() -> b() -> resolve()` chain is followed;
+ * it terminates because every pass either adds a name from a finite set or stops.
+ *
+ * Scoped to the executor subtree on purpose: a same-named helper elsewhere in the file is a
+ * different function, and treating it as a settler would over-flag across unrelated promises.
+ */
+function withLocalSettlers(executor, settlers) {
+  const inScope = new Set(settlers);
+  const callsAKnownSettler = (body) => {
+    let hit = false;
+    (function walk(n) {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && inScope.has(n.expression.text)) { hit = true; }
+      ts.forEachChild(n, walk);
+    })(body);
+    return hit;
+  };
+
+  let grew = true;
+  while (grew) {
+    const before = inScope.size;
+    (function scan(node) {
+      const declared = ts.isFunctionDeclaration(node) && node.name ? { name: node.name.text, body: node.body }
+        : ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+          && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+          ? { name: node.name.text, body: node.initializer.body }
+          : null;
+      if (declared && declared.body && !inScope.has(declared.name) && callsAKnownSettler(declared.body)) {
+        inScope.add(declared.name);
+      }
+      ts.forEachChild(node, scan);
+    })(executor);
+    grew = inScope.size > before;
+  }
+  return inScope;
+}
+
+/**
  * Timers whose callback settles an ENCLOSING `new Promise` executor, each tagged with whether it
  * is unref'd. Matching is `settlerReachedBy` (which callback shapes count) and `isUnrefd` (which
  * unref spellings count); both are documented above.
  *
- * KNOWN LIMITS — this matcher UNDER-detects, and the gaps are named so the next reader does not
- * read the test title as broader than the check.
- *   1. SETTLE-THROUGH-A-LOCAL-HELPER is invisible. Only DIRECT calls to the executor's own
- *      parameters count, so `const settle = r => resolve(r); setTimeout(() => settle(x), ms)`
- *      does not match. Live examples: `src/services/codegraph-query-runner.ts:190` and
- *      `src/bin/jar-runner.ts:252`, both unref'd timers settling via `settle()` — absent from
- *      this scan's census. jar-runner is the cautionary one: the SAME site WAS flagged at
- *      58dbe500 and left the census only when a refactor routed it through the helper, so this
- *      limit demonstrably loses true positives over time. (Believed benign at both: a live
- *      child-process handle holds the loop open so the timer still fires. But they are
- *      unflagged because they were never examined, NOT because that argument was checked.)
- *   2. PROPERTY-RECEIVER `unref` is invisible. `collectUnrefs` requires an identifier receiver,
- *      so `this.timer.unref()` is not collected — e.g. `src/bin/mux-runner.ts:4389`, `:4530`.
- *      Neither is a settling timer per `settlerReachedBy` today, so nothing is missed at present.
+ * LIMIT 1 — SETTLE-THROUGH-A-LOCAL-HELPER — is now CLOSED by `withLocalSettlers` (ROOT E).
+ * It used to be invisible: only DIRECT calls to the executor's own parameters counted, so
+ * `const settle = r => resolve(r); setTimeout(() => settle(x), ms)` did not match. That gap hid
+ * three unref'd hang guards, each the sole settle path of its promise, all now ref'd:
+ * `src/bin/jar-runner.ts`, `src/bin/spawn-refinement-team.ts`, `src/services/codegraph-query-runner.ts`.
+ * jar-runner is the cautionary one: the SAME site WAS flagged at 58dbe500 and left the census
+ * only when a refactor routed it through the helper — the limit demonstrably lost true positives
+ * over time. The prior note excused two of them as "benign, a live child-process handle holds the
+ * loop open", while stating they were unflagged because they had never been examined. Examined:
+ * the excuse is backwards. A hang guard fires only when `'close'` never arrives, and the usual
+ * reason `'close'` never arrives is that the child is gone and its handle already released —
+ * the same state in which the loop drains and an unref'd timer never fires. spawn-refinement-team
+ * was not in that note at all; the widened matcher found it, which is the argument for widening
+ * rather than hand-patching the two sites someone had already thought to write down.
+ *
+ * KNOWN LIMIT 2 — this matcher still UNDER-detects here, named so the next reader does not read
+ * the test title as broader than the check.
+ *   PROPERTY-RECEIVER `unref` is invisible. `collectUnrefs` requires an identifier receiver, so
+ *   `this.timer.unref()` is not collected — e.g. `src/bin/mux-runner.ts:4452`, `:4593`. MEASURED,
+ *   not assumed: a replica with this arm closed as well flags zero additional sites at HEAD, and
+ *   neither of those two is a settling timer per `settlerReachedBy` (`:4452` is a pure-telemetry
+ *   heartbeat that must STAY unref'd, `:4593` is armed after `this.settled` is already true).
  *
  * The bias throughout is toward a FALSE RED, never a false green: `unrefdNames` is file-global
  * and ignores shadowing, so a reused timer name over-flags rather than under-flags. An over-flag
@@ -182,7 +230,7 @@ function findSettlingTimers(file) {
       const executor = node.arguments?.[0];
       if (executor && (ts.isArrowFunction(executor) || ts.isFunctionExpression(executor))) {
         const names = executor.parameters.filter(p => ts.isIdentifier(p.name)).map(p => p.name.text);
-        inScope = new Set([...settlers, ...names]);
+        inScope = withLocalSettlers(executor, [...settlers, ...names]);
       }
     }
 
@@ -272,4 +320,84 @@ test('the sole-settle-path scan is not vacuous: it finds settling timers under E
     'a root came up short — the walk or the AST match is broken for it, and a broken scan '
     + 'reports zero violations exactly like a clean tree does',
   );
+});
+
+// ---------------------------------------------------------------------------
+// The widening, verified in BOTH directions
+//
+// A widened matcher that only ever finds MORE is not thereby correct: under-trigger alone would
+// pass a carry-anything bug, and over-trigger has a specific victim here — a heartbeat. Ref'ing a
+// heartbeat holds the event loop open forever, which is a NEW hang and strictly worse than the
+// defect being fixed, so "does not flag a heartbeat" is a load-bearing property, not a nicety.
+//
+// The probes are assembled at runtime into `os.tmpdir()`, NEVER into `tests/`. A probe file
+// committed under the walk would be scanned like any other file and would red this suite on its
+// own fixture — the same trap the `.mjs` exclusion above records.
+// ---------------------------------------------------------------------------
+
+const PROBE_SETTLES_VIA_HELPER = `
+export function run(): Promise<number> {
+  return new Promise((resolve) => {
+    const settle = (v: number) => { resolve(v); };
+    const guard = setTimeout(() => settle(1), 1000);
+    guard.unref();
+  });
+}
+`;
+
+// The mux-runner.ts:4452 shape: an interval whose callback settles NOTHING, unref'd on purpose.
+const PROBE_HEARTBEAT = `
+let touched = 0;
+export function run(done: { on: (e: string, f: () => void) => void }): Promise<number> {
+  return new Promise((resolve) => {
+    const bump = () => { touched += 1; };
+    const heartbeat = setInterval(() => bump(), 100);
+    heartbeat.unref();
+    done.on('close', () => resolve(touched));
+  });
+}
+`;
+
+test('the helper widening flags a helper-settled unref\'d timer and spares a heartbeat', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'unref-scan-probe-'));
+  const write = (name, body) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, body);
+    return findSettlingTimers(file);
+  };
+
+  try {
+    // DIRECTION 1 — it must newly FLAG a real sole-settle-path site. This shape is invisible to
+    // the pre-widening matcher (the callback calls `settle`, not `resolve`), and it is exactly
+    // the shape the three ref'd hang guards have.
+    const settling = write('settles-via-helper.ts', PROBE_SETTLES_VIA_HELPER);
+    assert.deepEqual(
+      settling.map(t => ({ settles: t.settles, unrefd: t.unrefd })),
+      [{ settles: 'settle', unrefd: true }],
+      'a timer settling through a local helper must be seen, and seen as unref\'d — this is the '
+      + 'gap that hid jar-runner.ts, spawn-refinement-team.ts and codegraph-query-runner.ts',
+    );
+
+    // Non-vacuity: the flag must track `.unref()`, not merely matching. Drop the unref and the
+    // same source must still MATCH but no longer be FLAGGED.
+    const refd = write('settles-via-helper-refd.ts', PROBE_SETTLES_VIA_HELPER.replace('guard.unref();', ''));
+    assert.deepEqual(
+      refd.map(t => ({ settles: t.settles, unrefd: t.unrefd })),
+      [{ settles: 'settle', unrefd: false }],
+      'ref\'ing the timer must clear the violation while keeping the match — otherwise the scan '
+      + 'is reporting "is a settling timer", not "is an unref\'d settling timer"',
+    );
+
+    // DIRECTION 2 — it must NOT flag a heartbeat. `bump` never reaches a settler, so the fixpoint
+    // in `withLocalSettlers` must refuse to promote it however many passes it runs.
+    assert.deepEqual(
+      write('heartbeat.ts', PROBE_HEARTBEAT),
+      [],
+      'a heartbeat settles nothing and must stay unref\'d: flagging it would push someone to ref '
+      + 'an interval that is never cleared, holding the event loop open forever — a new hang, '
+      + 'strictly worse than the defect this scan exists to catch',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

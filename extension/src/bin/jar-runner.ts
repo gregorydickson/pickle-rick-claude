@@ -248,9 +248,18 @@ function awaitJarManagerExit(launch: JarManagerLaunch, repoCwd: string): Promise
       }, 2000);
     }, taskTimeoutSeconds * 1000);
 
-    // Hang guard: force-resolve if process doesn't exit within timeout + 30s
+    // Hang guard: force-resolve if process doesn't exit within timeout + 30s.
+    //
+    // Stays REF'D. It is armed 30s AFTER the SIGTERM→SIGKILL escalation above, so by the time
+    // it matters both `timeoutHandle` and `killEscalation` have already fired and hold nothing.
+    // Reaching it means `'close'` never arrived despite the group kill — and the usual reason
+    // `'close'` never arrives is that the child is already gone and its handle already released,
+    // which is precisely the state in which the loop drains. An `.unref()` here would make the
+    // forced resolution conditional on some UNRELATED handle happening to hold the loop open,
+    // leaving `awaitJarManagerExit`'s promise pending forever. Same rule as
+    // `spawn-morty.ts`'s `armWorkerHangGuard`. Cleared on every settle path by `settle()` below,
+    // so being ref'd holds the loop only while the promise is genuinely pending.
     const hangGuard = setTimeout(() => settle({ ok: false, backend }, `${Style.RED}❌ Jar task hang detected — forcing failure${Style.RESET}`), (taskTimeoutSeconds + 30) * 1000);
-    hangGuard.unref();
 
     let settled = false;
     function settle(result: RunTaskResult, message?: string): void {
