@@ -1581,7 +1581,15 @@ function workflowPayloadMembers() {
 // asset: amputating `extension/data/` left this oracle reporting ZERO unresolved references while
 // the identical amputation of `extension/lib/` reported 25 — the two directories the operand list
 // omitted for four months, and only one of them was visible here.
-const RELATIVE_SPECIFIER_RE = /['"](\.\.?\/[^'"${]*\.(?:js|json))['"]/g;
+//
+// AP-BIN-ITER39-01. The EXTENSION class is open for the same reason and must stay in lockstep with
+// the gate's: `(?:js|json)` is a list of which payload members are allowed to matter, and this
+// oracle carried it after the gate's keyword list was removed. Amputating
+// `extension/data/kimi-no-swarm.yaml` — kimi's `--agent-file`, the only INV-SWARM-OFF disable —
+// left this oracle at ZERO unresolved references; widened it names the member. Over the intact
+// operand set the widened match adds exactly ONE specifier, so it cannot false-RED a healthy
+// asset. The MEMBER filter below stays `.js` for the reason the gate's `find` does.
+const RELATIVE_SPECIFIER_RE = /['"](\.\.?\/[^'"${]*\.[A-Za-z0-9]+)['"]/g;
 
 function memberSpecifiers(member) {
   const source = readFileSync(path.join(REPO_ROOT, member), 'utf8');
