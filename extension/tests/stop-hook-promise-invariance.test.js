@@ -22,7 +22,7 @@ import { execFileSync } from 'node:child_process';
 
 import { applyAllTicketsDoneCompletion } from '../bin/mux-runner.js';
 import { LATEST_SCHEMA_VERSION } from '../types/index.js';
-import { detectCompletionTokens, evaluateManagerIdleBackoff } from '../hooks/handlers/stop-hook.js';
+import { classifyDecision, detectCompletionTokens, evaluateManagerIdleBackoff } from '../hooks/handlers/stop-hook.js';
 
 /** The keys the promise carries, and the only keys it may ever carry. */
 const PROMISE_KEYS = ['kind', 'reason', 'ts'];
@@ -606,4 +606,85 @@ test('AP-EXT-ITER247-01: a turn that did not engage the backoff does not re-base
   } finally {
     fs.rmSync(fx.tmp, { recursive: true, force: true });
   }
+});
+
+// --- AP-EXT-ITER251-01: the rate-limit gate must not mask the terminal limit ------------------
+//
+// Every arm of `classifyDecisionInternal` approves, so the gate cannot be pinned through the
+// decision: a 640-row state x role x transcript matrix showed voiding `enforceRateLimitGate`
+// changes ZERO decisions. Its only observables are `logMessage` (what the operator reads out of
+// hooks.log to learn why the loop stopped) and `token` (which drives `maybeSpawnUpdateCheck`).
+// The five rate-limit cases in tests/stop-hook.test.js assert `decision === 'approve'`, which the
+// terminal default also produces, and touch the log line only via `doesNotMatch` — so nothing
+// asserted the gate FIRING, and nothing asserted its position in the chain.
+
+/** Minimal state: only the fields `classifyDecisionInternal` reads off the limit path. */
+function limitState(overrides) {
+  return { tmux_mode: true, iteration: 3, max_iterations: 50, ...overrides };
+}
+
+const RATE_LIMITED_TURN = 'Claude AI usage limit reached|1782000000';
+
+test('AP-EXT-ITER251-01: the rate-limit gate fires, and says so, when no limit is terminal', () => {
+  const decision = classifyDecision(limitState({}), RATE_LIMITED_TURN, '');
+
+  // The first POSITIVE assertion on the gate's discriminating observable. Voiding
+  // `enforceRateLimitGate` to `return null` reds here; nothing else in the repo did.
+  assert.match(
+    decision.logMessage,
+    /Rate limit detected/,
+    'the rate-limit gate no longer fires on a rate-limited turn — its log line is the only thing that distinguishes it from the terminal default',
+  );
+  assert.equal(decision.decision, 'approve');
+});
+
+test('AP-EXT-ITER251-01: max-iterations outranks the rate-limit gate in the hook log', () => {
+  const decision = classifyDecision(
+    limitState({ iteration: 50, max_iterations: 50 }),
+    RATE_LIMITED_TURN,
+    '',
+  );
+
+  // Ordering pin. With the gate ahead of `classifyLimitDecision` the operator reads
+  // "Rate limit detected" out of hooks.log for a run that actually exhausted its iteration cap,
+  // and diagnoses a transient backoff instead of the configured terminal condition.
+  assert.match(
+    decision.logMessage,
+    /Max iterations reached: 50\/50/,
+    'the rate-limit gate masked the terminal iteration cap — the hook log names the wrong stop reason',
+  );
+  assert.doesNotMatch(decision.logMessage, /Rate limit detected/);
+
+  // The limit arm deliberately zeroes the token so `isCompletionToken` cannot spawn an update
+  // check on a terminal turn; the gate carried the token through and defeated that.
+  assert.equal(decision.token.kind, 'none');
+});
+
+test('AP-EXT-ITER251-01: the time limit outranks the rate-limit gate in the hook log', () => {
+  const decision = classifyDecision(
+    limitState({ max_iterations: 0, start_time_epoch: 1, max_time_minutes: 1 }),
+    RATE_LIMITED_TURN,
+    '',
+  );
+
+  assert.match(
+    decision.logMessage,
+    /Time limit reached/,
+    'the rate-limit gate masked the terminal time limit',
+  );
+  assert.doesNotMatch(decision.logMessage, /Rate limit detected/);
+  assert.equal(decision.token.kind, 'none');
+});
+
+test('AP-EXT-ITER251-01: a short rate-limit body still reads as a rate limit, not a degenerate ack', () => {
+  // "rate limit" is exactly DEGENERATE_MAX_LENGTH chars, so it is also a degenerate short
+  // response. The gate stays AHEAD of the degenerate classifier: subordinating it to the
+  // terminal limits must not push it past this one too.
+  const decision = classifyDecision(limitState({}), 'rate limit', '');
+
+  assert.match(
+    decision.logMessage,
+    /Rate limit detected/,
+    'a 10-char rate-limit body was reclassified as a degenerate short response',
+  );
 });

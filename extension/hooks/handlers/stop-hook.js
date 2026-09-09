@@ -443,13 +443,17 @@ function classifyDecisionInternal(state, transcript, role) {
         if (tokenDecision)
             return tokenDecision;
     }
+    // The operator-configured limits are the TERMINAL condition and outrank a transient
+    // rate-limit note: a rate-limited turn that also lands on max-iterations/time-limit must
+    // log the limit it actually hit, not the backoff. Ordered before the degenerate classifier
+    // because a short "rate limit" body really is a rate limit, not a no-op ack.
+    const limitDecision = classifyLimitDecision(state);
+    if (limitDecision)
+        return limitDecision;
     const rateLimit = enforceRateLimitGate(state, transcript);
     if (rateLimit) {
         return { ...rateLimit, logMessage: 'Decision: APPROVE (Rate limit detected — handing off to runner for backoff)', token };
     }
-    const limitDecision = classifyLimitDecision(state);
-    if (limitDecision)
-        return limitDecision;
     const degenerateDecision = classifyDegenerateDecision(state, transcript, role);
     if (degenerateDecision)
         return degenerateDecision;
