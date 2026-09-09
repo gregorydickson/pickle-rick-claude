@@ -201,6 +201,20 @@ function isPidAlive(pid) {
 // reaches every descendant instead of leaking them.
 const GROUP_KILL_GRACE_MS = 2000;
 
+// R-ORCG: the shim below installs a no-op SIGTERM handler and a keep-alive
+// interval, so nothing in the process itself ever ends it — measured, one
+// `bin/npm run test:fast` orphan reparented to pid 1 per run of this file, and
+// it was the whole of a re-accumulated 6-process population. `tests/fixtures/
+// sigterm-ignoring-sleeper.js` already carries the answer, so this is that
+// mechanism rather than a new one: bound an ABANDONED instance's lifetime
+// without touching the SIGTERM behaviour the escalation cases are testing.
+//
+// DERIVED from the harness cap rather than written as a literal, so it cannot
+// silently drop below the window a live test needs. A shim that self-exits
+// before `spawnHarness`'s own timeout would end the hang these cases exist to
+// reproduce, turning a real assertion into a vacuous one.
+const SHIM_MAX_LIFETIME_MS = CAP_WORKER_GATE + 60_000;
+
 async function killGroupWithEscalation(pid) {
   killProcessGroup(pid, 'SIGTERM');
   await new Promise((resolve) => setTimeout(resolve, GROUP_KILL_GRACE_MS));
@@ -255,12 +269,14 @@ const child = spawn(process.execPath, ['-e', \`
     if (signalPath) fs.appendFileSync(signalPath, 'child:SIGTERM\\\\n');
   });
   setInterval(() => {}, 1000);
+  setTimeout(() => process.exit(0), ${SHIM_MAX_LIFETIME_MS});
 \`], { stdio: 'ignore' });
 
 if (pidPath && child.pid) fs.writeFileSync(pidPath, String(child.pid));
 if (readyPath) fs.writeFileSync(readyPath, 'ready\\n');
 if (!pidPath && child.pid) process.stdout.write(String(child.pid));
 setInterval(() => {}, 1000);
+setTimeout(() => process.exit(0), ${SHIM_MAX_LIFETIME_MS});
 `);
   fs.chmodSync(shimPath, 0o755);
 }
