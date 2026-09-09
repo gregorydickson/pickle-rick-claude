@@ -55,7 +55,7 @@ import { isProcessAlive } from '../lib/process-liveness.js';
 // audit-trap-door-enforcement.sh R-AFCC-CALLER-ENUMERATION.
 import { completionDirLadder, isTicketOracleCommitted, isPerTicketVerdictReason } from './mux-runner.js';
 import { loadFinalizeGateSettings, resolveFinalizeSettingsRoot } from './finalize-gate.js';
-import { runGate } from '../services/convergence-gate.js';
+import { runGate, getWorkspacePackages } from '../services/convergence-gate.js';
 const sm = new StateManager();
 const DEFAULT_DIRTY_EXEMPT_SEGMENTS = ['prds', 'docs'];
 const CODEX_REQUIRED_BACKEND = 'codex-required';
@@ -197,7 +197,69 @@ export function isTestFile(name) {
     const lower = name.toLowerCase();
     return TEST_PATTERNS.some(p => lower.includes(p));
 }
-export function discoverSubsystems(target) {
+function countSourceFiles(dir) {
+    let sourceCount = 0;
+    let testCount = 0;
+    const visited = new Set();
+    const walk = (p) => {
+        // Resolve real path to detect symlink loops
+        let realP;
+        try {
+            realP = fs.realpathSync(p);
+        }
+        catch {
+            return;
+        }
+        if (visited.has(realP))
+            return;
+        visited.add(realP);
+        let children;
+        try {
+            children = fs.readdirSync(p, { withFileTypes: true });
+        }
+        catch {
+            return;
+        }
+        for (const child of children) {
+            if (child.isDirectory() && !EXCLUDED_DIRS.has(child.name)) {
+                walk(path.join(p, child.name));
+            }
+            else if (child.isFile() && SOURCE_EXTS.has(path.extname(child.name))) {
+                sourceCount++;
+                if (isTestFile(child.name))
+                    testCount++;
+            }
+        }
+    };
+    walk(dir);
+    return { sourceCount, testCount };
+}
+/**
+ * ROOT W: resolve the absolute directories anatomy-park rotates over.
+ *
+ * A monorepo whose source lives one level down (packages/*) has exactly ONE
+ * top-level source directory, so reading identity off the top-level listing
+ * collapses the entire repo into a SINGLE rotation target no pass can finish:
+ * 4 of 6 operator runs, ~11.5 hours, every one anatomy_non_convergent over one
+ * subsystem named "packages". A declared workspace layout already names the
+ * real units, so ask for it FIRST and let the top-level listing be the fallback
+ * a flat repo takes.
+ *
+ * The manifest dialects stay in their ONE existing home, getWorkspacePackages.
+ * This resolver learns none of them on purpose: a new dialect is an edit there,
+ * never an eighth branch here. The try/catch keeps discovery TOTAL — an
+ * unreadable manifest degrades to the flat reading instead of crashing the
+ * phase. Roots equal to the target itself are dropped so the self-including
+ * workspace idiom cannot yield an empty subsystem name.
+ */
+function subsystemRoots(target) {
+    try {
+        const resolvedTarget = path.resolve(target);
+        const packages = getWorkspacePackages(target).filter(p => path.resolve(p) !== resolvedTarget);
+        if (packages.length > 0)
+            return packages;
+    }
+    catch { /* unreadable or malformed manifest — take the top-level listing below */ }
     let entries;
     try {
         entries = fs.readdirSync(target, { withFileTypes: true });
@@ -205,48 +267,24 @@ export function discoverSubsystems(target) {
     catch {
         return [];
     }
+    return entries
+        .filter(e => e.isDirectory() && !EXCLUDED_DIRS.has(e.name) && !e.name.startsWith('.'))
+        .map(e => path.join(target, e.name));
+}
+export function discoverSubsystems(target) {
     const subsystems = [];
-    for (const entry of entries) {
-        if (!entry.isDirectory() || EXCLUDED_DIRS.has(entry.name) || entry.name.startsWith('.'))
-            continue;
-        const fullPath = path.join(target, entry.name);
-        let sourceCount = 0;
-        let testCount = 0;
-        const visited = new Set();
-        const walk = (p) => {
-            // Resolve real path to detect symlink loops
-            let realP;
-            try {
-                realP = fs.realpathSync(p);
-            }
-            catch {
-                return;
-            }
-            if (visited.has(realP))
-                return;
-            visited.add(realP);
-            let children;
-            try {
-                children = fs.readdirSync(p, { withFileTypes: true });
-            }
-            catch {
-                return;
-            }
-            for (const child of children) {
-                if (child.isDirectory() && !EXCLUDED_DIRS.has(child.name)) {
-                    walk(path.join(p, child.name));
-                }
-                else if (child.isFile() && SOURCE_EXTS.has(path.extname(child.name))) {
-                    sourceCount++;
-                    if (isTestFile(child.name))
-                        testCount++;
-                }
-            }
-        };
-        walk(fullPath);
+    for (const dir of subsystemRoots(target)) {
+        const { sourceCount, testCount } = countSourceFiles(dir);
         // Exclude test-only directories (>80% test files) per anatomy-park spec
         if (sourceCount >= 3 && testCount / sourceCount <= 0.8) {
-            subsystems.push({ name: entry.name, fileCount: sourceCount });
+            // Name by the path RELATIVE to target, never the basename: filterBySubsystem
+            // resolves a name back through path.resolve(target, name), so a nested
+            // package named "a" would resolve to a directory that does not exist and be
+            // dropped by every scope filter. POSIX separators keep the persisted keys
+            // stable across platforms.
+            const name = path.relative(target, dir).replace(/\\/g, '/');
+            if (name.length > 0)
+                subsystems.push({ name, fileCount: sourceCount });
         }
     }
     return subsystems.sort((a, b) => a.name.localeCompare(b.name));

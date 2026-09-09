@@ -600,6 +600,107 @@ describe('discoverSubsystems', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // ROOT W (GitHub #14): a monorepo whose source lives one level down has ONE
+  // top-level source directory, so a top-level reading of subsystem identity
+  // collapses the whole repo into a SINGLE rotation target that no anatomy-park
+  // pass ever finishes — 4 of 6 operator runs, ~11.5h, all anatomy_non_convergent
+  // over one subsystem named "packages". The declared workspace layout names the
+  // real units. Fixtures below pin BOTH directions: the widening fires on a
+  // declared workspace, and a flat repo is untouched by it.
+  const seedPackage = (dir, { sources = 3, tests = 0 } = {}) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: path.basename(dir) }));
+    for (let i = 0; i < sources; i++) fs.writeFileSync(path.join(dir, `s${i}.ts`), '');
+    for (let i = 0; i < tests; i++) fs.writeFileSync(path.join(dir, `t${i}.test.ts`), '');
+  };
+
+  test('ROOT W: a pnpm workspace yields its PACKAGES, not the one directory containing them', () => {
+    const root = tmpDir();
+    try {
+      for (const name of ['a', 'b', 'c']) seedPackage(path.join(root, 'packages', name));
+      fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
+
+      const result = discoverSubsystems(root);
+      const names = result.map(s => s.name);
+      assert.deepEqual(names, ['packages/a', 'packages/b', 'packages/c'],
+        `expected the three workspace packages, got ${JSON.stringify(names)}`);
+      assert.ok(!names.includes('packages'),
+        'the containing directory must NOT be a subsystem — that is the single-target rotation');
+      for (const s of result) assert.equal(s.fileCount, 3);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('ROOT W: a root package.json workspaces field resolves the same way (not pnpm-only)', () => {
+    const root = tmpDir();
+    try {
+      for (const name of ['a', 'b', 'c']) seedPackage(path.join(root, 'packages', name));
+      fs.writeFileSync(
+        path.join(root, 'package.json'),
+        JSON.stringify({ name: 'root', workspaces: ['packages/*'] }),
+      );
+
+      const names = discoverSubsystems(root).map(s => s.name);
+      assert.deepEqual(names, ['packages/a', 'packages/b', 'packages/c'],
+        `expected the three workspace packages, got ${JSON.stringify(names)}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('ROOT W NEGATIVE control: a flat non-workspace repo still yields its top-level dirs', () => {
+    const root = tmpDir();
+    try {
+      for (const name of ['services', 'processors']) {
+        const sub = path.join(root, name);
+        fs.mkdirSync(sub);
+        for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(sub, `f${i}.ts`), '');
+      }
+
+      const result = discoverSubsystems(root);
+      assert.deepEqual(result.map(s => s.name), ['processors', 'services'],
+        'no manifest declares a workspace here, so discovery must be byte-identical to before');
+      for (const s of result) assert.equal(s.fileCount, 3);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('ROOT W: the source-count / test-ratio filter still applies PER RESOLVED PACKAGE', () => {
+    const root = tmpDir();
+    try {
+      seedPackage(path.join(root, 'packages', 'a'), { sources: 3 });
+      seedPackage(path.join(root, 'packages', 'b'), { sources: 2 });
+      seedPackage(path.join(root, 'packages', 'c'), { sources: 1, tests: 5 });
+      fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
+
+      const names = discoverSubsystems(root).map(s => s.name);
+      assert.deepEqual(names, ['packages/a'],
+        'b is below the 3-source floor and c is 5/6 tests (>0.8) — both must still be excluded');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('ROOT W: an unreadable workspace manifest degrades to the flat reading, never a throw', () => {
+    const root = tmpDir();
+    try {
+      // A DIRECTORY where the manifest is expected: unreadable as a file, and
+      // unlike chmod 000 it stays unreadable when the suite runs as uid 0.
+      fs.mkdirSync(path.join(root, 'pnpm-workspace.yaml'));
+      const sub = path.join(root, 'services');
+      fs.mkdirSync(sub);
+      for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(sub, `f${i}.ts`), '');
+
+      const names = discoverSubsystems(root).map(s => s.name);
+      assert.deepEqual(names, ['services'],
+        'discovery is total: a broken manifest must not crash the anatomy-park phase');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
