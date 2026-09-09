@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# `dirname` was the one external tool this script could not guard: it runs before
+# SCRIPT_DIR exists, and SCRIPT_DIR is what a guard would need in order to run. So it is
+# removed rather than checked -- `case` plus the `%/*` suffix trim are shell builtins, and
+# the bare-name arm reproduces what dirname returns for a path holding no slash.
+SCRIPT_SELF="${BASH_SOURCE[0]}"
+case "$SCRIPT_SELF" in
+  */*) SCRIPT_SELF_DIR="${SCRIPT_SELF%/*}" ;;
+  *)   SCRIPT_SELF_DIR="." ;;
+esac
+SCRIPT_DIR="$(cd "$SCRIPT_SELF_DIR" && pwd)"
 EXTENSION_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXTENSION_ROOT/.." && pwd)"
 CLAUDE_PATH="${CLAUDE_PATH_OVERRIDE:-$EXTENSION_ROOT/CLAUDE.md}"
@@ -14,10 +23,23 @@ if [ ! -f "$CLAUDE_PATH" ]; then
   exit 0
 fi
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "[error: node is required]" >&2
-  exit 1
-fi
+# AC-M4: every external tool this script depends on is checked HERE, in one place, before
+# any check runs. A tool that cannot be found ends the run non-zero; it may never reach a
+# check that would then report OK having measured nothing.
+#
+# The word list is the census of tools reached from this file, and it is not maintained by
+# hand: tests/audit-trap-door-enforcement-fixture.test.js re-derives the set from this
+# script and fails when a member is missing, so a newly introduced tool cannot stay unlisted.
+#
+# `command -v` is a shell builtin, so the guard itself is never the thing that is missing.
+# The message repeats the sentinel that services/verify-command-safety.js emits, so both
+# halves of the fail-closed discipline read identically in a log.
+for _tool in bash git grep node rg; do
+  if ! command -v "$_tool" >/dev/null 2>&1; then
+    echo "tool not installed: $_tool" >&2
+    exit 1
+  fi
+done
 
 audit_exit_code=0
 
@@ -979,19 +1001,40 @@ fi
 # ship it) alongside this fail-closed check — the two halves shipped together in 2bf16f30 and
 # must stay together, or every CI run reds on this line.
 #
-# A3 (18cbeb65) tool census, re-verified from HEAD: `rg` is the only external tool any
-# release-gate-invoked script depends on beyond node/git/bash — the other nine `&&`-chained
-# audit scripts (audit-test-tiers.sh, audit-test-isolation.sh, audit-subprocess-heavy-tests.sh,
-# audit-fix-commits.sh, audit-bundle-thesis.sh, audit-quarantine.sh, audit-guarded-reset.sh,
+# Tool census, re-measured from HEAD. The claim this paragraph used to carry -- that `rg`
+# was the only external tool needed "beyond node/git/bash" -- was false when it was written:
+# a `grep` call had already been in this file for three months. That is a hand-maintained
+# catalog rotting green, so the set is now checked mechanically by the preflight at the top
+# of the script and by the fixture test that re-derives it, and this paragraph only records
+# what was measured.
+#
+# Six external tools are reached from this file: `dirname` (removed -- see the top of the
+# script), `node`, `bash`, `git`, `rg` and `grep`. The last five are covered by the preflight.
+#
+# Why the preflight does NOT route through detectMissingTools, even though this call site
+# does: that helper reports a tool only when it is a member of NON_GUARANTEED_TOOLS
+# (services/verify-command-safety.js), a set holding rg/fd/jq and other optional binaries.
+# Asked about git, grep or bash it returns an empty list however absent they are -- measured,
+# not assumed -- so a preflight built on it would be a guard that can never fire. The
+# preflight therefore tests resolvability with a shell builtin and reuses the SENTINEL TEXT,
+# which is the part of the discipline that carries meaning into a log.
+#
+# The two halves stay distinct and both earn their place: the preflight answers "was it ever
+# going to run", while the isUnrunnableCheckResult call below answers "it ran and could not
+# do its job" -- a state no existence check can observe.
+#
+# Provisioning: the other nine `&&`-chained audit scripts (audit-test-tiers.sh,
+# audit-test-isolation.sh, audit-subprocess-heavy-tests.sh, audit-fix-commits.sh,
+# audit-bundle-thesis.sh, audit-quarantine.sh, audit-guarded-reset.sh,
 # audit-un-terminalize-single-path.sh, audit-did-we-count.sh) and this script's own internal
-# call to audit-phantom-done-call-sites.sh shell out to nothing else. `jq`/`python3`/`gh`/
-# `shellcheck` appear only in scripts NOT invoked by ci.yml or release.yml (audit-deploy-
+# use of audit-phantom-done-call-sites.sh need nothing further. `jq`/`python3`/`gh`/
+# `shellcheck` are named only by scripts NOT invoked by ci.yml or release.yml (audit-deploy-
 # content-drift.sh, audit-subsystem-claude-md.sh, audit-closer-template-compliance.sh,
 # capture-pkgjson-revert-forensic.sh, ci-repro.sh, reconcile-release-tags.sh, verify-release-
-# tag.sh, smoke-deployed-hooks.sh, coverage-delta.sh) — their provisioning does not affect the
-# release gate. `jq`/`python3`/`git` are already part of the `ubuntu-latest` runner image's own
-# baseline (see ci-repro.sh's `CI_RUNNER_BASELINE_PACKAGES`), which is why only `rg` — never
-# preinstalled — needed an explicit install step.
+# tag.sh, smoke-deployed-hooks.sh, coverage-delta.sh), so they do not affect the release gate.
+# `git` is part of the runner image baseline (ci-repro.sh's CI_RUNNER_BASELINE_PACKAGES) and
+# `bash`/`grep` are part of its essential set, which is why `rg` -- never preinstalled -- is
+# still the only member needing an explicit install step in both workflows.
 if ! node - "$EXTENSION_ROOT" "$EXTENSION_ROOT/src/bin/spawn-morty.ts" "$EXTENSION_ROOT/src/bin/mux-runner.ts" <<'NODE'
 const path = require('path');
 const { spawnSync } = require('child_process');

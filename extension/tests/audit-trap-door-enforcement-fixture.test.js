@@ -804,3 +804,233 @@ test('AP-EXT-ITER39-02: an unenumerated CLAUDE.md carrying no trap-door clause p
     `a clause-free file outside the swept set must not suppress the census; stdout: ${result.stdout}`
   );
 });
+
+// ---------------------------------------------------------------------------
+// AC-M4 census arm — every external tool the audit reaches has an existence check.
+//
+// The defect this closes is not one missing guard, it is that the set of tools was tracked
+// by hand. The script carried a comment naming its dependencies; a `grep` call had been in
+// the file for three months when that comment was written, and the comment did not mention
+// it. A list nobody re-derives is wrong from the moment the next call lands, and it is wrong
+// silently, because an unlisted tool looks exactly like a tool that is not used.
+//
+// So the set is DERIVED from the script on every run and compared with the word list the
+// preflight iterates. Adding a call to a new binary without listing it reds this arm.
+//
+// Honest limit, the same one audit-unprovisioned-binary-spawns.mjs states: only a STRING
+// LITERAL first argument is in contract. The `rg` call site passes a variable, so the
+// derivation cannot see it -- which is exactly why KNOWN_TOOL_FLOOR below is also asserted.
+// The derivation catches what arrives later; the floor pins what was measured by hand here.
+// ---------------------------------------------------------------------------
+
+const AUDIT_SCRIPT_PATH = path.join(EXTENSION_ROOT, 'scripts', 'audit-trap-door-enforcement.sh');
+
+// Measured by reading the script at the time this arm was written. `rg` is a member despite
+// being invisible to the derivation, so dropping it from the preflight cannot pass unnoticed.
+const KNOWN_TOOL_FLOOR = ['bash', 'git', 'grep', 'node', 'rg'];
+
+/** Split the script into its bash-level text and the bodies of its node heredocs. */
+function segmentScript(sourceText) {
+  const bash = [];
+  const heredoc = [];
+  let openTag = null;
+  for (const line of sourceText.split('\n')) {
+    if (openTag === null) {
+      bash.push(line);
+      const opener = line.match(/<<'?([A-Z_]+)'?\s*$/);
+      if (opener) openTag = opener[1];
+    } else if (line.trim() === openTag) {
+      // The terminator is a delimiter, not a line of bash. Keeping it out of the bash text
+      // is what stops the tag itself from being read as a command in command position.
+      openTag = null;
+    } else {
+      heredoc.push(line);
+    }
+  }
+  return { bashText: bash.join('\n'), heredocText: heredoc.join('\n') };
+}
+
+/**
+ * Classifies every candidate word in ONE shell, rather than one spawn per word. `type -t`
+ * is the shell's own answer to "is this a builtin, a keyword, or a program on PATH", so the
+ * derivation agrees with the thing that will actually run the script.
+ *
+ * `type -t` alone is not enough, because PATH lookup asks the FILESYSTEM, and the default
+ * macOS filesystem answers case-insensitively: `type -t NODE` reports `file` here and
+ * resolves to the real node binary, while on Linux it reports nothing. Left uncorrected the
+ * derivation would mean two different things on the two platforms this repo gates on.
+ *
+ * Comparing against the resolved path does not settle it either -- the resolver echoes the
+ * spelling it was asked about, so its basename always matches. The on-disk directory entry
+ * is the only case-sensitive answer available, so a word counts as external only when the
+ * containing directory really lists a file spelled exactly that way.
+ */
+function classifyWords(words) {
+  const unique = [...new Set(words)];
+  if (unique.length === 0) return new Map();
+  const probe = spawnSync(
+    'bash',
+    [
+      '-c',
+      'for w in "$@"; do k="$(type -t "$w" 2>/dev/null || echo none)"; ' +
+        'if [ "$k" = file ]; then p="$(command -v "$w")"; ' +
+        'ls -1 "${p%/*}" 2>/dev/null | grep -qxF "${p##*/}" || k=none; fi; ' +
+        'printf "%s %s\\n" "$w" "$k"; done',
+      '_',
+      ...unique,
+    ],
+    { encoding: 'utf8', timeout: 60_000 }
+  );
+  assert.equal(probe.status, 0, `word classification probe failed: ${probe.stderr}`);
+  const kinds = new Map();
+  for (const row of probe.stdout.split('\n')) {
+    const [word, kind] = row.trim().split(/\s+/);
+    if (word) kinds.set(word, kind || 'none');
+  }
+  return kinds;
+}
+
+/** The census, as code: external tools reached from the script's own text. */
+function deriveExternalTools(sourceText) {
+  const { bashText, heredocText } = segmentScript(sourceText);
+
+  // Command position: line start, or after a substitution/pipe/separator/control word.
+  const commandPosition = /(?:^|\$\(|`|\||;|&&|!\s|\bthen\b|\bdo\b|\belse\b|\bif\b)\s*([A-Za-z_][A-Za-z0-9_.-]*)/gm;
+  const candidates = [];
+  for (const line of bashText.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    for (const hit of line.matchAll(commandPosition)) candidates.push(hit[1]);
+  }
+  const kinds = classifyWords(candidates);
+  const tools = new Set(candidates.filter((word) => kinds.get(word) === 'file'));
+
+  // Matched over WHOLE heredoc content, never line by line: these calls wrap across lines,
+  // and a line-based scan would miss the very shape it exists to find.
+  const spawnCall = /(?:execFileSync|spawnSync|execSync|execFile|spawn)\s*\(\s*'([A-Za-z0-9_.-]+)'/g;
+  for (const hit of heredocText.matchAll(spawnCall)) tools.add(hit[1]);
+
+  return tools;
+}
+
+/** The word list the preflight loop iterates. */
+function readPreflightTools(sourceText) {
+  const loop = sourceText.match(/for\s+_tool\s+in\s+([^;]+);\s*do/);
+  assert.ok(loop, 'preflight loop not found in audit-trap-door-enforcement.sh');
+  return new Set(loop[1].trim().split(/\s+/));
+}
+
+test('AC-M4 census: every external tool derived from the audit script is covered by its preflight', () => {
+  const source = fs.readFileSync(AUDIT_SCRIPT_PATH, 'utf8');
+  const derived = deriveExternalTools(source);
+  const preflight = readPreflightTools(source);
+
+  // A derivation that found nothing would satisfy the subset check vacuously. The first
+  // census taken for this ticket did exactly that -- it read only the first token of each
+  // line and so never saw the tool inside a command substitution.
+  assert.ok(
+    derived.size >= 3,
+    `derivation found ${derived.size} tools; a near-empty census means the parser broke, not that the script grew simple`
+  );
+
+  const uncovered = [...derived].filter((tool) => !preflight.has(tool));
+  assert.deepEqual(
+    uncovered,
+    [],
+    `these external tools are invoked with no existence check: ${uncovered.join(', ')}`
+  );
+
+  const missingFloor = KNOWN_TOOL_FLOOR.filter((tool) => !preflight.has(tool));
+  assert.deepEqual(
+    missingFloor,
+    [],
+    `preflight dropped a tool the script is known to use: ${missingFloor.join(', ')}`
+  );
+});
+
+test('AC-M4 census: the derivation reports a newly introduced tool that the preflight does not list', () => {
+  const source = fs.readFileSync(AUDIT_SCRIPT_PATH, 'utf8');
+
+  // Negative control. Without it the arm above could pass forever on a parser that matches
+  // nothing. A name no workflow provisions and no tool list mentions is used deliberately,
+  // so the control cannot be satisfied by an unrelated allowlist.
+  const injected = source.replace(
+    "const { spawnSync } = require('child_process');",
+    "const { spawnSync } = require('child_process');\nexecFileSync('zzunprovisionedtool', ['--version']);"
+  );
+  assert.notEqual(injected, source, 'injection point not found; the control would measure nothing');
+
+  const derived = deriveExternalTools(injected);
+  assert.ok(
+    derived.has('zzunprovisionedtool'),
+    `derivation missed an injected tool call; it cannot detect a real one either (found: ${[...derived].join(', ')})`
+  );
+
+  const preflight = readPreflightTools(injected);
+  assert.ok(
+    !preflight.has('zzunprovisionedtool'),
+    'precondition: the injected tool must be absent from the preflight list'
+  );
+});
+
+/**
+ * Runs the audit with one binary made unresolvable, asserting first that everything ELSE
+ * still resolves. Without that precondition a failed spawn grades as a passing assertion.
+ */
+function runAuditWithBinaryAbsent(bin) {
+  const filteredPath = simulateBinaryAbsent(process.env.PATH || '', bin);
+
+  for (const survivor of ['bash', 'env', 'node'].filter((s) => s !== bin)) {
+    const probe = spawnSync('bash', ['-c', `command -v ${survivor}`], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: filteredPath },
+      timeout: 30_000,
+    });
+    assert.equal(
+      probe.status,
+      0,
+      `${survivor} must still resolve with ${bin} absent (got exit ${probe.status}); otherwise this measures a failed spawn, not the audit`
+    );
+  }
+
+  const which = spawnSync('bash', ['-c', `command -v ${bin}`], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: filteredPath },
+    timeout: 30_000,
+  });
+  assert.notEqual(which.status, 0, `precondition: ${bin} must be unresolvable under the filtered PATH`);
+
+  return spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+    cwd: EXTENSION_ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, PATH: filteredPath },
+    timeout: 60_000,
+  });
+}
+
+for (const bin of ['grep', 'git']) {
+  test(`audit-trap-door-enforcement fails closed when ${bin} is absent from PATH (never reports OK)`, () => {
+    const result = runAuditWithBinaryAbsent(bin);
+
+    assert.notEqual(
+      result.status,
+      0,
+      `audit must FAIL when ${bin} is unrunnable, got exit ${result.status}; stderr: ${result.stderr}`
+    );
+    assert.match(
+      result.stderr,
+      new RegExp(`tool not installed: ${bin}`),
+      `stderr must name the unrunnable tool, got: ${result.stderr}`
+    );
+    assert.doesNotMatch(
+      result.stderr,
+      /command not found/,
+      `a raw shell "command not found" leak means a check no-oped instead of failing closed: ${result.stderr}`
+    );
+    assert.doesNotMatch(
+      result.stdout,
+      /verified|OK/,
+      `an audit that could not run must not report a verified check: ${result.stdout}`
+    );
+  });
+}
