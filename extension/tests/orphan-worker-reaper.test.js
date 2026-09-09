@@ -351,6 +351,48 @@ test('AC3: $TMPDIR/cxhang-int-bin-*/claude with a foreign --add-dir reclassifies
   assert.equal(result[0].owningSessionDir, null);
 });
 
+// ---------------------------------------------------------------------------
+// R-ORCG: the repo-fixture match is root-INDEPENDENT.
+//
+// The AC3 case above feeds a path under the RUNNING module's own root, so it is
+// satisfied by an anchor derived from `import.meta.url` — and that anchor is
+// wrong in the deployed tree, where `extension/tests/fixtures` does not exist
+// because the deploy step does not rsync `tests/`. Every consumer of the reaper
+// executes the deployed build, so the class was dead in production while this
+// suite, which imports the repo build, stayed green. Feed a FOREIGN root.
+// ---------------------------------------------------------------------------
+
+test('R-ORCG: a fixture path under a FOREIGN root still matches repo_fixture_path', () => {
+  const sessionsRoot = makeTmp();
+  const command = `${process.execPath} /some/other/checkout/extension/tests/fixtures/sigterm-ignoring-sleeper.js`;
+  const result = parseWorkerProcsFromPs(`8101 8101 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 1, 'the match must not depend on which tree is executing the reaper');
+  assert.equal(result[0].kind, 'tmp_fixture');
+  assert.equal(result[0].matchClass, 'repo_fixture_path');
+  assert.equal(result[0].owningSessionDir, null);
+});
+
+test('R-ORCG-negative: an unrelated tools tests/fixtures path does not match', () => {
+  const sessionsRoot = makeTmp();
+  const command = `${process.execPath} /opt/other-tool/tests/fixtures/sleeper.js`;
+  const result = parseWorkerProcsFromPs(`8102 8102 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 0, 'the run is three consecutive segments, not any tests/fixtures path');
+});
+
+test('R-ORCG-negative: a path carrying the segment names out of order does not match', () => {
+  const sessionsRoot = makeTmp();
+  const command = `${process.execPath} /srv/tests/extension/fixtures/sleeper.js`;
+  const result = parseWorkerProcsFromPs(`8103 8103 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 0, 'the segments must appear consecutively and in order');
+});
+
+test('R-ORCG-negative: a segment merely CONTAINING "extension" does not match', () => {
+  const sessionsRoot = makeTmp();
+  const command = `${process.execPath} /srv/my-extension/tests/fixtures/sleeper.js`;
+  const result = parseWorkerProcsFromPs(`8104 8104 1 20:00:00 ${command}`, sessionsRoot);
+  assert.equal(result.length, 0, 'the run is matched segment-wise, never as a substring');
+});
+
 test('AC3-negative: a decoy tmp prefix that is a substring, not a first-segment prefix, does not match', () => {
   const sessionsRoot = makeTmp();
   const command = `node ${path.join(os.tmpdir(), 'not-cxhang-int-bin-123', 'x.js')}`;

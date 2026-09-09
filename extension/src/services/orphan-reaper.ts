@@ -36,7 +36,7 @@
  *    does not even require a worker-shaped command. Its containment is instead the
  *    positive PATH match (`matchTestOwnedFixture`: an ABSOLUTE argv token
  *    resolving under `os.tmpdir()` in a `TEST_OWNED_TMP_PREFIXES` first segment,
- *    or under this repo's fixtures dir), the min-age floor, and `resolveSelfIds`
+ *    or whose segments carry the `extension/tests/fixtures` run), the min-age floor, and `resolveSelfIds`
  *    — which is load-bearing ONLY because of this class (AP-EXT-ITER47-01).
  *
  * A command matching NEITHER class never becomes a candidate at all:
@@ -62,9 +62,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isProcessAlive, writeActivityEntry } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
-
-/** This repo's fixture dir, sibling of the compiled `services/` dir at runtime. */
-const FIXTURES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../tests/fixtures');
 
 export const ORPHAN_REAP_ENV_VAR = 'PICKLE_ORPHAN_REAP';
 
@@ -126,7 +123,7 @@ export type WorkerProcCandidate = {
    * Reap-report match class (AC5 non-zero-sweep visibility): `'session_owned'`
    * for a worker attributed to a sessions-root `--add-dir`, `'tmp_prefix_fixture'`
    * for a test-owned `os.tmpdir()` path, `'repo_fixture_path'` for a script
-   * anchored under this repo's `extension/tests/fixtures/`. `null` for an
+   * whose path segments carry the `extension/tests/fixtures` run. `null` for an
    * unattributable worker-shaped command that matched neither (never reaped).
    */
   matchClass: 'session_owned' | 'tmp_prefix_fixture' | 'repo_fixture_path' | null;
@@ -320,17 +317,46 @@ function resolveTmpPrefixFixturePath(command: string): string | null {
 }
 
 /**
- * Positive-path match for a repo fixture script: an argv token that resolves
- * to an ABSOLUTE path anchored under this repo's `extension/tests/fixtures/`
- * directory, regardless of any tmpdir involvement. Same anti-substring-scan
- * discipline as `resolveTmpPrefixFixturePath`.
+ * The fixture-dir segment run a repo fixture script path must contain, in order.
+ * A SHAPE, not a root: see `resolveRepoFixtureScriptPath`.
+ */
+const REPO_FIXTURE_SEGMENTS = ['extension', 'tests', 'fixtures'];
+
+/**
+ * Positive-path match for a repo fixture script: an argv token that resolves to
+ * an ABSOLUTE path whose segments contain the consecutive run
+ * `extension/tests/fixtures`, regardless of any tmpdir involvement. Same
+ * anti-substring-scan discipline as `resolveTmpPrefixFixturePath` — the run is
+ * matched segment-wise, so a token that merely CONTAINS the text (a path segment
+ * named `my-extension`, or prompt prose) does not match.
+ *
+ * Matched by SHAPE rather than against a derived root, because this module runs
+ * out of TWO trees and a root is right in only one of them. It used to anchor on
+ * `path.resolve(dirname(fileURLToPath(import.meta.url)), '../tests/fixtures')`,
+ * which is this checkout's fixtures dir when the repo build runs — and the
+ * deployed tree's `extension/tests/fixtures`, WHICH DOES NOT EXIST, when the
+ * deployed build runs. The deploy step does not rsync `tests/`. All three
+ * consumers (`setup.ts:runSetupOrphanReap`, `bin/reap-orphans.ts`,
+ * `mux-runner.ts:runPipelineOrphanWorkerReap`) execute the deployed build, so
+ * this whole class was dead in production while the unit test — which imports
+ * the REPO build, where the anchor happens to be correct — stayed green and
+ * always would have. Measured over one identical `ps` row: repo build
+ * `repo_fixture_path`, deployed build no match at all.
+ *
+ * Adding the deployed root as a SECOND anchor would only schedule the third
+ * (a worktree, a CI checkout, a release tarball). The shape needs no root list.
  */
 function resolveRepoFixtureScriptPath(command: string): string | null {
-  const fixturesPrefix = FIXTURES_DIR + path.sep;
   for (const token of command.split(/\s+/)) {
     if (!token.startsWith('/')) continue;
     const resolved = path.resolve(token);
-    if (resolved === FIXTURES_DIR || resolved.startsWith(fixturesPrefix)) return resolved;
+    const segments = resolved.split(path.sep);
+    const runStart = segments.length - REPO_FIXTURE_SEGMENTS.length;
+    for (let i = 0; i <= runStart; i++) {
+      if (REPO_FIXTURE_SEGMENTS.every((segment, offset) => segments[i + offset] === segment)) {
+        return resolved;
+      }
+    }
   }
   return null;
 }
@@ -343,7 +369,7 @@ type TestOwnedFixtureMatch = {
 
 /**
  * The ONE positive-path check for the `tmp_fixture` class: a test-owned
- * tmpdir prefix OR a script anchored under this repo's fixtures dir.
+ * tmpdir prefix OR a script whose path carries the repo fixtures-dir segment run.
  *
  * Admission and match class come out of the SAME evaluation. They used to be
  * two functions — `resolveTestOwnedFixturePath` returning the path and
