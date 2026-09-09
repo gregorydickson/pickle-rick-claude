@@ -382,6 +382,65 @@ test('writePickleIncompleteSentinelIfRemaining writes sentinel + emits event whe
   }
 });
 
+// ── B4 PRODUCER (2a76c4c0): the writer reconciles the artifact with its own
+// measurement, in both directions. The all-Done test below never pre-creates a
+// sentinel, so it is structurally blind to a stale one SURVIVING — which is exactly
+// what a later pickle phase that completes the remaining tickets leaves behind. The
+// consumer-side clear (pipeline-runner's maybeStampPickleIncompleteRobust, commit
+// b780c0a1) is covered by the two B4 tests earlier in this file and is out of scope
+// here; this pair covers the producer half only.
+
+test('B4 producer: an all-Done roster CLEARS a pickle_incomplete.json an earlier teardown left behind', () => {
+  const sessionDir = tmpDir('rrh-c2-session-');
+  try {
+    writeState(sessionDir, sessionDir);
+    writeTicket(sessionDir, 'aaa11111', 1, 'Done');
+    writeTicket(sessionDir, 'bbb22222', 2, 'Done');
+    // The stale conclusion a prior signal teardown recorded, when a ticket did remain.
+    const sentinelPath = path.join(sessionDir, SENTINEL);
+    fs.writeFileSync(sentinelPath, JSON.stringify({
+      reason: 'signal_teardown', remaining_count: 1, total: 2, ts: new Date().toISOString(),
+    }));
+
+    const statePath = path.join(sessionDir, 'state.json');
+    const wrote = writePickleIncompleteSentinelIfRemaining(sessionDir, statePath, () => {});
+
+    assert.equal(wrote, false, 'return contract is unchanged: true iff a sentinel was WRITTEN');
+    assert.ok(
+      !fs.existsSync(sentinelPath),
+      'the stale sentinel must be cleared once its tickets complete — presence may not keep asserting a conclusion the producer just measured false',
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('B4 producer control: a roster with a ticket still remaining KEEPS the sentinel and refreshes it', () => {
+  // Opposite direction. Without this, an unconditional unlink would pass the test
+  // above while destroying the C2 signal the sentinel exists to carry.
+  const sessionDir = tmpDir('rrh-c2-session-');
+  try {
+    writeState(sessionDir, sessionDir);
+    writeTicket(sessionDir, 'aaa11111', 1, 'Done');
+    writeTicket(sessionDir, 'bbb22222', 2, 'Todo');
+    const sentinelPath = path.join(sessionDir, SENTINEL);
+    fs.writeFileSync(sentinelPath, JSON.stringify({
+      reason: 'signal_teardown', remaining_count: 99, total: 99, ts: '1970-01-01T00:00:00.000Z',
+    }));
+
+    const statePath = path.join(sessionDir, 'state.json');
+    const wrote = writePickleIncompleteSentinelIfRemaining(sessionDir, statePath, () => {});
+
+    assert.equal(wrote, true);
+    assert.ok(fs.existsSync(sentinelPath), 'a genuinely incomplete roster must still be marked');
+    const sentinel = JSON.parse(fs.readFileSync(sentinelPath, 'utf-8'));
+    assert.equal(sentinel.remaining_count, 1, 'the sentinel must carry the fresh measurement, not the stale one');
+    assert.equal(sentinel.total, 2);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('writePickleIncompleteSentinelIfRemaining writes NO sentinel when all tickets Done', () => {
   const sessionDir = tmpDir('rrh-c2-session-');
   try {

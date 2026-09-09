@@ -36,6 +36,7 @@ import {
   detectRateLimitInLog,
   PARK_RESUME_JITTER_MIN_MS,
   PARK_RESUME_JITTER_MAX_MS,
+  rateLimitParkStillLive,
 } from '../bin/mux-runner.js';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -569,4 +570,105 @@ test('B3: restorePersistedRateLimitPark does not re-arm from a resets_at already
   // exactly now or in the past.
   assert.ok(!/persistedReset \* 1000 >= Date\.now\(\)/.test(fnBody),
     'the re-arm guard must be a strict future check, not >=');
+});
+
+// ---------------------------------------------------------------------------
+// B3 (2a76c4c0) — the watchdog half. `rate_limit_wait.json` PRESENCE used to feed
+// `rateLimitWaiting` into BOTH evaluateMuxIdleStallWatchdog and
+// evaluateCpuLivenessWatchdog via two copies of one `fs.existsSync` expression, so a
+// file that outlived its park blinded both watchdogs permanently. The classification
+// is now a measurement of the park's own recorded `wait_until`.
+//
+// The rows below are the decision table, and they are adversarial in BOTH directions:
+// a `return true` mutant must red on the absent + expired rows, and a `return false`
+// mutant must red on the future + unmeasurable rows. A suite that only proved
+// under-triggering would pass a suppress-forever bug, which IS the defect being fixed.
+// ---------------------------------------------------------------------------
+
+function parkDir(contents) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-b3-park-'));
+  if (contents !== undefined) {
+    writeFileSync(path.join(dir, 'rate_limit_wait.json'), contents);
+  }
+  return dir;
+}
+
+const B3_NOW = Date.parse('2026-09-09T12:00:00.000Z');
+
+test('B3: no rate_limit_wait.json means no park is live', () => {
+  assert.equal(rateLimitParkStillLive(parkDir(), B3_NOW), false);
+});
+
+test('B3: a park whose wait_until is still in the FUTURE is live (watchdogs stay suppressed)', () => {
+  const dir = parkDir(JSON.stringify({
+    waiting: true,
+    reason: 'API rate limit',
+    wait_until: new Date(B3_NOW + 60_000).toISOString(),
+  }));
+  assert.equal(rateLimitParkStillLive(dir, B3_NOW), true);
+});
+
+test('B3: a park whose wait_until has PASSED is NOT live — presence alone no longer classifies', () => {
+  // The fix. Before this, the identical file suppressed both watchdogs forever.
+  const dir = parkDir(JSON.stringify({
+    waiting: true,
+    reason: 'API rate limit',
+    wait_until: new Date(B3_NOW - 60_000).toISOString(),
+  }));
+  assert.equal(rateLimitParkStillLive(dir, B3_NOW), false);
+});
+
+test('B3: wait_until exactly at now is expired (strict future, matching the re-arm guard)', () => {
+  const dir = parkDir(JSON.stringify({ wait_until: new Date(B3_NOW).toISOString() }));
+  assert.equal(rateLimitParkStillLive(dir, B3_NOW), false);
+});
+
+test('B3: an UNPARSEABLE park file keeps the pre-B3 suppression — an unmeasurable input must not fire a watchdog', () => {
+  // Both callers can escalate to the terminal idle_stall_unrecoverable park, so
+  // withdrawing suppression on an input we cannot read would manufacture a halt path.
+  assert.equal(rateLimitParkStillLive(parkDir('{not json'), B3_NOW), true);
+});
+
+test('B3: a park file with NO wait_until keeps the pre-B3 suppression', () => {
+  const dir = parkDir(JSON.stringify({ waiting: true, reason: 'API rate limit' }));
+  assert.equal(rateLimitParkStillLive(dir, B3_NOW), true);
+});
+
+test('B3: a park file with an unparseable wait_until keeps the pre-B3 suppression', () => {
+  const dir = parkDir(JSON.stringify({ wait_until: 'not-a-date' }));
+  assert.equal(rateLimitParkStillLive(dir, B3_NOW), true);
+});
+
+test('B3: every writer of rate_limit_wait.json stamps the wait_until the measurement reads', () => {
+  // The measurement is only sound because `wait_until` is universal across producers.
+  // mux-runner's two writers are checked here; microverse-runner's two are checked by
+  // reading that file, so a producer that dropped the field would be caught rather
+  // than silently degrading every park to "unmeasurable → suppress forever".
+  const MICROVERSE_SRC = path.resolve(__dirname, '../src/bin/microverse-runner.ts');
+  const microSrc = readFileSync(MICROVERSE_SRC, 'utf8');
+  const muxWrites = src.split("writeStateFile(path.join(sessionDir, 'rate_limit_wait.json'), {").slice(1);
+  assert.equal(muxWrites.length, 2, 'mux-runner must have exactly two park writers');
+  for (const w of muxWrites) assert.match(w.slice(0, 400), /wait_until:/);
+  const microWrites = microSrc.split('writeStateFile(path.join(').filter(
+    w => w.slice(0, 120).includes('RATE_LIMIT_WAIT_FILENAME'),
+  );
+  assert.equal(microWrites.length, 2, 'microverse-runner must have exactly two park writers');
+  for (const w of microWrites) assert.match(w.slice(0, 400), /wait_until:/);
+});
+
+test('B3 WIRING: both watchdog call sites read the measurement, and no presence check survives', () => {
+  // Source-text arm. It cannot prove the mechanism is REACHED (runMuxRunnerMain is not
+  // exported and the call sites sit deep inside the async main loop), so the behavioural
+  // rows above are the real oracle. This only pins that neither copy of the old
+  // expression came back and that both sites route through the single reader.
+  assert.equal(
+    (src.match(/existsSync\(path\.join\(sessionDir, 'rate_limit_wait\.json'\)\)/g) || []).length,
+    0,
+    'neither watchdog may classify on rate_limit_wait.json presence',
+  );
+  assert.equal(
+    (src.match(/rateLimitWaiting: rateLimitParkStillLive\(sessionDir\),/g) || []).length,
+    2,
+    'both the idle-stall and CPU-liveness watchdogs must take rateLimitWaiting from the measurement',
+  );
 });

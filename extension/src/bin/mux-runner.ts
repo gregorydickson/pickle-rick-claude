@@ -8927,8 +8927,11 @@ export const PICKLE_INCOMPLETE_SENTINEL = 'pickle_incomplete.json';
  * Done — Todo/In-Progress/Failed/Skipped all count), write the
  * `pickle_incomplete.json` sentinel into SESSION_ROOT and emit the
  * `pickle_incomplete` activity event. When all tickets are Done (or none exist),
- * write NO sentinel. Returns true iff the sentinel was written. Fully
- * best-effort: never throws (a signal handler must always reach process.exit).
+ * write NO sentinel AND clear a sentinel an earlier teardown left behind (B4) — the
+ * measurement that decides whether to write is the same one that decides whether the
+ * recorded conclusion still holds, so it drives the artifact in both directions.
+ * Returns true iff the sentinel was written. Fully best-effort: never throws (a signal
+ * handler must always reach process.exit).
  */
 export function writePickleIncompleteSentinelIfRemaining(
   sessionDir: string,
@@ -8940,9 +8943,18 @@ export function writePickleIncompleteSentinelIfRemaining(
     const remaining = tickets.filter(
       t => (t.status || '').toLowerCase().replace(/["']/g, '').trim() !== 'done',
     );
-    if (tickets.length === 0 || remaining.length === 0) return false;
-    const ts = new Date().toISOString();
     const sentinelPath = path.join(sessionDir, PICKLE_INCOMPLETE_SENTINEL);
+    if (tickets.length === 0 || remaining.length === 0) {
+      // B4: the same `remaining` measurement drives the artifact in BOTH directions. A
+      // sentinel an earlier teardown wrote records "tickets remained"; we have just
+      // measured that none do, so leaving it would let a stale artifact keep asserting a
+      // conclusion its own producer no longer holds. Removing it here is subtraction, not
+      // a second ledger: no new state, no new field, and the return contract is unchanged
+      // (true iff a sentinel was WRITTEN).
+      try { fs.unlinkSync(sentinelPath); } catch { /* not present — nothing to reconcile */ }
+      return false;
+    }
+    const ts = new Date().toISOString();
     try {
       fs.writeFileSync(sentinelPath, JSON.stringify({
         reason: 'signal_teardown',
@@ -12815,6 +12827,41 @@ function bootstrapSessionResources(opts: {
 }
 
 /**
+ * B3: is the rate-limit park recorded by `rate_limit_wait.json` STILL RUNNING?
+ *
+ * The watchdogs need a legitimate-wait signal, and they used to take it from
+ * `fs.existsSync` on this file — twice, in two copies of the same expression. That is a
+ * status artifact classifying a conclusion nothing re-measures: the file outlives the park
+ * it describes whenever a clear is skipped (`microverse-runner.ts` clears only on the
+ * `!ctx.rateLimitExitReason` branch, its metric-park clear is best-effort, and a CANCELLED
+ * mux park returns via `exitRateLimitPark` without ever reaching the unlink in
+ * `foldRateLimitParkOnWake`). A survivor blinded BOTH the idle-stall and CPU-liveness
+ * watchdogs permanently, on presence alone.
+ *
+ * `wait_until` is the discriminator because it is the one field EVERY writer of this file
+ * stamps: `armRateLimitPark`, `restorePersistedRateLimitPark`, and microverse-runner's
+ * `emitMetricParkWait` and `handleRateLimit`.
+ *
+ * Suppression is withdrawn ONLY on a positive measurement that the recorded deadline has
+ * passed. Present-but-unmeasurable (unparseable JSON, missing or unparseable `wait_until`)
+ * keeps the pre-B3 suppressing behaviour deliberately: both callers can escalate to the
+ * terminal `idle_stall_unrecoverable` park, so firing on an input we cannot read would
+ * manufacture a halt path. Absent is the only other way to answer false, and that was
+ * already the answer.
+ */
+export function rateLimitParkStillLive(sessionDir: string, nowMs: number = Date.now()): boolean {
+  const waitPath = path.join(sessionDir, 'rate_limit_wait.json');
+  if (!fs.existsSync(waitPath)) return false;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(waitPath, 'utf-8')) as { wait_until?: unknown };
+    const waitUntilMs = Date.parse(String(parsed.wait_until ?? ''));
+    return !Number.isFinite(waitUntilMs) || waitUntilMs > nowMs;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * B4 (ticket e9bdac75): park survives --resume. If a persisted park-arm exists
  * with a still-future reset_at, RE-ARM the park (re-write rate_limit_wait.json so
  * the watchdogs see in_wait_state and no worker spawns) instead of clearing it.
@@ -13585,8 +13632,7 @@ async function runMuxRunnerMain() {
         nowMs: muxNow(),
         lastProgressMs: lastProgressEpoch,
         thresholdSeconds: idleStallThresholdSeconds,
-        // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-        rateLimitWaiting: fs.existsSync(path.join(sessionDir, 'rate_limit_wait.json')),
+        rateLimitWaiting: rateLimitParkStillLive(sessionDir),
         circuitBreakerExecutable: !cbEnabled || !cbState || canExecute(cbState),
         lastError: state.last_error ?? null,
         // mux state.json carries last_subprocess_error (ErrorRecord|null), the
@@ -13732,8 +13778,7 @@ async function runMuxRunnerMain() {
             windowSeconds,
             cpuFloorSeconds: DEFAULT_CPU_LIVENESS_FLOOR_SECONDS,
             artifactMtimeAdvanced: nowMtimeMs > cpuLivenessAnchorMtimeMs,
-            // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-            rateLimitWaiting: fs.existsSync(path.join(sessionDir, 'rate_limit_wait.json')),
+            rateLimitWaiting: rateLimitParkStillLive(sessionDir),
             circuitBreakerExecutable: !cbEnabled || !cbState || canExecute(cbState),
             lastError: state.last_error ?? null,
             consecutiveSubprocessErrors: state.last_subprocess_error != null ? 1 : 0,
