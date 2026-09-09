@@ -9,8 +9,14 @@
 //   --resume-from-todo   select the lowest runnable Todo, reuse the C5
 //                        ff-reattach primitive (detectAndRecoverHeadRegression)
 //                        to reattach any orphaned commit, re-queue it (Todo).
-//   --salvage <ticket>   call salvageTicket() (commit+Done / archive+Todo /
-//                        ff-reattach / no-op, per the tree+gate).
+//   --salvage <ticket>   call salvageTicket() with its DEFAULT deps: a dirty
+//                        non-terminal tree is archived + reset Todo; a clean or
+//                        already-terminal tree is a no-op. It never commits and
+//                        never moves HEAD — the primitive's commit+Done and
+//                        ff-reattach dispositions need `gate`/`commitScoped`/
+//                        `ffReattach` deps this call does not pass and that no
+//                        caller in the tree supplies. Use --reattach-orphan for
+//                        an orphaned commit.
 //   --reattach-orphan    call detectAndRecoverHeadRegression() (ff-only reattach).
 //   --reset-ticket <id>  archive the diff + reset the ticket to Todo via the
 //                        shared salvageTicket archive+resetTodo disposition.
@@ -293,7 +299,7 @@ function planDescription(subcommand: RecoverSubcommand, ticket: string | null, e
     case 'resume-from-todo':
       return `[plan] would re-queue lowest runnable Todo${ticket ? ` (${ticket})` : ' (none found)'} via ff-reattach, no write performed.${targetNote}`;
     case 'salvage':
-      return `[plan] would salvageTicket(${ticket}) (commit+Done / archive+Todo / ff-reattach / no-op), no write performed.${targetNote}`;
+      return `[plan] would salvageTicket(${ticket}) (dirty non-terminal tree -> archive the diff + reset Todo; clean or already-terminal tree -> no-op; never commits, never moves HEAD), no write performed.${targetNote}`;
     case 'reattach-orphan':
       return `[plan] would ff-reattach an orphaned commit${ticket ? ` for ${ticket}` : ''} via detectAndRecoverHeadRegression, no write performed.${targetNote}`;
     case 'reset-ticket':

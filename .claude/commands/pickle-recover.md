@@ -2,7 +2,7 @@ You are recovering a Pickle Rick session that halted in `recovery_exhausted` —
 
 > **Gate:** every subcommand EXCEPT `--reactivate` refuses to run unless the session's `state.exit_reason` is `recovery_exhausted`. `--reactivate` is the exception: it targets a COMPLETED session (`active:false`, `step:'completed'`), so it is exempt from the `recovery_exhausted` entry-state gate and instead refuses a still-live session (`active:true`). Each real (non-`--plan`) run performs EXACTLY ONE state transition via a shared primitive — never inline git, never a raw `state.json` write — and emits one `operator_recovery_transition` activity event.
 
-Diagnose from the tree before picking: most halts trace to the recovery/salvage machinery, not the worker — `git fsck` for dangling commits and check ticket artifact mtimes first. Real work found (orphaned commit, dirty-but-green tree) wants `--reattach-orphan`/`--salvage`; `--reset-ticket` archives-then-requeues and is the last resort.
+Diagnose from the tree before picking: most halts trace to the recovery/salvage machinery, not the worker — `git fsck` for dangling commits and check ticket artifact mtimes first. An orphaned commit wants `--reattach-orphan`, the only subcommand that moves HEAD. A dirty tree wants `--salvage`, which archives the diff to a patch and re-queues the ticket — it never commits the work, green or not — and `--reset-ticket` does the same for a clean tree or an already-terminal ticket that `--salvage` declines.
 
 Pick the subcommand for the situation, then run the recover script from the session's working directory:
 
@@ -11,7 +11,7 @@ Pick the subcommand for the situation, then run the recover script from the sess
 node "$HOME/.claude/pickle-rick/extension/bin/pickle-recover.js" --resume-from-todo
 ```
 
-**Salvage one ticket** (commit+Done / archive+Todo / ff-reattach / no-op, chosen by the working tree + gate):
+**Salvage one ticket** (a dirty non-terminal tree is archived to a patch and the ticket reset to Todo; a clean or already-terminal tree is a no-op — it never commits):
 ```bash
 node "$HOME/.claude/pickle-rick/extension/bin/pickle-recover.js" --salvage <ticket>
 ```

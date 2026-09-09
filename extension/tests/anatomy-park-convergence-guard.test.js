@@ -33,7 +33,6 @@ import { resolveApncMaxPassesWithoutClean } from '../bin/mux-runner.js';
 import {
     isConverged,
     readMicroverseState,
-    recordIteration,
     writeMicroverseState,
 } from '../services/microverse-state.js';
 import { MICROVERSE_FATAL_REASONS } from '../types/index.js';
@@ -254,18 +253,26 @@ test('AC-APNC-3: a holding/lowering pass is unaffected — no breadcrumb, return
 });
 
 // ---------------------------------------------------------------------------
-// AP-EXT-ITER41-03: an anatomy-park worker-mode session with no `key_metric`
+// AP-EXT-ITER42-03: an anatomy-park worker-mode session with no `key_metric` is
+// ADMITTED and never FILLED IN.
 //
-// `MicroverseSessionState.key_metric` is declared REQUIRED, but the parser deliberately
-// admits a state without one for this mode and returns it through an `as unknown as` cast,
-// so tsc saw none of the ~20 bare `state.key_metric.<field>` reads downstream. MEASURED on
-// the parser's own output before the fix: `isConverged` threw `reading 'direction'` and
-// `recordIteration` threw `reading 'tolerance'`.
+// `MicroverseSessionState.key_metric` is declared required, and this parser deliberately
+// admits a state without one for the single mode that decides convergence from
+// `anatomy-park.json` rather than from a measurement. A previous pass closed that type lie
+// by synthesizing a metric here. The synthesized object is returned to the caller, so the
+// next `writeMicroverseState` PERSISTS it: after one iteration the session on disk is no
+// longer a key_metric-less session, and every later iteration exercises the ordinary
+// metric-bearing path instead of the absent-metric path. That silently voided the coverage
+// `tests/integration/anatomy-park-microverse-runner-no-key-metric.test.js` exists to give,
+// and its fixture-integrity assertion caught it as a red integration tier.
 //
-// Those two are the pin because they are the ones that were measured to throw. The cases
-// below drive the REAL read path — a session directory on disk, through
-// `readMicroverseState` — not a hand-built object, because the defect lived in what the
-// parser handed back, not in what a caller could construct.
+// The absence is safe by construction, not by luck: the runner's own audit in that same
+// integration file forbids a bare `mvState.key_metric.<field>` read, and `isConverged`
+// reaches `direction` only behind a `convergence_target`, which this mode never sets.
+//
+// These cases drive the REAL read path — a session directory on disk, through
+// `readMicroverseState` — because the property is about what the parser HANDS BACK and what
+// a round trip then writes, neither of which a hand-built object can show.
 // ---------------------------------------------------------------------------
 
 function makeWorkerModeSession(overrides = {}) {
@@ -293,71 +300,58 @@ function makeWorkerModeSession(overrides = {}) {
     return dir;
 }
 
-test('AP-EXT-ITER41-03: a key_metric-less anatomy-park worker state parses into a fully-populated metric', () => {
+test('AP-EXT-ITER42-03: a key_metric-less anatomy-park worker state is admitted, not rejected', () => {
     const state = readMicroverseState(makeWorkerModeSession());
 
-    assert.notEqual(state, null, 'the parser must still admit this state, not reject it');
-    // Every field `assertMicroverseMetricShape` requires must be present: a partial fill would
-    // move the crash one property over instead of removing it.
-    assert.deepEqual(state.key_metric, {
-        description: 'Worker-managed convergence',
-        validation: '',
-        type: 'none',
-        timeout_seconds: 0,
-        tolerance: 0,
-        direction: 'higher',
-    });
+    assert.notEqual(state, null, 'the parser must admit this state');
+    assert.equal(
+        Object.hasOwn(state, 'key_metric'),
+        false,
+        'the parser must hand the absence back, never a synthesized metric',
+    );
 });
 
-test('AP-EXT-ITER41-03: isConverged reads direction off that state instead of throwing', () => {
-    const state = readMicroverseState(makeWorkerModeSession());
-    state.convergence_target = 0;
-
-    // Pre-fix this threw `Cannot read properties of undefined (reading 'direction')` — a message
-    // the pipeline-runner anatomy-phase skip does NOT match, so the phase halted the pipeline.
-    assert.equal(isConverged(state), 'target');
-});
-
-test('AP-EXT-ITER41-03: recordIteration reads tolerance off that state instead of throwing', () => {
-    const state = readMicroverseState(makeWorkerModeSession());
-    const entry = {
-        iteration: 1, score: 0, action: 'accept', description: 'worker pass', pre_iteration_sha: '',
-    };
-
-    // Pre-fix this threw `Cannot read properties of undefined (reading 'tolerance')`.
-    const next = recordIteration(state, entry);
-
-    assert.equal(next.convergence.history.length, 1);
-    assert.equal(next.convergence.history[0].classification, 'held');
-});
-
-test('AP-EXT-ITER41-03: each read gets its own metric object, so one session cannot mutate another', () => {
+test('AP-EXT-ITER42-03: a read/write round trip does not add key_metric to the file on disk', () => {
     const dir = makeWorkerModeSession();
-    const first = readMicroverseState(dir);
-    const second = readMicroverseState(dir);
 
-    first.key_metric.tolerance = 99;
-
-    assert.equal(second.key_metric.tolerance, 0, 'the synthesized metric must not be a shared literal');
-});
-
-test('AP-EXT-ITER41-03: the synthesized metric survives a write/read round trip', () => {
-    const dir = makeWorkerModeSession();
     writeMicroverseState(dir, readMicroverseState(dir));
 
-    // The fill is persisted, so it must satisfy the same shape assertion on the way back in.
-    assert.equal(readMicroverseState(dir).key_metric.type, 'none');
+    // The property the out-of-fence integration fixture depends on: after the runner has read
+    // and rewritten the session, it is still a key_metric-less session, so iteration 2 and
+    // iteration 3 keep exercising the absent-metric path. A fill here reds that file instead.
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'microverse.json'), 'utf-8'));
+    assert.equal(Object.hasOwn(onDisk, 'key_metric'), false, 'the persisted session must stay metric-less');
 });
 
-test('AP-EXT-ITER41-03: a NON-anatomy-park session with no key_metric is still rejected', () => {
+test('AP-EXT-ITER42-03: isConverged does not reach key_metric on the worker path', () => {
+    const state = readMicroverseState(makeWorkerModeSession());
+
+    // `direction` sits behind a `convergence_target` guard and worker mode never sets one, so
+    // the absent metric is unreachable rather than merely tolerated. Asserting the RETURN
+    // value, not just the absence of a throw: a guard that returned early for the wrong reason
+    // would also not throw.
+    assert.equal(state.convergence_target, undefined, 'worker mode sets no convergence target');
+    assert.equal(isConverged(state), null);
+});
+
+test('AP-EXT-ITER42-03: a stalled worker state still converges on the stall term alone', () => {
+    const dir = makeWorkerModeSession({ convergence: { stall_limit: 2, stall_counter: 2, history: [] } });
+    const state = readMicroverseState(dir);
+
+    // Non-vacuity control for the case above: isConverged has a reachable non-null answer on a
+    // metric-less state, so `null` there is a verdict rather than a function that always
+    // declines. `stall_counter` is read before any key_metric term.
+    assert.equal(isConverged(state), 'stall');
+});
+
+test('AP-EXT-ITER42-03: a NON-anatomy-park session with no key_metric is still rejected', () => {
     const dir = makeWorkerModeSession();
     fs.writeFileSync(
         path.join(dir, 'state.json'),
         JSON.stringify({ command_template: 'szechuan-sauce.md', session_dir: dir }),
     );
 
-    // Negative control: the fill is scoped to the one mode that declares no metric. Without
-    // this, "key_metric is required for microverse mode" would have become unreachable and
-    // every mode would silently converge against a synthesized zero-tolerance metric.
-    assert.equal(readMicroverseState(dir), null, 'a metric-mode session must not be filled in');
+    // The admission is scoped to the one mode that declares no metric; every other mode must
+    // still fail "key_metric is required for microverse mode".
+    assert.equal(readMicroverseState(dir), null, 'a metric-mode session must not be admitted');
 });

@@ -296,3 +296,71 @@ test('AP-EXT-ITER38-04: --salvage is UNCHANGED — the override belongs to --res
     assert.equal(result.transition?.disposition, 'no-op', '--salvage still declines a clean tree');
     assert.equal(fx.readStatus(), 'Failed', '--salvage leaves the ticket alone');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER42-02 — `--salvage` advertised two dispositions it cannot reach.
+//
+// `executeTransition`'s salvage arm calls `deps.salvage(input)` with NO second
+// argument and a literal `completionCommitSha: null`, so every dep that DECIDES
+// a disposition stays at salvage-ticket's inert default: `gate` returns
+// 'failing', `commitScoped` returns {committed:false}, `ffReattach` returns
+// {recovered:false} and `backfillDone` returns {done:false}. A census of `src/`
+// finds no provider for `ffReattach` or `backfillDone` anywhere, and no caller
+// passes a non-null `completionCommitSha`. So `committed-done` and
+// `ff-reattached` are unreachable from this command — yet the header comment,
+// the `--plan` text, the operator command doc and the README all named them as
+// outcomes "chosen by the working tree + gate", and the command doc told the
+// operator a dirty-but-green tree "wants --salvage". It gets the same
+// archive-then-requeue the same doc calls `--reset-ticket`'s last resort.
+//
+// These cases drive the REAL `runRecover` -> REAL `salvageTicket` over a REAL
+// git repo, so they observe the shipped disposition rather than a stub's.
+const SALVAGE_MATRIX = [
+    { status: 'In Progress', dirty: true },
+    { status: 'Failed', dirty: true },
+    { status: 'In Progress', dirty: false },
+    { status: 'Done', dirty: true },
+];
+
+test('AP-EXT-ITER42-02: --salvage never commits — a dirty green tree is archived + re-queued', () => {
+    const fx = makeRecoverFixture('In Progress', true);
+    const headBefore = gitIn(fx.repo, ['rev-parse', 'HEAD']).trim();
+
+    const result = runRecover({ subcommand: 'salvage', ticketArg: RESET_TICKET_ID, plan: false }, fx.repo, fx.deps);
+
+    assert.equal(result.transition?.disposition, 'archived-todo');
+    assert.equal(fx.readStatus(), 'Todo', 'the ticket is re-queued, never flipped Done');
+    assert.equal(fx.archivedPatches().length, 1, 'the diff is archived, never committed');
+    assert.equal(gitIn(fx.repo, ['rev-parse', 'HEAD']).trim(), headBefore, 'HEAD never moves — commit+Done is unreachable');
+});
+
+test('AP-EXT-ITER42-02: the reachable disposition set is a strict subset of the primitive\'s', () => {
+    // Corpus control: derive the disposition universe from the shipped primitive
+    // instead of restating it, so a disposition added later cannot pass unseen.
+    const primitive = fsSync.readFileSync(new URL('../lib/salvage-ticket.js', import.meta.url), 'utf-8');
+    const universe = new Set([...primitive.matchAll(/disposition:\s*'([a-z-]+)'/g)].map((m) => m[1]));
+    assert.ok(universe.size >= 4, `expected >=4 dispositions in the primitive, saw ${universe.size}`);
+
+    const observed = new Set(SALVAGE_MATRIX.map(({ status, dirty }) => {
+        const fx = makeRecoverFixture(status, dirty);
+        return runRecover({ subcommand: 'salvage', ticketArg: RESET_TICKET_ID, plan: false }, fx.repo, fx.deps)
+            .transition?.disposition;
+    }));
+
+    assert.deepEqual([...observed].sort(), ['archived-todo', 'no-op'], '--salvage reaches exactly these two');
+    for (const unreachable of ['committed-done', 'ff-reattached']) {
+        assert.ok(universe.has(unreachable), `${unreachable} must still exist in the primitive`);
+        assert.ok(!observed.has(unreachable), `${unreachable} is unreachable from --salvage`);
+    }
+});
+
+test('AP-EXT-ITER42-02: the --plan text promises no transition --salvage cannot perform', () => {
+    const fx = makeRecoverFixture('In Progress', true);
+
+    const result = runRecover({ subcommand: 'salvage', ticketArg: RESET_TICKET_ID, plan: true }, fx.repo, fx.deps);
+
+    assert.equal(result.transition, null, '--plan performs no transition');
+    const plan = fx.logs.join('\n');
+    assert.match(plan, /archive/i, 'the plan names the disposition the command actually reaches');
+    assert.doesNotMatch(plan, /commit\+Done|ff-reattach/i, 'the plan must not advertise an unreachable disposition');
+});
