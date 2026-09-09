@@ -3510,6 +3510,82 @@ test('AP-EXT-ITER243-01: an inline mention of the heading text does not open the
     }
 });
 
+/**
+ * AP-EXT-ITER253-01: a ticket whose acceptance criteria are plain bullets
+ * carries ZERO checkboxes, so the scan has nothing to judge. That is not the
+ * same fact as a checkbox list left unchecked, and it must not take the
+ * terminal disposition. MEASURED over the live ticket corpus: 77 of 77
+ * `rick_ticket_*.md` files across six sessions contain no `- [ ]`/`- [x]`
+ * line at all, so pre-fix this arm could only ever abandon a ticket here.
+ * The fixture ships a real trailered commit, so the Done path is otherwise
+ * open — the criteria shape is the only variable.
+ */
+test('AP-EXT-ITER253-01: a criteria list with no checkboxes parks the ticket instead of flipping it Skipped', () => {
+    const tmpDir = makeTmpRoot();
+    try {
+        initGitRepo(tmpDir);
+        const startCommit = gitHead(tmpDir);
+        const sessionDir = path.join(tmpDir, 'session');
+        const ticketId = 'auto-ac-plain-bullet-ticket';
+        writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'In Progress', [
+            '- **AC-1** the shipped behaviour is delivered',
+            '- **AC-2** a regression test covers it',
+        ]);
+        fs.writeFileSync(path.join(tmpDir, 'work.txt'), 'ticket work');
+        spawnSync('git', ['add', 'work.txt'], { cwd: tmpDir });
+        spawnSync('git', ['commit', '-m', 'complete', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'], { cwd: tmpDir });
+
+        const verdict = applyAutoTicketCompletionValidation({
+            sessionDir,
+            ticketId,
+            workingDir: tmpDir,
+            startCommit,
+            iteration: 1,
+        });
+
+        assert.deepEqual(verdict, { action: 'leave', reason: 'acceptance_criteria_absent' });
+        // The on-disk status is the harm: `skip` runs markTicketAutoSkipped,
+        // and Skipped is terminal, so the shipped commit above is abandoned.
+        assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'In Progress');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+/**
+ * AP-EXT-ITER253-01 control: the `unchecked` arm keeps the terminal skip and
+ * its on-disk Skipped stamp, so a mutant that reports `absent` for every
+ * ticket — or drops the checkbox gate outright — cannot satisfy the pair.
+ */
+test('AP-EXT-ITER253-01 control: an unchecked worker checkbox still flips the ticket Skipped', () => {
+    const tmpDir = makeTmpRoot();
+    try {
+        initGitRepo(tmpDir);
+        const startCommit = gitHead(tmpDir);
+        const sessionDir = path.join(tmpDir, 'session');
+        const ticketId = 'auto-ac-unchecked-control-ticket';
+        writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'In Progress', [
+            '- [ ] [worker] the shipped behaviour is delivered',
+        ]);
+        fs.writeFileSync(path.join(tmpDir, 'work.txt'), 'ticket work');
+        spawnSync('git', ['add', 'work.txt'], { cwd: tmpDir });
+        spawnSync('git', ['commit', '-m', 'complete', '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign'], { cwd: tmpDir });
+
+        const verdict = applyAutoTicketCompletionValidation({
+            sessionDir,
+            ticketId,
+            workingDir: tmpDir,
+            startCommit,
+            iteration: 1,
+        });
+
+        assert.deepEqual(verdict, { action: 'skip', reason: 'acceptance_criteria_not_checked' });
+        assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Skipped');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
 test('auto-mark-done.activity-event: skip path emits ticket_auto_skip_no_evidence event', () => {
     const tmpDir = makeTmpRoot();
     const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-auto-mark-data-')));

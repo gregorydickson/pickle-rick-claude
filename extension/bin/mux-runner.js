@@ -2623,13 +2623,15 @@ function acceptanceCriteriaCheckboxes(content) {
     }
     return checkboxes;
 }
-function hasCheckedAcceptanceCriteria(content) {
+function acceptanceCriteriaState(content) {
     const boxes = acceptanceCriteriaCheckboxes(content);
     if (boxes.length === 0)
-        return false;
+        return 'absent';
     return boxes
         .filter((box) => box.owner !== 'manager')
-        .every((box) => box.checked);
+        .every((box) => box.checked)
+        ? 'checked'
+        : 'unchecked';
 }
 function readHeadCommit(workingDir) {
     try {
@@ -3126,7 +3128,16 @@ fallbackDir) {
     catch {
         return { action: 'leave', reason: 'ticket_file_unreadable' };
     }
-    if (!hasCheckedAcceptanceCriteria(content)) {
+    // AP-EXT-ITER253-01: `absent` joins the three `leave` reasons above — the
+    // family for "this reader cannot judge this ticket" — instead of the terminal
+    // `skip`. A ticket whose criteria are plain bullets rather than checkboxes is
+    // parked for the next iteration, never flipped to Skipped with a reason that
+    // asserts a measurement the scan did not make.
+    const criteria = acceptanceCriteriaState(content);
+    if (criteria === 'absent') {
+        return { action: 'leave', reason: 'acceptance_criteria_absent' };
+    }
+    if (criteria === 'unchecked') {
         return { action: 'skip', reason: 'acceptance_criteria_not_checked' };
     }
     // B-1SEAM WS-1: the ONE completion predicate replaces the bare readEvidence
