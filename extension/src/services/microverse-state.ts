@@ -459,18 +459,33 @@ function hasApproachExhaustion(mvState: MicroverseSessionState): boolean {
     mvState.convergence.stall_counter >= mvState.convergence.stall_limit / 2;
 }
 
+/**
+ * AP-EXT-ITER250-01: `classification` is the verdict the caller ALREADY recorded for this
+ * iteration — the same contract `recordIteration` above carries, and for the same reason:
+ * "avoiding a redundant (and potentially inconsistent) re-classification".
+ *
+ * The fall-through re-derivation is correct ONLY for a state whose history does not yet hold
+ * the iteration being classified. `microverse-runner.ts` calls `recordIteration` FIRST, which
+ * pushes the entry with `action: 'accept'` for every non-regressed verdict — so by the time
+ * this runs, `getLastAcceptedScore` returns the iteration's OWN score and the re-derivation
+ * compares a score against itself. It answers 'held' on every accepted iteration and can never
+ * answer 'improved', which is precisely the value the early return exists to catch. It is also
+ * ledger-blind, so on a reverted iteration it can answer 'improved' where the recorded verdict
+ * was 'regressed'.
+ */
 export function classifyFailure(
   mvState: MicroverseSessionState,
   metricResult: { raw: string; score: number } | null,
   preIterSha: string,
   postIterSha: string,
+  classification?: 'improved' | 'held' | 'regressed',
 ): FailureClass | null {
   // 1. tool_failure — metric measurement itself failed
   if (metricResult === null) return 'tool_failure';
 
   // Check if this iteration improved
   const history = mvState.convergence?.history ?? [];
-  const classification = compareMetric(
+  classification ??= compareMetric(
     metricResult.score, getLastAcceptedScore(mvState),
     mvState.key_metric.tolerance, mvState.key_metric.direction,
   );

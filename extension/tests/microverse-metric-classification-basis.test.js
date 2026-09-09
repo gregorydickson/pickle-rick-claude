@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  classifyFailure,
   compareMetric,
   compareMetricWithBasis,
   createMicroverseState,
@@ -134,4 +135,85 @@ test('AC-V2: 36*36*36*33*33 resets the stall counter on the genuine improvement 
     Math.max(...stallCounterAfterStep) < state.convergence.stall_limit,
     'the sequence must never approach the stall_limit that would park the phase',
   );
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER250-01 — the failure classifier must read the verdict that was RECORDED,
+// never re-derive one against a history that already holds this iteration.
+//
+// `measureAndClassifyIteration` calls `recordIteration` BEFORE `classifyFailure`, and
+// `recordIteration` pushes the entry with `action: 'accept'` for every non-regressed
+// verdict. So the re-derivation's `getLastAcceptedScore` returns the iteration's OWN
+// score: it answers 'held' on every accepted iteration and can never answer 'improved',
+// which is the one value `classifyFailure`'s early return exists to catch. It is also
+// ledger-blind, while the recorded verdict may have come from the set-ops basis.
+//
+// Both cases below drive the runner's real order. The two 4-argument controls keep the
+// re-derivation fall-through alive for callers that classify a state which does NOT yet
+// contain the iteration.
+// ---------------------------------------------------------------------------
+
+const OSC_SHA_PRE = 'a'.repeat(40);
+const OSC_SHA_POST = 'b'.repeat(40);
+
+/**
+ * The shared `historyEntry` helper omits `classification` because `recordIteration` stamps
+ * it. These cases seed PRIOR history directly, and the streak predicates read that field,
+ * so the seeds have to carry it themselves.
+ */
+function classifiedEntry(iteration, score, classification) {
+  return { ...historyEntry(iteration, score, classification), classification };
+}
+
+function stateWithHistory(history) {
+  const state = createMicroverseState(BASE_OPTS);
+  return { ...state, convergence: { ...state.convergence, history } };
+}
+
+/** Runs the runner's order: build entry -> recordIteration -> classifyFailure. */
+function classifyAfterRecording(priorHistory, score, classification, extraArgs) {
+  const entry = historyEntry(99, score, classification);
+  const state = recordIteration(stateWithHistory([...priorHistory]), entry, classification);
+  return classifyFailure(
+    state,
+    { raw: String(score), score },
+    OSC_SHA_PRE,
+    OSC_SHA_POST,
+    ...(extraArgs ? [entry.classification] : []),
+  );
+}
+
+test('AP-EXT-ITER250-01: an improving iteration in an oscillating history is not a failure', () => {
+  const prior = [classifiedEntry(1, 20, 'improved'), classifiedEntry(2, 30, 'regressed')];
+
+  // The recorded verdict is 'improved' (30 -> 5, direction lower), so no failure is due.
+  assert.equal(classifyAfterRecording(prior, 5, 'improved', true), null);
+
+  // Negative control: the re-derivation this replaces reads its own score back as 'held',
+  // falls past the early return and reports the improvement as metric_unstable.
+  assert.equal(classifyAfterRecording(prior, 5, 'improved', false), 'metric_unstable');
+});
+
+test('AP-EXT-ITER250-01: a recorded regression is classified even when the numeric score improved', () => {
+  // The set-ops ledger basis can classify 'regressed' on a pass whose numeric score fell
+  // (direction 'lower'). The runner has already rolled back; the failure must be recorded.
+  const prior = [classifiedEntry(1, 20, 'held'), classifiedEntry(2, 20, 'held')];
+
+  assert.equal(classifyAfterRecording(prior, 5, 'regressed', true), 'regression');
+
+  // Negative control: ledger-blind re-derivation reads 5 vs 20 as an improvement and
+  // returns null, so the rollback the runner performed is never recorded as a failure.
+  assert.equal(classifyAfterRecording(prior, 5, 'regressed', false), null);
+});
+
+test('AP-EXT-ITER250-01: the recorded verdict never manufactures a failure a held pass would not earn', () => {
+  const prior = [classifiedEntry(1, 20, 'held'), classifiedEntry(2, 20, 'held')];
+
+  // Three consecutive 'held' entries are a genuine no-progress streak under both arities.
+  assert.equal(classifyAfterRecording(prior, 20, 'held', true), 'no_progress');
+  assert.equal(classifyAfterRecording(prior, 20, 'held', false), 'no_progress');
+
+  // A measurement failure still short-circuits ahead of any classification.
+  const state = stateWithHistory(prior);
+  assert.equal(classifyFailure(state, null, OSC_SHA_PRE, OSC_SHA_POST, 'improved'), 'tool_failure');
 });

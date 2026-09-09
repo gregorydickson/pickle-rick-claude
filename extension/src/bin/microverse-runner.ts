@@ -4603,7 +4603,9 @@ function recordFailureClassification(
   ctx: RunContext,
 ): void {
   try {
-    const failureClass = classifyFailure(state, metricResult, ctx.preIterSha ?? '', ctx.postIterSha ?? '');
+    // AP-EXT-ITER250-01: hand over the verdict `recordIteration` just recorded on `entry`.
+    // Re-deriving it here reads a history that already contains this iteration.
+    const failureClass = classifyFailure(state, metricResult, ctx.preIterSha ?? '', ctx.postIterSha ?? '', entry.classification);
     if (!failureClass) return;
     const description = entry?.description ?? '';
     state.failure_history.push({
