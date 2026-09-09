@@ -21,6 +21,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { applyAllTicketsDoneCompletion } from '../bin/mux-runner.js';
+import { LATEST_SCHEMA_VERSION } from '../types/index.js';
 import { detectCompletionTokens, evaluateManagerIdleBackoff } from '../hooks/handlers/stop-hook.js';
 
 /** The keys the promise carries, and the only keys it may ever carry. */
@@ -416,4 +417,135 @@ test('AP-EXT-ITER246-01: a state.json whose mtime moved BACKWARD releases the id
   assert.notEqual(decision, null, 'gate stopped claiming a real idle wait turn');
   assert.equal(decision.decision, 'approve', 'a state.json the gate cannot match was treated as unchanged');
   assert.match(decision.logMessage, /state_mtime/);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER247-01: only the turn that ENGAGED the backoff may re-baseline it.
+//
+// `engageIdleBackoffDecision` records `state_mtime_ms` BEFORE `finalizeHookDecision` appends the
+// `manager_idle_backoff_engaged` entry to state.json, so the hook's own write advances the very
+// mtime it just baselined against. `refreshIdleBackoffStateBaseline` re-reads it afterwards to
+// absorb that self-bump, and gates on the entry NAME so it absorbs nothing else.
+//
+// Both halves were driven by nothing. Measured over the 12 fast-tier stop-hook reachers: making
+// the whole function inert reds 3 (all in the out-of-fence sibling), but dropping the
+// `manager_idle_backoff_engaged` gate alone leaves all 278 green while a WORKER turn — which
+// reaches `finalizeHookDecision` with no entries at all, because the gate returned null before it
+// could clear the snapshot — silently re-baselines the manager's backoff onto external progress.
+// Drive measured end to end on the shipped hook: with the gate dropped, a state.json rewritten
+// while the backoff was engaged no longer releases and the manager stays suppressed for the whole
+// fallback window. That is the direction `idleBackoffStateBaselineChanged` calls unsafe.
+//
+// Asserted through the SHIPPED hook as a subprocess, because the re-baseline hangs off
+// `finalizeHookDecision` and is unreachable from the `evaluateManagerIdleBackoff` seam the pins
+// above use.
+
+/** A session the shipped stop-hook accepts, pre-migrated so only the hook's own writes move mtime. */
+function idleBackoffHookFixture() {
+  const tmp = tmpDir('idle-rebaseline-');
+  fs.mkdirSync(path.join(tmp, 'extension', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'extension', 'bin', 'log-watcher.js'), '');
+  fs.writeFileSync(path.join(tmp, 'pickle_settings.json'),
+    JSON.stringify({ manager_idle_backoff_fallback_ms: 60_000 }));
+
+  const sessionDir = path.join(tmp, 'session');
+  fs.mkdirSync(path.join(sessionDir, 'T1'), { recursive: true });
+  fs.writeFileSync(path.join(sessionDir, 'T1', `worker_session_${process.pid}.log`), 'alive\n');
+
+  const stateFile = path.join(sessionDir, 'state.json');
+  fs.writeFileSync(stateFile, JSON.stringify({
+    schema_version: LATEST_SCHEMA_VERSION,
+    active: true,
+    working_dir: process.cwd(),
+    step: 'research',
+    iteration: 1,
+    max_iterations: 50,
+    max_time_minutes: 60,
+    worker_timeout_seconds: 1200,
+    start_time_epoch: Math.floor(Date.now() / 1000) - 30,
+    completion_promise: null,
+    original_prompt: 'idle backoff re-baseline pin',
+    current_ticket: 'T1',
+    history: [],
+    started_at: new Date().toISOString(),
+    session_dir: sessionDir,
+    tmux_mode: false,
+    activity: [],
+  }, null, 2));
+  return { tmp, sessionDir, stateFile };
+}
+
+/** One Stop-hook turn against the fixture, as the manager unless a role is named. */
+function idleBackoffTurn(fx, response, role) {
+  const env = {
+    ...process.env,
+    EXTENSION_DIR: fx.tmp,
+    PICKLE_STATE_FILE: fx.stateFile,
+    FORCE_COLOR: '0',
+  };
+  if (role) env.PICKLE_ROLE = role;
+  else delete env.PICKLE_ROLE;
+  const stdout = execFileSync(process.execPath, [SHIPPED_STOP_HOOK], {
+    input: JSON.stringify({ last_assistant_message: response }),
+    encoding: 'utf8',
+    timeout: 30000,
+    env,
+  });
+  return JSON.parse(stdout.trim());
+}
+
+const WAIT_TURN = 'Waiting for Monitor signal.';
+
+/** Three wait turns is the engage threshold; the third turn writes the engaged snapshot. */
+function engageThroughShippedHook(fx) {
+  idleBackoffTurn(fx, WAIT_TURN);
+  idleBackoffTurn(fx, WAIT_TURN);
+  return idleBackoffTurn(fx, WAIT_TURN);
+}
+
+test('AP-EXT-ITER247-01: the engage turn absorbs its OWN state.json write', () => {
+  const fx = idleBackoffHookFixture();
+  try {
+    assert.equal(engageThroughShippedHook(fx).decision, 'block', 'backoff never engaged');
+
+    // Nothing but the hook has touched state.json. Without the re-baseline the engaged snapshot
+    // still carries the mtime from BEFORE its own `manager_idle_backoff_engaged` entry landed,
+    // so the backoff releases against its own write and suppresses nothing.
+    const next = idleBackoffTurn(fx, WAIT_TURN);
+    assert.equal(
+      next.decision,
+      'block',
+      'the backoff released against the activity entry it wrote itself — it never survives one turn',
+    );
+  } finally {
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER247-01: a turn that did not engage the backoff does not re-baseline it', () => {
+  const fx = idleBackoffHookFixture();
+  try {
+    assert.equal(engageThroughShippedHook(fx).decision, 'block', 'backoff never engaged');
+
+    // External progress: the runner rewrites state.json while the manager is suppressed.
+    const future = new Date(Date.now() + 5_000);
+    fs.utimesSync(fx.stateFile, future, future);
+
+    // A WORKER turn on the same session reaches `finalizeHookDecision` with no activity entries —
+    // the gate returns null for a non-manager role before it can clear the snapshot, so a
+    // re-baseline keyed on anything looser than the entry NAME fires here.
+    assert.equal(idleBackoffTurn(fx, 'still poking at it', 'worker').decision, 'approve');
+
+    const released = idleBackoffTurn(fx, WAIT_TURN);
+    assert.equal(
+      released.decision,
+      'approve',
+      'a worker turn re-baselined the manager backoff onto external progress — the manager stays suppressed for the whole fallback window',
+    );
+    const event = JSON.parse(fs.readFileSync(fx.stateFile, 'utf8')).activity.at(-1);
+    assert.equal(event.event, 'manager_idle_backoff_released');
+    assert.equal(event.release_reason, 'state_mtime');
+  } finally {
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
 });
