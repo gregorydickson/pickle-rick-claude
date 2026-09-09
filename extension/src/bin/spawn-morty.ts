@@ -1584,12 +1584,23 @@ function parseWorkerGateTestFailures(output: string, extensionDir: string): Work
   flushFailure();
   if (failures.length > 0) return failures;
 
-  const fallbackMessage = lines.map(line => line.trim()).find(line => line.length > 0) ?? 'npm run test:fast failed';
-  return [{
-    name: 'npm run test:fast',
-    file: '',
-    message: fallbackMessage,
-  }];
+  // ROOT G2: the tier exited non-zero but produced no parseable `not ok` TAP line —
+  // a pretest-hook crash, a contended run, a wrong cwd, or garbled output ahead of
+  // any test-framework output. This is a MEASUREMENT the producer never took, not a
+  // named failing test, so it must not masquerade as one. `worker_gate_failed`'s
+  // sole consumer (pipeline-runner.ts, ticket 6445c637) keys "measured" on
+  // `failures.length > 0`; fabricating a single entry here (as before) let every
+  // such red satisfy that check — measured on this box's live corpus, EVERY
+  // recorded `worker_gate_failed.failures` entry was this fallback, naming npm's
+  // own script banner line rather than a test. An empty array is the distinct
+  // unmeasured state `buildWorkerGateFailureSummary` (mux-runner.ts) already
+  // renders honestly ("no structured failures recorded") instead of a fabricated
+  // test name. The raw first line is still surfaced to the operator via stderr.
+  const firstLine = lines.map(line => line.trim()).find(line => line.length > 0);
+  console.error(
+    `[spawn-morty] worker gate tier produced no parseable failure (unmeasured)${firstLine ? `: ${firstLine}` : ''}`,
+  );
+  return [];
 }
 
 function parseWorkerGateLintFailures(output: string, extensionDir: string): WorkerGateTestFailure[] {

@@ -193,3 +193,62 @@ test('R-TIERWEDGE FR-B1: the default caps the budget with resolveTierStallThresh
     'the fourth parameter must stay OPTIONAL so production keeps passing three arguments',
   );
 });
+
+// ROOT G2 (03205968): the worker gate verdict payload must NAME its failing tests, and a tier
+// that produced no parseable result must record a DISTINCT state (an empty `failures` array —
+// the shape `worker_gate_failed`'s sole consumer, pipeline-runner.ts's
+// `ticketHasMeasuredRedTestFailure`, already reads as "unmeasured"), never a bare red carrying
+// a fabricated entry. Both cases below assert the SAME `ok: false` disposition so the `failures`
+// array shape is the only variable — proving the two inputs produce genuinely DIFFERENT
+// recorded states, not merely a different verdict.
+
+test('ROOT G2: a real not-ok TAP failure names the failing test', async () => {
+  const tmpDir = makeTmpDir();
+  try {
+    fs.writeFileSync(
+      path.join(tmpDir, 'fake-test.js'),
+      [
+        "process.stdout.write('not ok 1 - fast tier fails\\n');",
+        "process.stdout.write('  ---\\n');",
+        "process.stdout.write(\"  location: 'demo.test.js:12:4'\\n\");",
+        "process.stdout.write(\"  error: 'boom'\\n\");",
+        "process.stdout.write('  ...\\n');",
+        'process.exit(1);',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ scripts: { 'test:fast': 'node fake-test.js' } }),
+    );
+    const result = await runWorkerGateTestCommand('test:fast', tmpDir, 5000, 5000);
+    assert.equal(result.ok, false, 'a genuine TAP failure is red');
+    assert.equal(result.failures.length, 1, 'exactly one parsed failure');
+    assert.equal(result.failures[0].name, 'fast tier fails', 'the failure names the real test');
+    assert.notEqual(result.failures[0].name, 'npm run test:fast', 'not the old generic fallback name');
+    assert.notEqual(result.failures[0].name, '__timeout__', 'not the stall sentinel');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('ROOT G2: a tier that exits red with no parseable TAP output records an empty, distinct failures array', async () => {
+  const tmpDir = makeTmpDir();
+  try {
+    // Mirrors the live-corpus shape measured on this box: a `pretest:fast` hook crashing
+    // before `test:fast`'s own TAP-emitting runner ever starts, so the only output is npm's
+    // own script banner — never a `not ok` line.
+    fs.writeFileSync(
+      path.join(tmpDir, 'fake-test.js'),
+      "process.stdout.write('> pickle-rick-scripts@2.1.0-beta.25 pretest:fast\\n');\nprocess.exit(1);\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ scripts: { 'test:fast': 'node fake-test.js' } }),
+    );
+    const result = await runWorkerGateTestCommand('test:fast', tmpDir, 5000, 5000);
+    assert.equal(result.ok, false, 'a tier producing no parseable result is still red');
+    assert.deepEqual(result.failures, [], 'no fabricated failure — the distinct unmeasured state');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
