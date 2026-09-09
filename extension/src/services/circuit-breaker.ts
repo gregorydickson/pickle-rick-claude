@@ -55,6 +55,7 @@ export interface CircuitTransition {
 
 const CONSTRAINT_DISCOVERY_PATTERN = /\b(constraint|invariant|assumption|requirement|contract|blocked by|discovered)\b/i;
 const CORRECT_COURSE_SUGGESTION = 'Suggested recovery: run /pickle-correct-course "<discovery>"';
+const NO_PROGRESS_REASON_PREFIX = /^No progress in \d+ iterations/;
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -347,6 +348,35 @@ function noProgressReason(count: number, signature: string | null): string {
   return isConstraintDiscoverySignature(signature)
     ? `${base}. ${CORRECT_COURSE_SUGGESTION}`
     : base;
+}
+
+/**
+ * AP-EXT-ITER249-01: annotate a no-progress trip reason with the ticket tier and
+ * budget that produced it, WITHOUT rebuilding the reason.
+ *
+ * The reason's grammar is owned by `noProgressReason` directly above: a count prefix
+ * plus, on a constraint-discovery signature, `CORRECT_COURSE_SUGGESTION`. The
+ * annotator used to live in `mux-runner.ts` and re-derive that grammar with
+ * `/^No progress in (\d+) iterations(?:\..*)?$/`, returning a freshly composed
+ * prefix — so every clause after the count was DISCARDED. The suggestion is the only
+ * actionable recovery instruction the breaker produces, and it was dropped on exactly
+ * the transition that ends the run: the annotated reason is what reaches
+ * `circuit_breaker.json`, the runner log, the `circuit_open` activity event and the
+ * monitor's Circuit field, while the unannotated original survives only in
+ * `history[]`, which nothing reads.
+ *
+ * Splice the annotation in after the prefix and carry the remainder VERBATIM. The
+ * output is prefix + annotation + untouched remainder, so a clause added to
+ * `noProgressReason` later cannot be silently lost here, and the two halves of the
+ * grammar now live in one module instead of one each side of a regex round trip.
+ */
+export function formatCircuitBreakerTripReason(
+  reason: string,
+  budget: { tier: string; budget: number }
+): string {
+  const match = NO_PROGRESS_REASON_PREFIX.exec(reason);
+  if (!match) return reason;
+  return `${match[0]} (tier: ${budget.tier}, budget: ${budget.budget})${reason.slice(match[0].length)}`;
 }
 
 function updateErrorTracking(

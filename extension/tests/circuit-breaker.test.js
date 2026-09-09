@@ -12,6 +12,7 @@ import {
     canExecute,
     detectProgress,
     extractErrorSignature,
+    formatCircuitBreakerTripReason,
     isConstraintDiscoverySignature,
     normalizeErrorSignature,
     recordIterationResult,
@@ -548,6 +549,51 @@ test('recordIterationResult: no-progress constraint discovery opens with correct
     assert.equal(state.state, 'OPEN');
     assert.match(state.reason, /No progress in 3 iterations/);
     assert.match(state.reason, /\/pickle-correct-course "<discovery>"/);
+});
+
+/**
+ * AP-EXT-ITER249-01 — the trip reason is ANNOTATED, not rebuilt.
+ *
+ * The test above pins the PRODUCER: `recordIterationResult` appends the
+ * correct-course suggestion to `state.reason` on a constraint-discovery trip. Nothing
+ * pinned what the runner then does with it. `formatCircuitBreakerTripReason` used to
+ * match `/^No progress in (\d+) iterations(?:\..*)?$/` and return a freshly composed
+ * prefix, so the suggestion was discarded before the reason reached
+ * `circuit_breaker.json`, the runner log, the `circuit_open` activity event and the
+ * monitor's Circuit field — every surface an operator reads at the halt. It survived
+ * only in `history[]`, which no reader displays. A green producer pin over a consumer
+ * that throws the value away is exactly the shape this case closes.
+ */
+test('AP-EXT-ITER249-01: annotating the trip reason keeps the correct-course suggestion', () => {
+    const settings = makeSettings({ noProgressThreshold: 3, halfOpenAfter: 2 });
+    let state = makeFreshState({
+        state: 'HALF_OPEN',
+        consecutive_no_progress: 2,
+        last_error_signature: 'blocked by newly discovered contract constraint',
+    });
+    state = recordIterationResult(state, {
+        hasProgress: false,
+        errorSignature: 'blocked by newly discovered contract constraint',
+    }, 4, settings);
+    assert.equal(state.state, 'OPEN');
+
+    const annotated = formatCircuitBreakerTripReason(state.reason, { tier: 'medium', budget: 3 });
+    assert.match(annotated, /^No progress in 3 iterations \(tier: medium, budget: 3\)/);
+    assert.match(annotated, /\/pickle-correct-course "<discovery>"/);
+});
+
+// Negative controls: the annotation must still land on a bare no-progress reason (so the
+// fix cannot pass by dropping the annotation), and must NOT land on a same-error reason
+// (so it cannot pass by annotating everything).
+test('AP-EXT-ITER249-01: a bare no-progress reason is annotated, a same-error reason is not', () => {
+    assert.equal(
+        formatCircuitBreakerTripReason('No progress in 5 iterations', { tier: 'large', budget: 12 }),
+        'No progress in 5 iterations (tier: large, budget: 12)',
+    );
+    assert.equal(
+        formatCircuitBreakerTripReason('Same error repeated 5 times', { tier: 'medium', budget: 5 }),
+        'Same error repeated 5 times',
+    );
 });
 
 test('recordIterationResult: CLOSED → OPEN on sameErrorThreshold', () => {

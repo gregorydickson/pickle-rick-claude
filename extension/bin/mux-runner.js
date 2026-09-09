@@ -8,7 +8,7 @@ import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/a
 import { PromiseTokens, hasToken, VALID_STEPS, Defaults, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
-import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
+import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, formatCircuitBreakerTripReason, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
 import { buildManagerInvocation, buildJudgeInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js';
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
@@ -7233,12 +7233,6 @@ function settingsWithCircuitBreakerBudget(settings, budget) {
         noProgressThreshold: budget,
         halfOpenAfter: Math.min(settings.halfOpenAfter, Math.max(1, budget - 1)),
     };
-}
-function formatCircuitBreakerTripReason(reason, budget) {
-    const match = /^No progress in (\d+) iterations(?:\..*)?$/.exec(reason);
-    if (!match)
-        return reason;
-    return `No progress in ${match[1]} iterations (tier: ${budget.tier}, budget: ${budget.budget})`;
 }
 function clearCircuitBreakerBudgetCacheOnTicketChange(state, previousTicket) {
     if (previousTicket !== null && previousTicket !== state.current_ticket) {

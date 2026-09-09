@@ -8,7 +8,7 @@ import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/a
 import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type RateLimitProbeVerdict, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
-import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
+import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, formatCircuitBreakerTripReason, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
 import { buildManagerInvocation, buildJudgeInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv, type SpawnInvocation } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js';
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
@@ -8602,12 +8602,6 @@ function settingsWithCircuitBreakerBudget(settings: CircuitBreakerConfig, budget
     noProgressThreshold: budget,
     halfOpenAfter: Math.min(settings.halfOpenAfter, Math.max(1, budget - 1)),
   };
-}
-
-function formatCircuitBreakerTripReason(reason: string, budget: CircuitBreakerBudget): string {
-  const match = /^No progress in (\d+) iterations(?:\..*)?$/.exec(reason);
-  if (!match) return reason;
-  return `No progress in ${match[1]} iterations (tier: ${budget.tier}, budget: ${budget.budget})`;
 }
 
 function clearCircuitBreakerBudgetCacheOnTicketChange(state: State, previousTicket: string | null): void {
