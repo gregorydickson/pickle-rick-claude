@@ -296,6 +296,64 @@ test('AP-EXT-ITER233-01: a token this role may NOT act on does not release the g
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER45-01: every member of the wait-pattern set is driven end to end through the
+// real gate. The set is a literal alternation deciding a live control-flow predicate, and it
+// was fixtured at ONE of its three members: measured by amputating each member from the
+// shipped `hooks/handlers/stop-hook.js`, only `worker still` reddened anything (2 cases, the
+// AP-EXT-ITER233-01 pair above). Dropping either sibling left all 291 cases across the nine
+// fast-tier reachers GREEN while `evaluateManagerIdleBackoff` returned null for that phrasing
+// — no backoff engages, and the manager is re-prompted at full rate while a worker still runs.
+//
+// The phrases below are spelled LITERALLY and are never read off `WAIT_PATTERN_REGEXES`: an
+// expectation taken from the constant under test shrinks with the amputation and stays green
+// over the defect. This is a FLOOR on the set, never a ceiling — a new phrasing is welcome.
+
+/** One member each, phrased the way a manager turn actually reads. */
+const WAIT_TURNS = [
+  // /waiting for monitor signal\.?$/i — anchored at end of the trimmed turn.
+  { member: 'waiting for monitor signal', transcript: 'No worker output this turn. Waiting for monitor signal.' },
+  // /worker still/i — unanchored substring.
+  { member: 'worker still', transcript: 'The worker still has the integration tier running.' },
+  // /continuing to wait/i — unanchored substring.
+  { member: 'continuing to wait', transcript: 'No signal from the worker yet, so I am continuing to wait.' },
+];
+
+for (const { member, transcript } of WAIT_TURNS) {
+  test(`AP-EXT-ITER45-01: a manager turn matching "${member}" is claimed by the idle-backoff gate`, () => {
+    // A fresh session per member, so the wait counter cannot carry across phrasings and each
+    // verdict is attributable to its own member rather than to a neighbour's leftover snapshot.
+    const { stateFile, state } = makeIdleBackoffState();
+
+    // Precondition: this turn carries NO actionable token, so a claim below cannot be
+    // explained by the token classifier declining it.
+    assert.equal(detectCompletionTokens(transcript, state).kind, 'none');
+
+    const decision = evaluateManagerIdleBackoff(state, stateFile, transcript, '');
+    assert.notEqual(
+      decision,
+      null,
+      `wait-pattern member "${member}" is no longer recognized — an idle manager turn falls through the gate, `
+      + 'no backoff engages, and the manager is re-prompted at full rate while the worker runs',
+    );
+    assert.equal(decision.decision, 'block');
+  });
+}
+
+test('AP-EXT-ITER45-01: a manager turn matching NO member is left alone', () => {
+  // Teeth control: without it, a gate widened to claim every turn would pass the loop above
+  // while destroying the distinction the set exists to draw.
+  const { stateFile, state } = makeIdleBackoffState();
+  const substantive = 'Ticket a-1 is done: the fix landed, the tier is green, and I committed it.';
+
+  assert.equal(detectCompletionTokens(substantive, state).kind, 'none');
+  assert.equal(
+    evaluateManagerIdleBackoff(state, stateFile, substantive, ''),
+    null,
+    'the gate claimed a substantive manager turn — the wait matchers no longer discriminate',
+  );
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER245-01: the idle-backoff artifact scanner selects by SUFFIX, never by a
 // lifecycle-phase prefix list.
 //
