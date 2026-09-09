@@ -21,7 +21,7 @@ node "$HOME/.claude/pickle-rick/extension/bin/pickle-recover.js" --salvage <tick
 node "$HOME/.claude/pickle-rick/extension/bin/pickle-recover.js" --reattach-orphan
 ```
 
-**Reset a ticket to Todo** (archives the diff first, then re-queues the ticket):
+**Reset a ticket to Todo** (archives the diff first, then re-queues the ticket). Naming the ticket is the decision: it re-queues on a clean tree and re-queues a terminal `Skipped`/`Done` ticket too, which `--salvage` will not do:
 ```bash
 node "$HOME/.claude/pickle-rick/extension/bin/pickle-recover.js" --reset-ticket <id>
 ```

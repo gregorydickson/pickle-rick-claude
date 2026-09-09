@@ -160,3 +160,139 @@ test('AP-EXT-ITER10-01: no `as SalvageDeps` cast on any non-comment line in src/
     'the retired-cast comment is gone — simplify the catalog anchor back to a bare grep',
   );
 });
+
+// AP-EXT-ITER38-01 — `--reset-ticket` performs the transition it names.
+//
+// `resetTicketViaSalvage` injected `reconcile` and `gate` whose bodies were VERBATIM
+// copies of salvageTicket's own defaults, so the injection steered nothing:
+// `--reset-ticket` and `--salvage` were byte-identical across every (status × tree)
+// shape, and salvageTicket's three refusals — clean tree, terminal status, gate verdict
+// — each dropped the command out at `no-op` while it still exited 0 reporting a
+// completed transition. A `recovery_exhausted` session most often leaves exactly those
+// shapes behind: a clean tree (the recovery ladder already archived), or a ticket the
+// bounded escape forced Skipped.
+//
+// These cases drive the REAL salvageTicket through the REAL runRecover over a REAL git
+// repo, because the shipped coverage test injects a fake `salvage` and so asserts a
+// disposition table over a stub — it stayed green through the whole defect.
+import * as fsSync from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
+
+import { runRecover } from '../bin/pickle-recover.js';
+import { collectTickets, getTicketStatus } from '../services/pickle-utils.js';
+import { updateTicketFrontmatter } from '../services/git-utils.js';
+
+const RESET_TICKET_ID = 't1';
+
+function gitIn(cwd, args) {
+    return execFileSync('git', args, {
+        cwd,
+        encoding: 'utf-8',
+        timeout: 20000,
+        env: {
+            ...process.env,
+            GIT_CONFIG_GLOBAL: '/dev/null',
+            GIT_CONFIG_SYSTEM: '/dev/null',
+            GIT_CONFIG_NOSYSTEM: '1',
+            GIT_AUTHOR_NAME: 'Anatomy Park',
+            GIT_AUTHOR_EMAIL: 'anatomy@example.invalid',
+            GIT_COMMITTER_NAME: 'Anatomy Park',
+            GIT_COMMITTER_EMAIL: 'anatomy@example.invalid',
+        },
+    });
+}
+
+/** A real repo + session dir holding one ticket at `status`, tree dirty or clean. */
+function makeRecoverFixture(status, dirty) {
+    const root = fsSync.realpathSync(fsSync.mkdtempSync(path.join(os.tmpdir(), 'pickle-reset-ticket-')));
+    const repo = path.join(root, 'repo');
+    fsSync.mkdirSync(repo);
+    gitIn(repo, ['init', '-q', '-b', 'main']);
+    gitIn(repo, ['config', 'user.name', 'Anatomy Park']);
+    gitIn(repo, ['config', 'user.email', 'anatomy@example.invalid']);
+    fsSync.writeFileSync(path.join(repo, 'a.txt'), 'base\n');
+    gitIn(repo, ['add', '-A']);
+    gitIn(repo, ['commit', '-q', '-m', 'base']);
+    const head = gitIn(repo, ['rev-parse', 'HEAD']).trim();
+    if (dirty) fsSync.writeFileSync(path.join(repo, 'a.txt'), 'worker work\n');
+
+    const sessionDir = path.join(root, 'session');
+    const ticketDir = path.join(sessionDir, RESET_TICKET_ID);
+    fsSync.mkdirSync(ticketDir, { recursive: true });
+    fsSync.writeFileSync(
+        path.join(ticketDir, `rick_ticket_${RESET_TICKET_ID}.md`),
+        ['---', `id: ${RESET_TICKET_ID}`, 'title: reset fixture', `status: ${status}`, 'order: 1', '---', '', '# body', ''].join('\n'),
+    );
+
+    const logs = [];
+    // Only the state/session/event seams are faked. `salvage` is the REAL primitive, so
+    // the injection under test is the one production uses.
+    const deps = {
+        readState: () => ({
+            exit_reason: 'recovery_exhausted',
+            working_dir: repo,
+            start_commit: head,
+            current_ticket: RESET_TICKET_ID,
+            active: false,
+        }),
+        updateState: () => {},
+        resolveSessionPath: () => sessionDir,
+        collectTickets,
+        ticketStatus: getTicketStatus,
+        salvage: (input, salvageDeps) => salvageTicket(input, salvageDeps),
+        reattach: () => { throw new Error('reset-ticket must not reach the ff-reattach primitive'); },
+        setTicketTodo: (id, sd) => updateTicketFrontmatter(id, sd, { status: 'Todo', completion_commit: null }),
+        emit: () => {},
+        log: (m) => logs.push(m),
+    };
+    const readStatus = () => (getTicketStatus(sessionDir, RESET_TICKET_ID) ?? '').replace(/["']/g, '').trim();
+    const archivedPatches = () => fsSync.readdirSync(ticketDir).filter((f) => f.startsWith('pre_reset_diff_'));
+    return { repo, sessionDir, deps, logs, readStatus, archivedPatches };
+}
+
+test('AP-EXT-ITER38-01: --reset-ticket re-queues the named ticket on a CLEAN tree', () => {
+    const fx = makeRecoverFixture('Failed', false);
+    // Precondition: the tree really is clean, so the pre-fix clean-tree refusal applies.
+    assert.equal(gitIn(fx.repo, ['status', '--porcelain']).trim(), '', 'fixture tree must be clean');
+
+    const result = runRecover({ subcommand: 'reset-ticket', ticketArg: RESET_TICKET_ID, plan: false }, fx.repo, fx.deps);
+
+    assert.equal(result.code, 0);
+    assert.equal(result.transition?.disposition, 'archived-todo', 'the reset branch is reached, not `no-op`');
+    assert.equal(fx.readStatus(), 'Todo', 'the ticket the operator named is actually re-queued');
+    assert.deepEqual(fx.archivedPatches(), [], 'a clean tree archives nothing — forcing `dirty` widens the RESET, never the archive');
+});
+
+test('AP-EXT-ITER38-01: --reset-ticket re-queues a TERMINAL ticket the bounded escape Skipped', () => {
+    const fx = makeRecoverFixture('Skipped', false);
+
+    const result = runRecover({ subcommand: 'reset-ticket', ticketArg: RESET_TICKET_ID, plan: false }, fx.repo, fx.deps);
+
+    assert.equal(result.transition?.disposition, 'archived-todo');
+    assert.equal(fx.readStatus(), 'Todo', 'an explicit operator override re-queues a Skipped ticket');
+});
+
+test('AP-EXT-ITER38-01: --reset-ticket still archives a dirty diff BEFORE resetting', () => {
+    const fx = makeRecoverFixture('In Progress', true);
+
+    const result = runRecover({ subcommand: 'reset-ticket', ticketArg: RESET_TICKET_ID, plan: false }, fx.repo, fx.deps);
+
+    assert.equal(result.transition?.disposition, 'archived-todo');
+    assert.equal(fx.readStatus(), 'Todo');
+    assert.equal(fx.archivedPatches().length, 1, 'the dirty diff is archived, never reset over unarchived work');
+});
+
+test('AP-EXT-ITER38-01: --salvage is UNCHANGED — the override belongs to --reset-ticket alone', () => {
+    // The teeth of the fix: it must live in `resetTicketViaSalvage`'s injection, never in
+    // salvageTicket's own refusals. A fix applied to the primitive would green the three
+    // cases above AND change this one, turning every autonomous salvage seam into a
+    // forced archive+Todo.
+    const fx = makeRecoverFixture('Failed', false);
+
+    const result = runRecover({ subcommand: 'salvage', ticketArg: RESET_TICKET_ID, plan: false }, fx.repo, fx.deps);
+
+    assert.equal(result.transition?.disposition, 'no-op', '--salvage still declines a clean tree');
+    assert.equal(fx.readStatus(), 'Failed', '--salvage leaves the ticket alone');
+});

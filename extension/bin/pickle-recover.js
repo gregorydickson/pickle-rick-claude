@@ -114,11 +114,23 @@ export function selectLowestRunnableTodo(sessionDir, deps) {
 }
 /** Force the salvageTicket archive+resetTodo (`archived-todo`) disposition without inline git. */
 function resetTicketViaSalvage(input, deps) {
-    // gate -> 'failing' routes salvageTicket into its archive-then-resetTodo branch;
-    // reconcile reports a dirty, non-terminal ticket so the branch is reached. The
-    // archive + frontmatter-Todo writes are salvage's own shared deps — no inline git.
+    // `--reset-ticket <id>` is an OPERATOR override: naming the ticket IS the decision to
+    // re-queue it. salvageTicket guards its archive-then-resetTodo branch with three
+    // refusals written for the AUTONOMOUS seams — clean tree, terminal status, gate
+    // verdict — and this injection used to restate two of them VERBATIM from
+    // salvageTicket's own defaults (`reconcileTicketTruth` and `'failing'`), so it steered
+    // nothing: `--reset-ticket` and `--salvage` were byte-identical, and a clean tree or a
+    // Done/Skipped ticket fell out at `no-op` while the command still exited 0 reporting a
+    // completed transition. State the override ONCE, as eligibility, rather than one
+    // bypass per refusal. Forcing `dirty` widens the RESET, never the archive:
+    // `archiveBeforeDestructive` reads the real tree and returns null when it is clean.
+    // `gate` stays pinned and is no longer a restatement — with `dirty` forced, an
+    // unpinned gate is the one remaining route into the commit branch.
     const salvageDeps = {
-        reconcile: () => reconcileTicketTruth({ sessionDir: input.sessionDir, workingDir: input.workingDir }),
+        reconcile: () => {
+            const truth = reconcileTicketTruth({ sessionDir: input.sessionDir, workingDir: input.workingDir });
+            return { ...truth, dirty: true, ticketStatuses: { ...truth.ticketStatuses, [input.ticketId]: 'Todo' } };
+        },
         gate: () => 'failing',
     };
     // No cast: salvageTicket takes Partial<SalvageDeps> and merges over its own
