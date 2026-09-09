@@ -10,6 +10,7 @@ import {
   executeMainLoop,
   measureAndClassifyIteration,
   parseLlmJudgeOutput,
+  buildMicroverseHandoff,
   _deps,
 } from '../bin/microverse-runner.js';
 import {
@@ -299,6 +300,79 @@ test('measureAndClassifyIteration consumes structured LLM judge ledger before nu
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
   }
+});
+
+// f9821a5e: AC-H7-1/H7-2 (microverse-stall-resilience.test.js) pin that
+// buildJudgePrompt and buildMicroverseHandoff select the identical ledger subset when
+// called directly with the same array — but nothing drove the real
+// measureAndClassifyIteration -> measureLlmIteration -> judge-subprocess chain and
+// checked what ledger actually reaches the judge PROMPT at runtime. This closes that
+// gap: it captures the real judge invocation's `-p` argument and asserts the entry the
+// worker's brief named is the entry the judge actually scored this iteration.
+test('measureAndClassifyIteration feeds the worker-briefed ledger into the real judge prompt (f9821a5e)', async () => {
+  const sessionDir = makeTempDir('pickle-mv-h7-session-');
+  const workingDir = makeTempDir('pickle-mv-h7-work-');
+  const runnerState = makeRunnerState(sessionDir, workingDir, { backend: 'claude' });
+  const mv = createMicroverseState({
+    prdPath: path.join(workingDir, 'prd.md'),
+    metric: {
+      description: 'quality',
+      validation: 'improve code quality',
+      type: 'llm',
+      timeout_seconds: 60,
+      tolerance: 2,
+      direction: 'higher',
+      judge_model: 'claude-sonnet-4-6',
+    },
+    stallLimit: 3,
+  });
+  mv.status = 'iterating';
+  mv.baseline_score = 40;
+  mv.violation_ledger = [{
+    id: 'h7-briefed',
+    path: 'src/foo.ts',
+    line: 9,
+    rule: 'no-any',
+    first_seen_iter: 1,
+    last_seen_iter: 1,
+    severity: 'high',
+    description: 'the entry the worker was briefed on',
+  }];
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+  writeMicroverseState(sessionDir, mv);
+
+  // Mirrors production ordering (mux-runner.ts:5411 precedes :5505): the worker's
+  // brief is built from the ledger BEFORE the judge runs this iteration, off the
+  // same unmutated state.violation_ledger the judge is about to be asked about.
+  const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+  assert.ok(brief.includes('h7-briefed'), 'precondition: the worker brief names the seeded ledger entry');
+
+  let capturedPrompt = '';
+  process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+  const originalExec = _deps.execFileSync;
+  try {
+    _deps.execFileSync = (_cmd, args) => {
+      if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+      const idx = args.indexOf('-p');
+      if (idx !== -1) capturedPrompt = args[idx + 1] || '';
+      return JSON.stringify({ score: 0, violations: [], resolved: [], new: [], remaining: [] });
+    };
+    const ctx = makeContext(sessionDir, workingDir, runnerState, {
+      iteration: 2,
+      preIterSha: 'a'.repeat(40),
+      postIterSha: 'b'.repeat(40),
+    });
+    await measureAndClassifyIteration(mv, { raw: '40', score: 40 }, ctx);
+  } finally {
+    delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    _deps.execFileSync = originalExec;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+
+  assert.match(capturedPrompt, /## Prior violations \(DO NOT re-report unless still present\)/);
+  assert.ok(capturedPrompt.includes('h7-briefed'), 'the ACTUAL judge prompt scores the entry the worker was briefed on');
+  assert.ok(capturedPrompt.includes('the entry the worker was briefed on'));
 });
 
 test('measureAndClassifyIteration drops resolved violations from the live ledger before the next judge pass', async () => {
