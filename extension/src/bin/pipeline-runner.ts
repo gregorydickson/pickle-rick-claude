@@ -5221,21 +5221,57 @@ function maybeStampPickleIncompleteRobust(
 }
 
 /**
+ * ROOT G2: `worker_gate_tests_verdict` persists ONLY the three-valued disposition string
+ * (`readTicketWorkerGateTestsVerdict`) — the failure list itself is never written to ticket
+ * frontmatter. The one field that DOES carry it is the `worker_gate_failed` activity event's
+ * `failures` array (`spawn-morty.ts:finalizeFailedWorkerGate`/`flagOffRepoGateRed`), appended to
+ * `state.json.activity` via `writeActivityEntry`. A red verdict with no corroborating
+ * `worker_gate_failed` entry for that ticket — or one whose `failures` array is empty — never
+ * MEASURED a failing test; it is the "failed collapsed into empty" signature ROOT G2 names, not
+ * a genuine red. A ticket can carry more than one `worker_gate_failed` entry (retries); since
+ * activity is append-only, the LAST matching entry is authoritative for the ticket's CURRENT
+ * verdict.
+ */
+function ticketHasMeasuredRedTestFailure(runtime: PipelineRuntime, ticketId: string): boolean {
+  let activity: unknown;
+  try { activity = sm.read(runtime.statePath).activity; } catch { return false; }
+  if (!Array.isArray(activity)) return false;
+  let latestFailureCount: number | null = null;
+  for (const entry of activity) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as { event?: unknown; ticket_id?: unknown; failures?: unknown };
+    if (e.event !== 'worker_gate_failed' || e.ticket_id !== ticketId) continue;
+    latestFailureCount = Array.isArray(e.failures) ? e.failures.length : 0;
+  }
+  return (latestFailureCount ?? 0) > 0;
+}
+
+/**
  * WS-B (f8559470): tickets that flipped Done while WS-A's shared reader
  * (`readTicketWorkerGateTestsVerdict`) recorded `worker_gate_tests_verdict: red`
  * for them. Done is never blocked on a red test verdict (out of scope) — this
  * only names the offenders so the pipeline can withhold the success verdict
  * (AC-B1/AC-B3), never a new gate.
+ *
+ * ROOT G2 split: a red verdict corroborated by a non-empty `worker_gate_failed.failures`
+ * list is `measured` and still withholds; a red verdict with no such corroboration (the
+ * activity entry is missing — e.g. ring eviction, AP-EXT-ITER211-02 — or its failure list is
+ * empty) is `unmeasured` and is reported as a DISTINCT disposition rather than withheld.
  */
-function collectDoneTicketsWithRedTestVerdict(runtime: PipelineRuntime): { id: string; title: string }[] {
-  const offenders: { id: string; title: string }[] = [];
+function collectDoneTicketsWithRedTestVerdict(runtime: PipelineRuntime): {
+  measured: { id: string; title: string }[];
+  unmeasured: { id: string; title: string }[];
+} {
+  const measured: { id: string; title: string }[] = [];
+  const unmeasured: { id: string; title: string }[] = [];
   for (const t of collectTickets(runtime.sessionDir)) {
     if (!t.id || (t.status || '').toLowerCase() !== 'done') continue;
-    if (readTicketWorkerGateTestsVerdict(runtime.sessionDir, t.id) === 'red') {
-      offenders.push({ id: t.id, title: t.title || '' });
-    }
+    if (readTicketWorkerGateTestsVerdict(runtime.sessionDir, t.id) !== 'red') continue;
+    const offender = { id: t.id, title: t.title || '' };
+    if (ticketHasMeasuredRedTestFailure(runtime, t.id)) measured.push(offender);
+    else unmeasured.push(offender);
   }
-  return offenders;
+  return { measured, unmeasured };
 }
 
 /**
@@ -5318,12 +5354,26 @@ function withholdForDoneOverRedTestVerdict(
   rawPhase: PhaseName,
   log: (msg: string) => void,
 ): void {
-  const redOffenders = collectDoneTicketsWithRedTestVerdict(runtime);
-  if (redOffenders.length === 0) return;
-  counters.nonConvergent += redOffenders.length;
-  const names = redOffenders.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
-  counters.phaseDispositions[rawPhase] = `done_over_red_worker_gate_tests:${redOffenders.map((o) => o.id).join(',')}`;
-  log(`Phase ${rawPhase}: ${redOffenders.length} ticket(s) flipped Done over a red worker_gate_tests_verdict — withholding success verdict: ${names}`);
+  const { measured, unmeasured } = collectDoneTicketsWithRedTestVerdict(runtime);
+
+  if (unmeasured.length > 0) {
+    const unmeasuredNames = unmeasured.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
+    appendPhaseDisposition(
+      counters,
+      rawPhase,
+      `done_over_unmeasured_worker_gate_tests:${unmeasured.map((o) => o.id).join(',')}`,
+    );
+    log(
+      `Phase ${rawPhase}: ${unmeasured.length} ticket(s) flipped Done over an empty-because-unmeasured ` +
+      `worker_gate_tests_verdict (no corroborating failure evidence) — NOT withholding: ${unmeasuredNames}`,
+    );
+  }
+
+  if (measured.length === 0) return;
+  counters.nonConvergent += measured.length;
+  const names = measured.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
+  appendPhaseDisposition(counters, rawPhase, `done_over_red_worker_gate_tests:${measured.map((o) => o.id).join(',')}`);
+  log(`Phase ${rawPhase}: ${measured.length} ticket(s) flipped Done over a red worker_gate_tests_verdict — withholding success verdict: ${names}`);
   try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
 }
 
