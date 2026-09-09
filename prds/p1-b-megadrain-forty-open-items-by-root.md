@@ -519,6 +519,53 @@ instrument, not necessarily in the code.
 **Related:** GitHub #8 (anatomy-park declares convergence with no INV-NO-SELF-DISOWN evidence,
 "permanently inert on any 2+ marker monorepo") is the same monorepo-shape family. Compose them together.
 
+## 🔒 ROOT G3 — `nonConvergent` IS A ONE-WAY LATCH, SO ONE TICKET KILLS A FOUR-PHASE RUN (measured 2026-09-09)
+
+**Census of every write in `extension/src/bin/pipeline-runner.ts`:**
+
+```
+INCREMENT  6 sites: 4016 (seeded from phaseDispositions), 4938, 5369, 5415, 5461, 5510
+DECREMENT/RESET  0 sites  — grep for `nonConvergent (--|-=|= 0)` matches nothing
+VERDICT    4618: unsuccessful = pipelineFailed || counters.nonConvergent > 0
+```
+
+**Nothing in a run can lower it.** Not a converged anatomy-park, not a clean szechuan, not a green
+release gate. And [[ROOT G2]]'s withhold raises it at the **pickle boundary — phase 1 of 4**.
+
+| bundle | ticket dirs | tickets that tripped it | verdict |
+|---|---|---|---|
+| B-MEGADRAIN `27819a21` | 32 | 4 | dead at phase 1 |
+| B-CIGREEN `f365390b` | 10 | **1** | dead at phase 1 |
+
+**One ticket in ten foreclosed an entire four-phase run.** Everything after it — citadel, 48 anatomy
+passes across the two bundles, both szechuan phases — was work whose outcome could not change the
+verdict. This is the measured reason the branch has gone **5 days and 245 commits without a release**
+while the tree itself measures GREEN on every gate leg.
+
+**Why the shape is wrong, stated precisely.** The withhold is a **per-ticket, repairable** condition —
+ticket 3 flips Done over a red gate, ticket 12 fixes the code, and both bundles' branches measured green
+afterward. It was wired to a **run-level, monotonic** counter. WS-B's own comment says it reused the
+existing `nonConvergent` term "without adding a new gate, field, or halt" — correct subtraction, and it
+inherited permanence it did not intend. A fact that can become false was stored in a variable that can
+only go up.
+
+**This is NOT a request to weaken the honesty gate.** [[B-NOSTOP-GATES]] is right that ran-to-completion
+and reported-success are different wires, and a genuinely red bundle must not release. The defect is
+that the verdict is latched at the MOMENT OF THE FLIP rather than DERIVED at finalize from the tickets'
+FINAL state. Deriving it is strictly more honest: it answers "is this bundle red NOW?" instead of "was
+any ticket ever red?".
+
+### Acceptance criteria (machine-checkable)
+- `unsuccessful`'s done-over-red term is **re-derived at finalize** from each Done ticket's CURRENT `worker_gate_tests_verdict`, not from a counter incremented mid-run. A ticket whose verdict is no longer red does not contribute.
+- **Positive control:** a bundle whose ticket is STILL red at finalize withholds exactly as today — pinned, so the fix cannot become a fake-green.
+- **Negative control:** a bundle whose ticket was red at flip and is measurably green at finalize RELEASES. This is the case both live bundles hit and neither could express.
+- The other five `nonConvergent` increment sites are UNCHANGED — this root touches the done-over-red term only. A test enumerates the six sites so a future collapse of the counter is a deliberate act.
+- Mutation check: restore the latched increment; the negative control goes RED and the positive control stays GREEN.
+
+**Do NOT fix this by resetting the counter.** A decrement is the same enumerated-liability shape one
+level down — it needs a list of who may lower it. Derive the term at finalize; the counter then needs no
+reset because it is never the source of truth.
+
 ## 🛑 ROOT G2 — `done_over_red_worker_gate_tests` IS THE RELEASE BLOCKER (2 of 2 bundles, filed 2026-09-09)
 
 **Measured, both bundles that have run since this root's surface was touched:**
