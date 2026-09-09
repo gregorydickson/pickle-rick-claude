@@ -92,6 +92,34 @@ function readCommandTemplate(sessionDir) {
         throw err;
     }
 }
+/**
+ * AP-EXT-ITER41-03: the metric an anatomy-park worker-mode session means when it stores no
+ * `key_metric` at all — convergence is decided by `anatomy-park.json`, not by a measurement.
+ *
+ * `MicroverseSessionState.key_metric` is declared REQUIRED, yet this parser used to admit a
+ * state without one and hand it back through an `as unknown as` cast, so tsc could not see any
+ * of the 42 bare `state.key_metric.<field>` reads downstream. MEASURED against this parser's
+ * own output on a key_metric-less anatomy-park state: `isConverged` throws
+ * `reading 'direction'` and `recordIteration` throws `reading 'tolerance'`.
+ *
+ * Filling the field here is the SUBTRACTION: it removes the undefined state rather than
+ * guarding each reader, so every one of those sites is safe by construction and the type stops
+ * lying. `type: 'none'` is what worker mode already means — it routes baseline measurement to
+ * the declared "no measurement branch" log instead of a crash. `description` matches the string
+ * `metricDescriptionForFinalReport` (`bin/microverse-runner.ts`) already falls back to, so the
+ * final report is byte-identical either way. A fresh object per call: the value is persisted by
+ * the next `writeMicroverseState` and mutated by state updates, so a shared literal would alias.
+ */
+function workerManagedKeyMetric() {
+    return {
+        description: 'Worker-managed convergence',
+        validation: '',
+        type: 'none',
+        timeout_seconds: 0,
+        tolerance: 0,
+        direction: 'higher',
+    };
+}
 export function assertMicroverseStateShape(parsed, commandTemplate) {
     if (!isRecord(parsed)) {
         throw new Error('Invalid microverse state: root must be an object');
@@ -133,6 +161,7 @@ export function assertMicroverseStateShape(parsed, commandTemplate) {
         if (!anatomyParkWorkerMode) {
             throw new Error('Invalid microverse state: key_metric is required for microverse mode');
         }
+        parsed.key_metric = workerManagedKeyMetric();
     }
     else {
         assertMicroverseMetricShape(parsed.key_metric);
