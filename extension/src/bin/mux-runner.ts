@@ -6439,7 +6439,9 @@ function persistRunnerAuthoredGreenVerdict(
   gateWorkingDir?: string,
   gateMeasured?: boolean,
 ): void {
-  if (gateWorkingDir !== undefined && !fs.existsSync(path.join(gateWorkingDir, 'extension'))) return;
+  // ROOT G1: derived from the target repo's actual layout (the same 3-rung question
+  // the armed gate itself answers), not asserted to be `<workingDir>/extension`.
+  if (gateWorkingDir !== undefined && resolveGateProjectDir(gateWorkingDir) === null) return;
   try {
     const fp = ticketFilePath(sessionDir, ticketId);
     const raw = fs.readFileSync(fp, 'utf8');
@@ -7900,12 +7902,18 @@ export function spawnConvergedPlanImplementPass(opts: {
  * `ok: true` (the ladder may proceed) while recording the same not-run residual for
  * observability; the committer is the one that must not lie about a verdict it didn't
  * earn. `failures: null` distinguishes "gate never ran" from "gate ran, found none".
+ *
+ * ROOT G1: `extensionDir` is `resolveGateProjectDir(input.workingDir)` — the same
+ * 3-rung derivation the primary between-ticket gate uses — not a bare
+ * `<workingDir>/extension` existence check, so a flat target repo that declares its
+ * own `test:fast` script but has no `extension/` subdirectory is no longer treated
+ * as "no gate applicable" purely because it is not laid out like pickle-rick.
  */
 function runRecoveryArmedGate(
   input: AttemptRecoveryBeforeTerminalInput,
-  extensionDir: string,
+  extensionDir: string | null,
 ): { ok: boolean; failures: BetweenTicketGateFailure[] | null; measured: boolean } {
-  if (!fs.existsSync(extensionDir)) {
+  if (extensionDir === null) {
     emitWorkerGateNotRunResidual(input.statePath, input.ticketId, {
       computedVia: 'not_applicable',
       site: 'attemptRecoveryBeforeTerminal.runArmedGate',
@@ -7943,7 +7951,9 @@ function appendRecoveryAttempt(statePath: string, attempt: RecoveryAttempt, disc
  * not-ok and the ladder falls through.
  */
 export function attemptRecoveryBeforeTerminal(input: AttemptRecoveryBeforeTerminalInput): RecoveryOutcome {
-  const extensionDir = path.join(input.workingDir, 'extension');
+  // ROOT G1: derived from the target repo's actual layout, not asserted to be
+  // `<workingDir>/extension` — see the `resolveGateProjectDir` docblock above.
+  const extensionDir = resolveGateProjectDir(input.workingDir);
   const discriminant = resolveRecoveryDiscriminant(input);
   const haltSite = typeof input.evidence?.halt_site === 'string' ? `;halt_site=${input.evidence.halt_site}` : '';
   const discriminantTag = `[backend=${discriminant.backend};mode=${discriminant.mode}${haltSite}]`;

@@ -2680,3 +2680,97 @@ test('AP-BIN-ITER36-01 control: a plan whose phases DO parse still runs the phas
     'the phase-loop outcome report must still fire when the table parses',
   );
 });
+
+// ─────────── ROOT G1 (B-OFFREPO): armed-gate applicability is DERIVED, not asserted ───────────
+//
+// `persistRunnerAuthoredGreenVerdict`'s "did the caller's armed gate actually run" check used
+// to be a bare `<gateWorkingDir>/extension` existence test — rung 1 only of the 3-rung
+// `resolveGateProjectDir` derivation `runBetweenTicketFastGate` and
+// `commitGatePassingDeliverableOnExitPath` already use. A flat target repo that declares its
+// own `test:fast` script (rung 2) but has no `extension/` subdirectory therefore had its
+// genuinely-armed gate's green verdict silently dropped on the floor.
+
+function readTicketFrontmatterField(sessionDir, ticketId, field) {
+  const raw = readFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`), 'utf8');
+  const match = raw.match(new RegExp(`^${field}:\\s*"?([^"\\n]*)"?\\s*$`, 'm'));
+  return match ? match[1] : null;
+}
+
+/** A flat target repo: package.json + package-lock.json declaring `test:fast`, no `extension/`. */
+function makeFlatGateRepo(prefix, { declareGate = true } = {}) {
+  const { repo, baseSha } = makeRepo(prefix);
+  writeFileSync(path.join(repo, 'package.json'), JSON.stringify({
+    name: 'flat-target-repo',
+    version: '1.0.0',
+    scripts: declareGate ? { 'test:fast': 'node -e "console.log(\'# tests 1\'); process.exit(0)"' } : { build: 'node -e "0"' },
+  }, null, 2));
+  writeFileSync(path.join(repo, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
+  git(repo, ['add', 'package.json', 'package-lock.json']);
+  git(repo, ['commit', '-q', '-m', 'declare gate']);
+  return { repo, baseSha };
+}
+
+test('ROOT G1: commitAndContinueDoneFlip persists a green worker_gate_verdict on a flat target repo that declares test:fast', () => {
+  const { repo } = makeFlatGateRepo('root-g1-repo-');
+  const { sessionDir, statePath } = makeSession('root-g1-session-');
+  const ticketId = 'aaa11111';
+  makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+
+  // The worker's real deliverable — a dirty, uncommitted file for commitAndContinueDoneFlip
+  // to commit.
+  writeFileSync(path.join(repo, 'src.ts'), 'export const x = 1;\n');
+
+  const prev = process.env.PICKLE_TEST_MODE;
+  process.env.PICKLE_TEST_MODE = '1';
+  let result;
+  try {
+    result = commitAndContinueDoneFlip({
+      sessionDir, ticketId, workingDir: repo, statePath, flags: {}, log: () => {},
+      gateMeasured: true,
+    });
+  } finally {
+    if (prev === undefined) delete process.env.PICKLE_TEST_MODE; else process.env.PICKLE_TEST_MODE = prev;
+  }
+
+  assert.equal(result.ok, true, 'the dirty deliverable must commit');
+  assert.equal(
+    readTicketFrontmatterField(sessionDir, ticketId, 'worker_gate_verdict'),
+    'green',
+    'a flat repo whose armed gate genuinely ran (rung 2: declares test:fast, no extension/ dir) ' +
+    'must have its green verdict persisted, not silently dropped for lacking pickle-rick\'s own layout',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});
+
+test('ROOT G1 NEGATIVE CONTROL: commitAndContinueDoneFlip does not stamp a verdict when no gate is declared at all', () => {
+  const { repo } = makeFlatGateRepo('root-g1-neg-repo-', { declareGate: false });
+  const { sessionDir, statePath } = makeSession('root-g1-neg-session-');
+  const ticketId = 'bbb22222';
+  makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+
+  writeFileSync(path.join(repo, 'src.ts'), 'export const x = 1;\n');
+
+  const prev = process.env.PICKLE_TEST_MODE;
+  process.env.PICKLE_TEST_MODE = '1';
+  let result;
+  try {
+    result = commitAndContinueDoneFlip({
+      sessionDir, ticketId, workingDir: repo, statePath, flags: {}, log: () => {},
+      gateMeasured: true,
+    });
+  } finally {
+    if (prev === undefined) delete process.env.PICKLE_TEST_MODE; else process.env.PICKLE_TEST_MODE = prev;
+  }
+
+  assert.equal(result.ok, true, 'the dirty deliverable must still commit even with no gate applicable');
+  assert.equal(
+    readTicketFrontmatterField(sessionDir, ticketId, 'worker_gate_verdict'),
+    null,
+    'a repo with no runnable gate at all (no extension/, no declared test:fast) must never have a fabricated verdict stamped',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(sessionDir, { recursive: true, force: true });
+});

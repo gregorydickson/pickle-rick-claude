@@ -630,3 +630,54 @@ test('regression: an absent verdict on a repo WITH extension/ still recomputes',
   assert.equal(resolved.verdict, 'green');
   assert.notEqual(resolved.verdict, 'not_run', 'not_run must not swallow the recompute arm');
 });
+
+// ─────────── ROOT G1 (B-OFFREPO): the recovery ladder's armed-gate applicability is DERIVED ───────────
+//
+// `attemptRecoveryBeforeTerminal`'s `runArmedGate` used to test bare `<workingDir>/extension`
+// existence — rung 1 only of the 3-rung `resolveGateProjectDir` derivation the primary
+// between-ticket gate (`runBetweenTicketFastGate`) already uses. A flat target repo that
+// declares its own `test:fast` script (rung 2) but has no `extension/` subdirectory had its
+// recovery-ladder armed gate treated as "not applicable" even though the SAME gate at the
+// normal iteration boundary would have run it.
+
+test('ROOT G1: the recovery ladder\'s armed gate RUNS on a flat repo that declares test:fast (no extension/)', async () => {
+  const root = makeTmp();
+  const ticketId = 'jjj10101';
+  const sessionDir = path.join(root, 'session');
+  initRepo(root);
+  commitFile(root, 'work.txt', 'base', 'baseline');
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+    name: 'flat-target-repo',
+    version: '1.0.0',
+    scripts: { 'test:fast': 'node -e "console.log(\'# tests 1\'); process.exit(0)"' },
+  }, null, 2));
+  fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
+  git(root, ['add', '.']);
+  git(root, ['commit', '-m', 'declare gate', '--no-gpg-sign']);
+  fs.writeFileSync(path.join(root, 'work.txt'), 'dirty tree — rung 1 is reachable');
+  const statePath = writeState(sessionDir, { working_dir: root });
+  writeTicket(sessionDir, ticketId);
+
+  const outcome = attemptRecoveryBeforeTerminal({
+    sessionDir,
+    statePath,
+    extensionRoot: path.join(root, 'absent-extension-root'),
+    workingDir: root,
+    ticketId,
+    iteration: 1,
+    flags: null,
+    log: () => {},
+  });
+
+  assert.equal(outcome.kind, 'advanced', 'the dirty tree must still advance the ladder');
+  assert.equal(
+    findResiduals({
+      dataRoot: DATA_ROOT,
+      ticketId,
+      reason: WORKER_GATE_NOT_RUN_REASON,
+      site: 'attemptRecoveryBeforeTerminal.runArmedGate',
+    }).length,
+    0,
+    'a flat repo that declares test:fast must not report its armed gate as not-applicable',
+  );
+});
