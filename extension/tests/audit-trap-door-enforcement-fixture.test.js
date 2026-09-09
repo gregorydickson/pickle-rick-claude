@@ -726,3 +726,81 @@ test('SZ-CATROOT-01: a readable but empty catalog root still passes, so the unre
     `a readable root must still produce a census verdict; stdout: ${result.stdout}`
   );
 });
+
+// AP-EXT-ITER39-02: `discoverCatalogs` enumerates a seed plus exactly ONE directory level
+// under each root, and nothing compared that shape against the catalogs actually on disk —
+// so the sweep's own "cannot drift behind the catalogs it verifies" comment was a claim no
+// check made true. Measured on the pre-fix script with the fixture below: the nested
+// catalog was never opened and the run printed `verified across N catalog(s)` and exited 0.
+//
+// The fixture's two catalogs carry the SAME clause, differing only in depth, so the row
+// isolates depth as the variable — the nested one cannot red for any reason the swept one
+// would not also red for.
+const CATALOG_CLAUSE = '- `x.ts` — INVARIANT: `buildSymbolCorpus` is the anchor.\n';
+
+function runAuditWithNestedCatalog(nestedContent) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-trap-door-depth-'));
+  const root = path.join(tmpDir, 'catalog-root');
+  fs.mkdirSync(path.join(root, 'alpha', 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'alpha', 'CLAUDE.md'), CATALOG_CLAUSE);
+  if (nestedContent !== null) {
+    fs.writeFileSync(path.join(root, 'alpha', 'nested', 'CLAUDE.md'), nestedContent);
+  }
+
+  try {
+    return spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+      cwd: EXTENSION_ROOT,
+      encoding: 'utf8',
+      timeout: 180_000,
+      env: { ...process.env, SUBSYSTEM_CATALOG_ROOT_OVERRIDE: root },
+    });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER39-02: a trap-door catalog deeper than the sweep enumerates reds the audit instead of being silently uncounted', () => {
+  const result = runAuditWithNestedCatalog(CATALOG_CLAUSE);
+
+  assert.notEqual(
+    result.status,
+    0,
+    `a CLAUDE.md carrying trap-door clauses that the sweep never opens must red; stdout: ${result.stdout}`
+  );
+  assert.match(
+    result.stderr,
+    /nested\/CLAUDE\.md: carries trap-door clauses but is outside the swept set/,
+    `the failure must name the uncounted catalog; stderr: ${result.stderr}`
+  );
+  assert.doesNotMatch(
+    result.stdout,
+    CENSUS_VERDICT_RE,
+    `no census may be reported as verified while a trap-door catalog went unopened; stdout: ${result.stdout}`
+  );
+});
+
+test('AP-EXT-ITER39-02: the same catalog at the depth the sweep does enumerate passes, so the depth check is not a blanket red', () => {
+  const result = runAuditWithNestedCatalog(null);
+
+  assert.equal(result.status, 0, `a catalog at an enumerated depth is not a failure; stderr: ${result.stderr}`);
+  assert.match(
+    result.stdout,
+    CENSUS_VERDICT_RE,
+    `the swept catalog must still produce a census verdict; stdout: ${result.stdout}`
+  );
+});
+
+test('AP-EXT-ITER39-02: an unenumerated CLAUDE.md carrying no trap-door clause passes, so the obligation is derived from content and needs no path exception list', () => {
+  const result = runAuditWithNestedCatalog('# notes\n\nProse only, no trap doors.\n');
+
+  assert.equal(
+    result.status,
+    0,
+    `only a catalog carrying INVARIANT/ENFORCE/PATTERN_SHAPE is owed a sweep; stderr: ${result.stderr}`
+  );
+  assert.match(
+    result.stdout,
+    CENSUS_VERDICT_RE,
+    `a clause-free file outside the swept set must not suppress the census; stdout: ${result.stdout}`
+  );
+});

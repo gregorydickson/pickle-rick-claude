@@ -113,7 +113,7 @@ fi
 # "215 ENFORCE reference(s) verified" — the catalog-anchor-executability trap door
 # in extension/CLAUDE.md names this exact recurrence ("iter 8 swept only
 # extension/CLAUDE.md, and all four anchors iter 9 found false sat in the siblings").
-if ! node - "$CLAUDE_PATH" "$EXTENSION_ROOT" "$REPO_ROOT" "$SUBSYSTEM_CATALOG_ROOT" <<'NODE'
+node - "$CLAUDE_PATH" "$EXTENSION_ROOT" "$REPO_ROOT" "$SUBSYSTEM_CATALOG_ROOT" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 
@@ -121,8 +121,15 @@ const [,, primaryClaudePath, extensionRoot, repoRoot, subsystemCatalogRoot] = pr
 
 const VALID_TIERS = new Set(['fast', 'integration', 'expensive', 'contract']);
 
+// The roots BOTH catalog readers below share: the one-directory-level enumeration that
+// decides what gets swept, and the deep completeness walk that decides whether that
+// enumeration reached everything. Stated once so the two cannot disagree about where
+// catalogs live.
+const CATALOG_ROOTS = [[subsystemCatalogRoot, null], [repoRoot, 'extension']];
+
 // Discovered, never hand-listed: a new subsystem catalog enters the sweep the
-// moment it lands, so the sweep cannot drift behind the catalogs it verifies.
+// moment it lands AT ONE OF THESE DEPTHS; `reportUnsweptCatalogs` below is what makes
+// that a measured fact rather than a hope.
 // TWO roots, ONE rule. `extension/src/*/` holds the compiled-source subsystems;
 // `<repoRoot>/*/` holds every subsystem anatomy-park reviews outside it — repo-root
 // `bin/` is enumerated by `discoverSubsystems` exactly like they are and writes its
@@ -132,7 +139,7 @@ const VALID_TIERS = new Set(['fast', 'integration', 'expensive', 'contract']);
 function discoverCatalogs() {
   const catalogs = [primaryClaudePath];
 
-  for (const [root, skipDir] of [[subsystemCatalogRoot, null], [repoRoot, 'extension']]) {
+  for (const [root, skipDir] of CATALOG_ROOTS) {
     let entries;
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
@@ -164,6 +171,90 @@ function discoverCatalogs() {
   }
 
   return catalogs;
+}
+
+// AP-EXT-ITER39-02: the discovery above is a SHAPE -- a seed plus exactly ONE directory
+// level under each root -- and nothing compared that shape against the catalogs actually
+// on disk, so its own "cannot drift behind the catalogs it verifies" line was a claim no
+// check made true. MEASURED on the shipped script: a CLAUDE.md two levels under a root
+// (`<root>/alpha/nested/CLAUDE.md`) carrying a trap door whose ENFORCE names a file that
+// does not exist was never opened, and the run printed `360 ENFORCE reference(s) verified
+// across 4 catalog(s)` and exited 0. That is the uncounted-catalog shape
+// `audit-did-we-count.sh` names and cannot see: its check 2 compares its own walk against
+// nothing, so a catalog missing from THIS sweep is invisible to it by construction.
+//
+// The obligation is derived from CONTENT, never from a list of expected paths: a CLAUDE.md
+// carrying an INVARIANT / ENFORCE / PATTERN_SHAPE clause is a trap-door catalog and must be
+// in the swept set. Repo-root `CLAUDE.md` and `prds/CLAUDE.md` carry none, so the
+// deliberate repo-root exclusion falls out of the derivation rather than needing an
+// exception member that would rot silently the day either file grows a trap door.
+const TRAP_DOOR_CLAUSE_RE = /INVARIANT:|ENFORCE:|PATTERN_SHAPE/;
+const CATALOG_SET_INCOMPLETE_EXIT = 9;
+
+function collectCatalogsDeep(dir, skipDir, acc) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    // Same doctrine the discovery walk states for its roots: a directory that cannot be
+    // entered hides an unknown number of catalogs, so no completeness verdict over the
+    // readable siblings is admissible.
+    process.stderr.write(
+      `catalog completeness: ${path.relative(repoRoot, dir) || dir}: unreadable directory -- ` +
+        'an unknown number of CLAUDE.md catalogs beneath it could not be compared against ' +
+        `the swept set (${err instanceof Error ? err.message : String(err)})\n`
+    );
+    process.exit(1);
+  }
+
+  for (const entry of entries) {
+    if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === skipDir) continue;
+    const abs = path.join(dir, entry.name);
+    // `skipDir` applies at the ROOT level only -- it exists so the repo-root pass does not
+    // re-reach the primary catalog, which CLAUDE_PATH_OVERRIDE may have substituted.
+    if (entry.isDirectory()) collectCatalogsDeep(abs, null, acc);
+    else if (entry.isFile() && entry.name === 'CLAUDE.md') acc.push(abs);
+  }
+
+  return acc;
+}
+
+function reportUnsweptCatalogs(swept) {
+  const sweptSet = new Set(swept);
+  let unswept = 0;
+
+  for (const [root, skipDir] of CATALOG_ROOTS) {
+    for (const abs of collectCatalogsDeep(root, skipDir, [])) {
+      if (sweptSet.has(abs)) continue;
+
+      let text;
+      try {
+        text = fs.readFileSync(abs, 'utf8');
+      } catch (err) {
+        // Unreadable is not "carries no trap doors" -- the same positive-proof rule the
+        // roots above apply. Count it rather than passing over it.
+        process.stderr.write(
+          `catalog completeness: ${path.relative(repoRoot, abs) || abs}: unreadable -- cannot ` +
+            'tell whether it carries trap doors the sweep never opened ' +
+            `(${err instanceof Error ? err.message : String(err)})\n`
+        );
+        unswept++;
+        continue;
+      }
+
+      if (!TRAP_DOOR_CLAUSE_RE.test(text)) continue;
+
+      process.stderr.write(
+        `catalog completeness: ${path.relative(repoRoot, abs) || abs}: carries trap-door ` +
+          'clauses but is outside the swept set -- its ENFORCE refs and INVARIANT anchors are ' +
+          'verified by no oracle, and the census line would report `verified` without ever ' +
+          'opening it\n'
+      );
+      unswept++;
+    }
+  }
+
+  return unswept;
 }
 
 // A trap-door ENFORCE ref may name one test case (`…/foo.test.js#AC-CF-15`). The
@@ -258,7 +349,19 @@ let failures = 0;
 let verified = 0;
 const perCatalog = [];
 
-for (const claudePath of discoverCatalogs()) {
+const catalogs = discoverCatalogs();
+const unsweptCatalogs = reportUnsweptCatalogs(catalogs);
+if (unsweptCatalogs > 0) {
+  process.stderr.write(
+    `\n${unsweptCatalogs} on-disk trap-door catalog(s) outside the swept set -- no census ` +
+      'over the swept ones can be reported as verified\n'
+  );
+  // Distinct from 1 so the wrapper can tell "this ARM failed" from "the catalog SET is
+  // incomplete", which invalidates every later census in this script, not just this one.
+  process.exit(CATALOG_SET_INCOMPLETE_EXIT);
+}
+
+for (const claudePath of catalogs) {
   // Label carries the catalog so a phantom anchor is attributable to its file,
   // not just a bare line number that could belong to any of six catalogs.
   const label = path.relative(repoRoot, claudePath) || claudePath;
@@ -328,8 +431,20 @@ console.log(
   `audit-trap-door-enforcement: ${verified} ENFORCE reference(s) verified across ${perCatalog.length} catalog(s) (${perCatalog.join(', ')})`
 );
 NODE
-then
+enforce_arm_rc=$?
+
+if [ "$enforce_arm_rc" -ne 0 ]; then
   audit_exit_code=1
+fi
+
+# Exit 9 means the catalog SET the sweep enumerated is missing a trap-door catalog that is
+# on disk. Every later arm in this script enumerates catalogs by that same rule, so each
+# would print `verified across N catalog(s)` over the same missing member -- the verdict
+# this audit exists to make trustworthy, issued over a file it never opened. Stop here
+# instead: the discovery walk already states the rule for its own dark-root case, and this
+# keeps a run with an incomplete catalog set from printing ANY census.
+if [ "$enforce_arm_rc" -eq 9 ]; then
+  exit 1
 fi
 
 # INVARIANT symbol liveness (AC-V3).
