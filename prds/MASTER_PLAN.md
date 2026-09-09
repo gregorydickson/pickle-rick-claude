@@ -190,6 +190,50 @@ composing the next bundle — a red tree would make every later bundle's gate re
 
 ---
 
+## 🏁 B-CIGREEN RUN OUTCOME — session `2026-09-08-f365390b` ENDED 2026-09-09 10:16Z at 3/4
+
+```
+status: failed · current_phase: null · completed_phases: 3/4 · skipped_phases: 0
+state.exit_reason: stalled_below_target · step: completed · active: false
+microverse.json: status stopped, exit stalled_below_target, stall_counter 5/5
+phase_dispositions: { pickle:         "done_over_red_worker_gate_tests:0c065c63",
+                      szechuan-sauce: "stalled_below_target" }
+```
+
+**szechuan exhausted its OWN stall detector — `stall_counter` reached 5 of `szechuan_stall_limit` 5.**
+Unlike B-MEGADRAIN's `baseline_unmeasurable_unrecoverable` (which routed to
+`run-finalize-gate-incomplete` and still counted, giving 4/4), this exit did NOT count the phase:
+`completed_phases` stopped at 3. The stall ceiling is the documented mechanism doing its job.
+
+### ⚠ [[ROOT S]] CORRECTION — `stalled_below_target` has now REPEATED
+
+The root was filed as "four bundles, four DISTINCT causes." That is no longer the whole picture:
+
+| bundle | szechuan disposition |
+|---|---|
+| B-ARGMAX | `judge timed out after 600s` |
+| B-FRESHWIN | malformed `Write()` permission rule (**fixed** `e4edb6f9`) |
+| B-UNATTENDED | **`stalled_below_target`** |
+| B-MEGADRAIN | `baseline_unmeasurable_unrecoverable` |
+| B-CIGREEN | **`stalled_below_target`** ← repeat |
+
+**Five failures, four distinct dispositions, one REPEAT.** That changes the root's shape: a repeat is
+reproducible where four one-offs were not, so `stalled_below_target` is now the member worth attacking
+FIRST — it is the only one with two live observations to test a fix against. The "distinct causes wearing
+one disposition" framing still holds for the other three; it is no longer true that every failure was
+unique.
+
+**Do NOT assume the two `stalled_below_target` runs share a cause** — the disposition is a threshold
+(metric never reached target within the stall budget), and two runs can hit the same threshold for
+different reasons. The falsifying observation: compare the per-iteration metric traces of
+`2026-09-06-f625727a` and `2026-09-08-f365390b`. Same trajectory shape = one cause; different = the
+disposition is again hiding two.
+
+**No release, and szechuan is not why.** `nonConvergent` was already 1 from the pickle-boundary withhold
+before szechuan ran. Second consecutive bundle where the release was foreclosed at phase 1.
+
+---
+
 ## ✅ SECOND ANATOMY-PARK CONVERGENCE — the C6 raise replicates (B-CIGREEN, 2026-09-09 09:13Z)
 
 `2026-09-08-f365390b`: `completed_phases` 2 → 3, **no anatomy entry in `phase_dispositions`**,
