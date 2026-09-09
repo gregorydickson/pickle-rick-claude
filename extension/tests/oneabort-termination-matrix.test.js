@@ -23,6 +23,7 @@ import {
   runAllBackendsExhaustedFinalizeGate,
 } from '../bin/pipeline-runner.js';
 import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
+import { StateManager } from '../services/state-manager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MATRIX_PATH = path.resolve(__dirname, '..', '..', 'prds', 'research', 'oneabort-termination-matrix.json');
@@ -130,6 +131,12 @@ async function generateMatrix() {
     stubGateExit(0);
 
     const decision = classifyMicroverseHaltDecision(reason);
+    // The label the runtime OUGHT to attribute, read without the production catch. When the
+    // state read is the thing that fails, this throws and the run goes RED naming it, instead
+    // of the runner's fallback silently standing in for every reason.
+    const expectedResidual = classifyMicroverseHaltDecision(
+      new StateManager().read(runtime.statePath).exit_reason,
+    ).recognizedExitReason;
     let pipelineReachedFinalize = false;
     let residualReason = decision.recognizedExitReason;
 
@@ -148,6 +155,7 @@ async function generateMatrix() {
       action: decision.action,
       pipeline_reached_finalize: pipelineReachedFinalize,
       residual_reason: residualReason ?? '',
+      expected_residual_reason: expectedResidual ?? '',
       is_floor: false,
     });
   }
@@ -158,6 +166,7 @@ async function generateMatrix() {
     action: floorDecision.action,
     pipeline_reached_finalize: false,
     residual_reason: floorDecision.recognizedExitReason ?? '',
+    expected_residual_reason: floorDecision.recognizedExitReason ?? '',
     is_floor: true,
   });
 
@@ -173,7 +182,8 @@ function assertMatrixInvariants(matrix, unionMembers) {
   assert.ok(Array.isArray(matrix) && matrix.length >= 1, 'matrix must be a non-empty array');
   for (const record of matrix) {
     assert.ok(
-      'reason' in record && 'action' in record && 'pipeline_reached_finalize' in record && 'residual_reason' in record,
+      'reason' in record && 'action' in record && 'pipeline_reached_finalize' in record
+        && 'residual_reason' in record && 'expected_residual_reason' in record,
       `record missing required keys: ${JSON.stringify(record)}`,
     );
   }
@@ -191,6 +201,12 @@ function assertMatrixInvariants(matrix, unionMembers) {
       typeof record.residual_reason === 'string' && record.residual_reason.length > 0,
       `non-floor reason "${record.reason}" must carry a non-empty residual_reason`,
     );
+    assert.equal(
+      record.residual_reason,
+      record.expected_residual_reason,
+      `non-floor reason "${record.reason}" recorded residual "${record.residual_reason}" but the runtime `
+      + `should attribute "${record.expected_residual_reason}" — a collapsed fallback is not an attribution`,
+    );
   }
 }
 
@@ -198,6 +214,10 @@ let realMatrix;
 
 before(async () => {
   realMatrix = await generateMatrix();
+  // Validate BEFORE the write: MATRIX_PATH is a TRACKED repo file, so an unattributed matrix
+  // that lands on disk dirties the working tree of whatever run generated it. A matrix that
+  // fails its own invariants is never published — the hook throws and the file keeps HEAD's bytes.
+  assertMatrixInvariants(realMatrix, MICROVERSE_EXIT_REASONS);
   fs.mkdirSync(path.dirname(MATRIX_PATH), { recursive: true });
   fs.writeFileSync(MATRIX_PATH, JSON.stringify(realMatrix, null, 2) + '\n');
 });
@@ -243,6 +263,19 @@ describe('AC-OA-4b: every non-floor member reaches finalize with a non-empty res
     assert.ok(target, 'fixture must contain at least one non-floor record');
     target.action = 'abort';
     assert.throws(() => assertMatrixInvariants(fabricated, MICROVERSE_EXIT_REASONS), assert.AssertionError);
+  });
+
+  test('AP-EXT-ITER44-01: a matrix whose residuals collapsed to one shared fallback FAILS the attribution check', () => {
+    const collapsed = realMatrix.map((r) => ({ ...r }));
+    let mutated = 0;
+    for (const record of collapsed) {
+      if (record.is_floor === true) continue;
+      if (record.expected_residual_reason === 'all_judge_backends_exhausted') continue;
+      record.residual_reason = 'all_judge_backends_exhausted';
+      mutated++;
+    }
+    assert.ok(mutated >= 2, 'fixture must collapse at least two attributed rows, or the check is vacuous');
+    assert.throws(() => assertMatrixInvariants(collapsed, MICROVERSE_EXIT_REASONS), assert.AssertionError);
   });
 
   test('the crash floor itself aborts and is excepted from the non-floor invariant', () => {
