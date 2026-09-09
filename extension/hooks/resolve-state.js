@@ -98,7 +98,24 @@ export function selectScannedStateFile(stateFiles, cwd) {
     }
     return activeMatch?.stateFile ?? inactiveMatch?.stateFile ?? null;
 }
-function resolveStateFileFromSessionsDir(dataDir) {
+/**
+ * `rejected` is a state file the caller has already REFUSED, and it is refused
+ * here too. The mapped-session filter (`isMappedOrphanState`) exists to let a
+ * live same-cwd session win over a dead mapped one, so its refusal is expressed
+ * as a fall-through into this scan — and the scan enumerates
+ * `<dataDir>/sessions/*`, the very directory the mapped `sessionPath` lives in.
+ * Without the exclusion the orphan re-entered through the door the refusal
+ * opened: with no live alternative for the cwd it came back as the scan's
+ * `activeMatch` and was returned, `active: true` and `pid: null` intact
+ * (AP-EXT-ITER35-01). One rejection, one answer — not a mapped verdict and a
+ * scan verdict that disagree about the same file.
+ *
+ * The refusal is bounded protection, not belt-and-braces: `state-manager.ts`
+ * demotes a paused orphan only once its state file is 300s stale, so inside
+ * that window this is the ONLY thing standing between a crashed session and a
+ * hook that treats it as live.
+ */
+function resolveStateFileFromSessionsDir(dataDir, rejected) {
     const sessionsDir = path.join(dataDir, 'sessions');
     let entries;
     try {
@@ -107,7 +124,12 @@ function resolveStateFileFromSessionsDir(dataDir) {
     catch {
         return null;
     }
-    return selectScannedStateFile(entries.map((entry) => path.join(sessionsDir, entry, 'state.json')), process.cwd());
+    // Path identity through the same normalizer `sameWorkingDir` uses, so a
+    // symlinked data root cannot spell the same file two ways and slip past.
+    const rejectedKey = rejected === null ? null : normalizeWorkingDir(rejected);
+    return selectScannedStateFile(entries
+        .map((entry) => path.join(sessionsDir, entry, 'state.json'))
+        .filter((stateFile) => rejectedKey === null || normalizeWorkingDir(stateFile) !== rejectedKey), process.cwd());
 }
 /**
  * Resolves the state file path from env or the sessions map.
@@ -117,6 +139,7 @@ function resolveStateFileFromSessionsDir(dataDir) {
 export function resolveStateFile(dataDir) {
     const cwd = process.cwd();
     let fallbackStateFile = null;
+    let rejectedOrphanStateFile = null;
     const envStateFile = process.env.PICKLE_STATE_FILE;
     if (envStateFile) {
         const envMatch = resolveMatchingStateFile(envStateFile, cwd);
@@ -140,7 +163,10 @@ export function resolveStateFile(dataDir) {
                 const mappedStateFile = path.join(sessionPath, 'state.json');
                 const mappedMatch = resolveMatchingStateFile(mappedStateFile, cwd);
                 const mappedState = mappedMatch ? readLookupState(mappedStateFile) : null;
-                if (mappedMatch && !isMappedOrphanState(mappedEntry, mappedState)) {
+                if (mappedMatch && isMappedOrphanState(mappedEntry, mappedState)) {
+                    rejectedOrphanStateFile = mappedMatch.stateFile;
+                }
+                else if (mappedMatch) {
                     if (mappedMatch.active === true)
                         return mappedMatch.stateFile;
                     if (!fallbackStateFile)
@@ -152,7 +178,7 @@ export function resolveStateFile(dataDir) {
     catch {
         /* corrupt sessions map — fall through to state scan below */
     }
-    const scannedStateFile = resolveStateFileFromSessionsDir(dataDir);
+    const scannedStateFile = resolveStateFileFromSessionsDir(dataDir, rejectedOrphanStateFile);
     if (scannedStateFile)
         return scannedStateFile;
     return fallbackStateFile;

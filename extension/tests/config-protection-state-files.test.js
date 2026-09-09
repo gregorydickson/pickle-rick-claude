@@ -2214,3 +2214,82 @@ test('AP-EXT-ITER10-01: the ceiling is NARROW, not absent — it still refuses a
   manager.update(statePath, (s) => { s.tickets = [{ id: 't1', status: 'Done' }]; });
   assert.equal(manager.read(statePath).tickets[0].status, 'Done');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER35-01: a mapped orphan the resolver REFUSED must not re-enter
+// through the same-cwd scan.
+// ---------------------------------------------------------------------------
+
+/**
+ * A crashed session, exactly as `isMappedOrphanState` reads one: `active: true`
+ * with `pid: null` (nothing claims it) and a `current_sessions.json` entry whose
+ * pid is dead. It is the ONLY session for this cwd, which is the discriminator —
+ * the pre-existing fixtures in `resolve-state.test.js` all park a LIVE sibling
+ * beside the orphan, so recency picks the sibling and the refusal is never the
+ * thing under test (deleting it left 134/134 of those green).
+ *
+ * `iteration`/`history` keep the fixture off the R-PTSB-3 phantom signature and
+ * the mtime is fresh, so neither `state-manager.ts` demotion fires: the resolver's
+ * own refusal is the only thing that can answer here.
+ */
+function bootstrapLoneMappedOrphan() {
+  const tmpDir = mkFixtureTmpDir('cp-orphan-scan-');
+  writeExtensionSentinel(tmpDir);
+  const sessionDir = path.join(tmpDir, 'sessions', 'orphan');
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const stateFile = path.join(sessionDir, 'state.json');
+  fs.writeFileSync(stateFile, JSON.stringify(baseState({
+    active: true,
+    pid: null,
+    iteration: 1,
+    history: [{ iteration: 1, step: 'implement', timestamp: new Date().toISOString() }],
+    session_dir: sessionDir,
+  })));
+  fs.writeFileSync(
+    path.join(tmpDir, 'current_sessions.json'),
+    // 99999999 is above every reachable pid_max on the platforms this runs on,
+    // so `isProcessAlive` answers dead without a liveness race.
+    JSON.stringify({ [process.cwd()]: { sessionPath: sessionDir, pid: 99999999 } }),
+  );
+  return { tmpDir, sessionDir, stateFile };
+}
+
+test('AP-EXT-ITER35-01: a lone refused mapped orphan leaves the hook with no state, so the dead session cannot keep the write gate armed', () => {
+  const { tmpDir, sessionDir } = bootstrapLoneMappedOrphan();
+  const result = runHandler({
+    tmpDir,
+    // Empty, not absent: the env candidate must be out of the way so the map and
+    // the sessions scan are what answer. An inherited PICKLE_STATE_FILE would
+    // otherwise decide this test.
+    stateFile: '',
+    toolName: 'Write',
+    toolInput: { file_path: path.join(sessionDir, 'state.json') },
+  });
+
+  assert.equal(
+    result.decision,
+    'approve',
+    'the scan must not re-offer the state file the mapped-session filter refused — a crashed session kept the R-WSRC-3 gate armed against every later session in this repo',
+  );
+});
+
+test('AP-EXT-ITER35-01: the exclusion is scoped to the refused file — a live mapped session still arms the gate', () => {
+  const { tmpDir, sessionDir } = bootstrapLoneMappedOrphan();
+  // Same fixture, one field moved: the map now names a LIVE pid, so the refusal
+  // does not fire and nothing is excluded. Without this control the test above
+  // passes just as well under a scan that returns nothing at all.
+  fs.writeFileSync(
+    path.join(tmpDir, 'current_sessions.json'),
+    JSON.stringify({ [process.cwd()]: { sessionPath: sessionDir, pid: process.pid } }),
+  );
+
+  const result = runHandler({
+    tmpDir,
+    stateFile: '',
+    toolName: 'Write',
+    toolInput: { file_path: path.join(sessionDir, 'state.json') },
+  });
+
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /state file protected/i);
+});
