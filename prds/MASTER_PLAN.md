@@ -190,6 +190,34 @@ composing the next bundle — a red tree would make every later bundle's gate re
 
 ---
 
+## ✅ SECOND ANATOMY-PARK CONVERGENCE — the C6 raise replicates (B-CIGREEN, 2026-09-09 09:13Z)
+
+`2026-09-08-f365390b`: `completed_phases` 2 → 3, **no anatomy entry in `phase_dispositions`**,
+`anatomy-park.json` `converged: true`.
+
+```
+pass_counts {bin: 11, extension: 37}   consecutive_clean {2, 2}   stall_counts {0, 0}
+trap doors: 43 added / 44 committed
+reason: bin clean-converged at pass 11, extension clean-converged at pass 37
+```
+
+**`extension` needed THIRTY-SEVEN passes** — more than four times the old cap of 8, and twice the 17 that
+B-MEGADRAIN's `extension` needed. Two bundles, two convergences, both impossible under the old default.
+This is the replication: [[C6]] was not a one-off rescue of a single run.
+
+**The number worth keeping for [[ROOT W]]'s open question.** Convergence cost per subsystem now measures
+11, 17 and 37 passes across two bundles. A ceiling of 50 clears all three; a ceiling of 8 clears none.
+**But 37 also says the headroom is not generous** — one more subsystem of `extension`'s depth would come
+close to the cap, and the run would then report `anatomy_non_convergent` for a subsystem that was
+converging. If a third bundle shows a subsystem past ~45, raise the ceiling again rather than reading
+non-convergence as a verdict about the code.
+
+**Still no release.** `nonConvergent` is 1 from B-CIGREEN's own pickle-boundary withhold
+(`done_over_red_worker_gate_tests:0c065c63`), which no later phase lowers. szechuan-sauce is now running
+as phase 4.
+
+---
+
 ## ✅ ANATOMY-PARK CONVERGED under the raised APNC ceiling — the C6 raise is EMPIRICALLY VALIDATED (2026-09-08 04:32Z)
 
 **Measured at the phase boundary on session `2026-09-06-27819a21`:**
