@@ -519,6 +519,47 @@ instrument, not necessarily in the code.
 **Related:** GitHub #8 (anatomy-park declares convergence with no INV-NO-SELF-DISOWN evidence,
 "permanently inert on any 2+ marker monorepo") is the same monorepo-shape family. Compose them together.
 
+## 🛑 ROOT G2 — `done_over_red_worker_gate_tests` IS THE RELEASE BLOCKER (2 of 2 bundles, filed 2026-09-09)
+
+**Measured, both bundles that have run since this root's surface was touched:**
+
+| bundle | pickle disposition | nonConvergent | post-run branch gate |
+|---|---|---|---|
+| B-MEGADRAIN `27819a21` | `done_over_red_worker_gate_tests:7d47affe,f4dd43e8,0618cccd,fa96d062` | 4 | **GREEN** — tsc/eslint/emit 0, 0 drift, 10/10 audits, flake-budget 0 fail 5/5 runs tests=9554, integration 690/690, contract 99 |
+| B-CIGREEN `f365390b` | `done_over_red_worker_gate_tests:0c065c63` | 1 | **GREEN** — tsc/eslint/emit 0, 0 drift, flake-budget 0 fail 5/5 runs tests=9659 |
+
+**Both bundles were foreclosed from releasing at the PICKLE boundary, before any review phase ran** —
+`withholdForDoneOverRedTestVerdict` (`pipeline-runner.ts:5315`) raises `nonConvergent`, which no later
+phase lowers. Anatomy-park converged in both. szechuan's failure was irrelevant to the verdict in both.
+**Fixing szechuan entirely would have released neither bundle. This root, not [[ROOT S]], is what stands
+between a completed bundle and a release.**
+
+**The unresolved question, now with 2 of 2 evidence.** Five tickets across two bundles were flipped Done
+over a red `worker_gate_tests_verdict`, and BOTH branches measured green afterward on a quiet box.
+Readings, still not distinguished:
+1. **Benign** — later tickets repaired the earlier reds; each was true when taken, stale by the end.
+2. **Instrument** — the worker gate produces reds the release gate cannot reproduce (wrong cwd, contended
+   tier run, a timing-sensitive flake under worker load, or a tier reporting empty rather than failed).
+
+**2-for-2 does not settle it** — reading 1 predicts exactly this if the bundles were self-repairing, and
+so does reading 2. **The falsifying observation is per-ticket, not per-branch:** for each of the five ids,
+read the recorded `worker_gate_tests_verdict` payload and re-run EXACTLY that tier command at that
+ticket's own completion commit on a quiet box. Reading 1 predicts the red reproduces there and vanishes
+at HEAD; reading 2 predicts it never reproduces. An EMPTY failure list in the payload is reading 2's
+signature by itself.
+
+**Method note, from this session's own instruments.** The babysitter made four measurement errors while
+watching these runs — a self-matching `pgrep`, an under-matching worker census, an argv confirm that
+matched test fixtures, and a stray `cd` that turned "never ran" into exit 1. Every one would have read as
+a red or an absence. **A worker gate running under load, from a spawned cwd, is exposed to the same class**,
+which is why reading 2 is not the unlikely branch here.
+
+### Acceptance criteria (machine-checkable)
+- The recorded `worker_gate_tests_verdict` payload for a red ticket names the failing test(s); a red with an EMPTY failure list is impossible (or is itself reported as a distinct, non-red disposition).
+- Replay harness: given a ticket id, re-run its recorded tier command at its completion commit and report reproduce / not-reproduce. Exercised against all five known ids.
+- The withhold still fires on a genuine red (positive control) AND does NOT fire when the verdict's failure list is empty-because-unmeasured (negative control) — pinned in both directions.
+- Mutation check: make the verdict reader treat empty-as-red again; the negative control goes RED.
+
 ## 🌶 ROOT S — SZECHUAN: FOUR BUNDLES, FOUR DISTINCT CAUSES, ONE DISPOSITION (filed 2026-09-08 from measurement)
 
 **szechuan-sauce has withheld the release verdict on FOUR consecutive bundles. Each failed for a
