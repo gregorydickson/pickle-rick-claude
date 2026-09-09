@@ -29,8 +29,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
 import { readResumePhasePlan, seedResumePhaseCounters, writePipelineStatus } from '../bin/pipeline-runner.js';
 
@@ -38,7 +38,7 @@ const PHASES = ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'];
 const EMPTY_COUNTERS = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
 function mkSession() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-crsr-seed-')));
+  const root = fs.realpathSync(mkFixtureTmpDir('pickle-crsr-seed-'));
   process.env.PICKLE_DATA_ROOT = root; // R-PTSB sandbox
   const sessionDir = path.join(root, 'session');
   fs.mkdirSync(sessionDir, { recursive: true });

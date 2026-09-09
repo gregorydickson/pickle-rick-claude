@@ -117,3 +117,63 @@ test('D6: a dead owner\'s fixture directory survives SIGKILL, then is reaped by 
     fs.rmSync(scriptDir, { recursive: true, force: true });
   }
 });
+
+/**
+ * Ticket fe735bcb (D6): the NORMAL-exit half of the net, and the negative control the ticket
+ * requires — "a legitimately-retained directory is not swept".
+ *
+ * The two assertions must be made over ONE child run. Split across two children, the survival
+ * half stays green even when cleanup never executed at all, which would make the control
+ * vacuous: it would be measuring the absence of a sweep rather than its restraint.
+ *
+ * The child is isolated by handing it its own TMPDIR, so both the fixture it registers and the
+ * helper's own REGISTRY_DIR resolve inside a root this process owns. That keeps a test about
+ * leaked directories from leaking one itself, and it means the retained directory below is
+ * retained on the child's merits, not because it was hidden somewhere the sweep never looked.
+ */
+test('D6 (fe735bcb): a normal exit removes what the registry owns and spares what it does not', async () => {
+  const helperPath = path.join(__dirname, 'helpers', 'fixture-tmpdir.js');
+  const root = mkFixtureTmpDir('pickle-fixture-helper-negctl-');
+  const resultPath = path.join(root, 'result.json');
+  const script = `
+    import * as fs from 'node:fs';
+    import * as os from 'node:os';
+    import * as path from 'node:path';
+    import { mkFixtureTmpDir } from ${JSON.stringify(helperPath)};
+    // Registered: the helper records it, so every net owes it a removal.
+    const registered = mkFixtureTmpDir('pickle-negctl-registered-');
+    // Retained: identical mkdtemp shape, same TMPDIR, same 'pickle-' family — and deliberately
+    // NOT registered. It stands in for a directory some other tool legitimately keeps.
+    const retained = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-negctl-retained-'));
+    fs.writeFileSync(path.join(retained, 'evidence.txt'), 'must survive');
+    // Reported through a FILE, not stdout: the helper imports node:test, so importing it from a
+    // plain script makes the runner emit TAP onto stdout at exit and the JSON stops being the
+    // only thing there.
+    fs.writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify({ registered, retained }));
+    // Falls off the end: a normal exit, so process.on('exit') fires. No SIGKILL here — that
+    // path is the sibling test above, and it is the one case this net cannot cover.
+  `;
+  const scriptPath = path.join(root, 'child.mjs');
+  fs.writeFileSync(scriptPath, script);
+
+  const child = spawn(process.execPath, [scriptPath], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+    env: { ...process.env, TMPDIR: root },
+    timeout: 30_000,
+  });
+  const exitCode = await new Promise((resolve) => child.on('close', resolve));
+
+  assert.equal(exitCode, 0, 'the child must exit normally — an abnormal exit tests a different net');
+  const { registered, retained } = JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
+
+  assert.ok(!fs.existsSync(registered), 'a registered directory must be gone after a normal exit');
+  assert.ok(
+    fs.existsSync(retained),
+    'NEGATIVE CONTROL: an unregistered directory of the same shape, prefix family and TMPDIR must survive',
+  );
+  assert.equal(
+    fs.readFileSync(path.join(retained, 'evidence.txt'), 'utf-8'),
+    'must survive',
+    'the retained directory must survive with its CONTENTS intact, not merely as an empty husk',
+  );
+});

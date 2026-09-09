@@ -3,8 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 import { fileURLToPath } from 'node:url';
 import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -46,7 +46,7 @@ process.env.GIT_CONFIG_GLOBAL = '/dev/null';
 process.env.GIT_CONFIG_SYSTEM = '/dev/null';
 
 function createTempGitRepo() {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-microverse-'));
+    const dir = mkFixtureTmpDir('pickle-microverse-');
     execSync('git init', { cwd: dir, stdio: 'pipe' });
     execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe' });
     execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe' });
@@ -165,9 +165,9 @@ test('per-iteration gate remediation publishes gate result via atomic state writ
 });
 
 test('per-iteration gate remediation recovers orphan tmp result before classifying success', async () => {
-    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-result-'));
-    const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-work-'));
-    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-bin-'));
+    const sessionDir = mkFixtureTmpDir('pickle-remediation-result-');
+    const workingDir = mkFixtureTmpDir('pickle-remediation-work-');
+    const binDir = mkFixtureTmpDir('pickle-remediation-bin-');
     const fakeClaudePath = path.join(binDir, 'claude');
     const oldPath = process.env.PATH;
     const gateDir = path.join(sessionDir, 'gate');
@@ -299,9 +299,9 @@ test('boundRemediationPrompt output survives a real execve argument', () => {
 // mutation above fails on this budget, at 130048 bytes, not on the platform limit. What is
 // pinned here is the microverse-specific 96 KiB budget, which nothing else checked.
 test('runRemediatorForIteration bounds the prompt it hands to execve, not just in the helper', async () => {
-    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-argv-session-'));
-    const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-argv-work-'));
-    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-argv-bin-'));
+    const sessionDir = mkFixtureTmpDir('pickle-remediation-argv-session-');
+    const workingDir = mkFixtureTmpDir('pickle-remediation-argv-work-');
+    const binDir = mkFixtureTmpDir('pickle-remediation-argv-bin-');
     const argvReportPath = path.join(binDir, 'argv-bytes.json');
     const oldPath = process.env.PATH;
     const gateDir = path.join(sessionDir, 'gate');
@@ -396,10 +396,10 @@ test('runRemediatorForIteration bounds the prompt it hands to execve, not just i
 });
 
 test('per-iteration gate remediation logs worker_backend_resolved with backend-resolution source semantics', async () => {
-    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-session-'));
-    const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-work-'));
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-data-'));
-    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-remediation-bin-'));
+    const sessionDir = mkFixtureTmpDir('pickle-remediation-session-');
+    const workingDir = mkFixtureTmpDir('pickle-remediation-work-');
+    const dataRoot = mkFixtureTmpDir('pickle-remediation-data-');
+    const binDir = mkFixtureTmpDir('pickle-remediation-bin-');
     const fakeClaudePath = path.join(binDir, 'claude');
     const oldPath = process.env.PATH;
     const oldDataRoot = process.env.PICKLE_DATA_ROOT;
@@ -695,7 +695,7 @@ test('recordFailedApproach: caps at 100, oldest shifted on overflow', () => {
 });
 
 test('writeMicroverseState and readMicroverseState round-trip', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-'));
+    const dir = mkFixtureTmpDir('pickle-mv-');
     try {
         const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
         writeMicroverseState(dir, state);
@@ -707,7 +707,7 @@ test('writeMicroverseState and readMicroverseState round-trip', () => {
 });
 
 test('readMicroverseState returns null for missing file', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-'));
+    const dir = mkFixtureTmpDir('pickle-mv-');
     try {
         assert.equal(readMicroverseState(dir), null);
     } finally {
@@ -734,7 +734,7 @@ const MICROVERSE_RUNNER_BIN = path.resolve(
 );
 
 function createSessionDir(workingDir, mvOverrides = {}) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-session-'));
+    const dir = mkFixtureTmpDir('pickle-mv-session-');
     const state = {
         active: true,
         working_dir: workingDir,
@@ -855,7 +855,7 @@ function makeMicroverseLoopContext(session, workingDir, extensionRoot, stateOver
 
 test('pass-model.override: microverse runner passes configured per-pass model to runIteration', async () => {
     const workingDir = createTempGitRepo();
-    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pass-model-ext-'));
+    const extensionRoot = mkFixtureTmpDir('pickle-pass-model-ext-');
     const session = createSessionDir(workingDir);
     fs.writeFileSync(path.join(extensionRoot, 'pickle_settings.json'), JSON.stringify({
         pass_model_overrides: { 1: 'claude-opus-4-6' },
@@ -879,7 +879,7 @@ test('pass-model.override: microverse runner passes configured per-pass model to
 
 test('pass-model.default: microverse runner leaves model empty when current pass has no override', async () => {
     const workingDir = createTempGitRepo();
-    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pass-model-ext-'));
+    const extensionRoot = mkFixtureTmpDir('pickle-pass-model-ext-');
     const session = createSessionDir(workingDir);
     fs.writeFileSync(path.join(extensionRoot, 'pickle_settings.json'), JSON.stringify({
         pass_model_overrides: { 2: 'claude-opus-4-6' },
@@ -903,7 +903,7 @@ test('pass-model.default: microverse runner leaves model empty when current pass
 
 test('worker current_subsystem: microverse runner persists active subsystem before iteration spawn', async () => {
     const workingDir = createTempGitRepo();
-    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-current-subsystem-ext-'));
+    const extensionRoot = mkFixtureTmpDir('pickle-current-subsystem-ext-');
     const session = createSessionDir(workingDir, {
         convergence_mode: 'worker',
         convergence_file: 'anatomy-park.json',
@@ -954,8 +954,8 @@ test('R-APMW-8: production path unaffected when env var unset', async () => {
 
 test('wasted-iter.emit: microverse emits wasted_iter with no-commit predicate value', async () => {
     const workingDir = createTempGitRepo();
-    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wasted-mv-ext-'));
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wasted-mv-data-'));
+    const extensionRoot = mkFixtureTmpDir('pickle-wasted-mv-ext-');
+    const dataRoot = mkFixtureTmpDir('pickle-wasted-mv-data-');
     const previousDataRoot = process.env.PICKLE_DATA_ROOT;
     const session = createSessionDir(workingDir);
     const sha = 'a'.repeat(40);
@@ -986,8 +986,8 @@ test('wasted-iter.emit: microverse emits wasted_iter with no-commit predicate va
 
 test('pass-model.override: szechuan quality pass spawn args contain --model X', async () => {
     const workingDir = createTempGitRepo();
-    const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pass-model-ext-'));
-    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pass-model-bin-'));
+    const extensionRoot = mkFixtureTmpDir('pickle-pass-model-ext-');
+    const fakeBin = mkFixtureTmpDir('pickle-pass-model-bin-');
     const session = createSessionDir(workingDir);
     const capturePath = path.join(fakeBin, 'args.json');
     const previousPath = process.env.PATH;
@@ -1114,8 +1114,8 @@ test('stall-classifier.recovery: maps categories to recovery actions', () => {
 });
 
 test('stall-classifier.recovery: no-commit stall emits exactly one classification event', async () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-stall-classifier-data-'));
-    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-stall-classifier-session-'));
+    const dataRoot = mkFixtureTmpDir('pickle-stall-classifier-data-');
+    const sessionDir = mkFixtureTmpDir('pickle-stall-classifier-session-');
     const previousDataRoot = process.env.PICKLE_DATA_ROOT;
     try {
         process.env.PICKLE_DATA_ROOT = dataRoot;
@@ -1160,7 +1160,7 @@ test('stall-classifier.recovery: no-commit stall emits exactly one classificatio
 
 async function runMicroverseRelaunchScenario({ backend, priorRelaunchCount = 0, tickets }) {
     const workingDir = createTempGitRepo();
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-relaunch-data-'));
+    const dataRoot = mkFixtureTmpDir('pickle-mv-relaunch-data-');
     const previousDataRoot = process.env.PICKLE_DATA_ROOT;
     const session = createSessionDir(workingDir);
     const statePath = path.join(session.dir, 'state.json');
@@ -1225,7 +1225,7 @@ async function runMicroverseRelaunchScenario({ backend, priorRelaunchCount = 0, 
 }
 
 test('readRunnerState promotes orphan tmp state before microverse control-flow reads', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-state-'));
+    const dir = mkFixtureTmpDir('pickle-mv-state-');
     const statePath = path.join(dir, 'state.json');
     try {
         // baseState must satisfy isRecoverableStateSnapshotCandidate
@@ -1272,7 +1272,7 @@ test('readRunnerState promotes orphan tmp state before microverse control-flow r
 });
 
 test('deactivateRunnerState preserves session fields when lock-backed update fails', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-state-'));
+    const dir = mkFixtureTmpDir('pickle-mv-state-');
     const statePath = path.join(dir, 'state.json');
     try {
         writeStateFile(statePath, {
@@ -1312,7 +1312,7 @@ test('deactivateRunnerState preserves session fields when lock-backed update fai
 });
 
 test('microverse-runner fatal path promotes newer microverse tmp before marking stopped', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-fatal-'));
+    const dir = mkFixtureTmpDir('pickle-mv-fatal-');
     const mvPath = path.join(dir, 'microverse.json');
     const tmpPath = `${mvPath}.tmp.99999999`;
     try {
@@ -1350,7 +1350,7 @@ test('microverse-runner fatal path promotes newer microverse tmp before marking 
 // --- measureMetric tests ---
 
 test('measureMetric parses numeric output from command', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-'));
+    const dir = mkFixtureTmpDir('pickle-metric-');
     try {
         const result = await measureMetric('echo 42.5', 5, dir);
         assert.ok(result, 'expected non-null result');
@@ -1362,7 +1362,7 @@ test('measureMetric parses numeric output from command', async () => {
 });
 
 test('measureMetric returns null for non-numeric output', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-'));
+    const dir = mkFixtureTmpDir('pickle-metric-');
     try {
         const result = await measureMetric('echo "not a number"', 5, dir);
         assert.equal(result, null);
@@ -1372,7 +1372,7 @@ test('measureMetric returns null for non-numeric output', async () => {
 });
 
 test('measureMetric returns null on timeout', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-'));
+    const dir = mkFixtureTmpDir('pickle-metric-');
     try {
         const result = await measureMetric('sleep 10 && echo 50', 1, dir);
         assert.equal(result, null);
@@ -1393,7 +1393,7 @@ test('AP-EXT-ITER42-01: measureMetric settles on its own deadline when the shell
     // grandchild that inherited them holds them open for as long as it runs. This fake
     // child models exactly that: it exits nothing and NEVER emits 'close'. Pre-fix the
     // await here never resolves at all.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-'));
+    const dir = mkFixtureTmpDir('pickle-metric-');
     const originalSpawn = _deps.spawn;
     const originalKillGroup = _deps.killProcessGroup;
     const groupSignals = [];
@@ -1437,7 +1437,7 @@ test('AP-EXT-ITER42-01: measureMetric settles on its own deadline when the shell
 });
 
 test('AP-EXT-ITER42-01: measureMetric reaps the whole shell tree on timeout — no grandchild outlives the deadline', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-tree-'));
+    const dir = mkFixtureTmpDir('pickle-metric-tree-');
     try {
         // The metric contract parses the score off the LAST line of stdout, so `<cmd> | tail -1`
         // is the natural validation shape — and a pipeline makes `/bin/sh -c` FORK instead of
@@ -1478,7 +1478,7 @@ test('AP-EXT-ITER53-02: the judge child leads its own group and the timeout sign
     // The bare-child kill is the FALLBACK only. Making it throw proves the group kill is the
     // path taken, and the `detached` assertion proves the negative-PID signal can even reach
     // a grandchild — without it the group is the RUNNER's own (the AP-EXT-ITER47-01 hazard).
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-judge-group-'));
+    const dir = mkFixtureTmpDir('pickle-judge-group-');
     const originalSpawn = _deps.spawn;
     const originalKillGroup = _deps.killProcessGroup;
     const groupSignals = [];
@@ -1521,7 +1521,7 @@ test('AP-EXT-ITER53-02: the judge child leads its own group and the timeout sign
 });
 
 test('AP-EXT-ITER53-02: a wedged judge’s grandchild does not outlive the measurement deadline', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-judge-tree-'));
+    const dir = mkFixtureTmpDir('pickle-judge-tree-');
     const originalSpawn = _deps.spawn;
     try {
         // Stand in for the `claude` binary with a script that FORKS — that is the shape the
@@ -1560,7 +1560,7 @@ test('AP-EXT-ITER53-02: a wedged judge’s grandchild does not outlive the measu
 });
 
 test('measureMetric returns null on command failure', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-'));
+    const dir = mkFixtureTmpDir('pickle-metric-');
     try {
         const result = await measureMetric('exit 1', 5, dir);
         assert.equal(result, null);
@@ -1570,7 +1570,7 @@ test('measureMetric returns null on command failure', async () => {
 });
 
 test('measureMetric parses last line when multi-line output', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-'));
+    const dir = mkFixtureTmpDir('pickle-metric-');
     try {
         const result = await measureMetric('echo "info line" && echo 99', 5, dir);
         assert.ok(result, 'expected non-null result');
@@ -1655,7 +1655,7 @@ test('buildMicroverseHandoff omits gap-analysis section when gap_analysis_path f
 });
 
 test('buildMicroverseHandoff includes gap-analysis section when gap_analysis_path file exists', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-gap-handoff-'));
+    const dir = mkFixtureTmpDir('pickle-gap-handoff-');
     try {
         const gapPath = path.join(dir, 'gap_analysis.md');
         fs.writeFileSync(gapPath, '# Gap Analysis\n');
@@ -1980,7 +1980,7 @@ test('runner reads state.json and microverse.json on startup', () => {
 
 test('handleRateLimit persists API reset metadata and emits wait activity', async () => {
     const dir = createTempGitRepo();
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-data-'));
+    const dataRoot = mkFixtureTmpDir('pickle-mv-data-');
     const previousDataRoot = process.env.PICKLE_DATA_ROOT;
     const originalSleep = _deps.sleep;
     try {
@@ -2978,7 +2978,7 @@ test('worker_timeout_seconds=0 is re-enforced after state re-read', () => {
 
 test('auto-rescue: dirty tree gets auto-committed when no commits detected', () => {
     const dir = createTempGitRepo();
-    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-microverse-session-'));
+    const sessionDir = mkFixtureTmpDir('pickle-microverse-session-');
     try {
         const preSha = getHeadSha(dir);
 
@@ -3097,7 +3097,7 @@ test('AP-EXT-ITER25-02: rollback restores a non-UTF-8 TEXT staged file byte-exac
 });
 
 test('metric retry: second attempt succeeds after first failure', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metric-retry-'));
+    const dir = mkFixtureTmpDir('pickle-metric-retry-');
     try {
         let callCount = 0;
         const measureFn = () => {
@@ -3155,7 +3155,7 @@ test('F13: worker_timeout_seconds numeric 0 is always safe', () => {
 // --- F14: auto-commit .git validation ---
 
 test('F14: non-git workingDir is detected before auto-commit git commands', () => {
-    const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-nongit-'));
+    const nonGitDir = mkFixtureTmpDir('pickle-nongit-');
     try {
         // No .git directory — the runner should log 'not a git repository' and skip git ops
         const isGitRepo = fs.existsSync(path.join(nonGitDir, '.git'));
@@ -3189,7 +3189,7 @@ test('F14: valid git repo passes the .git existence check', () => {
 // --- Resume recovery tests ---
 
 test('resume recovery: stopped state with no history resets to gap_analysis', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-resume-'));
+    const dir = mkFixtureTmpDir('pickle-mv-resume-');
     try {
         let state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
         state.status = 'stopped';
@@ -3216,7 +3216,7 @@ test('resume recovery: stopped state with no history resets to gap_analysis', ()
 });
 
 test('resume recovery: stopped state with history resets to iterating', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-resume-'));
+    const dir = mkFixtureTmpDir('pickle-mv-resume-');
     try {
         let state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
         state.status = 'stopped';
@@ -3254,7 +3254,7 @@ test('resume recovery: stopped state with history resets to iterating', () => {
 });
 
 test('resume recovery: non-failed status is not modified', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-resume-'));
+    const dir = mkFixtureTmpDir('pickle-mv-resume-');
     try {
         let state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
         state.status = 'iterating';
@@ -3304,7 +3304,7 @@ test('worker mode: isConverged is irrelevant — runner checks convergence file 
 });
 
 test('worker mode: convergence file with converged=true triggers exit', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wk-'));
+    const dir = mkFixtureTmpDir('pickle-wk-');
     try {
         fs.writeFileSync(path.join(dir, 'convergence.json'), JSON.stringify({ converged: true, reason: 'done' }));
         const raw = JSON.parse(fs.readFileSync(path.join(dir, 'convergence.json'), 'utf-8'));
@@ -3316,7 +3316,7 @@ test('worker mode: convergence file with converged=true triggers exit', () => {
 });
 
 test('worker mode: convergence file missing does not throw', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wk-'));
+    const dir = mkFixtureTmpDir('pickle-wk-');
     try {
         let caught = false;
         try {
@@ -3331,7 +3331,7 @@ test('worker mode: convergence file missing does not throw', () => {
 });
 
 test('worker mode: malformed JSON in convergence file does not throw', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wk-'));
+    const dir = mkFixtureTmpDir('pickle-wk-');
     try {
         fs.writeFileSync(path.join(dir, 'convergence.json'), 'not json!!!');
         let caught = false;
@@ -3409,7 +3409,7 @@ test('backward compat: state without convergence_mode uses metric path', () => {
 
 test('microverse finalize success path lands finalizeTerminalState invariants', async () => {
     const { finalizeTerminalState } = await import('../services/state-manager.js');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-finalize-'));
+    const dir = mkFixtureTmpDir('pickle-mv-finalize-');
     try {
         const statePath = path.join(dir, 'state.json');
         fs.writeFileSync(statePath, JSON.stringify({
@@ -3439,7 +3439,7 @@ test('microverse finalize success path lands finalizeTerminalState invariants', 
 
 test('microverse forensic shutdown stamps signal exit_reason without clearing step/current_ticket', async () => {
     const { recordExitReason, safeDeactivate } = await import('../services/state-manager.js');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-signal-'));
+    const dir = mkFixtureTmpDir('pickle-mv-signal-');
     try {
         const statePath = path.join(dir, 'state.json');
         fs.writeFileSync(statePath, JSON.stringify({
@@ -3491,7 +3491,7 @@ test('resolveStallLimit: invalid stall_limit_llm=0 falls back to 15', () => {
 import { maybeEmitConsecutiveNoProgressWarning } from '../bin/microverse-runner.js';
 
 function withDataRoot(fn) {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-dataroot-'));
+    const tmpDir = mkFixtureTmpDir('pickle-dataroot-');
     const saved = process.env.PICKLE_DATA_ROOT;
     process.env.PICKLE_DATA_ROOT = tmpDir;
     try {
@@ -3621,7 +3621,7 @@ test('R-MVFM: non-plateau entry resets dedupe guard — next held appends fresh 
 
 test('AC-CF-07: the turn-count proxy survives for a DIRTY tree — amnesiac stays reachable', async () => {
     const workingDir = createTempGitRepo();
-    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-accf07-'));
+    const sessionDir = mkFixtureTmpDir('pickle-mv-accf07-');
     try {
         // `handleNoCommitStall` is reached only AFTER `autoRescueDirtyTree` has run, so a tree that
         // is still dirty here is exactly one of the two live states the rescue leaves behind: it
@@ -3892,7 +3892,7 @@ test('R-MVPARK: handleRateLimitExit sums cumulative_parked_ms across waits and e
     const originalSleep = _deps.sleep;
     const originalNow = _deps.now;
     const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-dataroot-'));
+    const dataRoot = mkFixtureTmpDir('pickle-dataroot-');
     try {
         process.env.PICKLE_DATA_ROOT = dataRoot;
         const { dir: sessionDir, state } = createSessionDir(workingDir);

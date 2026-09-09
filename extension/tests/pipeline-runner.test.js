@@ -3,8 +3,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 import * as url from 'node:url';
 import {
   isTestFile,
@@ -45,7 +45,7 @@ import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js'
 import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
 
 function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pipeline-'));
+  return mkFixtureTmpDir('pickle-pipeline-');
 }
 
 function writeRelaunchClaimState(statePath, overrides = {}) {
@@ -2796,7 +2796,7 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
 
 describe('AC-SCPIN-5 honest phase-halt reason', () => {
   function scpinTmpDir() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-scpin5-'));
+    return mkFixtureTmpDir('pickle-scpin5-');
   }
 
   function writePickleState(statePath, overrides = {}) {
@@ -3070,7 +3070,7 @@ describe('AP-EXT-ITER7-01 replay: the phase-runner transport decodes on the STRE
 
 describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   function cfTmpDir() {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-crashfloor-'));
+    return mkFixtureTmpDir('pickle-crashfloor-');
   }
 
   function seedGitRepoAndCommitCF(dir) {
@@ -3599,7 +3599,7 @@ describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
   }
 
   function tmp(prefix) {
-    return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    return mkFixtureTmpDir(prefix);
   }
 
   function git(args, cwd) {

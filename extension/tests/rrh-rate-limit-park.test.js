@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 import {
   computeRateLimitAction,
   resolveParkResumeTime,
@@ -38,8 +39,7 @@ import {
   PARK_RESUME_JITTER_MAX_MS,
   rateLimitParkStillLive,
 } from '../bin/mux-runner.js';
-import { writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -536,14 +536,14 @@ test('B3/AC-A5: the no-progress-counter suppression no longer reads rate_limit_w
 test('B3: a spawn failure with no rate-limit evidence in its OWN log is not classified as rate-limited', () => {
   // Exercises the exact function AC-A5 now depends on exclusively. A stale
   // rate_limit_wait.json elsewhere on disk plays no part in this call.
-  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-b3-ratelimit-'));
+  const dir = mkFixtureTmpDir('pickle-b3-ratelimit-');
   const logFile = path.join(dir, 'tmux_iteration_1.log');
   writeFileSync(logFile, JSON.stringify({ type: 'result', subtype: 'error', is_error: true }) + '\n');
   assert.equal(detectRateLimitInLog(logFile).limited, false);
 });
 
 test('B3: a spawn failure WITH a structured rejected rate_limit_event in its own log is still classified as rate-limited', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-b3-ratelimit-'));
+  const dir = mkFixtureTmpDir('pickle-b3-ratelimit-');
   const logFile = path.join(dir, 'tmux_iteration_1.log');
   const resetsAt = Math.floor(Date.now() / 1000) + 3600;
   writeFileSync(logFile, JSON.stringify({
@@ -586,7 +586,7 @@ test('B3: restorePersistedRateLimitPark does not re-arm from a resets_at already
 // ---------------------------------------------------------------------------
 
 function parkDir(contents) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-b3-park-'));
+  const dir = mkFixtureTmpDir('pickle-b3-park-');
   if (contents !== undefined) {
     writeFileSync(path.join(dir, 'rate_limit_wait.json'), contents);
   }

@@ -176,8 +176,8 @@ test('AP-EXT-ITER10-01: no `as SalvageDeps` cast on any non-comment line in src/
 // repo, because the shipped coverage test injects a fake `salvage` and so asserts a
 // disposition table over a stub — it stayed green through the whole defect.
 import * as fsSync from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 import { execFileSync } from 'node:child_process';
 
 import { runRecover } from '../bin/pickle-recover.js';
@@ -206,7 +206,7 @@ function gitIn(cwd, args) {
 
 /** A real repo + session dir holding one ticket at `status`, tree dirty or clean. */
 function makeRecoverFixture(status, dirty) {
-    const root = fsSync.realpathSync(fsSync.mkdtempSync(path.join(os.tmpdir(), 'pickle-reset-ticket-')));
+    const root = fsSync.realpathSync(mkFixtureTmpDir('pickle-reset-ticket-'));
     const repo = path.join(root, 'repo');
     fsSync.mkdirSync(repo);
     gitIn(repo, ['init', '-q', '-b', 'main']);

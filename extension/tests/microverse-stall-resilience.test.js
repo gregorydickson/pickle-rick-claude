@@ -2,7 +2,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +19,7 @@ import {
   handleNoCommitStall,
 } from '../bin/microverse-runner.js';
 import { createMicroverseState, updateViolationLedger, compareMetric } from '../services/microverse-state.js';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
 const TEST_METRIC = {
   description: 'quality score',
@@ -29,8 +29,12 @@ const TEST_METRIC = {
   tolerance: 0,
 };
 
+// D6: routed through the shared crash-surviving registry instead of a bare mkdtempSync — a
+// thrown assertion before this file's own fs.rmSync cleanup used to leak the directory until
+// the 24h derived-prefix sweep caught it; mkFixtureTmpDir's after()/exit hooks catch it
+// immediately regardless of how the test ends.
 function tmpDir(prefix = 'pickle-mrs-') {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  return mkFixtureTmpDir(prefix);
 }
 
 function git(dir, args) {

@@ -27,6 +27,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { mkFixtureTmpDir } from '../helpers/fixture-tmpdir.js';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -43,7 +44,7 @@ const STATE_MANAGER_SRC = path.resolve(__dirname, '../../src/services/state-mana
 const STATE_MANAGER = path.resolve(__dirname, '../../services/state-manager.js');
 
 function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-lock-steal-'));
+  return mkFixtureTmpDir('pickle-lock-steal-');
 }
 
 /** Mirrors the private `gateLockPath` in state-manager.ts — the gate lock is NOT session-scoped. */

@@ -24,9 +24,14 @@ import {
   writePipelineStatus,
 } from '../bin/pipeline-runner.js';
 import { CRASH_FLOOR_EXIT_REASONS, EXIT_REASONS } from '../types/index.js';
+import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
+// D6: routed through the shared crash-surviving registry instead of a bare mkdtempSync — a
+// thrown assertion before this file's own fs.rmSync cleanup used to leak the directory until
+// the 24h derived-prefix sweep caught it; mkFixtureTmpDir's after()/exit hooks catch it
+// immediately regardless of how the test ends.
 function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-finalize-honesty-'));
+  return mkFixtureTmpDir('pickle-finalize-honesty-');
 }
 
 // A state.json shape StateManager.read() accepts (mirrors tests/pipeline-runner.test.js).
