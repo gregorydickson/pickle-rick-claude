@@ -19,10 +19,11 @@
  * Self-reference: `managedDir` is NEVER a source of "originals". A spawn nested
  * inside a process that already carries our own env fragment inherits it, and
  * `git config --get core.hooksPath` HONORS `GIT_CONFIG_*` from the environment —
- * so the naive resolution answers with `managedDir` itself, and every hook gets
+ * so a naive resolution answers with `managedDir` itself, and every hook gets
  * rewritten to `exec <itself>`: an infinite exec loop that hangs the commit
- * forever. `resolvePreExistingHooksDir` therefore discards a self-matching
- * candidate and falls through to the repo default.
+ * forever. Every resolution `git` therefore runs under `GIT_CONFIG_COUNT=0`,
+ * which switches the environment-config layer OFF for that one child, so the
+ * question asked is always "what would this repo do without us".
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -46,6 +47,12 @@ function runGitBestEffort(args: string[], cwd: string): { status: number; stdout
       encoding: 'utf-8',
       timeout: GIT_RESOLVE_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // `GIT_CONFIG_COUNT=0` turns the environment-config layer off for this child without
+      // enumerating the `GIT_CONFIG_KEY_<i>`/`GIT_CONFIG_VALUE_<i>` pairs it governs, so an
+      // inherited fragment of ANY length (a nested spawn composes, appending at index n) is
+      // neutralized by one assignment. This is what makes the resolution answer with the
+      // repo's OWN configuration instead of the value we are about to impose on it.
+      env: { ...process.env, GIT_CONFIG_COUNT: '0' },
     });
     if (result.error) return { status: -1, stdout: '' };
     return { status: result.status ?? -1, stdout: result.stdout ?? '' };
@@ -74,18 +81,6 @@ function resolveDirFromGitOutput(args: string[], repoRoot: string, suffix?: stri
   }
 }
 
-/** Same on-disk directory, tolerating a path that does not exist yet. */
-function samePath(a: string, b: string): boolean {
-  const canonical = (p: string): string => {
-    try {
-      return fs.realpathSync(p);
-    } catch {
-      return path.resolve(p);
-    }
-  };
-  return canonical(a) === canonical(b);
-}
-
 /**
  * Resolves the target repo's PRE-EXISTING hooks directory: `core.hooksPath`
  * first (git-config(1) resolves a relative value against the repo root), else
@@ -93,16 +88,13 @@ function samePath(a: string, b: string): boolean {
  * Returns null when neither resolves to an existing directory, or on any error —
  * never throws.
  *
- * A candidate equal to `managedDir` is DISCARDED, not returned: that is us, seen
- * through our own inherited `GIT_CONFIG_*` fragment (see the module header).
- * Falling through to the repo default is what keeps a nested spawn forwarding
- * the repo's REAL hooks instead of either self-exec'ing or silently dropping
- * trailer attribution.
- *
- * The fallback derives from `rev-parse --git-common-dir`, NOT `rev-parse --git-path
- * hooks`: the latter honors `core.hooksPath` too, so under an inherited fragment
- * it re-derives the exact self-match the first arm just rejected. `--git-common-dir`
- * ignores `core.hooksPath`, which also makes the two arms non-redundant.
+ * Self-reference is prevented at the SOURCE, in `runGitBestEffort`: with the
+ * environment-config layer off, `core.hooksPath` can only ever answer with the repo's
+ * own value, so `managedDir` is not a candidate this can return. Discarding a
+ * self-matching ANSWER instead would leave the question wrong — under an inherited
+ * fragment the first arm is then always us, always discarded, and a repo that really
+ * does set `core.hooksPath` (husky) silently falls through to `<git-common-dir>/hooks`
+ * and loses its own `prepare-commit-msg`.
  *
  * COMMON, not `--git-dir`: hooks are a per-repository resource, so they live in the
  * COMMON dir. In a linked worktree `--git-dir` is `.git/worktrees/<name>`, which has
@@ -111,14 +103,14 @@ function samePath(a: string, b: string): boolean {
  * the worktree. `--git-common-dir` is identical to `--git-dir` in the main-worktree
  * and `--separate-git-dir` layouts, so this is strictly a widening.
  */
-function resolvePreExistingHooksDir(repoRoot: string, managedDir: string): string | null {
+function resolvePreExistingHooksDir(repoRoot: string): string | null {
   const candidates: Array<[string[], string?]> = [
     [['config', '--get', 'core.hooksPath']],
     [['rev-parse', '--git-common-dir'], 'hooks'],
   ];
   for (const [args, suffix] of candidates) {
     const resolved = resolveDirFromGitOutput(args, repoRoot, suffix);
-    if (resolved && !samePath(resolved, managedDir)) return resolved;
+    if (resolved) return resolved;
   }
   return null;
 }
@@ -218,7 +210,7 @@ function writeExecutableScript(filePath: string, contents: string): void {
 export function materializeTrailerHooks(
   opts: MaterializeTrailerHooksOpts,
 ): MaterializeTrailerHooksResult {
-  const preExistingDir = resolvePreExistingHooksDir(opts.repoRoot, opts.managedDir);
+  const preExistingDir = resolvePreExistingHooksDir(opts.repoRoot);
   if (!preExistingDir) {
     return { ok: false, reason: 'pre-existing hooks dir unresolvable' };
   }

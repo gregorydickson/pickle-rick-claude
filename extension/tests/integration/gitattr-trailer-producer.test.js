@@ -246,6 +246,58 @@ test('gitattr trailer producer — nested spawn self-reference', async (t) => {
     assert.equal(trailerValue(repoRoot), 'nested01');
   });
 
+  // AP-EXT-ITER37-01: the self-match DISCARD answered the wrong question. Under an inherited
+  // fragment `git config --get core.hooksPath` reports the managed dir (env config outranks the
+  // repo), so arm 1 was always us, always discarded, and a repo that really does set
+  // `core.hooksPath` (husky) fell through to `<git-common-dir>/hooks` — losing its own
+  // prepare-commit-msg for every later commit in the session. Every fixture above uses a repo with
+  // NO `core.hooksPath`, which is exactly why the fall-through looked correct.
+  await t.test('a nested materialization still forwards a repo core.hooksPath prepare-commit-msg', () => {
+    const repoRoot = tmpRoot('gitattr-hookspath-');
+    const managedDir = path.join(tmpRoot('gitattr-hookspath-managed-'), 'hooks');
+    initGitRepo(repoRoot);
+    const ownHooksDir = path.join(repoRoot, '.myhooks');
+    fs.mkdirSync(ownHooksDir);
+    const realHook = path.join(ownHooksDir, 'prepare-commit-msg');
+    fs.writeFileSync(realHook, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    git(['config', 'core.hooksPath', '.myhooks'], repoRoot);
+
+    assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+    assert.equal(materializeNested(repoRoot, managedDir).ok, true);
+
+    const stamped = fs.readFileSync(path.join(managedDir, 'prepare-commit-msg'), 'utf-8');
+    assert.equal(stamped.includes(`exec '${realHook}'`), true);
+  });
+
+  await t.test('a commit after a nested materialization runs the repo core.hooksPath hook AND stamps', () => {
+    const repoRoot = tmpRoot('gitattr-hookspath-commit-');
+    const managedDir = path.join(tmpRoot('gitattr-hookspath-commit-managed-'), 'hooks');
+    initGitRepo(repoRoot);
+    const ownHooksDir = path.join(repoRoot, '.myhooks');
+    fs.mkdirSync(ownHooksDir);
+    const marker = path.join(repoRoot, 'own-hook-ran.txt');
+    fs.writeFileSync(
+      path.join(ownHooksDir, 'prepare-commit-msg'),
+      `#!/bin/sh\nprintf ran > '${marker}'\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    git(['config', 'core.hooksPath', '.myhooks'], repoRoot);
+
+    assert.equal(materializeTrailerHooks({ repoRoot, managedDir }).ok, true);
+    assert.equal(materializeNested(repoRoot, managedDir).ok, true);
+
+    fs.writeFileSync(path.join(repoRoot, 'two.txt'), 'two');
+    git(['add', '-A'], repoRoot);
+    git(
+      ['commit', '--no-gpg-sign', '-q', '-m', 'fix: nested spawn with core.hooksPath'],
+      repoRoot,
+      hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'hooks9c1' }),
+    );
+
+    assert.equal(fs.existsSync(marker), true);
+    assert.equal(trailerValue(repoRoot), 'hooks9c1');
+  });
+
   await t.test('git *.sample hooks are not forwarded', () => {
     const repoRoot = tmpRoot('gitattr-samples-');
     const managedDir = path.join(tmpRoot('gitattr-samples-managed-'), 'hooks');
