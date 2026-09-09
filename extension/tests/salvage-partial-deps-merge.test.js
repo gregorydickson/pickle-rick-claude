@@ -364,3 +364,61 @@ test('AP-EXT-ITER42-02: the --plan text promises no transition --salvage cannot 
     assert.match(plan, /archive/i, 'the plan names the disposition the command actually reaches');
     assert.doesNotMatch(plan, /commit\+Done|ff-reattach/i, 'the plan must not advertise an unreachable disposition');
 });
+
+// AP-EXT-ITER43-02 — the same four-member menu survived in a FIFTH place.
+//
+// AP-EXT-ITER42-02 corrected four surfaces and its own catalog entry named them as
+// the complete set: the header comment, the `--plan` text, the operator command doc
+// and the README. The operator-facing babysitter-recipe table in `extension/CLAUDE.md`
+// carried the identical menu and was missed — a hand-listed set of surfaces rots the
+// same way a hand-listed set of anything else does, and only the `--plan` string above
+// had a guard, so nothing measured the four prose copies.
+//
+// That table is what an operator (and every session that loads the catalog) reads to
+// choose a recipe, and its row sent a dirty-but-green tree to `--salvage` promising
+// commit+Done. The command archives that diff to a patch and re-queues the ticket.
+//
+// Scoped to the table ROW, deliberately, and NOT to prose: the trap-door entries that
+// DESCRIBE this defect necessarily spell the unreachable dispositions, so a grep over
+// markdown would red on the catalog that closes the finding. A `|`-delimited row is a
+// structured cell with no such passenger.
+const SALVAGE_ROW_UNREACHABLE = [/commit\+Done/i, /ff-reattach/i];
+
+/** The outcome cell of the one recipe row documenting `--salvage`, or null. */
+function salvageRecipeCell(catalog) {
+    const rows = catalog.split('\n').filter((l) => l.startsWith('|') && l.includes('--salvage'));
+    if (rows.length !== 1) return null;
+    const cells = rows[0].split('|').slice(1, -1).map((c) => c.trim());
+    return cells.length >= 2 ? cells[cells.length - 1] : null;
+}
+
+test('AP-EXT-ITER43-02: the operator recipe table advertises no disposition --salvage cannot reach', () => {
+    const catalog = fsSync.readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf-8');
+    const cell = salvageRecipeCell(catalog);
+
+    assert.ok(cell, 'exactly one babysitter-recipe row must document --salvage');
+    assert.match(cell, /archiv/i, 'the row names the disposition the command actually reaches');
+    for (const unreachable of SALVAGE_ROW_UNREACHABLE) {
+        assert.doesNotMatch(cell, unreachable, `the row must not advertise ${unreachable}`);
+    }
+});
+
+test('AP-EXT-ITER43-02: the row predicate has teeth — it rejects the text that shipped', () => {
+    // Non-vacuity control. Without this, a row the extractor failed to find and a row
+    // that is genuinely correct are the same green. Re-runs the whole extraction over a
+    // catalog carrying the PRE-FIX row, so the scan, the cell split and the predicate
+    // are all exercised against a known violation rather than trusted.
+    const prefix = [
+        '| Babysitter recipe | `pickle-recover` command surface | What it does |',
+        '|---|---|---|',
+        '| salvage | `pickle-recover --salvage <id>` | commit+Done / archive+Todo / ' +
+            'ff-reattach / no-op per `salvageTicket` disposition. |',
+    ].join('\n');
+    const cell = salvageRecipeCell(prefix);
+
+    assert.ok(cell, 'the control fixture must still yield a cell — otherwise it proves nothing');
+    assert.ok(
+        SALVAGE_ROW_UNREACHABLE.some((re) => re.test(cell)),
+        'the shipped row must be rejected by the same predicate the live row passes',
+    );
+});
