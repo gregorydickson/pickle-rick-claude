@@ -319,8 +319,12 @@ function resolveTmpPrefixFixturePath(command: string): string | null {
 /**
  * The fixture-dir segment run a repo fixture script path must contain, in order.
  * A SHAPE, not a root: see `resolveRepoFixtureScriptPath`.
+ *
+ * Separator-delimited on BOTH sides, which is what makes a plain substring test
+ * segment-wise: a path component merely ENDING in `extension` (`my-extension`)
+ * carries `-extension/tests/fixtures/`, never `/extension/tests/fixtures/`.
  */
-const REPO_FIXTURE_SEGMENTS = ['extension', 'tests', 'fixtures'];
+const REPO_FIXTURE_SEGMENT_RUN = path.sep + ['extension', 'tests', 'fixtures'].join(path.sep) + path.sep;
 
 /**
  * Positive-path match for a repo fixture script: an argv token that resolves to
@@ -350,13 +354,8 @@ function resolveRepoFixtureScriptPath(command: string): string | null {
   for (const token of command.split(/\s+/)) {
     if (!token.startsWith('/')) continue;
     const resolved = path.resolve(token);
-    const segments = resolved.split(path.sep);
-    const runStart = segments.length - REPO_FIXTURE_SEGMENTS.length;
-    for (let i = 0; i <= runStart; i++) {
-      if (REPO_FIXTURE_SEGMENTS.every((segment, offset) => segments[i + offset] === segment)) {
-        return resolved;
-      }
-    }
+    // Trailing separator so the run still matches when it is the path's tail.
+    if ((resolved + path.sep).includes(REPO_FIXTURE_SEGMENT_RUN)) return resolved;
   }
   return null;
 }
