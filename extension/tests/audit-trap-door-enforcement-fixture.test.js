@@ -50,60 +50,6 @@ test('audit-trap-door-enforcement fails when R-CNAR-7 PATTERN_SHAPE is blanked i
   }
 });
 
-// AC-M4 / B-CIGREEN ROOT A: an unrunnable check (missing `rg`, or any absent tool)
-// must FAIL, never print OK. beta.21 CI proved the opposite — `rg: command not
-// found` on stderr, yet the audit exited 0. Simulate the exact CI condition (rg
-// absent from PATH, everything else present) and assert the audit now fails
-// closed with an explicit unrunnable reason instead of silently no-oping.
-test('audit-trap-door-enforcement fails closed when rg is absent from PATH (never reports OK)', () => {
-  const filteredPath = simulateBinaryAbsent(process.env.PATH || '', 'rg');
-
-  // Only `rg` may go missing. The predecessor simulation deleted the whole directory that resolved
-  // it, which on Linux is /usr/bin (with /bin symlinked to it) — so `bash` itself became
-  // unresolvable, the audit was never spawned, and every assertion below graded a failed spawn
-  // rather than the audit's verdict. Assert the survivors FIRST so that regression reports
-  // "bash no longer resolves" instead of passing the rg precondition for the wrong reason.
-  for (const bin of ['bash', 'env', 'git']) {
-    const probe = spawnSync('bash', ['-c', `command -v ${bin}`], {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: filteredPath },
-      timeout: 30_000,
-    });
-    assert.equal(
-      probe.status,
-      0,
-      `${bin} must still resolve under the simulated-absent PATH (got exit ${probe.status}); ` +
-        'without it the audit never runs and this test measures nothing',
-    );
-  }
-
-  const which = spawnSync('bash', ['-c', 'command -v rg'], {
-    encoding: 'utf8',
-    env: { ...process.env, PATH: filteredPath },
-    timeout: 30_000,
-  });
-  assert.notEqual(which.status, 0, 'precondition: rg must be unresolvable under the filtered PATH');
-
-  const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
-    cwd: EXTENSION_ROOT,
-    encoding: 'utf8',
-    env: { ...process.env, PATH: filteredPath },
-    timeout: 60_000,
-  });
-
-  assert.notEqual(result.status, 0, `audit must FAIL when rg is unrunnable, got exit ${result.status}; stderr: ${result.stderr}`);
-  assert.match(
-    result.stderr,
-    /tool not installed: rg/,
-    `stderr must name the unrunnable reason, got: ${result.stderr}`
-  );
-  assert.doesNotMatch(
-    result.stderr,
-    /command not found/,
-    `a raw shell "command not found" leak means the check no-oped instead of failing closed: ${result.stderr}`
-  );
-});
-
 // AP-EXT-ITER152-01: the INVARIANT liveness corpus must exclude the sibling wire's
 // anchor-absence allowlist.
 //
@@ -975,12 +921,17 @@ test('AC-M4 census: the derivation reports a newly introduced tool that the pref
 
 /**
  * Runs the audit with one binary made unresolvable, asserting first that everything ELSE
- * still resolves. Without that precondition a failed spawn grades as a passing assertion.
+ * still resolves. Without that precondition a failed spawn grades as a passing assertion:
+ * an earlier version of the `rg` case deleted the whole directory that resolved it, which
+ * on Linux is /usr/bin with /bin symlinked to it, so `bash` itself went missing, the audit
+ * was never spawned, and every assertion below graded the failed spawn rather than a
+ * verdict. The survivors span several directories so that regression reports "bash no
+ * longer resolves" instead of passing the precondition for the wrong reason.
  */
 function runAuditWithBinaryAbsent(bin) {
   const filteredPath = simulateBinaryAbsent(process.env.PATH || '', bin);
 
-  for (const survivor of ['bash', 'env', 'node'].filter((s) => s !== bin)) {
+  for (const survivor of ['bash', 'env', 'git', 'node'].filter((s) => s !== bin)) {
     const probe = spawnSync('bash', ['-c', `command -v ${survivor}`], {
       encoding: 'utf8',
       env: { ...process.env, PATH: filteredPath },
@@ -1008,7 +959,10 @@ function runAuditWithBinaryAbsent(bin) {
   });
 }
 
-for (const bin of ['grep', 'git']) {
+// `rg` is the tool the beta.21 CI log actually caught going missing, and it is the one
+// whose call site keeps its own detectMissingTools guard. It rides the same table as the
+// others because the observable is identical: fail, name the tool, print no verified check.
+for (const bin of ['grep', 'git', 'rg']) {
   test(`audit-trap-door-enforcement fails closed when ${bin} is absent from PATH (never reports OK)`, () => {
     const result = runAuditWithBinaryAbsent(bin);
 
