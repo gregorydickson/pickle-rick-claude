@@ -257,14 +257,30 @@ function refreshIdleBackoffStateBaseline(state, stateFile, entries) {
     snapshot.state_mtime_ms = readFileMtimeMs(stateFile);
     writeIdleBackoffSnapshot(state, snapshot);
 }
+/**
+ * Is the state.json in front of us the one this backoff engaged against?
+ *
+ * AP-EXT-ITER246-01: ONE clause over the WHOLE baseline. `state.current_ticket` is READ FROM
+ * state.json, so a ticket that differs from the baseline means state.json was rewritten and its
+ * mtime advanced — measured on the shipped hook, the two clauses this replaces returned the
+ * identical `state_mtime` reason and the mtime one DOMINATED: with the ticket clause amputated a
+ * real ticket change still released. Its only separating case was a ticket change whose mtime did
+ * NOT advance (a same-granularity-tick write, a restored file, a clock moving back), and there the
+ * two clauses could disagree about a single question with no arm to break the tie.
+ *
+ * Identity, not recency: an absent baseline, a backward move and an unreadable state file all read
+ * as CHANGED and release. That is the safe direction — a spurious release costs one manager turn,
+ * while a spurious block suppresses a live manager for the whole fallback window.
+ */
+function idleBackoffStateBaselineChanged(snapshot, stateMtimeMs, currentTicket) {
+    return snapshot.state_mtime_ms !== stateMtimeMs || snapshot.ticket !== currentTicket;
+}
 function idleBackoffReleaseReason(state, stateFile, snapshot, nowMs, fallbackMs) {
     const currentTicket = state.current_ticket ?? null;
     const stateMtimeMs = readFileMtimeMs(stateFile);
     const artifactMtimeMs = getWorkerArtifactMtimeMs(state);
     const workerPid = snapshot.worker_pid ?? getLatestWorkerPid(state);
-    if (snapshot.ticket !== undefined && snapshot.ticket !== currentTicket)
-        return 'state_mtime';
-    if (snapshot.state_mtime_ms !== undefined && stateMtimeMs > snapshot.state_mtime_ms)
+    if (idleBackoffStateBaselineChanged(snapshot, stateMtimeMs, currentTicket))
         return 'state_mtime';
     if (snapshot.artifact_mtime_ms !== undefined && artifactMtimeMs > snapshot.artifact_mtime_ms)
         return 'artifact_landed';

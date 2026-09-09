@@ -356,3 +356,64 @@ test('AP-EXT-ITER245-01: a non-markdown ticket-dir file does NOT release the idl
   assert.notEqual(decision, null, 'gate stopped claiming a real idle wait turn');
   assert.equal(decision.decision, 'block', 'a worker log counted as a landed artifact — the backoff never engages');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER246-01: ONE clause decides whether the state.json in front of the gate is the one
+// the backoff engaged against — mtime AND ticket, compared as an identity.
+//
+// Two clauses used to answer that single question and both returned `state_mtime`. Measured on the
+// shipped hook, the mtime one DOMINATED: with the ticket clause amputated a real ticket change
+// still released, because `state.current_ticket` is read FROM state.json and a rewrite advances the
+// mtime. Coverage was one-sided — `stop-hook-idle-backoff.test.js#releases on state.json mtime
+// change` drove the mtime half end to end, while amputating the ticket clause left all 12 fast-tier
+// reachers green. The tie-break between them was driven by nothing at all.
+//
+// The always-release direction is held by the non-markdown control above: a predicate that reports
+// CHANGED unconditionally reds it.
+
+test('AP-EXT-ITER246-01: a mid-backoff ticket change releases the idle backoff', () => {
+  const { stateFile, state, nowMs } = engagedBackoff(1_000);
+
+  // Deliberately the separating case: the ticket moves while state.json's mtime does NOT. In
+  // production a rewrite advances the mtime too and the other half would release anyway, so this
+  // is the only input on which the two collapsed clauses could ever disagree — a same-granularity
+  // -tick write, a restored file, a clock moving back.
+  state.current_ticket = 'ticket-b';
+
+  const decision = evaluateManagerIdleBackoff(state, stateFile, IDLE_TURN, '', () => {}, nowMs);
+  assert.notEqual(decision, null, 'gate stopped claiming a real idle wait turn');
+  assert.equal(
+    decision.decision,
+    'approve',
+    'the backoff stayed engaged against a ticket it was never engaged for — nudges suppressed for the whole fallback window',
+  );
+  assert.match(decision.logMessage, /state_mtime/);
+});
+
+test('AP-EXT-ITER246-01: a state.json write releases the idle backoff', () => {
+  // Paired positive control for the BACKWARD case below — same axis, opposite direction — so the
+  // two together say identity rather than recency. The out-of-fence sibling named above asserts the
+  // same release through the compiled hook; this one asserts it at the exported seam.
+  const { stateFile, state, nowMs } = engagedBackoff(1_000);
+  const future = new Date(Date.now() + 5_000);
+  fs.utimesSync(stateFile, future, future);
+
+  const decision = evaluateManagerIdleBackoff(state, stateFile, IDLE_TURN, '', () => {}, nowMs);
+  assert.notEqual(decision, null, 'gate stopped claiming a real idle wait turn');
+  assert.equal(decision.decision, 'approve', 'state.json advanced and the backoff did not release');
+  assert.match(decision.logMessage, /state_mtime/);
+});
+
+test('AP-EXT-ITER246-01: a state.json whose mtime moved BACKWARD releases the idle backoff', () => {
+  // Identity, not recency. A baseline the gate cannot match is a baseline it cannot trust, whichever
+  // way the timestamp moved — a restore, a clock correction, an unreadable file. Releasing costs one
+  // manager turn; a strict-greater comparison holds a live manager blocked for the fallback window.
+  const { stateFile, state, nowMs } = engagedBackoff(1_000);
+  const past = new Date(Date.now() - 5_000);
+  fs.utimesSync(stateFile, past, past);
+
+  const decision = evaluateManagerIdleBackoff(state, stateFile, IDLE_TURN, '', () => {}, nowMs);
+  assert.notEqual(decision, null, 'gate stopped claiming a real idle wait turn');
+  assert.equal(decision.decision, 'approve', 'a state.json the gate cannot match was treated as unchanged');
+  assert.match(decision.logMessage, /state_mtime/);
+});
