@@ -74,44 +74,70 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 📌 SESSION HANDOFF — state as of 2026-09-06 (context cleared here; read this first)
+## 📌 SESSION HANDOFF — state as of 2026-09-09 19:52Z (context cleared here; read this FIRST)
 
-**LIVE PIPELINE — do not relaunch, do not touch the tree.** Session `2026-09-06-f625727a`
-(`tmux attach -t pipeline-f625727a`), bundle **B-UNATTENDED**, at **anatomy-park, 2/4 phases complete**,
-3 procs alive, `exit_reason: null`, tree clean, 0 unpushed. HEAD `0d52923b`, version `2.1.0-beta.25`.
+**LIVE PIPELINE — do not relaunch, do not touch the tree.** Session `2026-09-09-e959390b`
+(`tmux attach -t pipeline-e959390b`), bundle **B-MEGADRAIN continuation**, at **pickle 0/4**,
+`iteration 19`, `step: implement`, mux pid 4773, `exit_reason: null`, tree clean, 0 unpushed.
+HEAD `a6cac81c`. Version `2.1.0-beta.25` — **250 commits since that tag, nothing released since
+2026-09-04.**
 
-**IMMEDIATE NEXT ACTION:** when `pipeline-status.json` reaches `completed_phases: 3`, cut **beta.26** per
-the STANDING RELEASE TRIGGER below. That is one phase away.
+**THE BABYSITTER CRON AND THE PIPELINE MONITOR ARE SESSION-ONLY AND DIED WITH THE LAST SESSION.**
+Re-arm the cron from `prds/babysitter.md` (operator cadence: every 2h at an off-herd minute) or nothing
+supervises the run. Re-arm a monitor on
+`~/.local/share/pickle-rick/sessions/2026-09-09-e959390b/pipeline-status.json`.
 
-**What happened this session (2026-09-04 → 09-06), so it is not re-derived:**
-- Recovered from a power outage; committed an interrupted worker's in-scope fix; deployed; pushed 199 commits.
-- Shipped `v2.1.0-beta.25`. **Its Linux CI is GREEN** (`a8ef0566`) — the first green on this branch.
-- **szechuan is broken and its cause is EXTERNAL**: the `claude` CLI auto-updated 2.1.252 → 2.1.260 on
-  2026-09-04 12:57 CDT. Every szechuan run before that succeeded; all three after failed, each with a
-  DIFFERENT message under one disposition — 600s timeout · rejected `Write()` permission rule (fixed
-  `e4edb6f9`) · **`Autocompact is thrashing` (context too large — STILL UNFIXED)**.
-- **B-UNATTENDED halted at 0/4 on GitHub #11** with all 17 tickets Done, because the fix was in SOURCE
-  and the pipeline runs DEPLOYED JS. Recovered: pushed → `install.sh` → re-attached `launch.sh`.
-  **Deploy is now current** (verified by content). The #11 halt is deleted and live.
-- **PR #12 closed.** `pr-factory.ts` ran `gh pr create` with no `--base` → targeted stale `main`
-  (+160k/−17.7k, 643 files). Root `CLAUDE.md` now carries a BINDING **NO PULL REQUESTS** rule; deletion
-  queued as TIER-1.4b.
+### Why nothing has released — MEASURED, do not re-derive
 
-**Open, in priority order:**
-1. **AC-G3 is FAILING: +174 LOC** (26,327 → 26,501). Net LOC across the three runners must go DOWN;
-   that is the bundle's grade. Re-measure at bundle end.
-2. **szechuan's context/autocompact cause is unfixed.** `b5d885c4` changed score *derivation*, not what
-   the judge *reads*. Expect szechuan to degrade again at phase 4. Not a halt — it withholds the
-   success verdict, which is why the release trigger sits at phase 3.
-3. **The babysitter cron is SESSION-ONLY and dies when this session ends.** Re-arm it
-   (`prds/babysitter.md` → the prompt; operator cadence is every 2 hours) or the loop stops.
+`counters.nonConvergent` in `pipeline-runner.ts` has **6 increment sites and ZERO decrements**;
+`unsuccessful = pipelineFailed || nonConvergent > 0`. The `done_over_red_worker_gate_tests` withhold
+raises it at the **pickle boundary, phase 1 of 4**, and nothing can lower it — not a converged
+anatomy-park, not a clean szechuan, not a green gate.
 
-**Corrections made this session — do not re-derive the disproven versions:** "we outgrew the judge
-ceiling" was WRONG (measured tree size, not judge CONTEXT); "B-LOGEV is stale" was WRONG (premise
-intact); the "self-modifying bundle / R-PSRB" category **does not exist** (source and runtime are
-isolated) and is struck from `CLAUDE.md` and `prds/CLAUDE.md`.
+| bundle | tickets | tripped it | verdict |
+|---|---|---|---|
+| B-UNATTENDED `f625727a` | 17 | — (anatomy non-convergent + szechuan) | 2/4 failed |
+| B-MEGADRAIN `27819a21` | 32 | 4 | 4/4 failed — dead at phase 1 |
+| B-CIGREEN `f365390b` | 10 | **1** | 3/4 failed — dead at phase 1 |
+
+Filed as [[ROOT G3]] in the megadrain PRD. **Fix is DERIVE-at-finalize, never decrement the counter.**
+
+### Corrections — do NOT re-derive the disproven versions
+
+- **anatomy-park CONVERGES now.** Twice: B-MEGADRAIN `{bin 11, extension 17}`, B-CIGREEN
+  `{bin 11, extension 37}`, both `converged: true`, zero stalls. The old
+  `APNC_MAX_PASSES_WITHOUT_CLEAN = 8` was ending the loop BEFORE convergence could appear; source now
+  reads **50** (C6, built). The hypothesis "a large bundle may never converge" is **FALSIFIED**.
+- **szechuan is NOT the release blocker.** Both recent bundles were foreclosed before szechuan ran.
+- **szechuan's five failures = four dispositions + ONE REPEAT** (`stalled_below_target` in B-UNATTENDED
+  and B-CIGREEN). Attack the repeat first — it has two live observations. [[ROOT S]].
+- **The branch is GREEN.** Full non-expensive gate measured twice on a quiet box: tsc/eslint/emit 0,
+  0 JS-TS drift, 10/10 audits, flake-budget failures=0 runs 5/5 (tests 9554 then 9659), integration
+  690/690, contract 99. The blocker is the run VERDICT, not the code.
+- **GitHub #14 is filed in BOTH places** — [[ROOT W]] in the megadrain PRD and a row in this file's
+  GitHub issue map. That map's completeness claim was corrected; re-run `gh issue list --state open`
+  before trusting it.
+
+### Instrument errors made last session — the same class the audits keep finding
+
+`pgrep -f 'bin/pipeline-runner.js'` matched the claude process carrying the prompt · a bare
+`ps | grep claude` census missed a live worker (use `ppid ==` the mux pid) · the argv confirm matched
+TEST FIXTURES (54 test files spawn `bin/pipeline-runner.js`) · `${PIPESTATUS[0]}` is a bashism and this
+shell is **zsh**, so three gate legs reported EMPTY exit codes · a stray second `cd extension` turned
+"never ran" into `exit 1`. **Resolve the live session by reading `state.json`, never argv.**
+
+### Open, in priority order
+
+1. **[[ROOT G2]]** — done-over-red is the release blocker. Three ACs already BUILT this run: withhold
+   only on a measured failure list, verdict payload must name failing tests, replay harness.
+2. **[[ROOT G3]]** — the latch. Not yet built.
+3. **[[ROOT W]]** — GitHub #14; `13b619bc` landed the workspace-package shape fix.
+4. **[[ROOT S]]** — szechuan; `0929fd81` bounded the judge's allowed-paths section by construction.
+5. **Release decision is the OPERATOR's.** The tree is green and beta.26 could be cut, but every run's
+   verdict was honestly withheld and overriding that is a judgment call, not a rule to apply.
 
 ---
+
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
 
