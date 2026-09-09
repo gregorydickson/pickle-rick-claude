@@ -6,8 +6,8 @@
 // extension/-scoped greenGate — is dead weight. This pins the deletion via ONE
 // declared DELETED_SYMBOLS set (describe.each), so the list can never drift
 // into two hand-maintained copies. Absence is asserted PER HOME FILE, never
-// whole-tree — `commitMessage` is a name collision with unrelated locals in
-// microverse-runner.ts and bundle-finalize.ts.
+// whole-tree — `commitMessage` is a name collision with an unrelated local in
+// microverse-runner.ts.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -91,19 +91,12 @@ test('survival pin: ticket-declared-files.ts exists, exports readDeclaredFiles, 
   }
 });
 
-test('collision guard: commitMessage is still present in microverse-runner.ts and bundle-finalize.ts (home-file-scoped absence, not whole-tree)', () => {
+test('collision guard: commitMessage is still present in microverse-runner.ts (home-file-scoped absence, not whole-tree)', () => {
   const microverse = readRepoFile('src/bin/microverse-runner.ts');
   assert.match(
     microverse,
     /\bcommitMessage\b/,
     'microverse-runner.ts declares its own unrelated `commitMessage` local — a whole-tree absence assertion would wrongly delete it',
-  );
-
-  const bundleFinalize = readRepoFile('src/services/bundle-finalize.ts');
-  assert.match(
-    bundleFinalize,
-    /\bcommitMessage\b/,
-    'bundle-finalize.ts uses `commitMessage` as a DTO field/parameter name — unrelated to the deleted evidence-module helper',
   );
 });
 

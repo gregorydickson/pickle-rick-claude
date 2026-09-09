@@ -135,9 +135,9 @@ Scrubbed, all three pass and the tier is `fail 0`.
 
 ### Re-flooring — this bundle's RECORDED baseline
 
-The floor is computed dynamically at `extension/src/services/bundle-finalize.ts:124`
-(`const floor = baseline + delta`) — it is **not** a hardcoded constant, so re-flooring means
-recording a measured baseline, not editing a number. The PRD's `7720` is stale and the
+The floor is `baseline + delta` — **not** a hardcoded constant, so re-flooring means recording a
+measured baseline, not editing a number. No shipped code computes it: the arithmetic is applied
+here, against the measurement in the table below. The PRD's `7720` is stale and the
 `770dfe8a` "fast tier green" claim is NOT cited (it does not reproduce on this host).
 
 | | tests | pass |
