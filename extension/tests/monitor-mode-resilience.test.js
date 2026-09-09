@@ -214,10 +214,10 @@ describeEach(MONITOR_MODE_CASES)(
   },
 );
 
-// --- R-MWCL-5: first-tick watchdog ---
+// --- R-MWCL-5: respawn watchdog (first tick + interval re-arm) ---
 
 describeEach(MONITOR_MODE_CASES)(
-  'R-MWCL-5 %s: watchdog fires immediately and uses the mode-specific pane 2 command',
+  'R-MWCL-5 %s: respawn watchdog',
   (mode, template, _step, _expectedStepMode, paneTwoPattern) => {
     test('watchdog fires immediately and uses the mode-specific pane 2 command', async () => {
       const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog` });
@@ -259,12 +259,7 @@ describeEach(MONITOR_MODE_CASES)(
         fixture.cleanup();
       }
     });
-  },
-);
 
-describeEach(MONITOR_MODE_CASES)(
-  'R-MWCL-5 %s: first-tick failure still leaves the watchdog interval armed',
-  (mode, template) => {
     test('first-tick failure still leaves the watchdog interval armed', async () => {
       const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog-flaky` });
       try {
