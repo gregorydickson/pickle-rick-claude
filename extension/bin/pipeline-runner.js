@@ -281,10 +281,11 @@ export function discoverSubsystems(target) {
             // resolves a name back through path.resolve(target, name), so a nested
             // package named "a" would resolve to a directory that does not exist and be
             // dropped by every scope filter. POSIX separators keep the persisted keys
-            // stable across platforms.
+            // stable across platforms. The name is never empty: subsystemRoots already
+            // drops any root that resolves equal to target, so that invariant has ONE
+            // home rather than a second check here.
             const name = path.relative(target, dir).replace(/\\/g, '/');
-            if (name.length > 0)
-                subsystems.push({ name, fileCount: sourceCount });
+            subsystems.push({ name, fileCount: sourceCount });
         }
     }
     return subsystems.sort((a, b) => a.name.localeCompare(b.name));
