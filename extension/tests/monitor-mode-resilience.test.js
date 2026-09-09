@@ -115,6 +115,29 @@ function sendKeysCalls(spawnCalls) {
   return spawnCalls.filter((call) => call.command === 'tmux' && call.args[0] === 'send-keys');
 }
 
+const WATCHDOG_PANE_COMMANDS = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };
+
+// tmux stub for startRespawnWatchdog: answers `display-message -p #S` with the
+// session name and `-p -t <pane>` with that pane's current command (none of which
+// is `node`, so every pane reads dead and the watchdog respawns all four).
+// Records every call so a test can assert the resulting send-keys sweep.
+function makeWatchdogSpawn(sessionName) {
+  const spawnCalls = [];
+  const spawnSyncFn = (command, args = []) => {
+    spawnCalls.push({ command, args: [...args] });
+    if (command !== 'tmux') return { status: 0, stdout: '', stderr: '' };
+    if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '#S') {
+      return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
+    }
+    if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '-t') {
+      const pane = Number((args[3] || '').split('.').at(-1));
+      return { status: 0, stdout: `${WATCHDOG_PANE_COMMANDS[pane] || ''}\n`, stderr: '' };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  return { spawnCalls, spawnSyncFn };
+}
+
 function paneTargetCalls(spawnCalls, pane) {
   return spawnCalls.filter((call) =>
     call.command === 'tmux'
@@ -223,20 +246,7 @@ describeEach(MONITOR_MODE_CASES)(
       const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog` });
       try {
         const sessionName = `${mode}-watchdog`;
-        const paneCommands = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };
-        const spawnCalls = [];
-        const spawnSyncFn = (command, args = []) => {
-          spawnCalls.push({ command, args: [...args] });
-          if (command !== 'tmux') return { status: 0, stdout: '', stderr: '' };
-          if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '#S') {
-            return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
-          }
-          if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '-t') {
-            const pane = Number((args[3] || '').split('.').at(-1));
-            return { status: 0, stdout: `${paneCommands[pane] || ''}\n`, stderr: '' };
-          }
-          return { status: 0, stdout: '', stderr: '' };
-        };
+        const { spawnCalls, spawnSyncFn } = makeWatchdogSpawn(sessionName);
 
         const handle = startRespawnWatchdog({
           sessionDir: fixture.sessionDir,
@@ -264,22 +274,9 @@ describeEach(MONITOR_MODE_CASES)(
       const fixture = makeMonitorFixture({ template, sessionName: `${mode}-watchdog-flaky` });
       try {
         const sessionName = `${mode}-watchdog-flaky`;
-        const basePaneCommands = { 0: 'zsh', 1: 'bash', 2: 'fish', 3: 'sh' };
-        const spawnCalls = [];
+        const { spawnCalls, spawnSyncFn: baseSpawn } = makeWatchdogSpawn(sessionName);
         let shouldThrow = true;
         const errors = [];
-        const baseSpawn = (command, args = []) => {
-          spawnCalls.push({ command, args: [...args] });
-          if (command !== 'tmux') return { status: 0, stdout: '', stderr: '' };
-          if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '#S') {
-            return { status: 0, stdout: `${sessionName}\n`, stderr: '' };
-          }
-          if (args[0] === 'display-message' && args[1] === '-p' && args[2] === '-t') {
-            const pane = Number((args[3] || '').split('.').at(-1));
-            return { status: 0, stdout: `${basePaneCommands[pane] || ''}\n`, stderr: '' };
-          }
-          return { status: 0, stdout: '', stderr: '' };
-        };
         const flakySpawn = (command, args = []) => {
           if (shouldThrow) {
             shouldThrow = false;
