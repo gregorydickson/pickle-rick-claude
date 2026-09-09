@@ -161,7 +161,7 @@ test('AP-EXT-ITER10-01: no `as SalvageDeps` cast on any non-comment line in src/
   );
 });
 
-// AP-EXT-ITER38-01 — `--reset-ticket` performs the transition it names.
+// AP-EXT-ITER38-04 — `--reset-ticket` performs the transition it names.
 //
 // `resetTicketViaSalvage` injected `reconcile` and `gate` whose bodies were VERBATIM
 // copies of salvageTicket's own defaults, so the injection steered nothing:
@@ -252,7 +252,7 @@ function makeRecoverFixture(status, dirty) {
     return { repo, sessionDir, deps, logs, readStatus, archivedPatches };
 }
 
-test('AP-EXT-ITER38-01: --reset-ticket re-queues the named ticket on a CLEAN tree', () => {
+test('AP-EXT-ITER38-04: --reset-ticket re-queues the named ticket on a CLEAN tree', () => {
     const fx = makeRecoverFixture('Failed', false);
     // Precondition: the tree really is clean, so the pre-fix clean-tree refusal applies.
     assert.equal(gitIn(fx.repo, ['status', '--porcelain']).trim(), '', 'fixture tree must be clean');
@@ -265,7 +265,7 @@ test('AP-EXT-ITER38-01: --reset-ticket re-queues the named ticket on a CLEAN tre
     assert.deepEqual(fx.archivedPatches(), [], 'a clean tree archives nothing — forcing `dirty` widens the RESET, never the archive');
 });
 
-test('AP-EXT-ITER38-01: --reset-ticket re-queues a TERMINAL ticket the bounded escape Skipped', () => {
+test('AP-EXT-ITER38-04: --reset-ticket re-queues a TERMINAL ticket the bounded escape Skipped', () => {
     const fx = makeRecoverFixture('Skipped', false);
 
     const result = runRecover({ subcommand: 'reset-ticket', ticketArg: RESET_TICKET_ID, plan: false }, fx.repo, fx.deps);
@@ -274,7 +274,7 @@ test('AP-EXT-ITER38-01: --reset-ticket re-queues a TERMINAL ticket the bounded e
     assert.equal(fx.readStatus(), 'Todo', 'an explicit operator override re-queues a Skipped ticket');
 });
 
-test('AP-EXT-ITER38-01: --reset-ticket still archives a dirty diff BEFORE resetting', () => {
+test('AP-EXT-ITER38-04: --reset-ticket still archives a dirty diff BEFORE resetting', () => {
     const fx = makeRecoverFixture('In Progress', true);
 
     const result = runRecover({ subcommand: 'reset-ticket', ticketArg: RESET_TICKET_ID, plan: false }, fx.repo, fx.deps);
@@ -284,7 +284,7 @@ test('AP-EXT-ITER38-01: --reset-ticket still archives a dirty diff BEFORE resett
     assert.equal(fx.archivedPatches().length, 1, 'the dirty diff is archived, never reset over unarchived work');
 });
 
-test('AP-EXT-ITER38-01: --salvage is UNCHANGED — the override belongs to --reset-ticket alone', () => {
+test('AP-EXT-ITER38-04: --salvage is UNCHANGED — the override belongs to --reset-ticket alone', () => {
     // The teeth of the fix: it must live in `resetTicketViaSalvage`'s injection, never in
     // salvageTicket's own refusals. A fix applied to the primitive would green the three
     // cases above AND change this one, turning every autonomous salvage seam into a
