@@ -1400,6 +1400,32 @@ const DEFAULT_JUDGE_TIMEOUT = 180;
 // `last_seen_iter`). Bounds the prompt so a long-running session's accumulated
 // ledger cannot blow the judge's context window (R-SLLJ-1).
 const MAX_PRIOR_VIOLATIONS_IN_PROMPT = 50;
+// ROOT S: byte budget for the "Review ONLY these paths:" section of the judge prompt.
+// `history` (R-SLLJ-1, above) and `priorViolations` are already capped; `allowedPaths`
+// was not, and MEASURED as the dominant unbounded term — on session 2026-09-06-f625727a
+// (631 allowed_paths, the szechuan run that later reported `stalled_below_target` under
+// `Autocompact is thrashing`), the "Review ONLY these paths:" section alone was ~33,101
+// of the real prompt's 37,499 bytes. Bounding it by construction is what stops judge
+// timeout, context-thrash and an unmeasurable baseline from being three failure modes of
+// one unbounded read (see prds/p1-b-megadrain-forty-open-items-by-root.md ROOT S).
+const MAX_ALLOWED_PATHS_PROMPT_BYTES = 8000;
+/**
+ * Bound the enumerated allowed-paths section by construction: include entries in order
+ * until the next one would exceed the byte budget, then stop. Always includes at least
+ * one entry so a single oversized path cannot silently empty the scoping section.
+ */
+export function selectAllowedPathsForPrompt(allowedPaths) {
+    const shown = [];
+    let bytes = 0;
+    for (const p of allowedPaths) {
+        const lineBytes = Buffer.byteLength(`- ${p}\n`, 'utf-8');
+        if (shown.length > 0 && bytes + lineBytes > MAX_ALLOWED_PATHS_PROMPT_BYTES)
+            break;
+        shown.push(p);
+        bytes += lineBytes;
+    }
+    return { shown, omitted: allowedPaths.length - shown.length };
+}
 // H7: the ONE selection over the violation ledger. The judge prompt and the worker
 // handoff both render from this call, so "the set the metric scores" and "the set the
 // worker is briefed on" are the same object by construction rather than by convention.
@@ -1446,8 +1472,12 @@ export function buildJudgePrompt(input) {
     }
     if (allowedPaths.length > 0) {
         parts.push('Review ONLY these paths:');
-        for (const p of allowedPaths)
+        const { shown, omitted } = selectAllowedPathsForPrompt(allowedPaths);
+        for (const p of shown)
             parts.push(`- ${p}`);
+        if (omitted > 0) {
+            parts.push(`... and ${omitted} more path(s) in scope but not listed (truncated to bound judge context size).`);
+        }
         parts.push('Use Read, Glob, and Grep to examine these files before scoring.');
         // R-SSOC L1: constrain SCORING (not just which files to read) to the allowed
         // paths. A judge that scores whole-tree slop steers the worker off-scope

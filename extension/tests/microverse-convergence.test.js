@@ -33,6 +33,7 @@ import {
 } from '../services/microverse-state.js';
 import {
     buildJudgePrompt,
+    selectAllowedPathsForPrompt,
     parseLlmJudgeOutput,
     extractScore,
     emitJudgeParseDiagnostic,
@@ -42,6 +43,7 @@ import {
     classifyAnatomyNonConvergence,
     markMicroverseFatalError,
     auditPostIterationScope,
+    measureAndClassifyIteration,
     JUDGE_SYSTEM_PROMPT,
     _deps,
 } from '../bin/microverse-runner.js';
@@ -1573,4 +1575,201 @@ test('AP-EXT-ITER8-02: a genuinely absent scope.json remains a no-op', () => {
     });
     assert.equal(promoted, false, 'no scope.json may be conjured from nothing');
     assert.equal(events.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// ROOT S (ticket fea72262): bound the szechuan judge's INPUT so
+// `stalled_below_target` stops being unbounded. MEASURED against a real judge
+// prompt built from live session 2026-09-06-f625727a's microverse.json (631
+// allowed_paths — the run that later reported `stalled_below_target` under
+// `Autocompact is thrashing`): the unbounded prompt was 37,499 bytes, of
+// which the "Review ONLY these paths:" enumeration alone was ~33,101 bytes —
+// the dominant unbounded term (history and priorViolations were already
+// capped via R-SLLJ-1/H7; allowedPaths was not). Bounded by construction
+// (MAX_ALLOWED_PATHS_PROMPT_BYTES), the SAME real session's prompt now
+// measures 12,480 bytes — a ~67% reduction, verified by re-running
+// buildJudgePrompt over that session's microverse.json.
+// ---------------------------------------------------------------------------
+
+test('ROOT S: buildJudgePrompt bounds the allowedPaths section by construction', () => {
+    const allowedPaths = Array.from(
+        { length: 2000 },
+        (_, i) => `src/generated/module-${i}-with-a-realistic-path-length.ts`,
+    );
+    const prompt = buildJudgePrompt({
+        goal: 'Reduce complexity violations',
+        cwd: '/repo',
+        history: [],
+        prdPath: '/repo/src',
+        priorViolations: [],
+        allowedPaths,
+    });
+    const bytes = Buffer.byteLength(prompt, 'utf-8');
+    assert.ok(
+        bytes < 20000,
+        `an unbounded 2000-path scope must not blow the prompt past a small multiple of the byte budget; got ${bytes} bytes`,
+    );
+    assert.ok(
+        prompt.includes('more path(s) in scope but not listed'),
+        'a truncated scope must say so, never silently enumerate short',
+    );
+    assert.ok(prompt.includes(`- ${allowedPaths[0]}`), 'the first allowed path must still be enumerated');
+});
+
+test('ROOT S: selectAllowedPathsForPrompt always shows at least one path even when a single entry exceeds the budget', () => {
+    const hugePath = 'src/' + 'x'.repeat(20000) + '.ts';
+    const { shown, omitted } = selectAllowedPathsForPrompt([hugePath, 'src/small.ts']);
+    assert.deepEqual(shown, [hugePath], 'a single oversized entry must not empty the section');
+    assert.equal(omitted, 1);
+});
+
+test('ROOT S negative control: a normal-sized allowedPaths list is not truncated', () => {
+    const allowedPaths = ['src/foo.ts', 'src/bar.ts', 'src/baz.ts'];
+    const prompt = buildJudgePrompt({
+        goal: 'Reduce violations',
+        cwd: '/repo',
+        history: [],
+        prdPath: '/repo/src',
+        priorViolations: [],
+        allowedPaths,
+    });
+    for (const p of allowedPaths) {
+        assert.ok(prompt.includes(`- ${p}`), `normal-sized prompt must enumerate ${p} verbatim`);
+    }
+    assert.ok(
+        !prompt.includes('more path(s) in scope but not listed'),
+        'a normal-sized scope must never be reported as truncated',
+    );
+});
+
+// ---------------------------------------------------------------------------
+// ROOT S convergence-outcome regression. The judge measurement seam is
+// stubbable (_deps.execFileSync under PICKLE_JUDGE_LEGACY_SPAWN=1): drive a
+// real judge measurement through a LARGE (formerly-unbounded) allowed_paths
+// scope and assert the CONVERGENCE OUTCOME (isConverged), never the judge's
+// classification string — a bounded prompt must not change whether or how
+// the loop converges, only how much context it costs to get there.
+// ---------------------------------------------------------------------------
+
+function rootSMakeTmpDir(prefix) {
+    return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
+function rootSMakeRunnerState(sessionDir, workingDir) {
+    return {
+        active: true,
+        working_dir: workingDir,
+        step: 'implement',
+        iteration: 0,
+        max_iterations: 10,
+        max_time_minutes: 60,
+        worker_timeout_seconds: 0,
+        start_time_epoch: Math.floor(Date.now() / 1000),
+        completion_promise: null,
+        original_prompt: 'test',
+        current_ticket: null,
+        history: [],
+        started_at: new Date().toISOString(),
+        session_dir: sessionDir,
+        tmux_mode: true,
+        command_template: 'szechuan-sauce.md',
+        backend: 'claude',
+    };
+}
+
+function rootSMakeContext(sessionDir, workingDir, runnerState) {
+    return {
+        sessionDir,
+        extensionRoot: path.resolve('.'),
+        statePath: path.join(sessionDir, 'state.json'),
+        workingDir,
+        startTime: Date.now(),
+        initialIteration: 0,
+        enableFailureClassification: false,
+        cgSettings: {
+            enabled_convergence_files: ['anatomy-park.json'],
+            regression_warning_threshold: 5,
+            remediator_timeout_s: 600,
+            baseline_max_age_iterations: 30,
+            baseline_max_age_seconds: 14_400,
+        },
+        rateLimitWaitMinutes: 1,
+        maxRateLimitRetries: 1,
+        log: () => {},
+        currentRunnerState: runnerState,
+        iteration: 2,
+        consecutiveRateLimits: 0,
+        preIterSha: 'a'.repeat(40),
+        postIterSha: 'b'.repeat(40),
+    };
+}
+
+async function runRootSJudgeConvergence(allowedPaths) {
+    const sessionDir = rootSMakeTmpDir('pickle-mv-roots-session-');
+    const workingDir = rootSMakeTmpDir('pickle-mv-roots-work-');
+    const runnerState = rootSMakeRunnerState(sessionDir, workingDir);
+    const mv = createMicroverseState({
+        prdPath: path.join(workingDir, 'prd.md'),
+        metric: {
+            description: 'quality',
+            validation: 'reduce violations',
+            type: 'llm',
+            timeout_seconds: 60,
+            tolerance: 0,
+            direction: 'lower',
+            judge_model: 'claude-sonnet-4-6',
+        },
+        stallLimit: 3,
+    });
+    mv.status = 'iterating';
+    mv.baseline_score = 3;
+    mv.convergence_target = 0;
+    mv.allowed_paths = allowedPaths;
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+    writeMicroverseState(sessionDir, mv);
+
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+    const originalExec = _deps.execFileSync;
+    let capturedPrompt = '';
+    try {
+        _deps.execFileSync = (_cmd, args) => {
+            if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+            const idx = args.indexOf('-p');
+            if (idx !== -1) capturedPrompt = args[idx + 1] || '';
+            // All violations resolved: judge_result.violations.length is what the loop
+            // actually converges on (see the "score the loop converges on" comment at
+            // measureAndClassifyIteration's shape==='full' branch), so an empty
+            // violations array is what makes this a converging measurement.
+            return JSON.stringify({ score: 0, violations: [], resolved: [], new: [], remaining: [] });
+        };
+        const ctx = rootSMakeContext(sessionDir, workingDir, runnerState);
+        await measureAndClassifyIteration(mv, { raw: '0', score: 0 }, ctx);
+        return { converged: isConverged(mv), capturedPrompt };
+    } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+        _deps.execFileSync = originalExec;
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+}
+
+test('ROOT S: a formerly-unbounded allowed_paths scope still reaches convergence, with a bounded prompt', async () => {
+    const allowedPaths = Array.from(
+        { length: 2000 },
+        (_, i) => `src/generated/module-${i}-with-a-realistic-path-length.ts`,
+    );
+    const { converged, capturedPrompt } = await runRootSJudgeConvergence(allowedPaths);
+    assert.equal(converged, 'target', 'a converging score over a large scope must still reach isConverged === target');
+    const bytes = Buffer.byteLength(capturedPrompt, 'utf-8');
+    assert.ok(bytes < 20000, `the actual judge-bound prompt must be bounded; got ${bytes} bytes`);
+});
+
+test('ROOT S negative control: a normal-sized allowed_paths scope still reaches convergence', async () => {
+    const allowedPaths = ['src/foo.ts', 'src/bar.ts', 'src/baz.ts'];
+    const { converged, capturedPrompt } = await runRootSJudgeConvergence(allowedPaths);
+    assert.equal(converged, 'target', 'a normal-sized scope must be unaffected and still converge');
+    assert.ok(
+        !capturedPrompt.includes('more path(s) in scope but not listed'),
+        'a normal-sized scope must not be reported as truncated',
+    );
 });
