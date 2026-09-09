@@ -247,8 +247,8 @@ export function findTicketSessionDir(sessionsRoot, ticketId) {
  * Reads `completion_commit` (falling back to `completion_commit_inferred`) from a ticket
  * markdown file's YAML-ish frontmatter block. Quoted or bare, 7-40 hex chars — the R-CCQF
  * shape documented in the root CLAUDE.md, reimplemented minimally here rather than pulling
- * in `ticket-completion-evidence.ts`'s session/state-context oracle. Returns null on any
- * missing/unreadable file or absent/malformed value — never throws.
+ * in the session/state-context oracle used by the completion-evidence service. Returns null
+ * on any missing/unreadable file or absent/malformed value — never throws.
  */
 export function readTicketCompletionCommit(ticketMdPath) {
     let raw;
