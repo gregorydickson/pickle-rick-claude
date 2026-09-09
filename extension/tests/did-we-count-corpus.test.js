@@ -15,6 +15,15 @@ import {
   extractEnclosingFunctionSnippet,
   ruleFiresOnSnippet,
   resolveReplayRepoRoot,
+  findTicketSessionDir,
+  readTicketCompletionCommit,
+  readRecordedGatePhase,
+  resolveGateCommand,
+  replayTicketAtCompletionCommit,
+  materializeCommitWorktree,
+  cleanupCommitWorktree,
+  symlinkNodeModules,
+  formatTicketReplayReport,
 } from '../bin/did-we-count-replay.js';
 
 const VALID_BUCKETS = new Set(['detectable', 'semantic', 'out-of-reach']);
@@ -515,4 +524,331 @@ test('AP-EXT-ITER102-01: resolveReplayRepoRoot decodes a percent-encoded module 
 test('AP-EXT-ITER102-01: resolveReplayRepoRoot resolves this repo from its own default URL', () => {
   // The no-argument path the fast-tier oracle and the CLI both take.
   assert.equal(resolveReplayRepoRoot(), fs.realpathSync(path.resolve(EXTENSION_ROOT, '..')));
+});
+
+// ─── Ticket fb9ad56c: ROOT G2 ticket-replay harness ─────────────────────────────────────
+// Every case below injects `runGateCommand` (and, where a real git repo is not the point
+// of the case, `materialize`/`symlink`/`resolvesOnCurrentBranch`) so the fast tier never
+// spends a real `npm run test:fast` subprocess — that real exercise happens once, outside
+// the test suite, via the CLI, against the five live ticket ids named in the ticket body.
+
+function makeGitRepo() {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'g2-replay-repo-'));
+  const git = (args) =>
+    spawnSync('git', args, { cwd: repo, encoding: 'utf-8', timeout: 20_000 }).stdout?.trim();
+  spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, timeout: 20_000 });
+  spawnSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo, timeout: 20_000 });
+  spawnSync('git', ['config', 'user.email', 'test@test.local'], { cwd: repo, timeout: 20_000 });
+  spawnSync('git', ['config', 'user.name', 'Test User'], { cwd: repo, timeout: 20_000 });
+  fs.mkdirSync(path.join(repo, 'extension'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'extension', 'marker.txt'), 'hello\n');
+  fs.writeFileSync(path.join(repo, 'root-marker.txt'), 'root\n');
+  spawnSync('git', ['add', '.'], { cwd: repo, timeout: 20_000 });
+  spawnSync('git', ['commit', '-q', '-m', 'seed'], { cwd: repo, timeout: 20_000 });
+  const sha = git(['rev-parse', 'HEAD']);
+  return { repo, sha };
+}
+
+function makeSessionFixture({ ticketId, completionCommit, gatePhase = 'test:fast' }) {
+  const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'g2-replay-sessions-'));
+  const sessionDir = path.join(sessionsRoot, 'sess-1');
+  const ticketDir = path.join(sessionDir, ticketId);
+  fs.mkdirSync(ticketDir, { recursive: true });
+  const frontmatterCommitLine =
+    completionCommit === undefined ? '' : `completion_commit: ${completionCommit}\n`;
+  fs.writeFileSync(
+    path.join(ticketDir, `rick_ticket_${ticketId}.md`),
+    `---\nid: ${ticketId}\nstatus: "Done"\n${frontmatterCommitLine}---\n# Description\n`,
+  );
+  const activity =
+    gatePhase === null
+      ? []
+      : [
+          { event: 'other_event', ticket_id: ticketId },
+          {
+            event: 'worker_gate_failed',
+            ticket_id: ticketId,
+            gate_phase: gatePhase,
+            failures: [{ name: 'npm run test:fast', file: '', message: 'pretest:fast' }],
+          },
+        ];
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({ activity }));
+  return sessionsRoot;
+}
+
+test('findTicketSessionDir: locates the session dir owning a ticket id', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'abc12345', completionCommit: 'deadbeef' });
+  const found = findTicketSessionDir(sessionsRoot, 'abc12345');
+  assert.equal(found, path.join(sessionsRoot, 'sess-1'));
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('findTicketSessionDir: returns null for an unknown ticket id and a missing root', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'abc12345', completionCommit: 'deadbeef' });
+  assert.equal(findTicketSessionDir(sessionsRoot, 'nonexistent'), null);
+  assert.equal(findTicketSessionDir(path.join(sessionsRoot, 'does-not-exist'), 'abc12345'), null);
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('readTicketCompletionCommit: reads bare, quoted, and inferred forms; null when absent', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'g2-frontmatter-'));
+  const bare = path.join(tmp, 'bare.md');
+  fs.writeFileSync(bare, '---\nid: x\ncompletion_commit: 0123456789abcdef0123456789abcdef01234567\n---\n');
+  assert.equal(readTicketCompletionCommit(bare), '0123456789abcdef0123456789abcdef01234567');
+
+  const quoted = path.join(tmp, 'quoted.md');
+  fs.writeFileSync(quoted, '---\nid: x\ncompletion_commit: "48cb826b785068"\n---\n');
+  assert.equal(readTicketCompletionCommit(quoted), '48cb826b785068');
+
+  const inferred = path.join(tmp, 'inferred.md');
+  fs.writeFileSync(inferred, '---\nid: x\ncompletion_commit_inferred: "68bc7fa0"\n---\n');
+  assert.equal(readTicketCompletionCommit(inferred), '68bc7fa0');
+
+  const absent = path.join(tmp, 'absent.md');
+  fs.writeFileSync(absent, '---\nid: x\nzero_diff_intent: already-satisfied\n---\n');
+  assert.equal(readTicketCompletionCommit(absent), null);
+
+  assert.equal(readTicketCompletionCommit(path.join(tmp, 'nope.md')), null);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('readRecordedGatePhase: reads the LAST matching worker_gate_failed event, null otherwise', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'g2-state-'));
+  const statePath = path.join(tmp, 'state.json');
+  fs.writeFileSync(
+    statePath,
+    JSON.stringify({
+      activity: [
+        { event: 'worker_gate_failed', ticket_id: 't1', gate_phase: 'test:fast' },
+        { event: 'worker_gate_failed', ticket_id: 't2', gate_phase: 'test:integration' },
+        { event: 'worker_gate_failed', ticket_id: 't1', gate_phase: 'test:integration' },
+      ],
+    }),
+  );
+  assert.equal(readRecordedGatePhase(statePath, 't1'), 'test:integration');
+  assert.equal(readRecordedGatePhase(statePath, 't2'), 'test:integration');
+  assert.equal(readRecordedGatePhase(statePath, 'unknown'), null);
+
+  const malformed = path.join(tmp, 'malformed.json');
+  fs.writeFileSync(malformed, '{not json');
+  assert.equal(readRecordedGatePhase(malformed, 't1'), null);
+
+  assert.equal(readRecordedGatePhase(path.join(tmp, 'missing.json'), 't1'), null);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('resolveGateCommand: maps known gate phases, refuses unknown ones', () => {
+  assert.deepEqual(resolveGateCommand('test:fast'), ['run', 'test:fast']);
+  assert.deepEqual(resolveGateCommand('test:integration'), ['run', 'test:integration']);
+  assert.equal(resolveGateCommand('lint'), null);
+  assert.equal(resolveGateCommand('tsc'), null);
+});
+
+test('replayTicketAtCompletionCommit: missing session dir is could-not-measure, never not-reproduce', () => {
+  const result = replayTicketAtCompletionCommit('ghost0000', {
+    sessionsRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'g2-empty-sessions-')),
+    repoRoot: '/nonexistent',
+    runGateCommand: () => {
+      throw new Error('must not be called');
+    },
+  });
+  assert.equal(result.outcome, 'could-not-measure');
+  assert.match(result.detail, /no session dir found/);
+});
+
+test('replayTicketAtCompletionCommit: a zero-diff-intent ticket with no completion_commit is could-not-measure', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'zerodiff1', completionCommit: undefined });
+  const result = replayTicketAtCompletionCommit('zerodiff1', {
+    sessionsRoot,
+    repoRoot: '/nonexistent',
+    runGateCommand: () => {
+      throw new Error('must not be called');
+    },
+  });
+  assert.equal(result.outcome, 'could-not-measure');
+  assert.match(result.detail, /no completion_commit stamped/);
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('replayTicketAtCompletionCommit: no worker_gate_failed event is could-not-measure (unreadable verdict)', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'noevent01', completionCommit: 'deadbeef', gatePhase: null });
+  const result = replayTicketAtCompletionCommit('noevent01', {
+    sessionsRoot,
+    repoRoot: '/nonexistent',
+    runGateCommand: () => {
+      throw new Error('must not be called');
+    },
+  });
+  assert.equal(result.outcome, 'could-not-measure');
+  assert.match(result.detail, /no worker_gate_failed event/);
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('replayTicketAtCompletionCommit: an unresolvable completion commit is could-not-measure', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'badsha001', completionCommit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' });
+  const result = replayTicketAtCompletionCommit('badsha001', {
+    sessionsRoot,
+    repoRoot: '/nonexistent',
+    resolvesOnCurrentBranch: () => false,
+    runGateCommand: () => {
+      throw new Error('must not be called');
+    },
+  });
+  assert.equal(result.outcome, 'could-not-measure');
+  assert.match(result.detail, /does not resolve to a commit/);
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('replayTicketAtCompletionCommit: a gate run that exits non-zero reproduces the recorded red', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'reproduce', completionCommit: 'deadbeef' });
+  const result = replayTicketAtCompletionCommit('reproduce', {
+    sessionsRoot,
+    repoRoot: '/nonexistent',
+    resolvesOnCurrentBranch: () => true,
+    materialize: () => {},
+    symlink: () => {},
+    makeTempDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'g2-dest-')),
+    runGateCommand: () => ({ ok: false, timedOut: false }),
+  });
+  assert.equal(result.outcome, 'reproduce');
+  assert.equal(result.completionCommit, 'deadbeef');
+  assert.equal(result.gatePhase, 'test:fast');
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('replayTicketAtCompletionCommit: a gate run that exits 0 does NOT reproduce the recorded red', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'notreprod', completionCommit: 'deadbeef' });
+  const result = replayTicketAtCompletionCommit('notreprod', {
+    sessionsRoot,
+    repoRoot: '/nonexistent',
+    resolvesOnCurrentBranch: () => true,
+    materialize: () => {},
+    symlink: () => {},
+    makeTempDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'g2-dest-')),
+    runGateCommand: () => ({ ok: true, timedOut: false }),
+  });
+  assert.equal(result.outcome, 'not-reproduce');
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('replayTicketAtCompletionCommit: a timed-out gate run is could-not-measure, never a verdict', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'timesout1', completionCommit: 'deadbeef' });
+  const result = replayTicketAtCompletionCommit('timesout1', {
+    sessionsRoot,
+    repoRoot: '/nonexistent',
+    resolvesOnCurrentBranch: () => true,
+    materialize: () => {},
+    symlink: () => {},
+    makeTempDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'g2-dest-')),
+    runGateCommand: () => ({ ok: false, timedOut: true }),
+  });
+  assert.equal(result.outcome, 'could-not-measure');
+  assert.match(result.detail, /timed out/);
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('replayTicketAtCompletionCommit: a materialization failure is could-not-measure, never a verdict', () => {
+  const sessionsRoot = makeSessionFixture({ ticketId: 'matfail01', completionCommit: 'deadbeef' });
+  const result = replayTicketAtCompletionCommit('matfail01', {
+    sessionsRoot,
+    repoRoot: '/nonexistent',
+    resolvesOnCurrentBranch: () => true,
+    materialize: () => {
+      throw new Error('git archive exploded');
+    },
+    makeTempDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'g2-dest-')),
+    runGateCommand: () => {
+      throw new Error('must not be called');
+    },
+  });
+  assert.equal(result.outcome, 'could-not-measure');
+  assert.match(result.detail, /could not materialize/);
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('replayTicketAtCompletionCommit: cleanup runs even when materialize succeeds but symlink throws', () => {
+  // A worktree can be created by `materialize` and then leak on disk forever if a LATER
+  // step throws before the run ever starts. Cleanup must cover the whole span, not just
+  // the run itself.
+  const sessionsRoot = makeSessionFixture({ ticketId: 'symfail01', completionCommit: 'deadbeef' });
+  let cleanupCalledWith = null;
+  const result = replayTicketAtCompletionCommit('symfail01', {
+    sessionsRoot,
+    repoRoot: '/some/repo',
+    resolvesOnCurrentBranch: () => true,
+    materialize: () => {},
+    symlink: () => {
+      throw new Error('symlink exploded');
+    },
+    cleanup: (repoRoot, destDir) => {
+      cleanupCalledWith = { repoRoot, destDir };
+    },
+    makeTempDir: () => '/tmp/g2-dest-fixed-path',
+    runGateCommand: () => {
+      throw new Error('must not be called');
+    },
+  });
+  assert.equal(result.outcome, 'could-not-measure');
+  assert.match(result.detail, /could not materialize/);
+  assert.deepEqual(cleanupCalledWith, { repoRoot: '/some/repo', destDir: '/tmp/g2-dest-fixed-path' });
+  fs.rmSync(sessionsRoot, { recursive: true, force: true });
+});
+
+test('materializeCommitWorktree + symlinkNodeModules: a real git worktree of a real commit', () => {
+  const { repo, sha } = makeGitRepo();
+  const destBase = fs.mkdtempSync(path.join(os.tmpdir(), 'g2-materialize-'));
+  const dest = path.join(destBase, 'worktree');
+  try {
+    materializeCommitWorktree(repo, sha, dest);
+    assert.equal(fs.readFileSync(path.join(dest, 'extension', 'marker.txt'), 'utf-8'), 'hello\n');
+    // A real worktree carries a `.git` gitlink and the FULL repo root — not just extension/ —
+    // so repo-root files and `git`-shelling tests inside the replayed tier keep working.
+    assert.ok(fs.existsSync(path.join(dest, '.git')), 'a real worktree must carry its own .git gitlink');
+    assert.ok(fs.existsSync(path.join(dest, 'root-marker.txt')), 'a real worktree must include the repo root, not just extension/');
+
+    fs.mkdirSync(path.join(repo, 'extension', 'node_modules'), { recursive: true });
+    symlinkNodeModules(repo, dest);
+    const linkTarget = fs.readlinkSync(path.join(dest, 'extension', 'node_modules'));
+    assert.equal(linkTarget, path.join(repo, 'extension', 'node_modules'));
+
+    cleanupCommitWorktree(repo, dest);
+    assert.equal(fs.existsSync(dest), false, 'cleanup must remove the materialized worktree directory');
+    const list = spawnSync('git', ['worktree', 'list'], { cwd: repo, encoding: 'utf-8', timeout: 20_000 }).stdout;
+    assert.ok(!list.includes(dest), 'cleanup must prune the worktree from git\'s administrative list');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(destBase, { recursive: true, force: true });
+  }
+});
+
+test('replayTicketAtCompletionCommit: end-to-end against a REAL repo and REAL completion commit', () => {
+  const { repo, sha } = makeGitRepo();
+  const sessionsRoot = makeSessionFixture({ ticketId: 'realsha01', completionCommit: sha });
+  try {
+    const result = replayTicketAtCompletionCommit('realsha01', {
+      sessionsRoot,
+      repoRoot: repo,
+      materialize: () => {},
+      symlink: () => {},
+      makeTempDir: () => fs.mkdtempSync(path.join(os.tmpdir(), 'g2-dest-')),
+      runGateCommand: (extensionDir, args) => {
+        assert.deepEqual(args, ['run', 'test:fast']);
+        return { ok: false, timedOut: false };
+      },
+    });
+    assert.equal(result.outcome, 'reproduce');
+    assert.equal(result.completionCommit, sha);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionsRoot, { recursive: true, force: true });
+  }
+});
+
+test('formatTicketReplayReport: renders a row per result including could-not-measure', () => {
+  const report = formatTicketReplayReport([
+    { ticketId: 'a1', outcome: 'reproduce', detail: 'd1', completionCommit: 'sha1', gatePhase: 'test:fast' },
+    { ticketId: 'a2', outcome: 'could-not-measure', detail: 'no session dir', completionCommit: null, gatePhase: null },
+  ]);
+  assert.match(report, /\| `a1` \| reproduce \| sha1 \| test:fast \| d1 \|/);
+  assert.match(report, /\| `a2` \| could-not-measure \| — \| — \| no session dir \|/);
 });

@@ -13,8 +13,10 @@
  * shas are never given a check at all.
  */
 import * as path from 'node:path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import ts from 'typescript';
@@ -220,7 +222,283 @@ function buildRegistryOrEmpty() {
         return {};
     }
 }
+const TICKET_REPLAY_GIT_TIMEOUT_MS = 30_000;
+const DEFAULT_TICKET_REPLAY_GATE_TIMEOUT_MS = 900_000;
+/** One-level scan for the session directory holding `rick_ticket_<ticketId>.md`. Never throws. */
+export function findTicketSessionDir(sessionsRoot, ticketId) {
+    let entries;
+    try {
+        entries = fs.readdirSync(sessionsRoot, { withFileTypes: true });
+    }
+    catch {
+        return null;
+    }
+    for (const entry of entries) {
+        if (!entry.isDirectory())
+            continue;
+        const ticketDir = path.join(sessionsRoot, entry.name, ticketId);
+        const ticketFile = path.join(ticketDir, `rick_ticket_${ticketId}.md`);
+        if (fs.existsSync(ticketFile))
+            return path.join(sessionsRoot, entry.name);
+    }
+    return null;
+}
+/**
+ * Reads `completion_commit` (falling back to `completion_commit_inferred`) from a ticket
+ * markdown file's YAML-ish frontmatter block. Quoted or bare, 7-40 hex chars — the R-CCQF
+ * shape documented in the root CLAUDE.md, reimplemented minimally here rather than pulling
+ * in `ticket-completion-evidence.ts`'s session/state-context oracle. Returns null on any
+ * missing/unreadable file or absent/malformed value — never throws.
+ */
+export function readTicketCompletionCommit(ticketMdPath) {
+    let raw;
+    try {
+        raw = fs.readFileSync(ticketMdPath, 'utf-8');
+    }
+    catch {
+        return null;
+    }
+    for (const field of ['completion_commit', 'completion_commit_inferred']) {
+        const match = raw.match(new RegExp(`^${field}:\\s*(.+)$`, 'm'));
+        if (!match)
+            continue;
+        const value = match[1].trim().replace(/^['"]|['"]$/g, '').trim();
+        if (/^[0-9a-f]{7,40}$/i.test(value))
+            return value;
+    }
+    return null;
+}
+/**
+ * Reads a session's `state.json` and returns the `gate_phase` of the LAST `worker_gate_failed`
+ * activity entry naming this ticket id. Returns null on unreadable/unparseable state or no
+ * matching event — the "unreadable verdict" could-not-measure case.
+ */
+export function readRecordedGatePhase(stateJsonPath, ticketId) {
+    let parsed;
+    try {
+        parsed = JSON.parse(fs.readFileSync(stateJsonPath, 'utf-8'));
+    }
+    catch {
+        return null;
+    }
+    if (typeof parsed !== 'object' || parsed === null)
+        return null;
+    const activity = parsed.activity;
+    if (!Array.isArray(activity))
+        return null;
+    let found = null;
+    for (const entry of activity) {
+        if (typeof entry !== 'object' || entry === null)
+            continue;
+        const e = entry;
+        if (e.event === 'worker_gate_failed' && e.ticket_id === ticketId && typeof e.gate_phase === 'string') {
+            found = e.gate_phase;
+        }
+    }
+    return found;
+}
+/** Maps a recorded gate phase to the npm argv that reproduces it. Unrecognized -> null. */
+export function resolveGateCommand(gatePhase) {
+    if (gatePhase === 'test:fast' || gatePhase === 'test:integration') {
+        return ['run', gatePhase];
+    }
+    return null;
+}
+/**
+ * Materializes `<sha>` into `destDir` via `git worktree add --detach` — a REAL working tree
+ * sharing this repo's object store, never a `git archive | tar` extraction. This matters:
+ * the recorded tier command (`npm run test:fast`) is itself a test suite whose own tests
+ * shell out to `git ls-files`/`git rev-parse` and read repo-root files (e.g.
+ * `.claude/commands/*.md`) one level ABOVE `extension/` — an `extension/`-only tar
+ * extraction with no `.git` produces exactly those two classes of spurious failure,
+ * independent of whatever the ticket's own commit actually did. `git worktree add` neither
+ * checks out, switches, nor resets the CURRENT working tree — it creates an entirely
+ * separate, detached-HEAD directory the primary checkout never sees. Throws on any failure —
+ * the caller (`replayTicketAtCompletionCommit`) converts that into `could-not-measure`.
+ */
+export function materializeCommitWorktree(repoRoot, sha, destDir) {
+    const result = spawnSync('git', ['worktree', 'add', '--detach', destDir, sha], {
+        cwd: repoRoot,
+        timeout: TICKET_REPLAY_GIT_TIMEOUT_MS,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+    });
+    if (result.status !== 0 || result.error) {
+        throw new Error(`git worktree add ${sha} failed: ${result.stderr?.toString() ?? result.error?.message ?? 'unknown error'}`);
+    }
+}
+/**
+ * Removes a worktree created by `materializeCommitWorktree` and prunes its administrative
+ * state. Best-effort by design (never throws): a cleanup failure must never mask, or be
+ * mistaken for, the replay verdict it runs after.
+ */
+export function cleanupCommitWorktree(repoRoot, destDir) {
+    try {
+        fs.rmSync(destDir, { recursive: true, force: true });
+    }
+    catch {
+        // best-effort
+    }
+    try {
+        spawnSync('git', ['worktree', 'prune'], { cwd: repoRoot, timeout: TICKET_REPLAY_GIT_TIMEOUT_MS });
+    }
+    catch {
+        // best-effort
+    }
+}
+/** Symlinks the live `extension/node_modules` into a materialized worktree. Throws on failure. */
+export function symlinkNodeModules(repoRoot, destDir) {
+    const src = path.join(repoRoot, 'extension', 'node_modules');
+    const dest = path.join(destDir, 'extension', 'node_modules');
+    fs.symlinkSync(src, dest, 'dir');
+}
+function commitResolvesOnCurrentBranch(repoRoot, sha) {
+    const result = spawnSync('git', ['cat-file', '-t', sha], {
+        cwd: repoRoot,
+        timeout: TICKET_REPLAY_GIT_TIMEOUT_MS,
+        encoding: 'utf-8',
+    });
+    return result.status === 0 && result.stdout.trim() === 'commit';
+}
+/** `git worktree add` requires its target path not to already exist. */
+function defaultMakeTempDir() {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-ticket-replay-'));
+    return path.join(base, 'worktree');
+}
+/** Default gate-command runner: a real `npm run <phase>` inside the materialized tree. */
+export function defaultRunGateCommand(extensionDir, args) {
+    const timeoutMs = Number(process.env.PICKLE_TICKET_REPLAY_GATE_TIMEOUT_MS) > 0
+        ? Number(process.env.PICKLE_TICKET_REPLAY_GATE_TIMEOUT_MS)
+        : DEFAULT_TICKET_REPLAY_GATE_TIMEOUT_MS;
+    const result = spawnSync('npm', args, {
+        cwd: extensionDir,
+        timeout: timeoutMs,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+    });
+    if (result.error && result.error.code === 'ETIMEDOUT') {
+        return { ok: false, timedOut: true };
+    }
+    return { ok: result.status === 0, timedOut: false };
+}
+function notMeasured(ticketId, detail, completionCommit = null, gatePhase = null) {
+    return { ticketId, outcome: 'could-not-measure', detail, completionCommit, gatePhase };
+}
+/**
+ * Locates the ticket's session, completion commit, and recorded gate command, and confirms
+ * the commit resolves on the current branch. Never throws — resolves to the `could-not-measure`
+ * result directly when any lookup fails, so the caller only branches once on `ready`.
+ */
+function resolveTicketReplayTarget(ticketId, deps) {
+    const sessionDir = findTicketSessionDir(deps.sessionsRoot, ticketId);
+    if (!sessionDir) {
+        return { ready: false, result: notMeasured(ticketId, `no session dir found for ticket ${ticketId}`) };
+    }
+    const ticketMdPath = path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`);
+    const completionCommit = readTicketCompletionCommit(ticketMdPath);
+    if (!completionCommit) {
+        return {
+            ready: false,
+            result: notMeasured(ticketId, `no completion_commit stamped for ticket ${ticketId} (zero-diff-intent or unattributed close — no tree to replay at)`),
+        };
+    }
+    const gatePhase = readRecordedGatePhase(path.join(sessionDir, 'state.json'), ticketId);
+    if (!gatePhase) {
+        return {
+            ready: false,
+            result: notMeasured(ticketId, `no worker_gate_failed event found for ticket ${ticketId}`, completionCommit),
+        };
+    }
+    const gateArgs = resolveGateCommand(gatePhase);
+    if (!gateArgs) {
+        return {
+            ready: false,
+            result: notMeasured(ticketId, `unrecognized gate phase "${gatePhase}" for ticket ${ticketId}`, completionCommit, gatePhase),
+        };
+    }
+    const resolves = deps.resolvesOnCurrentBranch ?? commitResolvesOnCurrentBranch;
+    if (!resolves(deps.repoRoot, completionCommit)) {
+        return {
+            ready: false,
+            result: notMeasured(ticketId, `completion commit ${completionCommit} does not resolve to a commit on the current branch`, completionCommit, gatePhase),
+        };
+    }
+    return { ready: true, completionCommit, gatePhase, gateArgs };
+}
+/**
+ * Given a ticket id, reads its recorded completion commit and recorded tier command, replays
+ * that exact command against that commit's own historical `extension/` tree, and reports
+ * reproduce / not-reproduce / could-not-measure. Report-only: never mutates the real working
+ * tree, never breaks a phase loop, never throws — every failure mode maps to
+ * `could-not-measure` with an explanatory `detail`.
+ */
+export function replayTicketAtCompletionCommit(ticketId, deps) {
+    try {
+        const target = resolveTicketReplayTarget(ticketId, deps);
+        if (!target.ready)
+            return target.result;
+        const { completionCommit, gatePhase, gateArgs } = target;
+        const makeTempDir = deps.makeTempDir ?? defaultMakeTempDir;
+        const materialize = deps.materialize ?? materializeCommitWorktree;
+        const symlink = deps.symlink ?? symlinkNodeModules;
+        const cleanup = deps.cleanup ?? cleanupCommitWorktree;
+        const destDir = makeTempDir();
+        // Cleanup covers the WHOLE materialize+run span in one finally: a worktree can be
+        // created by `materialize` and then leaked forever if `symlink` throws before the run
+        // ever starts — splitting cleanup across two try blocks left exactly that gap.
+        try {
+            try {
+                materialize(deps.repoRoot, completionCommit, destDir);
+                symlink(deps.repoRoot, destDir);
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                return notMeasured(ticketId, `could not materialize ${completionCommit}: ${msg}`, completionCommit, gatePhase);
+            }
+            const extensionDir = path.join(destDir, 'extension');
+            const { ok, timedOut } = deps.runGateCommand(extensionDir, gateArgs);
+            if (timedOut) {
+                return notMeasured(ticketId, `gate command "npm ${gateArgs.join(' ')}" timed out`, completionCommit, gatePhase);
+            }
+            return {
+                ticketId,
+                outcome: ok ? 'not-reproduce' : 'reproduce',
+                detail: ok
+                    ? `"npm ${gateArgs.join(' ')}" exited 0 at ${completionCommit} — recorded red did NOT reproduce`
+                    : `"npm ${gateArgs.join(' ')}" exited non-zero at ${completionCommit} — recorded red reproduced`,
+                completionCommit,
+                gatePhase,
+            };
+        }
+        finally {
+            cleanup(deps.repoRoot, destDir);
+        }
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return notMeasured(ticketId, `unexpected error replaying ticket ${ticketId}: ${msg}`);
+    }
+}
+export function formatTicketReplayReport(results) {
+    const rows = results.map((r) => `| \`${r.ticketId}\` | ${r.outcome} | ${r.completionCommit ?? '—'} | ${r.gatePhase ?? '—'} | ${r.detail} |`);
+    return [
+        '# ROOT G2 ticket replay',
+        '',
+        '| ticket | outcome | completion_commit | gate_phase | detail |',
+        '|--------|---------|--------------------|------------|--------|',
+        ...rows,
+        '',
+    ].join('\n');
+}
 if (process.argv[1] && path.basename(process.argv[1]) === 'did-we-count-replay.js') {
-    const results = replayCorpus(CORPUS, buildRegistryOrEmpty());
-    process.stdout.write(formatReplayReport(results));
+    const ticketFlagIndex = process.argv.indexOf('--tickets');
+    if (ticketFlagIndex !== -1) {
+        const ids = process.argv.slice(ticketFlagIndex + 1);
+        const sessionsRoot = path.join(os.homedir(), '.local', 'share', 'pickle-rick', 'sessions');
+        const repoRoot = resolveReplayRepoRoot();
+        const results = ids.map((id) => replayTicketAtCompletionCommit(id, { sessionsRoot, repoRoot, runGateCommand: defaultRunGateCommand }));
+        process.stdout.write(formatTicketReplayReport(results));
+    }
+    else {
+        const results = replayCorpus(CORPUS, buildRegistryOrEmpty());
+        process.stdout.write(formatReplayReport(results));
+    }
 }
