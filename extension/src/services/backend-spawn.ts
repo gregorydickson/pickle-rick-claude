@@ -1012,6 +1012,14 @@ function buildClaudeJudgeInvocation(opts: JudgeInvocationOptions): SpawnInvocati
   // Read-only tool allowlist — judge MUST NOT write, edit, or execute.
   args.push('--allowedTools', 'Read,Glob,Grep');
   args.push('--no-session-persistence');
+  // B-CLIBRITTLE: load NO ambient setting source (`user`, `project`, `local`). Everything a judge
+  // depends on is already explicit on this command line, so anything it would inherit is an input
+  // nobody in this repo controls, and every judge spawn is phase-critical. Sibling parity: the
+  // codex arm gets the same isolation from --ignore-user-config/--ignore-rules, which it carries
+  // in its own builder. Stated HERE rather than at the call sites deliberately — as a per-callsite
+  // step it was applied at one of four prompted judge spawns, and a fifth would have been the next
+  // silent bypass. DECOUPLE, DO NOT DETECT: this needs no list of known-bad ambient rules.
+  args.push('--setting-sources', '');
   args.push('-p', opts.prompt);
   return { cmd: 'claude', args, backend: 'claude' };
 }

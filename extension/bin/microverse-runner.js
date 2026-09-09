@@ -6,7 +6,7 @@ import { execFileSync, execFile, spawn, spawnSync } from 'child_process';
 import { pathToFileURL } from 'node:url';
 import { Defaults, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, buildWorkerInvocation, backendEnvOverrides, } from '../services/backend-spawn.js';
-import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir, decoupleJudgeSettingSources } from '../services/judge-spawn-env.js'; // R-SJET-3
+import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetricWithBasis, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
@@ -2023,11 +2023,10 @@ function buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, ju
         model,
         systemPrompt: JUDGE_SYSTEM_PROMPT,
     });
-    // B-CLIBRITTLE: the ONE place the measurement judge's args are assembled, so decoupling here
-    // covers both spawn transports below (legacy execFileSync and spawnWithClosedStdin) without a
-    // per-callsite edit. Deliberately NOT applied to probeJudgeBackendAvailability, whose spawn is
-    // `<backend> --version` — no prompt, no tools, nothing settings-dependent to isolate.
-    return { cmd, args: decoupleJudgeSettingSources(args), model };
+    // B-CLIBRITTLE: the ambient-settings decoupling is carried by buildJudgeInvocation's claude arm
+    // itself, so it reaches every prompted judge spawn — this one, both rate-limit probes, and
+    // correct-course — rather than only the sites that remembered to append it. Nothing to do here.
+    return { cmd, args, model };
 }
 function toAttemptFailureKind(c) {
     if (c.failureKind === 'spawn_failed' || c.failureKind === 'unknown')

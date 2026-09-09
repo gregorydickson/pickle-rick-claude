@@ -15,7 +15,7 @@ import {
   buildWorkerInvocation,
   backendEnvOverrides,
 } from '../services/backend-spawn.js';
-import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir, decoupleJudgeSettingSources } from '../services/judge-spawn-env.js'; // R-SJET-3
+import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 import {
   readMicroverseState,
@@ -2794,11 +2794,10 @@ function buildJudgeAttemptInvocation(
     model,
     systemPrompt: JUDGE_SYSTEM_PROMPT,
   });
-  // B-CLIBRITTLE: the ONE place the measurement judge's args are assembled, so decoupling here
-  // covers both spawn transports below (legacy execFileSync and spawnWithClosedStdin) without a
-  // per-callsite edit. Deliberately NOT applied to probeJudgeBackendAvailability, whose spawn is
-  // `<backend> --version` — no prompt, no tools, nothing settings-dependent to isolate.
-  return { cmd, args: decoupleJudgeSettingSources(args), model };
+  // B-CLIBRITTLE: the ambient-settings decoupling is carried by buildJudgeInvocation's claude arm
+  // itself, so it reaches every prompted judge spawn — this one, both rate-limit probes, and
+  // correct-course — rather than only the sites that remembered to append it. Nothing to do here.
+  return { cmd, args, model };
 }
 
 function toAttemptFailureKind(c: ClassifiedJudgeError): JudgeMeasurementAttempt['failureKind'] {

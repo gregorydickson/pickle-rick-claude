@@ -9,11 +9,10 @@ import {
   buildJudgeEnv,
   getJudgeEnvForAttempt,
   cleanupJudgeRuntimeDir,
-  decoupleJudgeSettingSources,
-  JUDGE_DECOUPLED_SETTING_SOURCES,
 } from '../services/judge-spawn-env.js';
 import { execFileSync } from 'node:child_process';
-import { backendEnvOverrides } from '../services/backend-spawn.js';
+import { backendEnvOverrides, buildJudgeInvocation } from '../services/backend-spawn.js';
+import { runCorrectCourse } from '../bin/correct-course.js';
 
 // ---------------------------------------------------------------------------
 // isNestedClaude
@@ -192,20 +191,58 @@ test('cleanupJudgeRuntimeDir: never throws for a non-existent path outside tmpdi
 // B-CLIBRITTLE AC-1 — the judge spawn is decoupled from ambient CLI settings
 // ---------------------------------------------------------------------------
 
-test('decoupleJudgeSettingSources: appends --setting-sources with the repo-owned empty value', () => {
-  const out = decoupleJudgeSettingSources(['--model', 'x', '-p', 'prompt']);
-  const i = out.indexOf('--setting-sources');
-  assert.notEqual(i, -1, 'the decoupling flag must be present');
-  assert.equal(out[i + 1], JUDGE_DECOUPLED_SETTING_SOURCES);
-  assert.equal(JUDGE_DECOUPLED_SETTING_SOURCES, '', 'empty value means: load NO ambient source');
+test('AP-EXT-ITER36-01: every claude judge invocation carries the ambient-settings decoupling flag', () => {
+  // Pins the BUILDER, not a helper a call site may forget: the decoupling reaches
+  // the measurement judge, both rate-limit probes and correct-course by construction.
+  for (const opts of [
+    { prompt: 'score it', addDirs: [] },
+    { prompt: 'score it', addDirs: ['/tmp/x'], model: 'm', systemPrompt: 'sp' },
+  ]) {
+    const { args } = buildJudgeInvocation('claude', opts);
+    const i = args.indexOf('--setting-sources');
+    assert.notEqual(i, -1, 'the decoupling flag must be present');
+    assert.equal(args[i + 1], '', 'empty value means: load NO ambient source');
+    assert.equal(
+      args.filter((a) => a === '--setting-sources').length,
+      1,
+      'the flag must appear exactly once',
+    );
+  }
 });
 
-test('decoupleJudgeSettingSources: preserves prior args in order and does not mutate its input', () => {
-  const input = ['--model', 'x', '-p', 'prompt'];
-  const frozen = [...input];
-  const out = decoupleJudgeSettingSources(input);
-  assert.deepEqual(input, frozen, 'input array must not be mutated');
-  assert.deepEqual(out.slice(0, frozen.length), frozen, 'prior args must keep their order');
+// End-to-end on one of the THREE production sites that forgot the per-callsite step.
+// Hosted here rather than beside the other correct-course cases BY FORCE: this session's
+// scope.json:allowed_paths does not carry tests/correct-course.test.js, and a commit
+// touching it is refused by the check-scope-diff preflight. Move it back when a fence
+// carries that file — do NOT read its location as evidence it is about judge env.
+test('AP-EXT-ITER36-01: the real correct-course plan is decoupled from ambient settings', () => {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-clibrittle-'));
+  try {
+    const result = runCorrectCourse({
+      sessionDir,
+      repoRoot: sessionDir,
+      discovery: 'Ambient settings discovery',
+      dryRun: true,
+      autoApply: false,
+      force: false,
+      recoverFromLedger: false,
+      recover: false,
+    }, { stdout: () => {}, now: () => new Date('2026-04-30T12:00:00.000Z') });
+
+    assert.equal(result.invocation.cmd, 'claude');
+    const i = result.invocation.args.indexOf('--setting-sources');
+    assert.notEqual(i, -1, 'the course-correction judge spawn must load NO ambient setting source');
+    assert.equal(result.invocation.args[i + 1], '');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER36-01: the codex judge arm carries its own isolation, not --setting-sources', () => {
+  const { args } = buildJudgeInvocation('codex', { prompt: 'score it', addDirs: [] });
+  assert.equal(args.includes('--setting-sources'), false, 'codex has no such flag');
+  assert.equal(args.includes('--ignore-user-config'), true);
+  assert.equal(args.includes('--ignore-rules'), true);
 });
 
 // The behavioural half of AC-1. A permissive-but-unrelated ambient rule is INSTALLED in a real
@@ -254,8 +291,11 @@ test('AC-1: an ambient permissions rule cannot break the judge spawn once decoup
     // Mutation direction that matters: WITHOUT the decoupling the ambient rule kills the spawn.
     assert.throws(() => run([]), /rejected/, 'control: the installed rule must be able to break an undecoupled spawn');
 
-    // AC-1 proper: with the decoupling the same installed rule is inert and the spawn works.
-    assert.equal(run(decoupleJudgeSettingSources([])), '42');
+    // AC-1 proper: the args the REAL builder produces make the installed rule inert.
+    const builtArgs = buildJudgeInvocation('claude', { prompt: 'score it', addDirs: [] }).args;
+    const flagIdx = builtArgs.indexOf('--setting-sources');
+    assert.notEqual(flagIdx, -1);
+    assert.equal(run(['--setting-sources', builtArgs[flagIdx + 1]]), '42');
   } finally {
     fs.rmSync(ws, { recursive: true, force: true });
   }
