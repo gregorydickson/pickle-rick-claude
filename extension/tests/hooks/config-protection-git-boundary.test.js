@@ -5902,14 +5902,124 @@ test('AP-EXT-ITER256-01: destroying .git-ADJACENT paths stays approved', () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER259-01 — the ANCESTOR axis of the `.git` domain
+//
+// The domain was closed by PATH alone (`pathEntersGitDir`), so a token had to
+// NAME `.git` to be seen. Destroying the directory that CONTAINS it reaches the
+// same branch/HEAD state with nothing to match — the shape AP-EXT-ITER257-01
+// closed for the state file and AP-EXT-ITER257-02 then generalised, whose own
+// docblock states the law this closes: the same predicate against two targets,
+// "so a third defended root cannot arrive with only one of its two directions
+// again". The `.git` domain HAD arrived with only one.
+//
+// Measured against the shipped handler with PICKLE_ROLE=worker before the fix,
+// both controls live in the same probe run: `rm -rf <working_dir>` and
+// `mv <working_dir> /tmp/x` APPROVED while `> <working_dir>/.git/HEAD` and
+// `git reset --hard` BLOCKED. Shim-verified: removing the repo root removes its
+// `.git` with it, which is strictly worse than the `> .git/HEAD` re-point the
+// PATH axis already blocks.
+//
+// Held to three handler spawns per case (AP-EXT-ITER257-01): the fast tier runs
+// at c=8 and roughly ten added subprocess spawns push tests/metrics.test.js past
+// its own 45s cap.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER259-01: destroying the directory that CONTAINS .git blocks for a worker', () => {
+  // `workingDir` is the ancestor target's root: the gate resolves
+  // `<state.working_dir>/.git`, so the fixture must own that directory — and it
+  // must sit OUTSIDE the data root, or the token also encloses the session state
+  // file and the role-independent state domain answers first (AP-EXT-ITER257-01).
+  const workingDir = mkFixtureTmpDir('cp-git-repo-');
+  const { tmpDir, stateFile } = bootstrapSession({ workingDir });
+  const asWorker = (command) => runHandler({
+    tmpDir, stateFile, cwd: workingDir, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+
+  // Control FIRST: without it every assertion below could pass over a disabled
+  // hook — the vacuous shape this file has been burned by twice.
+  assert.equal(asWorker('echo x > .git/HEAD').decision, 'block', 'blocking control');
+
+  const removed = asWorker(`rm -rf ${workingDir}`);
+  assert.equal(removed.decision, 'block', 'rm -rf <working_dir> reaches .git');
+  assert.match(removed.reason, /R-WSRC-GR/);
+  assert.match(removed.reason, /allow_git_dir_write_reason/);
+
+  // A `cd` into the same directory is not a write and must stay approved: the
+  // ancestor token and the hazard token are IDENTICAL, so only the anchor tells
+  // them apart. This is the whole over-block surface of the arm.
+  assert.equal(
+    asWorker(`cd ${workingDir} && npm test`).decision, 'approve',
+    'cd into the working dir is not a write',
+  );
+});
+
+test('AP-EXT-ITER259-01: the ancestor arm is worker-scoped and shares ONE predicate with the descendant arm', () => {
+  const workingDir = mkFixtureTmpDir('cp-git-repo-');
+  const { tmpDir, stateFile } = bootstrapSession({ workingDir });
+  const asRole = (command, role) => runHandler({
+    tmpDir, stateFile, cwd: workingDir, toolName: 'Bash', toolInput: { command },
+    extraEnv: role ? { PICKLE_ROLE: role } : {},
+  });
+
+  // Same role scope as every other R-WSRC-GR arm: mux-runner.ts / jar-runner.ts
+  // DELETE PICKLE_ROLE, so the operator session that legitimately moves or
+  // rebuilds its own repo is never gated.
+  assert.equal(asRole(`rm -rf ${workingDir}`, 'worker').decision, 'block', 'worker is gated');
+  assert.equal(asRole(`rm -rf ${workingDir}`, undefined).decision, 'approve', 'operator is not');
+
+  // ONE predicate, not the same `||` spelled at each of the two call sites: a
+  // second spelling is how a later pass fixes the Bash arm and leaves the
+  // Write/Edit one answering the older question.
+  const source = readCode(CONFIG_PROTECTION_TS);
+  const detector = source.slice(
+    source.indexOf('function detectGitDirWriteTarget('),
+    source.indexOf('function segmentInvokesInstallSh('),
+  );
+  assert.ok(detector.length > 0, 'detectGitDirWriteTarget must remain a single named function');
+  assert.equal(
+    (detector.match(/touchesRepoGitDir\(/g) || []).length, 2,
+    'both arms must route through the shared predicate',
+  );
+  assert.doesNotMatch(
+    detector, /enclosesProtectedPath\(/,
+    'the ancestor test belongs to the shared predicate, not to a second spelling here',
+  );
+
+  const shared = source.slice(
+    source.indexOf('function touchesRepoGitDir('),
+    source.indexOf('function detectProtectedWriteTarget('),
+  );
+  assert.ok(shared.length > 0, 'touchesRepoGitDir must remain a single named function');
+  assert.match(shared, /pathEntersGitDir\(/, 'descendant direction');
+  assert.match(shared, /enclosesProtectedPath\(/, 'ancestor direction');
+
+  // The target is RESOLVED from the state the gate already holds and passed
+  // positionally — never defaulted, which is how a new call site silently
+  // acquires the descendant half alone and fails OPEN (AP-EXT-ITER257-01).
+  const gate = source.slice(
+    source.indexOf('function isGitDirWriteBlockedByRWSRCGR('),
+    source.indexOf('function evaluateStateWriteGate('),
+  );
+  assert.ok(gate.length > 0, 'isGitDirWriteBlockedByRWSRCGR must remain a single named function');
+  assert.match(gate, /state\.working_dir/, 'the target comes from resolved state');
+  assert.match(gate, /detectGitDirWriteTarget\(input, repoGitDir\)/);
+  assert.doesNotMatch(
+    source, /function detectGitDirWriteTarget\(input: PreToolUseInput, repoGitDir: string \| null = /,
+    'repoGitDir must never acquire a default',
+  );
+});
+
 test('AP-EXT-ITER256-01: the .git destruction gate stays worker-scoped', () => {
   // Role scope is the reason this lives in the R-WSRC-GR wire and not the
   // role-independent state domain: `mux-runner.ts`/`jar-runner.ts` DELETE
   // PICKLE_ROLE, so the operator session that legitimately removes a stale
   // `.git/index.lock` must never be gated.
-  const { tmpDir, stateFile } = bootstrapSession();
+  const workingDir = mkFixtureTmpDir('cp-git-repo-');
+  const { tmpDir, stateFile } = bootstrapSession({ workingDir });
   const asRole = (command, role) => runHandler({
-    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    tmpDir, stateFile, cwd: workingDir, toolName: 'Bash', toolInput: { command },
     extraEnv: role ? { PICKLE_ROLE: role } : {},
   });
 

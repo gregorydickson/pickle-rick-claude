@@ -415,6 +415,30 @@ function pathEntersGitDir(filePath: string): boolean {
 }
 
 /**
+ * BOTH directions of the `.git` domain in ONE predicate: `word` ENTERS the git
+ * directory, or it ENCLOSES the repository's own.
+ *
+ * AP-EXT-ITER259-01. The sibling state domain already states the law this
+ * closes — "the SAME predicate against two targets rather than two predicates,
+ * so a third defended root cannot arrive with only one of its two directions
+ * again" — and the `.git` domain had arrived with exactly one. Its descendant
+ * arm needs no root (any path COMPONENT naming `.git` is inside some
+ * repository); its ancestor arm needs the resolved one, because "shallower than
+ * the repo" is meaningless without knowing which repo.
+ *
+ * ONE home for the disjunction rather than the same `||` spelled at each of the
+ * two call sites in `detectGitDirWriteTarget`: a second spelling is how a later
+ * pass fixes the Bash arm and leaves the Write/Edit one answering the older
+ * question, which is the drift `findBashWriteTarget` was folded to prevent.
+ * Both shared predicates read the word through `expandLeadingHome` and the ONE
+ * `wordExpandsTo`/`wordSpellsProtectedName` pair, so this adds no third
+ * spelling rule and no bound of its own.
+ */
+function touchesRepoGitDir(word: string, repoGitDir: string | null): boolean {
+  return pathEntersGitDir(word) || enclosesProtectedPath(word, repoGitDir);
+}
+
+/**
  * Tool-input file_path match → returns reason string or null.
  *
  * `stateFile` is the RESOLVED runtime state path (`resolveStateFile`, threaded
@@ -996,34 +1020,47 @@ function detectTargetedStateFile(input: PreToolUseInput, stateFile: string | nul
  * no edit to this function. That is what a single class buys and a per-domain
  * one would not have.
  *
- * RESIDUAL, reported rather than claimed closed, and now UNBLOCKED AND PRICED AT
- * ZERO rather than blocked: the domain is closed by PATH, so removing a
- * repository's PARENT directory reaches `.git` without naming it, exactly as
- * `rm -rf <session dir>` reached the state file. The ancestor predicate that
- * closed the state domain — `enclosesProtectedPath` against
- * `<state.working_dir>/.git` — is still NOT landed, but its blocker is gone.
- * Under the raw+segment scope union it cost 25 new blocks over 8,805 unique real
- * worker Bash calls, every one a `cd <repo> && …` chain or a bare `..` claimed
- * by a `cp`/`rm` anchor in a DIFFERENT segment. The same arm re-measured over the
- * same corpus AFTER AP-EXT-ITER258-01 deleted the raw scope costs ZERO new
- * blocks. The state domain never paid that cost because its target is EIGHT
- * components deep and the coverage bound drops a two-component token there;
- * `<working_dir>/.git` is FOUR, so the same bound admits `..` — which is why the
- * price had to be re-taken per target and not inherited. What is NOT yet
- * measured is the fail-closed half against a `.git` target, so land the arm with
- * its own hazard battery rather than on this number alone. Do NOT try to close
- * this by growing a list; no member can express an ancestor.
+ * AP-EXT-ITER259-01 LANDED the ancestor half. The domain was closed by PATH
+ * alone, so destroying a repository's PARENT reached `.git` without naming it,
+ * exactly as `rm -rf <session dir>` reached the state file. `repoGitDir` is the
+ * RESOLVED `<state.working_dir>/.git`, threaded from `main` and REQUIRED, never
+ * defaulted — a defaulted parameter is how a new call site silently loses the
+ * ancestor arm and fails OPEN, the failure mode AP-EXT-ITER257-01 closes for the
+ * sibling domain. `null` is the legitimate "unresolved" value and disables only
+ * that arm.
+ *
+ * The price is 3 new blocks over 8,805 unique real worker Bash calls, NOT the
+ * ZERO this docblock previously carried, and the correction is the reusable
+ * part: that zero was taken with relative tokens resolving against the MEASURING
+ * process's cwd. `enclosesProtectedPath` resolves before comparing, so a bare
+ * `.` inherits the cwd's component count and clears the coverage bound — a
+ * census that does not `chdir` to the worker's repo cannot see the one token
+ * that costs anything. Re-taken at the worker's cwd: 8 blocks before, 11 after,
+ * ZERO lost, and all 3 added carry the matched token `.` inside a HEREDOC BODY
+ * (`cat >> "$SESS/TASK_NOTES.md" <<'EOF'`), so every one is the open
+ * AP-EXT-ITER258-03 prose-as-commands defect, not this arm misreading a real
+ * command. On a real command `.` at the repo root IS the repository, and
+ * `rm -rf .` destroys it, so the arm's reading of that token is correct.
+ *
+ * RESIDUAL, reported rather than claimed closed: a write whose DESTINATION is
+ * the repo root spelled as a bare directory (`cp /tmp/x <repo>`, `rsync -a d/
+ * <repo>`) blocks, while the file-named twin `cp /tmp/x <repo>/x` approves —
+ * inherent to an ancestor test, which cannot tell "write INTO this directory"
+ * from "replace it". Measured ZERO occurrences in the corpus. Ancestors
+ * shallower than the coverage bound still approve, and a repository OUTSIDE
+ * `state.working_dir` has only its descendant direction. Do NOT try to close any
+ * of these by growing a list; no member can express an ancestor.
  */
-function detectGitDirWriteTarget(input: PreToolUseInput): string | null {
+function detectGitDirWriteTarget(input: PreToolUseInput, repoGitDir: string | null): string | null {
   const toolName = input.tool_name || '';
   const filePath = input.tool_input?.file_path || '';
   const command = input.tool_input?.command || '';
 
   if ((toolName === 'Write' || toolName === 'Edit') && filePath) {
-    return pathEntersGitDir(filePath) ? filePath : null;
+    return touchesRepoGitDir(filePath, repoGitDir) ? filePath : null;
   }
   if (toolName === 'Bash' && command) {
-    return findBashWriteTarget(command, (token) => (pathEntersGitDir(token) ? token : null));
+    return findBashWriteTarget(command, (token) => (touchesRepoGitDir(token, repoGitDir) ? token : null));
   }
   return null;
 }
@@ -1616,7 +1653,12 @@ function isGitVerbBlockedByRWSRCGR(input: PreToolUseInput, state: State): boolea
  */
 function isGitDirWriteBlockedByRWSRCGR(input: PreToolUseInput, state: State): boolean {
   if (!isWorkerRole()) return false;
-  const target = detectGitDirWriteTarget(input);
+  // The ancestor arm's target (AP-EXT-ITER259-01), resolved from the state the
+  // gate already holds. Passed POSITIONALLY and never defaulted, so a future
+  // call site cannot acquire the descendant half alone; `null` when the session
+  // names no working dir, which disables that arm and nothing else.
+  const repoGitDir = state.working_dir ? path.join(state.working_dir, GIT_INTERNAL_DIR) : null;
+  const target = detectGitDirWriteTarget(input, repoGitDir);
   if (!target) return false;
 
   const gate = GIT_VERB_GATE[GIT_DIR_WRITE_KEY];
@@ -1639,7 +1681,7 @@ function isGitDirWriteBlockedByRWSRCGR(input: PreToolUseInput, state: State): bo
   }
 
   logGitVerbGateEvent(gate, 'blocked', { blocked_path: target, ticket_id: ticketId ?? null });
-  block(`R-WSRC-GR: writing into a repository's \`${GIT_INTERNAL_DIR}/\` directory is FORBIDDEN inside worker subprocesses — it reaches the SAME branch/HEAD state the gated git verbs defend, with no reflog entry and no warning (a plain \`> .git/HEAD\` re-points the pinned branch). Blocked path: ${target}. Use the allowed porcelain instead: \`git add <paths>\`, \`git commit\`, \`git restore <named-files>\`. Operator override: set state.flags.${gate?.flag ?? 'allow_git_dir_write_reason'}="<reason>" to bypass.`);
+  block(`R-WSRC-GR: writing into a repository's \`${GIT_INTERNAL_DIR}/\` directory — or destroying a directory that CONTAINS it — is FORBIDDEN inside worker subprocesses, because it reaches the SAME branch/HEAD state the gated git verbs defend, with no reflog entry and no warning (a plain \`> .git/HEAD\` re-points the pinned branch; an \`rm -rf <repo>\` takes the whole history). Blocked path: ${target}. Use the allowed porcelain instead: \`git add <paths>\`, \`git commit\`, \`git restore <named-files>\`; scope a cleanup to the files you mean rather than to a directory above the repository. Operator override: set state.flags.${gate?.flag ?? 'allow_git_dir_write_reason'}="<reason>" to bypass.`);
   return true;
 }
 
