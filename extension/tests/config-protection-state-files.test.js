@@ -2856,3 +2856,107 @@ test('AP-EXT-ITER258-01: the write walker scans segments only, never the raw com
   assert.match(fn, /for \(const scope of splitShellSegments\(normalized\)\) \{/);
   assert.doesNotMatch(fn, /\[\s*normalized\s*,\s*\.\.\.splitShellSegments/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER260-01 — a write DESTINATION hidden inside a command SUBSTITUTION.
+//
+// `$(`, a backtick and `(` are all SEGMENT SEPARATORS, so a substitution's inner
+// text was read as CODE and only as code: `$(echo <state file>)` became the
+// segment `echo <state file>`, where the path is an operand of `echo` and no
+// write anchor is in sight, while the outer segment kept the anchor and lost its
+// operand. Nothing read that text as the VALUE of the word it sits in, so the
+// destination reached every protected domain unseen — measured against the
+// shipped handler with the literal-path controls blocking in the SAME run, the
+// `$(...)` and backtick spellings of both a positional destination and a
+// redirect destination all APPROVED for a worker.
+//
+// The fix is a second READING appended by `splitShellSegments`, beside the
+// AP-EXT-ITER187-01 empty-expansion one: a substitution contributes its
+// OPERANDS. Dropping the command word is structural rather than a guess about
+// which commands appear — a command's own name is never part of its output — and
+// it makes the two readings PARTITION the inner text instead of overlapping.
+//
+// The REDIRECT case below is the DISCRIMINATOR between that partition and the
+// obvious alternative of inlining every inner word: Pass 1 probes the single
+// token standing after the `>`, so an all-words rendering leaves the
+// substitution's command name there and the redirect spelling stays open. It was
+// measured open under that rendering before this one replaced it.
+//
+// Price over 8,805 unique real worker Bash calls (9,191 calls, 139 live
+// `tmux_iteration_*.log` NDJSON transcripts, the measuring session excluded, cwd
+// chdir'd to the worker's repo): 3 new blocks, ZERO lost. All 3 read back in
+// full and every one is markdown prose inside a HEREDOC BODY, the open
+// AP-EXT-ITER258-03 defect, not a real command misread. Under-block half: a
+// 51-form hazard battery across all four protected domains — 10 newly closed,
+// ZERO lost, and 17 read-only approvals all still approving.
+//
+// THREE spawns. Two are the defect in the two spellings that need a subprocess
+// to separate (positional and redirect) and the third is the non-vacuity
+// control: a reading that simply blocked more would fail it. The backtick twin
+// and the nested form ride the in-process segmenter pin below, which costs none.
+// ---------------------------------------------------------------------------
+
+function runSubstitutionDestination(build) {
+  const { tmpDir, stateFile } = bootstrapSession();
+  return runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: build({ stateFile, scratch: path.join(tmpDir, 'scratch') }) },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+}
+
+test('AP-EXT-ITER260-01: a positional write destination inside a substitution blocks', () => {
+  assert.equal(
+    runSubstitutionDestination(({ stateFile, scratch }) => `cp ${scratch} $(echo ${stateFile})`).decision,
+    'block',
+    'the substitution names the protected path; the outer anchor writes it',
+  );
+});
+
+test('AP-EXT-ITER260-01: a REDIRECT destination inside a substitution blocks', () => {
+  // The discriminator: Pass 1 reads ONE token after the `>`, so this case
+  // separates the operands partition from an all-inner-words rendering.
+  assert.equal(
+    runSubstitutionDestination(({ stateFile }) => `echo x > $(echo ${stateFile})`).decision,
+    'block',
+  );
+});
+
+test('AP-EXT-ITER260-01: a substitution that READS the protected file still approves', () => {
+  // Non-vacuity. The reading widens what a write anchor can reach, not what
+  // counts as a write.
+  assert.equal(
+    runSubstitutionDestination(({ stateFile }) => `echo "$(cat ${stateFile})" | head`).decision,
+    'approve',
+  );
+});
+
+test('AP-EXT-ITER260-01: the outer word receives a substitution operands, never its command word', async () => {
+  const { splitShellSegments } = await import(
+    pathToFileURL(path.resolve(__dirname, '../hooks/shell-exec.js')).href
+  );
+  const target = '/tmp/session/state' + '.json';
+  const tick = String.fromCharCode(96);
+
+  for (const [label, command, expected] of [
+    ['dollar-paren', `cp /tmp/a $(echo ${target})`, `cp /tmp/a ${target}`],
+    ['backticks', `cp /tmp/a ${tick}echo ${target}${tick}`, `cp /tmp/a ${target}`],
+    ['nested', `cp /tmp/a $(echo $(echo ${target}))`, `cp /tmp/a ${target}`],
+    ['redirect', `echo x > $(echo ${target})`, `echo x > ${target}`],
+  ]) {
+    const segments = splitShellSegments(command);
+    assert.ok(
+      segments.includes(expected),
+      `${label}: expected a reading ${JSON.stringify(expected)}, got ${JSON.stringify(segments)}`,
+    );
+    assert.ok(
+      !segments.includes(expected.replace(target, `echo ${target}`)),
+      `${label}: the substitution command word must not stand in the destination position`,
+    );
+  }
+
+  // A command with no expansion in it takes no additional reading at all.
+  assert.deepEqual(splitShellSegments('git status'), ['git status']);
+});

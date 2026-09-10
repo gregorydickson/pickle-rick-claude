@@ -1102,7 +1102,16 @@ function expansionSpanEnd(text, start) {
     return i;
 }
 /**
- * AP-EXT-ITER187-01: the reading of the command in which EVERY expansion
+ * THE expansion walk: the reading of `command` in which every expansion span
+ * contributes whatever `render` answers for it.
+ *
+ * ONE walk for both readings the segmenter takes, because they differ in that
+ * answer and in NOTHING else — a second copy is the fork `execName` and
+ * `splitShellSegments` each already collapsed. The renderings are
+ * `elideExpansions` (the empty string) and `inlineSubstitutionOutput` (a
+ * command substitution's operands); each has its own docblock below.
+ *
+ * AP-EXT-ITER187-01, the reading that made the walk exist: EVERY expansion
  * contributes the EMPTY string.
  *
  * An expansion GLUED to a literal is a word bash may produce two ways, and only
@@ -1142,7 +1151,7 @@ function expansionSpanEnd(text, start) {
  * docblock records is unchanged: a value-CARRYING `$NAME` (`G=git; $G reset`)
  * still spells nothing and still needs assignment tracking.
  */
-function elideExpansions(command) {
+function readExpansions(command, render) {
     let out = '';
     let i = 0;
     while (i < command.length) {
@@ -1154,7 +1163,7 @@ function elideExpansions(command) {
         }
         const expanding = matchAt(EXPANDING_QUOTED_SPAN_RE, command, i);
         if (expanding !== null) {
-            out += elideExpansionsInText(expanding);
+            out += readExpansionsInText(expanding, render);
             i += expanding.length;
             continue;
         }
@@ -1164,13 +1173,14 @@ function elideExpansions(command) {
             i++;
             continue;
         }
+        out += render(command.slice(i, end));
         i = end;
     }
     return out;
 }
 /**
- * The empty-expansion reading of a run bash WILL expand — the walk above minus
- * its quoting arms, for the INSIDE of a double-quoted span.
+ * The walk above minus its quoting arms, for the INSIDE of a double-quoted span
+ * — a run bash WILL expand, so both renderings apply there too.
  *
  * The backslash pass-through is not a duplicate of `LITERAL_PART_RE`: inside
  * `"…"` the grammar hands the span over whole, and `\$` is still bash's literal
@@ -1178,7 +1188,7 @@ function elideExpansions(command) {
  * it is unreachable — `UNQUOTED_ESCAPE` is the first alternative of
  * `LITERAL_PART_RE`, so every `\<char>` has already been consumed.
  */
-function elideExpansionsInText(text) {
+function readExpansionsInText(text, render) {
     let out = '';
     let i = 0;
     while (i < text.length) {
@@ -1193,9 +1203,71 @@ function elideExpansionsInText(text) {
             i++;
             continue;
         }
+        out += render(text.slice(i, end));
         i = end;
     }
     return out;
+}
+/** The AP-EXT-ITER187-01 rendering: every expansion contributes the empty string. */
+function elideExpansions(command) {
+    return readExpansions(command, () => '');
+}
+/** The inner text of a command substitution span, or null when the span is not one. */
+function substitutionBody(span) {
+    if (span.startsWith('`')) {
+        return span.length > 1 && span.endsWith('`') ? span.slice(1, -1) : span.slice(1);
+    }
+    if (!span.startsWith('$('))
+        return null;
+    return span.endsWith(')') ? span.slice(2, -1) : span.slice(2);
+}
+/**
+ * AP-EXT-ITER260-01: what a COMMAND SUBSTITUTION contributes to the word AROUND
+ * it — its operands.
+ *
+ * The inner text was already read as CODE, and only as code: `$(`, a backtick
+ * and `(` are all segment separators, so `$(echo <state file>)` becomes the
+ * segment `echo <state file>`, where the path is an operand of `echo` and no
+ * write anchor is in sight. Nothing ever read that text as the VALUE of the word
+ * it sits in, so a write DESTINATION hidden inside a substitution reached every
+ * protected domain unseen — `cp /tmp/a $(echo <state file>)`, its backtick twin
+ * and `echo x > $(echo <state file>)` all APPROVED for a worker while the
+ * literal-path twins blocked, measured against the shipped handler with both
+ * controls live in the same run.
+ *
+ * The command WORD is dropped and its operands kept. That is structural, not a
+ * guess about which commands are used: a command's own name is never part of its
+ * output (`echo X` prints `X`, never `echo`), and the code reading above
+ * already covers the name. So the two readings PARTITION the inner text rather
+ * than overlapping — and the partition is exactly what closes the REDIRECT
+ * spelling, whose Pass 1 probes the single token standing after the `>` and
+ * would otherwise find the substitution's command name there.
+ *
+ * Any OTHER expansion contributes its span verbatim: a substitution is the one
+ * form whose output is derived from text it carries. A parameter expansion's
+ * word is `parameterExpansionWords`' job and stays there — reading `${x:-git}`
+ * here would spell its OPERATOR as a word bash never produces.
+ *
+ * Price, over 8,805 unique real worker Bash calls (9,191 calls, 139 live
+ * `tmux_iteration_*.log` NDJSON transcripts, the measuring session excluded, cwd
+ * chdir'd to the worker's repo): 3 new blocks, ZERO lost, ZERO domains changed on
+ * a command that already blocked. All 3 were read back in full and every one is
+ * markdown prose inside a HEREDOC BODY whose backticks pair across the text
+ * (`...'none'` then `. Refuted` reads as a redirect to the repo root) — the
+ * open AP-EXT-ITER258-03 prose-as-commands defect meeting AP-EXT-ITER259-01's
+ * bare-dot ancestor token, not this rendering misreading a real command.
+ */
+function substitutionOutput(span) {
+    const body = substitutionBody(span);
+    if (body === null)
+        return span;
+    const inner = readExpansions(body, substitutionOutput).replace(/^\s+/, '');
+    const afterCommandWord = inner.search(/\s/);
+    return afterCommandWord === -1 ? '' : inner.slice(afterCommandWord);
+}
+/** The rendering in which every command substitution contributes its operands. */
+function inlineSubstitutionOutput(command) {
+    return readExpansions(command, substitutionOutput);
 }
 /**
  * THE shell segmenter for the hooks subsystem. Splits a command into segments
@@ -1265,14 +1337,28 @@ export function splitShellSegments(command, depth = 0) {
     if (current.length > 0)
         segments.push(current.join(' '));
     const own = expandShellCommandStrings(segments.length > 0 ? segments : [command], depth);
-    // AP-EXT-ITER187-01: append the empty-expansion reading of the SAME command.
-    // Taken on the raw string because `$(`/`` ` `` are separators — by the time the
-    // segments above exist the glued word has already been cut in half. The elided
-    // text carries no `$` and no backtick, so its own elision is the identity and the
-    // recursion terminates in one step; `depth` is passed through unchanged so the
-    // command-string budget is spent on real nesting only.
-    const elided = elideExpansions(command);
-    return elided === command ? own : [...own, ...splitShellSegments(elided, depth)];
+    // Append the additional READINGS of the same command — the empty-expansion one
+    // (AP-EXT-ITER187-01) and the substitution-output one (AP-EXT-ITER260-01). Both
+    // are taken on the RAW string because `$(`/`` ` `` are separators: by the time
+    // the segments above exist the glued word has already been cut in half. A
+    // rendering only ever REMOVES characters, so a reading that differs is strictly
+    // shorter and the recursion terminates; `depth` is passed through unchanged so
+    // the command-string budget is spent on real nesting only. ONE loop, not a case
+    // per reading — a third rendering is a member of this list and nothing else.
+    //
+    // A reading is taken once. The two renderings AGREE whenever the substitution
+    // carries no operand (`git reset$(true) --hard` elides and inlines to the same
+    // `git reset --hard`), and re-segmenting the identical string a second time
+    // buys nothing but a duplicate scope.
+    const scopes = [...own];
+    const taken = new Set([command]);
+    for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command)]) {
+        if (taken.has(reading))
+            continue;
+        taken.add(reading);
+        scopes.push(...splitShellSegments(reading, depth));
+    }
+    return scopes;
 }
 /**
  * Returns the command-string payload of a `bash -c '<cmd>'` segment, or null

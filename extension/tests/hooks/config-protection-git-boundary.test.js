@@ -5158,10 +5158,16 @@ test('AP-EXT-ITER188-01: one grammar feeds every reader of bash\'s quoting forms
     if (form === '${UNQUOTED_RUN}') continue; // not a span: the ordinary run
     assert.ok(named.has(form), `${form} is declared in the grammar but no elision reader consumes it`);
   }
-  // And the private reader is GONE: elideExpansions must not test a quote
-  // character itself, which is the shape that made `'` a phantom span opener.
-  const walk = code.slice(code.indexOf('function elideExpansions('), code.indexOf('function elideExpansionsInText('));
-  assert.equal(walk.match(/'\\\\''|=== *'\\''/g), null, 'elideExpansions must not re-read quotes itself');
+  // And the private reader is GONE: the walk must not test a quote character
+  // itself, which is the shape that made `'` a phantom span opener. The walk is
+  // `readExpansions` since AP-EXT-ITER260-01 parameterized it by what an
+  // expansion contributes; `elideExpansions` is now the thin rendering wrapper,
+  // and slicing to a name that no longer opens the walk runs to EOF unnoticed.
+  const walkStart = code.indexOf('function readExpansions(');
+  const walkEnd = code.indexOf('function readExpansionsInText(');
+  assert.ok(walkStart !== -1 && walkEnd > walkStart, 'the expansion walk must stay one named function');
+  const walk = code.slice(walkStart, walkEnd);
+  assert.equal(walk.match(/'\\\\''|=== *'\\''/g), null, 'the expansion walk must not re-read quotes itself');
   assert.ok(walk.includes('LITERAL_PART_RE') && walk.includes('EXPANDING_QUOTED_SPAN_RE'));
 });
 
