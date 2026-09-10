@@ -480,10 +480,32 @@ function normalizeRedirectOperators(command) {
  * the command word. `.has` answered a different, weaker question — "is the fold
  * spelled exactly like a member" — and a Set exists to make exactly that read
  * fast, so keeping one would preserve the seam the bypass came through.
+ *
+ * AP-EXT-ITER252-01 — WHY THIS STAYS AN ENUMERATION, and what that costs. The
+ * list-free formulation was written and MEASURED, not argued: invert the pass to
+ * "a protected basename standing as a positional operand is a write UNLESS the
+ * anchor is a known reader". Over 9,191 real worker Bash calls (139 live
+ * `tmux_iteration_*.log` NDJSON transcripts), 215 name a protected basename and
+ * 83 of those carry one as a bare positional under a READ anchor — `cat
+ * "$S/state.json"`, `grep … state.json`, `head`, `find`. Inverting blocks 34% of
+ * real protected-file traffic, nearly all of it reads, which is the over-block
+ * the read-only exclusions on this very list exist to prevent. So no formulation
+ * needs no list here: the shell gives the scanner no syntax that separates
+ * `truncate FILE` from `head FILE`, only the command's identity. Do not
+ * re-litigate the inversion — re-measure it if you must, the corpus is still
+ * there.
+ *
+ * The cost of KEEPING the list is that its failure direction is SILENT: a writer
+ * absent from it approves, and nothing says so. `dd`/`truncate`/`install`/`ln`/
+ * `touch` were absent and measured APPROVE against `<session>/state.json` on the
+ * shipped handler while every listed twin blocked. Their over-block cost over
+ * the same 9,191-call corpus is ZERO. A new member is a one-line addition here —
+ * never a new code path — and it must arrive with both halves measured.
  */
 const WRITE_COMMANDS = [
-    'tee', 'cp', 'mv', 'rsync',
+    'tee', 'cp', 'mv', 'rsync', 'install', 'dd',
     'sed', 'perl', 'vim', 'vi', 'nano', 'emacs', 'ed', 'ex',
+    'truncate', 'ln', 'touch',
 ];
 /**
  * `WRITE_COMMANDS` members whose FILE argument is a write target only in

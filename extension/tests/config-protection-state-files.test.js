@@ -2132,6 +2132,17 @@ test('AP-EXT-ITER180-02: the span delimiters this file cuts on are CODE, and eve
 // These cases pin the residual as OPEN so the claim cannot silently re-inflate,
 // and the third pins the ceiling still firing on its own property so a future
 // reader can never confuse "the ceiling is absent" with "the ceiling is narrow".
+//
+// AP-EXT-ITER252-01 NARROWED this residual to its irreducible half. The table used
+// to carry `dd`/`truncate`/`install`/`ln` beside the two interpreters, on the
+// entry's ASSERTED premise that "each addition raises the false-block surface on
+// read-only invocations". Measured, that premise is false OF THESE FOUR: over
+// 9,191 real worker Bash calls they cost ZERO new blocks, because none of them
+// has a read-only invocation a worker actually issues. They are also inside the
+// destination-arg family the entry's own PATTERN_SHAPE permits, so closing them
+// grew no code path. What remains here is the half that genuinely cannot be
+// enumerated: an INTERPRETER opens its own argument with no verb to key on, and
+// the next interpreter is always one `apt install` away.
 // ---------------------------------------------------------------------------
 
 // The bypass is specific, not a dead gate: each approving writer is paired with
@@ -2139,10 +2150,6 @@ test('AP-EXT-ITER180-02: the span delimiters this file cuts on are CODE, and eve
 const AP_EXT_ITER10_01_BYPASSES = [
   ['node -e', (t) => `node -e "require('fs').writeFileSync('${t}','{}')"`],
   ['python3 -c', (t) => `python3 -c "open('${t}','w').write('{}')"`],
-  ['dd of=', (t) => `dd if=/tmp/pickle-src of=${t}`],
-  ['truncate -s 0', (t) => `truncate -s 0 ${t}`],
-  ['install', (t) => `install /tmp/pickle-src ${t}`],
-  ['ln -sf', (t) => `ln -sf /tmp/pickle-src ${t}`],
 ];
 
 for (const [label, build] of AP_EXT_ITER10_01_BYPASSES) {
@@ -2292,4 +2299,72 @@ test('AP-EXT-ITER35-01: the exclusion is scoped to the refused file — a live m
 
   assert.equal(result.decision, 'block');
   assert.match(result.reason, /state file protected/i);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER252-01: `WRITE_COMMANDS` is the ONE anchor class every protected
+// domain's Pass 2 walks, and its failure direction is SILENT — a writer absent
+// from it approves and nothing says so. Five coreutils writers whose entire
+// purpose is to write a positional file operand were absent, and measured
+// APPROVE against `<session>/state.json` on the shipped handler while every
+// listed twin (`cp`/`mv`/`tee`/`sed -i`) blocked.
+//
+// Driven as a table over the REAL handler subprocess rather than as a
+// membership read of the list, because membership is not the invariant — the
+// invariant is that the shell form REACHES a block, which also spends
+// `anchorWritesPositionalArg` (each new member must NOT be gated behind an
+// in-place flag) and the `of=`-operand path `dd` needs.
+// ---------------------------------------------------------------------------
+
+const POSITIONAL_WRITER_FORMS = [
+  ['dd', (target) => `dd if=/tmp/seed of=${target}`],
+  ['truncate', (target) => `truncate -s 0 ${target}`],
+  ['install', (target) => `install -m 644 /tmp/seed ${target}`],
+  ['ln', (target) => `ln -sf /tmp/seed ${target}`],
+  ['touch', (target) => `touch ${target}`],
+];
+
+for (const [name, build] of POSITIONAL_WRITER_FORMS) {
+  test(`AP-EXT-ITER252-01: blocks \`${name}\` writing <session>/state.json`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Bash',
+      toolInput: { command: build(path.join(sessionDir, 'state.json')) },
+    });
+    assert.equal(result.decision, 'block', `${name} approved a protected state write`);
+    assert.match(result.reason, /state file protected/i);
+  });
+
+  test(`AP-EXT-ITER252-01: \`${name}\` still approves when no protected path is named`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    // Negative control: without it, a handler that blocked EVERY occurrence of
+    // these anchors would pass the assertions above while over-blocking the
+    // 9,191-call live corpus the member set was measured against.
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Bash',
+      toolInput: { command: build(path.join(sessionDir, 'notes.md')) },
+    });
+    assert.equal(result.decision, 'approve', `${name} over-blocked an unprotected path`);
+  });
+}
+
+test('AP-EXT-ITER252-01: the settings and circuit-breaker domains share the same new anchors', () => {
+  // The anchor class is shared by every protected domain (`findBashWriteTarget`
+  // is walked by both state and config probes), so a member added for state.json
+  // must reach the sibling basenames too — the "security gate ran narrower than
+  // the lint gate" drift the WRITE_COMMANDS docblock names.
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  for (const basename of ['pickle_settings.json', 'circuit_breaker.json', 'pipeline-status.json']) {
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Bash',
+      toolInput: { command: `truncate -s 0 ${path.join(sessionDir, basename)}` },
+    });
+    assert.equal(result.decision, 'block', `truncate approved a write to ${basename}`);
+  }
 });
