@@ -131,23 +131,32 @@ function baseState(overrides = {}) {
   };
 }
 
-function bootstrapSession({ flags } = {}) {
+// The session's working dir is the FIXTURE dir, never the test runner's own cwd
+// (AP-EXT-ITER255-01). Every case that writes a file into `tmpDir` and then names
+// it in a command is asserting "the command runs where that file is"; pinning
+// `working_dir` to the runner's cwd made that true only for a gate reading some
+// OTHER base, which is precisely the defect those cases could not see. `runHandler`
+// puts the handler's cwd on the same directory, because every state-resolution arm
+// in `resolve-state.ts` matches `state.working_dir` against `process.cwd()`.
+// `workingDir` overrides it for cases that need a tree of their own shape.
+function bootstrapSession({ flags, workingDir } = {}) {
   const tmpDir = mkFixtureTmpDir('cp-git-');
   writeExtensionSentinel(tmpDir);
   const sessionDir = path.join(tmpDir, 'sessions', 'session');
   fs.mkdirSync(sessionDir, { recursive: true });
   const stateFile = path.join(sessionDir, 'state.json');
-  const state = baseState({ session_dir: sessionDir });
+  const resolvedWorkingDir = workingDir || tmpDir;
+  const state = baseState({ session_dir: sessionDir, working_dir: resolvedWorkingDir });
   if (flags) state.flags = flags;
   fs.writeFileSync(stateFile, JSON.stringify(state));
   fs.writeFileSync(
     path.join(tmpDir, 'current_sessions.json'),
-    JSON.stringify({ [process.cwd()]: sessionDir }),
+    JSON.stringify({ [resolvedWorkingDir]: sessionDir }),
   );
   return { tmpDir, sessionDir, stateFile, dataRoot: tmpDir };
 }
 
-function runHandler({ tmpDir, stateFile, toolName, toolInput, extraEnv = {} }) {
+function runHandler({ tmpDir, stateFile, toolName, toolInput, extraEnv = {}, cwd }) {
   const env = {
     ...process.env,
     EXTENSION_DIR: tmpDir,
@@ -157,10 +166,18 @@ function runHandler({ tmpDir, stateFile, toolName, toolInput, extraEnv = {} }) {
     ...extraEnv,
   };
   const input = JSON.stringify({ tool_name: toolName, tool_input: toolInput });
+  // Defaults to the fixture dir, which is `bootstrapSession`'s working dir: every
+  // state-resolution arm in `resolve-state.ts` matches `state.working_dir` against
+  // `process.cwd()`, so the two must name the same directory or the state resolves
+  // to null and the hook approves before any gate runs.
   const stdout = execFileSync(process.execPath, [HANDLER], {
     input,
     encoding: 'utf-8',
     env,
+    cwd: cwd || tmpDir,
+    // Hang guard (AP-EXT-ITER42-01): the handler answers in tens of ms, so this
+    // bounds a hook that never returns rather than a slow one.
+    timeout: 30000,
   });
   return JSON.parse(stdout.trim());
 }
@@ -5707,4 +5724,113 @@ test('AP-EXT-ITER254-01: the .git/ domain adds no second traversal and no second
   );
   assert.ok(gate.length > 0, 'isGitDirWriteBlockedByRWSRCGR must remain a single named function');
   assert.doesNotMatch(gate, /approve\(\)/, 'the .git/ gate must never approve — it blocks or declines');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER255-01 — the R-CSIS-B1 soak guard resolved a RELATIVE `node --test`
+// operand against `getExtensionRoot()`, the DEPLOYED install root
+// (`~/.claude/pickle-rick`), which carries no `tests/` directory at all. Every
+// relative spelling therefore failed its read and the guard APPROVED the soak,
+// while the byte-equivalent absolute twin BLOCKED — measured 5 of 5 relative
+// forms on the shipped handler with the absolute form live as a control in the
+// same run. The guard exists to stop the unconditional soak that produces the
+// timeout -> relaunch -> re-soak no-progress loop its own block message names.
+//
+// The fixture is a REAL working-dir tree with the marker file nested under it,
+// so a base that is not the session's working dir cannot reach it. Pre-fix,
+// every case below except the absolute control approves.
+// ---------------------------------------------------------------------------
+
+function csisFixtureRepo() {
+  const repoRoot = mkFixtureTmpDir('cp-csis-');
+  const integrationDir = path.join(repoRoot, 'extension', 'tests', 'integration');
+  fs.mkdirSync(integrationDir, { recursive: true });
+  fs.writeFileSync(path.join(integrationDir, 'soak.test.js'), '// @tier: expensive\n');
+  fs.writeFileSync(path.join(integrationDir, 'quick.test.js'), '// @tier: fast\n');
+  return { repoRoot, soak: path.join(integrationDir, 'soak.test.js') };
+}
+
+test('AP-EXT-ITER255-01: worker blocks every relative spelling of `node --test <expensive>`', () => {
+  const { repoRoot, soak } = csisFixtureRepo();
+  const { tmpDir, stateFile } = bootstrapSession({ workingDir: repoRoot });
+
+  for (const command of [
+    // Live control: the ONE form that blocked pre-fix. Its presence here proves
+    // the probe reaches the arm, so an approve below is the gate, not the setup.
+    `node --test ${soak}`,
+    'node --test extension/tests/integration/soak.test.js',
+    'node --test ./extension/tests/integration/soak.test.js',
+    'cd extension && node --test tests/integration/soak.test.js',
+    'cd extension/tests && node --test integration/soak.test.js',
+    "bash -c 'cd extension && node --test tests/integration/soak.test.js'",
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, cwd: repoRoot,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', JSON.stringify(command));
+    assert.match(result.reason, /R-CSIS-B1/);
+  }
+});
+
+test('AP-EXT-ITER255-01 fail-closed half: the widened base set blocks nothing that is not expensive-tier', () => {
+  const { repoRoot } = csisFixtureRepo();
+  const { tmpDir, stateFile } = bootstrapSession({ workingDir: repoRoot });
+
+  for (const command of [
+    // Same relative spellings, same directories — a fast-tier marker instead.
+    'node --test extension/tests/integration/quick.test.js',
+    'cd extension && node --test tests/integration/quick.test.js',
+    // A candidate that names no file at all under any reachable base.
+    'node --test tests/integration/soak.test.js',
+    // The recommended entrypoints the guard's own block message points at.
+    'cd extension && RUN_EXPENSIVE_TESTS=1 npm run test:expensive',
+    'cd extension && npm run test:fast',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, cwd: repoRoot,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', JSON.stringify(command));
+  }
+});
+
+// Structural pin: the behaviour cases above pass on the day the base is re-typed
+// as a constant that happens to hold the fixture, and drift from it afterwards.
+// The ABSENCE of an install-root read from this gate is the invariant.
+test('AP-EXT-ITER255-01: the soak guard bases on the session working dir, never on an install root', () => {
+  const source = readCode(CONFIG_PROTECTION_TS);
+  const gate = source.slice(
+    source.indexOf('function isExpensiveNodeTestBlockedByRCSIS('),
+    source.indexOf('function isBashInstallBlockedByRWSRC('),
+  );
+  assert.ok(gate.length > 0, 'isExpensiveNodeTestBlockedByRCSIS must remain a single named function');
+  assert.doesNotMatch(
+    gate,
+    /getExtensionRoot/,
+    'the deployed install root holds no tests/ directory — it can never be a resolution base',
+  );
+  assert.match(gate, /state\.working_dir/, 'the base is the session working dir the hook already holds');
+
+  const bases = source.slice(
+    source.indexOf('function resolveExpensiveTestBases('),
+    source.indexOf('function isExpensiveTestFile('),
+  );
+  assert.ok(bases.length > 0, 'resolveExpensiveTestBases must remain a single named function');
+  // Derived from the command and the filesystem, never from a hand-listed set of
+  // cwd-moving builtins — that is the incomplete-declaration shape this module
+  // has been bitten by repeatedly, one builtin name away from the next bypass.
+  assert.doesNotMatch(
+    bases,
+    /'cd'|"cd"|'pushd'|"pushd"|'popd'|"popd"/,
+    'the base set must not enumerate cwd-moving builtins',
+  );
+  assert.match(bases, /isDirectory\(\)/, 'a base is a directory that really exists, decided on disk');
+  // Same token universe the candidates come from, so a `bash -c` payload cannot
+  // hide the directory its own candidate is relative to.
+  assert.match(bases, /splitShellSegments\(command\)/);
 });

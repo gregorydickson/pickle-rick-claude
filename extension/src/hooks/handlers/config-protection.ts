@@ -1140,6 +1140,46 @@ function extractNodeTestPaths(command: string): string[] {
 }
 
 /**
+ * R-CSIS-B1: the directories a RELATIVE `node --test` operand could resolve
+ * against.
+ *
+ * Pre-fix the ONE base was `getExtensionRoot()` — the DEPLOYED install root
+ * (`~/.claude/pickle-rick`), which carries no `tests/` directory at all, so
+ * every relative spelling failed its read and the guard APPROVED the soak while
+ * the byte-equivalent absolute twin BLOCKED (AP-EXT-ITER255-01: measured on the
+ * shipped handler, 5 of 5 relative forms approved with the absolute form
+ * blocking as a live control in the same run). The base a command actually runs
+ * from is the session's working dir, which the hook already holds.
+ *
+ * A `cd` moves that base, and enumerating the movers (`cd`, `pushd`, a
+ * subshell, `bash -c 'cd …'`) is the incomplete-declaration shape that has
+ * failed in this module ten times — so nothing is enumerated: ANY token of the
+ * command that names a real directory is taken as a plausible base. Over-reach
+ * is fail-safe in exactly this guard's documented direction, the same reasoning
+ * `extractNodeTestPathsFromSegment` records for its operands — a base only
+ * reaches `block()` when `<base>/<candidate>` is a real file whose first line is
+ * the expensive-tier marker, and blocking that is the conservative call.
+ */
+function resolveExpensiveTestBases(command: string, workingDir: string): string[] {
+  const bases = [workingDir];
+  // The SAME token universe `extractNodeTestPaths` draws its candidates from,
+  // for free: `splitShellSegments` expands a `bash -c '<cmd>'` payload, so the
+  // wrapper form's `cd` is a bare token here exactly as its unwrapped twin is.
+  // Read off the raw command instead and the payload stays one glued token —
+  // measured: `bash -c 'cd extension && node --test <expensive>'` APPROVED
+  // while the unwrapped twin BLOCKED.
+  const tokens = splitShellSegments(command).flatMap((segment) => tokenizeShellCommand(segment));
+  for (const token of tokens) {
+    const base = path.resolve(workingDir, token);
+    if (bases.includes(base)) continue;
+    try {
+      if (fs.statSync(base).isDirectory()) bases.push(base);
+    } catch { /* not a directory on disk — not a cwd the shell could reach */ }
+  }
+  return bases;
+}
+
+/**
  * R-CSIS-B1: Returns true when testPath resolves to a file whose first line
  * is `// @tier: expensive`. Fails safe (returns false) on any read error.
  */
@@ -1159,16 +1199,18 @@ function isExpensiveTestFile(testPath: string, cwd: string): boolean {
  * R-CSIS-B1: Blocks `node --test <path>` when <path> is an expensive-tier test file.
  * Emits `closer_expensive_node_test_blocked` for the audit trail and calls block().
  */
-function isExpensiveNodeTestBlockedByRCSIS(input: PreToolUseInput, _state: State): boolean {
+function isExpensiveNodeTestBlockedByRCSIS(input: PreToolUseInput, state: State): boolean {
   if (input.tool_name !== 'Bash' || !input.tool_input?.command) return false;
   const command = input.tool_input.command;
   const candidates = extractNodeTestPaths(command);
   if (candidates.length === 0) return false;
-  const extensionDir = getExtensionRoot();
+  const bases = resolveExpensiveTestBases(command, state.working_dir);
   // The FIRST candidate that is genuinely expensive-tier, not the first
   // candidate: which token is the path and which is an option operand is not
   // knowable without an operand table, so let the on-disk tier marker decide.
-  const testPath = candidates.find((candidate) => isExpensiveTestFile(candidate, extensionDir));
+  const testPath = candidates.find(
+    (candidate) => bases.some((base) => isExpensiveTestFile(candidate, base)),
+  );
   if (!testPath) return false;
 
   try {
