@@ -5298,3 +5298,153 @@ test('AP-EXT-ITER180-01 no pin reads a source file outside the declared readers'
   );
   assert.ok(maskCallers.length > 0, 'the anchor test must still exercise codeMask');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER252-03: the Git Boundary Rules name a CATEGORY, the verb set
+// enumerated only its PORCELAIN members.
+//
+// "branch / HEAD mutation" is the category. `reset`/`switch`/`checkout <ref>`
+// were members; the PLUMBING that reaches the same ref was not, so
+// `git update-ref HEAD <sha>`, `git symbolic-ref HEAD <ref>` and
+// `git branch -f|-D|-m` APPROVED for a worker against the shipped handler while
+// every porcelain twin blocked. Shim-verified in a scratch repo that each really
+// mutates what the blocked verbs mutate: `git update-ref HEAD HEAD~2` took the
+// branch from 3 commits to 1 (no working-tree change, no warning),
+// `git symbolic-ref HEAD refs/heads/other` re-pointed HEAD off the pinned
+// branch, `git branch -m` renamed the pinned branch.
+//
+// Closed by SET MEMBERSHIP, not by three new argument-tested arms: this seam
+// already carries four same-theme checks, so a fifth is the guard-piling shape
+// W5b forbids. The price is over-block on the read forms, measured below.
+// ---------------------------------------------------------------------------
+
+const ITER252_03_REF_PLUMBING_BLOCKED = [
+  ['update-ref moves the current branch', 'git update-ref HEAD 0123456789abcdef0123456789abcdef01234567'],
+  ['update-ref names the branch directly', 'git update-ref refs/heads/main 0123456789abcdef0123456789abcdef01234567'],
+  ['update-ref deletes a ref', 'git update-ref -d refs/heads/feature'],
+  ['symbolic-ref re-points HEAD', 'git symbolic-ref HEAD refs/heads/other'],
+  ['branch force-moves a ref', 'git branch -f main 0123456789abcdef0123456789abcdef01234567'],
+  ['branch deletes a ref', 'git branch -D feature'],
+  ['branch renames the pinned branch', 'git branch -m renamed'],
+  // The same three ride every carrier the porcelain verbs already ride, because
+  // they are members of the ONE set the shared reader scans — no per-verb wiring.
+  ['a command PREFIX in front of update-ref', 'env git update-ref HEAD HEAD~2'],
+  ['a glob spelling of update-ref', 'git update-re? HEAD HEAD~2'],
+  ['a wrapper payload holding branch -m', "bash -c 'git branch -m renamed'"],
+  ['a chained segment holding symbolic-ref', 'git status && git symbolic-ref HEAD refs/heads/other'],
+];
+
+for (const [label, command] of ITER252_03_REF_PLUMBING_BLOCKED) {
+  test(`AP-EXT-ITER252-03: worker blocks ${label}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /R-WSRC-GR/);
+  });
+}
+
+// Non-tautology controls. Over 9,191 real worker Bash calls from 139 live
+// `tmux_iteration_*.log` transcripts the three new members flip ZERO commands
+// (12 blocks before, 12 after). These are the reads a worker reaches for when
+// the blocked forms are the ones it wanted; all still APPROVE.
+test('AP-EXT-ITER252-03: the ref-mutation members do not over-block ordinary git reads', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    'git rev-parse --abbrev-ref HEAD',
+    'git rev-parse HEAD',
+    'git status -sb',
+    'git status --short',
+    'git log --oneline -5',
+    'git add -u',
+    'git show HEAD:extension/src/hooks/shell-exec.ts',
+    'git diff --name-only HEAD~1',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// The over-block is DECLARED, not discovered later: the read forms of the two
+// verbs that have one now block, and this pins that as the accepted price so a
+// future pass reads it as intended rather than as a regression.
+test('AP-EXT-ITER252-03: the read forms of the gated plumbing over-block, deliberately', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of ['git symbolic-ref --short HEAD', 'git branch --show-current', 'git branch -a']) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  }
+});
+
+// A manager (no PICKLE_ROLE) is untouched — the Git Boundary Rules bind workers.
+test('AP-EXT-ITER252-03: a non-worker context still runs the ref plumbing', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of ['git update-ref HEAD HEAD~2', 'git branch -m renamed']) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// The audit trail: a blocked plumbing verb emits a REGISTERED name, so the
+// AP-EXT-ITER110-01 literal-union proof covers the three new members too.
+test('AP-EXT-ITER252-03: blocking update-ref emits a registered activity event', async () => {
+  const { VALID_ACTIVITY_EVENTS } = await import('../../types/index.js');
+  const { tmpDir, stateFile, dataRoot } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile, toolName: 'Bash',
+    toolInput: { command: 'git update-ref HEAD HEAD~2' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+  const emitted = readActivityEvents(dataRoot).filter(e => String(e.event).startsWith('worker_git_'));
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0].event, 'worker_git_update_ref_blocked');
+  assert.ok(VALID_ACTIVITY_EVENTS.includes(emitted[0].event));
+});
+
+// The operator override reaches the new members through the same one table.
+test('AP-EXT-ITER252-03: the per-verb override flag bypasses a ref-plumbing block', () => {
+  const { tmpDir, stateFile } = bootstrapSession({
+    flags: { allow_git_branch_reason: 'manager-owned branch rename' },
+  });
+  const result = runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command: 'git branch -m renamed' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
+// The structural half of the W5b call: the three verbs arrived as SET MEMBERS
+// and added NO argument-tested arm. A future pass that "fixes" a read-form
+// over-block by appending `if (verb === 'branch' && ...)` re-opens the
+// guard-piling shape this iteration refused, so pin its absence.
+test('AP-EXT-ITER252-03: the ref plumbing is set membership, not a fifth conditional arm', () => {
+  const source = readCode(CONFIG_PROTECTION_TS);
+  assert.match(
+    source,
+    /const PROHIBITED_GIT_VERBS_SIMPLE = new Set\(\[\s*'reset', 'switch', 'stash', 'rebase', 'pull', 'push',\s*'update-ref', 'symbolic-ref', 'branch',\s*\]\);/,
+  );
+  const body = source.slice(
+    source.indexOf('export function detectProhibitedGitVerb('),
+    source.indexOf('function extractNodeTestPaths('),
+  );
+  assert.ok(body.length > 0, 'detectProhibitedGitVerb must remain a single named function');
+  for (const verb of ['update-ref', 'symbolic-ref', 'branch']) {
+    assert.doesNotMatch(body, new RegExp(`verb === '${verb}'`), `${verb} must not grow its own arm`);
+  }
+  // The three arms that predate this iteration, unchanged — the pin is "no
+  // FIFTH arm", not "no arms".
+  assert.match(body, /verb === 'checkout'/);
+  assert.match(body, /verb === 'commit'/);
+  assert.match(body, /verb === 'fetch'/);
+});

@@ -328,6 +328,15 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'worker_git_commit__amend_bypass',
         'worker_git_fetch__prune_blocked',
         'worker_git_fetch__prune_bypass',
+        // AP-EXT-ITER252-03: the ref-mutation plumbing verbs (update-ref,
+        // symbolic-ref, branch) joined PROHIBITED_GIT_VERBS_SIMPLE, so the gate
+        // emits six more names.
+        'worker_git_update_ref_blocked',
+        'worker_git_update_ref_bypass',
+        'worker_git_symbolic_ref_blocked',
+        'worker_git_symbolic_ref_bypass',
+        'worker_git_branch_blocked',
+        'worker_git_branch_bypass',
     ];
     assert.equal(VALID_ACTIVITY_EVENTS.length, expected.length);
     for (const e of expected) {

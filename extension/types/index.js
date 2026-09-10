@@ -513,6 +513,15 @@ export const VALID_ACTIVITY_EVENTS = [
     'worker_git_commit__amend_bypass',
     'worker_git_fetch__prune_blocked',
     'worker_git_fetch__prune_bypass',
+    // AP-EXT-ITER252-03: the ref-mutation plumbing spellings the Git Boundary
+    // Rules' "branch / HEAD mutation" category names but the porcelain-only verb
+    // set never enumerated.
+    'worker_git_update_ref_blocked',
+    'worker_git_update_ref_bypass',
+    'worker_git_symbolic_ref_blocked',
+    'worker_git_symbolic_ref_bypass',
+    'worker_git_branch_blocked',
+    'worker_git_branch_bypass',
 ];
 /**
  * Recoverable reasons a ticket can be flipped to Failed by the auto-skip guard (R-WSWA-3).

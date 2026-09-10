@@ -748,7 +748,47 @@ function isBashInvokingInstallSh(command) {
         return false;
     return splitShellSegments(command).some(segmentInvokesInstallSh);
 }
-const PROHIBITED_GIT_VERBS_SIMPLE = new Set(['reset', 'switch', 'stash', 'rebase', 'pull', 'push']);
+/**
+ * The verbs `detectProhibitedGitVerb` blocks with NO argument test at all.
+ *
+ * AP-EXT-ITER252-03 added the three REF-MUTATION plumbing spellings
+ * (`update-ref`, `symbolic-ref`, `branch`). The Git Boundary Rules close this
+ * set by naming a CATEGORY — "branch / HEAD mutation" — and the porcelain
+ * members were the only ones ever enumerated, so the plumbing that reaches the
+ * SAME ref approved: measured against the shipped handler with
+ * PICKLE_ROLE=worker, `git update-ref HEAD <sha>`, `git symbolic-ref HEAD <ref>`
+ * and `git branch -f|-D|-m` all APPROVED while `git reset --hard`,
+ * `git checkout <ref>`, `git switch`, `git commit --amend` and
+ * `git fetch --prune` blocked. Shim-verified in a scratch repo that each really
+ * mutates what the blocked verbs mutate: `git update-ref HEAD HEAD~2` took the
+ * branch from 3 commits to 1 with no reflog warning and no working-tree change,
+ * `git symbolic-ref HEAD refs/heads/other` re-pointed HEAD off the pinned
+ * branch, and `git branch -m` renamed the pinned branch out from under the run.
+ * Losing commits silently is the B-PNTR failure this whole seam exists for.
+ *
+ * They are UNCONDITIONAL members rather than three new argument-tested arms
+ * beside `checkout`/`commit`/`fetch`. That is the W5b subtract-before-add call,
+ * not a shortcut: this function already carries four same-theme checks, so a
+ * fifth is the guard-piling shape, and set membership is a one-line addition
+ * that adds no branch and no complexity. The cost is paid in the OVER-block
+ * direction, this module's established one.
+ *
+ * Both halves measured over 9,191 real worker Bash calls (139 live
+ * `tmux_iteration_*.log` NDJSON transcripts, this session's own logs excluded):
+ * blocks before 12, blocks after 12 — ZERO real commands flip. Reported rather
+ * than claimed: that zero is partly an artifact. The corpus holds exactly ONE
+ * real `git branch --show-current`, and it survives only because it sits inside
+ * a `$(…)` substitution within a double-quoted string; the standalone form DOES
+ * block now, as do `git symbolic-ref --short HEAD` and any `git <verb> … branch`
+ * whose bare word folds to one of these names. The approved substitutes are
+ * `git rev-parse --abbrev-ref HEAD` and `git status -sb`, both still APPROVE.
+ * Blocking a read costs a worker one turn; approving a ref mutation costs the
+ * bundle its commits.
+ */
+const PROHIBITED_GIT_VERBS_SIMPLE = new Set([
+    'reset', 'switch', 'stash', 'rebase', 'pull', 'push',
+    'update-ref', 'symbolic-ref', 'branch',
+]);
 /**
  * The verbs `detectProhibitedGitVerb` reacts to at all. `findGitVerb` returns the
  * FIRST bare word matching one of these, wherever it sits in the argument list —
@@ -1067,6 +1107,9 @@ const GIT_VERB_GATE = {
     'pull': { flag: 'allow_git_pull_reason', blocked: 'worker_git_pull_blocked', bypass: 'worker_git_pull_bypass' },
     'push': { flag: 'allow_git_push_reason', blocked: 'worker_git_push_blocked', bypass: 'worker_git_push_bypass' },
     'fetch --prune': { flag: 'allow_git_fetch_prune_reason', blocked: 'worker_git_fetch__prune_blocked', bypass: 'worker_git_fetch__prune_bypass' },
+    'update-ref': { flag: 'allow_git_update_ref_reason', blocked: 'worker_git_update_ref_blocked', bypass: 'worker_git_update_ref_bypass' },
+    'symbolic-ref': { flag: 'allow_git_symbolic_ref_reason', blocked: 'worker_git_symbolic_ref_blocked', bypass: 'worker_git_symbolic_ref_bypass' },
+    'branch': { flag: 'allow_git_branch_reason', blocked: 'worker_git_branch_blocked', bypass: 'worker_git_branch_bypass' },
 };
 /**
  * The R-WSRC-GR audit line, best-effort. Lives here rather than inline so the two arms of
