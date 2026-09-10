@@ -229,6 +229,81 @@ function isInsideRuntimeRoot(filePath) {
         return false;
     return rootParts.every((rootPart, i) => wordExpandsTo(parts[i], rootPart));
 }
+/**
+ * True when the shell word `filePath` names a DIRECTORY that ENCLOSES the
+ * RESOLVED runtime state file — the ancestor axis of the same question
+ * `isInsideRuntimeRoot` asks in the descendant direction.
+ *
+ * AP-EXT-ITER257-01: every protected-file domain in this module was closed by a
+ * token that NAMES the file — a basename (`matchProtectedStateBasename`), a
+ * containing root (`isInsideRuntimeRoot`) or a path component
+ * (`pathEntersGitDir`) — and destroying an ANCESTOR DIRECTORY reaches the file
+ * with no token naming anything. Measured against the shipped handler with both
+ * controls live in the same probe run (`rm -f <session>/state.json` and
+ * `shred -u <session>/state.json` BLOCK, `cat` APPROVES): `rm -rf <session dir>`,
+ * `rm -rf <session dir>/`, `rm -rf <data root>/sessions`, `rm -rf <data root>`,
+ * `chmod 000 <session dir>` and `mv <session dir> /tmp/elsewhere` — 6 of 6
+ * APPROVED. That is a complete bypass of the destruction gate AP-EXT-ITER256-01
+ * landed one pass earlier, by a spelling a worker plausibly types while cleaning
+ * up, and it reaches the state-unreadable crash floor rather than a wrong value.
+ *
+ * NEEDS NO LIST, and that is why it is the right shape: the hook has already
+ * RESOLVED the one state file it is defending (`resolveStateFile`, threaded from
+ * `main`), so "is this word an ancestor of THAT path" is answerable by
+ * comparison. No enumeration of directory names, no ceiling constant, and
+ * nothing to add a member to when the runtime grows another artifact — every
+ * sibling in the session directory (`circuit_breaker.json`,
+ * `pipeline-status.json`, the ticket dirs) is covered by the state file's
+ * ancestry for free.
+ *
+ * The TOKEN is the pattern side, per component, through the ONE shared
+ * `wordExpandsTo`, for the reason AP-EXT-ITER96-02 established for the sibling
+ * direction: a path component is a shell word bash expands beside a real
+ * directory, so `rm -rf ~/.local/share/pickle-ric?/sessions` reaches the same
+ * inode as the literal. Components are read after `expandLeadingHome`, so the
+ * `~` and `$HOME` spellings of an ancestor resolve to the same path the shell
+ * would use.
+ *
+ * A STRICT ancestor (`parts.length >= stateParts.length` returns false): the
+ * equal case IS the state file, which `matchProtectedStateBasename` already
+ * blocks, and the deeper case is `isInsideRuntimeRoot`'s. One question per arm,
+ * no overlap. Deliberately NOT folded into `isInsideRuntimeRoot`: the two differ
+ * in which side is shorter, so a shared body would need a direction case, and
+ * that function's body carries two catalogued PATTERN_SHAPEs pinning it.
+ *
+ * COVERAGE is the bound, and this direction is the one that NEEDS one. The
+ * sibling arm's docblock records that the conjunction over every root component
+ * IS its bound — true when the ROOT is the fixed side. Here the conjunction runs
+ * over the TOKEN's components, so a SHORT token is barely bounded at all: an
+ * empty component list matches vacuously and a one-component `*` names the first
+ * directory under `/`. MEASURED over 8,805 unique real worker Bash calls (139
+ * live `tmux_iteration_*.log` NDJSON transcripts): unbounded, this arm adds 31
+ * blocks and every single one is `//`, `/` or `/*` — C and JS comment markers
+ * sitting in HEREDOC BODIES, read as a write destination resolving to the
+ * filesystem root. Zero are real ancestors.
+ *
+ * The bound is the SAME LAW `wordSpellsProtectedName` already applies to a
+ * basename — does the word spell at least HALF of what it claims to name —
+ * lifted from characters-of-a-name to components-of-a-path, so this module gains
+ * no new kind of bound. With `<data root>/sessions/<hash>/state.json` at eight
+ * components a token must spell four, which every hazard form does (the data
+ * root is five, the sessions dir six, the session dir seven) and no comment
+ * marker can.
+ *
+ * RESIDUAL, reported rather than claimed closed: `/`, `$HOME` and the other
+ * shallow ancestors approve. They are under the coverage bound by construction,
+ * they are where 31 of 31 measured false positives live, and destroying them is
+ * not a spelling a worker reaches by accident.
+ */
+function enclosesResolvedStateFile(filePath, stateFile) {
+    if (!filePath || !stateFile)
+        return false;
+    const parts = path.resolve(expandLeadingHome(filePath)).toLowerCase().split(path.sep).filter(Boolean);
+    const stateParts = path.resolve(stateFile).toLowerCase().split(path.sep).filter(Boolean);
+    if (parts.length >= stateParts.length || parts.length * 2 < stateParts.length)
+        return false;
+    return parts.every((part, i) => wordExpandsTo(part, stateParts[i]));
+}
 /** The repository-internal directory the Git Boundary Rules forbid a worker to touch. */
 const GIT_INTERNAL_DIR = '.git';
 /**
@@ -274,15 +349,23 @@ function pathEntersGitDir(filePath) {
         .split(path.sep)
         .some((component) => wordSpellsProtectedName(component, GIT_INTERNAL_DIR));
 }
-/** Tool-input file_path match → returns reason string or null. */
-function detectProtectedWriteTarget(filePath) {
+/**
+ * Tool-input file_path match → returns reason string or null.
+ *
+ * `stateFile` is the RESOLVED runtime state path (`resolveStateFile`, threaded
+ * from `main`) and is REQUIRED, never defaulted: a defaulted parameter is how a
+ * new call site silently loses the ancestor arm and fails OPEN, which is the
+ * exact failure mode AP-EXT-ITER257-01 closes. `null` is the legitimate
+ * "unresolved" value and disables only that arm.
+ */
+function detectProtectedWriteTarget(filePath, stateFile) {
     if (!filePath)
         return null;
     const stateMatch = matchProtectedStateBasename(filePath);
     if (stateMatch) {
         return { matched: filePath, isSettings: SETTINGS_BASENAMES.has(stateMatch) };
     }
-    if (isInsideRuntimeRoot(filePath)) {
+    if (isInsideRuntimeRoot(filePath) || enclosesResolvedStateFile(filePath, stateFile)) {
         return { matched: filePath, isSettings: false };
     }
     return null;
@@ -666,8 +749,8 @@ function anchorWritesPositionalArg(name, argsInScope) {
  * `null` if none. Routes through the shared `findBashWriteTarget` walker with
  * the `detectProtectedWriteTarget` state-file probe.
  */
-function detectBashStateWriteTarget(command) {
-    return findBashWriteTarget(command, detectProtectedWriteTarget);
+function detectBashStateWriteTarget(command, stateFile) {
+    return findBashWriteTarget(command, (token) => detectProtectedWriteTarget(token, stateFile));
 }
 const ALLOW_CONFIG_EDIT_FLAG = '--allow-config-edit';
 function hasAllowConfigEditFlag(args) {
@@ -703,11 +786,18 @@ function isConfigProtectionEnabled(extensionDir) {
     catch { /* default true — continue with protection enabled */ }
     return true;
 }
+/**
+ * Resolves the live session state AND keeps the PATH it came from. The path is
+ * the protected target `enclosesResolvedStateFile` compares against
+ * (AP-EXT-ITER257-01) — discarding it here is what left the ancestor axis
+ * unanswerable and forced every earlier domain to close by naming the file.
+ */
 function loadResolvedState() {
     const stateFile = resolveStateFile(getDataRoot());
     if (!stateFile)
         return null;
-    return loadActiveState(stateFile);
+    const state = loadActiveState(stateFile);
+    return state ? { state, stateFile } : null;
 }
 function trimmedFlag(flags, key) {
     if (!flags)
@@ -752,15 +842,15 @@ function detectTargetedConfigFile(input) {
  * path and whether it is a `pickle_settings.json` write (which uses the
  * `allow_settings_writes_reason` override exclusively).
  */
-function detectTargetedStateFile(input) {
+function detectTargetedStateFile(input, stateFile) {
     const toolName = input.tool_name || '';
     const filePath = input.tool_input?.file_path || '';
     const command = input.tool_input?.command || '';
     if ((toolName === 'Write' || toolName === 'Edit') && filePath) {
-        return detectProtectedWriteTarget(filePath);
+        return detectProtectedWriteTarget(filePath, stateFile);
     }
     if (toolName === 'Bash' && command) {
-        return detectBashStateWriteTarget(command);
+        return detectBashStateWriteTarget(command, stateFile);
     }
     return null;
 }
@@ -1389,8 +1479,8 @@ function isGitDirWriteBlockedByRWSRCGR(input, state) {
     block(`R-WSRC-GR: writing into a repository's \`${GIT_INTERNAL_DIR}/\` directory is FORBIDDEN inside worker subprocesses — it reaches the SAME branch/HEAD state the gated git verbs defend, with no reflog entry and no warning (a plain \`> .git/HEAD\` re-points the pinned branch). Blocked path: ${target}. Use the allowed porcelain instead: \`git add <paths>\`, \`git commit\`, \`git restore <named-files>\`. Operator override: set state.flags.${gate?.flag ?? 'allow_git_dir_write_reason'}="<reason>" to bypass.`);
     return true;
 }
-function evaluateStateWriteGate(input, state) {
-    const hit = detectTargetedStateFile(input);
+function evaluateStateWriteGate(input, state, stateFile) {
+    const hit = detectTargetedStateFile(input, stateFile);
     if (!hit)
         return null;
     const flags = state.flags;
@@ -1433,15 +1523,16 @@ function main() {
         approve();
         return;
     }
-    const state = loadResolvedState();
-    if (!state) {
+    const resolved = loadResolvedState();
+    if (!resolved) {
         approve();
         return;
     }
+    const { state, stateFile } = resolved;
     // R-WSRC-3: state-file write gate runs BEFORE the legacy config-file gate so
     // an `--allow-config-edit` flag cannot accidentally smuggle a state-file
     // write through; state writes require their own explicit override flags.
-    const stateDecision = evaluateStateWriteGate(input, state);
+    const stateDecision = evaluateStateWriteGate(input, state, stateFile);
     if (stateDecision) {
         if (stateDecision.decision === 'approve') {
             approve();

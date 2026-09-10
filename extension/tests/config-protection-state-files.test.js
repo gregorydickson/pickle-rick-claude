@@ -2506,3 +2506,155 @@ for (const [name, build] of AP_EXT_ITER256_01_DECLARED_RESIDUALS) {
     );
   });
 }
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER257-01 — the protected-file domains were closed by tokens that NAME
+// the file, so mutating an ANCESTOR DIRECTORY reached it with nothing to match.
+//
+// Every arm of this handler answered "does this word name a protected file":
+// `matchProtectedStateBasename` by basename, `isInsideRuntimeRoot` by containing
+// root, `pathEntersGitDir` by path component. `rm -rf <session dir>` names
+// nothing — and destroys state.json, circuit_breaker.json, pipeline-status.json
+// and every ticket artifact at once, reaching the state-unreadable crash floor
+// rather than a wrong value.
+//
+// Measured against the shipped compiled handler with both controls live in the
+// same probe run (`rm -f <session>/state.json` and `shred -u <session>/state.json`
+// BLOCK, `cat` APPROVES): `rm -rf <session dir>`, `rm -rf <session dir>/`,
+// `rm -rf <data root>/sessions`, `rm -rf <data root>`, `chmod 000 <session dir>`
+// and `mv <session dir> /tmp/elsewhere` — 6 of 6 APPROVED. That is a complete
+// bypass of the destruction gate AP-EXT-ITER256-01 landed one pass earlier.
+//
+// The fix needs NO list: the hook has already resolved the one state file it
+// defends, so "is this word an ancestor of THAT path" is a comparison. The state
+// path is now threaded from `main` instead of being discarded.
+//
+// Cost, measured not assumed — 8,805 unique real worker Bash calls from 139 live
+// `tmux_iteration_*.log` NDJSON transcripts, driven through pre-fix and post-fix
+// compiled mirrors: the hit sets are IDENTICAL by command index AND matched
+// token, for two different live session paths. Zero flips in either direction.
+// UNBOUNDED the same arm added 31 blocks, every one of them `//`, `/` or `/*` —
+// comment markers in heredoc bodies resolving to the filesystem root — which is
+// why the coverage bound below is load-bearing and its controls come from the
+// corpus rather than from imagination.
+// ---------------------------------------------------------------------------
+
+function runWorkerBashOnAncestor(buildCommand) {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  const sessionsDir = path.dirname(sessionDir);
+  return runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: buildCommand({ sessionDir, sessionsDir, dataRoot: tmpDir, stateFile }) },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+}
+
+// Only ancestors at least as deep as `stateParts.length - 2` are asserted here:
+// the coverage bound is depth-RELATIVE, and TMPDIR is two components deep on
+// Linux against five on macOS, so a `<data root>` case would pass on one OS and
+// fail on the other. The two asserted depths clear the bound on any platform.
+//
+// SIX forms, not the twelve measured: the write-command ANCHOR is not this
+// arm's variable — `chmod`, `chown`, `shred`, `truncate` and a redirect all
+// reach the probe through the ONE shared `WRITE_COMMANDS` class that
+// AP-EXT-ITER256-01 already pins, so asserting each here would buy a handler
+// SPAWN per anchor and no new coverage. What varies is the SPELLING of the
+// ancestor, so that is what is enumerated: two depths, a trailing slash, both
+// glob shapes and one non-`rm` anchor proving the class really is shared.
+const AP_EXT_ITER257_01_ANCESTOR_DESTROYERS = [
+  ['rm -rf the session directory', ({ sessionDir }) => `rm -rf ${sessionDir}`],
+  ['rm -rf the session directory with a trailing slash', ({ sessionDir }) => `rm -rf ${sessionDir}/`],
+  ['rm -rf the sessions directory', ({ sessionsDir }) => `rm -rf ${sessionsDir}`],
+  ['mv the session directory away', ({ sessionDir }) => `mv ${sessionDir} /tmp/elsewhere`],
+  // A path COMPONENT is a shell word bash expands beside a real directory, the
+  // AP-EXT-ITER96-02 law — so a globbed ancestor reaches the same inode.
+  ['a `?`-globbed session component', ({ sessionsDir }) => `rm -rf ${sessionsDir}/sessio?`],
+  ['a `*`-globbed sessions component', ({ sessionDir, dataRoot }) => `rm -rf ${dataRoot}/session*/${path.basename(sessionDir)}`],
+];
+
+for (const [label, build] of AP_EXT_ITER257_01_ANCESTOR_DESTROYERS) {
+  test(`AP-EXT-ITER257-01: blocks a mutation of an ancestor of the resolved state file — ${label}`, () => {
+    assert.equal(runWorkerBashOnAncestor(build).decision, 'block', `${label} must not reach the state file unnamed`);
+  });
+}
+
+test('AP-EXT-ITER257-01: the Write/Edit arm shares the ancestor probe', () => {
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  for (const toolName of ['Write', 'Edit']) {
+    assert.equal(
+      runHandler({ tmpDir, stateFile, toolName, toolInput: { file_path: sessionDir } }).decision,
+      'block',
+      `${toolName} at the session directory must block — the invariant is "any tool"`,
+    );
+  }
+});
+
+test('AP-EXT-ITER257-01: a SIBLING session directory still approves', () => {
+  // Non-tautology: the gate is answering "ancestor of THIS resolved state file",
+  // not blanket-blocking every path that looks like a session directory.
+  assert.equal(
+    runWorkerBashOnAncestor(({ sessionsDir }) => `rm -rf ${sessionsDir}/some-other-session`).decision,
+    'approve',
+  );
+});
+
+test('AP-EXT-ITER257-01: a read of an ancestor directory still approves', () => {
+  assert.equal(runWorkerBashOnAncestor(({ sessionDir }) => `ls ${sessionDir}`).decision, 'approve');
+});
+
+// The over-block controls are the 31 commands the UNBOUNDED arm newly blocked
+// over the live corpus, reduced to their shapes: a comment marker in a heredoc
+// body read as a write destination that resolves to the filesystem root.
+//
+// The anchor before the heredoc is LOAD-BEARING and taken from the corpus: it is
+// a `cp`/`rm` in the raw un-segmented scope whose Pass 2 arg walk runs on into
+// the heredoc BODY, where the comment marker sits. A control written with only
+// `cat > file <<EOF` probes no body token at all and would pin nothing — checked
+// against a bound-dropped mirror, which it fails to red.
+const AP_EXT_ITER257_01_CORPUS_CONTROLS = [
+  ['a `//` line comment reached by a `cp` anchor', "cp a.js /tmp/b.js && cat > c.test.js <<'EOF'\n// @tier: fast\nEOF"],
+  ['a `/*` block comment reached by an `rm` anchor', "rm -rf /tmp/scratch && cat > /tmp/x.c <<'EOF'\n/* note */\nEOF"],
+  ['a bare `/` operand', 'cp /etc/hosts /'],
+];
+
+for (const [label, command] of AP_EXT_ITER257_01_CORPUS_CONTROLS) {
+  test(`AP-EXT-ITER257-01: corpus over-block control approves — ${label}`, () => {
+    assert.equal(runWorkerBash(command).decision, 'approve', `${label} blocked — the coverage bound has been widened`);
+  });
+}
+
+// Structural pin (PATTERN_SHAPE). Two shapes, and both are load-bearing:
+// the per-component expansion read (a literal compare re-opens the globbed
+// ancestor) and the coverage bound (dropping it re-opens the 31 corpus blocks).
+test('AP-EXT-ITER257-01: the ancestor arm reads components through the shared expander under a coverage bound', () => {
+  const handler = readCode(path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'));
+  const fn = handler.slice(
+    handler.indexOf('function enclosesResolvedStateFile'),
+    handler.indexOf("const GIT_INTERNAL_DIR"),
+  );
+  assert.ok(fn.length > 0, 'enclosesResolvedStateFile body must be locatable');
+  assert.match(fn, /parts\.every\(\(part, i\) => wordExpandsTo\(part, stateParts\[i\]\)\)/);
+  assert.match(fn, /parts\.length \* 2 < stateParts\.length/);
+  // The bypass shapes: a literal compare, or the command-word matcher whose
+  // bound is false of a path component (AP-EXT-ITER96-02).
+  assert.doesNotMatch(fn, /execNameIs\(/);
+  assert.doesNotMatch(fn, /\.startsWith\(/);
+});
+
+test('AP-EXT-ITER257-01: the resolved state path is threaded, never defaulted', () => {
+  const handler = readCode(path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'));
+  // A defaulted parameter is how a new call site silently loses the arm and
+  // fails OPEN — the exact shape this finding closed. tsc must demand it.
+  assert.match(handler, /function detectProtectedWriteTarget\(filePath: string, stateFile: string \| null\)/);
+  assert.doesNotMatch(handler, /stateFile: string \| null = /);
+  // `loadResolvedState` must keep the PATH, not just the parsed state; the arm
+  // is unanswerable without it. Pinned on the SIGNATURE, which is the contract
+  // tsc enforces at every call site — a body-line needle would red on a
+  // behaviour-preserving rewrite and teach the next reader to delete the pin.
+  assert.match(
+    handler,
+    /function loadResolvedState\(\): \{ state: State; stateFile: string \} \| null/,
+  );
+});
