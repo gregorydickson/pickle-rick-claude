@@ -5448,3 +5448,263 @@ test('AP-EXT-ITER252-03: the ref plumbing is set membership, not a fifth conditi
   assert.match(body, /verb === 'commit'/);
   assert.match(body, /verb === 'fetch'/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER254-01 — the PATH axis of the Git Boundary Rules
+//
+// The Rules close the worker's git contract on TWO axes. The VERB axis was
+// enumerated (and its plumbing half closed by AP-EXT-ITER252-03); the PATH one
+// — "direct `.git/` modification (any tool)", carried verbatim in four live
+// prompt files — had NO enforcement member anywhere under `src/hooks`, so it
+// failed OPEN exactly as a missing verb does. Measured against the shipped
+// handler with PICKLE_ROLE=worker before the fix: `> .git/HEAD`,
+// `> .git/config`, `tee .git/HEAD`, `truncate -s 0 .git/index`,
+// `cp x .git/HEAD`, `sed -i '' … .git/config` and a `Write` at `.git/HEAD` ALL
+// APPROVED while `git reset --hard` and `> <session>/state.json` blocked in the
+// same probe run.
+//
+// Shim-verified in a scratch repo (`GIT_CONFIG_GLOBAL=/dev/null` +
+// `useConfigOnly`): a plain `echo "ref: refs/heads/other" > .git/HEAD` took the
+// pinned branch from `main` at 3 commits to `other` at 1 with no reflog entry
+// and no working-tree change — the silent commit loss `git switch` is blocked
+// for, reached by a redirect.
+//
+// Every case below carries its CONTROLS in the same run. A gate probe with no
+// live control is the vacuous shape this file has been burned by twice: a
+// missing extension sentinel or a short `baseState` disables the whole hook and
+// every command reads `approve`.
+// ---------------------------------------------------------------------------
+
+const GIT_DIR_WRITE_FORMS = [
+  ['redirect onto HEAD', 'echo "ref: refs/heads/other" > .git/HEAD'],
+  ['append onto config', 'echo "[core]" >> .git/config'],
+  ['redirect onto packed-refs', 'echo x > .git/packed-refs'],
+  ['tee onto HEAD', 'echo x | tee .git/HEAD'],
+  ['cp over HEAD', 'cp /tmp/forged-head .git/HEAD'],
+  ['mv over the index', 'mv /tmp/forged-index .git/index'],
+  ['truncate the index', 'truncate -s 0 .git/index'],
+  ['sed -i the config', "sed -i '' s/main/other/ .git/config"],
+  ['absolute path into .git', '/bin/echo x > /tmp/somerepo/.git/HEAD'],
+  ['glob spelling of the directory', 'echo x > .gi?/HEAD'],
+  ['case-folded spelling', 'echo x > .GIT/HEAD'],
+  ['a worktree/submodule .git FILE', 'echo "gitdir: ../.git/modules/x" > sub/.git'],
+];
+
+// These MUST stay approved. `.github/` holds this repo's own release workflow
+// and `.gitignore` is edited by real tickets, so a `.git`-PREFIX read rather
+// than a path-COMPONENT read would break the pipeline outright; the three
+// exclusion idioms are the shape 62 of 62 real `.git`-naming worker commands
+// in the live corpus actually use, and every one of them is a READ.
+const GIT_ADJACENT_APPROVALS = [
+  ['the release workflow', 'echo x > .github/workflows/release.yml'],
+  ['a workflow via tee', 'echo x | tee .github/workflows/ci.yml'],
+  ['.gitignore', 'echo node_modules > .gitignore'],
+  ['.gitattributes', 'echo "*.js text" > .gitattributes'],
+  ['reading HEAD', 'cat .git/HEAD'],
+  ['grep --exclude-dir', 'grep -rn foo . --exclude-dir=.git'],
+  ['grep -v of a .git prefix', 'grep -rn foo . | grep -v "^./.git/"'],
+  ['find -not -path', "find . -name CLAUDE.md -not -path './.git/*'"],
+  ['a bare wildcard component', 'echo x > */HEAD'],
+];
+
+test('AP-EXT-ITER254-01: a worker write into .git/ blocks across the shared write-command class', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const asWorker = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+
+  // Controls FIRST: if these two disagree the hook is disabled and every
+  // assertion below would pass vacuously.
+  assert.equal(asWorker('git reset --hard HEAD~1').decision, 'block', 'blocking control');
+  assert.equal(asWorker('cat README.md').decision, 'approve', 'approving control');
+
+  for (const [label, command] of GIT_DIR_WRITE_FORMS) {
+    const result = asWorker(command);
+    assert.equal(result.decision, 'block', `${label}: ${command}`);
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, /allow_git_dir_write_reason/);
+  }
+});
+
+test('AP-EXT-ITER254-01: .github, .gitignore and the read/exclusion idioms stay approved', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const asWorker = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+
+  assert.equal(asWorker('echo x > .git/HEAD').decision, 'block', 'blocking control');
+
+  for (const [label, command] of GIT_ADJACENT_APPROVALS) {
+    assert.equal(asWorker(command).decision, 'approve', `${label}: ${command}`);
+  }
+});
+
+test('AP-EXT-ITER254-01: the Write/Edit tools reach .git/ too, and are gated the same way', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const toolName of ['Write', 'Edit']) {
+    const blocked = runHandler({
+      tmpDir, stateFile, toolName, toolInput: { file_path: '.git/HEAD' },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(blocked.decision, 'block', `${toolName} .git/HEAD`);
+    assert.match(blocked.reason, /R-WSRC-GR/);
+
+    const approved = runHandler({
+      tmpDir, stateFile, toolName, toolInput: { file_path: '.github/workflows/ci.yml' },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(approved.decision, 'approve', `${toolName} .github/**`);
+  }
+});
+
+test('AP-EXT-ITER254-01: the gate is worker-scoped — the manager/operator session is untouched', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  // `mux-runner.ts` / `jar-runner.ts` DELETE PICKLE_ROLE, so the operator
+  // session that legitimately clears a `.git/index.lock` must not be gated.
+  for (const command of ['echo x > .git/HEAD', 'rm .git/index.lock', 'cp /tmp/x .git/config']) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    });
+    assert.equal(result.decision, 'approve', `no role: ${command}`);
+  }
+  assert.equal(
+    runHandler({
+      tmpDir, stateFile, toolName: 'Write', toolInput: { file_path: '.git/HEAD' },
+    }).decision,
+    'approve',
+    'no role: Write .git/HEAD',
+  );
+  // Every worker-class role honours the Rules, not just `worker` — the
+  // R-WSRC-GR-LEAK shape (B-PNTR 2026-05-25) was one arm knowing one role.
+  for (const role of ['worker', 'refinement-worker']) {
+    assert.equal(
+      runHandler({
+        tmpDir, stateFile, toolName: 'Bash', toolInput: { command: 'echo x > .git/HEAD' },
+        extraEnv: { PICKLE_ROLE: role },
+      }).decision,
+      'block',
+      `role ${role}`,
+    );
+  }
+});
+
+test('AP-EXT-ITER254-01: the operator override approves and both audit names are registered', async () => {
+  const { VALID_ACTIVITY_EVENTS } = await import('../../types/index.js');
+
+  const blockedSession = bootstrapSession();
+  const blocked = runHandler({
+    tmpDir: blockedSession.tmpDir, stateFile: blockedSession.stateFile,
+    toolName: 'Bash', toolInput: { command: 'echo x > .git/HEAD' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(blocked.decision, 'block');
+  const blockedEvents = readActivityEvents(blockedSession.dataRoot)
+    .filter((e) => String(e.event).startsWith('worker_git_dir_write'));
+  assert.equal(blockedEvents.length, 1);
+  assert.equal(blockedEvents[0].event, 'worker_git_dir_write_blocked');
+  assert.ok(VALID_ACTIVITY_EVENTS.includes(blockedEvents[0].event));
+  assert.equal(blockedEvents[0].gate_payload.ticket_id, 'test-ticket-01');
+
+  const bypassSession = bootstrapSession({
+    flags: { allow_git_dir_write_reason: 'operator repair of a corrupt ref' },
+  });
+  const approved = runHandler({
+    tmpDir: bypassSession.tmpDir, stateFile: bypassSession.stateFile,
+    toolName: 'Bash', toolInput: { command: 'echo x > .git/HEAD' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(approved.decision, 'approve');
+  const bypassEvents = readActivityEvents(bypassSession.dataRoot)
+    .filter((e) => String(e.event).startsWith('worker_git_dir_write'));
+  assert.equal(bypassEvents.length, 1);
+  assert.equal(bypassEvents[0].event, 'worker_git_dir_write_bypass');
+  assert.ok(VALID_ACTIVITY_EVENTS.includes(bypassEvents[0].event));
+});
+
+// The override DECLINES to block; it does not approve. Every other gate in
+// `main()` approves and returns on its override, which ends the dispatch and
+// skips the gates below it — so with `allow_git_reset_reason` set,
+// `git reset --hard && cp x tsconfig.json` approves and the config gate that
+// would have blocked the second half never runs (asserted below on the shipped
+// handler, as the pre-existing shape it is). This gate falls through instead,
+// so an override scoped to `.git/` cannot launder a config write with it.
+test('AP-EXT-ITER254-01: a .git/ override does not launder a config write past the config gate', () => {
+  const bypass = bootstrapSession({
+    flags: { allow_git_dir_write_reason: 'operator repair of a corrupt ref' },
+  });
+  const asWorker = (command) => runHandler({
+    tmpDir: bypass.tmpDir, stateFile: bypass.stateFile,
+    toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+
+  // The override really is in force for the domain it names.
+  assert.equal(asWorker('echo x > .git/HEAD').decision, 'approve', 'override in force');
+
+  // ... and does NOT carry a config write with it.
+  const laundered = asWorker('cp .git/HEAD tsconfig.json');
+  assert.equal(laundered.decision, 'block', 'config gate must still see the tsconfig write');
+  assert.match(laundered.reason, /Config file protected/);
+
+  // The sibling verb gate DOES skip the config gate on its own override. Pinned
+  // as the pre-existing shape so a future pass making the two "consistent"
+  // knows which direction is the safe one.
+  const verbBypass = bootstrapSession({ flags: { allow_git_reset_reason: 'operator recovery' } });
+  const viaVerbGate = runHandler({
+    tmpDir: verbBypass.tmpDir, stateFile: verbBypass.stateFile,
+    toolName: 'Bash', toolInput: { command: 'git reset --hard HEAD~1 && cp x tsconfig.json' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(viaVerbGate.decision, 'approve');
+});
+
+// The structural half. The PATH axis rides the SHARED walker and the SHARED
+// gate table; a future pass that gives it a private traversal re-opens the
+// drift the `single write-command class` invariant exists to prevent, and a
+// second gate table re-opens the AP-EXT-ITER110-01 unregistered-name class.
+test('AP-EXT-ITER254-01: the .git/ domain adds no second traversal and no second gate table', () => {
+  const source = readCode(CONFIG_PROTECTION_TS);
+
+  const detector = source.slice(
+    source.indexOf('function detectGitDirWriteTarget('),
+    source.indexOf('function segmentInvokesInstallSh('),
+  );
+  assert.ok(detector.length > 0, 'detectGitDirWriteTarget must remain a single named function');
+  assert.match(detector, /findBashWriteTarget\(/, 'the Bash arm must route through the shared walker');
+  assert.doesNotMatch(detector, /tokenizeShell/, 'no private tokenizer walk');
+  assert.doesNotMatch(detector, /splitShellSegments/, 'no private segment walk');
+
+  // ONE table: the `.git/` row lives in GIT_VERB_GATE beside the verbs.
+  assert.equal(
+    (source.match(/const GIT_VERB_GATE[^=]*=/g) || []).length, 1,
+    'GIT_VERB_GATE must stay the only gate table',
+  );
+  assert.match(source, /\[GIT_DIR_WRITE_KEY\]:\s*\{\s*flag: 'allow_git_dir_write_reason'/);
+
+  // ONE role read, shared by both R-WSRC-GR arms.
+  assert.equal(
+    (source.match(/process\.env\.PICKLE_ROLE/g) || []).length, 1,
+    'PICKLE_ROLE must be read exactly once, inside isWorkerRole',
+  );
+
+  // A COMPONENT test, never a prefix/startsWith test — that is what keeps
+  // `.github/` and `.gitignore` out of the domain.
+  const predicate = source.slice(
+    source.indexOf('function pathEntersGitDir('),
+    source.indexOf('function detectProtectedWriteTarget('),
+  );
+  assert.ok(predicate.length > 0, 'pathEntersGitDir must remain a single named function');
+  assert.match(predicate, /split\(path\.sep\)/);
+  assert.match(predicate, /wordSpellsProtectedName\(/, 'must reuse the shared spelling reader');
+  assert.doesNotMatch(predicate, /startsWith|indexOf|includes\(/, 'no prefix/substring match');
+
+  // The override arm falls through; it never ends the dispatch with an approve.
+  const gate = source.slice(
+    source.indexOf('function isGitDirWriteBlockedByRWSRCGR('),
+    source.indexOf('function evaluateStateWriteGate('),
+  );
+  assert.ok(gate.length > 0, 'isGitDirWriteBlockedByRWSRCGR must remain a single named function');
+  assert.doesNotMatch(gate, /approve\(\)/, 'the .git/ gate must never approve — it blocks or declines');
+});

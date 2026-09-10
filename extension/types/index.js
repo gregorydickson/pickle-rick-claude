@@ -522,6 +522,11 @@ export const VALID_ACTIVITY_EVENTS = [
     'worker_git_symbolic_ref_bypass',
     'worker_git_branch_blocked',
     'worker_git_branch_bypass',
+    // AP-EXT-ITER254-01: the PATH axis of the same Git Boundary Rules — a worker
+    // write landing inside a repository's `.git/` directory, which no verb member
+    // can express. Emitted by the `GIT_DIR_WRITE_KEY` row of `GIT_VERB_GATE`.
+    'worker_git_dir_write_blocked',
+    'worker_git_dir_write_bypass',
 ];
 /**
  * Recoverable reasons a ticket can be flipped to Failed by the auto-skip guard (R-WSWA-3).

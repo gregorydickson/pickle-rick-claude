@@ -337,6 +337,11 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'worker_git_symbolic_ref_bypass',
         'worker_git_branch_blocked',
         'worker_git_branch_bypass',
+        // AP-EXT-ITER254-01: the PATH axis of the same Git Boundary Rules — the
+        // `.git/` write gate rides the ONE GIT_VERB_GATE table, so it brings its
+        // two names with it.
+        'worker_git_dir_write_blocked',
+        'worker_git_dir_write_bypass',
     ];
     assert.equal(VALID_ACTIVITY_EVENTS.length, expected.length);
     for (const e of expected) {

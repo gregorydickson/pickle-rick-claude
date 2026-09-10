@@ -229,6 +229,51 @@ function isInsideRuntimeRoot(filePath) {
         return false;
     return rootParts.every((rootPart, i) => wordExpandsTo(parts[i], rootPart));
 }
+/** The repository-internal directory the Git Boundary Rules forbid a worker to touch. */
+const GIT_INTERNAL_DIR = '.git';
+/**
+ * True when `filePath` traverses — or IS — a repository's `.git` directory.
+ *
+ * AP-EXT-ITER254-01: the Git Boundary Rules close the worker's git contract by
+ * naming a CATEGORY on both axes. The VERB axis was enumerated (and its
+ * plumbing half closed by AP-EXT-ITER252-03); the PATH axis — "direct `.git/`
+ * modification (any tool)", carried verbatim in four live prompt files — had no
+ * enforcement member anywhere under `src/hooks`, so it failed OPEN exactly as a
+ * missing verb does. Measured against the shipped handler with
+ * PICKLE_ROLE=worker and both a blocking control (`> <session>/state.json`,
+ * `git reset --hard`) and an approving one (`cat`) in the same probe run:
+ * `> .git/HEAD`, `> .git/config`, `> .git/packed-refs`, `tee .git/HEAD`,
+ * `truncate -s 0 .git/index`, `cp x .git/HEAD`, `sed -i '' … .git/config` and a
+ * `Write` tool call at `.git/HEAD` ALL APPROVED while every gated verb blocked.
+ * Shim-verified in a scratch repo (`GIT_CONFIG_GLOBAL=/dev/null` +
+ * `useConfigOnly`): a plain `echo "ref: refs/heads/other" > .git/HEAD` took the
+ * pinned branch from `main` at 3 commits to `other` at 1 with no reflog entry,
+ * no warning and no working-tree change — the same silent commit loss
+ * `git switch` and `git checkout <ref>` are blocked for, reached by a redirect.
+ *
+ * A COMPONENT test, not a prefix test: a worker's cwd is not knowable here (the
+ * hook sees a token, and `git -C sub`, a submodule and a sibling checkout all
+ * put `.git` at a different depth), so anchoring on one repository root would
+ * need the enumeration this module has now failed at eight times. "Any path
+ * component names `.git`" needs no list and no root. The last component counts
+ * too: in a worktree or submodule `.git` is a FILE holding the gitdir pointer,
+ * so writing it re-points the whole repository.
+ *
+ * Read through the shared `wordSpellsProtectedName`, never a `===` on the
+ * component, so this domain inherits the ONE expansion reader and the ONE
+ * coverage bound rather than growing a second spelling rule (AP-EXT-ITER96-01):
+ * `.gi?/HEAD` scores 3*2 >= 4 and blocks, a bare `*` component scores 0 and does
+ * not. `.github/` is a literal that is not `.git` and carries no pattern
+ * character, so it can never reach this — verified directly, since the repo's
+ * own release workflow lives there.
+ */
+function pathEntersGitDir(filePath) {
+    if (!filePath)
+        return false;
+    return path.resolve(expandLeadingHome(filePath)).toLowerCase()
+        .split(path.sep)
+        .some((component) => wordSpellsProtectedName(component, GIT_INTERNAL_DIR));
+}
 /** Tool-input file_path match → returns reason string or null. */
 function detectProtectedWriteTarget(filePath) {
     if (!filePath)
@@ -679,6 +724,35 @@ function detectTargetedStateFile(input) {
     return null;
 }
 /**
+ * The `.git/` half of the Git Boundary Rules (AP-EXT-ITER254-01): returns the
+ * write destination that reaches a repository-internal path, or null.
+ *
+ * Routes the Bash arm through the SHARED `findBashWriteTarget` walker with a
+ * `.git`-path probe — the third `probe` caller beside the state and config ones,
+ * and deliberately not a fourth traversal. The walker's arity is unchanged, so
+ * the `single write-command class` invariant still holds by construction: this
+ * domain gets the SAME `WRITE_COMMANDS` class, the same segment union and the
+ * same redirect normalization as the other two, and cannot drift narrower.
+ *
+ * RESIDUAL, reported rather than claimed closed: `rm -rf .git`, `shred` and
+ * `unlink` still APPROVE, because DESTRUCTION is not a `WRITE_COMMANDS` member —
+ * the open AP-EXT-ITER252-04 finding, whose fix is a measured trade in the
+ * config domain and belongs to its own iteration. Closing it there closes it
+ * here too, for free, because the class is shared.
+ */
+function detectGitDirWriteTarget(input) {
+    const toolName = input.tool_name || '';
+    const filePath = input.tool_input?.file_path || '';
+    const command = input.tool_input?.command || '';
+    if ((toolName === 'Write' || toolName === 'Edit') && filePath) {
+        return pathEntersGitDir(filePath) ? filePath : null;
+    }
+    if (toolName === 'Bash' && command) {
+        return findBashWriteTarget(command, (token) => (pathEntersGitDir(token) ? token : null));
+    }
+    return null;
+}
+/**
  * Returns true if a single (already-segmented) shell command EXECS the deploy
  * script install.sh — whether it stands at the exec token or behind a shell wrapper.
  *
@@ -1097,7 +1171,33 @@ function isBashInstallBlockedByRWSRC(input, state) {
 const ALLOW_STATE_WRITE_REASON_FIELD = 'allow_state_writes_reason';
 const ALLOW_SETTINGS_WRITE_REASON_FIELD = 'allow_settings_writes_reason';
 const ALLOW_INSTALL_SH_REASON_FIELD = 'allow_install_sh_reason'; // rare manager override only (R-WSRC)
+/** Worker-class roles that MUST honor Git Boundary Rules. */
+const WORKER_ROLES = new Set(['worker', 'refinement-worker']);
+/**
+ * The ONE read of `PICKLE_ROLE` behind the Git Boundary Rules gates.
+ *
+ * Both R-WSRC-GR arms — the verb gate and the `.git/` write gate — ask the same
+ * question of the same env var, so it is asked once here rather than re-spelled
+ * per arm; a second copy is how one arm ends up honouring `refinement-worker`
+ * and the other not (the R-WSRC-GR-LEAK shape, B-PNTR 2026-05-25).
+ *
+ * Manager / operator invocations (PICKLE_ROLE unset, or a non-worker role) pass
+ * through deliberately. `mux-runner.ts` and `jar-runner.ts` DELETE the variable,
+ * so the operator session that legitimately reaches `.git` for a recovery is
+ * never gated, and the runtime's own git callers go through `execFileSync` and
+ * raise no Bash PreToolUse event at all.
+ */
+function isWorkerRole() {
+    const role = process.env.PICKLE_ROLE;
+    return !!role && WORKER_ROLES.has(role);
+}
+/**
+ * `GIT_VERB_GATE`'s key for the PATH axis of the Git Boundary Rules. Carries a
+ * `/`, which no git verb can, so it is unreachable by the verb detector.
+ */
+const GIT_DIR_WRITE_KEY = '.git/ write';
 const GIT_VERB_GATE = {
+    [GIT_DIR_WRITE_KEY]: { flag: 'allow_git_dir_write_reason', blocked: 'worker_git_dir_write_blocked', bypass: 'worker_git_dir_write_bypass' },
     'reset': { flag: 'allow_git_reset_reason', blocked: 'worker_git_reset_blocked', bypass: 'worker_git_reset_bypass' },
     'checkout': { flag: 'allow_git_checkout_reason', blocked: 'worker_git_checkout_blocked', bypass: 'worker_git_checkout_bypass' },
     'switch': { flag: 'allow_git_switch_reason', blocked: 'worker_git_switch_blocked', bypass: 'worker_git_switch_bypass' },
@@ -1139,12 +1239,7 @@ export function gitVerbGateEventNames() {
 function isGitVerbBlockedByRWSRCGR(input, state) {
     if (input.tool_name !== 'Bash' || !input.tool_input?.command)
         return false;
-    const role = process.env.PICKLE_ROLE;
-    if (!role)
-        return false;
-    // Worker-class roles that MUST honor Git Boundary Rules.
-    const WORKER_ROLES = new Set(['worker', 'refinement-worker']);
-    if (!WORKER_ROLES.has(role))
+    if (!isWorkerRole())
         return false;
     const detected = detectProhibitedGitVerb(input.tool_input.command);
     if (!detected)
@@ -1162,6 +1257,46 @@ function isGitVerbBlockedByRWSRCGR(input, state) {
     }
     logGitVerbGateEvent(gate, 'blocked', { command: input.tool_input.command, ticket_id: ticketId ?? null });
     block(`R-WSRC-GR: \`git ${verb}\` is FORBIDDEN inside worker subprocesses. PRESERVE WORK first (R-WUWC): commit verified changes scoped, then \`git restore <named-files>\` — NEVER \`git restore .\` or a directory over uncommitted work (restore is not blocked and wipes it all). Operator override: set state.flags.${flagField ?? `allow_git_${verb.replace(/\s/g, '_')}_reason`}="<reason>" to bypass.`);
+    return true;
+}
+/**
+ * R-WSRC-GR PATH axis (AP-EXT-ITER254-01): blocks a worker WRITE that lands inside a
+ * repository's `.git/` directory, by any tool.
+ *
+ * A sibling of `isGitVerbBlockedByRWSRCGR`, not an arm inside it. That function already
+ * carries the four same-theme verb checks the W5b subtract-before-add rule (Override 1.6)
+ * forbids adding a fifth to, and its complexity sits close to the eslint ceiling; folding
+ * a PATH question into a VERB detector would raise the count while making one symbol
+ * answer two questions. Everything the two arms genuinely share is shared instead — the
+ * role read (`isWorkerRole`), the gate table (`GIT_VERB_GATE`), the audit emitter
+ * (`logGitVerbGateEvent`) and the write-target walker (`findBashWriteTarget`) — so the
+ * only thing this adds is the question itself.
+ */
+function isGitDirWriteBlockedByRWSRCGR(input, state) {
+    if (!isWorkerRole())
+        return false;
+    const target = detectGitDirWriteTarget(input);
+    if (!target)
+        return false;
+    const gate = GIT_VERB_GATE[GIT_DIR_WRITE_KEY];
+    const flags = state.flags || {};
+    const override = gate ? trimmedFlag(flags, gate.flag) : null;
+    const ticketId = state.current_ticket;
+    if (override) {
+        // Records the bypass and DECLINES to block — deliberately NOT `approve()`.
+        // Every other gate in `main()` approves and returns on its override, which
+        // ends the dispatch and skips the gates below it: with
+        // `allow_git_reset_reason` set, `git reset --hard && cp x tsconfig.json`
+        // approves, and the config gate that would have blocked the second half
+        // never runs. Verified pre-existing on the shipped handler; not a shape to
+        // copy. An override says "this worker may write `.git/`" and says nothing
+        // about `tsconfig.json`, so falling through is both narrower and one case
+        // SMALLER — there is no second approve site to keep in step.
+        logGitVerbGateEvent(gate, 'bypass', { blocked_path: target, reason: override, ticket_id: ticketId ?? null });
+        return false;
+    }
+    logGitVerbGateEvent(gate, 'blocked', { blocked_path: target, ticket_id: ticketId ?? null });
+    block(`R-WSRC-GR: writing into a repository's \`${GIT_INTERNAL_DIR}/\` directory is FORBIDDEN inside worker subprocesses — it reaches the SAME branch/HEAD state the gated git verbs defend, with no reflog entry and no warning (a plain \`> .git/HEAD\` re-points the pinned branch). Blocked path: ${target}. Use the allowed porcelain instead: \`git add <paths>\`, \`git commit\`, \`git restore <named-files>\`. Operator override: set state.flags.${gate?.flag ?? 'allow_git_dir_write_reason'}="<reason>" to bypass.`);
     return true;
 }
 function evaluateStateWriteGate(input, state) {
@@ -1238,6 +1373,12 @@ function main() {
     // R-WSRC-GR: Block prohibited git verbs (reset, checkout w/ ref, switch, stash, rebase,
     // commit --amend, pull, push, fetch --prune) from worker subprocess contexts.
     if (isGitVerbBlockedByRWSRCGR(input, state)) {
+        return; // block() or approve() already called inside
+    }
+    // R-WSRC-GR PATH axis: the same Rules forbid direct `.git/` modification by ANY tool,
+    // which no verb member can express. Runs after the verb gate so a command that is both
+    // (`git ... > .git/HEAD`) still reports the verb the worker actually typed.
+    if (isGitDirWriteBlockedByRWSRCGR(input, state)) {
         return; // block() or approve() already called inside
     }
     const targetedConfigFile = detectTargetedConfigFile(input);

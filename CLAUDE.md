@@ -165,6 +165,7 @@ Workers run inside the runtime they modify. Hooks enforce these (prose alone fai
 | tsc errors at commit time | `allow_tsc_failed_reason` (manager-only) | `tsc-gate.ts` hook |
 | `bash install.sh` from worker | none | bash-scanner |
 | `~/.claude/pickle-rick/**` | none | `config-protection.ts` hook |
+| Any path inside a repo's `.git/` | `allow_git_dir_write_reason` | `config-protection.ts` hook (R-WSRC-GR path axis) |
 | Test `claude --add-dir <real-repo>` | none | `backend-spawn.ts` `PICKLE_TEST_MODE` |
 | Other ticket's dir | none | `check-scope-diff.ts` preflight |
 | `spawnSync`/`spawn` no `timeout` | per-callsite | Per-file trap doors |
