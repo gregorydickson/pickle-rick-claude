@@ -509,12 +509,27 @@ function normalizeRedirectOperators(command) {
         .replace(/(^|[^>])>/g, '$1 > ');
 }
 /**
- * Commands that write a file passed as a positional argument, which the redirect
- * tokenizer's `>`/`>>` pass does not cover. Two families, one class:
- *   - destination-arg writers: `tee`/`cp`/`mv`/`rsync`
- *   - in-place / editor writers: `sed -i FILE`, `perl -i FILE`, `vim FILE`, ...
- * Read-only commands (`grep`/`ls`/`stat`/`cat`/`awk`) are deliberately absent, so
- * they fall through to approve.
+ * Commands that MUTATE a file passed as a positional argument, which the redirect
+ * tokenizer's `>`/`>>` pass does not cover.
+ *
+ * ONE membership criterion, not a roster of families (AP-EXT-ITER256-01): a
+ * command belongs here when EVERY invocation of it over a positional file
+ * operand mutates that operand — creating it, rewriting it, removing it, or
+ * changing who may read it. That single question settles `tee`/`cp`/`mv`/`rsync`,
+ * the in-place editors, the `dd`/`truncate`/`install`/`ln`/`touch` writers and
+ * the destroyers `rm`/`shred`/`unlink`/`chmod`/`chown` alike, and it is the same
+ * question that keeps `grep`/`ls`/`stat`/`cat`/`awk` out — they have no mutating
+ * invocation at all, so no separate read-only exclusion rule is needed. The one
+ * member whose implication is merely PARTIAL is `sed`, and it is not spared by a
+ * second list: `IN_PLACE_ONLY_WRITERS` narrows the ANCHOR, never the set.
+ *
+ * The criterion is also what stops the set growing by theme. A command with a
+ * read-only mode over the SAME operand fails it and stays out — `gzip -l`/`-t`,
+ * `xz -l`, `tar -t` — because admitting one would need that command's own flag
+ * grammar, the enumeration-fence trap this module has been bitten by repeatedly.
+ * `mkdir` fails it for a different reason: it cannot touch an existing file at
+ * all. Those exclusions are DECLARED RESIDUALS with a stated test, not gaps
+ * nobody looked at.
  *
  * EVERY probe over EVERY protected domain walks this one class — a per-caller
  * command class is what let `sed -i state.json` through while `sed -i
@@ -540,17 +555,43 @@ function normalizeRedirectOperators(command) {
  * re-litigate the inversion — re-measure it if you must, the corpus is still
  * there.
  *
- * The cost of KEEPING the list is that its failure direction is SILENT: a writer
- * absent from it approves, and nothing says so. `dd`/`truncate`/`install`/`ln`/
- * `touch` were absent and measured APPROVE against `<session>/state.json` on the
- * shipped handler while every listed twin blocked. Their over-block cost over
- * the same 9,191-call corpus is ZERO. A new member is a one-line addition here —
- * never a new code path — and it must arrive with both halves measured.
+ * The cost of KEEPING the list is that its failure direction is SILENT: a
+ * mutator absent from it approves, and nothing says so. `dd`/`truncate`/
+ * `install`/`ln`/`touch` were absent and measured APPROVE against
+ * `<session>/state.json` on the shipped handler while every listed twin blocked.
+ * Their over-block cost over the same 9,191-call corpus is ZERO. A new member is
+ * a one-line addition here — never a new code path — and it must arrive with
+ * both halves measured.
+ *
+ * AP-EXT-ITER256-01 — DESTRUCTION is mutation, and the family name "writers" hid
+ * that: the gap was raised on this subsystem's pass 2 and carried open through
+ * passes 3 and 4 before this one closed it. `rm`, `rm -f`, `rm -rf`, `shred -u`, `unlink` and
+ * `chmod 000` over `<session>/state.json` and `<session>/pickle_settings.json`
+ * ALL measured APPROVE on the shipped handler while the `>` redirect and `tee`
+ * twins blocked in the same probe run. Deleting the state file is strictly worse
+ * than rewriting it: a rewrite risks a wrong value, a delete reaches the
+ * state-unreadable crash floor. Closing them here also closes the `rm -rf .git`
+ * residual the AP-EXT-ITER254-01 path gate declared, for free, because the class
+ * is shared — that is the whole point of there being one class.
+ *
+ * Both halves measured over 8,805 unique real worker Bash calls (9,191 calls,
+ * 139 live `tmux_iteration_*.log` NDJSON transcripts, the measuring session's own
+ * logs excluded). The pre-fix and post-fix hit SETS are identical BY COMMAND
+ * INDEX except for FOUR additions and ZERO losses, and `shred`/`unlink`/`chmod`/
+ * `chown` contribute NONE of the four — every one comes from `rm`. Reported
+ * rather than excused: those four are real commands that now block. Their cause
+ * is measured, not guessed — each is an `rm -rf <scratch> && … <protected>`
+ * chain whose `rm` anchor reaches a protected operand belonging to a LATER
+ * segment, because `findWriteTargetInScope`'s Pass 2 walks the RAW un-segmented
+ * scope as one of its scopes. NONE of the four survives segment-only scoping
+ * (0 of 4, measured), so the over-block belongs to the scope union rather than
+ * to these members, and closing it is AP-EXT-ITER256-02's job, not this one's.
  */
 const WRITE_COMMANDS = [
     'tee', 'cp', 'mv', 'rsync', 'install', 'dd',
     'sed', 'perl', 'vim', 'vi', 'nano', 'emacs', 'ed', 'ex',
     'truncate', 'ln', 'touch',
+    'rm', 'shred', 'unlink', 'chmod', 'chown',
 ];
 /**
  * `WRITE_COMMANDS` members whose FILE argument is a write target only in
@@ -734,11 +775,18 @@ function detectTargetedStateFile(input) {
  * domain gets the SAME `WRITE_COMMANDS` class, the same segment union and the
  * same redirect normalization as the other two, and cannot drift narrower.
  *
- * RESIDUAL, reported rather than claimed closed: `rm -rf .git`, `shred` and
- * `unlink` still APPROVE, because DESTRUCTION is not a `WRITE_COMMANDS` member —
- * the open AP-EXT-ITER252-04 finding, whose fix is a measured trade in the
- * config domain and belongs to its own iteration. Closing it there closes it
- * here too, for free, because the class is shared.
+ * That sharing paid out: AP-EXT-ITER256-01 admitted the destroyers to the ONE
+ * class for the STATE domain's sake, and `rm -rf .git`, `shred -u .git/HEAD`,
+ * `unlink .git/index.lock` and `chmod 000 .git/config` — the residual this
+ * docblock reported OPEN for a full pass — closed here at the same instant, with
+ * no edit to this function. That is what a single class buys and a per-domain
+ * one would not have.
+ *
+ * RESIDUAL, reported rather than claimed closed: the domain is closed by PATH,
+ * so removing a repository's PARENT directory reaches `.git` without naming it,
+ * exactly as `rm -rf <session dir>` reaches the state file — one granularity
+ * gap, both domains, tracked as AP-EXT-ITER256-03. No member of any list can
+ * express it, so do not try to close it by growing one.
  */
 function detectGitDirWriteTarget(input) {
     const toolName = input.tool_name || '';

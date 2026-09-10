@@ -5834,3 +5834,85 @@ test('AP-EXT-ITER255-01: the soak guard bases on the session working dir, never 
   // hide the directory its own candidate is relative to.
   assert.match(bases, /splitShellSegments\(command\)/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER256-01 closes the residual AP-EXT-ITER254-01 declared.
+//
+// The PATH gate reuses the shared `findBashWriteTarget` walker, so it inherited
+// the write-command class verbatim — and DESTRUCTION was not a member of it.
+// `rm -rf .git`, `shred -u .git/HEAD` and `unlink .git/index` therefore APPROVED
+// for a worker while the `>` and `tee` twins over the same paths blocked, which
+// is the residual the ITER254-01 entry reported rather than claimed closed.
+// Admitting the destroyers to the ONE class closes both domains at once; these
+// cases pin that the closure really reached this one, since nothing here names
+// the members and a future narrowing of the class would pass silently.
+// ---------------------------------------------------------------------------
+
+const ITER256_01_GIT_DIR_DESTRUCTION = [
+  ['recursive remove of the whole directory', 'rm -rf .git'],
+  ['remove of the index', 'rm -f .git/index'],
+  ['remove through an absolute path', 'rm /tmp/somerepo/.git/HEAD'],
+  ['shred of HEAD', 'shred -u .git/HEAD'],
+  ['unlink of the index lock', 'unlink .git/index.lock'],
+  ['chmod of the config', 'chmod 000 .git/config'],
+  ['glob spelling of the directory', 'rm -f .gi?/HEAD'],
+];
+
+test('AP-EXT-ITER256-01: destroying a .git path is blocked for a worker, closing the ITER254-01 residual', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const asWorker = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+
+  // Controls FIRST, in the same run: without them a disabled hook approves
+  // everything and every assertion below passes vacuously.
+  assert.equal(asWorker('git reset --hard HEAD~1').decision, 'block', 'blocking control');
+  assert.equal(asWorker('cat README.md').decision, 'approve', 'approving control');
+
+  for (const [label, command] of ITER256_01_GIT_DIR_DESTRUCTION) {
+    const result = asWorker(command);
+    assert.equal(result.decision, 'block', `${label}: ${command}`);
+    assert.match(result.reason, /R-WSRC-GR/);
+    assert.match(result.reason, /allow_git_dir_write_reason/);
+  }
+});
+
+test('AP-EXT-ITER256-01: destroying .git-ADJACENT paths stays approved', () => {
+  // The same exclusions the path gate already owns must survive the wider
+  // anchor class: `.github/` holds this repo's own release workflow and
+  // `.gitignore` is edited by real tickets, so a destroyer over either is
+  // ordinary work, and a scratch remove must not become collateral.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const asWorker = (command) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+
+  assert.equal(asWorker('rm -rf .git').decision, 'block', 'blocking control');
+
+  for (const command of [
+    'rm -f .github/workflows/ci.yml',
+    'rm -f .gitignore',
+    'rm -f .gitattributes',
+    'rm -rf /tmp/scratch-dir',
+    'chmod 755 scripts/build.sh',
+  ]) {
+    assert.equal(asWorker(command).decision, 'approve', command);
+  }
+});
+
+test('AP-EXT-ITER256-01: the .git destruction gate stays worker-scoped', () => {
+  // Role scope is the reason this lives in the R-WSRC-GR wire and not the
+  // role-independent state domain: `mux-runner.ts`/`jar-runner.ts` DELETE
+  // PICKLE_ROLE, so the operator session that legitimately removes a stale
+  // `.git/index.lock` must never be gated.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const asRole = (command, role) => runHandler({
+    tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+    extraEnv: role ? { PICKLE_ROLE: role } : {},
+  });
+
+  assert.equal(asRole('rm -f .git/index.lock', 'worker').decision, 'block', 'worker is gated');
+  assert.equal(asRole('rm -f .git/index.lock', undefined).decision, 'approve', 'operator is not');
+});

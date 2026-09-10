@@ -2368,3 +2368,141 @@ test('AP-EXT-ITER252-01: the settings and circuit-breaker domains share the same
     assert.equal(result.decision, 'block', `truncate approved a write to ${basename}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER256-01: DESTRUCTION is mutation, and the family name "writers" hid
+// it.
+//
+// `WRITE_COMMANDS` was documented as two families — destination-arg writers and
+// in-place editors — while the invariant it defends is "a worker MUST NOT modify
+// a runtime state file". Removing the file is not writing it, so `rm`, `rm -f`,
+// `rm -rf`, `shred -u`, `unlink` and `chmod 000` over `<session>/state.json` and
+// `<session>/pickle_settings.json` ALL measured APPROVE on the shipped handler
+// while the `>` redirect and `tee` twins blocked in the same probe run. Deleting
+// the state file is strictly worse than rewriting it: a rewrite risks a wrong
+// value, a delete reaches the state-unreadable crash floor.
+//
+// The docblock now states ONE membership criterion instead of a family roster —
+// every invocation over a positional file operand mutates that operand — which
+// is what admits these five and what keeps `gzip`/`tar`/`xz` (read-only modes)
+// and `mkdir` (cannot touch an existing file) out. Those exclusions are pinned
+// below as DECLARED residuals so "absent" can never be read as "overlooked".
+//
+// Driven as a table over the REAL handler subprocess, not as a membership read
+// of the list: membership is not the invariant. The invariant is that the shell
+// form REACHES a block, which also spends `anchorWritesPositionalArg` — a new
+// member must not land behind an in-place flag.
+// ---------------------------------------------------------------------------
+
+const AP_EXT_ITER256_01_DESTROYERS = [
+  ['rm', (target) => `rm ${target}`],
+  ['rm -f', (target) => `rm -f ${target}`],
+  ['rm -rf', (target) => `rm -rf ${target}`],
+  ['shred -u', (target) => `shred -u ${target}`],
+  ['unlink', (target) => `unlink ${target}`],
+  ['chmod 000', (target) => `chmod 000 ${target}`],
+  ['chown', (target) => `chown nobody ${target}`],
+];
+
+for (const [name, build] of AP_EXT_ITER256_01_DESTROYERS) {
+  test(`AP-EXT-ITER256-01: blocks \`${name}\` destroying <session>/state.json`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Bash',
+      toolInput: { command: build(path.join(sessionDir, 'state.json')) },
+    });
+    assert.equal(result.decision, 'block', `${name} approved destroying a protected state file`);
+    assert.match(result.reason, /state file protected/i);
+  });
+
+  test(`AP-EXT-ITER256-01: \`${name}\` still approves when no protected path is named`, () => {
+    // Negative control. Without it a handler that blocked EVERY occurrence of
+    // these anchors would satisfy the assertions above while over-blocking the
+    // scratch-directory cleanup that is most of what a worker uses `rm` for.
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Bash',
+      toolInput: { command: build(path.join(sessionDir, 'notes.md')) },
+    });
+    assert.equal(result.decision, 'approve', `${name} over-blocked an unprotected path`);
+  });
+}
+
+test('AP-EXT-ITER256-01: the destroyers reach every sibling protected basename', () => {
+  // One shared class, so a member admitted for state.json must reach the
+  // siblings too — the "security gate ran narrower than the lint gate" drift
+  // the `single write-command class` trap door exists to prevent.
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  for (const basename of ['pickle_settings.json', 'circuit_breaker.json', 'pipeline-status.json']) {
+    const result = runHandler({
+      tmpDir,
+      stateFile,
+      toolName: 'Bash',
+      toolInput: { command: `rm -f ${path.join(sessionDir, basename)}` },
+    });
+    assert.equal(result.decision, 'block', `rm approved destroying ${basename}`);
+  }
+});
+
+test('AP-EXT-ITER256-01: a `.tmp.<pid>` state twin is destroyed through the same anchors', () => {
+  // The transaction temp files are the R-WSRC-3 domain too, and they are the
+  // spelling a worker reaching for a "stale lockfile" would actually type.
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `rm -f ${path.join(sessionDir, 'state.json.tmp.4242')}` },
+  });
+  assert.equal(result.decision, 'block');
+  assert.match(result.reason, /state file protected/i);
+});
+
+test('AP-EXT-ITER256-01: the override flag still releases a destroying command', () => {
+  // The gate must stay an override-able speed bump, not a new hard fence: a
+  // schema-migration ticket that legitimately removes a temp file needs the
+  // documented escape hatch to work through the new anchors as well.
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession({
+    flags: { allow_state_writes_reason: 'schema migration' },
+  });
+  const result = runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `rm -f ${path.join(sessionDir, 'state.json')}` },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
+// DECLARED RESIDUALS, pinned as approving so a future pass reads them as
+// measured decisions rather than as gaps. Each is excluded by the ONE
+// membership criterion, for a stated reason: the compressors have a read-only
+// mode over the same operand (`gzip -l`/`-t`, `xz -l`, `tar -t`), so admitting
+// one would need that command's own flag grammar — the enumeration-fence trap;
+// `mkdir` cannot touch an existing file at all.
+const AP_EXT_ITER256_01_DECLARED_RESIDUALS = [
+  ['gzip', (target) => `gzip ${target}`],
+  ['xz', (target) => `xz ${target}`],
+  ['mkdir -p', (target) => `mkdir -p ${target}`],
+];
+
+for (const [name, build] of AP_EXT_ITER256_01_DECLARED_RESIDUALS) {
+  test(`AP-EXT-ITER256-01: \`${name}\` over a protected state path is a DECLARED residual (approves)`, () => {
+    assert.equal(
+      runWorkerBashInSession(build).decision,
+      'approve',
+      `${name} now blocks — update the WRITE_COMMANDS criterion docblock and this pin together, do not delete the pin`,
+    );
+    // Non-tautology: an admitted member over the SAME path still blocks, so the
+    // approve above is the criterion talking, not a disarmed gate.
+    assert.equal(
+      runWorkerBashInSession((t) => `rm -f ${t}`).decision,
+      'block',
+      'the admitted-destroyer twin must still block',
+    );
+  });
+}
