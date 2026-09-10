@@ -1152,11 +1152,13 @@ function expansionSpanEnd(text: string, start: number): number {
  * THE expansion walk: the reading of `command` in which every expansion span
  * contributes whatever `render` answers for it.
  *
- * ONE walk for both readings the segmenter takes, because they differ in that
+ * ONE walk for every reading the segmenter takes, because they differ in that
  * answer and in NOTHING else — a second copy is the fork `execName` and
- * `splitShellSegments` each already collapsed. The renderings are
- * `elideExpansions` (the empty string) and `inlineSubstitutionOutput` (a
- * command substitution's operands); each has its own docblock below.
+ * `splitShellSegments` each already collapsed. A new reading is a new `render`
+ * argument and nothing else; the walk itself never grows a case. The renderings
+ * are `elideExpansions` (the empty string), `inlineSubstitutionOutput` (a
+ * command substitution's operands) and `inlineParameterExpansionBody` (a
+ * parameter expansion's body); each has its own docblock below.
  *
  * AP-EXT-ITER187-01, the reading that made the walk exist: EVERY expansion
  * contributes the EMPTY string.
@@ -1301,6 +1303,63 @@ function inlineSubstitutionOutput(command: string): string {
 }
 
 /**
+ * AP-EXT-ITER264-02: what a PARAMETER EXPANSION contributes to the command
+ * AROUND it — the text it carries, with its braces gone.
+ *
+ * The braces are the whole defect. A `${…}` body is ONE word to bash, but this
+ * module's scan reaches it only after `SEGMENT_SCAN_RE` has already cut the
+ * command at whitespace, so a body carrying a SEPARATOR is split like ordinary
+ * code and its closing `}` glues to the last word of the last piece. `}` cannot
+ * be split back out — it is a reserved WORD, not a metacharacter, and
+ * `GLUED_SEPARATOR_RE` excludes it for bash's own reason (splitting it destroys
+ * a brace EXPANSION) — so the glue is permanent and the last command of the body
+ * is unreadable. Measured against the shipped handler with every literal twin
+ * live in the same run: `bash <<< ${x:-cd sub && bash install.sh}`, its `;`
+ * spelling, its `eval`, `trap`, `bash -s`, `source /dev/stdin`, fd-prefixed and
+ * glued twins, and the state-file write in place of the deploy script — 21 of 28
+ * forms APPROVED for a worker while all 8 byte-identical literal twins blocked,
+ * and a real shell runs every one of them.
+ *
+ * The reading is taken on the RAW command, before any splitting, for exactly the
+ * reason the other two are: by the time segments exist the brace has already
+ * glued. It needs no knowledge of the CARRIER — here-string, `eval`, `trap`,
+ * `-s`, `source /dev/stdin` and the glued and fd-prefixed spellings are all one
+ * reading, because the brace is removed before anything asks what will re-parse
+ * the text.
+ *
+ * The BODY is contributed whole rather than the substituted word alone, because
+ * narrowing it to the word means reading PAST the expansion operator, and naming
+ * bash's operators is the enumerated-set shape this module has paid for
+ * repeatedly. The residue is the leading operator run staying glued to the
+ * body's FIRST word (`${x:-cd sub …}` renders `x:-cd` as a word bash never
+ * produces). That costs nothing: the operator run only ever precedes the first
+ * word, `parameterExpansionWords` already recovers that word from the UNRENDERED
+ * reading — which is still taken, this being strictly additive — and an extra
+ * segment naming no anchor is this module's established fail-safe direction.
+ * Measured: the hazard-in-first-position forms already block without this
+ * reading, so the two readings PARTITION the body's positions.
+ *
+ * Any OTHER expansion contributes its span verbatim. A command substitution's
+ * contribution is `substitutionOutput`'s job and stays there — its inner text is
+ * CODE, already a segment of its own, and its braces are not the ones that glue.
+ *
+ * Nested bodies collapse in ONE step by recursing, the same shape
+ * `substitutionOutput` uses. A rendering only ever REMOVES characters (the two
+ * braces), so a reading that differs is strictly shorter and the recursion in
+ * `splitShellSegments` still terminates on that argument.
+ */
+function parameterExpansionBody(span: string): string {
+  if (!span.startsWith('${')) return span;
+  const body = span.endsWith('}') ? span.slice(2, -1) : span.slice(2);
+  return readExpansions(body, parameterExpansionBody);
+}
+
+/** The rendering in which every parameter expansion contributes its body. */
+function inlineParameterExpansionBody(command: string): string {
+  return readExpansions(command, parameterExpansionBody);
+}
+
+/**
  * THE shell segmenter for the hooks subsystem. Splits a command into segments
  * at every operator where bash starts a new command — the control operators
  * `&&`, `||`, `|`, `&`, `;`, an unquoted newline (a top-level command
@@ -1366,10 +1425,11 @@ export function splitShellSegments(command: string, depth = 0): string[] {
   }
   if (current.length > 0) segments.push(current.join(' '));
   const own = expandShellCommandStrings(segments.length > 0 ? segments : [command], depth);
-  // Append the additional READINGS of the same command — the empty-expansion one
-  // (AP-EXT-ITER187-01) and the substitution-output one (AP-EXT-ITER260-01). Both
-  // are taken on the RAW string because `$(`/`` ` `` are separators: by the time
-  // the segments above exist the glued word has already been cut in half. A
+  // Append the additional READINGS of the same command — ONE list, one member
+  // per rendering. Each is taken on the RAW string because the segments above
+  // have already cut a glued word in half: `$(`/`` ` `` are separators, and a
+  // `${…}` body's closing brace has already fused to its last word
+  // (AP-EXT-ITER264-02). A
   // rendering only ever REMOVES characters, so a reading that differs is strictly
   // shorter and the recursion terminates; `depth` is passed through unchanged so
   // the command-string budget is spent on real nesting only. ONE loop, not a case
@@ -1381,7 +1441,7 @@ export function splitShellSegments(command: string, depth = 0): string[] {
   // buys nothing but a duplicate scope.
   const scopes = [...own];
   const taken = new Set([command]);
-  for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command)]) {
+  for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command), inlineParameterExpansionBody(command)]) {
     if (taken.has(reading)) continue;
     taken.add(reading);
     scopes.push(...splitShellSegments(reading, depth));

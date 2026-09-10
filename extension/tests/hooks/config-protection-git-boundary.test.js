@@ -4897,12 +4897,19 @@ test('AP-EXT-ITER143-01: expansion offers the word bash substitutes, and keeps t
   // expansion is a strict widening and cannot lose a pre-fix block.
   // The trailing `reset` is the AP-EXT-ITER187-01 empty-expansion twin: a
   // word-carrying body is read as empty too, because telling the forms that
-  // can be empty from the one that cannot means naming bash's operators.
-  assert.deepEqual(splitShellSegments('${x:-git} reset'), ['${x:-git} x:-git -git git reset', 'reset']);
+  // can be empty from the one that cannot means naming bash's operators. The
+  // LAST member is the AP-EXT-ITER264-02 twin, in which the same body is read
+  // brace-free; it is why the list is exact here rather than a containment
+  // check — a rendering must never silently drop out of it.
+  assert.deepEqual(
+    splitShellSegments('${x:-git} reset'),
+    ['${x:-git} x:-git -git git reset', 'reset', 'x:-git reset'],
+  );
   // A body of pure name characters carries no substitutable word beyond itself;
   // the bare `echo` is the AP-EXT-ITER187-01 reading in which `${HOME}` — which
-  // really can be empty — contributes nothing.
-  assert.deepEqual(splitShellSegments('echo ${HOME}'), ['echo ${HOME} HOME', 'echo']);
+  // really can be empty — contributes nothing, and `echo HOME` is the
+  // AP-EXT-ITER264-02 reading in which it contributes its body.
+  assert.deepEqual(splitShellSegments('echo ${HOME}'), ['echo ${HOME} HOME', 'echo', 'echo HOME']);
   // No `${` at all: byte-identical to the pre-fix reading.
   assert.deepEqual(splitShellSegments('git status && ls'), ['git status', 'ls']);
   assert.deepEqual(splitShellSegments('git {reset,--hard}'), ['git reset --hard']);
@@ -6185,4 +6192,195 @@ test('AP-EXT-ITER264-01: neither payload slot reads a token by adjacency', () =>
   assert.ok(start > 0, 'expandShellCommandStrings must remain a single named function');
   const expander = source.slice(start);
   assert.match(expander, /for \(const word of \[payload, \.\.\.expandWord\(payload\)\]\) \{/);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER264-02 — a segment SEPARATOR inside a parameter-expansion body
+// split the RAW command, and the closing brace glued to the last word.
+//
+// The residual AP-EXT-ITER264-01 recorded, one level UP from it. A `${…}` body
+// is ONE word to bash, but `SEGMENT_SCAN_RE` reaches it only after the command
+// has been cut at whitespace, so a body carrying `&&` (or `;`, or a newline)
+// was split like ordinary code — and the `}` could not be split back out,
+// because it is a reserved WORD and `GLUED_SEPARATOR_RE` excludes it for bash's
+// own reason: splitting it destroys a brace EXPANSION. The glue is therefore
+// permanent and the body's LAST command is unreadable.
+//
+// Measured against the pre-fix shipped mirror with every literal twin live in
+// the same run: 21 of 28 hazard forms APPROVED for a worker across the
+// here-string, glued, fd-prefixed, `-s`, `source /dev/stdin`, `eval` and `trap`
+// carriers and the `&&` and `;` spellings, while all 8 byte-identical literal
+// twins blocked. The git-verb domain blocked throughout — its verb sits in the
+// MIDDLE of the body, where no brace glues — which is what located the defect at
+// the body's EDGES rather than at the split.
+//
+// The two readings PARTITION the body's positions: a hazard standing FIRST is
+// recovered from the unrendered command by `parameterExpansionWords`, which
+// reads past the leading operator run; a hazard standing LAST needs the brace
+// gone, which is this rendering. Both are measured below.
+//
+// Assembled from fragments for the same reason the block above is.
+// ---------------------------------------------------------------------------
+
+const ITER264_02_CHAIN = '&'.repeat(2);
+
+/** True when some segment IS the tail command line, or begins with it. */
+const segmentsLeadingWith = (command, tail) =>
+  splitShellSegments(command).some((segment) => segment === tail || segment.startsWith(`${tail} `));
+
+for (const [label, carrier] of [
+  ['a here-string', (payload) => `bash ${ITER264_HERE_STRING} ${payload}`],
+  ['the eval builtin', (payload) => `eval ${payload}`],
+  ['the trap builtin', (payload) => `trap ${payload} EXIT`],
+]) {
+  test(`AP-EXT-ITER264-02: worker blocks the deploy script standing LAST in ${label} body`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const command = carrier(iter264Expansion(`cd sub ${ITER264_02_CHAIN} ${ITER264_DEPLOY}`));
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /R-WSRC/);
+  });
+}
+
+for (const [label, carrier] of [
+  ['a here-string', (payload) => `bash ${ITER264_HERE_STRING} ${payload}`],
+  ['the eval builtin', (payload) => `eval ${payload}`],
+]) {
+  test(`AP-EXT-ITER264-02: worker blocks a state-file write standing LAST in ${label} body`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const write = `echo x ${ITER264_REDIRECT} ${path.join(sessionDir, 'state.json')}`;
+    const command = carrier(iter264Expansion(`cd sub ${ITER264_02_CHAIN} ${write}`));
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /state file protected/i);
+  });
+}
+
+test('AP-EXT-ITER264-02: a benign body carrying a separator stays approved', () => {
+  // Non-tautology. Without this, every block above would pass under a guard that
+  // refuses any expansion body containing a separator at all.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const command = `bash ${ITER264_HERE_STRING} ${iter264Expansion(`cd sub ${ITER264_02_CHAIN} echo hello world`)}`;
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve', command);
+});
+
+test('AP-EXT-ITER264-02: the brace is gone before anything asks what re-parses the body', () => {
+  // Behaviour half, in-process so the whole carrier family costs no spawn. The
+  // rendering is taken on the RAW command, so it cannot know — and does not need
+  // to know — which construct will re-parse the text.
+  const tail = 'cmdname alpha beta';
+  for (const separator of [ITER264_02_CHAIN, ';', '|', '\n']) {
+    for (const body of [`x:-cd sub ${separator} ${tail}`, `x:=cd sub ${separator} ${tail}`]) {
+      const word = `${ITER264_DOLLAR}{${body}}`;
+      for (const command of [
+        `bash ${ITER264_HERE_STRING} ${word}`,
+        `bash ${ITER264_HERE_STRING}${word}`,
+        `bash 0${ITER264_HERE_STRING} ${word}`,
+        `bash -s ${ITER264_HERE_STRING} ${word}`,
+        `source /dev/stdin ${ITER264_HERE_STRING} ${word}`,
+        `eval ${word}`,
+        `trap ${word} EXIT`,
+        word,
+      ]) {
+        // The tail command line stands as its OWN segment. `trap` is asserted
+        // with a prefix rather than an equality because its own trailing
+        // operand (`EXIT`) rides along in the rendered text — bash reads it as
+        // one of trap's arguments too, so the segment is faithful.
+        assert.ok(
+          segmentsLeadingWith(command, tail),
+          `${command} -> ${JSON.stringify(splitShellSegments(command))}`,
+        );
+      }
+    }
+  }
+
+  // A NESTED body collapses too: the rendering recurses, the same shape
+  // `substitutionOutput` uses, so one reading is enough for both levels.
+  const nested = `bash ${ITER264_HERE_STRING} ${ITER264_DOLLAR}{x:-${ITER264_DOLLAR}{y:-cd sub ${ITER264_02_CHAIN} ${tail}}}`;
+  assert.ok(
+    segmentsLeadingWith(nested, tail),
+    `${nested} -> ${JSON.stringify(splitShellSegments(nested))}`,
+  );
+
+  // The recursion's witness is COST, not a decision. Without it the outer
+  // reading loop still reaches the same body — one re-segmentation per level —
+  // and finds the same command, so no verdict changes and nothing above reds.
+  // What changes is the scope count: measured at 8-deep, 3841 scopes with the
+  // recursion against 18488 without, and at 12-deep 622 ms against 86 SECONDS.
+  // A hook that never finishes reading a command is dispatch's fail-open catch,
+  // so this arm is a real door. The bound is on the deterministic scope COUNT
+  // rather than on the clock, so it cannot flake under load.
+  const deepBody = `${ITER264_DOLLAR}{x:-`.repeat(8)
+    + `cd sub ${ITER264_02_CHAIN} ${tail}`
+    + '}'.repeat(8);
+  const deep = splitShellSegments(`bash ${ITER264_HERE_STRING} ${deepBody}`);
+  assert.ok(deep.some((segment) => segment.startsWith(tail)), 'the 8-deep body still surfaces');
+  assert.ok(deep.length < 8000, `8-deep nesting produced ${deep.length} scopes`);
+
+  // Strictly ADDITIVE: the unrendered segments are still present, so no command
+  // that blocked before this pass can stop blocking. The head position is the
+  // half `parameterExpansionWords` answers from that unrendered reading — it is
+  // asserted here so the partition claim has a witness on BOTH sides.
+  const headFirst = `bash ${ITER264_HERE_STRING} ${ITER264_DOLLAR}{x:-${tail} ${ITER264_02_CHAIN} cd sub}`;
+  assert.ok(
+    segmentsLeadingWith(headFirst, tail),
+    `${headFirst} -> ${JSON.stringify(splitShellSegments(headFirst))}`,
+  );
+  const literal = `bash ${ITER264_HERE_STRING} 'cd sub ${ITER264_02_CHAIN} ${tail}'`;
+  assert.ok(splitShellSegments(literal).includes(tail));
+  assert.ok(splitShellSegments(literal).includes(literal));
+});
+
+test('AP-EXT-ITER264-02: every reading reaches the ONE expansion walk as an argument', () => {
+  // Structural half (the AP-EXT-ITER260-01 PATTERN_SHAPE, now with three
+  // members). A reading is a `render` passed to `readExpansions`; a second copy
+  // of the walk, or a rendering spliced into the segmenter as a branch, is the
+  // fork this shape forbids.
+  const source = readCode(SHELL_EXEC_TS);
+
+  const carried = source.match(
+    /function parameterExpansionBody\(span: string\): string \{([\s\S]*?)\n\}/,
+  )?.[1];
+  assert.ok(carried, 'parameterExpansionBody must remain a single named function');
+  // It contributes the BODY, brace-free, and recurses through the shared walk
+  // rather than re-walking the text itself.
+  assert.match(carried, /readExpansions\(body, parameterExpansionBody\)/);
+  assert.doesNotMatch(carried, /expansionSpanEnd|balancedSpanEnd/);
+
+  const splitStart = source.indexOf('export function splitShellSegments(');
+  assert.ok(splitStart > 0, 'splitShellSegments must remain a single named function');
+  const splitter = source.slice(splitStart);
+  const readings = splitter.match(/for \(const reading of \[([^\]]*)\]\) \{/)?.[1];
+  assert.ok(readings, 'splitShellSegments must iterate a LIST of readings');
+  assert.deepEqual(
+    readings.split(',').map((entry) => entry.trim()),
+    [
+      'elideExpansions(command)',
+      'inlineSubstitutionOutput(command)',
+      'inlineParameterExpansionBody(command)',
+    ],
+  );
+  for (const rendering of ['elideExpansions', 'inlineSubstitutionOutput', 'inlineParameterExpansionBody']) {
+    const body = source.match(
+      new RegExp(`function ${rendering}\\(command: string\\): string \\{([\\s\\S]*?)\\n\\}`),
+    )?.[1];
+    assert.ok(body, `${rendering} must remain a single named function`);
+    assert.match(body, /return readExpansions\(command, /);
+  }
 });
