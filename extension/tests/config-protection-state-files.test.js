@@ -2765,3 +2765,94 @@ test('AP-EXT-ITER257-02: the ancestor arm is one predicate over every defended r
   // how the runtime root got the descendant direction and not this one.
   assert.doesNotMatch(handler, /function enclosesResolvedStateFile/);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER258-01 — an anchor may not claim an operand belonging to a LATER
+// command.
+//
+// `findBashWriteTarget` walked TWO scopes: the raw normalized command AND each
+// `splitShellSegments` segment. The raw one was kept on the argument that
+// "scanning more can only find more", which is false for Pass 2 — Pass 2 walks
+// every token after its anchor (`tokens.slice(i + 1)`), and the raw command has
+// no command boundary in it. So a destroying or copying anchor in one segment
+// claimed a positional operand belonging to a later one, and the protected token
+// it reached was usually not an operand at all.
+//
+// Measured over 8,805 unique real worker Bash calls (9,191 calls, 139 live
+// `tmux_iteration_*.log` NDJSON transcripts, the measuring session excluded),
+// all three protected domains: 24 blocks before, 8 after — 16 removed, ZERO
+// added, ZERO with a changed matched token. All 16 were read back in full and
+// every one is an over-block: a scratch cleanup reaching a later listing of a
+// deployed module, a tar exclude PATTERN, a glob reached by a later tee, and
+// heredoc-body prose naming a protected path. Two thirds of everything this
+// gate blocked over real traffic was this defect.
+//
+// The under-block half is a 63-form hazard battery — every redirect spelling,
+// the write commands, the env/quoted/glob/shell-payload/eval/here-string bypass
+// forms, the ancestor spellings and the git-internal and lint-config domains:
+// ZERO differences. Reach through a command SUBSTITUTION survives as well,
+// because it comes from the empty-expansion reading `splitShellSegments`
+// appends (AP-EXT-ITER187-01) and never came from the raw scope.
+//
+// THE FIX IS A DELETED SCOPE, NOT A BOUND, and that is forced rather than
+// preferred: a bound inside Pass 2 cannot see a NEWLINE. `tokenizeShellTokens`
+// splits on whitespace, so a newline never reaches Pass 2 as a token, and a
+// multi-line worker command is the common shape — the newline case below is the
+// discriminator that separates the two designs, and a token-level bound leaves
+// it blocking.
+//
+// THREE spawns. Two are the defect in its two boundary spellings and the third
+// is the non-vacuity control: a walker that simply stopped finding things would
+// pass both approvals and RED on the block.
+// ---------------------------------------------------------------------------
+
+function runCrossSegmentCommand(build) {
+  const { tmpDir, stateFile } = bootstrapSession();
+  return runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: build({ stateFile, scratch: path.join(tmpDir, 'scratch') }) },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+}
+
+test('AP-EXT-ITER258-01: a destroying anchor does not claim a later segment READ operand', () => {
+  assert.equal(
+    runCrossSegmentCommand(({ stateFile, scratch }) => `rm -rf ${scratch} && ls ${stateFile}`).decision,
+    'approve',
+    'the destroying anchor operand is the scratch dir; the protected path belongs to a listing',
+  );
+});
+
+test('AP-EXT-ITER258-01: the boundary holds when it is a NEWLINE, not an operator', () => {
+  // The discriminator. A bound applied inside Pass 2 cannot reach this case at
+  // all — `tokenizeShellTokens` drops whitespace, so the newline is not a token.
+  assert.equal(
+    runCrossSegmentCommand(({ stateFile, scratch }) => `rm -rf ${scratch}\nls ${stateFile}`).decision,
+    'approve',
+  );
+});
+
+test('AP-EXT-ITER258-01: a real write in the later segment still blocks', () => {
+  // Non-vacuity: narrowing the scope must not narrow the gate. The second
+  // command is scanned on its own, where the protected path IS its operand.
+  assert.equal(
+    runCrossSegmentCommand(({ stateFile, scratch }) => `rm -rf ${scratch} && rm -f ${stateFile}`).decision,
+    'block',
+  );
+});
+
+// Structural pin (PATTERN_SHAPE), no spawn: the walker takes its scopes from the
+// segmenter and from nothing else. Re-adding the raw command to that list is the
+// exact shape that produced this finding, and it reads as a widening.
+test('AP-EXT-ITER258-01: the write walker scans segments only, never the raw command', () => {
+  const handler = readCode(path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'));
+  const fn = handler.slice(
+    handler.indexOf('function findBashWriteTarget'),
+    handler.indexOf('function findWriteTargetInScope'),
+  );
+  assert.ok(fn.length > 0, 'findBashWriteTarget body must be locatable');
+  assert.match(fn, /for \(const scope of splitShellSegments\(normalized\)\) \{/);
+  assert.doesNotMatch(fn, /\[\s*normalized\s*,\s*\.\.\.splitShellSegments/);
+});

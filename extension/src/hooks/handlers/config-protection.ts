@@ -498,18 +498,40 @@ function isProtectedConfigToken(token: string): boolean {
  * class, so `detectBashStateWriteTarget` (state files) and
  * `bashWritesProtectedConfig` (config files) cannot drift apart.
  *
- * The walk runs over every scope bash could start a command in: the raw command
- * PLUS each `splitShellSegments` segment. `tokenizeBashCommand` splits on
- * whitespace and quotes only, so in a GROUPED write the destination stays glued
- * to its delimiter — `(echo x > <session>/state.json)` tokenizes its last token
- * as `state.json)`, whose basename matches no protected name, and the write was
- * APPROVED while the bare twin blocked (10/12 forms, AP-EXT-ITER19-02). Feeding
- * the segmenter's output through the same walker restores the boundary for the
- * last two detectors that were still reading the raw command.
+ * The walk runs over the `splitShellSegments` output and NOTHING else — one
+ * scope per command bash will start. `tokenizeBashCommand` splits on whitespace
+ * and quotes only, so in a GROUPED write the destination stays glued to its
+ * delimiter — `(echo x > <session>/state.json)` tokenizes its last token as
+ * `state.json)`, whose basename matches no protected name, and the write was
+ * APPROVED while the bare twin blocked (10/12 forms, AP-EXT-ITER19-02).
+ * Segmenting is what restores that boundary.
  *
- * Union rather than replacement: both scopes are fail-closed and the first hit
- * wins, so scanning more can only find more — a destination that survives only
- * in the raw token stream keeps its existing reach.
+ * AP-EXT-ITER258-01 REMOVED the raw un-segmented command from that list. It was
+ * scanned as a second scope on the argument that "scanning more can only find
+ * more", and that argument is FALSE for Pass 2, which walks every token after
+ * its anchor (`tokens.slice(i + 1)`). The raw scope contains no command
+ * boundary, so an anchor in one segment claims a positional operand belonging to
+ * a LATER one: `rm -rf /tmp/scratch && ls <session>/state.json` blocked on an
+ * `ls` READ, and `tar --exclude='pickle_settings.json'` blocked on an exclude
+ * PATTERN. A bound INSIDE Pass 2 cannot express this — `tokenizeShellTokens`
+ * discards whitespace, so a NEWLINE, the boundary a worker's multi-line command
+ * actually uses, never reaches Pass 2 as a token at all. The segmenter is the
+ * one home that already knows every boundary, glued and newline ones included,
+ * so bounding the walk is deleting a scope rather than adding a rule.
+ *
+ * BOTH halves measured over 8,805 unique real worker Bash calls (9,191 calls,
+ * 139 live `tmux_iteration_*.log` NDJSON transcripts, the measuring session's own
+ * logs excluded), across all three protected domains: 24 blocks before, 8 after
+ * — 16 REMOVED, ZERO added, ZERO with a changed matched token. All 16 were read
+ * back in full and every one is an over-block: a read operand, an `--exclude=`
+ * value, heredoc-body prose, or another segment's operand. The under-block half
+ * is a 63-form hazard battery — every redirect spelling, all the write commands,
+ * the `env`/quoted/glob/`bash -c`/`eval`/here-string bypass forms, the ancestor
+ * spellings and the `.git` and lint-config domains: ZERO differences. Reach
+ * through a command SUBSTITUTION survives too (`rm $(cat f) <session>/state.json`
+ * still blocks), because it comes from the empty-expansion reading
+ * `splitShellSegments` appends (AP-EXT-ITER187-01) and never came from the raw
+ * scope.
  *
  * Redirect operators are normalized ONCE, BEFORE segmenting. Two of them carry a
  * character the segmenter reads as a control operator: `>|` (clobber-override)
@@ -530,7 +552,7 @@ function findBashWriteTarget<T>(
   // is why the normalizer is quote-blind (see `normalizeRedirectOperators`); the
   // quoted/unquoted decision belongs to `findWriteTargetInScope`, not here.
   const normalized = normalizeRedirectOperators(command);
-  for (const scope of [normalized, ...splitShellSegments(normalized)]) {
+  for (const scope of splitShellSegments(normalized)) {
     const hit = findWriteTargetInScope(scope, probe);
     if (hit !== null) return hit;
   }
@@ -748,13 +770,14 @@ function normalizeRedirectOperators(command: string): string {
  * logs excluded). The pre-fix and post-fix hit SETS are identical BY COMMAND
  * INDEX except for FOUR additions and ZERO losses, and `shred`/`unlink`/`chmod`/
  * `chown` contribute NONE of the four — every one comes from `rm`. Reported
- * rather than excused: those four are real commands that now block. Their cause
- * is measured, not guessed — each is an `rm -rf <scratch> && … <protected>`
- * chain whose `rm` anchor reaches a protected operand belonging to a LATER
- * segment, because `findWriteTargetInScope`'s Pass 2 walks the RAW un-segmented
- * scope as one of its scopes. NONE of the four survives segment-only scoping
- * (0 of 4, measured), so the over-block belongs to the scope union rather than
- * to these members, and closing it is AP-EXT-ITER256-02's job, not this one's.
+ * rather than excused: those four were real commands that blocked. Their cause
+ * was measured, not guessed — each is an `rm -rf <scratch> && … <protected>`
+ * chain whose `rm` anchor reached a protected operand belonging to a LATER
+ * segment, because `findBashWriteTarget` walked the RAW un-segmented command as
+ * one of its scopes. NONE of the four survived segment-only scoping (0 of 4,
+ * measured), so the over-block belonged to the scope union rather than to these
+ * members — and AP-EXT-ITER258-01 has since deleted that scope, which retires
+ * all four along with twelve more of the same shape.
  */
 const WRITE_COMMANDS = [
   'tee', 'cp', 'mv', 'rsync', 'install', 'dd',
@@ -824,10 +847,12 @@ function isInPlaceFlag(arg: string): boolean {
  * on the same paths approved.
  *
  * The flag scan spans the whole remaining scope rather than the leading flag run
- * (`sed 's/a/b/' -i FILE` permutes on GNU and must stay blocked). In the raw
- * un-segmented scope that lets a LATER segment's `-i` re-arm an earlier read —
- * fail-closed, the same direction the raw+segment union already fails, and each
- * segment is scanned on its own where the args are correctly bounded.
+ * (`sed 's/a/b/' -i FILE` permutes on GNU and must stay blocked). "Scope" is now
+ * ONE command — AP-EXT-ITER258-01 removed the raw un-segmented scope from
+ * `findBashWriteTarget` — so a later segment's `-i` can no longer re-arm an
+ * earlier read, and the residual this docblock declared is closed. What remains
+ * is bounded by the segment: an `-i` standing anywhere in the SAME command still
+ * arms it, which is the permuted form above.
  */
 function anchorWritesPositionalArg(name: string, argsInScope: string[]): boolean {
   if (!IN_PLACE_ONLY_WRITERS.has(name)) return true;
@@ -971,24 +996,23 @@ function detectTargetedStateFile(input: PreToolUseInput, stateFile: string | nul
  * no edit to this function. That is what a single class buys and a per-domain
  * one would not have.
  *
- * RESIDUAL, reported rather than claimed closed, and now BLOCKED ON A NAMED
- * DEFECT rather than merely open: the domain is closed by PATH, so removing a
+ * RESIDUAL, reported rather than claimed closed, and now UNBLOCKED AND PRICED AT
+ * ZERO rather than blocked: the domain is closed by PATH, so removing a
  * repository's PARENT directory reaches `.git` without naming it, exactly as
  * `rm -rf <session dir>` reached the state file. The ancestor predicate that
  * closed the state domain — `enclosesProtectedPath` against
- * `<state.working_dir>/.git` — was IMPLEMENTED and MEASURED this pass and is
- * NOT landed, because its fail-closed half fails: it adds 34 blocks over 8,805
- * unique real worker Bash calls, and ZERO of the 34 survives segment-only
- * scoping. Every one is `cd <repo> && …` or a bare `..` claimed by a `cp`/`rm`
- * anchor sitting in a DIFFERENT shell segment — the raw-scope arg walk of
- * AP-EXT-ITER256-02, not this domain. The state domain does not pay that cost
- * because its target is EIGHT components deep and the coverage bound drops a
- * two-component token there; `<working_dir>/.git` is FOUR, so the same bound
- * admits `..`. Land AP-EXT-ITER256-02's segment bound FIRST, then this arm: what
- * is measured is that 0 of the 34 survives segment-only scoping, so the bound
- * removes every one of them — whether it also costs true positives of its own is
- * that finding's question, not this one's, and is NOT measured here. Do NOT try
- * to close this by growing a list; no member can express an ancestor.
+ * `<state.working_dir>/.git` — is still NOT landed, but its blocker is gone.
+ * Under the raw+segment scope union it cost 25 new blocks over 8,805 unique real
+ * worker Bash calls, every one a `cd <repo> && …` chain or a bare `..` claimed
+ * by a `cp`/`rm` anchor in a DIFFERENT segment. The same arm re-measured over the
+ * same corpus AFTER AP-EXT-ITER258-01 deleted the raw scope costs ZERO new
+ * blocks. The state domain never paid that cost because its target is EIGHT
+ * components deep and the coverage bound drops a two-component token there;
+ * `<working_dir>/.git` is FOUR, so the same bound admits `..` — which is why the
+ * price had to be re-taken per target and not inherited. What is NOT yet
+ * measured is the fail-closed half against a `.git` target, so land the arm with
+ * its own hazard battery rather than on this number alone. Do NOT try to close
+ * this by growing a list; no member can express an ancestor.
  */
 function detectGitDirWriteTarget(input: PreToolUseInput): string | null {
   const toolName = input.tool_name || '';
