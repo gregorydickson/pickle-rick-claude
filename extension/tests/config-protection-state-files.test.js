@@ -2631,12 +2631,12 @@ for (const [label, command] of AP_EXT_ITER257_01_CORPUS_CONTROLS) {
 test('AP-EXT-ITER257-01: the ancestor arm reads components through the shared expander under a coverage bound', () => {
   const handler = readCode(path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'));
   const fn = handler.slice(
-    handler.indexOf('function enclosesResolvedStateFile'),
+    handler.indexOf('function enclosesProtectedPath'),
     handler.indexOf("const GIT_INTERNAL_DIR"),
   );
-  assert.ok(fn.length > 0, 'enclosesResolvedStateFile body must be locatable');
-  assert.match(fn, /parts\.every\(\(part, i\) => wordExpandsTo\(part, stateParts\[i\]\)\)/);
-  assert.match(fn, /parts\.length \* 2 < stateParts\.length/);
+  assert.ok(fn.length > 0, 'enclosesProtectedPath body must be locatable');
+  assert.match(fn, /parts\.every\(\(part, i\) => wordExpandsTo\(part, targetParts\[i\]\)\)/);
+  assert.match(fn, /parts\.length \* 2 < targetParts\.length/);
   // The bypass shapes: a literal compare, or the command-word matcher whose
   // bound is false of a path component (AP-EXT-ITER96-02).
   assert.doesNotMatch(fn, /execNameIs\(/);
@@ -2657,4 +2657,111 @@ test('AP-EXT-ITER257-01: the resolved state path is threaded, never defaulted', 
     handler,
     /function loadResolvedState\(\): \{ state: State; stateFile: string \} \| null/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER257-02 — the ancestor axis was closed for ONE target, and the
+// predicate named that target in its own identifier.
+//
+// AP-EXT-ITER257-01 landed `enclosesResolvedStateFile`, which answered "is this
+// word an ancestor of the resolved state file" and nothing else. The DEPLOYED
+// RUNTIME ROOT is defended by the same handler, in the same disjunction, one
+// line away — and it had the DESCENDANT direction only (`isInsideRuntimeRoot`).
+// So `rm -rf ~/.claude/pickle-rick` BLOCKED and `rm -rf ~/.claude`, one
+// component shallower and destroying strictly more, APPROVED. Measured against
+// the shipped compiled handler with the session-directory and runtime-root
+// twins BLOCKING and `cat` APPROVING in the same probe run: `rm -rf ~/.claude`,
+// `rm -rf $HOME/.claude` and `mv ~/.claude /tmp/gone` — 3 of 3 APPROVED. That
+// destroys the runtime the pipeline is executing: not a wrong value, no state
+// to recover from, and no reinstall short of `install.sh`.
+//
+// The fix is a PARAMETER, not a fourth arm. `enclosesProtectedPath(word, target)`
+// takes the resolved path the caller is defending, so a domain cannot acquire
+// the descendant direction and silently miss the ancestor one — which is what
+// happened here, and would happen again the next time a defended root is added.
+//
+// The coverage bound is DEPTH-RELATIVE, so its zero-cost result was re-taken
+// per target rather than inherited: over the same 8,805 unique real worker Bash
+// calls (139 live `tmux_iteration_*.log` NDJSON transcripts, two different live
+// session paths) the pre-fix and post-fix hit sets are identical by command
+// index AND matched token — 24 and 24, zero added, zero lost. Re-taking it was
+// not ceremony: the same bound against a `<working_dir>/.git` target, also four
+// components, costs 34 real worker commands, which is why that sibling domain
+// is measured-and-deferred rather than landed here.
+//
+// THREE spawns, and the two omitted ones are omitted on evidence, not on taste.
+// A globbed-ancestor case and a read-approve control would probe the SAME
+// predicate body the AP-EXT-ITER257-01 block above already pins for exactly
+// those two properties — mutation-checked: a literal `===` component compare
+// reds that block's two globbed spellings whether or not a third exists here.
+// The cost of adding them is not zero: they are handler SUBPROCESS spawns, and
+// AP-EXT-ITER257-01 measured that added spawns alone push `tests/metrics.test.js`
+// "CLI: default invocation with mock data" past its 45s cap in the parallel fast
+// tier while it passes standalone — re-measured this pass, at five spawns that
+// test reds in-tier and at three it does not.
+//
+// HOME is repointed at the fixture so the asserted depth is the same on every
+// platform: `<HOME>/.claude` always sits exactly one component above
+// `<HOME>/.claude/pickle-rick`, and that relationship clears the coverage bound
+// for any HOME. A bare `$HOME` case is deliberately NOT asserted — it clears the
+// bound only when HOME is itself two or more components deep, which is true on
+// macOS and on Linux CI but is not a property of the fix.
+// ---------------------------------------------------------------------------
+
+function runOnRuntimeRootAncestor({ toolName = 'Bash', build }) {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const claudeDir = path.join(tmpDir, '.claude');
+  const runtimeRoot = path.join(claudeDir, 'pickle-rick');
+  const target = build({ claudeDir, runtimeRoot, home: tmpDir });
+  return runHandler({
+    tmpDir,
+    stateFile,
+    toolName,
+    toolInput: toolName === 'Bash' ? { command: target } : { file_path: target },
+    extraEnv: { PICKLE_ROLE: 'worker', HOME: tmpDir },
+  });
+}
+
+test('AP-EXT-ITER257-02: blocks a mutation of an ancestor of the deployed runtime root', () => {
+  assert.equal(
+    runOnRuntimeRootAncestor({ build: ({ claudeDir }) => `rm -rf ${claudeDir}` }).decision,
+    'block',
+    'removing ~/.claude destroys the deployed runtime with no token naming it',
+  );
+});
+
+test('AP-EXT-ITER257-02: the Write/Edit arm shares the runtime-root ancestor probe', () => {
+  assert.equal(
+    runOnRuntimeRootAncestor({ toolName: 'Write', build: ({ claudeDir }) => claudeDir }).decision,
+    'block',
+    'the invariant is "any tool", not "any bash command"',
+  );
+});
+
+test('AP-EXT-ITER257-02: a SIBLING of the runtime root still approves', () => {
+  // Non-tautology: the arm answers "ancestor of THAT resolved root", not
+  // "anything under HOME". A disarmed gate cannot pass this and the block above.
+  assert.equal(
+    runOnRuntimeRootAncestor({ build: ({ home }) => `rm -rf ${path.join(home, '.claude-backup')}` }).decision,
+    'approve',
+  );
+});
+
+// Structural pin (PATTERN_SHAPE), no spawn: the ancestor arm must run over the
+// resolved roots the domain defends, through ONE predicate. A second
+// target-naming predicate is the shape that produced this finding.
+test('AP-EXT-ITER257-02: the ancestor arm is one predicate over every defended root', () => {
+  const handler = readCode(path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'));
+  const fn = handler.slice(
+    handler.indexOf('function detectProtectedWriteTarget'),
+    handler.indexOf('function isProtectedFile'),
+  );
+  assert.ok(fn.length > 0, 'detectProtectedWriteTarget body must be locatable');
+  // Both defended roots, one call. Losing `getProtectedRuntimeRoot()` here
+  // re-opens `rm -rf ~/.claude`; losing `stateFile` re-opens `rm -rf <session>`.
+  assert.match(fn, /\[stateFile, getProtectedRuntimeRoot\(\)\]/);
+  assert.match(fn, /\.some\(\(target\) => enclosesProtectedPath\(filePath, target\)\)/);
+  // The regression shape: an ancestor predicate that names its target, which is
+  // how the runtime root got the descendant direction and not this one.
+  assert.doesNotMatch(handler, /function enclosesResolvedStateFile/);
 });

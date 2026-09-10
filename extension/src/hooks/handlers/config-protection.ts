@@ -259,8 +259,29 @@ function isInsideRuntimeRoot(filePath: string): boolean {
 
 /**
  * True when the shell word `filePath` names a DIRECTORY that ENCLOSES the
- * RESOLVED runtime state file — the ancestor axis of the same question
+ * RESOLVED protected path `target` — the ancestor axis of the same question
  * `isInsideRuntimeRoot` asks in the descendant direction.
+ *
+ * AP-EXT-ITER257-02: the target is a PARAMETER, not this function's own idea of
+ * what is protected, because the axis is not one domain's. Landed against the
+ * resolved state file alone, the arm closed `rm -rf <session dir>` and left the
+ * BYTE-IDENTICAL shape open in every sibling domain the same handler defends:
+ * measured on the shipped handler with the session-directory and runtime-root
+ * twins BLOCKING in the same probe run, `rm -rf <working_dir>`,
+ * `mv <working_dir> /tmp/elsewhere`, `rm -rf ~/.claude` and
+ * `mv ~/.claude /tmp/gone` — 4 of 4 APPROVED, reaching a repository's `.git`
+ * and the DEPLOYED RUNTIME ROOT with no token naming either. A predicate that
+ * names its target in its own identifier is how one domain gets an axis and its
+ * siblings silently do not; the caller supplies the resolved path IT is
+ * defending, and the handler already holds them (`stateFile` from
+ * `loadResolvedState`, `getProtectedRuntimeRoot()`).
+ *
+ * The runtime-root target is LANDED and costs nothing; the `.git` one is
+ * MEASURED, NOT LANDED, and `detectGitDirWriteTarget`'s docblock carries the
+ * number and the reason. Generalizing the parameter is what let the two be
+ * priced SEPARATELY at all — with the target baked into the identifier the only
+ * available move was all three domains or none, and all three costs 34 real
+ * worker commands.
  *
  * AP-EXT-ITER257-01: every protected-file domain in this module was closed by a
  * token that NAMES the file — a basename (`matchProtectedStateBasename`), a
@@ -276,13 +297,12 @@ function isInsideRuntimeRoot(filePath: string): boolean {
  * up, and it reaches the state-unreadable crash floor rather than a wrong value.
  *
  * NEEDS NO LIST, and that is why it is the right shape: the hook has already
- * RESOLVED the one state file it is defending (`resolveStateFile`, threaded from
- * `main`), so "is this word an ancestor of THAT path" is answerable by
- * comparison. No enumeration of directory names, no ceiling constant, and
- * nothing to add a member to when the runtime grows another artifact — every
- * sibling in the session directory (`circuit_breaker.json`,
- * `pipeline-status.json`, the ticket dirs) is covered by the state file's
- * ancestry for free.
+ * RESOLVED the paths it is defending, so "is this word an ancestor of THAT path"
+ * is answerable by comparison. No enumeration of directory names, no ceiling
+ * constant, and nothing to add a member to when a defended tree grows another
+ * artifact — every sibling in the session directory (`circuit_breaker.json`,
+ * `pipeline-status.json`, the ticket dirs) and every file under the deployed
+ * runtime root is covered by its own root's ancestry for free.
  *
  * The TOKEN is the pattern side, per component, through the ONE shared
  * `wordExpandsTo`, for the reason AP-EXT-ITER96-02 established for the sibling
@@ -292,10 +312,11 @@ function isInsideRuntimeRoot(filePath: string): boolean {
  * `~` and `$HOME` spellings of an ancestor resolve to the same path the shell
  * would use.
  *
- * A STRICT ancestor (`parts.length >= stateParts.length` returns false): the
- * equal case IS the state file, which `matchProtectedStateBasename` already
- * blocks, and the deeper case is `isInsideRuntimeRoot`'s. One question per arm,
- * no overlap. Deliberately NOT folded into `isInsideRuntimeRoot`: the two differ
+ * A STRICT ancestor (`parts.length >= targetParts.length` returns false): the
+ * equal case IS the target itself and the deeper case is inside it, both of
+ * which the caller's own descendant arm already answers
+ * (`matchProtectedStateBasename`, `isInsideRuntimeRoot`, `pathEntersGitDir`).
+ * One question per arm, no overlap. Deliberately NOT folded into `isInsideRuntimeRoot`: the two differ
  * in which side is shorter, so a shared body would need a direction case, and
  * that function's body carries two catalogued PATTERN_SHAPEs pinning it.
  *
@@ -318,17 +339,33 @@ function isInsideRuntimeRoot(filePath: string): boolean {
  * root is five, the sessions dir six, the session dir seven) and no comment
  * marker can.
  *
- * RESIDUAL, reported rather than claimed closed: `/`, `$HOME` and the other
- * shallow ancestors approve. They are under the coverage bound by construction,
- * they are where 31 of 31 measured false positives live, and destroying them is
- * not a spelling a worker reaches by accident.
+ * The bound is DEPTH-RELATIVE, so it is re-measured PER TARGET and never
+ * inherited (AP-EXT-ITER257-02). The deployed runtime root is FOUR components
+ * to the state path's eight, so the same rule admits a two-component token
+ * there that it drops against the state file: `~` and `$HOME` block against
+ * `~/.claude/pickle-rick` and do not against `<session>/state.json`. Re-measured
+ * over the same 8,805 unique real worker Bash calls (139 live
+ * `tmux_iteration_*.log` NDJSON transcripts) for two different live session
+ * paths: adding this target leaves the hit sets IDENTICAL BY COMMAND INDEX AND
+ * MATCHED TOKEN — 24 before, 24 after, zero added, zero lost. Inheriting the
+ * earlier pass's zero instead of re-taking it would have been wrong: the same
+ * bound against a `<working_dir>/.git` target, also four components, costs 34.
+ *
+ * RESIDUAL, reported rather than claimed closed: `/` and the other ancestors
+ * shallower than the bound approve against every target. They are where 31 of 31
+ * measured false positives live, and destroying them is not a spelling a worker
+ * reaches by accident. Also still open, and NOT closable by this predicate: the
+ * lint-config domain (`PROTECTED_PATTERNS`) has no resolved path at all — it is
+ * a basename at unknown depth — so `rm -rf <working_dir>/extension` still
+ * approves. Only a filesystem walk could answer it, and this module does not do
+ * one.
  */
-function enclosesResolvedStateFile(filePath: string, stateFile: string | null): boolean {
-  if (!filePath || !stateFile) return false;
+function enclosesProtectedPath(filePath: string, target: string | null): boolean {
+  if (!filePath || !target) return false;
   const parts = path.resolve(expandLeadingHome(filePath)).toLowerCase().split(path.sep).filter(Boolean);
-  const stateParts = path.resolve(stateFile).toLowerCase().split(path.sep).filter(Boolean);
-  if (parts.length >= stateParts.length || parts.length * 2 < stateParts.length) return false;
-  return parts.every((part, i) => wordExpandsTo(part, stateParts[i]));
+  const targetParts = path.resolve(target).toLowerCase().split(path.sep).filter(Boolean);
+  if (parts.length >= targetParts.length || parts.length * 2 < targetParts.length) return false;
+  return parts.every((part, i) => wordExpandsTo(part, targetParts[i]));
 }
 
 /** The repository-internal directory the Git Boundary Rules forbid a worker to touch. */
@@ -385,6 +422,14 @@ function pathEntersGitDir(filePath: string): boolean {
  * new call site silently loses the ancestor arm and fails OPEN, which is the
  * exact failure mode AP-EXT-ITER257-01 closes. `null` is the legitimate
  * "unresolved" value and disables only that arm.
+ *
+ * The ancestor arm runs over BOTH resolved roots this domain defends, not just
+ * the state file (AP-EXT-ITER257-02). The deployed runtime root had the
+ * descendant direction only — `isInsideRuntimeRoot` — so `rm -rf ~/.claude`
+ * APPROVED while `rm -rf ~/.claude/pickle-rick` one component deeper BLOCKED,
+ * and the shallower spelling destroys strictly more. The two are the SAME
+ * predicate against two targets rather than two predicates, so a third defended
+ * root cannot arrive with only one of its two directions again.
  */
 function detectProtectedWriteTarget(filePath: string, stateFile: string | null): { matched: string; isSettings: boolean } | null {
   if (!filePath) return null;
@@ -392,7 +437,9 @@ function detectProtectedWriteTarget(filePath: string, stateFile: string | null):
   if (stateMatch) {
     return { matched: filePath, isSettings: SETTINGS_BASENAMES.has(stateMatch) };
   }
-  if (isInsideRuntimeRoot(filePath) || enclosesResolvedStateFile(filePath, stateFile)) {
+  const enclosesRuntimeTree = [stateFile, getProtectedRuntimeRoot()]
+    .some((target) => enclosesProtectedPath(filePath, target));
+  if (isInsideRuntimeRoot(filePath) || enclosesRuntimeTree) {
     return { matched: filePath, isSettings: false };
   }
   return null;
@@ -837,7 +884,7 @@ function isConfigProtectionEnabled(extensionDir: string): boolean {
 
 /**
  * Resolves the live session state AND keeps the PATH it came from. The path is
- * the protected target `enclosesResolvedStateFile` compares against
+ * the protected target `enclosesProtectedPath` compares against
  * (AP-EXT-ITER257-01) — discarding it here is what left the ancestor axis
  * unanswerable and forced every earlier domain to close by naming the file.
  */
@@ -924,11 +971,24 @@ function detectTargetedStateFile(input: PreToolUseInput, stateFile: string | nul
  * no edit to this function. That is what a single class buys and a per-domain
  * one would not have.
  *
- * RESIDUAL, reported rather than claimed closed: the domain is closed by PATH,
- * so removing a repository's PARENT directory reaches `.git` without naming it,
- * exactly as `rm -rf <session dir>` reaches the state file — one granularity
- * gap, both domains, tracked as AP-EXT-ITER256-03. No member of any list can
- * express it, so do not try to close it by growing one.
+ * RESIDUAL, reported rather than claimed closed, and now BLOCKED ON A NAMED
+ * DEFECT rather than merely open: the domain is closed by PATH, so removing a
+ * repository's PARENT directory reaches `.git` without naming it, exactly as
+ * `rm -rf <session dir>` reached the state file. The ancestor predicate that
+ * closed the state domain — `enclosesProtectedPath` against
+ * `<state.working_dir>/.git` — was IMPLEMENTED and MEASURED this pass and is
+ * NOT landed, because its fail-closed half fails: it adds 34 blocks over 8,805
+ * unique real worker Bash calls, and ZERO of the 34 survives segment-only
+ * scoping. Every one is `cd <repo> && …` or a bare `..` claimed by a `cp`/`rm`
+ * anchor sitting in a DIFFERENT shell segment — the raw-scope arg walk of
+ * AP-EXT-ITER256-02, not this domain. The state domain does not pay that cost
+ * because its target is EIGHT components deep and the coverage bound drops a
+ * two-component token there; `<working_dir>/.git` is FOUR, so the same bound
+ * admits `..`. Land AP-EXT-ITER256-02's segment bound FIRST, then this arm: what
+ * is measured is that 0 of the 34 survives segment-only scoping, so the bound
+ * removes every one of them — whether it also costs true positives of its own is
+ * that finding's question, not this one's, and is NOT measured here. Do NOT try
+ * to close this by growing a list; no member can express an ancestor.
  */
 function detectGitDirWriteTarget(input: PreToolUseInput): string | null {
   const toolName = input.tool_name || '';
