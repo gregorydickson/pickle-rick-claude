@@ -1532,8 +1532,19 @@ function wordToCodeBuiltinPayload(segment) {
  */
 const HERE_STRING_OPERATOR_RE = /^\d*<<</;
 /**
- * The word a here-string hands to the command's standard input, or null when
+ * The text a here-string hands to the command's standard input, or null when
  * the segment carries no here-string.
+ *
+ * The take is the WHOLE remaining scope, joined — the same take
+ * `wordToCodeBuiltinPayload` uses, and for the reason AP-EXT-ITER264-01 measured
+ * here: the operand is ONE bash word, but this module's tokenizer ends a word at
+ * whitespace, so a `${…}` body carrying a space arrives as several tokens with
+ * the closing brace glued to the last one. Joining restores the bytes the shell
+ * kept together. The words that FOLLOW the operand are the command's own
+ * arguments rather than its stdin; that costs extra scanned tokens and never a
+ * lost block — this module's established direction. Reading `tokens[idx + 1]`
+ * instead was the last single-token adjacency read, the shape the
+ * AP-EXT-ITER262-01 PATTERN_SHAPE forbids.
  *
  * AP-EXT-ITER70-02. AP-EXT-ITER70-01 declared bash's word-to-code set as `-c`
  * plus `eval` and filed the rest as a fd family whose code "arrives as DATA on
@@ -1586,8 +1597,22 @@ function hereStringPayload(segment) {
  * Appends each command-string payload's own segments after the segment that
  * carries it — the `-c` operand of a shell wrapper, the arguments of the `eval`
  * builtin, and the operand of a here-string. The carrying segment is KEPT
- * (fail-safe: never removes a segment a detector already saw), so `bash
- * install.sh` — which carries none of them — is untouched.
+ * (fail-safe: never removes a segment a detector already saw), so a bare deploy
+ * command — which carries none of them — is untouched.
+ *
+ * Each payload is split as WRITTEN and then as every word `expandWord` may
+ * produce from it. That is ONE application of the seam for all three
+ * constructs rather than a treatment per construct: a payload is a WORD before
+ * it is code, and re-tokenizing the text alone loses the boundary bash kept.
+ * AP-EXT-ITER264-01 measured what that costs — a parameter expansion carrying
+ * two words fragments and its closing brace glues to the last fragment, so the
+ * seam never saw a whole word and the deploy ban and both R-WSRC-3 write gates
+ * approved in every here-string, `eval` and `trap` spelling while each literal
+ * twin blocked.
+ *
+ * The payload LEADS its own list because `expandWord` is not strictly widening:
+ * `expandBraceWord` REPLACES an alternation with its alternatives, so a payload
+ * carrying one would be LOST if the seam alone were pushed.
  */
 function expandShellCommandStrings(segments, depth) {
     if (depth >= MAX_SHELL_COMMAND_STRING_DEPTH)
