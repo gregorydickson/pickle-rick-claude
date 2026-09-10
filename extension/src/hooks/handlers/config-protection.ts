@@ -10,6 +10,7 @@ import {
   execAnchorIndex,
   execNameIs,
   execNamesIn,
+  expandWord,
   wordExpandsTo,
   execTokenIndex,
   isShellWrapper,
@@ -626,6 +627,28 @@ function findBashWriteTarget<T>(
  * Only the REDIRECT anchor is gated: a DESTINATION is legitimately quoted
  * (`> "state.json"`), so `tokens[i + 1]` and the positional args are probed
  * whatever their quoting.
+ *
+ * AP-EXT-ITER262-01: the destination is a WORD, so it is read through
+ * `expandWord` — THE word-expansion seam, the same one `pushWordBoundaryTokens`
+ * applies at its flush — and not as the raw token. The two passes ask the same
+ * question about a word and had two different answers to it: the seam widens a
+ * word into SIBLING tokens, which Pass 2 reaches because it scans every arg in
+ * the scope, while Pass 1's single-token adjacency reads only the ORIGINAL word
+ * standing after the operator and never the siblings beside it. So
+ * `echo x > ${x:-<state file>}` and its assign / alternate / append twins all
+ * APPROVED for a worker while `cp /tmp/a ${x:-<state file>}` and
+ * `tee ${x:-<state file>}` blocked — shim-verified that all four really write
+ * the file. Asking the seam directly at the destination slot removes the
+ * divergence rather than teaching Pass 1 which siblings belong to which word,
+ * which would re-admit the positional read this module keeps retiring.
+ *
+ * The raw token leads the list rather than being left to the seam to return,
+ * because the seam is NOT strictly widening: `expandBraceWord` REPLACES an
+ * alternation word with its alternatives and then drops the empty ones, so
+ * `expandWord` can return a list without the original in it and, for `{,}`, no
+ * list at all — measured over the live corpus, 1890 of 790,777 tokens. No probe
+ * may be lost here, so the destination is named explicitly and the expansion
+ * only ever adds to it.
  */
 function findWriteTargetInScope<T>(
   command: string,
@@ -633,12 +656,16 @@ function findWriteTargetInScope<T>(
 ): T | null {
   const tokens = tokenizeShellTokens(command);
 
-  // Pass 1: `>` / `>>` redirects — the immediate next token is the destination.
+  // Pass 1: `>` / `>>` redirects — the immediate next token is the destination,
+  // read through `expandWord` for every word bash may produce from it.
   for (let i = 0; i < tokens.length - 1; i++) {
     const isRedirect = !tokens[i].quoted && (tokens[i].value === '>' || tokens[i].value === '>>');
     if (!isRedirect) continue;
-    const hit = probe(tokens[i + 1].value);
-    if (hit !== null) return hit;
+    const destination = tokens[i + 1].value;
+    for (const word of [destination, ...expandWord(destination)]) {
+      const hit = probe(word);
+      if (hit !== null) return hit;
+    }
   }
 
   // Pass 2: write/editor commands that mutate a positional FILE arg

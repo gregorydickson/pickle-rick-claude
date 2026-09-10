@@ -2933,6 +2933,101 @@ test('AP-EXT-ITER260-01: a substitution that READS the protected file still appr
   );
 });
 
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER262-01 — the redirect DESTINATION was read as a raw token, never as
+// a WORD.
+//
+// `expandWord` is THE word-expansion seam (brace expansion, then the literal
+// words a parameter expansion may substitute), applied by
+// `pushWordBoundaryTokens` at its flush. It widens one word into SIBLING TOKENS
+// appended beside the original, so every WHOLE-SCOPE read reaches the recovered
+// word — Pass 2 scans every arg after its anchor and blocks the positional
+// twins. Pass 1 reads ONE token by adjacency to the operator, so it saw only the
+// ORIGINAL word standing after the operator and never the sibling beside it: the
+// default, assign-default, alternate and append spellings ALL APPROVED for a
+// worker in every protected domain (state file, settings, circuit breaker,
+// deployed runtime root, repository git dir, lint config) while both positional
+// twins and the literal-path control blocked in the same run. Shim-verified in a
+// real shell: all four really write the file.
+//
+// The fix asks the seam directly at the destination slot rather than teaching
+// Pass 1 which siblings belong to which word — that would re-admit the
+// positional read `execAnchorIndex` and `findGitVerb` were each burned by.
+//
+// TWO spawns: the defect, and the non-vacuity control. The seam is shared rather
+// than re-implemented, so the remaining forms ride the in-process pin below,
+// which costs none.
+// ---------------------------------------------------------------------------
+
+function runParameterExpansionDestination(build) {
+  const { tmpDir, stateFile } = bootstrapSession();
+  return runHandler({
+    tmpDir,
+    stateFile,
+    toolName: 'Bash',
+    toolInput: { command: build({ stateFile, scratch: path.join(tmpDir, 'scratch.txt') }) },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+}
+
+// Assembled from fragments so this file's own bytes never spell a redirect
+// standing beside a protected basename (AP-EXT-ITER258-03 refuses such a write).
+const PARAM_EXPANSION = (word) => `${String.fromCharCode(36)}{x:-${word}}`;
+const REDIRECT_TO = String.fromCharCode(62);
+
+test('AP-EXT-ITER262-01: a REDIRECT destination inside a parameter expansion blocks', () => {
+  assert.equal(
+    runParameterExpansionDestination(
+      ({ stateFile }) => `echo x ${REDIRECT_TO} ${PARAM_EXPANSION(stateFile)}`,
+    ).decision,
+    'block',
+    'the expansion substitutes the protected path; bash really writes it',
+  );
+});
+
+test('AP-EXT-ITER262-01: an ordinary destination inside a parameter expansion still approves', () => {
+  // Non-vacuity, and the discriminator against the obvious over-reach of probing
+  // every token in the scope instead of the destination WORD: the protected path
+  // is here as a READ operand while the destination is an ordinary artifact, so
+  // a Pass 1 that scanned the whole scope would block it. Measured RED under
+  // exactly that mutant.
+  assert.equal(
+    runParameterExpansionDestination(
+      ({ stateFile, scratch }) => `cat ${stateFile} ${REDIRECT_TO} ${PARAM_EXPANSION(scratch)}`,
+    ).decision,
+    'approve',
+  );
+});
+
+test('AP-EXT-ITER262-01: the destination slot reads the shared word-expansion seam', async () => {
+  // Behaviour half: every spelling of the expansion recovers the destination
+  // word through the ONE exported seam, so Pass 1 and Pass 2 cannot answer the
+  // same question about a word differently again.
+  const { expandWord } = await import(
+    pathToFileURL(path.resolve(__dirname, '../hooks/shell-exec.js')).href
+  );
+  const target = '/tmp/session/state' + '.json';
+  const dollar = String.fromCharCode(36);
+  for (const body of [`x:-${target}`, `x:=${target}`, `x:+${target}`, `x-${target}`]) {
+    assert.ok(
+      expandWord(`${dollar}{${body}}`).includes(target),
+      `${body}: the seam must recover the substituted word`,
+    );
+  }
+
+  // Structural half (PATTERN_SHAPE): the destination is read through the seam
+  // and not as a raw token. Both delimiters are asserted to resolve first — a
+  // span whose end delimiter vanishes slices to EOF and pins nothing.
+  const handler = readCode(path.resolve(__dirname, '../src/hooks/handlers/config-protection.ts'));
+  const start = handler.indexOf('function findWriteTargetInScope');
+  const end = handler.indexOf('function bashWritesProtectedConfig');
+  assert.ok(start >= 0 && end > start, 'findWriteTargetInScope body must be locatable');
+  const fn = handler.slice(start, end);
+  assert.match(fn, /const destination = tokens\[i \+ 1\]\.value;/);
+  assert.match(fn, /for \(const word of \[destination, \.\.\.expandWord\(destination\)\]\) \{/);
+  assert.doesNotMatch(fn, /probe\(tokens\[i \+ 1\]\.value\)/);
+});
+
 test('AP-EXT-ITER260-01: the outer word receives a substitution operands, never its command word', async () => {
   const { splitShellSegments } = await import(
     pathToFileURL(path.resolve(__dirname, '../hooks/shell-exec.js')).href

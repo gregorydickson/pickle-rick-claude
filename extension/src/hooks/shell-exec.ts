@@ -1024,10 +1024,24 @@ function parameterExpansionWords(word: string): string[] {
  *
  * ONE home, for the reason `execName` and `splitShellSegments` have one: a
  * second expansion taught to half the module is the fork AP-EXT-ITER12-01 and
- * AP-EXT-ITER66-01 each collapsed. The original word is always kept, so this is
- * a strict WIDENING — no command that blocked before can stop blocking now.
+ * AP-EXT-ITER66-01 each collapsed.
+ *
+ * NOT strictly widening, contrary to what this docblock claimed until
+ * AP-EXT-ITER262-01 measured it: the parameter arm keeps the original word, but
+ * `expandBraceWord` REPLACES an alternation with its alternatives and drops the
+ * empty ones, so `{a,b}x` returns neither `{a,b}x` nor, for `{,}`, anything at
+ * all — 1890 of 790,777 tokens over the live worker corpus. Callers that must
+ * not lose a probe name the original word themselves; `pushWordBoundaryTokens`
+ * does not, because a token bash will never produce is not a token the segment
+ * should carry.
+ *
+ * EXPORTED for the second slot that reads a single WORD rather than a whole
+ * scope: `findWriteTargetInScope`'s redirect destination (AP-EXT-ITER262-01).
+ * The flush below widens a word into sibling TOKENS, which every whole-scope
+ * read reaches and a single-token adjacency read does not, so the destination
+ * slot asks this seam directly instead of growing its own expansion.
  */
-function expandWord(word: string): string[] {
+export function expandWord(word: string): string[] {
   const braced = expandBraceWord(word);
   if (!word.includes('${')) return braced;
   return braced.flatMap((w) => [w, ...parameterExpansionWords(w)]);
