@@ -1576,7 +1576,9 @@ function hereStringPayload(segment) {
         if (token.quoted || !HERE_STRING_OPERATOR_RE.test(token.value))
             continue;
         const glued = token.value.replace(HERE_STRING_OPERATOR_RE, '');
-        return glued.length > 0 ? glued : (tokens[idx + 1]?.value ?? null);
+        const rest = tokens.slice(idx + 1).map((rested) => rested.value);
+        const words = glued.length > 0 ? [glued, ...rest] : rest;
+        return words.length > 0 ? words.join(' ') : null;
     }
     return null;
 }
@@ -1598,8 +1600,11 @@ function expandShellCommandStrings(segments, depth) {
             ...shellCommandStringPayloads(segment),
             hereStringPayload(segment),
         ]) {
-            if (payload !== null)
-                expanded.push(...splitShellSegments(payload, depth + 1));
+            if (payload === null)
+                continue;
+            for (const word of [payload, ...expandWord(payload)]) {
+                expanded.push(...splitShellSegments(word, depth + 1));
+            }
         }
     }
     return expanded;

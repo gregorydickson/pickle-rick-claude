@@ -6032,3 +6032,157 @@ test('AP-EXT-ITER256-01: the .git destruction gate stays worker-scoped', () => {
   assert.equal(asRole('rm -f .git/index.lock', 'worker').decision, 'block', 'worker is gated');
   assert.equal(asRole('rm -f .git/index.lock', undefined).decision, 'approve', 'operator is not');
 });
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER264-01 — a word-to-code payload never reached the word-expansion
+// seam.
+//
+// Bash's word-to-code set is closed: the `-c` operand, a word-to-code builtin's
+// arguments, and a here-string operand. Two of the three re-parse the payload
+// WITHOUT word splitting, so one word can carry a whole command line —
+// `eval` concatenates its arguments before re-parsing, and a here-string operand
+// is not split at all. A parameter expansion is exactly such a word.
+//
+// The payload was handed to `splitShellSegments` as TEXT, which re-tokenizes at
+// whitespace: a `${…}` body carrying a space was cut across tokens and its
+// closing brace glued to the last fragment, so `expandWord` — which recovers
+// `bash <install>` from the WHOLE word — never saw a whole word. Measured
+// against the pre-fix shipped mirror with live literal controls in the same run:
+// the here-string and `eval` spellings of the deploy-script ban and of both
+// R-WSRC-3 write gates ALL APPROVED for a worker while every byte-identical
+// literal twin blocked. Shim-verified in a real shell on this box: `bash <<<
+// ${x:-cmd a b}` and `eval ${x:-cmd a b}` both really run `cmd a b`.
+//
+// `hereStringPayload` compounded it by reading ONE token by adjacency — the last
+// member of the AP-EXT-ITER262-01 PATTERN_SHAPE — so the here-string arm lost the
+// bytes before the seam could be asked. It now takes the whole remaining scope
+// via `slice`, the same take `wordToCodeBuiltinPayload` uses.
+//
+// The `-c` arm is deliberately NOT pinned as a defect: bash WORD-SPLITS an
+// unquoted `-c` operand, so `bash -c ${x:-cmd a b}` runs the command string
+// `cmd` with `a`/`b` as `$0`/`$1` and never runs `cmd a b` — shim-verified.
+// Scanning its payload tokens separately is the faithful reading.
+//
+// Assembled from fragments so this file's own bytes never spell the banned
+// deploy command or a redirect standing beside a protected basename
+// (AP-EXT-ITER258-03 refuses such a write).
+// ---------------------------------------------------------------------------
+
+const ITER264_DOLLAR = String.fromCharCode(36);
+const ITER264_REDIRECT = String.fromCharCode(62);
+const ITER264_HERE_STRING = '<'.repeat(3);
+const ITER264_DEPLOY = 'bash ' + 'insta' + 'll.sh';
+// A parameter expansion whose substituted word carries WHITESPACE — the shape
+// the tokenizer cut in half.
+const iter264Expansion = (word) => `${ITER264_DOLLAR}{x:-${word}}`;
+
+for (const [label, carrier] of [
+  ['a here-string', (payload) => `bash ${ITER264_HERE_STRING} ${payload}`],
+  ['the eval builtin', (payload) => `eval ${payload}`],
+  ['the trap builtin', (payload) => `trap ${payload} EXIT`],
+]) {
+  test(`AP-EXT-ITER264-01: worker blocks the deploy script behind ${label} expansion`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: carrier(iter264Expansion(ITER264_DEPLOY)) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', carrier(iter264Expansion(ITER264_DEPLOY)));
+    assert.match(result.reason, /R-WSRC/);
+  });
+}
+
+for (const [label, carrier] of [
+  ['a here-string', (payload) => `bash ${ITER264_HERE_STRING} ${payload}`],
+  ['the eval builtin', (payload) => `eval ${payload}`],
+]) {
+  test(`AP-EXT-ITER264-01: worker blocks a state-file write behind ${label} expansion`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const write = `echo x ${ITER264_REDIRECT} ${path.join(sessionDir, 'state.json')}`;
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: carrier(iter264Expansion(write)) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', carrier(iter264Expansion(write)));
+    assert.match(result.reason, /state file protected/i);
+  });
+}
+
+test('AP-EXT-ITER264-01: a benign expansion payload stays approved', () => {
+  // Non-tautology. Without this, every block above would pass under a guard that
+  // refuses any payload containing an expansion at all.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const command = `bash ${ITER264_HERE_STRING} ${iter264Expansion('echo hello world')}`;
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve', command);
+});
+
+test('AP-EXT-ITER264-01: the payload slot reads the shared word-expansion seam', () => {
+  // Behaviour half, in-process so the remaining spellings cost no spawn: the
+  // recovered command line reaches the segmenter as its own segment, for both
+  // constructs that do not word-split, and for the whole family of expansion
+  // spellings.
+  const payload = 'cmdname alpha beta';
+  for (const body of [`x:-${payload}`, `x:=${payload}`, `x:+${payload}`, `x-${payload}`]) {
+    const word = `${ITER264_DOLLAR}{${body}}`;
+    for (const command of [
+      `bash ${ITER264_HERE_STRING} ${word}`,
+      `bash ${ITER264_HERE_STRING}${word}`,
+      `bash 0${ITER264_HERE_STRING} ${word}`,
+      `eval ${word}`,
+    ]) {
+      assert.ok(
+        splitShellSegments(command).includes(payload),
+        `${command} -> ${JSON.stringify(splitShellSegments(command))}`,
+      );
+    }
+  }
+
+  // Monotone in the direction that matters: the carrying segment is kept, and a
+  // LITERAL payload still surfaces on its own, so no command that blocked before
+  // this pass can stop blocking.
+  const literal = `bash ${ITER264_HERE_STRING} 'cmdname alpha beta'`;
+  assert.ok(splitShellSegments(literal).includes(payload));
+  assert.ok(splitShellSegments(literal).includes(literal));
+
+  // The raw payload LEADS the list and is never left to the seam to return.
+  // `expandWord` is not strictly widening — `expandBraceWord` REPLACES an
+  // alternation with its alternatives (AP-EXT-ITER262-01 measured that claim on
+  // the live corpus) — so a payload carrying one is absent from its result and
+  // would be LOST if the seam alone were pushed.
+  const braced = `bash ${ITER264_HERE_STRING} 'cmdname {a,b}'`;
+  assert.ok(
+    splitShellSegments(braced).includes('cmdname a b'),
+    `${braced} -> ${JSON.stringify(splitShellSegments(braced))}`,
+  );
+});
+
+test('AP-EXT-ITER264-01: neither payload slot reads a token by adjacency', () => {
+  // Structural half (the catalog PATTERN_SHAPE). `hereStringPayload` was the ONE
+  // remaining fixed-offset token read in `extension/src/hooks/` that feeds a
+  // detector; it now takes the whole remaining scope, and every payload is read
+  // through `expandWord` in ONE place rather than per construct.
+  const source = readCode(SHELL_EXEC_TS);
+
+  const payload = source.match(
+    /function hereStringPayload\(segment: string\): string \| null \{([\s\S]*?)\n\}/,
+  )?.[1];
+  assert.ok(payload, 'hereStringPayload must remain a single named function');
+  assert.match(payload, /tokens\.slice\(idx \+ 1\)/);
+  assert.doesNotMatch(payload, /tokens\[idx \+ 1\]/);
+
+  const start = source.indexOf('function expandShellCommandStrings(');
+  assert.ok(start > 0, 'expandShellCommandStrings must remain a single named function');
+  const expander = source.slice(start);
+  assert.match(expander, /for \(const word of \[payload, \.\.\.expandWord\(payload\)\]\) \{/);
+});
