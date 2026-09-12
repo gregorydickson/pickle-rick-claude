@@ -74,67 +74,85 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 📌 SESSION HANDOFF — state as of 2026-09-09 19:52Z (context cleared here; read this FIRST)
+## 📌 SESSION HANDOFF — state as of 2026-09-12 15:00Z (SUPERSEDES the 2026-09-09 handoff; read this FIRST)
 
-**LIVE PIPELINE — do not relaunch, do not touch the tree.** Session `2026-09-09-e959390b`
-(`tmux attach -t pipeline-e959390b`), bundle **B-MEGADRAIN continuation**, at **pickle 0/4**,
-`iteration 19`, `step: implement`, mux pid 4773, `exit_reason: null`, tree clean, 0 unpushed.
-HEAD `a6cac81c`. Version `2.1.0-beta.25` — **250 commits since that tag, nothing released since
-2026-09-04.**
+**NO PIPELINE IS RUNNING. Nothing is wedged. The tree is clean and nothing is unpushed.**
 
-**THE BABYSITTER CRON AND THE PIPELINE MONITOR ARE SESSION-ONLY AND DIED WITH THE LAST SESSION.**
-Re-arm the cron from `prds/babysitter.md` (operator cadence: every 2h at an off-herd minute) or nothing
-supervises the run. Re-arm a monitor on
-`~/.local/share/pickle-rick/sessions/2026-09-09-e959390b/pipeline-status.json`.
+The previous handoff said session `2026-09-09-e959390b` was LIVE at pickle 0/4 and must not be touched.
+**That is stale.** Measured from the session's own files, not from a log line:
 
-### Why nothing has released — MEASURED, do not re-derive
+| what | measured |
+|---|---|
+| session `e959390b` | `active: false`, `step: completed`, ended 2026-09-10 19:24Z |
+| phases | **4/4 completed**, 0 skipped |
+| tickets | **23 of 23 Done** |
+| verdict | `failed` |
+| citadel advisory findings | 185 |
+| box | rebooted Fri 2026-09-11 06:10 local, power outage, AFTER the run finished |
+| tmux / cron / monitor | all gone; a session-only cron did not survive the reboot |
 
-`counters.nonConvergent` in `pipeline-runner.ts` has **6 increment sites and ZERO decrements**;
-`unsuccessful = pipelineFailed || nonConvergent > 0`. The `done_over_red_worker_gate_tests` withhold
-raises it at the **pickle boundary, phase 1 of 4**, and nothing can lower it — not a converged
-anatomy-park, not a clean szechuan, not a green gate.
+**The outage destroyed no work.** The run had already completed ~16 hours before the box went down.
 
-| bundle | tickets | tripped it | verdict |
-|---|---|---|---|
-| B-UNATTENDED `f625727a` | 17 | — (anatomy non-convergent + szechuan) | 2/4 failed |
-| B-MEGADRAIN `27819a21` | 32 | 4 | 4/4 failed — dead at phase 1 |
-| B-CIGREEN `f365390b` | 10 | **1** | 3/4 failed — dead at phase 1 |
+`phase_dispositions` for that run:
+```
+pickle:         done_over_red_worker_gate_tests:49b6e555,8ef171aa; post_final_tier_degraded:red
+anatomy-park:   rate_limit_exhausted
+szechuan-sauce: baseline_unmeasurable_unrecoverable
+```
 
-Filed as [[ROOT G3]] in the megadrain PRD. **Fix is DERIVE-at-finalize, never decrement the counter.**
+### What that run actually delivered — the GitHub backlog is nearly drained
 
-### Corrections — do NOT re-derive the disproven versions
+Seven of the nine open GitHub issues were verified fixed at HEAD `c741ce4f` **by mechanism grep, not by
+ticket title**, and closed with evidence on 2026-09-12: **#6 #7 #8 #9 #10 #11 #14**. Remaining open:
+**#5** (enhancement, Genesis knowledge model), **#15** (judge-failure finalize gate breaks the loop),
+**#16** (NEW, filed 2026-09-12, the `nonConvergent` latch).
 
-- **anatomy-park CONVERGES now.** Twice: B-MEGADRAIN `{bin 11, extension 17}`, B-CIGREEN
-  `{bin 11, extension 37}`, both `converged: true`, zero stalls. The old
-  `APNC_MAX_PASSES_WITHOUT_CLEAN = 8` was ending the loop BEFORE convergence could appear; source now
-  reads **50** (C6, built). The hypothesis "a large bundle may never converge" is **FALSIFIED**.
-- **szechuan is NOT the release blocker.** Both recent bundles were foreclosed before szechuan ran.
-- **szechuan's five failures = four dispositions + ONE REPEAT** (`stalled_below_target` in B-UNATTENDED
-  and B-CIGREEN). Attack the repeat first — it has two live observations. [[ROOT S]].
-- **The branch is GREEN.** Full non-expensive gate measured twice on a quiet box: tsc/eslint/emit 0,
-  0 JS-TS drift, 10/10 audits, flake-budget failures=0 runs 5/5 (tests 9554 then 9659), integration
-  690/690, contract 99. The blocker is the run VERDICT, not the code.
-- **GitHub #14 is filed in BOTH places** — [[ROOT W]] in the megadrain PRD and a row in this file's
-  GitHub issue map. That map's completeness claim was corrected; re-run `gh issue list --state open`
-  before trusting it.
+**Two method corrections worth keeping.** #14's fix is real: `discoverSubsystems` now iterates
+`subsystemRoots`, which consults `getWorkspacePackages` first (`13b619bc`). And #11 was initially
+mis-reported by me as half-fixed, because I read the boilerplate filter (`hasSubstantiveManagerHandoff`)
+and INFERRED the exit arm survived without grepping it. It does not survive —
+`mux-runner.ts:10092` and `:14769` both read *"`manager_handoff_pending` no longer halts — this is
+park-and-flag only."* **Grep the arm, not its neighbour.**
 
-### Instrument errors made last session — the same class the audits keep finding
+### Why nothing has released — RE-MEASURED at HEAD, the premise HOLDS
 
-`pgrep -f 'bin/pipeline-runner.js'` matched the claude process carrying the prompt · a bare
-`ps | grep claude` census missed a live worker (use `ppid ==` the mux pid) · the argv confirm matched
-TEST FIXTURES (54 test files spawn `bin/pipeline-runner.js`) · `${PIPESTATUS[0]}` is a bashism and this
-shell is **zsh**, so three gate legs reported EMPTY exit codes · a stray second `cd extension` turned
-"never ran" into `exit 1`. **Resolve the live session by reading `state.json`, never argv.**
+`counters.nonConvergent` in `pipeline-runner.ts`: **5 raise sites** (`:4938 :5369 :5415 :5461 :5510`),
+**0 decrements** (`grep 'nonConvergent(--|-=)'` matches nothing), verdict at `:4618`
+`unsuccessful = pipelineFailed || counters.nonConvergent > 0`. Unchanged since the 2026-09-09 reading.
+Now filed publicly as **GitHub #16** with the four-bundle evidence table.
 
-### Open, in priority order
+Its sibling is **GitHub #15**, also re-measured and CONFIRMED live:
+`runAllBackendsExhaustedFinalizeGate` (`:4914`) returns `{ action: 'break' }` on a failed finalize gate,
+and the caller at `:5621` is `if (outcome.action === 'break') break;` — **unconditional**, never
+consulting `pipeline_continue_on_phase_fail`. A measurement failure stops the phase loop.
 
-1. **[[ROOT G2]]** — done-over-red is the release blocker. Three ACs already BUILT this run: withhold
-   only on a measured failure list, verdict payload must name failing tests, replay harness.
-2. **[[ROOT G3]]** — the latch. Not yet built.
-3. **[[ROOT W]]** — GitHub #14; `13b619bc` landed the workspace-package shape fix.
-4. **[[ROOT S]]** — szechuan; `0929fd81` bounded the judge's allowed-paths section by construction.
-5. **Release decision is the OPERATOR's.** The tree is green and beta.26 could be cut, but every run's
-   verdict was honestly withheld and overriding that is a judgment call, not a rule to apply.
+### Version and release position
+
+`2.1.0-beta.25`, **273 commits unreleased**, nothing tagged since 2026-09-04. Of those 273, **117 are
+anatomy-park review commits** — most of the unreleased delta is review output, not new bundle work.
+
+### NEXT DISPATCH — [[B-RELVERD]]
+
+`prds/p1-b-relverd-derive-never-latch-continue-never-break.md`, authored 2026-09-12. Four roots, one
+thesis: **a non-crash disposition must not doom the verdict, and must not stop the phase loop.**
+
+| root | item | source |
+|---|---|---|
+| V1 | `nonConvergent` latch → derive at finalize | GitHub #16, ROOT G3 |
+| V2 | failed finalize gate returns `break` → continue | GitHub #15 |
+| V3 | remediator burns cycles on `<timeout>` sentinels; diagnostic truncated to startup output | GitHub #15 |
+| V4 | downgraded anatomy crash reports GREEN (AP-EXT-ITER5-01 disposition half, fence-blocked) | measured |
+
+Two source files, one subsystem surface, so the review toll is paid once. V1 before V4.
+
+### Standing instrument warnings — the same class the audits keep finding
+
+`pgrep -f 'bin/pipeline-runner.js'` matches the claude process carrying the prompt, and 54 test files
+spawn that same argv · a bare `ps | grep claude` census misses live workers (use `ppid ==` the mux pid) ·
+`${PIPESTATUS[0]}` is a bashism and **this shell is zsh**, so piped gate legs report EMPTY exit codes ·
+zsh also refuses `grep --include=*.ts` unquoted. **Resolve a live session by reading `state.json`,
+never argv.** Capture every gate leg's exit code directly and stamp a same-run marker; a stale
+`/tmp` tier log reads as green.
 
 ---
 
@@ -455,30 +473,36 @@ the AC-G3 net-LOC number whatever it says.
 
 ---
 
-## 🐙 GITHUB ISSUES → BUNDLE MAP (rows #5–#11 verified against HEAD 2026-09-05; #14 verified 2026-09-08)
+## 🐙 GITHUB ISSUES → BUNDLE MAP (fully re-measured against HEAD `c741ce4f`, 2026-09-12)
 
-Rows #5–#11 were re-measured at HEAD on 2026-09-05. **#14 was filed AFTER that sweep and is verified
-separately below** — the 2026-09-05 header used to claim the map covered every open issue, which stopped
-being true the moment a new one was filed. **Re-run `gh issue list --state open` against this table
-before trusting it as complete; a catalog that asserts completeness is exactly the shape that rots green.**
-**None qualifies as won't-fix.**
+**Seven of the nine open issues were CLOSED on 2026-09-12** after verifying each one by MECHANISM grep
+at HEAD, not by ticket title. The B-MEGADRAIN continuation run (`2026-09-09-e959390b`, 23/23 Done) had
+fixed them and nobody had closed the issues. **Re-run `gh issue list --state open` before trusting this
+table as complete; a catalog that asserts completeness is exactly the shape that rots green.**
 
-| # | premise verified live by | disposition |
+| # | verdict at HEAD | mechanism measured |
 |---|---|---|
-| **#6** | `microverse-runner.ts:4657` — the hardcoded `"worker timed out"` string is present on a branch guarded only by `owned.length === 0` + dirty tree | B-UNATTENDED **TIER 3** |
-| **#7** | `violation_ledger` 8 refs; szechuan 0-for-2 this session | B-UNATTENDED **TIER 1** (folds into item 4) |
-| **#8** | `microverse-runner.ts:1354` reads *"INV-NO-SELF-DISOWN evidence in either direction — continuing"* | B-UNATTENDED **TIER 2** |
-| **#9** | hand-patched at **3** launches on 2026-09-05; rendered prompt carried `SESSION_ROOT="--refine"` | B-UNATTENDED **TIER 1** |
-| **#10** | `all_success` live at `spawn-refinement-team.ts:2568` | B-UNATTENDED **TIER 2** |
-| **#11** | shipped-predicate replay over the live corpus: 10 of 26 artifacts halt = **24% of all tickets** | B-UNATTENDED **TIER 1** |
-| **#5** | architecture review; already concludes *"do not migrate"* | **OPEN, not scoped — and now MORE relevant** |
-| **#14** | verified at HEAD 2026-09-08: `grep -c "subsystems.push({ name: entry.name"` = **1** (subsystem identity IS a top-level `readdirSync` entry), `grep -cE "pnpm-workspace\|workspaces"` = **0** (no workspace awareness). Operator evidence: 4 of 6 runs `anatomy_non_convergent`, ~11.5h. | [[B-MEGADRAIN]] **ROOT W** — and it **interacts with C6**: those runs died at the OLD APNC cap of 8, so the raise to 50 makes a structurally-unconvergeable run ~6x costlier. Compose with **#8** (same monorepo-shape family). |
+| **#6** | ✅ **CLOSED** | the `"worker timed out"` literal is gone from `src/` entirely; the message now reads `microverse: auto-commit (no commits produced — dirty tree detected)`, naming the condition the branch actually tests |
+| **#7** | ✅ **CLOSED** | H7: `selectLedgerEntriesForPrompt(mvState.violation_ledger)` is ONE selection consumed by BOTH the judge prompt and the worker brief (`microverse-runner.ts:3583`). Absent/malformed ledger degrades to the prior brief |
+| **#8** | ✅ **CLOSED** | AP-EXT-ITER7-01 + 7-02: `check_status` is TOTAL over every `runGate` exit incl. all four early-skip producers; `isCheckUnmeasured(result.check_status,'typecheck')` dominates `classifyNoDisown`, so an unattempted typecheck returns `{ran:false,skipped:'typecheck_unmeasurable'}` and the guard WITHHOLDS convergence |
+| **#9** | ✅ **CLOSED** | `grep -rn 'SESSION_ROOT="\$1"' .claude/commands/` → **0**. Templates derive the root from `BASH_SOURCE`, removing the substitution surface rather than escaping it |
+| **#10** | ✅ **CLOSED** | the omission is no longer silent: `[pickle-rick] requirement coverage gap: N of M requirement(s) not mapped by any ticket: <ids>`. **Stated residual:** `manifest.tickets` is STILL an AC-shape projection, not a full decomposition — the warning names what it drops |
+| **#11** | ✅ **CLOSED** | `mux-runner.ts:10092` + `:14769` — *"`manager_handoff_pending` no longer halts — this is park-and-flag only"*. `flagManagerHandoffResidual` records it, the epic completes `reason: 'success'`, the remaining phases run. `hasSubstantiveManagerHandoff` separately narrows the boilerplate false positive |
+| **#14** | ✅ **CLOSED** | `discoverSubsystems` iterates `subsystemRoots(target)`, which consults `getWorkspacePackages(target)` FIRST and only falls back to the top-level listing. Identity is the path RELATIVE to target, not the basename (`13b619bc`, tidied `4de9ad13`) |
+| **#15** | 🔴 **OPEN — [[B-RELVERD]] ROOT V2 + V3** | CONFIRMED live: `runAllBackendsExhaustedFinalizeGate` (`pipeline-runner.ts:4914`) returns `{action:'break'}`; caller `:5621` is `if (outcome.action === 'break') break;` — unconditional, never reads `pipeline_continue_on_phase_fail`. Second half: the remediator aborts on `<timeout>` sentinels having burned the cycle, 3 cycles → 0 fixes → cap exhausted |
+| **#16** | 🔴 **OPEN — [[B-RELVERD]] ROOT V1** | filed 2026-09-12. `nonConvergent`: 5 raises, 0 decrements, `:4618` verdict reads `> 0`. Four bundles' evidence table in the issue body |
+| **#5** | ⏸ **OPEN, deliberately unscheduled** | enhancement, not a bug and not won't-fix |
 
-**#5 is deliberately left open and unscheduled.** It is not a bug and it is not won't-fix. It states
-that of four ideas worth taking from Genesis, *"one of them is arguably the whole thesis of this project
-that we only half-implemented"* — which speaks directly to the autonomous-continuous-loops principle in
-root `CLAUDE.md` and to the redesign B-UNATTENDED begins. **Read it before the next redesign decision.**
-It stays out of B-UNATTENDED only because dispatch order is bugs before feature epics.
+**⚠ Method note, and it cost a wrong public comment.** I first reported #11 as half-fixed because I read
+the boilerplate filter (`hasSubstantiveManagerHandoff`) and INFERRED that the exit arm beside it had
+survived. It had not. **Grep the arm you are claiming about, not its neighbour** — a comment corrected
+on the issue is a cheap version of this lesson; a ticket built on it is not.
+
+**#5 is deliberately left open and unscheduled.** It is not a bug. It states that of four ideas worth
+taking from Genesis, *"one of them is arguably the whole thesis of this project that we only
+half-implemented"* — which speaks directly to the autonomous-continuous-loops principle in root
+`CLAUDE.md`. **Read it before the next redesign decision.** It stays unscheduled only because dispatch
+order is bugs before feature epics.
 
 ---
 
