@@ -5,6 +5,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import { Linter } from 'eslint';
+import tseslint from 'typescript-eslint';
+import eslintConfig from '../eslint.config.js';
 import {
     createMicroverseState,
     writeMicroverseState,
@@ -120,6 +123,89 @@ test('principles file has priority matrix', () => {
 test('principles file has diagnostic guide', () => {
     const content = fs.readFileSync(PRINCIPLES_PATH, 'utf-8');
     assert.ok(content.includes('## Quick Diagnostic Guide'), 'missing Quick Diagnostic Guide');
+});
+
+// ---------------------------------------------------------------------------
+// M4 (GitHub #22): the judge is told the ENFORCED function-size ceiling
+// ---------------------------------------------------------------------------
+// The ceiling is read from eslint.config.js, never hand-copied, and the replay measures the real
+// functions with eslint's own rule under noInlineConfig, so a scoped disable cannot hide one.
+
+const EXTENSION_ROOT = path.resolve(import.meta.dirname, '..');
+const SIZE_RULE = 'max-lines-per-function';
+const STALE_SIZE_LIMIT_RE = /function.{0,20}(>|limit|hard limit).{0,5}50|50-line function/i;
+const M4_LEDGER_FUNCTIONS = {
+    'src/bin/mux-runner.ts': ['runMuxRunnerMain', 'checkPartialLifecycleExit', 'reapOrphanedManagersAtIterationStart', 'bootstrapSessionResources'],
+    'src/services/citadel/audit-runner.ts': ['buildCitadelAuditReport'],
+};
+
+/** The unscoped base options plus each per-file override, as eslint.config.js enforces them. */
+function enforcedSizeCeilings() {
+    const entries = eslintConfig.filter((entry) => entry.rules?.[SIZE_RULE]);
+    const base = entries.find((entry) => !entry.files);
+    assert.ok(base, `eslint.config.js has no unscoped ${SIZE_RULE} entry`);
+    const overrides = entries.filter((entry) => entry.files)
+        .map((entry) => ({ files: entry.files, max: entry.rules[SIZE_RULE][1].max }));
+    return { options: base.rules[SIZE_RULE][1], overrides };
+}
+
+/** Ledger functions the size rule reports under `options`; throws if a file fails to parse or a function is gone. */
+function oversizedLedgerFunctions(options) {
+    const reported = [];
+    for (const [file, names] of Object.entries(M4_LEDGER_FUNCTIONS)) {
+        const source = fs.readFileSync(path.join(EXTENSION_ROOT, file), 'utf-8');
+        const messages = new Linter({ configType: 'flat', cwd: EXTENSION_ROOT }).verify(source, [{
+            files: ['**/*.ts'],
+            languageOptions: { parser: tseslint.parser },
+            linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: 'off' },
+            rules: { [SIZE_RULE]: ['error', options] },
+        }], file);
+        const fatal = messages.find((m) => m.fatal);
+        if (fatal) throw new Error(`${file} did not parse, so it was not measured: ${fatal.message}`);
+        for (const name of names) {
+            assert.match(source, new RegExp(`function ${name}\\b`), `${name} is no longer in ${file}; the replay would pass vacuously`);
+            if (messages.some((m) => m.ruleId === SIZE_RULE && m.message.includes(`'${name}'`))) reported.push(name);
+        }
+    }
+    return reported.sort();
+}
+
+let enforcedReplay;
+const replayUnderEnforcedRule = () => (enforcedReplay ??= oversizedLedgerFunctions(enforcedSizeCeilings().options));
+
+test('M4-1: the principles file states the enforced code-line ceiling and every per-file exception', () => {
+    const content = fs.readFileSync(PRINCIPLES_PATH, 'utf-8');
+    const { options, overrides } = enforcedSizeCeilings();
+    assert.ok(options.skipBlankLines && options.skipComments, 'eslint no longer counts code lines only; revisit the prompt text');
+    assert.ok(content.includes(`${options.max} code lines`), `principles must state the enforced ${options.max} code-line ceiling`);
+    assert.ok(content.includes('skipComments'), 'principles must say comment lines do not count');
+    assert.ok(overrides.length > 0, 'expected per-file max-lines-per-function overrides in eslint.config.js');
+    for (const { files, max } of overrides) {
+        assert.ok(content.includes(String(max)), `principles must name the ${max}-line exception`);
+        for (const file of files) assert.ok(content.includes(file), `principles must name the exception file ${file}`);
+    }
+});
+
+test('M4-4: no judge prompt, principles file or root CLAUDE.md states a 50-line function limit', () => {
+    const commandsDir = path.resolve(EXTENSION_ROOT, '../.claude/commands');
+    const prompts = [
+        ...fs.readdirSync(EXTENSION_ROOT).filter((f) => /^szechuan-sauce.*principles\.md$/.test(f)).map((f) => path.join(EXTENSION_ROOT, f)),
+        ...fs.readdirSync(commandsDir).filter((f) => f.endsWith('.md')).map((f) => path.join(commandsDir, f)),
+        path.resolve(EXTENSION_ROOT, '../CLAUDE.md'),
+    ];
+    assert.ok(prompts.length > 3, 'prompt corpus unexpectedly small; the scan would pass vacuously');
+    const hits = prompts.flatMap((file) => fs.readFileSync(file, 'utf-8').split('\n')
+        .map((line, i) => (STALE_SIZE_LIMIT_RE.test(line) ? `${path.basename(file)}:${i + 1}: ${line.trim()}` : null))
+        .filter(Boolean));
+    assert.deepEqual(hits, [], 'a prompt still states a function-size limit other than the enforced ceiling');
+});
+
+test('M4-3 (negative control): runMuxRunnerMain is still over the enforced ceiling', () => {
+    assert.ok(replayUnderEnforcedRule().includes('runMuxRunnerMain'), 'tightening the count must not silence the real finding');
+});
+
+test('M4-2: replaying the five ledger functions under code-line counting yields exactly one violation', () => {
+    assert.deepEqual(replayUnderEnforcedRule(), ['runMuxRunnerMain']);
 });
 
 // ---------------------------------------------------------------------------

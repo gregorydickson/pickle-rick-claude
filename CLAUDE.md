@@ -32,8 +32,8 @@ like a member that does not apply.
    checked that the invariant names a LIVE symbol.
 4. **Subtraction is the preferred fix.** "Necessary?" is the first Simplification Review question — a fix
    that removes a divergence beats one that guards it.
-5. **Complexity has a price and it is paid back IN-BUNDLE.** Growth against the 50-line function limit is
-   acceptable; **unrepaid growth is not.**
+5. **Complexity has a price and it is paid back IN-BUNDLE.** Growth against the enforced function-size ceiling
+   (120 code lines, max-lines-per-function in extension/eslint.config.js) is acceptable; **unrepaid growth is not.**
 
 **The metric is not lines — it is how many distinct states a reader must hold to know the system is
 correct.** Code that ADDS lines while removing ambiguity (an evidence test, a negative control, a typed

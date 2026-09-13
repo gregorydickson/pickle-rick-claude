@@ -427,7 +427,7 @@ All prior tickets are complete and individually verified. Test suite passes.
 6. Re-check the file. If P0-P1 violations remain, repeat from step 3.
 
 **Principle checklist (check ALL modified files)**:
-- Functions > 50 lines → extract named helpers
+- Functions over the project's enforced lint ceiling (Pickle Rick: 120 code lines, `max-lines-per-function` in `extension/eslint.config.js`) → extract named helpers
 - Nesting 3+ levels → guard clauses / early return
 - Copy-pasted code 3+ times across tickets → extract shared function
 - Magic numbers/strings → named constants
@@ -444,7 +444,7 @@ All prior tickets are complete and individually verified. Test suite passes.
 ## Acceptance Criteria
 - [ ] Zero P0 violations in MODIFIED_FILES — Verify: manual review complete, no security/data-loss issues — Type: llm-conformance
 - [ ] Zero P1 violations in MODIFIED_FILES — Verify: manual review complete, no bugs-waiting-to-happen — Type: llm-conformance
-- [ ] All functions ≤ 50 lines in MODIFIED_FILES — Verify: grep for function bodies — Type: lint
+- [ ] All functions within the project's enforced function-size ceiling in MODIFIED_FILES — Verify: run the project linter (Pickle Rick: `max-lines-per-function`, 120 code lines) — Type: lint
 - [ ] No dead imports/exports in MODIFIED_FILES — Verify: `${TC_CMD}` + grep unused — Type: lint
 - [ ] Test suite passes — Verify: `${TEST_CMD}` — Type: test
 - [ ] Type checker passes — Verify: `${TC_CMD}` — Type: typecheck

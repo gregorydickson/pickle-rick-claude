@@ -14,7 +14,7 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 
 | Symptom | Principle | Quick Fix |
 |---------|-----------|-----------|
-| Function > 50 lines | Small Functions | Extract named helpers |
+| Function > 120 code lines (200 in the two eslint override files) | Small Functions | Extract named helpers |
 | Deep nesting (3+ levels) | Guard Clauses, Cognitive Load | Early returns |
 | Copy-pasted code (3+ times) | DRY | Extract shared function |
 | Magic numbers/strings | Self-Documenting Code | Named constants |
@@ -110,7 +110,7 @@ Don't build features, abstractions, or infrastructure until you have a concrete,
 **The Delete Test**: Can you delete this code/feature without breaking anything currently used? If yes, delete it.
 
 ### Small Functions
-Functions should do one thing, do it well, and do it only. Target: 5-15 lines (hard limit: 50). Name reveals intent. One level of abstraction per function.
+Functions should do one thing, do it well, and do it only. Target: 5-15 lines. Hard ceiling: the enforced `max-lines-per-function` rule in `extension/eslint.config.js` — 120 code lines, 200 for `src/services/dot-builder.ts` and `src/bin/microverse-runner.ts`. Count code lines the way that rule does (`skipBlankLines` + `skipComments`): blank and comment lines do not count, so never measure a function by its line span. A function under the ceiling is not a size violation. When the target project enforces its own ceiling, use that number. Name reveals intent. One level of abstraction per function.
 
 **Stepdown Rule**: Read the code top-to-bottom like a narrative. Each function should call functions one abstraction level below.
 
