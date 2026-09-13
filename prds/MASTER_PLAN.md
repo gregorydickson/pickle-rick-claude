@@ -126,6 +126,34 @@ Its sibling is **GitHub #15**, also re-measured and CONFIRMED live:
 and the caller at `:5621` is `if (outcome.action === 'break') break;` — **unconditional**, never
 consulting `pipeline_continue_on_phase_fail`. A measurement failure stops the phase loop.
 
+### ⛔ RELEASE ATTEMPT 2026-09-12 — FULL GATE RUN, **RED**, ship correctly refused
+
+Operator authorized a full ship (bump, tag, push, deploy) **conditional on a green gate**. The gate was
+run from `extension/` at `c741ce4f`, every leg's exit code captured directly (no pipes, no
+`${PIPESTATUS}` — this shell is zsh), with a same-run id so a stale log cannot read as green.
+
+```
+GATE_RUN_ID=20260912T150133Z-7830   GATE_START=15:01:33Z   GATE_END=16:03:27Z   HEAD=c741ce4f
+npm ci 0 · tsc --noEmit 0 · eslint 0 · tsc emit 0 · JS/TS drift 0 files
+9/9 audits 0
+test:fast:budget  1   <-- RED
+test:integration  0
+test:expensive    0
+```
+
+**The condition was not met, so nothing was bumped, tagged, pushed or deployed.** The tree is untouched.
+
+**The red is CONTENTION, not code — measured both directions on a quiet box** (load 1.31, zero leaked
+fixture dirs, Node v24.19.0): `tests/metrics.test.js` standalone is **63/63 pass, exit 0**; in-tier it
+failed **3 of 3 runs** on `CLI: default invocation with mock data` at 45021.6 / 45016.4 / 45017.2 ms —
+three runs within 5ms of a 45s cap is a timeout, not a flake. Filed as **GitHub #17** and scoped as
+[[B-RELVERD]] **ROOT V5**, which is the item to land first.
+
+**Do NOT ship on the strength of "it passes standalone".** By this repo's own rule a failure is
+inherited only if it is already filed as a bug PRD AND reproduces on the pre-bundle tree; this one was
+filed only as a COMMENT IN A THIRD TEST FILE, which is not the same thing and is precisely how it went
+unnoticed. `CLAUDE.md` is unambiguous: test failures block release, no exceptions.
+
 ### Version and release position
 
 `2.1.0-beta.25`, **273 commits unreleased**, nothing tagged since 2026-09-04. Of those 273, **117 are
@@ -142,8 +170,12 @@ thesis: **a non-crash disposition must not doom the verdict, and must not stop t
 | V2 | failed finalize gate returns `break` → continue | GitHub #15 |
 | V3 | remediator burns cycles on `<timeout>` sentinels; diagnostic truncated to startup output | GitHub #15 |
 | V4 | downgraded anatomy crash reports GREEN (AP-EXT-ITER5-01 disposition half, fence-blocked) | measured |
+| **V5** | **fast-tier 45s cap decided by unrelated tests' spawn count — LAND FIRST, it is what is red** | GitHub #17 |
+| V6 | eslint gate reads strict, configured unlimited, 17 findings exit 0 | GitHub #18 |
 
-Two source files, one subsystem surface, so the review toll is paid once. V1 before V4.
+Six roots, two subsystems (phase/verdict layer + release gate). The review toll is near-fixed per
+BUNDLE, so the second subsystem costs one extra rotation, not double. **Order: V5 first** (it is the
+live red), then V1, then V4 after V1. B-LOGEV was swept from the queue this pass as already-fixed.
 
 ### Standing instrument warnings — the same class the audits keep finding
 
@@ -491,6 +523,8 @@ table as complete; a catalog that asserts completeness is exactly the shape that
 | **#14** | ✅ **CLOSED** | `discoverSubsystems` iterates `subsystemRoots(target)`, which consults `getWorkspacePackages(target)` FIRST and only falls back to the top-level listing. Identity is the path RELATIVE to target, not the basename (`13b619bc`, tidied `4de9ad13`) |
 | **#15** | 🔴 **OPEN — [[B-RELVERD]] ROOT V2 + V3** | CONFIRMED live: `runAllBackendsExhaustedFinalizeGate` (`pipeline-runner.ts:4914`) returns `{action:'break'}`; caller `:5621` is `if (outcome.action === 'break') break;` — unconditional, never reads `pipeline_continue_on_phase_fail`. Second half: the remediator aborts on `<timeout>` sentinels having burned the cycle, 3 cycles → 0 fixes → cap exhausted |
 | **#16** | 🔴 **OPEN — [[B-RELVERD]] ROOT V1** | filed 2026-09-12. `nonConvergent`: 5 raises, 0 decrements, `:4618` verdict reads `> 0`. Four bundles' evidence table in the issue body |
+| **#17** | 🔴 **OPEN — [[B-RELVERD]] ROOT V5, filed 2026-09-12** | **currently blocking the release.** `test:fast:budget` red 3/3 at a 45s cap on `tests/metrics.test.js`; standalone 63/63 green. The coupling is documented in `tests/config-protection-state-files.test.js` as a spawn budget imposed on OTHER authors |
+| **#18** | 🔴 **OPEN — [[B-RELVERD]] ROOT V6, filed 2026-09-12** | `eslint src/ --max-warnings=-1` is ESLint's NO-LIMIT value; measured `17 problems (0 errors, 17 warnings)` **exit 0**. Drifted 16 → 17 since 2026-09-01 |
 | **#5** | ⏸ **OPEN, deliberately unscheduled** | enhancement, not a bug and not won't-fix |
 
 **⚠ Method note, and it cost a wrong public comment.** I first reported #11 as half-fixed because I read
@@ -3691,7 +3725,22 @@ inherited debt). A gate that cannot run reports **`not_run`**, never `green`, an
 ⚠️ **The self-build cannot exercise this bug** — pickle-rick HAS `extension/` — so WS-4's off-repo field
 run is mandatory, not optional. Build **ATTENDED**.
 
-## 🔺 OPEN BUG — B-LOGEV: 81% of worker session logs are EMPTY, and the classifier believes them (2026-08-04, P1)
+## ✅ RESOLVED (was OPEN BUG) — B-LOGEV: 81% of worker session logs are EMPTY, and the classifier believes them (2026-08-04, P1) — **STRUCK 2026-09-12 by re-measurement**
+
+> **⛔ DO NOT DISPATCH. Re-measured at HEAD `c741ce4f` on 2026-09-12 and the premise is GONE.**
+> `classifyWorkerSessionLogs` (`mux-runner.ts:10941`) now takes `workObserved: () => boolean` as a
+> **REQUIRED** parameter, and its own docblock states the fix: *"an empty log alone can no longer produce
+> `log_empty`. `workObserved` is the corroborant — did this ticket do work inside the iteration window —
+> and it is consulted ONLY on the empty branch... It is a REQUIRED parameter, not a defaulted one, so no
+> call site can silently keep the size-only verdict. A caller that cannot measure a window passes a thunk
+> returning `false` and classifies exactly as before — an unknown window is not evidence, in either
+> direction."*
+> Requiredness is what makes this a closure rather than a patch: a defaulted parameter would leave every
+> un-updated call site on the old verdict. **Note the 2026-09-05 verify-first re-measure below said
+> PREMISE INTACT — that reading was correct then and is stale now.** The original text is retained
+> beneath for forensics.
+
+
 
 > **🔎 VERIFY-FIRST RE-MEASURE 2026-09-05 (babysitter, against HEAD `a8ef0566`): PREMISE INTACT — this row
 > is REAL and drainable as written.** `classifyWorkerSessionLogs` is live at `mux-runner.ts:10616`,
