@@ -159,9 +159,25 @@ survived. It had not. **Grep the arm you are claiming about, not its neighbour.*
 
 ### Open, in priority order
 
-1. **`post_final_tier_degraded:red`** still raises the withhold and is now the LAST unexamined verdict
-   term. It fired on a run whose branch then passed a 19-leg gate, so its input is suspect in the same
-   way V1's was. **Do not assume it is wrong** — measure what tier it read and when, then decide.
+1. **✅ MEASURED 2026-09-13 — `post_final_tier_degraded:red` is NOT a false withhold, it is an
+   EVIDENCE-DESTROYING one. Filed as GitHub #19.** The recorded verdict was
+   `{state:'red', degraded:true, dimensions:['script failure: test:fast:serial']}` — the fallback name
+   emitted when the gate dies before any TAP output, so no test name was recovered.
+   **The red does not reproduce:** `test:fast:serial` at HEAD is 403 tests / 401 pass / **0 fail** /
+   exit 0, the full 19-leg gate is green, and the flake budget is `failures=0 runs 5/5 tests=9844`. The
+   only test-file delta since that run's final commit is in the PARALLEL half, so nothing that landed
+   can explain a serial red. Likeliest cause is a transient inside `pretest:fast`, whose two audits read
+   a test tree the workers were still editing.
+   **What can be proven and what cannot:** the red does not reproduce; WHAT it was cannot be recovered,
+   because `mux-runner.ts:1096` does `gate.failures.map(f => f.name)` and drops `f.message` — the
+   diagnostic tail `buildScriptFailureMessage(lines)` had ALREADY built at `:770`. `persistPostFinalVerdict`
+   then stores only `{state, degraded, dimensions}`.
+   **This is root V3's defect one function over** — V3 (shipped in beta.26) stopped the remediator
+   truncating a test diagnostic; the identical loss survives in the post-final verdict. A fix landing
+   where it was filed while its twin sits in a sibling is this codebase's recurring shape; the census
+   must sweep the CLASS, not the cited call site.
+   *Hypothesis, NOT measured, needs its own pass:* whether the post-final tier should run against a
+   quiescent tree at all.
 2. **szechuan `stalled_below_target`** — the repeat that [[ROOT S]] has been tracking. Now the only
    phase that did not complete.
 3. **#5** — read before the next redesign decision.
@@ -489,7 +505,8 @@ the AC-G3 net-LOC number whatever it says.
 
 ## 🐙 GITHUB ISSUES → BUNDLE MAP (re-measured 2026-09-12; #15-#18 closed 2026-09-13 by beta.26)
 
-**BUG BACKLOG DRAINED.** Every bug issue is closed. Only #5, an enhancement, remains open.
+**Backlog as of 2026-09-13 10:10Z:** #19 (post-final verdict discards its own diagnostic, filed this
+pass from measurement) and #5 (enhancement, unscheduled). Everything else is closed.
 
 **Seven of the nine open issues were CLOSED on 2026-09-12** after verifying each one by MECHANISM grep
 at HEAD, not by ticket title. The B-MEGADRAIN continuation run (`2026-09-09-e959390b`, 23/23 Done) had
