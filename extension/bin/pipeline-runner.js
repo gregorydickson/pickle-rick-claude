@@ -3877,12 +3877,17 @@ function finalizeNonSuccessTerminal(statePath, phaseIncomplete, phaseIncompleteR
  * latching it at the pickle boundary let one ticket repaired later doom a four-phase run. It is
  * derived HERE from every Done ticket's CURRENT verdict: "is this bundle red now?", not "was any
  * ticket ever red?". Only a run that has a pickle phase asks, exactly as before.
+ *
+ * B-RELVERD V4: a `crash_downgraded` skip is a crashed phase the loop continued past, so it
+ * withholds success; every other skip reason stays a benign skip. Derived from `phaseSkips`,
+ * which already survives crash-resume, rather than raised into the one-way counter.
  */
 export function computePipelineVerdict(runtime, counters) {
     const pipelineFailed = (counters.completed + counters.skipped) < runtime.config.phases.length;
     const doneOverRed = runtime.config.phases.includes('pickle')
         && reportDoneOverRedTestVerdict(runtime, counters, runtime.log);
-    const unsuccessful = pipelineFailed || counters.nonConvergent > 0 || doneOverRed;
+    const crashDowngraded = Object.values(counters.phaseSkips).includes('crash_downgraded');
+    const unsuccessful = pipelineFailed || counters.nonConvergent > 0 || doneOverRed || crashDowngraded;
     const handoffStop = !!readHandoffExitReason(runtime.statePath);
     return { pipelineFailed, unsuccessful, handoffStop, effectiveFailed: unsuccessful && !handoffStop };
 }
@@ -4366,6 +4371,9 @@ async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, inde
     }, runtime);
     if (skipWarning) {
         counters.skipped++;
+        // B-RELVERD V4: a crash downgraded to a skip is named like every other skip, and this
+        // write IS the success withhold — `computePipelineVerdict` derives it from the name.
+        counters.phaseSkips[rawPhase] = 'crash_downgraded';
         // AP-EXT-ITER83-01: this downgrade is a continue-past-nonzero like every other
         // one in this loop, so it records the SAME evidence. Without it, the sole
         // writer of `recoverable_phase_failure` is skipped, `buildCloserReleasePlan`

@@ -9,6 +9,7 @@ import {
   __setSpawnRunnerForTests,
   applyStrictPhasesOverride,
   buildCloserReleasePlan,
+  computePipelineVerdict,
   executeCloserReleasePlan,
   isFatalPhaseFailure,
   logPhaseContinueReason,
@@ -573,7 +574,9 @@ function driveAnatomyMissingKeyMetricCrash() {
 test('AP-EXT-ITER83-01: downgraded anatomy-park crash records recoverable_phase_failure and withholds closer release', async () => {
   const { repo, sessionDir, statePath } = driveAnatomyMissingKeyMetricCrash();
 
-  await expectMainExit(sessionDir, 0);
+  // B-RELVERD V4: the crash is named `crash_downgraded`, which withholds success, so the
+  // run exits Failure (1) — a crashed deep-review phase is not a successful run.
+  await expectMainExit(sessionDir, 1);
 
   const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
   const events = (Array.isArray(state.activity) ? state.activity : [])
@@ -590,29 +593,64 @@ test('AP-EXT-ITER83-01: downgraded anatomy-park crash records recoverable_phase_
   assert.equal(plan.install, false);
   assert.equal(plan.tag, false);
 
-  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
-  assert.match(
-    runnerLog,
-    /Closer: prior phase non-zero exit detected — skipping install and tag/,
-  );
+  // The withheld verdict now skips the closer outright, so the refusal line no longer reaches
+  // pipeline-runner.log; the shipped executor still refuses this plan and says so.
+  const closerLog = [];
+  let installCalled = false;
+  let tagCalled = false;
+  executeCloserReleasePlan(plan, {
+    install: () => { installCalled = true; },
+    tag: () => { tagCalled = true; },
+  }, (msg) => closerLog.push(msg));
+  assert.equal(installCalled, false);
+  assert.equal(tagCalled, false);
+  assert.match(closerLog.join('\n'), /Closer: prior phase non-zero exit detected — skipping install and tag/);
+
+  const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+  assert.equal(status.status, 'failed', 'V4-1: the downgraded crash withholds the success verdict');
+  assert.equal(status.phase_skips['anatomy-park'], 'crash_downgraded', 'V4-1: the disposition is named');
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
-// Control: the downgrade itself is unchanged — this fix moves the EVIDENCE wire,
-// never the disposition wire. Without this, widening the branch into a halt or a
-// nonConvergent bump would also satisfy the case above.
-test('AP-EXT-ITER83-01 control: the missing-key-metric downgrade still continues and exits 0', async () => {
+// Control: the downgrade still CONTINUES — B-RELVERD V4 moves the disposition (a named
+// `crash_downgraded` skip that withholds success) but must never widen the branch into a
+// halt. The run reaches finalize and reports failed; it does not stop mid-loop.
+test('AP-EXT-ITER83-01 control: the missing-key-metric downgrade still continues to finalize, withholding success', async () => {
   const { repo, sessionDir } = driveAnatomyMissingKeyMetricCrash();
 
-  await expectMainExit(sessionDir, 0);
+  await expectMainExit(sessionDir, 1);
 
   const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
   assert.match(runnerLog, /phase_skipped_with_warning/);
   assert.match(runnerLog, /anatomy_park_missing_key_metric/);
+  assert.match(runnerLog, /Pipeline finished:/, 'V4-5: the run reached finalize, not a mid-loop stop');
   const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
-  assert.equal(status.status, 'completed');
+  assert.equal(status.status, 'failed');
   assert.equal(status.skipped_phases, 1);
+  assert.equal(status.current_phase, null, 'the terminal status write ran');
   fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// V4-3: the withhold keys on the NAME, not on "a skip happened". A benign empty-scope skip
+// stays a successful skip; only `crash_downgraded` withholds.
+test('B-RELVERD V4-3: an ordinary empty-scope skip still reports success; crash_downgraded withholds', () => {
+  const { runtime } = makeRuntime({ configOverrides: { phases: ['anatomy-park'] } });
+  const counters = (reason) => ({
+    completed: 0,
+    skipped: 1,
+    phaseSkips: { 'anatomy-park': reason },
+    nonConvergent: 0,
+    phaseDispositions: {},
+  });
+
+  const benign = computePipelineVerdict(runtime, counters('empty_scope'));
+  assert.equal(benign.pipelineFailed, false);
+  assert.equal(benign.unsuccessful, false, 'an empty-scope skip is still a success');
+
+  const crashed = computePipelineVerdict(runtime, counters('crash_downgraded'));
+  assert.equal(crashed.pipelineFailed, false, 'the phase is accounted for — this is not a shortfall');
+  assert.equal(crashed.unsuccessful, true);
+  assert.equal(crashed.effectiveFailed, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -654,7 +692,9 @@ function floodActivityRing(statePath, count) {
 test('AP-EXT-ITER211-02: an over-cap activity ring must not evict the degradation breadcrumb into a clean closer release', async () => {
   const { repo, sessionDir, statePath } = driveAnatomyMissingKeyMetricCrash();
 
-  await expectMainExit(sessionDir, 0);
+  // B-RELVERD V4: the downgraded crash withholds success (exit 1); the breadcrumb this case
+  // pins is written before finalize either way.
+  await expectMainExit(sessionDir, 1);
 
   const before = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
   const beforeBreadcrumbs = before.activity.filter((e) => e.event === 'recoverable_phase_failure');

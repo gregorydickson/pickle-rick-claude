@@ -165,10 +165,15 @@ test('pipeline downgrades known anatomy-park missing-key-metric fatal to phase_s
   });
 
   try {
-    await expectMainExit(sessionDir, 0);
+    // B-RELVERD V4: the downgrade still CONTINUES (szechuan-sauce runs — calls.length 2), but
+    // the crash is named `crash_downgraded` and withholds success, so the run exits Failure (1).
+    await expectMainExit(sessionDir, 1);
     assert.equal(calls.length, 2);
     assertRunnerScript(calls[0].args[0], 'microverse-runner.js');
     assertRunnerScript(calls[1].args[0], 'microverse-runner.js');
+
+    const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.phase_skips['anatomy-park'], 'crash_downgraded');
 
     const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.match(runnerLog, /phase_skipped_with_warning/);
