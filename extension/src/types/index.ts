@@ -168,6 +168,13 @@ export interface State {
     state: PostFinalVerdictState;
     degraded: boolean;
     dimensions: string[];
+    /**
+     * M1: the diagnostic tail (`buildScriptFailureMessage`) for each `script_failure: true`
+     * gate failure, carried alongside `dimensions` instead of being dropped by the
+     * name-only projection. Real TAP failures never populate this — empty unless the gate
+     * died before any TAP output (e.g. in `pretest:fast`).
+     */
+    diagnostics: { name: string; message: string }[];
   };
   /** Forward-created by R-CCPM-3: orphan session paths detected at session-map read time. */
   orphans_detected?: string[];

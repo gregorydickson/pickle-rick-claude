@@ -902,10 +902,11 @@ function isBaselineOnlyFailureSet(failureNames, baselineFailures) {
  * 'green'. Wired by `runPostFinalMeasurement` below, at both promise-synthesis seams.
  */
 export function classifyPostFinalVerdict(input) {
-    const finalize = (state, dimensions) => ({
+    const finalize = (state, dimensions, diagnostics = []) => ({
         state,
         degraded: state === 'red' || state === 'inconclusive' || state === 'absent',
         dimensions,
+        diagnostics,
     });
     if (!input.applicable)
         return finalize('not_applicable', []);
@@ -944,7 +945,15 @@ export function classifyPostFinalVerdict(input) {
     const failureNames = gate.failures.map(f => f.name);
     if (isBaselineOnlyFailureSet(failureNames, input.baselineFailures))
         return finalize('green', []);
-    return finalize('red', failureNames);
+    // M1: carry the diagnostic tail for `script_failure: true` entries — the withheld verdict
+    // otherwise names only the script (`"script failure: test:fast:serial"`) with nothing to
+    // triage. Real TAP failures never set `message` (only `parseBetweenTicketFastGateFailures`'s
+    // no-TAP-output branch does), so this filter naturally excludes them — `dimensions` stays the
+    // sole attribution for a real test regression.
+    const diagnostics = gate.failures
+        .filter((f) => typeof f.message === 'string' && f.message.length > 0)
+        .map(f => ({ name: f.name, message: f.message }));
+    return finalize('red', failureNames, diagnostics);
 }
 /**
  * R-NOPOSTTIER: the post-final fast tier measured 835042 ms in this repo, well above
@@ -970,6 +979,7 @@ function persistAndLogPostFinalVerdict(input, verdict, suffix) {
                 state: verdict.state,
                 degraded: verdict.degraded,
                 dimensions: verdict.dimensions,
+                diagnostics: verdict.diagnostics,
             };
         });
     }
@@ -6102,7 +6112,9 @@ export function spawnRecoveryRemediator(input, gateFailures) {
             file: f.file || '',
             line: 0,
             ruleOrCode: '',
-            message: f.name,
+            // M1: prefer the script-failure diagnostic tail over the bare name — otherwise the
+            // remediator's brief carries only "script failure: test:fast:serial" with nothing to fix.
+            message: f.message || f.name,
             severity: 'error',
             occurrence_index: i,
         }));

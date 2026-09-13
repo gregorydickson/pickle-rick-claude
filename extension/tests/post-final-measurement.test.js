@@ -152,7 +152,7 @@ test('post-final measurement fires on the applyAllTicketsDoneCompletion path (PR
     );
     const state = readState(ctx.statePath);
     // Pre-fix, `post_final_verdict` was undefined on every path.
-    assert.deepEqual(state.post_final_verdict, { state: 'green', degraded: false, dimensions: [] });
+    assert.deepEqual(state.post_final_verdict, { state: 'green', degraded: false, dimensions: [], diagnostics: [] });
   } finally {
     ctx.cleanup();
   }
@@ -230,10 +230,10 @@ test('AC-11: a bundle with no commit at all reports green, and a red tier still 
     // Without this the case could pass as `not_applicable` — a different non-degraded state
     // reached for the wrong reason, since that arm never runs the tier at all.
     assert.equal(greenRunner.calls.length, 1, 'the tier must actually have been measured');
-    assert.deepEqual(greenVerdict, { state: 'green', degraded: false, dimensions: [] });
+    assert.deepEqual(greenVerdict, { state: 'green', degraded: false, dimensions: [], diagnostics: [] });
     assert.deepEqual(
       readState(path.join(greenSession, 'state.json')).post_final_verdict,
-      { state: 'green', degraded: false, dimensions: [] },
+      { state: 'green', degraded: false, dimensions: [], diagnostics: [] },
     );
 
     const redRunner = stubRunner({
@@ -308,6 +308,18 @@ test('AC-5: a script-only gate failure (no TAP output) names the script, never t
         `dimension must never be shaped like npm's own lifecycle banner: ${d}`,
       );
     }
+
+    // M1: the persisted verdict must also carry the diagnostic tail beside the name, in its
+    // own field — otherwise a withheld verdict reads only "script failure: pretest:fast" with
+    // nothing to triage.
+    const diagnostics = state.post_final_verdict.diagnostics;
+    assert.equal(diagnostics.length, 1, 'the script-failure tail must be carried, not dropped');
+    assert.equal(diagnostics[0].name, dimensions[0], 'diagnostics.name must match the dimension it explains');
+    assert.match(
+      diagnostics[0].message,
+      /audit-test-tiers\.sh: FAIL/,
+      'diagnostics.message must carry the tail of the gate output, not just the script name',
+    );
   } finally {
     ctx.cleanup();
   }
@@ -353,7 +365,7 @@ test('a throwing clock still RECORDS a verdict — surviving is not enough (f7f1
     assert.ok(state.completion_promise, 'the promise is still synthesized');
     assert.deepEqual(
       state.post_final_verdict,
-      { state: 'absent', degraded: true, dimensions: [] },
+      { state: 'absent', degraded: true, dimensions: [], diagnostics: [] },
       'a throw must be recorded as absent/degraded, never left unwritten',
     );
     // The throw is now caught by the measurement's own catch, so it is that log that fires — the
@@ -382,6 +394,8 @@ test('a red tier is recorded as red with its failing dimensions, and the run sti
     assert.equal(state.post_final_verdict.state, 'red');
     assert.equal(state.post_final_verdict.degraded, true);
     assert.deepEqual(state.post_final_verdict.dimensions, ['widget explodes']);
+    // M1-3: a real TAP failure (no `message`) must not manufacture a diagnostics entry.
+    assert.deepEqual(state.post_final_verdict.diagnostics, []);
     // Measuring is not acting: withholding the success verdict belongs to ticket fa3d0f5a.
     assert.equal(state.exit_reason, 'completed', 'this ticket must not change the disposition');
     assert.equal(state.step, 'completed');
@@ -423,7 +437,7 @@ test('a working dir with no extension/ is not_applicable and runs no tier', () =
     assert.equal(runner.calls.length, 0, 'no tier run when there is nothing to measure');
     const state = readState(ctx.statePath);
     assert.deepEqual(state.post_final_verdict, {
-      state: 'not_applicable', degraded: false, dimensions: [],
+      state: 'not_applicable', degraded: false, dimensions: [], diagnostics: [],
     });
   } finally {
     ctx.cleanup();
@@ -457,7 +471,7 @@ test('a BLANK working dir is absent/degraded, never not_applicable (f7f188f4)', 
     assert.equal(runner.calls.length, 0, 'an unknown working dir must not spawn a tier run');
     // The returned verdict and the persisted one must agree — a divergence here is the same
     // write-vs-read defect class the audit is tracing.
-    const expected = { state: 'absent', degraded: true, dimensions: [] };
+    const expected = { state: 'absent', degraded: true, dimensions: [], diagnostics: [] };
     assert.deepEqual(verdict, expected, 'returned verdict');
     assert.deepEqual(readState(statePath).post_final_verdict, expected, 'persisted verdict');
   } finally {
@@ -479,7 +493,7 @@ test('CONTROL: a real dir with no extension/ stays not_applicable, non-degraded 
       runTestFast: runner,
     });
     assert.equal(runner.calls.length, 0);
-    const expected = { state: 'not_applicable', degraded: false, dimensions: [] };
+    const expected = { state: 'not_applicable', degraded: false, dimensions: [], diagnostics: [] };
     assert.deepEqual(verdict, expected, 'off-repo bundles must NOT be marked degraded');
     assert.deepEqual(readState(statePath).post_final_verdict, expected);
   } finally {
@@ -511,7 +525,7 @@ test('a throw BETWEEN the two applicability facts still lands on absent (f7f188f
       runTestFast: runner,
     });
     assert.equal(runner.calls.length, 0, 'no tier run when applicability never resolved');
-    const expected = { state: 'absent', degraded: true, dimensions: [] };
+    const expected = { state: 'absent', degraded: true, dimensions: [], diagnostics: [] };
     assert.deepEqual(verdict, expected, 'returned verdict');
     assert.deepEqual(readState(statePath).post_final_verdict, expected, 'persisted verdict');
     assert.ok(
@@ -552,7 +566,7 @@ test('an unpersistable verdict is logged and returned, never thrown (the persist
     assert.equal(runner.calls.length, 0, 'a blank working dir must not spawn a tier run');
     assert.deepEqual(
       verdict,
-      { state: 'absent', degraded: true, dimensions: [] },
+      { state: 'absent', degraded: true, dimensions: [], diagnostics: [] },
       'the classification is still correct — only the write failed',
     );
     assert.ok(

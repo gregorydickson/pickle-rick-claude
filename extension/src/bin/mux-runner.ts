@@ -1018,6 +1018,8 @@ export type ClassifyPostFinalVerdictOutput = {
   state: PostFinalVerdictState;
   degraded: boolean;
   dimensions: string[];
+  /** M1: diagnostic tail for each `script_failure: true` entry, never concatenated into `dimensions`. */
+  diagnostics: { name: string; message: string }[];
 };
 
 function isMalformedGate(gate: BetweenTicketGateResult | null): boolean {
@@ -1057,10 +1059,12 @@ export function classifyPostFinalVerdict(
   const finalize = (
     state: PostFinalVerdictState,
     dimensions: string[],
+    diagnostics: { name: string; message: string }[] = [],
   ): ClassifyPostFinalVerdictOutput => ({
     state,
     degraded: state === 'red' || state === 'inconclusive' || state === 'absent',
     dimensions,
+    diagnostics,
   });
 
   if (!input.applicable) return finalize('not_applicable', []);
@@ -1096,7 +1100,16 @@ export function classifyPostFinalVerdict(
   const failureNames = gate.failures.map(f => f.name);
   if (isBaselineOnlyFailureSet(failureNames, input.baselineFailures)) return finalize('green', []);
 
-  return finalize('red', failureNames);
+  // M1: carry the diagnostic tail for `script_failure: true` entries — the withheld verdict
+  // otherwise names only the script (`"script failure: test:fast:serial"`) with nothing to
+  // triage. Real TAP failures never set `message` (only `parseBetweenTicketFastGateFailures`'s
+  // no-TAP-output branch does), so this filter naturally excludes them — `dimensions` stays the
+  // sole attribution for a real test regression.
+  const diagnostics = gate.failures
+    .filter((f): f is BetweenTicketGateFailure & { message: string } =>
+      typeof f.message === 'string' && f.message.length > 0)
+    .map(f => ({ name: f.name, message: f.message }));
+  return finalize('red', failureNames, diagnostics);
 }
 
 /**
@@ -1139,6 +1152,7 @@ function persistAndLogPostFinalVerdict(
         state: verdict.state,
         degraded: verdict.degraded,
         dimensions: verdict.dimensions,
+        diagnostics: verdict.diagnostics,
       };
     });
   } catch (err) {
@@ -7303,7 +7317,9 @@ export function spawnRecoveryRemediator(
       file: f.file || '',
       line: 0,
       ruleOrCode: '',
-      message: f.name,
+      // M1: prefer the script-failure diagnostic tail over the bare name — otherwise the
+      // remediator's brief carries only "script failure: test:fast:serial" with nothing to fix.
+      message: f.message || f.name,
       severity: 'error' as const,
       occurrence_index: i,
     }));

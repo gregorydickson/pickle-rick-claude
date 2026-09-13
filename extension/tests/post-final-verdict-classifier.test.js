@@ -217,6 +217,60 @@ test('a red gate with failures outside an empty baseline classifies red with dim
 });
 
 // ---------------------------------------------------------------------------
+// M1 (ROOT M1, PRD p1-b-measure-the-measurement-must-mean-what-it-names.md): the post-final
+// verdict must carry the script-failure diagnostic tail beside the name, in a field of its own.
+
+// M1-1: a script_failure entry's name AND its diagnostic tail both reach the classifier's output.
+test('M1-1: a script-failure gate persists the failure name AND its diagnostic tail', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({
+      ok: false,
+      timed_out: false,
+      measured: false,
+      failures: [{
+        name: 'script failure: pretest:fast',
+        file: '',
+        script_failure: true,
+        message: 'audit-test-tiers.sh: FAIL — tests/foo.test.js missing @tier header',
+      }],
+    }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'red');
+  // M1-2: dimensions keeps its existing shape — an array of name strings, untouched.
+  assert.deepStrictEqual(result.dimensions, ['script failure: pretest:fast']);
+  // M1-1: the tail lands in its own field, not concatenated into dimensions.
+  assert.deepStrictEqual(result.diagnostics, [{
+    name: 'script failure: pretest:fast',
+    message: 'audit-test-tiers.sh: FAIL — tests/foo.test.js missing @tier header',
+  }]);
+});
+
+// M1-3 (negative control): a red gate with parsed real test names still records those names in
+// dimensions, and diagnostics stays empty — the tail never replaces or duplicates a real name.
+test('M1-3: a red gate with real (non-script) TAP failures carries no diagnostics tail', () => {
+  const result = classifyPostFinalVerdict({
+    gate: gate({
+      ok: false,
+      failures: [
+        { name: 'widget_test.js > explodes', file: 'widget_test.js' },
+        { name: 'gadget_test.js > breaks', file: 'gadget_test.js' },
+      ],
+    }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.strictEqual(result.state, 'red');
+  assert.deepStrictEqual(result.dimensions, ['widget_test.js > explodes', 'gadget_test.js > breaks']);
+  assert.deepStrictEqual(result.diagnostics, []);
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER157-02 — a gate that EXITED 0 without executing a test is not green.
 //
 // `bin/test-runner.js --tier fast` exits 0 printing only `[no files for tier fast]` on an
