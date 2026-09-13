@@ -2181,7 +2181,21 @@ function maybeAutoCloseSplitOriginal(
   return flipSplitOriginalDoneOnTwinEvidence(input, ticket.id, dirs, twinEvidence, canonicalSha);
 }
 
-// eslint-disable-next-line complexity -- HT-1 reviewed: measured complexity 16 against a ceiling of 15, one over. R-PDUP adds the todo/failed auto-close branch; R-AFCC-DEEP-3B requires batchLoopPhantomDoneKind to stay in this function body (audit-phantom-done-call-sites.sh invariant), so the branch cannot be extracted without breaking that invariant. Tracked in GitHub #21.
+/**
+ * R3: guards the R-PDUP auto-close branch's status check so
+ * correctPhantomDoneTickets does not have to inline it, keeping that
+ * function's complexity under the eslint ceiling.
+ */
+function tryAutoCloseSplitOriginal(
+  status: string,
+  input: CorrectPhantomDoneTicketsInput,
+  ticket: TicketInfo,
+  allTickets: TicketInfo[],
+): boolean {
+  if (status !== 'todo' && status !== 'failed') return false;
+  return maybeAutoCloseSplitOriginal(input, ticket, allTickets);
+}
+
 export function correctPhantomDoneTickets(input: CorrectPhantomDoneTicketsInput): number {
   const allTickets = collectTickets(input.sessionDir);
   let corrected = 0;
@@ -2222,9 +2236,7 @@ export function correctPhantomDoneTickets(input: CorrectPhantomDoneTicketsInput)
     // A split original is a ticket whose title has no roman-numeral suffix but
     // whose children (with -i/-ii suffix) have all been Done. We auto-close it
     // with the twin's delivery SHA so the roster scanner cannot re-run it.
-    if (status === 'todo' || status === 'failed') {
-      if (maybeAutoCloseSplitOriginal(input, ticket, allTickets)) corrected++;
-    }
+    if (tryAutoCloseSplitOriginal(status, input, ticket, allTickets)) corrected++;
   }
   return corrected;
 }
