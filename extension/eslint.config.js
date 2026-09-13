@@ -43,6 +43,10 @@ export default tseslint.config(
       // 0 whole-tree hits for both — safe at 'error'.
       'pickle/no-invalid-checkout-index-stage': 'error',
       'pickle/require-group-kill-for-spawned-child': 'error',
+      // M3 (GitHub #21): a disable naming no rule hides everything on its range. A same-line or
+      // file-wide directive can silence this rule too, so tests/eslint-plugin-pickle.test.js
+      // re-runs it over src/ with noInlineConfig, which no directive can reach.
+      'pickle/no-unlimited-disable': 'error',
     },
   },
   {

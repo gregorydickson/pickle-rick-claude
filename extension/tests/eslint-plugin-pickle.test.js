@@ -1,7 +1,8 @@
 // @tier: fast
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { RuleTester } from 'eslint';
+import { Linter, RuleTester } from 'eslint';
+import tseslint from 'typescript-eslint';
 import pickle from '../eslint-plugin-pickle/index.js';
 import eslintConfig from '../eslint.config.js';
 import fs from 'node:fs';
@@ -778,4 +779,87 @@ describe('V6-1: the release-gate eslint leg fails on a fresh warn-level finding'
       }
     });
   }
+});
+
+// ─── M3 (GitHub #21): no rule-less eslint-disable directive ───────────────────
+// A disable naming no rule silences every rule on its range, including rules added later.
+// ESLint applies directives to the rule that inspects them, so `x; // eslint-disable-line` and a
+// file-wide `/* eslint-disable */` silence pickle/no-unlimited-disable in the lint leg itself.
+// These cases re-run the SAME rule with noInlineConfig, which no directive can reach.
+
+/** Lines the rule reports for `code`; throws when the file did not parse (unparsed is not clean). */
+function unlimitedDisableLines(code, { filePath = 'fixture.ts', noInlineConfig = true } = {}) {
+  const messages = new Linter({ configType: 'flat', cwd: EXTENSION_ROOT }).verify(code, [{
+    files: ['**/*.ts', '**/*.js'],
+    languageOptions: { parser: tseslint.parser },
+    linterOptions: { noInlineConfig, reportUnusedDisableDirectives: 'off' },
+    plugins: { pickle },
+    rules: { 'pickle/no-unlimited-disable': 'error' },
+  }], filePath);
+  const fatal = messages.find((m) => m.fatal);
+  if (fatal) throw new Error(`${filePath} did not parse, so it was not measured: ${fatal.message}`);
+  return messages.filter((m) => m.ruleId === 'pickle/no-unlimited-disable').map((m) => m.line);
+}
+
+const RULE_LESS_DISABLES = {
+  'line comment, next-line, with reason': { code: '// eslint-disable-next-line -- why\nconst a = 1;\n', line: 1 },
+  'block comment, next-line': { code: '/* eslint-disable-next-line */\nconst a = 1;\n', line: 1 },
+  'line comment, same line': { code: 'const a = 1; // eslint-disable-line\n', line: 1 },
+  'block comment, same line, with reason': { code: 'const a = 1; /* eslint-disable-line -- why */\n', line: 1 },
+  'block comment, file-wide': { code: 'const b = 2;\n/* eslint-disable */\nconst a = 1;\n', line: 2 },
+  'after a directive naming this rule': {
+    code: '/* eslint-disable pickle/no-unlimited-disable */\nconst b = 2;\n// eslint-disable-next-line\nconst a = 1;\n',
+    line: 3,
+  },
+};
+
+describe('M3 (GitHub #21): pickle/no-unlimited-disable', () => {
+  it('M3-2: a fresh rule-less disable is flagged on its own line in every directive shape', () => {
+    for (const [shape, { code, line }] of Object.entries(RULE_LESS_DISABLES)) {
+      assert.deepEqual(unlimitedDisableLines(code), [line], `rule-less disable not flagged: ${shape}`);
+    }
+  });
+
+  it('M3-2: the lint-leg rule reports a rule-less next-line directive under normal inline config', () => {
+    for (const shape of ['line comment, next-line, with reason', 'block comment, next-line']) {
+      const { code, line } = RULE_LESS_DISABLES[shape];
+      assert.deepEqual(unlimitedDisableLines(code, { noInlineConfig: false }), [line], shape);
+    }
+  });
+
+  it('M3-3: a scoped directive, a bare enable, and a JSDoc lookalike are not flagged', () => {
+    const scoped = [
+      '// eslint-disable-next-line no-console -- why\nconsole.log(1);\n',
+      'console.log(1); // eslint-disable-line no-console\n',
+      '/* eslint-disable no-console, complexity */\nconsole.log(1);\n',
+      '/* eslint-disable no-console */\nconsole.log(1);\n/* eslint-enable */\n',
+      '/** eslint-disable */\nconst a = 1;\n',
+    ];
+    for (const code of scoped) assert.deepEqual(unlimitedDisableLines(code), [], code);
+  });
+
+  it('M3-3: no rule-less eslint-disable directive exists anywhere under src/', () => {
+    const files = fs.readdirSync(path.join(EXTENSION_ROOT, 'src'), { recursive: true })
+      .filter((rel) => rel.endsWith('.ts'))
+      .map((rel) => path.join('src', rel));
+    assert.ok(files.length > 100, `scanned only ${files.length} src/ files — the census is not measuring the tree`);
+    const offenders = files.flatMap((rel) =>
+      unlimitedDisableLines(fs.readFileSync(path.join(EXTENSION_ROOT, rel), 'utf8'), { filePath: rel })
+        .map((line) => `${rel}:${line}`));
+    assert.deepEqual(offenders, [], `rule-less eslint-disable directive(s): ${offenders.join(', ')}`);
+  });
+
+  it('M3-5: stripping the rule list above either mux-runner ceiling function reds the scan there and nowhere else', () => {
+    const rel = path.join('src', 'bin', 'mux-runner.ts');
+    const lines = fs.readFileSync(path.join(EXTENSION_ROOT, rel), 'utf8').split('\n');
+    const mutatedLines = ['export function correctPhantomDoneTickets(', 'async function runMuxRunnerMain('].map((head) => {
+      const at = lines.findIndex((l) => l.startsWith(head));
+      assert.ok(at > 0, `${head} not found in ${rel}`);
+      const scoped = lines[at - 1];
+      lines[at - 1] = scoped.replace(/(eslint-disable-next-line) .+? (--)/, '$1 $2');
+      assert.notEqual(lines[at - 1], scoped, `${head} is not preceded by a scoped disable directive`);
+      return at;
+    });
+    assert.deepEqual(unlimitedDisableLines(lines.join('\n'), { filePath: rel }), mutatedLines);
+  });
 });

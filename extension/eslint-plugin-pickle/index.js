@@ -7,6 +7,7 @@
  *   pickle/hook-decision-values  — hook decisions must be "approve" or "block", never "allow"
  *   pickle/no-unsafe-error-cast  — catch bindings require instanceof Error guard before .message/.stack/.code
  *   pickle/no-bare-extension-dir — EXTENSION_DIR reads must go through getExtensionRoot()
+ *   pickle/no-unlimited-disable  — every eslint-disable directive must name the rules it suppresses
  */
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1175,6 +1176,39 @@ const requireGroupKillForSpawnedChild = {
   },
 };
 
+// ─── Rule: no-unlimited-disable ──────────────────────────────────────────────
+//
+// M3 (GitHub #21): a disable directive with no rule list silences EVERY rule on its range,
+// including rules added later, so a `--max-warnings=0` gate cannot see what it suppresses.
+// ESLint's own directive parser decides what a directive is and what it names, so this rule
+// keeps no keyword list or regex. A same-line or file-wide directive silences this rule's own
+// report; tests/eslint-plugin-pickle.test.js re-runs it with `noInlineConfig` to close that.
+
+const noUnlimitedDisable = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description: 'eslint-disable directives must name the rules they suppress',
+    },
+    messages: {
+      unlimited:
+        "'eslint-{{type}}' names no rule, so it silences every rule on its range — including rules added later — and a --max-warnings=0 gate cannot see what it suppresses. Name the rule(s) it trades away.",
+    },
+    schema: [],
+  },
+  create(context) {
+    const sourceCode = context.sourceCode ?? context.getSourceCode();
+    return {
+      Program() {
+        for (const directive of sourceCode.getDisableDirectives().directives) {
+          if (directive.type === 'enable' || directive.value.trim() !== '') continue;
+          context.report({ loc: directive.node.loc, messageId: 'unlimited', data: { type: directive.type } });
+        }
+      },
+    };
+  },
+};
+
 // ─── Plugin Export ───────────────────────────────────────────────────────────
 
 const plugin = {
@@ -1201,6 +1235,7 @@ const plugin = {
     'require-spawn-result-error-check': requireSpawnResultErrorCheck,
     'no-invalid-checkout-index-stage': noInvalidCheckoutIndexStage,
     'require-group-kill-for-spawned-child': requireGroupKillForSpawnedChild,
+    'no-unlimited-disable': noUnlimitedDisable,
   },
 };
 

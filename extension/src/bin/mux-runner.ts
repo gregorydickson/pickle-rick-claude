@@ -2167,7 +2167,7 @@ function maybeAutoCloseSplitOriginal(
   return flipSplitOriginalDoneOnTwinEvidence(input, ticket.id, dirs, twinEvidence, canonicalSha);
 }
 
-// eslint-disable-next-line -- R-PDUP adds the todo/failed auto-close branch; R-AFCC-DEEP-3B requires batchLoopPhantomDoneKind to stay in this function body (audit-phantom-done-call-sites.sh invariant)
+// eslint-disable-next-line complexity -- R-PDUP adds the todo/failed auto-close branch; R-AFCC-DEEP-3B requires batchLoopPhantomDoneKind to stay in this function body (audit-phantom-done-call-sites.sh invariant)
 export function correctPhantomDoneTickets(input: CorrectPhantomDoneTicketsInput): number {
   const allTickets = collectTickets(input.sessionDir);
   let corrected = 0;
@@ -12907,7 +12907,7 @@ function restorePersistedRateLimitPark(opts: {
   }
 }
 
-// eslint-disable-next-line -- legacy mux runner loop retained behavior-preserving for global bin acceptance
+// eslint-disable-next-line max-lines-per-function, complexity -- legacy mux runner loop retained behavior-preserving for global bin acceptance
 async function runMuxRunnerMain() {
   const sessionDir = process.argv[2];
   const statePath = sessionDir ? path.join(sessionDir, 'state.json') : '';
