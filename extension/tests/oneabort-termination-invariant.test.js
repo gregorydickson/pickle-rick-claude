@@ -113,12 +113,13 @@ function writeState(sessionDir, overrides = {}) {
 }
 
 /** Build a minimal PipelineRuntime the way production code does. */
-function makeRuntime({ repo, startCommit, exitReason = null } = {}) {
+function makeRuntime({ repo, startCommit, exitReason = null, stateOverrides = {} } = {}) {
   const sessionDir = tmpDir('oneabort-session-');
   const statePath = writeState(sessionDir, {
     working_dir: repo,
     start_commit: startCommit,
     exit_reason: exitReason,
+    ...stateOverrides,
   });
   return {
     sessionDir,
@@ -306,7 +307,9 @@ describe('AC-OA-4: the incumbent reasons keep their existing counter behaviour',
     });
   }
 
-  test('a failing gate still breaks and touches no counter', async () => {
+  // B-RELVERD V2: a failed gate is a measurement verdict, not the crash floor — it continues the
+  // phase loop by default, naming the disposition and withholding success via nonConvergent.
+  test('a failing gate continues, names the disposition, withholds success', async () => {
     const { repo, startCommit } = makeRepo();
     const runtime = makeRuntime({ repo, startCommit, exitReason: 'all_judge_backends_exhausted' });
     const counters = freshCounters();
@@ -314,10 +317,30 @@ describe('AC-OA-4: the incumbent reasons keep their existing counter behaviour',
 
     const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
 
+    assert.equal(outcome.action, 'continue');
+    assert.equal(counters.completed, 0, 'a failed gate is not a completed phase');
+    assert.equal(counters.nonConvergent, 1, 'success is withheld by the same term the pass arm uses');
+    assert.equal(counters.phaseDispositions['anatomy-park'], 'finalize_gate_failed:all_judge_backends_exhausted');
+  });
+
+  // B-RELVERD V2-3: the strict opt-in is the only way to get the old stop.
+  test('a failing gate under pipeline_continue_on_phase_fail=false still breaks', async () => {
+    const { repo, startCommit } = makeRepo();
+    const runtime = makeRuntime({
+      repo,
+      startCommit,
+      exitReason: 'all_judge_backends_exhausted',
+      stateOverrides: { pipeline_continue_on_phase_fail: false },
+    });
+    const counters = freshCounters();
+    stubGateExit(1);
+
+    const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+
     assert.equal(outcome.action, 'break');
     assert.equal(counters.completed, 0);
-    assert.equal(counters.nonConvergent, 0);
-    assert.deepEqual(counters.phaseDispositions, {});
+    assert.equal(counters.nonConvergent, 1);
+    assert.match(counters.phaseDispositions['anatomy-park'], /^finalize_gate_failed:/);
   });
 });
 
