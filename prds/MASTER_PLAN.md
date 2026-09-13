@@ -74,158 +74,84 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — state as of 2026-09-13 08:40Z. **v2.1.0-beta.26 SHIPPED.** Read this FIRST.
+## 🚢 SESSION HANDOFF — 2026-09-13 19:15Z. **v2.1.0-beta.27 SHIPPED.** Read this FIRST.
 
-**The release drought is over.** First tag since 2026-09-04, closing a **283-commit** gap in which four
-consecutive bundles ran their phases and reported `failed` while the tree they produced measured green.
+**Two releases in two days.** beta.26 fixed the verdict layer's DISPOSITIONS (B-RELVERD); beta.27 fixed
+the MEASUREMENTS that layer consumes (B-MEASURE).
 
 | | |
 |---|---|
-| tag | **v2.1.0-beta.26**, targeting `release/v2.1-beta` |
-| sha | `6238ab82` — tag sha verified EQUAL to the branch sha via `verify-release-tag.sh`, rc 0 |
-| gate | **19 legs, every exit code captured directly, all rc 0** |
-| tree | clean · compiled JS matches TS · deploy verified BY CONTENT |
-| bug backlog | **fully drained** — only #5 (enhancement) remains open |
+| tag | **v2.1.0-beta.27** → `e46a7108`, verified EQUAL to the branch sha (`verify-release-tag.sh` rc 0) |
+| gate | **19 legs, all rc 0**, every exit code captured directly, same-run end marker |
+| counts | fast **9859** `failures=0 runs 5/5` · integration **721** parallel / **699** serial · contract 99 · soak genuinely **1803.7s** |
+| tree | clean · compiled JS matches TS · deploy verified BY CONTENT (1 intentional symlink, services 0) |
+| backlog | **#19 #20 #21 #22 closed.** Only #5 (enhancement) open |
 
-**Gate counts, recorded so a future run can tell green from shrunk:** fast **9844** tests, `failures=0
-runs_completed=5/5` · integration **721** parallel + **697** serial as separate invocations · contract 99
-· expensive 14+8 · deploy-lifecycle soak **genuinely 1803.7s**, not the self-skip. The fast tier GREW
-from 9820, so nothing greened by shrinking.
+### What shipped — [[B-MEASURE]], 5 roots, 7/7 tickets Done, 4/4 phases, 162m
 
-### What shipped — [[B-RELVERD]], six roots, 7/7 tickets Done
+- **M3** two RULE-LESS eslint disables hid **complexity 366** + **1690 code lines** from a
+  `--max-warnings=0` gate. Census: 49 disables, 47 scoped, 2 bare. Now scoped + review-marked with the
+  measured numbers as a ratchet baseline; new `pickle/no-unlimited-disable` keys on ESLint's own
+  directive list, so a justification comment cannot hide one.
+- **M4** judge measured SPAN against a 50-line limit nothing enforces (eslint enforces **120** code
+  lines). 3 of 6 prior ledger entries were false at 46/47/49 code lines.
+- **M1** the post-final verdict dropped the diagnostic tail it had already built.
+- **M2** the baseline kept the judge's self-report while every iteration used the ledger count.
+- **M5** the numeric comparison arm would not name its basis, and it was the arm that misfired.
 
-Session `2026-09-12-a4d141e1`, 3/4 phases, 195m15s, anatomy-park CONVERGED (it appears in no
-disposition), szechuan `stalled_below_target`.
+### ⚠ THE PREDICTION I GOT WRONG — read before claiming any field validation
 
-**Axis 1 — the verdict layer dooming a run that was fine.** V1 `nonConvergent` latch → derived at
-finalize · V2 failed finalize gate `break` → `isStrictPhasePolicy(runtime) ? break : continue` · V3
-remediator no longer spends a cycle on `<timeout>` sentinels, coarse diagnostic keeps its tail · V4 the
-downgraded anatomy crash names its disposition.
+I reported that szechuan would be "the first run scored on the M2 and M4 fixes." **It was not, and the
+claim was structurally impossible.** The pipeline executes DEPLOYED JavaScript; source lands only at
+`install.sh`. M2 was committed 13:15Z; the deployed `microverse-runner.js` was last written 08:25Z.
+Measured: `baselineJudgeResult` appeared **7× in source, 0× in the deployed runtime** during that phase.
 
-**Axis 2 — a gate greening a measurement it never took.** V5 the metrics fast-tier coupling REMOVED
-(not raised) · V6 `--max-warnings=-1` → `=0` with the 17 findings FIXED, not downgraded.
+**A bundle's own fixes CANNOT validate on the run that builds them.** CLAUDE.md states this isolation as
+a property; its consequence for validation claims is the part that bites. szechuan DID converge to 0 in
+9 iterations (first ever in this series) — that is real, and its cause is **UNIDENTIFIED**. Do not
+attribute it to M2. As of this release M1/M2/M4 ARE deployed (`baselineJudgeResult` now 7 in the
+deployed tree), so the **next** run is the genuine field test.
 
-### 🎯 V1 VALIDATED IN THE FIELD ON ITS OWN FIRST RUN — the single most important line in this file
+### 🔬 The mutation that found a guard blind to its own subject
 
-The bundle's pickle phase reported:
+B-MEASURE's fixes reddened two gate legs. One was an exhaustive-equality pin meeting M1's new
+`diagnostics` key — declared it rather than loosening the assertion. The other was **not** a stale pin:
+a carve-out invariant correctly fired once M3 scoped the two directives, because they lacked the
+`HT-1 reviewed:` marker.
 
-```
-pickle: done_over_unmeasured_worker_gate_tests:34f7bd91,3f21f6b6,b369eb18,35e8a2c0,e79a89d8;
-        post_final_tier_degraded:red
-```
+**Then mutation found the real defect.** Re-baring a scoped directive — reproducing the exact original
+bug — left that entire test **GREEN**. Its rule-less clause anchored on `$`, so it matched only when the
+line ENDED right after the separator; a rule-less disable carrying a justification escaped it, then
+escaped the rule-name clause too because it names no rule. **The guard that should have caught
+complexity 366 was blind to it by construction.** Widened and re-verified both ways, 47 scoped disables
+green as the over-trigger control.
 
-**Five tickets, and NO `done_over_red` term at all**, with an explicit `NOT withholding` log line.
-Under the previous code those five would have latched `nonConvergent` at phase 1 of 4 and doomed the
-run before anatomy-park started — which is precisely what killed B-MEGADRAIN, B-CIGREEN and the
-continuation. The fix's first live exercise was the exact scenario it was built for.
+**Standing rule:** when you fix a defect class, MUTATE the guard that should have caught it. A guard
+passing over your fix proves nothing about whether it can see the defect.
 
-### ⚠ The red that replaced the red — a lesson worth more than the fix
+### Also worth keeping from this session
 
-After V5 landed, the gate was STILL red, on a DIFFERENT test: `AC-GTRUTH-A2-6`, which asserts the exact
-source text `runnerState.pipeline_continue_on_phase_fail === false) return true;`. V2's own commit
-(`e832b712`) had EXTRACTED that inline check into `isStrictPhasePolicy` so the finalize gate could
-consult one reader instead of two. **A behaviour-preserving refactor reddened a source-text pin.**
-
-Behaviour was re-verified BEFORE the pin was touched, not assumed: the five strict-phase suites ran
-**131/131** green at the extracting commit. The pin was then rewritten (`52b5988e`) to name the
-invariant — polarity, the wire, one reader.
-
-**And the first rewrite was VACUOUS.** The file-wide `pipeline_continue_on_phase_fail === false`
-assertion stayed GREEN when the reader was flipped to `!== true`, because the `--strict-phases` SETTER
-carries the identical comparison and masked it. Scoping the assertion to the reader's own function body
-fixed it. Final mutation matrix, source restored byte-identical after each:
-
-| mutation | expected | got |
-|---|---|---|
-| reader polarity `=== false` → `!== true` | RED | RED |
-| SETTER-only flip (over-trigger control) | GREEN | GREEN |
-| delegation `return isStrictPhasePolicy(runtime);` deleted | RED | RED |
-| second reader added | RED | RED |
-
-**Two standing rules earned here:** a source-text pin anchored on a SPELLING cannot survive a refactor
-that preserves behaviour, and it trains the next author to rewrite the guard instead of reading it. And
-when a pin asserts a token that appears MORE THAN ONCE in the file, scope the assertion to the
-construct you mean — a sibling occurrence will mask the mutation and hand you a vacuous green.
-
-### GitHub — seven closed 2026-09-12, four closed 2026-09-13
-
-Closed on measurement, each citing the mechanism grepped rather than a ticket title: **#6 #7 #8 #9 #10
-#11 #14** (fixed by the previous run, never closed) and **#15 #16 #17 #18** (fixed by this release).
-**Only #5 remains open**, an enhancement, deliberately unscheduled.
-
-**Method correction retained on purpose:** #11 was first reported by me as half-fixed, because I read
-the boilerplate filter (`hasSubstantiveManagerHandoff`) and INFERRED the exit arm beside it had
-survived. It had not. **Grep the arm you are claiming about, not its neighbour.**
-
-### 🚀 IN FLIGHT — [[B-MEASURE]], launched 2026-09-13 11:54Z
-
-Session `2026-09-13-d2e834e1`, tmux `pipeline-d2e834e1`, PRD
-`prds/p1-b-measure-the-measurement-must-mean-what-it-names.md`. Five roots, one thesis: **a measurement
-must measure what it names, carry the evidence it computed, and not be silenced.**
-
-| root | finding | issue |
-|---|---|---|
-| **M3** (first) | two RULE-LESS `eslint-disable-next-line` comments hide complexity **366** + **1690** lines from a `--max-warnings=0` gate | #21 |
-| M4 | judge measures SPAN against a 50-line limit nothing enforces (eslint enforces **120** code lines); 3 of 6 ledger entries false | #22 |
-| M1 | post-final verdict drops the diagnostic tail it already built | #19 |
-| M2 | baseline scored on a different wire from every iteration | #20 |
-| M5 | the one comparison basis that will not name itself is the arm that misfired | — |
-
-**Four of the five are ONE omission: a fix landed where it was filed while its twin sat in a sibling.**
-M1 is V3's twin, M2 is #7's untouched half, M3 is #18's twin, M5 is B-VERDICT's missed arm. **Sweep the
-CLASS, not the cited call site** — this is now the most reliable finding-generator in this repo.
-
-**M3 carries an explicit NON-GOAL:** do NOT decompose `runMuxRunnerMain`. Making a 1690-line,
-complexity-366 salvage-path function VISIBLE is this bundle's job; ratcheting it down belongs to a later
-one, against a ceiling that only exists once M3 lands.
-
-### Method errors this session, kept because both were cheap here and expensive later
-
-- **#11 closed as half-fixed when it was fully fixed.** I read the boilerplate filter and INFERRED the
-  exit arm beside it had survived. **Grep the arm you are claiming about, not its neighbour.**
-- **#7 closed on partial verification.** It reported TWO defects; I verified one. The second is now #20.
-  **When an issue reports N defects, verify N before closing.**
-- **A first pin rewrite was VACUOUS** — a file-wide token assertion stayed green under mutation because a
-  sibling occurrence masked it. **Scope an assertion to the construct you mean.**
-- **A grep for `eslint-disable.*max-lines-per-function` found nothing** while two rule-less disables were
-  hiding exactly that. **A pattern that requires the thing being suppressed to be NAMED cannot find the
-  suppression that names nothing.**
+- **A `js_ts_drift 1` red was mine**: I edited a TS comment and committed without regenerating the
+  emitted mirror. Re-ran the FULL gate rather than reasoning the 2-line delta was benign — the audits
+  read git history, and a new commit changes that input.
+- **Four of B-MEASURE's five roots were ONE omission:** a fix landed where it was filed while its twin
+  sat in a sibling. **Sweep the CLASS, not the cited call site.**
+- **#7 was closed on partial verification** (it reported two defects; one was checked). **#11 was
+  reported half-fixed when it was fully fixed** (read the neighbour, not the arm). Both corrected
+  publicly.
 
 ### Open, in priority order
 
-1. **✅ MEASURED 2026-09-13 — `post_final_tier_degraded:red` is NOT a false withhold, it is an
-   EVIDENCE-DESTROYING one. Filed as GitHub #19.** The recorded verdict was
-   `{state:'red', degraded:true, dimensions:['script failure: test:fast:serial']}` — the fallback name
-   emitted when the gate dies before any TAP output, so no test name was recovered.
-   **The red does not reproduce:** `test:fast:serial` at HEAD is 403 tests / 401 pass / **0 fail** /
-   exit 0, the full 19-leg gate is green, and the flake budget is `failures=0 runs 5/5 tests=9844`. The
-   only test-file delta since that run's final commit is in the PARALLEL half, so nothing that landed
-   can explain a serial red. Likeliest cause is a transient inside `pretest:fast`, whose two audits read
-   a test tree the workers were still editing.
-   **What can be proven and what cannot:** the red does not reproduce; WHAT it was cannot be recovered,
-   because `mux-runner.ts:1096` does `gate.failures.map(f => f.name)` and drops `f.message` — the
-   diagnostic tail `buildScriptFailureMessage(lines)` had ALREADY built at `:770`. `persistPostFinalVerdict`
-   then stores only `{state, degraded, dimensions}`.
-   **This is root V3's defect one function over** — V3 (shipped in beta.26) stopped the remediator
-   truncating a test diagnostic; the identical loss survives in the post-final verdict. A fix landing
-   where it was filed while its twin sits in a sibling is this codebase's recurring shape; the census
-   must sweep the CLASS, not the cited call site.
-   *Hypothesis, NOT measured, needs its own pass:* whether the post-final tier should run against a
-   quiescent tree at all.
-2. **✅ MEASURED 2026-09-13 — szechuan's `stalled_below_target` was NOT a worker failure.** Its whole
-   15-minute, 6-iteration life was decided by two measurement defects, both now filed and dispatched:
-   the baseline scored on a different wire from the iterations (GitHub #20), and a judge counting SPAN
-   against a limit nothing enforces (GitHub #22). Log: `LLM baseline metric: 2` → `Metric: 6` with
-   `resolved: []`, `remaining: []`, all six ids `new` → `Classification: regressed (previous=2,
-   tolerance=0)` → stall. **Nothing regressed** — the baseline never built a ledger for anything to
-   carry over from, and 3 of the 6 violations were false (46, 47 and 49 CODE lines filed against a
-   "50-line limit"). ROOT S's repeat has a measured cause for the first time.
-3. **#5** — read before the next redesign decision.
-4. The stale-premise sweep still lists rows never re-measured. **B-LOGEV was struck this pass as
-   already-fixed** (its corroborant parameter is REQUIRED, so no call site can keep the old verdict);
-   expect the same of others. Re-grep the MECHANISM before scoping any row.
+1. **The next run is the field test for M1/M2/M4.** Read szechuan's basis lines and the post-final
+   verdict's `diagnostics` channel. If a `post_final_tier_degraded` fires now, it should finally say why.
+2. **szechuan's convergence cause is UNIDENTIFIED** and was wrongly nearly attributed to M2. Worth one
+   measured pass: what differed between the stalling run and the converging one, given neither ran M2.
+3. **`runMuxRunnerMain` decomposition** — 1690 code lines, complexity 366, now RECORDED as a ratchet
+   baseline in its own review marker. A later bundle lowers it against that ceiling. Deliberately not
+   attempted blind.
+4. **#5** — enhancement, read before the next redesign decision.
+5. The stale-premise sweep still lists rows never re-measured. Re-grep the MECHANISM before scoping.
 
----
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
 
@@ -545,8 +471,8 @@ the AC-G3 net-LOC number whatever it says.
 
 ## 🐙 GITHUB ISSUES → BUNDLE MAP (re-measured 2026-09-12; #15-#18 closed 2026-09-13 by beta.26)
 
-**Backlog as of 2026-09-13 12:00Z:** #19, #20, #21, #22 — all filed from measurement this session, all
-dispatched in [[B-MEASURE]] — plus #5 (enhancement, unscheduled). Everything else is closed.
+**Backlog as of 2026-09-13 19:15Z:** #19, #20, #21, #22 all SHIPPED in beta.27 and closed. Only #5
+(enhancement, unscheduled) remains open.
 
 **Seven of the nine open issues were CLOSED on 2026-09-12** after verifying each one by MECHANISM grep
 at HEAD, not by ticket title. The B-MEGADRAIN continuation run (`2026-09-09-e959390b`, 23/23 Done) had
