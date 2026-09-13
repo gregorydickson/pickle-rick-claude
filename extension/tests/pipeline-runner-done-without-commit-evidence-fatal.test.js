@@ -448,11 +448,50 @@ test('AC-GTRUTH-A2-6: pipeline_continue_on_phase_fail is not modified by this bu
   const src = fs.readFileSync(
     path.join(import.meta.dirname, '..', 'src', 'bin', 'pipeline-runner.ts'), 'utf-8',
   );
+  // B-RELVERD V2 (e832b712) EXTRACTED the inline switch into `isStrictPhasePolicy` so the
+  // all-backends-exhausted finalize gate could consult the SAME opt-in instead of growing a
+  // second reader with its own polarity. That is a structural change; the policy is unchanged.
+  //
+  // The original pin asserted the exact inline spelling
+  // `runnerState.pipeline_continue_on_phase_fail === false) return true;` and therefore reddened
+  // on a pure extract-method. A source-text pin anchored on a SPELLING cannot survive a refactor
+  // that preserves the behaviour, and a pin that reds on a correct change trains the next author
+  // to rewrite the guard instead of reading it. So this pin now names the INVARIANT the bundle
+  // must not touch, in the two parts that are actually load-bearing.
+  //
+  // Behaviour re-verified before this pin was rewritten, not assumed: the strict-phase suites
+  // (pipeline-runner-phase-fail-continue, nostop-gates-invariant, nostop-gates-sibling-parity,
+  // pipeline-runner-prnf9, one-skip-surface) ran 131/131 green at the extracting commit.
+
+  // 1. POLARITY, scoped to the halt-path reader's OWN BODY. Asserting the `=== false` spelling
+  //    against the whole file is vacuous: the `--strict-phases` SETTER a few hundred lines down
+  //    carries the identical comparison, so a mutation of the reader is masked by its sibling.
+  //    Mutation-checked — the file-wide form stayed GREEN when the reader was flipped to
+  //    `!== true`. Slice the function first, then assert.
+  const readerBody = /function isStrictPhasePolicy\([^)]*\): boolean \{([\s\S]*?)\n\}/.exec(src);
+  assert.ok(readerBody, 'isStrictPhasePolicy must exist as a named function');
+  assert.match(
+    readerBody[1],
+    /pipeline_continue_on_phase_fail === false/,
+    'the halt-path reader must compare the opt-in with an explicit === false, so an absent or ' +
+    'malformed value stays non-strict',
+  );
+
+  // 2. THE WIRE: the post-phase halt decision still delegates to that reader. This is the part
+  //    WS-A2 promised not to touch — deleting the delegation would let a non-zero phase exit
+  //    continue even under --strict-phases.
   assert.match(
     src,
-    /runnerState\.pipeline_continue_on_phase_fail === false\) return true;/,
-    'the strict-phase tightening switch must remain exactly as shipped — WS-A2 demotes one ' +
-    'exit reason, it does not touch the operator\'s opt-in halt policy',
+    /return isStrictPhasePolicy\(runtime\);/,
+    'shouldHaltAfterPhase must still consult the strict-phase opt-in as its final term',
+  );
+
+  // 3. ONE READER: the halt-path reader is named once. A second, separately-spelled read is how
+  //    two arms of the same policy drift apart, which is the failure this file exists to prevent.
+  assert.equal(
+    (src.match(/function isStrictPhasePolicy\(/g) || []).length,
+    1,
+    'there must be exactly one strict-phase policy reader',
   );
 });
 
