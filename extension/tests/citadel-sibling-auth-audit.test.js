@@ -201,7 +201,7 @@ describe('runCitadelAudit AC-CIT-10 behavior', () => {
       assert.equal(first.exit_code, second.exit_code);
       assert.equal(persisted.schema_version, '1.0');
       assert.equal(persisted.summary.findings, first.summary.findings);
-      assert.equal(persisted.exitCode, first.exitCode);
+      assert.equal(persisted.exit_code, first.exit_code);
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
       fs.rmSync(sessionDir, { recursive: true, force: true });

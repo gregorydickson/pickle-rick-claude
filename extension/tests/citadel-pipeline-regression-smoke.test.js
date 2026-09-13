@@ -200,9 +200,9 @@ describe('citadel pipeline regression smoke', () => {
         matched.length >= fixture.expected.minimumMatchedIssuesAtHighOrAbove,
         `matched ${matched.length} stable issue ids: ${matched.join(', ')}`,
       );
-      // The report still computes its severity-based exitCode field; it is simply no longer
+      // The report still computes its severity-based exit_code field; it is simply no longer
       // used to halt the pipeline.
-      assert.equal(report.exitCode, fixture.expected.strictExitCode);
+      assert.equal(report.exit_code, fixture.expected.strictExitCode);
       assert.equal(report.schema, '1.0');
       const status = JSON.parse(fs.readFileSync(path.join(run.sessionDir, 'pipeline-status.json'), 'utf-8'));
       assert.notEqual(status.status, 'failed');
@@ -230,7 +230,7 @@ describe('citadel pipeline regression smoke', () => {
       assert.deepEqual(calls, ['mux-runner.js', 'microverse-runner.js', 'microverse-runner.js']);
       const report = readCitadelReport(run.sessionDir);
       assert.ok(report);
-      assert.equal(report.exitCode, fixture.expected.strictExitCode);
+      assert.equal(report.exit_code, fixture.expected.strictExitCode);
       assert.ok(report.summary.high + report.summary.critical >= fixture.expected.minimumMatchedIssuesAtHighOrAbove);
       const status = JSON.parse(fs.readFileSync(path.join(run.sessionDir, 'pipeline-status.json'), 'utf-8'));
       assert.notEqual(status.status, 'failed');

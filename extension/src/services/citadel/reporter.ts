@@ -38,7 +38,6 @@ export interface CitadelJsonReport {
   prd_path: string;
   diff_range: string;
   exit_code: number;
-  exitCode: number;
   header: CitadelReportHeader;
   sections: Record<string, unknown>;
   findings: CitadelFinding[];
@@ -87,7 +86,6 @@ export class Reporter {
       prd_path: input.prdPath,
       diff_range: input.diffRange,
       exit_code: exitCode,
-      exitCode,
       header: input.header,
       sections: input.sections,
       findings,
@@ -98,8 +96,8 @@ export class Reporter {
     };
   }
 
-  renderMarkdown(report: Pick<CitadelJsonReport, 'findings' | 'decisions' | 'summary' | 'exitCode'>): string {
-    return renderMarkdown(report.findings, report.decisions, report.summary, report.exitCode);
+  renderMarkdown(report: Pick<CitadelJsonReport, 'findings' | 'decisions' | 'summary' | 'exit_code'>): string {
+    return renderMarkdown(report.findings, report.decisions, report.summary, report.exit_code);
   }
 }
 

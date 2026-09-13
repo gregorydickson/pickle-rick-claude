@@ -16,7 +16,6 @@ export class Reporter {
             prd_path: input.prdPath,
             diff_range: input.diffRange,
             exit_code: exitCode,
-            exitCode,
             header: input.header,
             sections: input.sections,
             findings,
@@ -27,7 +26,7 @@ export class Reporter {
         };
     }
     renderMarkdown(report) {
-        return renderMarkdown(report.findings, report.decisions, report.summary, report.exitCode);
+        return renderMarkdown(report.findings, report.decisions, report.summary, report.exit_code);
     }
 }
 export function rankFindings(findings) {

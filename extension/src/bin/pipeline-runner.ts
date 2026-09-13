@@ -1729,7 +1729,7 @@ function isCitadelReport(value: unknown): value is CitadelJsonReport {
   return Array.isArray(record.findings)
     && typeof record.summary === 'object'
     && record.summary !== null
-    && (typeof record.exitCode === 'number' || typeof record.exit_code === 'number');
+    && typeof record.exit_code === 'number';
 }
 
 function findingText(finding: CitadelFinding): string {

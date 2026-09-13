@@ -84,7 +84,7 @@ describe('citadel cross-phase fixture', () => {
       assert.ok(!ids.includes('szechuan-sauce:cross-phase-shared-id'));
       assert.equal(report.summary.critical, 1);
       assert.ok(report.summary.low >= 1);
-      assert.equal(report.exitCode, 1);
+      assert.equal(report.exit_code, 1);
       assert.equal(report.schema, '1.0');
       assert.equal(report.findings[0].severity, 'Critical');
       // Cross-phase fixture asserts cross-phase merging only; other analyzers may add additional findings
@@ -198,7 +198,6 @@ describe('citadel cross-phase fixture', () => {
       ).map((f) => f.id);
       assert.deepEqual(crossPhaseIds, ['anatomy-park:missing']);
       assert.equal(report.exit_code, 0);
-      assert.equal(report.exitCode, 0);
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
       fs.rmSync(sessionDir, { recursive: true, force: true });

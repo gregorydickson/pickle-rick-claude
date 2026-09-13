@@ -1420,7 +1420,7 @@ function isCitadelReport(value) {
     return Array.isArray(record.findings)
         && typeof record.summary === 'object'
         && record.summary !== null
-        && (typeof record.exitCode === 'number' || typeof record.exit_code === 'number');
+        && typeof record.exit_code === 'number';
 }
 function findingText(finding) {
     const citation = typeof finding.file === 'string'

@@ -85,7 +85,7 @@ describe('standalone-integration: full surface', () => {
   });
 
   test('standalone result has correct exit_code shape', () => {
-    assert.ok(typeof result.exitCode === 'number', 'result.exitCode must be numeric');
+    assert.ok(typeof result.exit_code === 'number', 'result.exit_code must be numeric');
     assert.strictEqual(result.schema, '1.0');
   });
 });

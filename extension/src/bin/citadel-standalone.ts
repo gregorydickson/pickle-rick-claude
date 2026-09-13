@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   }
 
   const result = await runCitadelStandalone({ workingDir, diffRange }, outputDir);
-  process.exitCode = result.exitCode;
+  process.exitCode = result.exit_code;
 }
 
 if (process.argv[1] && path.basename(process.argv[1]) === 'citadel-standalone.js') {
