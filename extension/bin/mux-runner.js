@@ -11832,7 +11832,433 @@ function advancePerTicketTimeoutCounter(input) {
     }
     return { ticketForTimeout, counterNext };
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 1159 code lines against a ceiling of 120, and complexity 230 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowers it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle first), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/**
+ * R2c: the R-CMWL-4 / R-CHTS-CODEX no-progress halt that `runMuxRunnerMain` ran verbatim in both its `inactive`
+ * and `error` branches — counter update, recovery seam, terminal park — as one seam. `relaunch` means the pass made
+ * progress and the caller proceeds to its relaunch; `continue` means the recovery ladder advanced the queue.
+ */
+function resolveCodexManagerNoProgressStep(input) {
+    const { statePath, sessionDir, postState, state, iteration, log } = input;
+    const noProgress = checkAndUpdateCodexManagerNoProgress(statePath, input.pendingCount, log);
+    if (!noProgress.halt)
+        return { kind: 'relaunch' };
+    // AC-2 fail-safe: missing working_dir must halt this git-mutating
+    // recovery seam, never fall back to process.cwd() (the real repo).
+    if (!postState.working_dir && !state.working_dir) {
+        recordExitReason(statePath, 'state_working_dir_missing');
+        safeDeactivate(statePath);
+        return { kind: 'exit', exitReason: 'state_working_dir_missing' };
+    }
+    // R-CHTS-CODEX: route through recovery seam before parking.
+    const codexRecovery = haltOrRecoverCodexNoProgress({
+        statePath,
+        sessionDir,
+        extensionRoot: input.extensionRoot,
+        workingDir: postState.working_dir || state.working_dir,
+        iteration,
+        log,
+    });
+    if (codexRecovery.kind === 'advanced')
+        return { kind: 'continue' };
+    if (codexRecovery.kind === 'recovery_exhausted') {
+        writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
+        recordExitReason(statePath, 'recovery_exhausted');
+        safeDeactivate(statePath);
+        removeRunnerSessionMapEntry(statePath, log);
+        return { kind: 'exit', exitReason: 'recovery_exhausted' };
+    }
+    // kind === 'halt' → fall through to existing park.
+    log(`Codex manager made no progress for ${noProgress.consecutiveCount} consecutive relaunch passes — halting with codex_manager_no_progress.`);
+    logActivity({ event: 'codex_manager_no_progress', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackendFromStateFileWithSource(statePath).backend, consecutive_count: noProgress.consecutiveCount, pending_count: input.pendingCount });
+    recordExitReason(statePath, 'codex_manager_no_progress');
+    safeDeactivate(statePath);
+    removeRunnerSessionMapEntry(statePath, log);
+    return { kind: 'exit', exitReason: 'codex_manager_no_progress' };
+}
+/**
+ * R2c: R-ORSR-2 — the recovery ladder `runMuxRunnerMain` routes a `closer_handoff_terminal` park through before
+ * the terminal closer exit. `fall_through` leaves the decision to the caller's `exitForCloserTerminalState`.
+ */
+function routeCloserHandoffRecovery(input) {
+    const { state, statePath, sessionDir, iteration, log } = input;
+    // AC-2 fail-safe: missing working_dir must halt this git-mutating
+    // recovery call, never fall back to process.cwd() (the real repo).
+    if (!state.working_dir) {
+        recordExitReason(statePath, 'state_working_dir_missing');
+        safeDeactivate(statePath);
+        return { kind: 'exit', exitReason: 'state_working_dir_missing' };
+    }
+    const recovery = routeRecoveryBeforeTerminal({
+        sessionDir,
+        statePath,
+        extensionRoot: input.extensionRoot,
+        workingDir: state.working_dir,
+        ticketId: state.current_ticket || '',
+        iteration,
+        flags: state.flags ?? null,
+        log,
+        mode: 'manager',
+    });
+    if (recovery.kind === 'advanced') {
+        log(`recovery: ${recovery.strategy} advanced ${state.current_ticket} before closer_handoff_terminal — continuing.`);
+        persistCloserHandoffTracker(statePath, null);
+        return { kind: 'continue' };
+    }
+    if (recovery.kind === 'exhausted') {
+        log(`recovery_exhausted: ladder exhausted for ${state.current_ticket} (${recovery.reason}). Exiting at iteration ${iteration}.`);
+        writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, `closer_handoff_terminal: ${recovery.reason}`, log);
+        recordExitReason(statePath, 'recovery_exhausted');
+        safeDeactivate(statePath);
+        removeRunnerSessionMapEntry(statePath, log);
+        return { kind: 'exit', exitReason: 'recovery_exhausted' };
+    }
+    // fall_through → existing closer terminal park.
+    return { kind: 'fall_through' };
+}
+/**
+ * R2c: R-MWIS-3 self-recovery for a stalled pass that has not yet exceeded the recovery cap — emit the
+ * diagnostic, salvage any gate-passing deliverable, and re-select a pending ticket.
+ */
+function selfRecoverIdleStall(input) {
+    const { state, statePath, sessionDir, idleSeconds, idleStallThresholdSeconds, idleStallRecoveryCount, log } = input;
+    log(`[idle-stall] no forward progress for ${idleSeconds}s (>= ${idleStallThresholdSeconds}s) with clean wait-state — emitting mux_idle_stall_detected and self-recovering (attempt ${idleStallRecoveryCount}/${input.idleStallRecoveryCap})`);
+    process.stderr.write(`[mux-runner] idle-stall watchdog: ${idleSeconds}s idle, re-evaluating current ticket\n`);
+    logActivity({
+        event: 'mux_idle_stall_detected',
+        source: 'pickle',
+        session: path.basename(sessionDir),
+        iteration: input.iteration,
+        gate_payload: {
+            threshold_seconds: idleStallThresholdSeconds,
+            idle_seconds: idleSeconds,
+            observed_iteration: input.curIter,
+            current_ticket: state.current_ticket ?? null,
+            step: typeof state.step === 'string' ? state.step : 'unknown',
+        },
+    });
+    // R-MWIS-3: before self-recovering past the current ticket, commit any
+    // gate-passing uncommitted deliverable via the existing #99 R-WCUC path so
+    // the re-select/relaunch below cannot strand completed work.
+    // AC-2 fail-safe: missing working_dir must halt this git-mutating commit,
+    // never fall back to process.cwd() (the real repo).
+    if (!state.working_dir) {
+        recordExitReason(statePath, 'state_working_dir_missing');
+        safeDeactivate(statePath);
+        return { kind: 'exit', exitReason: 'state_working_dir_missing' };
+    }
+    routeExitPathSalvage({
+        sessionDir,
+        statePath,
+        workingDir: state.working_dir,
+        ticketId: state.current_ticket ?? null,
+        extensionRoot: input.extensionRoot,
+        flags: state.flags ?? null,
+        log,
+    });
+    // Self-recovery: re-evaluate the current ticket so the next pass re-selects a
+    // pending ticket and re-spawns a worker. The caller resets the stall trackers +
+    // progress epoch so the watchdog re-arms cleanly. Mirrors the recovery-advanced reset.
+    const nextPending = findNextPendingTicketId(sessionDir);
+    updateMuxLifecycleState(statePath, { currentTicket: nextPending ?? null });
+    return { kind: 'recovered', idleStallRecoveryCount };
+}
+/**
+ * R2c: R-MWIS-2 main-loop idle-stall watchdog. Before each worker spawn, check whether the loop has made no forward
+ * progress for longer than the bounded threshold while in NO legitimate wait state (rate-limit wait, breaker OPEN,
+ * last_error, subprocess errors). Best-effort: a throw is logged and the pass proceeds with the count it reached.
+ */
+function runIdleStallWatchdog(input) {
+    const { state, statePath, sessionDir, iteration, idleStallRecoveryCap, cbEnabled, cbState, log } = input;
+    let idleStallRecoveryCount = input.idleStallRecoveryCount;
+    try {
+        const idleDecision = evaluateMuxIdleStallWatchdog({
+            active: state.active === true,
+            nowMs: input.now(),
+            lastProgressMs: input.lastProgressEpoch,
+            thresholdSeconds: input.idleStallThresholdSeconds,
+            rateLimitWaiting: rateLimitParkStillLive(sessionDir),
+            circuitBreakerExecutable: !cbEnabled || !cbState || canExecute(cbState),
+            lastError: state.last_error ?? null,
+            // mux state.json carries last_subprocess_error (ErrorRecord|null), the
+            // worker-error wait-state signal; treat a present record as 1 accumulated error.
+            consecutiveSubprocessErrors: state.last_subprocess_error != null ? 1 : 0,
+        });
+        if (!idleDecision.stalled)
+            return { kind: 'none', idleStallRecoveryCount };
+        // L2: bound consecutive self-recoveries. The streak increments per stall;
+        // a single recovery that clears the wedge advances the loop (resetting the
+        // streak), but a loop that re-arms the stall every pass climbs the streak
+        // and escalates once it exceeds the cap rather than spinning forever.
+        idleStallRecoveryCount += 1;
+        if (evaluateIdleStallRecoveryCap(idleStallRecoveryCount, idleStallRecoveryCap)) {
+            // W4a: route the idle-stall escalation through the single choke point before
+            // the terminal `idle_stall_unrecoverable` park. A ladder-advanced ticket
+            // resets the streak and continues; only fall_through / exhausted parks.
+            // AC-2 fail-safe: never run the git-mutating recovery against process.cwd().
+            if (state.current_ticket && state.working_dir) {
+                const recovery = routeRecoveryBeforeTerminal({
+                    sessionDir,
+                    statePath,
+                    extensionRoot: input.extensionRoot,
+                    workingDir: state.working_dir,
+                    ticketId: state.current_ticket,
+                    iteration,
+                    flags: state.flags ?? null,
+                    log,
+                    mode: 'worker',
+                    evidence: { halt_site: 'idle_stall_unrecoverable', idle_seconds: idleDecision.idleSeconds },
+                });
+                if (recovery.kind === 'advanced') {
+                    log(`recovery: ${recovery.strategy} advanced ${state.current_ticket} before idle_stall_unrecoverable — continuing.`);
+                    return { kind: 'recovered', idleStallRecoveryCount: 0 };
+                }
+            }
+            const msg = `[idle-stall] self-recovery exceeded cap (${idleStallRecoveryCount} > ${idleStallRecoveryCap}) — escalating idle_stall_unrecoverable at iteration ${iteration}`;
+            log(msg);
+            process.stderr.write(`[mux-runner] ${msg}\n`);
+            recordExitReason(statePath, 'idle_stall_unrecoverable');
+            safeDeactivate(statePath);
+            removeRunnerSessionMapEntry(statePath, log);
+            const exitReason = 'idle_stall_unrecoverable';
+            return { kind: 'exit', exitReason };
+        }
+        return selfRecoverIdleStall({
+            state,
+            statePath,
+            sessionDir,
+            extensionRoot: input.extensionRoot,
+            iteration,
+            curIter: input.curIter,
+            idleSeconds: idleDecision.idleSeconds,
+            idleStallThresholdSeconds: input.idleStallThresholdSeconds,
+            idleStallRecoveryCount,
+            idleStallRecoveryCap,
+            log,
+        });
+    }
+    catch (err) {
+        // Watchdog is best-effort — never crash the loop on a watchdog failure.
+        log(`idle-stall watchdog threw (ignored): ${safeErrorMessage(err)}`);
+        return { kind: 'none', idleStallRecoveryCount };
+    }
+}
+/**
+ * R2c: the pathological EPIC_COMPLETED arm — the manager claimed completion past FALSE_EPIC_THRESHOLD times on one
+ * ticket. Persists the counter, records the exit reason and deactivates; returns the exit reason for the loop's `break`.
+ */
+function haltOnPersistentHallucination(input) {
+    const { decision, statePath, sessionDir, log } = input;
+    log(`MANAGER_PERSISTENT_HALLUCINATION: ticket ${decision.ticket} emitted ${PromiseTokens.EPIC_COMPLETED} ${decision.nextCount} times without finishing (threshold ${FALSE_EPIC_THRESHOLD}). Done=${decision.doneCount}/${decision.totalCount}. Bailing for human review.\n       Iteration log: ${input.iterLogFile}`);
+    appendPipelineRunnerMarker(sessionDir, `MANAGER_PERSISTENT_HALLUCINATION ticket=${decision.ticket} count=${decision.nextCount} done=${decision.doneCount}/${decision.totalCount}`);
+    try {
+        sm.update(statePath, s => {
+            s.false_epic_completed_count = decision.nextCount;
+            s.false_epic_completed_ticket = decision.ticket;
+        });
+    }
+    catch (err) {
+        log(`WARN: failed to persist false_epic counter: ${safeErrorMessage(err)}`);
+    }
+    logActivity({
+        event: 'manager_persistent_hallucination',
+        source: 'pickle',
+        session: path.basename(sessionDir),
+        ticket: decision.ticket,
+        error: `${PromiseTokens.EPIC_COMPLETED} hallucinated ${decision.nextCount}× on ticket ${decision.ticket} (done ${decision.doneCount}/${decision.totalCount})`,
+    });
+    recordExitReason(statePath, 'manager_persistent_hallucination');
+    safeDeactivate(statePath);
+    return 'manager_persistent_hallucination';
+}
+/** R2c: persist the false-epic counter and move `current_ticket` (with its per-ticket cache) to the recovered ticket. */
+function persistFalseEpicRecoveryState(input) {
+    const { sessionDir, decision, curState, recoveredCurrentTicket } = input;
+    try {
+        sm.update(input.statePath, s => {
+            s.false_epic_completed_count = decision.nextCount;
+            s.false_epic_completed_ticket = curState.current_ticket || null;
+            const priorTicket = s.current_ticket;
+            if (s.current_ticket !== recoveredCurrentTicket) {
+                s.current_ticket = recoveredCurrentTicket;
+                delete s.current_ticket_tier;
+                delete s.current_ticket_budget;
+                delete s.current_ticket_max_iterations;
+                delete s.current_ticket_worker_timeout_seconds;
+                delete s.current_ticket_budget_start_iteration;
+            }
+            const recoveredStep = inferTicketLifecycleStep(sessionDir, recoveredCurrentTicket, s.step);
+            s.step = priorTicket !== recoveredCurrentTicket ? recoveredStep : maxLifecycleStep(s.step, recoveredStep);
+        });
+    }
+    catch (err) {
+        input.log(`WARN: failed to persist false_epic counter: ${safeErrorMessage(err)}`);
+    }
+}
+/** R2c: the stricter retry brief handed to the next iteration via handoff.txt after a false EPIC_COMPLETED. */
+function writeFalseEpicRetryBrief(input) {
+    const { decision } = input;
+    const retryBrief = [
+        `=== MANAGER FALSE EPIC RECOVERY (count ${decision.nextCount}/${FALSE_EPIC_THRESHOLD}) ===`,
+        `You emitted <promise>${PromiseTokens.EPIC_COMPLETED}</promise> but only ${decision.doneCount} of ${decision.totalCount} tickets are status: Done.`,
+        decision.pendingIds.length > 0 ? `Pending tickets: ${decision.pendingIds.join(', ')}.` : '',
+        decision.kind === 'recover_advance'
+            ? `Continue with the next non-Done ticket. Do NOT emit ${PromiseTokens.EPIC_COMPLETED} again until every rick_ticket_*.md file in the session root reports status: Done.`
+            : `Resume work on current_ticket=${input.curState.current_ticket}. It is NOT yet Done. Do NOT emit ${PromiseTokens.EPIC_COMPLETED} again until every rick_ticket_*.md file in the session root reports status: Done.`,
+        `Use ${PromiseTokens.TASK_COMPLETED} for single-ticket completions; reserve ${PromiseTokens.EPIC_COMPLETED} for the moment all tickets are Done.`,
+    ].filter(Boolean).join('\n');
+    const handoffSummary = buildIterationHandoffSummary(input.state, input.sessionDir, input.iteration + 1);
+    writeHandoffAtomic(input.sessionDir, `${handoffSummary}\n\n${retryBrief}`, process.pid, input.log);
+}
+/**
+ * R2c: a recoverable false EPIC_COMPLETED — log it, close out an already-Done `current_ticket` through the Done-flip
+ * guard (recover_advance), persist the counter, and hand the next iteration a stricter brief. `parked` means the
+ * guard refused the flip: the residual is recorded and the caller continues without the stall reset.
+ */
+function recoverFalseEpicCompletion(input) {
+    const { decision, curState, statePath, sessionDir, log } = input;
+    const tag = decision.kind === 'recover_advance' ? 'advancing' : 'retrying same ticket';
+    const currentId = curState.current_ticket || '(none)';
+    log(`MANAGER_FALSE_${PromiseTokens.EPIC_COMPLETED}: ${PromiseTokens.EPIC_COMPLETED} claimed but ${decision.doneCount} of ${decision.totalCount} tickets Done (pending: ${decision.pendingIds.join(', ') || '(none)'}). Treating as ${PromiseTokens.TASK_COMPLETED} — ${tag}. count=${decision.nextCount}/${FALSE_EPIC_THRESHOLD}.\n       Iteration log: ${input.iterLogFile}`);
+    appendPipelineRunnerMarker(sessionDir, `MANAGER_FALSE_${PromiseTokens.EPIC_COMPLETED} ticket=${currentId} mode=${tag} count=${decision.nextCount}/${FALSE_EPIC_THRESHOLD} done=${decision.doneCount}/${decision.totalCount} pending=${decision.pendingIds.join(',')}`);
+    logActivity({
+        event: 'manager_false_epic_completed',
+        source: 'pickle',
+        session: path.basename(sessionDir),
+        ticket: curState.current_ticket || undefined,
+        error: `${PromiseTokens.EPIC_COMPLETED} with ${decision.totalCount - decision.doneCount} pending — ${tag}`,
+    });
+    let recoveredCurrentTicket = curState.current_ticket || null;
+    if (decision.kind === 'recover_advance' && curState.current_ticket) {
+        // current_ticket is already Done — close it out so the next
+        // iteration picks the next non-Done ticket. Counter persists at the
+        // CURRENT ticket so a subsequent false epic on the SAME current
+        // ticket doesn't get a fresh budget.
+        const guard = guardCompletionCommitBeforeDone({
+            sessionDir,
+            ticketId: curState.current_ticket,
+            // AP-EXT-ITER124-01: ladder, not `||` selection. This site also
+            // omitted `state.working_dir` from its chain entirely, unlike the
+            // sibling at the genuine-epic-completion flip below, which reads the
+            // very same pair. (Both dirs are session-level here, so the ladder
+            // usually collapses to one rung — the defect is the divergence
+            // between two siblings asking one question, not a lost rung.)
+            ...completionDirLadder(curState.working_dir, input.state.working_dir),
+            flags: curState.flags ?? null,
+        });
+        if (!guard.ok) {
+            const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
+            log(msg);
+            process.stderr.write(`${msg}\n`);
+            // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
+            // the residual, park this ticket (leave it un-Done), and
+            // continue the phase loop instead of halting the session.
+            recordExitReason(statePath, 'done_without_commit_evidence');
+            return { kind: 'continue', parked: true };
+        }
+        // R-PEDC: clear stale prior-iteration stamp on recovery.
+        clearStaleDoneWithoutCommitEvidence(statePath);
+        if (markTicketDone(sessionDir, curState.current_ticket)) {
+            log(`Marked ticket ${curState.current_ticket} as Done (recover_advance)`);
+        }
+        recoveredCurrentTicket = findNextPendingTicketId(sessionDir);
+    }
+    persistFalseEpicRecoveryState({ statePath, sessionDir, decision, curState, recoveredCurrentTicket, log });
+    writeFalseEpicRetryBrief({ state: input.state, sessionDir, iteration: input.iteration, decision, curState, log });
+    return { kind: 'continue', parked: false };
+}
+/**
+ * R2c: the genuine-EPIC_COMPLETED preamble — clear any lingering false-epic counter, then flip the final ticket Done
+ * through the Done-flip guard. `continue` means the guard refused: the residual is recorded and the ticket is parked.
+ */
+function markFinalTicketDoneBeforeFinalize(input) {
+    const { curState, statePath, sessionDir, log } = input;
+    // Genuine epic completion — clear any lingering false-epic counter and
+    // proceed as before.
+    if (Number(curState.false_epic_completed_count) > 0) {
+        try {
+            sm.update(statePath, s => {
+                s.false_epic_completed_count = 0;
+                s.false_epic_completed_ticket = null;
+            });
+        }
+        catch (err) {
+            log(`WARN: failed to clear false_epic counter: ${safeErrorMessage(err)}`);
+        }
+    }
+    // Mark final ticket as Done before exiting or chaining
+    if (!curState.current_ticket)
+        return { kind: 'proceed' };
+    const guard = guardCompletionCommitBeforeDone({
+        sessionDir,
+        ticketId: curState.current_ticket,
+        // AP-EXT-ITER124-01: ladder, not `||` selection.
+        ...completionDirLadder(curState.working_dir, input.state.working_dir),
+        flags: curState.flags ?? null,
+    });
+    if (!guard.ok) {
+        const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
+        log(msg);
+        process.stderr.write(`${msg}\n`);
+        // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
+        // the residual, park this ticket (leave it un-Done), and continue
+        // the phase loop instead of halting on the EPIC_COMPLETED claim.
+        recordExitReason(statePath, 'done_without_commit_evidence');
+        return { kind: 'continue' };
+    }
+    // R-PEDC: clear stale prior-iteration stamp on recovery so a
+    // fully-shipped bundle finalizes as 'completed', not 'failed'.
+    clearStaleDoneWithoutCommitEvidence(statePath);
+    if (markTicketDone(sessionDir, curState.current_ticket)) {
+        log(`Marked final ticket ${curState.current_ticket} as Done`);
+    }
+    return { kind: 'proceed' };
+}
+/**
+ * R2c: AC-A2 (B-DSAN2 WS-A) — a clean manager exit (end_turn / max-turns) must NOT exit 0 while tickets remain
+ * non-terminal. Reuses evaluateManagerRelaunch (the existing completion authority) to relaunch on a pending bundle,
+ * forcing an unreclaimable In Progress ticket terminal through the AC-A4 bounded escape. `fall_through` means every
+ * ticket is terminal and the caller's clean exit applies.
+ */
+function relaunchOrEscapeAfterCleanManagerExit(input) {
+    const { postState, statePath, sessionDir, iteration, log } = input;
+    const relaunchTickets = withFreshTicketStatuses(sessionDir, collectTickets(sessionDir));
+    const decision = evaluateManagerRelaunch(postState, relaunchTickets, input.cbState, input.exitKind);
+    if (decision.reason === 'time_limit') {
+        log('Time limit reached. Exiting.');
+        finalizeTerminalState(statePath, { step: 'completed', runnerIteration: iteration, exitReason: 'limit' });
+        return { kind: 'exit', exitReason: 'limit' };
+    }
+    if (decision.shouldRelaunch) {
+        // AC-A4 (f8000435): bounded terminal escape. An In Progress ticket held
+        // across the resolved bounded-escape cap (`hardening.bounded_terminal_escape_cap`,
+        // compiled default 3) consecutive no-progress relaunches is forced
+        // terminal (salvage → Skipped); the next loop's evaluateManagerRelaunch
+        // sees it no longer pending and advances/halts deterministically — the
+        // pipeline never spins to max_iterations on an unreclaimable ticket.
+        const boundedEscapeCap = resolveHardeningSettings(loadPickleSettingsBag(input.extensionRoot)).bounded_terminal_escape_cap;
+        const esc = evaluateBoundedEscape(postState, sessionDir, boundedEscapeCap);
+        if (esc.escape && esc.ticketId) {
+            executeBoundedEscape(statePath, sessionDir, postState.working_dir || input.state.working_dir || '', esc.ticketId, iteration, boundedEscapeCap, log);
+            return { kind: 'continue' };
+        }
+        if (esc.ticketId) {
+            recordBoundedEscapeAttempt(statePath, esc.ticketId, iteration, log, input.attemptWindow);
+        }
+        const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
+        log(`${relaunchBackend} manager exited via ${input.exitKind} with ${decision.pendingCount} pending — relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`);
+        recordManagerRelaunch(statePath, sessionDir, decision, iteration, log);
+        return { kind: 'continue' };
+    }
+    if (decision.pendingCount > 0) {
+        // cap_exceeded / circuit_open WITH pending tickets — terminal, but NEVER exit-0.
+        recordExitReason(statePath, 'idle_stall_unrecoverable');
+        safeDeactivate(statePath);
+        return { kind: 'exit', exitReason: 'idle_stall_unrecoverable' };
+    }
+    // decision.pendingCount === 0 → all terminal → legitimate clean exit, fall through.
+    return { kind: 'fall_through' };
+}
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 894 code lines against a ceiling of 120, and complexity 177 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
@@ -12005,43 +12431,17 @@ async function runMuxRunnerMain() {
                 // ladder. (TIER-1.2 gh-11: manager_handoff_pending no longer reaches this
                 // branch — it is a non-halting residual logged by evaluateCloserTerminalState.)
                 if (closerDecision.reason === 'closer_handoff_terminal') {
-                    // AC-2 fail-safe: missing working_dir must halt this git-mutating
-                    // recovery call, never fall back to process.cwd() (the real repo).
-                    if (!state.working_dir) {
-                        recordExitReason(statePath, 'state_working_dir_missing');
-                        safeDeactivate(statePath);
-                        exitReason = 'state_working_dir_missing';
-                        break;
-                    }
-                    const recovery = routeRecoveryBeforeTerminal({
-                        sessionDir,
-                        statePath,
-                        extensionRoot,
-                        workingDir: state.working_dir,
-                        ticketId: state.current_ticket || '',
-                        iteration,
-                        flags: state.flags ?? null,
-                        log,
-                        mode: 'manager',
-                    });
-                    if (recovery.kind === 'advanced') {
-                        log(`recovery: ${recovery.strategy} advanced ${state.current_ticket} before closer_handoff_terminal — continuing.`);
-                        persistCloserHandoffTracker(statePath, null);
+                    const closerRecovery = routeCloserHandoffRecovery({ state, statePath, sessionDir, extensionRoot, iteration, log });
+                    if (closerRecovery.kind === 'continue') {
                         lastStateIteration = -1;
                         stallCount = 0;
                         state = readRunnerState(statePath);
                         continue;
                     }
-                    if (recovery.kind === 'exhausted') {
-                        log(`recovery_exhausted: ladder exhausted for ${state.current_ticket} (${recovery.reason}). Exiting at iteration ${iteration}.`);
-                        writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, `closer_handoff_terminal: ${recovery.reason}`, log);
-                        recordExitReason(statePath, 'recovery_exhausted');
-                        safeDeactivate(statePath);
-                        removeRunnerSessionMapEntry(statePath, log);
-                        exitReason = 'recovery_exhausted';
+                    if (closerRecovery.kind === 'exit') {
+                        exitReason = closerRecovery.exitReason;
                         break;
                     }
-                    // fall_through → existing closer terminal park.
                 }
                 exitReason = exitForCloserTerminalState(statePath, sessionDir, iteration, closerDecision, log);
                 break;
@@ -12183,110 +12583,23 @@ async function runMuxRunnerMain() {
         // in NO legitimate wait state (rate-limit wait, breaker OPEN, last_error, subprocess
         // errors). If wedged, emit a diagnostic event and self-recover (re-evaluate the
         // current ticket / re-spawn) rather than sit silently at 0% CPU.
-        try {
-            const idleDecision = evaluateMuxIdleStallWatchdog({
-                active: state.active === true,
-                nowMs: muxNow(),
-                lastProgressMs: lastProgressEpoch,
-                thresholdSeconds: idleStallThresholdSeconds,
-                rateLimitWaiting: rateLimitParkStillLive(sessionDir),
-                circuitBreakerExecutable: !cbEnabled || !cbState || canExecute(cbState),
-                lastError: state.last_error ?? null,
-                // mux state.json carries last_subprocess_error (ErrorRecord|null), the
-                // worker-error wait-state signal; treat a present record as 1 accumulated error.
-                consecutiveSubprocessErrors: state.last_subprocess_error != null ? 1 : 0,
+        {
+            const idleStep = runIdleStallWatchdog({
+                state, statePath, sessionDir, extensionRoot, iteration, curIter, now: muxNow, lastProgressEpoch,
+                idleStallThresholdSeconds, idleStallRecoveryCap, idleStallRecoveryCount, cbEnabled, cbState, log,
             });
-            if (idleDecision.stalled) {
-                // L2: bound consecutive self-recoveries. The streak increments per stall;
-                // a single recovery that clears the wedge advances the loop (resetting the
-                // streak), but a loop that re-arms the stall every pass climbs the streak
-                // and escalates once it exceeds the cap rather than spinning forever.
-                idleStallRecoveryCount += 1;
-                if (evaluateIdleStallRecoveryCap(idleStallRecoveryCount, idleStallRecoveryCap)) {
-                    // W4a: route the idle-stall escalation through the single choke point before
-                    // the terminal `idle_stall_unrecoverable` park. A ladder-advanced ticket
-                    // resets the streak and continues; only fall_through / exhausted parks.
-                    // AC-2 fail-safe: never run the git-mutating recovery against process.cwd().
-                    if (state.current_ticket && state.working_dir) {
-                        const recovery = routeRecoveryBeforeTerminal({
-                            sessionDir,
-                            statePath,
-                            extensionRoot,
-                            workingDir: state.working_dir,
-                            ticketId: state.current_ticket,
-                            iteration,
-                            flags: state.flags ?? null,
-                            log,
-                            mode: 'worker',
-                            evidence: { halt_site: 'idle_stall_unrecoverable', idle_seconds: idleDecision.idleSeconds },
-                        });
-                        if (recovery.kind === 'advanced') {
-                            log(`recovery: ${recovery.strategy} advanced ${state.current_ticket} before idle_stall_unrecoverable — continuing.`);
-                            idleStallRecoveryCount = 0;
-                            lastStateIteration = -1;
-                            stallCount = 0;
-                            lastProgressEpoch = muxNow();
-                            continue;
-                        }
-                    }
-                    const msg = `[idle-stall] self-recovery exceeded cap (${idleStallRecoveryCount} > ${idleStallRecoveryCap}) — escalating idle_stall_unrecoverable at iteration ${iteration}`;
-                    log(msg);
-                    process.stderr.write(`[mux-runner] ${msg}\n`);
-                    recordExitReason(statePath, 'idle_stall_unrecoverable');
-                    safeDeactivate(statePath);
-                    removeRunnerSessionMapEntry(statePath, log);
-                    exitReason = 'idle_stall_unrecoverable';
-                    break;
-                }
-                log(`[idle-stall] no forward progress for ${idleDecision.idleSeconds}s (>= ${idleStallThresholdSeconds}s) with clean wait-state — emitting mux_idle_stall_detected and self-recovering (attempt ${idleStallRecoveryCount}/${idleStallRecoveryCap})`);
-                process.stderr.write(`[mux-runner] idle-stall watchdog: ${idleDecision.idleSeconds}s idle, re-evaluating current ticket\n`);
-                logActivity({
-                    event: 'mux_idle_stall_detected',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    iteration,
-                    gate_payload: {
-                        threshold_seconds: idleStallThresholdSeconds,
-                        idle_seconds: idleDecision.idleSeconds,
-                        observed_iteration: curIter,
-                        current_ticket: state.current_ticket ?? null,
-                        step: typeof state.step === 'string' ? state.step : 'unknown',
-                    },
-                });
-                // R-MWIS-3: before self-recovering past the current ticket, commit any
-                // gate-passing uncommitted deliverable via the existing #99 R-WCUC path so
-                // the re-select/relaunch below cannot strand completed work.
-                // AC-2 fail-safe: missing working_dir must halt this git-mutating commit,
-                // never fall back to process.cwd() (the real repo).
-                if (!state.working_dir) {
-                    recordExitReason(statePath, 'state_working_dir_missing');
-                    safeDeactivate(statePath);
-                    exitReason = 'state_working_dir_missing';
-                    break;
-                }
-                routeExitPathSalvage({
-                    sessionDir,
-                    statePath,
-                    workingDir: state.working_dir,
-                    ticketId: state.current_ticket ?? null,
-                    extensionRoot,
-                    flags: state.flags ?? null,
-                    log,
-                });
-                // Self-recovery: re-evaluate the current ticket so the next pass re-selects a
-                // pending ticket and re-spawns a worker. Reset the stall trackers + progress
-                // epoch so the watchdog re-arms cleanly. Mirrors the recovery-advanced reset.
-                const nextPending = findNextPendingTicketId(sessionDir);
-                updateMuxLifecycleState(statePath, { currentTicket: nextPending ?? null });
+            if (idleStep.kind === 'exit') {
+                exitReason = idleStep.exitReason;
+                break;
+            }
+            idleStallRecoveryCount = idleStep.idleStallRecoveryCount;
+            if (idleStep.kind === 'recovered') {
                 lastStateIteration = -1;
                 stallCount = 0;
+                // eslint-disable-next-line no-useless-assignment -- kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it (dead store recorded in c87f5dfa conformance)
                 lastProgressEpoch = muxNow();
                 continue;
             }
-        }
-        catch (err) {
-            // Watchdog is best-effort — never crash the loop on a watchdog failure.
-            log(`idle-stall watchdog threw (ignored): ${safeErrorMessage(err)}`);
         }
         // C6 (B-MRSW): CPU/artifact liveness watchdog. The idle-stall watchdog above keys on
         // `lastProgressMs`, which a `/login` re-auth keeps falsely fresh; this complement keys
@@ -12849,108 +13162,13 @@ async function runMuxRunnerMain() {
                 },
             });
             if (decision.kind === 'persistent_hallucination') {
-                log(`MANAGER_PERSISTENT_HALLUCINATION: ticket ${decision.ticket} emitted ${PromiseTokens.EPIC_COMPLETED} ${decision.nextCount} times without finishing (threshold ${FALSE_EPIC_THRESHOLD}). Done=${decision.doneCount}/${decision.totalCount}. Bailing for human review.\n       Iteration log: ${iterLogFile}`);
-                appendPipelineRunnerMarker(sessionDir, `MANAGER_PERSISTENT_HALLUCINATION ticket=${decision.ticket} count=${decision.nextCount} done=${decision.doneCount}/${decision.totalCount}`);
-                try {
-                    sm.update(statePath, s => {
-                        s.false_epic_completed_count = decision.nextCount;
-                        s.false_epic_completed_ticket = decision.ticket;
-                    });
-                }
-                catch (err) {
-                    log(`WARN: failed to persist false_epic counter: ${safeErrorMessage(err)}`);
-                }
-                logActivity({
-                    event: 'manager_persistent_hallucination',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    ticket: decision.ticket,
-                    error: `${PromiseTokens.EPIC_COMPLETED} hallucinated ${decision.nextCount}× on ticket ${decision.ticket} (done ${decision.doneCount}/${decision.totalCount})`,
-                });
-                recordExitReason(statePath, 'manager_persistent_hallucination');
-                safeDeactivate(statePath);
-                exitReason = 'manager_persistent_hallucination';
+                exitReason = haltOnPersistentHallucination({ decision, statePath, sessionDir, iterLogFile, log });
                 break;
             }
             if (decision.kind === 'recover_advance' || decision.kind === 'recover_retry') {
-                const tag = decision.kind === 'recover_advance' ? 'advancing' : 'retrying same ticket';
-                const currentId = curState.current_ticket || '(none)';
-                log(`MANAGER_FALSE_${PromiseTokens.EPIC_COMPLETED}: ${PromiseTokens.EPIC_COMPLETED} claimed but ${decision.doneCount} of ${decision.totalCount} tickets Done (pending: ${decision.pendingIds.join(', ') || '(none)'}). Treating as ${PromiseTokens.TASK_COMPLETED} — ${tag}. count=${decision.nextCount}/${FALSE_EPIC_THRESHOLD}.\n       Iteration log: ${iterLogFile}`);
-                appendPipelineRunnerMarker(sessionDir, `MANAGER_FALSE_${PromiseTokens.EPIC_COMPLETED} ticket=${currentId} mode=${tag} count=${decision.nextCount}/${FALSE_EPIC_THRESHOLD} done=${decision.doneCount}/${decision.totalCount} pending=${decision.pendingIds.join(',')}`);
-                logActivity({
-                    event: 'manager_false_epic_completed',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    ticket: curState.current_ticket || undefined,
-                    error: `${PromiseTokens.EPIC_COMPLETED} with ${decision.totalCount - decision.doneCount} pending — ${tag}`,
-                });
-                let recoveredCurrentTicket = curState.current_ticket || null;
-                if (decision.kind === 'recover_advance' && curState.current_ticket) {
-                    // current_ticket is already Done — close it out so the next
-                    // iteration picks the next non-Done ticket. Counter persists at the
-                    // CURRENT ticket so a subsequent false epic on the SAME current
-                    // ticket doesn't get a fresh budget.
-                    const guard = guardCompletionCommitBeforeDone({
-                        sessionDir,
-                        ticketId: curState.current_ticket,
-                        // AP-EXT-ITER124-01: ladder, not `||` selection. This site also
-                        // omitted `state.working_dir` from its chain entirely, unlike the
-                        // sibling at the genuine-epic-completion flip below, which reads the
-                        // very same pair. (Both dirs are session-level here, so the ladder
-                        // usually collapses to one rung — the defect is the divergence
-                        // between two siblings asking one question, not a lost rung.)
-                        ...completionDirLadder(curState.working_dir, state.working_dir),
-                        flags: curState.flags ?? null,
-                    });
-                    if (!guard.ok) {
-                        const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
-                        log(msg);
-                        process.stderr.write(`${msg}\n`);
-                        // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
-                        // the residual, park this ticket (leave it un-Done), and
-                        // continue the phase loop instead of halting the session.
-                        recordExitReason(statePath, 'done_without_commit_evidence');
-                        continue;
-                    }
-                    // R-PEDC: clear stale prior-iteration stamp on recovery.
-                    clearStaleDoneWithoutCommitEvidence(statePath);
-                    if (markTicketDone(sessionDir, curState.current_ticket)) {
-                        log(`Marked ticket ${curState.current_ticket} as Done (recover_advance)`);
-                    }
-                    recoveredCurrentTicket = findNextPendingTicketId(sessionDir);
-                }
-                try {
-                    sm.update(statePath, s => {
-                        s.false_epic_completed_count = decision.nextCount;
-                        s.false_epic_completed_ticket = curState.current_ticket || null;
-                        const priorTicket = s.current_ticket;
-                        if (s.current_ticket !== recoveredCurrentTicket) {
-                            s.current_ticket = recoveredCurrentTicket;
-                            delete s.current_ticket_tier;
-                            delete s.current_ticket_budget;
-                            delete s.current_ticket_max_iterations;
-                            delete s.current_ticket_worker_timeout_seconds;
-                            delete s.current_ticket_budget_start_iteration;
-                        }
-                        const recoveredStep = inferTicketLifecycleStep(sessionDir, recoveredCurrentTicket, s.step);
-                        s.step = priorTicket !== recoveredCurrentTicket ? recoveredStep : maxLifecycleStep(s.step, recoveredStep);
-                    });
-                }
-                catch (err) {
-                    log(`WARN: failed to persist false_epic counter: ${safeErrorMessage(err)}`);
-                }
-                // Stricter retry brief — handed to the next iteration via handoff.txt.
-                const retryBrief = [
-                    `=== MANAGER FALSE EPIC RECOVERY (count ${decision.nextCount}/${FALSE_EPIC_THRESHOLD}) ===`,
-                    `You emitted <promise>${PromiseTokens.EPIC_COMPLETED}</promise> but only ${decision.doneCount} of ${decision.totalCount} tickets are status: Done.`,
-                    decision.pendingIds.length > 0 ? `Pending tickets: ${decision.pendingIds.join(', ')}.` : '',
-                    decision.kind === 'recover_advance'
-                        ? `Continue with the next non-Done ticket. Do NOT emit ${PromiseTokens.EPIC_COMPLETED} again until every rick_ticket_*.md file in the session root reports status: Done.`
-                        : `Resume work on current_ticket=${curState.current_ticket}. It is NOT yet Done. Do NOT emit ${PromiseTokens.EPIC_COMPLETED} again until every rick_ticket_*.md file in the session root reports status: Done.`,
-                    `Use ${PromiseTokens.TASK_COMPLETED} for single-ticket completions; reserve ${PromiseTokens.EPIC_COMPLETED} for the moment all tickets are Done.`,
-                ].filter(Boolean).join('\n');
-                const handoffSummary = buildIterationHandoffSummary(state, sessionDir, iteration + 1);
-                writeHandoffAtomic(sessionDir, `${handoffSummary}\n\n${retryBrief}`, process.pid, log);
+                const falseEpicStep = recoverFalseEpicCompletion({ decision, curState, state, statePath, sessionDir, iteration, iterLogFile, log });
+                if (falseEpicStep.parked)
+                    continue;
                 // Reset stall counter so the recovery iteration isn't immediately
                 // killed by the no-progress detector — the manager IS making progress
                 // (we just disagree about whether it's done).
@@ -12959,45 +13177,8 @@ async function runMuxRunnerMain() {
                 await sleep(1000);
                 continue;
             }
-            // Genuine epic completion — clear any lingering false-epic counter and
-            // proceed as before.
-            if (Number(curState.false_epic_completed_count) > 0) {
-                try {
-                    sm.update(statePath, s => {
-                        s.false_epic_completed_count = 0;
-                        s.false_epic_completed_ticket = null;
-                    });
-                }
-                catch (err) {
-                    log(`WARN: failed to clear false_epic counter: ${safeErrorMessage(err)}`);
-                }
-            }
-            // Mark final ticket as Done before exiting or chaining
-            if (curState.current_ticket) {
-                const guard = guardCompletionCommitBeforeDone({
-                    sessionDir,
-                    ticketId: curState.current_ticket,
-                    // AP-EXT-ITER124-01: ladder, not `||` selection.
-                    ...completionDirLadder(curState.working_dir, state.working_dir),
-                    flags: curState.flags ?? null,
-                });
-                if (!guard.ok) {
-                    const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
-                    log(msg);
-                    process.stderr.write(`${msg}\n`);
-                    // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
-                    // the residual, park this ticket (leave it un-Done), and continue
-                    // the phase loop instead of halting on the EPIC_COMPLETED claim.
-                    recordExitReason(statePath, 'done_without_commit_evidence');
-                    continue;
-                }
-                // R-PEDC: clear stale prior-iteration stamp on recovery so a
-                // fully-shipped bundle finalizes as 'completed', not 'failed'.
-                clearStaleDoneWithoutCommitEvidence(statePath);
-                if (markTicketDone(sessionDir, curState.current_ticket)) {
-                    log(`Marked final ticket ${curState.current_ticket} as Done`);
-                }
-            }
+            if (markFinalTicketDoneBeforeFinalize({ curState, state, statePath, sessionDir, log }).kind === 'continue')
+                continue;
             // TIER-1.2 gh-11: manager_handoff_pending no longer halts — this is park-and-flag
             // only. closer_handoff_terminal requires status 'failed', which cannot hold on the
             // ticket just marked Done above, so what this path wants is the residual COMMAND,
@@ -13097,47 +13278,18 @@ async function runMuxRunnerMain() {
                         break;
                     }
                     if (inactiveDecision.shouldRelaunch) {
-                        const noProgress = checkAndUpdateCodexManagerNoProgress(statePath, inactiveDecision.pendingCount, log);
-                        if (noProgress.halt) {
-                            // AC-2 fail-safe: missing working_dir must halt this git-mutating
-                            // recovery seam, never fall back to process.cwd() (the real repo).
-                            if (!postState.working_dir && !state.working_dir) {
-                                recordExitReason(statePath, 'state_working_dir_missing');
-                                safeDeactivate(statePath);
-                                exitReason = 'state_working_dir_missing';
-                                break;
-                            }
-                            // R-CHTS-CODEX: route through recovery seam before parking.
-                            const codexRecovery = haltOrRecoverCodexNoProgress({
-                                statePath,
-                                sessionDir,
-                                extensionRoot,
-                                workingDir: postState.working_dir || state.working_dir,
-                                iteration,
-                                log,
-                            });
-                            if (codexRecovery.kind === 'advanced') {
-                                lastStateIteration = -1;
-                                stallCount = 0;
-                                await sleep(1000);
-                                continue;
-                            }
-                            if (codexRecovery.kind === 'recovery_exhausted') {
-                                writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
-                                recordExitReason(statePath, 'recovery_exhausted');
-                                safeDeactivate(statePath);
-                                removeRunnerSessionMapEntry(statePath, log);
-                                exitReason = 'recovery_exhausted';
-                                break;
-                            }
-                            // kind === 'halt' → fall through to existing park.
-                            log(`Codex manager made no progress for ${noProgress.consecutiveCount} consecutive relaunch passes — halting with codex_manager_no_progress.`);
-                            logActivity({ event: 'codex_manager_no_progress', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackendFromStateFileWithSource(statePath).backend, consecutive_count: noProgress.consecutiveCount, pending_count: inactiveDecision.pendingCount });
-                            recordExitReason(statePath, 'codex_manager_no_progress');
-                            safeDeactivate(statePath);
-                            removeRunnerSessionMapEntry(statePath, log);
-                            exitReason = 'codex_manager_no_progress';
+                        const codexStep = resolveCodexManagerNoProgressStep({
+                            statePath, sessionDir, extensionRoot, postState, state, iteration, pendingCount: inactiveDecision.pendingCount, log,
+                        });
+                        if (codexStep.kind === 'exit') {
+                            exitReason = codexStep.exitReason;
                             break;
+                        }
+                        if (codexStep.kind === 'continue') {
+                            lastStateIteration = -1;
+                            stallCount = 0;
+                            await sleep(1000);
+                            continue;
                         }
                         const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
                         log(`${relaunchBackend} manager subprocess exited via ${inactiveExitKind} with ${inactiveDecision.pendingCount} ticket(s) still pending — relaunching (count ${inactiveDecision.nextRelaunchCount}/${inactiveDecision.cap}).`);
@@ -13153,50 +13305,20 @@ async function runMuxRunnerMain() {
                 // completion authority) to relaunch on a pending bundle; only an all-terminal queue
                 // may fall through to the clean exit. No new parallel guard.
                 if (inactiveExitKind !== 'codex_session_inactive') {
-                    const relaunchTickets = withFreshTicketStatuses(sessionDir, collectTickets(sessionDir));
-                    const decision = evaluateManagerRelaunch(postState, relaunchTickets, cbState, inactiveExitKind);
-                    if (decision.reason === 'time_limit') {
-                        log('Time limit reached. Exiting.');
-                        finalizeTerminalState(statePath, { step: 'completed', runnerIteration: iteration, exitReason: 'limit' });
-                        exitReason = 'limit';
+                    const cleanExitStep = relaunchOrEscapeAfterCleanManagerExit({
+                        postState, state, statePath, sessionDir, extensionRoot, iteration, cbState, exitKind: inactiveExitKind, log,
+                        attemptWindow: { sessionDir, iterationStartMs: iterStartMs, commitWindow: { workingDir: iterWorkingDir, preIterSha } },
+                    });
+                    if (cleanExitStep.kind === 'exit') {
+                        exitReason = cleanExitStep.exitReason;
                         break;
                     }
-                    if (decision.shouldRelaunch) {
-                        // AC-A4 (f8000435): bounded terminal escape. An In Progress ticket held
-                        // across the resolved bounded-escape cap (`hardening.bounded_terminal_escape_cap`,
-                        // compiled default 3) consecutive no-progress relaunches is forced
-                        // terminal (salvage → Skipped); the next loop's evaluateManagerRelaunch
-                        // sees it no longer pending and advances/halts deterministically — the
-                        // pipeline never spins to max_iterations on an unreclaimable ticket.
-                        const boundedEscapeCap = resolveHardeningSettings(loadPickleSettingsBag(extensionRoot)).bounded_terminal_escape_cap;
-                        const esc = evaluateBoundedEscape(postState, sessionDir, boundedEscapeCap);
-                        if (esc.escape && esc.ticketId) {
-                            executeBoundedEscape(statePath, sessionDir, postState.working_dir || state.working_dir || '', esc.ticketId, iteration, boundedEscapeCap, log);
-                            lastStateIteration = -1;
-                            stallCount = 0;
-                            await sleep(1000);
-                            continue;
-                        }
-                        if (esc.ticketId) {
-                            recordBoundedEscapeAttempt(statePath, esc.ticketId, iteration, log, { sessionDir, iterationStartMs: iterStartMs,
-                                commitWindow: { workingDir: iterWorkingDir, preIterSha } });
-                        }
-                        const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
-                        log(`${relaunchBackend} manager exited via ${inactiveExitKind} with ${decision.pendingCount} pending — relaunching (count ${decision.nextRelaunchCount}/${decision.cap}).`);
-                        recordManagerRelaunch(statePath, sessionDir, decision, iteration, log);
+                    if (cleanExitStep.kind === 'continue') {
                         lastStateIteration = -1;
                         stallCount = 0;
                         await sleep(1000);
                         continue;
                     }
-                    if (decision.pendingCount > 0) {
-                        // cap_exceeded / circuit_open WITH pending tickets — terminal, but NEVER exit-0.
-                        recordExitReason(statePath, 'idle_stall_unrecoverable');
-                        safeDeactivate(statePath);
-                        exitReason = 'idle_stall_unrecoverable';
-                        break;
-                    }
-                    // decision.pendingCount === 0 → all terminal → legitimate clean exit, fall through.
                 }
             }
             log('Session deactivated. Exiting loop.');
@@ -13224,47 +13346,18 @@ async function runMuxRunnerMain() {
                 break;
             }
             if (relaunchDecision.shouldRelaunch && !isGenuineCrashOrSpawnFailure(relaunchDecision, outcome, iterLogFile)) {
-                const noProgress = checkAndUpdateCodexManagerNoProgress(statePath, relaunchDecision.pendingCount, log);
-                if (noProgress.halt) {
-                    // AC-2 fail-safe: missing working_dir must halt this git-mutating
-                    // recovery seam, never fall back to process.cwd() (the real repo).
-                    if (!postState.working_dir && !state.working_dir) {
-                        recordExitReason(statePath, 'state_working_dir_missing');
-                        safeDeactivate(statePath);
-                        exitReason = 'state_working_dir_missing';
-                        break;
-                    }
-                    // R-CHTS-CODEX: route through recovery seam before parking.
-                    const codexRecovery = haltOrRecoverCodexNoProgress({
-                        statePath,
-                        sessionDir,
-                        extensionRoot,
-                        workingDir: postState.working_dir || state.working_dir,
-                        iteration,
-                        log,
-                    });
-                    if (codexRecovery.kind === 'advanced') {
-                        lastStateIteration = -1;
-                        stallCount = 0;
-                        await sleep(1000);
-                        continue;
-                    }
-                    if (codexRecovery.kind === 'recovery_exhausted') {
-                        writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
-                        recordExitReason(statePath, 'recovery_exhausted');
-                        safeDeactivate(statePath);
-                        removeRunnerSessionMapEntry(statePath, log);
-                        exitReason = 'recovery_exhausted';
-                        break;
-                    }
-                    // kind === 'halt' → fall through to existing park.
-                    log(`Codex manager made no progress for ${noProgress.consecutiveCount} consecutive relaunch passes — halting with codex_manager_no_progress.`);
-                    logActivity({ event: 'codex_manager_no_progress', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackendFromStateFileWithSource(statePath).backend, consecutive_count: noProgress.consecutiveCount, pending_count: relaunchDecision.pendingCount });
-                    recordExitReason(statePath, 'codex_manager_no_progress');
-                    safeDeactivate(statePath);
-                    removeRunnerSessionMapEntry(statePath, log);
-                    exitReason = 'codex_manager_no_progress';
+                const codexStep = resolveCodexManagerNoProgressStep({
+                    statePath, sessionDir, extensionRoot, postState, state, iteration, pendingCount: relaunchDecision.pendingCount, log,
+                });
+                if (codexStep.kind === 'exit') {
+                    exitReason = codexStep.exitReason;
                     break;
+                }
+                if (codexStep.kind === 'continue') {
+                    lastStateIteration = -1;
+                    stallCount = 0;
+                    await sleep(1000);
+                    continue;
                 }
                 const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
                 const detail = relaunchDecision.exitKind === 'other_error'
