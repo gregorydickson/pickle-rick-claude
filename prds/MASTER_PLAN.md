@@ -74,120 +74,102 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 📌 SESSION HANDOFF — state as of 2026-09-12 15:00Z (SUPERSEDES the 2026-09-09 handoff; read this FIRST)
+## 🚢 SESSION HANDOFF — state as of 2026-09-13 08:40Z. **v2.1.0-beta.26 SHIPPED.** Read this FIRST.
 
-**NO PIPELINE IS RUNNING. Nothing is wedged. The tree is clean and nothing is unpushed.**
+**The release drought is over.** First tag since 2026-09-04, closing a **283-commit** gap in which four
+consecutive bundles ran their phases and reported `failed` while the tree they produced measured green.
 
-The previous handoff said session `2026-09-09-e959390b` was LIVE at pickle 0/4 and must not be touched.
-**That is stale.** Measured from the session's own files, not from a log line:
-
-| what | measured |
+| | |
 |---|---|
-| session `e959390b` | `active: false`, `step: completed`, ended 2026-09-10 19:24Z |
-| phases | **4/4 completed**, 0 skipped |
-| tickets | **23 of 23 Done** |
-| verdict | `failed` |
-| citadel advisory findings | 185 |
-| box | rebooted Fri 2026-09-11 06:10 local, power outage, AFTER the run finished |
-| tmux / cron / monitor | all gone; a session-only cron did not survive the reboot |
+| tag | **v2.1.0-beta.26**, targeting `release/v2.1-beta` |
+| sha | `6238ab82` — tag sha verified EQUAL to the branch sha via `verify-release-tag.sh`, rc 0 |
+| gate | **19 legs, every exit code captured directly, all rc 0** |
+| tree | clean · compiled JS matches TS · deploy verified BY CONTENT |
+| bug backlog | **fully drained** — only #5 (enhancement) remains open |
 
-**The outage destroyed no work.** The run had already completed ~16 hours before the box went down.
+**Gate counts, recorded so a future run can tell green from shrunk:** fast **9844** tests, `failures=0
+runs_completed=5/5` · integration **721** parallel + **697** serial as separate invocations · contract 99
+· expensive 14+8 · deploy-lifecycle soak **genuinely 1803.7s**, not the self-skip. The fast tier GREW
+from 9820, so nothing greened by shrinking.
 
-`phase_dispositions` for that run:
-```
-pickle:         done_over_red_worker_gate_tests:49b6e555,8ef171aa; post_final_tier_degraded:red
-anatomy-park:   rate_limit_exhausted
-szechuan-sauce: baseline_unmeasurable_unrecoverable
-```
+### What shipped — [[B-RELVERD]], six roots, 7/7 tickets Done
 
-### What that run actually delivered — the GitHub backlog is nearly drained
+Session `2026-09-12-a4d141e1`, 3/4 phases, 195m15s, anatomy-park CONVERGED (it appears in no
+disposition), szechuan `stalled_below_target`.
 
-Seven of the nine open GitHub issues were verified fixed at HEAD `c741ce4f` **by mechanism grep, not by
-ticket title**, and closed with evidence on 2026-09-12: **#6 #7 #8 #9 #10 #11 #14**. Remaining open:
-**#5** (enhancement, Genesis knowledge model), **#15** (judge-failure finalize gate breaks the loop),
-**#16** (NEW, filed 2026-09-12, the `nonConvergent` latch).
+**Axis 1 — the verdict layer dooming a run that was fine.** V1 `nonConvergent` latch → derived at
+finalize · V2 failed finalize gate `break` → `isStrictPhasePolicy(runtime) ? break : continue` · V3
+remediator no longer spends a cycle on `<timeout>` sentinels, coarse diagnostic keeps its tail · V4 the
+downgraded anatomy crash names its disposition.
 
-**Two method corrections worth keeping.** #14's fix is real: `discoverSubsystems` now iterates
-`subsystemRoots`, which consults `getWorkspacePackages` first (`13b619bc`). And #11 was initially
-mis-reported by me as half-fixed, because I read the boilerplate filter (`hasSubstantiveManagerHandoff`)
-and INFERRED the exit arm survived without grepping it. It does not survive —
-`mux-runner.ts:10092` and `:14769` both read *"`manager_handoff_pending` no longer halts — this is
-park-and-flag only."* **Grep the arm, not its neighbour.**
+**Axis 2 — a gate greening a measurement it never took.** V5 the metrics fast-tier coupling REMOVED
+(not raised) · V6 `--max-warnings=-1` → `=0` with the 17 findings FIXED, not downgraded.
 
-### Why nothing has released — RE-MEASURED at HEAD, the premise HOLDS
+### 🎯 V1 VALIDATED IN THE FIELD ON ITS OWN FIRST RUN — the single most important line in this file
 
-`counters.nonConvergent` in `pipeline-runner.ts`: **5 raise sites** (`:4938 :5369 :5415 :5461 :5510`),
-**0 decrements** (`grep 'nonConvergent(--|-=)'` matches nothing), verdict at `:4618`
-`unsuccessful = pipelineFailed || counters.nonConvergent > 0`. Unchanged since the 2026-09-09 reading.
-Now filed publicly as **GitHub #16** with the four-bundle evidence table.
-
-Its sibling is **GitHub #15**, also re-measured and CONFIRMED live:
-`runAllBackendsExhaustedFinalizeGate` (`:4914`) returns `{ action: 'break' }` on a failed finalize gate,
-and the caller at `:5621` is `if (outcome.action === 'break') break;` — **unconditional**, never
-consulting `pipeline_continue_on_phase_fail`. A measurement failure stops the phase loop.
-
-### ⛔ RELEASE ATTEMPT 2026-09-12 — FULL GATE RUN, **RED**, ship correctly refused
-
-Operator authorized a full ship (bump, tag, push, deploy) **conditional on a green gate**. The gate was
-run from `extension/` at `c741ce4f`, every leg's exit code captured directly (no pipes, no
-`${PIPESTATUS}` — this shell is zsh), with a same-run id so a stale log cannot read as green.
+The bundle's pickle phase reported:
 
 ```
-GATE_RUN_ID=20260912T150133Z-7830   GATE_START=15:01:33Z   GATE_END=16:03:27Z   HEAD=c741ce4f
-npm ci 0 · tsc --noEmit 0 · eslint 0 · tsc emit 0 · JS/TS drift 0 files
-9/9 audits 0
-test:fast:budget  1   <-- RED
-test:integration  0
-test:expensive    0
+pickle: done_over_unmeasured_worker_gate_tests:34f7bd91,3f21f6b6,b369eb18,35e8a2c0,e79a89d8;
+        post_final_tier_degraded:red
 ```
 
-**The condition was not met, so nothing was bumped, tagged, pushed or deployed.** The tree is untouched.
+**Five tickets, and NO `done_over_red` term at all**, with an explicit `NOT withholding` log line.
+Under the previous code those five would have latched `nonConvergent` at phase 1 of 4 and doomed the
+run before anatomy-park started — which is precisely what killed B-MEGADRAIN, B-CIGREEN and the
+continuation. The fix's first live exercise was the exact scenario it was built for.
 
-**The red is CONTENTION, not code — measured both directions on a quiet box** (load 1.31, zero leaked
-fixture dirs, Node v24.19.0): `tests/metrics.test.js` standalone is **63/63 pass, exit 0**; in-tier it
-failed **3 of 3 runs** on `CLI: default invocation with mock data` at 45021.6 / 45016.4 / 45017.2 ms —
-three runs within 5ms of a 45s cap is a timeout, not a flake. Filed as **GitHub #17** and scoped as
-[[B-RELVERD]] **ROOT V5**, which is the item to land first.
+### ⚠ The red that replaced the red — a lesson worth more than the fix
 
-**Do NOT ship on the strength of "it passes standalone".** By this repo's own rule a failure is
-inherited only if it is already filed as a bug PRD AND reproduces on the pre-bundle tree; this one was
-filed only as a COMMENT IN A THIRD TEST FILE, which is not the same thing and is precisely how it went
-unnoticed. `CLAUDE.md` is unambiguous: test failures block release, no exceptions.
+After V5 landed, the gate was STILL red, on a DIFFERENT test: `AC-GTRUTH-A2-6`, which asserts the exact
+source text `runnerState.pipeline_continue_on_phase_fail === false) return true;`. V2's own commit
+(`e832b712`) had EXTRACTED that inline check into `isStrictPhasePolicy` so the finalize gate could
+consult one reader instead of two. **A behaviour-preserving refactor reddened a source-text pin.**
 
-### Version and release position
+Behaviour was re-verified BEFORE the pin was touched, not assumed: the five strict-phase suites ran
+**131/131** green at the extracting commit. The pin was then rewritten (`52b5988e`) to name the
+invariant — polarity, the wire, one reader.
 
-`2.1.0-beta.25`, **273 commits unreleased**, nothing tagged since 2026-09-04. Of those 273, **117 are
-anatomy-park review commits** — most of the unreleased delta is review output, not new bundle work.
+**And the first rewrite was VACUOUS.** The file-wide `pipeline_continue_on_phase_fail === false`
+assertion stayed GREEN when the reader was flipped to `!== true`, because the `--strict-phases` SETTER
+carries the identical comparison and masked it. Scoping the assertion to the reader's own function body
+fixed it. Final mutation matrix, source restored byte-identical after each:
 
-### NEXT DISPATCH — [[B-RELVERD]]
-
-`prds/p1-b-relverd-derive-never-latch-continue-never-break.md`, authored 2026-09-12. Four roots, one
-thesis: **a non-crash disposition must not doom the verdict, and must not stop the phase loop.**
-
-| root | item | source |
+| mutation | expected | got |
 |---|---|---|
-| V1 | `nonConvergent` latch → derive at finalize | GitHub #16, ROOT G3 |
-| V2 | failed finalize gate returns `break` → continue | GitHub #15 |
-| V3 | remediator burns cycles on `<timeout>` sentinels; diagnostic truncated to startup output | GitHub #15 |
-| V4 | downgraded anatomy crash reports GREEN (AP-EXT-ITER5-01 disposition half, fence-blocked) | measured |
-| **V5** | **fast-tier 45s cap decided by unrelated tests' spawn count — LAND FIRST, it is what is red** | GitHub #17 |
-| V6 | eslint gate reads strict, configured unlimited, 17 findings exit 0 | GitHub #18 |
+| reader polarity `=== false` → `!== true` | RED | RED |
+| SETTER-only flip (over-trigger control) | GREEN | GREEN |
+| delegation `return isStrictPhasePolicy(runtime);` deleted | RED | RED |
+| second reader added | RED | RED |
 
-Six roots, two subsystems (phase/verdict layer + release gate). The review toll is near-fixed per
-BUNDLE, so the second subsystem costs one extra rotation, not double. **Order: V5 first** (it is the
-live red), then V1, then V4 after V1. B-LOGEV was swept from the queue this pass as already-fixed.
+**Two standing rules earned here:** a source-text pin anchored on a SPELLING cannot survive a refactor
+that preserves behaviour, and it trains the next author to rewrite the guard instead of reading it. And
+when a pin asserts a token that appears MORE THAN ONCE in the file, scope the assertion to the
+construct you mean — a sibling occurrence will mask the mutation and hand you a vacuous green.
 
-### Standing instrument warnings — the same class the audits keep finding
+### GitHub — seven closed 2026-09-12, four closed 2026-09-13
 
-`pgrep -f 'bin/pipeline-runner.js'` matches the claude process carrying the prompt, and 54 test files
-spawn that same argv · a bare `ps | grep claude` census misses live workers (use `ppid ==` the mux pid) ·
-`${PIPESTATUS[0]}` is a bashism and **this shell is zsh**, so piped gate legs report EMPTY exit codes ·
-zsh also refuses `grep --include=*.ts` unquoted. **Resolve a live session by reading `state.json`,
-never argv.** Capture every gate leg's exit code directly and stamp a same-run marker; a stale
-`/tmp` tier log reads as green.
+Closed on measurement, each citing the mechanism grepped rather than a ticket title: **#6 #7 #8 #9 #10
+#11 #14** (fixed by the previous run, never closed) and **#15 #16 #17 #18** (fixed by this release).
+**Only #5 remains open**, an enhancement, deliberately unscheduled.
+
+**Method correction retained on purpose:** #11 was first reported by me as half-fixed, because I read
+the boilerplate filter (`hasSubstantiveManagerHandoff`) and INFERRED the exit arm beside it had
+survived. It had not. **Grep the arm you are claiming about, not its neighbour.**
+
+### Open, in priority order
+
+1. **`post_final_tier_degraded:red`** still raises the withhold and is now the LAST unexamined verdict
+   term. It fired on a run whose branch then passed a 19-leg gate, so its input is suspect in the same
+   way V1's was. **Do not assume it is wrong** — measure what tier it read and when, then decide.
+2. **szechuan `stalled_below_target`** — the repeat that [[ROOT S]] has been tracking. Now the only
+   phase that did not complete.
+3. **#5** — read before the next redesign decision.
+4. The stale-premise sweep still lists rows never re-measured. **B-LOGEV was struck this pass as
+   already-fixed** (its corroborant parameter is REQUIRED, so no call site can keep the old verdict);
+   expect the same of others. Re-grep the MECHANISM before scoping any row.
 
 ---
-
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
 
@@ -505,7 +487,9 @@ the AC-G3 net-LOC number whatever it says.
 
 ---
 
-## 🐙 GITHUB ISSUES → BUNDLE MAP (fully re-measured against HEAD `c741ce4f`, 2026-09-12)
+## 🐙 GITHUB ISSUES → BUNDLE MAP (re-measured 2026-09-12; #15-#18 closed 2026-09-13 by beta.26)
+
+**BUG BACKLOG DRAINED.** Every bug issue is closed. Only #5, an enhancement, remains open.
 
 **Seven of the nine open issues were CLOSED on 2026-09-12** after verifying each one by MECHANISM grep
 at HEAD, not by ticket title. The B-MEGADRAIN continuation run (`2026-09-09-e959390b`, 23/23 Done) had
@@ -521,10 +505,10 @@ table as complete; a catalog that asserts completeness is exactly the shape that
 | **#10** | ✅ **CLOSED** | the omission is no longer silent: `[pickle-rick] requirement coverage gap: N of M requirement(s) not mapped by any ticket: <ids>`. **Stated residual:** `manifest.tickets` is STILL an AC-shape projection, not a full decomposition — the warning names what it drops |
 | **#11** | ✅ **CLOSED** | `mux-runner.ts:10092` + `:14769` — *"`manager_handoff_pending` no longer halts — this is park-and-flag only"*. `flagManagerHandoffResidual` records it, the epic completes `reason: 'success'`, the remaining phases run. `hasSubstantiveManagerHandoff` separately narrows the boilerplate false positive |
 | **#14** | ✅ **CLOSED** | `discoverSubsystems` iterates `subsystemRoots(target)`, which consults `getWorkspacePackages(target)` FIRST and only falls back to the top-level listing. Identity is the path RELATIVE to target, not the basename (`13b619bc`, tidied `4de9ad13`) |
-| **#15** | 🔴 **OPEN — [[B-RELVERD]] ROOT V2 + V3** | CONFIRMED live: `runAllBackendsExhaustedFinalizeGate` (`pipeline-runner.ts:4914`) returns `{action:'break'}`; caller `:5621` is `if (outcome.action === 'break') break;` — unconditional, never reads `pipeline_continue_on_phase_fail`. Second half: the remediator aborts on `<timeout>` sentinels having burned the cycle, 3 cycles → 0 fixes → cap exhausted |
-| **#16** | 🔴 **OPEN — [[B-RELVERD]] ROOT V1** | filed 2026-09-12. `nonConvergent`: 5 raises, 0 decrements, `:4618` verdict reads `> 0`. Four bundles' evidence table in the issue body |
-| **#17** | 🔴 **OPEN — [[B-RELVERD]] ROOT V5, filed 2026-09-12** | **currently blocking the release.** `test:fast:budget` red 3/3 at a 45s cap on `tests/metrics.test.js`; standalone 63/63 green. The coupling is documented in `tests/config-protection-state-files.test.js` as a spawn budget imposed on OTHER authors |
-| **#18** | 🔴 **OPEN — [[B-RELVERD]] ROOT V6, filed 2026-09-12** | `eslint src/ --max-warnings=-1` is ESLint's NO-LIMIT value; measured `17 problems (0 errors, 17 warnings)` **exit 0**. Drifted 16 → 17 since 2026-09-01 |
+| **#15** | ✅ **CLOSED 2026-09-13, shipped in beta.26** | CONFIRMED live: `runAllBackendsExhaustedFinalizeGate` (`pipeline-runner.ts:4914`) returns `{action:'break'}`; caller `:5621` is `if (outcome.action === 'break') break;` — unconditional, never reads `pipeline_continue_on_phase_fail`. Second half: the remediator aborts on `<timeout>` sentinels having burned the cycle, 3 cycles → 0 fixes → cap exhausted |
+| **#16** | ✅ **CLOSED 2026-09-13, shipped in beta.26** | filed 2026-09-12. `nonConvergent`: 5 raises, 0 decrements, `:4618` verdict reads `> 0`. Four bundles' evidence table in the issue body |
+| **#17** | ✅ **CLOSED 2026-09-13, shipped in beta.26** | **currently blocking the release.** `test:fast:budget` red 3/3 at a 45s cap on `tests/metrics.test.js`; standalone 63/63 green. The coupling is documented in `tests/config-protection-state-files.test.js` as a spawn budget imposed on OTHER authors |
+| **#18** | ✅ **CLOSED 2026-09-13, shipped in beta.26** | `eslint src/ --max-warnings=-1` is ESLint's NO-LIMIT value; measured `17 problems (0 errors, 17 warnings)` **exit 0**. Drifted 16 → 17 since 2026-09-01 |
 | **#5** | ⏸ **OPEN, deliberately unscheduled** | enhancement, not a bug and not won't-fix |
 
 **⚠ Method note, and it cost a wrong public comment.** I first reported #11 as half-fixed because I read
