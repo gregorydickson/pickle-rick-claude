@@ -90,7 +90,17 @@ function collectSectionFindings(sections) {
             : sectionFindings.map((finding) => withFindingSource(finding, key));
     }));
 }
+// Section keys are spread in order: collectSectionFindings follows section order.
 function runCitadelAnalyzers(options, repoRoot, resolvedPrdPath) {
+    const inputs = loadAnalyzerInputs(options, repoRoot, resolvedPrdPath);
+    return {
+        ...runScopeAnalyzers(inputs),
+        ...runCrossPhaseAnalyzers(inputs),
+        ...runPrdContractAnalyzers(inputs),
+        ...runDiffPatternAnalyzers(inputs.diff),
+    };
+}
+function loadAnalyzerInputs(options, repoRoot, resolvedPrdPath) {
     const prdMarkdown = resolvedPrdPath ? readFileSync(resolvedPrdPath, 'utf-8') : '';
     // ticket 98dc9bed F3.1: parseWithComposes already handles PRDs without a
     // composes: front-matter block. Swallowing ComposesError here masks malformed
@@ -100,6 +110,10 @@ function runCitadelAnalyzers(options, repoRoot, resolvedPrdPath) {
         : { decisions: [], acceptanceCriteria: [], endpoints: [], allowlistEntries: [], statusCodeRows: [], transitionAuditRows: [], composedRcodes: new Map() };
     const diff = walkDiff(options.diffRange, { repoRoot });
     const projectShapes = detectProjectShapes(repoRoot);
+    return { options, repoRoot, resolvedPrdPath, prdMarkdown, parsedPrd, diff, projectShapes };
+}
+function runScopeAnalyzers(inputs) {
+    const { options, repoRoot, resolvedPrdPath, prdMarkdown, diff, projectShapes } = inputs;
     const siblingAuth = auditSiblingAuthPreconditions(diff, { projectShapes });
     const frontendPropDrift = safeRunAnalyzer('citadel-frontend-prop-drift', () => auditFrontendPropDrift(diff), { analyzerCompatibility: ['react-frontend'], projectShapes });
     const acShape = resolvedPrdPath
@@ -108,13 +122,26 @@ function runCitadelAnalyzers(options, repoRoot, resolvedPrdPath) {
     const ruleSetInvariants = resolvedPrdPath
         ? auditRuleSetInvariants(diff, { repoRoot, prdMarkdown })
         : NO_PRD_SKIPPED;
+    return {
+        sibling_auth_preconditions: siblingAuth,
+        frontend_prop_drift: frontendPropDrift,
+        ac_shape: acShape,
+        rule_set_invariants: ruleSetInvariants,
+    };
+}
+function runCrossPhaseAnalyzers({ options, diff }) {
     const crossPhase = readCrossPhaseFindings(options.sessionDir);
     const crossPhaseReport = {
         findings: crossPhase.findings,
         summary: crossPhase.summary,
     };
-    const diffHygiene = auditDiffHygiene(diff, { szechuanFindings: crossPhase.szechuan_findings });
-    const divergenceReconciliation = reconcileDivergences(diff);
+    return {
+        diff_hygiene: auditDiffHygiene(diff, { szechuanFindings: crossPhase.szechuan_findings }),
+        divergence_reconciliation: reconcileDivergences(diff),
+        cross_phase: crossPhaseReport,
+    };
+}
+function runPrdContractAnalyzers({ repoRoot, resolvedPrdPath, parsedPrd, diff, projectShapes }) {
     const acCoverage = resolvedPrdPath
         ? safeRunAnalyzer('citadel-ac-coverage', () => buildAcCoverageScorecard(parsedPrd.acceptanceCriteria, diff, { repoRoot }))
         : NO_PRD_SKIPPED;
@@ -126,33 +153,23 @@ function runCitadelAnalyzers(options, repoRoot, resolvedPrdPath) {
     const endpointContractConformance = resolvedPrdPath
         ? safeRunAnalyzer('citadel-endpoint-contract', () => checkEndpointContractConformance(parsedPrd.endpoints, parsedPrd.statusCodeRows, { repoRoot }), { analyzerCompatibility: ['nestjs-api'], projectShapes })
         : NO_PRD_SKIPPED;
-    const schemaRegistryDrift = safeRunAnalyzer('citadel-schema-registry-drift', () => auditSchemaRegistryDrift(diff));
-    const testAuthenticity = safeRunAnalyzer('citadel-test-authenticity', () => auditTestAuthenticity(diff));
-    const staleReference = safeRunAnalyzer('citadel-stale-reference', () => auditStaleReferences(diff));
-    const crossfileBehaviorDrift = safeRunAnalyzer('citadel-crossfile-behavior-drift', () => auditCrossfileBehaviorDrift(diff));
-    const bannedConstructs = safeRunAnalyzer('citadel-banned-constructs', () => auditBannedConstructs(diff));
-    const bannedCasts = safeRunAnalyzer('citadel-banned-casts', () => auditBannedCasts(diff));
-    const patternConformance = safeRunAnalyzer('citadel-pattern-conformance', () => auditPatternConformance(diff));
     return {
-        sibling_auth_preconditions: siblingAuth,
-        frontend_prop_drift: frontendPropDrift,
-        ac_shape: acShape,
-        rule_set_invariants: ruleSetInvariants,
-        diff_hygiene: diffHygiene,
-        divergence_reconciliation: divergenceReconciliation,
-        cross_phase: crossPhaseReport,
         ac_coverage: acCoverage,
         allowlist_dead: allowlistDead,
         state_transitions: stateTransitions,
         trap_door_coverage: trapDoorCoverage,
         endpoint_contract_conformance: endpointContractConformance,
-        schema_registry_drift: schemaRegistryDrift,
-        test_authenticity: testAuthenticity,
-        stale_reference: staleReference,
-        crossfile_behavior_drift: crossfileBehaviorDrift,
-        banned_constructs: bannedConstructs,
-        banned_casts: bannedCasts,
-        pattern_conformance: patternConformance,
+    };
+}
+function runDiffPatternAnalyzers(diff) {
+    return {
+        schema_registry_drift: safeRunAnalyzer('citadel-schema-registry-drift', () => auditSchemaRegistryDrift(diff)),
+        test_authenticity: safeRunAnalyzer('citadel-test-authenticity', () => auditTestAuthenticity(diff)),
+        stale_reference: safeRunAnalyzer('citadel-stale-reference', () => auditStaleReferences(diff)),
+        crossfile_behavior_drift: safeRunAnalyzer('citadel-crossfile-behavior-drift', () => auditCrossfileBehaviorDrift(diff)),
+        banned_constructs: safeRunAnalyzer('citadel-banned-constructs', () => auditBannedConstructs(diff)),
+        banned_casts: safeRunAnalyzer('citadel-banned-casts', () => auditBannedCasts(diff)),
+        pattern_conformance: safeRunAnalyzer('citadel-pattern-conformance', () => auditPatternConformance(diff)),
     };
 }
 export async function runCitadelStandalone(target, outputDir) {

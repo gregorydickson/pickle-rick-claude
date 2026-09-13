@@ -5,7 +5,7 @@ import { withLock } from '../state-manager.js';
 import { auditAcShape, AcShapeAuditReport } from './ac-shape-audit.js';
 import { auditSiblingAuthPreconditions } from './sibling-auth-audit.js';
 import { auditFrontendPropDrift } from './frontend-prop-drift-audit.js';
-import { walkDiff } from './diff-walker.js';
+import { DiffSummary, walkDiff } from './diff-walker.js';
 import { auditRuleSetInvariants } from './rule-set-invariant-audit.js';
 import { auditDiffHygiene } from './diff-hygiene.js';
 import { reconcileDivergences, DivergenceDecisionRequired } from './divergence-reconciliation.js';
@@ -149,11 +149,36 @@ function collectSectionFindings(sections: CitadelAuditSections): FindingLike[] {
 
 type CitadelAuditSections = ReturnType<typeof runCitadelAnalyzers>;
 
+interface CitadelAnalyzerInputs {
+  options: CitadelAuditOptions;
+  repoRoot: string;
+  resolvedPrdPath: string | undefined;
+  prdMarkdown: string;
+  parsedPrd: ParsedPrd;
+  diff: DiffSummary;
+  projectShapes: ProjectShape[];
+}
+
+// Section keys are spread in order: collectSectionFindings follows section order.
 function runCitadelAnalyzers(
   options: CitadelAuditOptions,
   repoRoot: string,
   resolvedPrdPath: string | undefined,
 ) {
+  const inputs = loadAnalyzerInputs(options, repoRoot, resolvedPrdPath);
+  return {
+    ...runScopeAnalyzers(inputs),
+    ...runCrossPhaseAnalyzers(inputs),
+    ...runPrdContractAnalyzers(inputs),
+    ...runDiffPatternAnalyzers(inputs.diff),
+  };
+}
+
+function loadAnalyzerInputs(
+  options: CitadelAuditOptions,
+  repoRoot: string,
+  resolvedPrdPath: string | undefined,
+): CitadelAnalyzerInputs {
   const prdMarkdown = resolvedPrdPath ? readFileSync(resolvedPrdPath, 'utf-8') : '';
   // ticket 98dc9bed F3.1: parseWithComposes already handles PRDs without a
   // composes: front-matter block. Swallowing ComposesError here masks malformed
@@ -163,6 +188,11 @@ function runCitadelAnalyzers(
     : { decisions: [], acceptanceCriteria: [], endpoints: [], allowlistEntries: [], statusCodeRows: [], transitionAuditRows: [], composedRcodes: new Map() };
   const diff = walkDiff(options.diffRange, { repoRoot });
   const projectShapes = detectProjectShapes(repoRoot);
+  return { options, repoRoot, resolvedPrdPath, prdMarkdown, parsedPrd, diff, projectShapes };
+}
+
+function runScopeAnalyzers(inputs: CitadelAnalyzerInputs) {
+  const { options, repoRoot, resolvedPrdPath, prdMarkdown, diff, projectShapes } = inputs;
   const siblingAuth = auditSiblingAuthPreconditions(diff, { projectShapes });
   const frontendPropDrift = safeRunAnalyzer(
     'citadel-frontend-prop-drift',
@@ -175,13 +205,28 @@ function runCitadelAnalyzers(
   const ruleSetInvariants = resolvedPrdPath
     ? auditRuleSetInvariants(diff, { repoRoot, prdMarkdown })
     : NO_PRD_SKIPPED;
+  return {
+    sibling_auth_preconditions: siblingAuth,
+    frontend_prop_drift: frontendPropDrift,
+    ac_shape: acShape,
+    rule_set_invariants: ruleSetInvariants,
+  };
+}
+
+function runCrossPhaseAnalyzers({ options, diff }: CitadelAnalyzerInputs) {
   const crossPhase = readCrossPhaseFindings(options.sessionDir);
   const crossPhaseReport: CrossPhaseFindingsReport = {
     findings: crossPhase.findings,
     summary: crossPhase.summary,
   };
-  const diffHygiene = auditDiffHygiene(diff, { szechuanFindings: crossPhase.szechuan_findings });
-  const divergenceReconciliation = reconcileDivergences(diff);
+  return {
+    diff_hygiene: auditDiffHygiene(diff, { szechuanFindings: crossPhase.szechuan_findings }),
+    divergence_reconciliation: reconcileDivergences(diff),
+    cross_phase: crossPhaseReport,
+  };
+}
+
+function runPrdContractAnalyzers({ repoRoot, resolvedPrdPath, parsedPrd, diff, projectShapes }: CitadelAnalyzerInputs) {
   const acCoverage = resolvedPrdPath
     ? safeRunAnalyzer('citadel-ac-coverage', () =>
         buildAcCoverageScorecard(parsedPrd.acceptanceCriteria, diff, { repoRoot }))
@@ -201,40 +246,31 @@ function runCitadelAnalyzers(
         { analyzerCompatibility: ['nestjs-api'], projectShapes },
       )
     : NO_PRD_SKIPPED;
-  const schemaRegistryDrift = safeRunAnalyzer('citadel-schema-registry-drift', () =>
-    auditSchemaRegistryDrift(diff));
-  const testAuthenticity = safeRunAnalyzer('citadel-test-authenticity', () =>
-    auditTestAuthenticity(diff));
-  const staleReference = safeRunAnalyzer('citadel-stale-reference', () =>
-    auditStaleReferences(diff));
-  const crossfileBehaviorDrift = safeRunAnalyzer('citadel-crossfile-behavior-drift', () =>
-    auditCrossfileBehaviorDrift(diff));
-  const bannedConstructs = safeRunAnalyzer('citadel-banned-constructs', () =>
-    auditBannedConstructs(diff));
-  const bannedCasts = safeRunAnalyzer('citadel-banned-casts', () =>
-    auditBannedCasts(diff));
-  const patternConformance = safeRunAnalyzer('citadel-pattern-conformance', () =>
-    auditPatternConformance(diff));
   return {
-    sibling_auth_preconditions: siblingAuth,
-    frontend_prop_drift: frontendPropDrift,
-    ac_shape: acShape,
-    rule_set_invariants: ruleSetInvariants,
-    diff_hygiene: diffHygiene,
-    divergence_reconciliation: divergenceReconciliation,
-    cross_phase: crossPhaseReport,
     ac_coverage: acCoverage,
     allowlist_dead: allowlistDead,
     state_transitions: stateTransitions,
     trap_door_coverage: trapDoorCoverage,
     endpoint_contract_conformance: endpointContractConformance,
-    schema_registry_drift: schemaRegistryDrift,
-    test_authenticity: testAuthenticity,
-    stale_reference: staleReference,
-    crossfile_behavior_drift: crossfileBehaviorDrift,
-    banned_constructs: bannedConstructs,
-    banned_casts: bannedCasts,
-    pattern_conformance: patternConformance,
+  };
+}
+
+function runDiffPatternAnalyzers(diff: DiffSummary) {
+  return {
+    schema_registry_drift: safeRunAnalyzer('citadel-schema-registry-drift', () =>
+      auditSchemaRegistryDrift(diff)),
+    test_authenticity: safeRunAnalyzer('citadel-test-authenticity', () =>
+      auditTestAuthenticity(diff)),
+    stale_reference: safeRunAnalyzer('citadel-stale-reference', () =>
+      auditStaleReferences(diff)),
+    crossfile_behavior_drift: safeRunAnalyzer('citadel-crossfile-behavior-drift', () =>
+      auditCrossfileBehaviorDrift(diff)),
+    banned_constructs: safeRunAnalyzer('citadel-banned-constructs', () =>
+      auditBannedConstructs(diff)),
+    banned_casts: safeRunAnalyzer('citadel-banned-casts', () =>
+      auditBannedCasts(diff)),
+    pattern_conformance: safeRunAnalyzer('citadel-pattern-conformance', () =>
+      auditPatternConformance(diff)),
   };
 }
 
