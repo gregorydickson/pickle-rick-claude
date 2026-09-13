@@ -157,6 +157,40 @@ Closed on measurement, each citing the mechanism grepped rather than a ticket ti
 the boilerplate filter (`hasSubstantiveManagerHandoff`) and INFERRED the exit arm beside it had
 survived. It had not. **Grep the arm you are claiming about, not its neighbour.**
 
+### 🚀 IN FLIGHT — [[B-MEASURE]], launched 2026-09-13 11:54Z
+
+Session `2026-09-13-d2e834e1`, tmux `pipeline-d2e834e1`, PRD
+`prds/p1-b-measure-the-measurement-must-mean-what-it-names.md`. Five roots, one thesis: **a measurement
+must measure what it names, carry the evidence it computed, and not be silenced.**
+
+| root | finding | issue |
+|---|---|---|
+| **M3** (first) | two RULE-LESS `eslint-disable-next-line` comments hide complexity **366** + **1690** lines from a `--max-warnings=0` gate | #21 |
+| M4 | judge measures SPAN against a 50-line limit nothing enforces (eslint enforces **120** code lines); 3 of 6 ledger entries false | #22 |
+| M1 | post-final verdict drops the diagnostic tail it already built | #19 |
+| M2 | baseline scored on a different wire from every iteration | #20 |
+| M5 | the one comparison basis that will not name itself is the arm that misfired | — |
+
+**Four of the five are ONE omission: a fix landed where it was filed while its twin sat in a sibling.**
+M1 is V3's twin, M2 is #7's untouched half, M3 is #18's twin, M5 is B-VERDICT's missed arm. **Sweep the
+CLASS, not the cited call site** — this is now the most reliable finding-generator in this repo.
+
+**M3 carries an explicit NON-GOAL:** do NOT decompose `runMuxRunnerMain`. Making a 1690-line,
+complexity-366 salvage-path function VISIBLE is this bundle's job; ratcheting it down belongs to a later
+one, against a ceiling that only exists once M3 lands.
+
+### Method errors this session, kept because both were cheap here and expensive later
+
+- **#11 closed as half-fixed when it was fully fixed.** I read the boilerplate filter and INFERRED the
+  exit arm beside it had survived. **Grep the arm you are claiming about, not its neighbour.**
+- **#7 closed on partial verification.** It reported TWO defects; I verified one. The second is now #20.
+  **When an issue reports N defects, verify N before closing.**
+- **A first pin rewrite was VACUOUS** — a file-wide token assertion stayed green under mutation because a
+  sibling occurrence masked it. **Scope an assertion to the construct you mean.**
+- **A grep for `eslint-disable.*max-lines-per-function` found nothing** while two rule-less disables were
+  hiding exactly that. **A pattern that requires the thing being suppressed to be NAMED cannot find the
+  suppression that names nothing.**
+
 ### Open, in priority order
 
 1. **✅ MEASURED 2026-09-13 — `post_final_tier_degraded:red` is NOT a false withhold, it is an
@@ -178,8 +212,14 @@ survived. It had not. **Grep the arm you are claiming about, not its neighbour.*
    must sweep the CLASS, not the cited call site.
    *Hypothesis, NOT measured, needs its own pass:* whether the post-final tier should run against a
    quiescent tree at all.
-2. **szechuan `stalled_below_target`** — the repeat that [[ROOT S]] has been tracking. Now the only
-   phase that did not complete.
+2. **✅ MEASURED 2026-09-13 — szechuan's `stalled_below_target` was NOT a worker failure.** Its whole
+   15-minute, 6-iteration life was decided by two measurement defects, both now filed and dispatched:
+   the baseline scored on a different wire from the iterations (GitHub #20), and a judge counting SPAN
+   against a limit nothing enforces (GitHub #22). Log: `LLM baseline metric: 2` → `Metric: 6` with
+   `resolved: []`, `remaining: []`, all six ids `new` → `Classification: regressed (previous=2,
+   tolerance=0)` → stall. **Nothing regressed** — the baseline never built a ledger for anything to
+   carry over from, and 3 of the 6 violations were false (46, 47 and 49 CODE lines filed against a
+   "50-line limit"). ROOT S's repeat has a measured cause for the first time.
 3. **#5** — read before the next redesign decision.
 4. The stale-premise sweep still lists rows never re-measured. **B-LOGEV was struck this pass as
    already-fixed** (its corroborant parameter is REQUIRED, so no call site can keep the old verdict);
@@ -505,8 +545,8 @@ the AC-G3 net-LOC number whatever it says.
 
 ## 🐙 GITHUB ISSUES → BUNDLE MAP (re-measured 2026-09-12; #15-#18 closed 2026-09-13 by beta.26)
 
-**Backlog as of 2026-09-13 10:10Z:** #19 (post-final verdict discards its own diagnostic, filed this
-pass from measurement) and #5 (enhancement, unscheduled). Everything else is closed.
+**Backlog as of 2026-09-13 12:00Z:** #19, #20, #21, #22 — all filed from measurement this session, all
+dispatched in [[B-MEASURE]] — plus #5 (enhancement, unscheduled). Everything else is closed.
 
 **Seven of the nine open issues were CLOSED on 2026-09-12** after verifying each one by MECHANISM grep
 at HEAD, not by ticket title. The B-MEGADRAIN continuation run (`2026-09-09-e959390b`, 23/23 Done) had
