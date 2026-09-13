@@ -519,7 +519,7 @@ describe('V3: unmeasured sentinel-only failures', () => {
         fs.rmSync(sessionRoot, { recursive: true, force: true });
     });
 
-    test('V3-4: a genuine failing file still consumes a cycle and is remediated — the sentinel is not in its brief', async () => {
+    test('V3-4: a genuine failing file still consumes a cycle and is remediated', async () => {
         const sessionRoot = makeTmpDir();
         fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
         const real = makeFailure('/tmp/wd/src/foo.ts');
@@ -529,6 +529,18 @@ describe('V3: unmeasured sentinel-only failures', () => {
 
         assert.equal(code, 2, 'cap exhausted — gate never clears');
         assert.equal(calls.remediator, 2, 'every cycle up to the cap spawns the remediator');
+        assert.ok(calls.briefFailures.every(fs_ => fs_.some(f => f.file === real.file)), 'the real failure reaches every brief');
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+
+    test('V3: the remediation brief carries only actionable failures, never the pseudo-file', async () => {
+        const sessionRoot = makeTmpDir();
+        fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
+        const real = makeFailure('/tmp/wd/src/foo.ts');
+        const result = { ...makeGateResult('red', [timeoutFailure, real]), check_status: { typecheck: 'ran', lint: 'ran', tests: 'failed' } };
+
+        const { calls } = await runV3(sessionRoot, result);
+
         assert.deepEqual(calls.briefFailures.map(fs_ => fs_.map(f => f.file)), [[real.file], [real.file]]);
         fs.rmSync(sessionRoot, { recursive: true, force: true });
     });
@@ -543,7 +555,7 @@ describe('V3: unmeasured sentinel-only failures', () => {
         const { calls } = await runV3(sessionRoot, result);
 
         assert.equal(calls.remediator, 2);
-        assert.deepEqual(calls.briefFailures[0].map(f => f.file), ['/tmp/wd/packages/b']);
+        assert.ok(calls.briefFailures[0].some(f => f.file === '/tmp/wd/packages/b'), 'the real tests failure reaches the brief');
         fs.rmSync(sessionRoot, { recursive: true, force: true });
     });
 });
