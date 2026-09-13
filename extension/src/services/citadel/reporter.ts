@@ -70,8 +70,6 @@ export interface ReporterInput {
 }
 
 export interface CitadelRunResult extends CitadelJsonReport {
-  exitCode: number;
-  decisions: CitadelDecision[];
   json: CitadelJsonReport;
 }
 
@@ -104,12 +102,7 @@ export class Reporter {
       markdown: renderMarkdown(findings, decisions, summary, exitCode),
     };
 
-    return {
-      ...json,
-      exitCode,
-      decisions,
-      json,
-    };
+    return { ...json, json };
   }
 
   renderMarkdown(report: Pick<CitadelJsonReport, 'findings' | 'decisions' | 'summary' | 'exitCode'>): string {

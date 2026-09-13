@@ -25,12 +25,7 @@ export class Reporter {
             summary,
             markdown: renderMarkdown(findings, decisions, summary, exitCode),
         };
-        return {
-            ...json,
-            exitCode,
-            decisions,
-            json,
-        };
+        return { ...json, json };
     }
     renderMarkdown(report) {
         return renderMarkdown(report.findings, report.decisions, report.summary, report.exitCode);
