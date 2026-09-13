@@ -849,17 +849,17 @@ describe('M3 (GitHub #21): pickle/no-unlimited-disable', () => {
     assert.deepEqual(offenders, [], `rule-less eslint-disable directive(s): ${offenders.join(', ')}`);
   });
 
-  it('M3-5: stripping the rule list above either mux-runner ceiling function reds the scan there and nowhere else', () => {
+  it('M3-5: stripping the rule list above every scoped mux-runner disable reds the scan there and nowhere else', () => {
     const rel = path.join('src', 'bin', 'mux-runner.ts');
     const lines = fs.readFileSync(path.join(EXTENSION_ROOT, rel), 'utf8').split('\n');
-    const mutatedLines = ['export function correctPhantomDoneTickets(', 'async function runMuxRunnerMain('].map((head) => {
-      const at = lines.findIndex((l) => l.startsWith(head));
-      assert.ok(at > 0, `${head} not found in ${rel}`);
-      const scoped = lines[at - 1];
-      lines[at - 1] = scoped.replace(/(eslint-disable-next-line) .+? (--)/, '$1 $2');
-      assert.notEqual(lines[at - 1], scoped, `${head} is not preceded by a scoped disable directive`);
-      return at;
+    const scopedDisableRe = /(eslint-disable-next-line) .+? (--)/;
+    const mutatedLines = [];
+    lines.forEach((line, i) => {
+      if (!scopedDisableRe.test(line)) return;
+      lines[i] = line.replace(scopedDisableRe, '$1 $2');
+      mutatedLines.push(i + 1);
     });
+    assert.ok(mutatedLines.length > 0, `no scoped eslint-disable-next-line directive found in ${rel} — discovery is vacuous`);
     assert.deepEqual(unlimitedDisableLines(lines.join('\n'), { filePath: rel }), mutatedLines);
   });
 });
