@@ -11400,7 +11400,418 @@ async function applyRateLimitCycleOutcome(input) {
     }
     return { kind: 'proceed', consecutiveRateLimits };
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 1397 code lines against a ceiling of 120, and complexity 300 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowers it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle first), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/**
+ * R-WSWA-2 pre-spawn half: snapshot the per-ticket review/conformance artifact count BEFORE
+ * the worker spawn; the AFTER snapshot + delta persistence happen once it exits
+ * (`recordPostSpawnWorkerProgress`).
+ */
+function snapshotPreSpawnArtifactProgress(state, sessionDir) {
+    const apTicketId = state.current_ticket || null;
+    // AC-A4 (B-RRH): a large-tier ticket's first N spawns credit early-phase
+    // (research/plan) artifacts as progress. Compute the flag from the PRIOR
+    // per-ticket spawn_count so the BEFORE/AFTER counts use the same prefix set.
+    const apPriorSpawnCount = (apTicketId && state.worker_artifact_progress?.[apTicketId]?.spawn_count) || 0;
+    const apCreditEarlyPhases = apTicketId
+        ? resolveCreditEarlyPhases(sessionDir, apTicketId, apPriorSpawnCount, resolveWmwEarlyPhaseK())
+        : false;
+    const apBeforeCount = apTicketId ? countWorkerArtifacts(path.join(sessionDir, apTicketId), { creditEarlyPhases: apCreditEarlyPhases }) : 0;
+    return { apTicketId, apCreditEarlyPhases, apBeforeCount };
+}
+/**
+ * Post-spawn bookkeeping, in the loop's original order: R-MWIS-3 exit-path salvage, the AC-A5
+ * no-progress-increment suppression probe, then the R-WSWA-2 artifact-progress record. The
+ * caller keeps the AC-2 `working_dir` fail-safe (it breaks the main loop) and applies the
+ * idle-stall resets; `exitCommitProgressMs` is the forward-progress epoch captured at the
+ * point the salvage reported a commit, or null when it did not.
+ */
+function recordPostSpawnWorkerProgress(input) {
+    const { sessionDir, statePath, state, extensionRoot, iteration, apTicketId, apBeforeCount, log } = input;
+    let exitCommitProgressMs = null;
+    try {
+        const exitCommit = routeExitPathSalvage({
+            sessionDir,
+            statePath,
+            workingDir: input.workingDir,
+            ticketId: input.previousTicket,
+            extensionRoot,
+            flags: state.flags ?? null,
+            log,
+        });
+        if (exitCommit.committed)
+            exitCommitProgressMs = Date.now();
+    }
+    catch { /* best-effort — never block iteration on exit-path commit */ }
+    // AC-A5 (B-RRH): a rate-limited spawn (this iteration's own log shows a 429)
+    // OR a spawn within breaker-recovery grace must NOT increment the no-progress
+    // counter (B-RLAR-D2 429-spawn counter poisoning). B3: rate_limit_wait.json
+    // PRESENCE is deliberately NOT consulted here — it is a status artifact that
+    // can outlive the iteration that wrote it (a --resume re-arm from a still-live
+    // park, or a crash before fold-on-wake), so its mere presence would misclassify
+    // an unrelated same-window spawn failure as rate-limited. This iteration's own
+    // log is the sole per-iteration signal, and it independently catches every
+    // genuine re-hit of a live limit (the resumed spawn's own API call fails with
+    // its own rate_limit_event). Fail-open: any probe error → not suppressed.
+    let apSuppressIncrement = false;
+    try {
+        const apRateLimited = detectRateLimitInLog(path.join(sessionDir, `tmux_iteration_${iteration}.log`)).limited;
+        const apBreakerGrace = isWithinBreakerRecoveryGrace(input.cbState, resolveHardeningSettings(loadPickleSettingsBag(extensionRoot)).breaker_recovery_grace_seconds, Date.now());
+        apSuppressIncrement = apRateLimited || apBreakerGrace;
+    }
+    catch { /* best-effort — never block iteration on rate-limit/breaker probing */ }
+    // R-WSWA-2: persist the post-spawn artifact-count delta and emit
+    // worker_artifact_progress_zero at exactly K consecutive zero-delta spawns.
+    // AC-A3 (B-RRH): scope the source-tree signature to scope.json:allowed_paths so a
+    // peer session's dirty prds/ file is absent from the signature (B-HRPW).
+    let apProgressResult = null;
+    try {
+        if (apTicketId)
+            apProgressResult = recordWorkerArtifactProgress(statePath, sessionDir, apTicketId, apBeforeCount, {
+                iteration,
+                log,
+                workingDir: state.working_dir || process.cwd(),
+                sourceSignatureFn: (wd) => computeScopedSourceTreeSignature(wd, path.join(sessionDir, 'scope.json')),
+                creditEarlyPhases: input.apCreditEarlyPhases,
+                suppressIncrement: apSuppressIncrement,
+            });
+    }
+    catch { /* best-effort observability — never block iteration on progress tracking */ }
+    return { exitCommitProgressMs, apProgressResult };
+}
+/**
+ * R-WSE-2: detect partial lifecycle exit (research-review APPROVED, downstream artifacts missing)
+ * 90574654: sub-classify the exit (log_empty → worker_silent_death |
+ * log_truncated → worker_partial_lifecycle_exit) and route BOTH sub-classes
+ * into the ONE salvage-first recovery policy. hold/respawn both continue the
+ * loop (hold drew no cap and left the ticket untouched — H4 lands the real
+ * hold semantics in 7eb9fa20; respawn lets the manager re-spawn under the
+ * drawn-down persistent cap). Cap exhausted falls through to the existing
+ * no-progress halt shape. Fail-open: any error → log + existing behavior.
+ * R-WSE-3: emit stderr breadcrumb when ticket Failed after research APPROVED.
+ * Returns the exit reason the caller breaks the loop with, or null to continue.
+ */
+function evaluateIterationPartialLifecycleExit(input) {
+    const { sessionDir, statePath, iterWorkingDir, iteration, preIterSha, iterStartMs, apProgressResult, apBeforeCount, log } = input;
+    try {
+        const iterTicket = input.iterTicket;
+        // Hoisted so the R-WSDO breadcrumb below can gate on its null result.
+        let plExit = null;
+        if (iterTicket) {
+            // B-LOGEV: hand the classifier the iteration window so an EMPTY log is corroborated
+            // against real work before it is allowed to claim a silent death. Both halves of the
+            // window are already in scope here — the same two values passed to the recovery
+            // policy immediately below.
+            plExit = checkPartialLifecycleExit(sessionDir, statePath, iterTicket, {
+                workingDir: iterWorkingDir,
+                preIterSha,
+                iterationStartMs: iterStartMs,
+            });
+            if (plExit && plExit.subClass) {
+                const sdDecision = applySilentDeathRecoveryPolicy({
+                    sessionDir,
+                    statePath,
+                    ticketId: iterTicket,
+                    workingDir: iterWorkingDir,
+                    iteration,
+                    classification: plExit,
+                    preIterSha,
+                    iterationStartMs: iterStartMs,
+                    log,
+                });
+                if (sdDecision.action === 'halt') {
+                    log(`[silent-death] halting loop at iteration ${iteration}: respawn cap exhausted for ${iterTicket}.`);
+                    recordExitReason(statePath, sdDecision.exitReason);
+                    safeDeactivate(statePath);
+                    removeRunnerSessionMapEntry(statePath, log);
+                    return sdDecision.exitReason;
+                }
+            }
+        }
+        if (iterTicket) {
+            checkFailedAfterResearchApproved(sessionDir, iterTicket);
+        }
+        // R-WSDO (30aa2e0d) + AC-WMFF-2B: at most one post-iteration production breadcrumb.
+        // The predicates, their overlap, and the R-WSDO-first control flow live in
+        // emitWorkerProductionBreadcrumb — the one seam a test can cross to reach them.
+        if (iterTicket) {
+            emitWorkerProductionBreadcrumb({
+                sessionDir,
+                statePath,
+                workingDir: iterWorkingDir,
+                ticketId: iterTicket,
+                iteration,
+                partialLifecycleExit: plExit,
+                artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
+                preIterSha,
+                iterationStartMs: iterStartMs,
+            });
+        }
+    }
+    catch { /* best-effort — never block iteration on partial-lifecycle check failure */ }
+    return null;
+}
+/**
+ * B-DURA T10: commit the current ticket's gate-passing deliverable at the NORMAL
+ * iteration boundary (or attribute an existing untagged commit, or honest-fail)
+ * BEFORE the Done-detection / context-clear block. Best-effort, idempotent
+ * on HEAD movement — an already-tagged commit or a clean tree is a no-op. The
+ * downstream Done-flip guard remains authoritative; this only ensures verified
+ * work is a durable commit on the branch before context is cleared.
+ */
+function commitBoundaryDeliverableAfterIteration(input) {
+    const { sessionDir, statePath, state, log } = input;
+    try {
+        const boundaryTicket = state.current_ticket || null;
+        if (boundaryTicket && !isTerminalTicketStatus(getTicketStatus(sessionDir, boundaryTicket))) {
+            commitGatePassingDeliverableAtBoundary({
+                sessionDir,
+                statePath,
+                workingDir: input.iterWorkingDir,
+                ticketId: boundaryTicket,
+                extensionRoot: input.extensionRoot,
+                flags: state.flags ?? null,
+                preIterSha: input.preIterSha,
+                log,
+            });
+        }
+    }
+    catch (err) {
+        log(`[boundary-commit] iteration-boundary commit threw (ignored): ${safeErrorMessage(err)}`);
+    }
+}
+/**
+ * R-CXOR-1: detect HEAD regression after a model-attested Done — the worker may have committed
+ * then git-reset to baseline. Returns true when the suppression cap halted the session, which
+ * the loop honours with a bare `return` (the original disposition). Errors are logged and ignored.
+ */
+function recoverHeadRegressionAfterModelDone(input) {
+    const { sessionDir, statePath, state, ticketId, log } = input;
+    try {
+        const hrResult = detectAndRecoverHeadRegression({
+            ticketId,
+            workingDir: input.ticketWorkingDir || state.working_dir || process.cwd(),
+            startCommit: input.startCommit,
+            completionCommitSha: input.completionCommitSha,
+            sessionDir,
+            statePath,
+            iteration: input.iteration,
+            iterationStartMs: input.iterStartMs,
+            log,
+        });
+        if (hrResult.action === 'suppression_cap_escalate') {
+            // 7eb9fa20: cap reached with evidence — existing no-progress halt.
+            const msg = `[failed-flip] suppression cap exhausted for ${ticketId} at head-regression — halting (recovery_exhausted).`;
+            log(msg);
+            process.stderr.write(`${msg}\n`);
+            writeRecoveryHandoffArtifact(sessionDir, ticketId, 'head_regression_suppression_cap', log);
+            recordExitReason(statePath, 'recovery_exhausted');
+            safeDeactivate(statePath);
+            removeRunnerSessionMapEntry(statePath, log);
+            return true;
+        }
+    }
+    catch (err) {
+        log(`head-regression check failed (ignored): ${safeErrorMessage(err)}`);
+    }
+    return false;
+}
+/**
+ * Validate the ticket the loop just moved past: a model-attested Done must carry completion
+ * evidence (F3 / R-DWC guard), otherwise the drift path runs the auto-completion validation.
+ * `continue` parks the ticket and continues the phase loop (the caller records the wasted
+ * iteration); `return` is the head-regression suppression-cap halt.
+ */
+function validatePriorTicketCompletion(input) {
+    const { sessionDir, statePath, state, previousTicket, previousTicketStartCommit, prevTicketInfo, iteration, log } = input;
+    if (prevTicketInfo?.id && normalizedStatus(getTicketStatus(sessionDir, prevTicketInfo.id)) === 'done') {
+        // F3 / R-DWC: worker-self-attested Done must have explicit completion_commit.
+        // Recurring failure class — Finding #2 (codex Done-without-commit).
+        const guard = guardCompletionCommitBeforeDone({
+            sessionDir,
+            ticketId: prevTicketInfo.id,
+            // AP-EXT-ITER124-01: ladder, not `||` selection.
+            ...completionDirLadder(prevTicketInfo.working_dir, state.working_dir),
+            flags: state.flags ?? null,
+        });
+        if (!guard.ok) {
+            const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
+            log(msg);
+            process.stderr.write(`${msg}\n`);
+            // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
+            // the residual, park this ticket (leave it un-Done), and
+            // continue the phase loop instead of halting the session.
+            recordExitReason(statePath, 'done_without_commit_evidence');
+            return 'continue';
+        }
+        // R-PEDC: clear stale prior-iteration stamp on recovery.
+        clearStaleDoneWithoutCommitEvidence(statePath);
+        log(`Ticket ${previousTicket} already marked Done by model — skipping validation (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
+        if (previousTicketStartCommit && recoverHeadRegressionAfterModelDone({
+            ...input,
+            ticketId: prevTicketInfo.id,
+            ticketWorkingDir: prevTicketInfo.working_dir,
+            startCommit: previousTicketStartCommit,
+            completionCommitSha: guard.sha || null,
+        })) {
+            return 'return';
+        }
+        return 'proceed';
+    }
+    // Drift scenario: model changed current_ticket without following protocol
+    const autoValidation = applyAutoTicketCompletionValidation({
+        sessionDir,
+        ticketId: previousTicket,
+        // AP-EXT-ITER125-01: this site already held the (per-ticket, session)
+        // pair and spent it on an `||` SELECTION, so a non-empty-but-unusable
+        // per-ticket `working_dir` won and the session dir was never consulted.
+        ...completionDirLadder(prevTicketInfo?.working_dir, state.working_dir),
+        startCommit: previousTicketStartCommit,
+        iteration,
+        log,
+        statePath,
+        flags: state.flags ?? null,
+    });
+    // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — the callee
+    // already recorded the residual exit_reason and no longer
+    // deactivates the session, so park this ticket (leave it un-Done)
+    // and continue the phase loop.
+    if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
+        return 'continue';
+    }
+    return 'proceed';
+}
+/** The between-ticket record for the ticket the loop just moved past (landed status + its repo). */
+function describeCompletedTicketBoundary(input, prevTicketInfo, postState, postTicket) {
+    return {
+        ticketId: input.previousTicket,
+        landedStatus: prevTicketInfo?.id ? getTicketStatus(input.sessionDir, prevTicketInfo.id) : null,
+        workingDir: prevTicketInfo?.working_dir || postState.working_dir || input.state.working_dir || process.cwd(),
+        nextTicketId: postTicket,
+    };
+}
+/** Run the between-ticket fast gate at a completed ticket boundary; failures are logged and ignored. */
+function runCompletedBoundaryFastGate(completedBoundary, statePath, log) {
+    try {
+        runBetweenTicketFastGate({
+            statePath,
+            workingDir: completedBoundary.workingDir,
+            completedTicketId: completedBoundary.ticketId,
+            nextTicketId: completedBoundary.nextTicketId,
+            landedStatus: completedBoundary.landedStatus,
+            log,
+        });
+    }
+    catch (err) {
+        log(`between-ticket fast gate failed at ticket boundary (ignored): ${safeErrorMessage(err)}`);
+    }
+}
+/** HEAD of the next ticket's repo when the current ticket changed; the prior start commit otherwise. */
+function resolveNextTicketStartCommit(input, nextTicket, lifecycleState) {
+    if (nextTicket === input.previousTicket)
+        return input.previousTicketStartCommit;
+    const nextTicketInfo = nextTicket ? collectTickets(input.sessionDir).find(t => t.id === nextTicket) : null;
+    return nextTicket
+        ? readHeadCommit(nextTicketInfo?.working_dir || lifecycleState.working_dir || process.cwd())
+        : null;
+}
+function applyTicketTransitionAfterIteration(input) {
+    const { sessionDir, statePath, previousTicket, previousTicketStartCommit, log } = input;
+    try {
+        const postState = readRunnerState(statePath);
+        const postTicket = postState.current_ticket || null;
+        let completedBoundary = null;
+        if (previousTicket && postTicket !== previousTicket) {
+            // Check if the model already marked it Done via prompt-driven validation
+            const tickets = collectTickets(sessionDir);
+            const prevTicketInfo = tickets.find(t => t.id === previousTicket);
+            const verdict = validatePriorTicketCompletion({ ...input, previousTicket, prevTicketInfo });
+            if (verdict !== 'proceed')
+                return { kind: verdict };
+            completedBoundary = describeCompletedTicketBoundary({ ...input, previousTicket }, prevTicketInfo, postState, postTicket);
+        }
+        const postStep = inferTicketLifecycleStep(sessionDir, postTicket, postState.step);
+        const lifecycleState = updateMuxLifecycleState(statePath, { currentTicket: postTicket, step: postStep });
+        const nextTicket = lifecycleState.current_ticket || null;
+        if (completedBoundary) {
+            completedBoundary.nextTicketId = nextTicket;
+            runCompletedBoundaryFastGate(completedBoundary, statePath, log);
+        }
+        const nextTicketStartCommit = resolveNextTicketStartCommit(input, nextTicket, lifecycleState);
+        return { kind: 'proceed', previousTicket: nextTicket, previousTicketStartCommit: nextTicketStartCommit };
+    }
+    catch {
+        /* state read failed — skip transition check */
+        return { kind: 'proceed', previousTicket, previousTicketStartCommit };
+    }
+}
+/**
+ * Circuit breaker: record the iteration outcome (the caller skips subprocess failures and a
+ * disabled breaker). circuit_breaker.json is written inside sm.update to stay in sync with the
+ * state.json iteration, falling back to direct reads/writes when the update fails. Returns the
+ * updated breaker and whether it tripped OPEN on this iteration (already stamped + deactivated).
+ */
+function recordCircuitBreakerIteration(input) {
+    const { cbSettings, cbPath, statePath, sessionDir, state, iteration, log } = input;
+    let cbState = input.cbState;
+    let errorSig = null;
+    try {
+        const logContent = fs.readFileSync(input.iterLogFile, 'utf-8');
+        errorSig = extractErrorSignature(logContent);
+    }
+    catch { /* log may not exist */ }
+    let prevCBState = cbState.state;
+    // Write CB state inside sm.update to keep circuit_breaker.json in sync with state.json iteration
+    try {
+        sm.update(statePath, s => {
+            clearCircuitBreakerBudgetCacheOnTicketChange(s, cbState.last_known_ticket);
+            const progress = detectProgress(s.working_dir || process.cwd(), cbState.last_known_head, cbState.last_known_step, s.step, cbState.last_known_ticket, s.current_ticket);
+            const budget = getCircuitBreakerBudget(s, sessionDir);
+            const dynamicCbSettings = settingsWithCircuitBreakerBudget(cbSettings, budget.budget);
+            prevCBState = cbState.state;
+            cbState = recordIterationResult(cbState, { hasProgress: progress.hasProgress, errorSignature: errorSig }, iteration, dynamicCbSettings);
+            cbState.last_known_head = progress.currentHead;
+            cbState.last_known_step = s.step;
+            cbState.last_known_ticket = s.current_ticket;
+            if (prevCBState !== 'OPEN' && cbState.state === 'OPEN') {
+                cbState.reason = formatCircuitBreakerTripReason(cbState.reason, budget);
+            }
+            writeStateFile(cbPath, cbState);
+        });
+    }
+    catch {
+        // sm.update failed — fall back to direct reads/writes (iteration desync possible but non-fatal)
+        let postIterState = state;
+        try {
+            postIterState = readRunnerState(statePath);
+        }
+        catch { /* use last known state */ }
+        clearCircuitBreakerBudgetCacheOnTicketChange(postIterState, cbState.last_known_ticket);
+        const progress = detectProgress(postIterState.working_dir || process.cwd(), cbState.last_known_head, cbState.last_known_step, postIterState.step, cbState.last_known_ticket, postIterState.current_ticket);
+        const budget = getCircuitBreakerBudget(postIterState, sessionDir);
+        const dynamicCbSettings = settingsWithCircuitBreakerBudget(cbSettings, budget.budget);
+        prevCBState = cbState.state;
+        cbState = recordIterationResult(cbState, { hasProgress: progress.hasProgress, errorSignature: errorSig }, iteration, dynamicCbSettings);
+        cbState.last_known_head = progress.currentHead;
+        cbState.last_known_step = postIterState.step;
+        cbState.last_known_ticket = postIterState.current_ticket;
+        if (prevCBState !== 'OPEN' && cbState.state === 'OPEN') {
+            cbState.reason = formatCircuitBreakerTripReason(cbState.reason, budget);
+        }
+        writeStateFile(cbPath, cbState);
+    }
+    if (prevCBState !== 'OPEN' && cbState.state === 'OPEN') {
+        logActivity({ event: 'circuit_open', source: 'pickle', session: path.basename(sessionDir), error: cbState.reason });
+        log(`Circuit breaker tripped: ${cbState.reason}`);
+        recordExitReason(statePath, 'circuit_open');
+        safeDeactivate(statePath);
+        return { cbState, tripped: true };
+    }
+    if (prevCBState === 'HALF_OPEN' && cbState.state === 'CLOSED') {
+        logActivity({ event: 'circuit_recovery', source: 'pickle', session: path.basename(sessionDir) });
+        log('Circuit breaker recovered (HALF_OPEN → CLOSED)');
+    }
+    return { cbState, tripped: false };
+}
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 1156 code lines against a ceiling of 120, and complexity 232 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowers it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle first), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
@@ -11980,17 +12391,8 @@ async function runMuxRunnerMain() {
         const preIterSha = readHeadCommit(iterWorkingDir);
         // 90574654: iteration-window start — freshness base for silent-death salvage probes.
         const iterStartMs = Date.now();
-        // R-WSWA-2: snapshot the per-ticket review/conformance artifact count BEFORE the
-        // worker spawn; the AFTER snapshot + delta persistence happen once it exits.
-        const apTicketId = state.current_ticket || null;
-        // AC-A4 (B-RRH): a large-tier ticket's first N spawns credit early-phase
-        // (research/plan) artifacts as progress. Compute the flag from the PRIOR
-        // per-ticket spawn_count so the BEFORE/AFTER counts use the same prefix set.
-        const apPriorSpawnCount = (apTicketId && state.worker_artifact_progress?.[apTicketId]?.spawn_count) || 0;
-        const apCreditEarlyPhases = apTicketId
-            ? resolveCreditEarlyPhases(sessionDir, apTicketId, apPriorSpawnCount, resolveWmwEarlyPhaseK())
-            : false;
-        const apBeforeCount = apTicketId ? countWorkerArtifacts(path.join(sessionDir, apTicketId), { creditEarlyPhases: apCreditEarlyPhases }) : 0;
+        // R-WSWA-2: snapshot the per-ticket artifact count BEFORE the worker spawn.
+        const { apTicketId, apCreditEarlyPhases, apBeforeCount } = snapshotPreSpawnArtifactProgress(state, sessionDir);
         // B-WSPU WS-1: all tiers route through the single synchronous spawn path.
         const outcome = await runIteration(sessionDir, iteration, extensionRoot).catch((err) => {
             const msg = err instanceof Error ? err.message : String(err);
@@ -12014,57 +12416,17 @@ async function runMuxRunnerMain() {
             exitReason = 'state_working_dir_missing';
             break;
         }
-        try {
-            const exitCommit = routeExitPathSalvage({
-                sessionDir,
-                statePath,
-                workingDir: state.working_dir,
-                ticketId: previousTicket,
-                extensionRoot,
-                flags: state.flags ?? null,
-                log,
-            });
-            if (exitCommit.committed) {
-                lastProgressEpoch = muxNow();
-                // L2: a committed deliverable is genuine forward progress — reset the streak.
-                idleStallRecoveryCount = 0;
-            }
+        const postSpawn = recordPostSpawnWorkerProgress({
+            sessionDir, statePath, state, workingDir: state.working_dir, previousTicket, extensionRoot, cbState,
+            iteration, apTicketId, apBeforeCount, apCreditEarlyPhases, log,
+        });
+        if (postSpawn.exitCommitProgressMs !== null) {
+            // eslint-disable-next-line no-useless-assignment -- kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it (dead store recorded in 72817af8 conformance)
+            lastProgressEpoch = postSpawn.exitCommitProgressMs;
+            // L2: a committed deliverable is genuine forward progress — reset the streak.
+            idleStallRecoveryCount = 0;
         }
-        catch { /* best-effort — never block iteration on exit-path commit */ }
-        // AC-A5 (B-RRH): a rate-limited spawn (this iteration's own log shows a 429)
-        // OR a spawn within breaker-recovery grace must NOT increment the no-progress
-        // counter (B-RLAR-D2 429-spawn counter poisoning). B3: rate_limit_wait.json
-        // PRESENCE is deliberately NOT consulted here — it is a status artifact that
-        // can outlive the iteration that wrote it (a --resume re-arm from a still-live
-        // park, or a crash before fold-on-wake), so its mere presence would misclassify
-        // an unrelated same-window spawn failure as rate-limited. This iteration's own
-        // log is the sole per-iteration signal, and it independently catches every
-        // genuine re-hit of a live limit (the resumed spawn's own API call fails with
-        // its own rate_limit_event). Fail-open: any probe error → not suppressed.
-        let apSuppressIncrement = false;
-        try {
-            const apRateLimited = detectRateLimitInLog(path.join(sessionDir, `tmux_iteration_${iteration}.log`)).limited;
-            const apBreakerGrace = isWithinBreakerRecoveryGrace(cbState, resolveHardeningSettings(loadPickleSettingsBag(extensionRoot)).breaker_recovery_grace_seconds, Date.now());
-            apSuppressIncrement = apRateLimited || apBreakerGrace;
-        }
-        catch { /* best-effort — never block iteration on rate-limit/breaker probing */ }
-        // R-WSWA-2: persist the post-spawn artifact-count delta and emit
-        // worker_artifact_progress_zero at exactly K consecutive zero-delta spawns.
-        // AC-A3 (B-RRH): scope the source-tree signature to scope.json:allowed_paths so a
-        // peer session's dirty prds/ file is absent from the signature (B-HRPW).
-        let apProgressResult = null;
-        try {
-            if (apTicketId)
-                apProgressResult = recordWorkerArtifactProgress(statePath, sessionDir, apTicketId, apBeforeCount, {
-                    iteration,
-                    log,
-                    workingDir: state.working_dir || process.cwd(),
-                    sourceSignatureFn: (wd) => computeScopedSourceTreeSignature(wd, path.join(sessionDir, 'scope.json')),
-                    creditEarlyPhases: apCreditEarlyPhases,
-                    suppressIncrement: apSuppressIncrement,
-                });
-        }
-        catch { /* best-effort observability — never block iteration on progress tracking */ }
+        const apProgressResult = postSpawn.apProgressResult;
         // L2: a worker that produced NEW artifacts (non-zero delta) made genuine
         // progress — reset the consecutive idle-stall recovery streak.
         if (apProgressResult && apProgressResult.zeroProgressCount === 0)
@@ -12266,221 +12628,33 @@ async function runMuxRunnerMain() {
             emitWastedIterOnce();
             continue;
         }
-        // R-WSE-2: detect partial lifecycle exit (research-review APPROVED, downstream artifacts missing)
-        // 90574654: sub-classify the exit (log_empty → worker_silent_death |
-        // log_truncated → worker_partial_lifecycle_exit) and route BOTH sub-classes
-        // into the ONE salvage-first recovery policy. hold/respawn both continue the
-        // loop (hold drew no cap and left the ticket untouched — H4 lands the real
-        // hold semantics in 7eb9fa20; respawn lets the manager re-spawn under the
-        // drawn-down persistent cap). Cap exhausted falls through to the existing
-        // no-progress halt shape. Fail-open: any error → log + existing behavior.
-        // R-WSE-3: emit stderr breadcrumb when ticket Failed after research APPROVED
-        try {
-            const iterTicket = state.current_ticket;
-            // Hoisted so the R-WSDO breadcrumb below can gate on its null result.
-            let plExit = null;
-            if (iterTicket) {
-                // B-LOGEV: hand the classifier the iteration window so an EMPTY log is corroborated
-                // against real work before it is allowed to claim a silent death. Both halves of the
-                // window are already in scope here — the same two values passed to the recovery
-                // policy immediately below.
-                plExit = checkPartialLifecycleExit(sessionDir, statePath, iterTicket, {
-                    workingDir: iterWorkingDir,
-                    preIterSha,
-                    iterationStartMs: iterStartMs,
-                });
-                if (plExit && plExit.subClass) {
-                    const sdDecision = applySilentDeathRecoveryPolicy({
-                        sessionDir,
-                        statePath,
-                        ticketId: iterTicket,
-                        workingDir: iterWorkingDir,
-                        iteration,
-                        classification: plExit,
-                        preIterSha,
-                        iterationStartMs: iterStartMs,
-                        log,
-                    });
-                    if (sdDecision.action === 'halt') {
-                        log(`[silent-death] halting loop at iteration ${iteration}: respawn cap exhausted for ${iterTicket}.`);
-                        recordExitReason(statePath, sdDecision.exitReason);
-                        safeDeactivate(statePath);
-                        removeRunnerSessionMapEntry(statePath, log);
-                        exitReason = sdDecision.exitReason;
-                        break;
-                    }
-                }
-            }
-            if (iterTicket) {
-                checkFailedAfterResearchApproved(sessionDir, iterTicket);
-            }
-            // R-WSDO (30aa2e0d) + AC-WMFF-2B: at most one post-iteration production breadcrumb.
-            // The predicates, their overlap, and the R-WSDO-first control flow live in
-            // emitWorkerProductionBreadcrumb — the one seam a test can cross to reach them.
-            if (iterTicket) {
-                emitWorkerProductionBreadcrumb({
-                    sessionDir,
-                    statePath,
-                    workingDir: iterWorkingDir,
-                    ticketId: iterTicket,
-                    iteration,
-                    partialLifecycleExit: plExit,
-                    artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
-                    preIterSha,
-                    iterationStartMs: iterStartMs,
-                });
+        // R-WSE-2 / 90574654 / R-WSE-3 / R-WSDO: classify the exit and route silent death.
+        {
+            const silentDeathHalt = evaluateIterationPartialLifecycleExit({
+                sessionDir, statePath, iterTicket: state.current_ticket, iterWorkingDir, iteration, preIterSha,
+                iterStartMs, apProgressResult, apBeforeCount, log,
+            });
+            if (silentDeathHalt) {
+                exitReason = silentDeathHalt;
+                break;
             }
         }
-        catch { /* best-effort — never block iteration on partial-lifecycle check failure */ }
-        // B-DURA T10: commit the current ticket's gate-passing deliverable at the NORMAL
-        // iteration boundary (or attribute an existing untagged commit, or honest-fail)
-        // BEFORE the Done-detection / context-clear block below. Best-effort, idempotent
-        // on HEAD movement — an already-tagged commit or a clean tree is a no-op. The
-        // downstream Done-flip guard remains authoritative; this only ensures verified
-        // work is a durable commit on the branch before context is cleared.
-        try {
-            const boundaryTicket = state.current_ticket || null;
-            if (boundaryTicket && !isTerminalTicketStatus(getTicketStatus(sessionDir, boundaryTicket))) {
-                commitGatePassingDeliverableAtBoundary({
-                    sessionDir,
-                    statePath,
-                    workingDir: iterWorkingDir,
-                    ticketId: boundaryTicket,
-                    extensionRoot,
-                    flags: state.flags ?? null,
-                    preIterSha,
-                    log,
-                });
-            }
-        }
-        catch (err) {
-            log(`[boundary-commit] iteration-boundary commit threw (ignored): ${safeErrorMessage(err)}`);
-        }
+        // B-DURA T10: commit the gate-passing deliverable BEFORE the Done-detection block below.
+        commitBoundaryDeliverableAfterIteration({ sessionDir, statePath, state, iterWorkingDir, extensionRoot, preIterSha, log });
         // Move iterLogFile computation BEFORE transition block (needed by classifyTicketCompletion)
         const iterLogFile = path.join(sessionDir, `tmux_iteration_${iteration}.log`);
         // Detect ticket transitions: validate completion before marking Done
-        try {
-            const postState = readRunnerState(statePath);
-            const postTicket = postState.current_ticket || null;
-            let completedBoundary = null;
-            if (previousTicket && postTicket !== previousTicket) {
-                // Check if the model already marked it Done via prompt-driven validation
-                const tickets = collectTickets(sessionDir);
-                const prevTicketInfo = tickets.find(t => t.id === previousTicket);
-                if (prevTicketInfo?.id && normalizedStatus(getTicketStatus(sessionDir, prevTicketInfo.id)) === 'done') {
-                    // F3 / R-DWC: worker-self-attested Done must have explicit completion_commit.
-                    // Recurring failure class — Finding #2 (codex Done-without-commit).
-                    const guard = guardCompletionCommitBeforeDone({
-                        sessionDir,
-                        ticketId: prevTicketInfo.id,
-                        // AP-EXT-ITER124-01: ladder, not `||` selection.
-                        ...completionDirLadder(prevTicketInfo.working_dir, state.working_dir),
-                        flags: state.flags ?? null,
-                    });
-                    if (!guard.ok) {
-                        const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
-                        log(msg);
-                        process.stderr.write(`${msg}\n`);
-                        // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
-                        // the residual, park this ticket (leave it un-Done), and
-                        // continue the phase loop instead of halting the session.
-                        recordExitReason(statePath, 'done_without_commit_evidence');
-                        emitWastedIterOnce();
-                        continue;
-                    }
-                    // R-PEDC: clear stale prior-iteration stamp on recovery.
-                    clearStaleDoneWithoutCommitEvidence(statePath);
-                    log(`Ticket ${previousTicket} already marked Done by model — skipping validation (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
-                    // R-CXOR-1: detect HEAD regression — worker may have committed then git-reset to baseline.
-                    if (previousTicketStartCommit) {
-                        try {
-                            const hrResult = detectAndRecoverHeadRegression({
-                                ticketId: prevTicketInfo.id,
-                                workingDir: prevTicketInfo.working_dir || state.working_dir || process.cwd(),
-                                startCommit: previousTicketStartCommit,
-                                completionCommitSha: guard.sha || null,
-                                sessionDir,
-                                statePath,
-                                iteration,
-                                iterationStartMs: iterStartMs,
-                                log,
-                            });
-                            if (hrResult.action === 'suppression_cap_escalate') {
-                                // 7eb9fa20: cap reached with evidence — existing no-progress halt.
-                                const msg = `[failed-flip] suppression cap exhausted for ${prevTicketInfo.id} at head-regression — halting (recovery_exhausted).`;
-                                log(msg);
-                                process.stderr.write(`${msg}\n`);
-                                writeRecoveryHandoffArtifact(sessionDir, prevTicketInfo.id ?? null, 'head_regression_suppression_cap', log);
-                                recordExitReason(statePath, 'recovery_exhausted');
-                                safeDeactivate(statePath);
-                                removeRunnerSessionMapEntry(statePath, log);
-                                return;
-                            }
-                        }
-                        catch (err) {
-                            log(`head-regression check failed (ignored): ${safeErrorMessage(err)}`);
-                        }
-                    }
-                }
-                else {
-                    // Drift scenario: model changed current_ticket without following protocol
-                    const autoValidation = applyAutoTicketCompletionValidation({
-                        sessionDir,
-                        ticketId: previousTicket,
-                        // AP-EXT-ITER125-01: this site already held the (per-ticket, session)
-                        // pair and spent it on an `||` SELECTION, so a non-empty-but-unusable
-                        // per-ticket `working_dir` won and the session dir was never consulted.
-                        ...completionDirLadder(prevTicketInfo?.working_dir, state.working_dir),
-                        startCommit: previousTicketStartCommit,
-                        iteration,
-                        log,
-                        statePath,
-                        flags: state.flags ?? null,
-                    });
-                    // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — the callee
-                    // already recorded the residual exit_reason and no longer
-                    // deactivates the session, so park this ticket (leave it un-Done)
-                    // and continue the phase loop.
-                    if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
-                        emitWastedIterOnce();
-                        continue;
-                    }
-                }
-                completedBoundary = {
-                    ticketId: previousTicket,
-                    landedStatus: prevTicketInfo?.id ? getTicketStatus(sessionDir, prevTicketInfo.id) : null,
-                    workingDir: prevTicketInfo?.working_dir || postState.working_dir || state.working_dir || process.cwd(),
-                    nextTicketId: postTicket,
-                };
-            }
-            const postStep = inferTicketLifecycleStep(sessionDir, postTicket, postState.step);
-            const lifecycleState = updateMuxLifecycleState(statePath, { currentTicket: postTicket, step: postStep });
-            const nextTicket = lifecycleState.current_ticket || null;
-            if (completedBoundary) {
-                completedBoundary.nextTicketId = nextTicket;
-                try {
-                    runBetweenTicketFastGate({
-                        statePath,
-                        workingDir: completedBoundary.workingDir,
-                        completedTicketId: completedBoundary.ticketId,
-                        nextTicketId: completedBoundary.nextTicketId,
-                        landedStatus: completedBoundary.landedStatus,
-                        log,
-                    });
-                }
-                catch (err) {
-                    log(`between-ticket fast gate failed at ticket boundary (ignored): ${safeErrorMessage(err)}`);
-                }
-            }
-            if (nextTicket !== previousTicket) {
-                const nextTicketInfo = nextTicket ? collectTickets(sessionDir).find(t => t.id === nextTicket) : null;
-                previousTicketStartCommit = nextTicket
-                    ? readHeadCommit(nextTicketInfo?.working_dir || lifecycleState.working_dir || process.cwd())
-                    : null;
-            }
-            previousTicket = nextTicket;
+        const transition = applyTicketTransitionAfterIteration({
+            sessionDir, statePath, state, previousTicket, previousTicketStartCommit, iteration, iterStartMs, log,
+        });
+        if (transition.kind === 'continue') {
+            emitWastedIterOnce();
+            continue;
         }
-        catch { /* state read failed — skip transition check */ }
+        if (transition.kind === 'return')
+            return;
+        previousTicket = transition.previousTicket;
+        previousTicketStartCommit = transition.previousTicketStartCommit;
         // --- Rate limit classification (MUST run before CB to prevent CB poisoning) ---
         const exitResult = classifyIterationExit(outcome.completion, iterLogFile, {
             didTimeout: outcome.timedOut,
@@ -12604,64 +12778,13 @@ async function runMuxRunnerMain() {
         // === Existing CB recording — only reached for non-rate-limit ===
         // Circuit breaker: record iteration outcome (skip for subprocess failures)
         if (cbEnabled && cbState && result !== 'error' && result !== 'inactive') {
-            let errorSig = null;
-            try {
-                // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-                const logContent = fs.readFileSync(iterLogFile, 'utf-8');
-                errorSig = extractErrorSignature(logContent);
-            }
-            catch { /* log may not exist */ }
-            let prevCBState = cbState.state;
-            // Write CB state inside sm.update to keep circuit_breaker.json in sync with state.json iteration
-            try {
-                sm.update(statePath, s => {
-                    clearCircuitBreakerBudgetCacheOnTicketChange(s, cbState.last_known_ticket);
-                    const progress = detectProgress(s.working_dir || process.cwd(), cbState.last_known_head, cbState.last_known_step, s.step, cbState.last_known_ticket, s.current_ticket);
-                    const budget = getCircuitBreakerBudget(s, sessionDir);
-                    const dynamicCbSettings = settingsWithCircuitBreakerBudget(cbSettings, budget.budget);
-                    prevCBState = cbState.state;
-                    cbState = recordIterationResult(cbState, { hasProgress: progress.hasProgress, errorSignature: errorSig }, iteration, dynamicCbSettings);
-                    cbState.last_known_head = progress.currentHead;
-                    cbState.last_known_step = s.step;
-                    cbState.last_known_ticket = s.current_ticket;
-                    if (prevCBState !== 'OPEN' && cbState.state === 'OPEN') {
-                        cbState.reason = formatCircuitBreakerTripReason(cbState.reason, budget);
-                    }
-                    writeStateFile(cbPath, cbState);
-                });
-            }
-            catch {
-                // sm.update failed — fall back to direct reads/writes (iteration desync possible but non-fatal)
-                let postIterState = state;
-                try {
-                    postIterState = readRunnerState(statePath);
-                }
-                catch { /* use last known state */ }
-                clearCircuitBreakerBudgetCacheOnTicketChange(postIterState, cbState.last_known_ticket);
-                const progress = detectProgress(postIterState.working_dir || process.cwd(), cbState.last_known_head, cbState.last_known_step, postIterState.step, cbState.last_known_ticket, postIterState.current_ticket);
-                const budget = getCircuitBreakerBudget(postIterState, sessionDir);
-                const dynamicCbSettings = settingsWithCircuitBreakerBudget(cbSettings, budget.budget);
-                prevCBState = cbState.state;
-                cbState = recordIterationResult(cbState, { hasProgress: progress.hasProgress, errorSignature: errorSig }, iteration, dynamicCbSettings);
-                cbState.last_known_head = progress.currentHead;
-                cbState.last_known_step = postIterState.step;
-                cbState.last_known_ticket = postIterState.current_ticket;
-                if (prevCBState !== 'OPEN' && cbState.state === 'OPEN') {
-                    cbState.reason = formatCircuitBreakerTripReason(cbState.reason, budget);
-                }
-                writeStateFile(cbPath, cbState);
-            }
-            if (prevCBState !== 'OPEN' && cbState.state === 'OPEN') {
-                logActivity({ event: 'circuit_open', source: 'pickle', session: path.basename(sessionDir), error: cbState.reason });
-                log(`Circuit breaker tripped: ${cbState.reason}`);
-                recordExitReason(statePath, 'circuit_open');
-                safeDeactivate(statePath);
+            const cbStep = recordCircuitBreakerIteration({
+                cbState, cbSettings, cbPath, statePath, sessionDir, state, iteration, iterLogFile, log,
+            });
+            cbState = cbStep.cbState;
+            if (cbStep.tripped) {
                 exitReason = 'circuit_open';
                 break;
-            }
-            if (prevCBState === 'HALF_OPEN' && cbState.state === 'CLOSED') {
-                logActivity({ event: 'circuit_recovery', source: 'pickle', session: path.basename(sessionDir) });
-                log('Circuit breaker recovered (HALF_OPEN → CLOSED)');
             }
         }
         if (result === 'task_completed') {
