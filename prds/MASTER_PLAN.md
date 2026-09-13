@@ -140,9 +140,44 @@ passing over your fix proves nothing about whether it can see the defect.
   reported half-fixed when it was fully fixed** (read the neighbour, not the arm). Both corrected
   publicly.
 
+### 🚀 IN FLIGHT — [[B-RATCHET]], launched 2026-09-13 19:51Z
+
+Session `2026-09-13-0a4d0d85`, tmux `pipeline-0a4d0d85`, PRD
+`prds/p1-b-ratchet-a-recorded-ceiling-that-nothing-enforces-is-a-comment.md`. **This is also the field
+test for M1/M2/M4**, which are deployed as of beta.27 (`baselineJudgeResult` now 7 in the deployed tree).
+
+| root | finding |
+|---|---|
+| **R1** (first) | the ceiling beta.27 recorded is PROSE — nothing parses `1690` or `complexity 366`; make it a ratchet that fails BOTH ways |
+| R3 | delete the small carve-out outright: `correctPhantomDoneTickets` complexity 16 → ≤15 |
+| R2 | halve `runMuxRunnerMain`: 1690 code lines → ≤900, complexity 366 → ≤180. STRUCTURAL ONLY |
+| R4 | an unresolvable ledger entry guarantees a stall and then blames the worker (#23) |
+| R5 | bounded split of `pickle-utils.ts`, 3232 lines / 128 exports → <2600 |
+
+### ✅ ANSWERED 2026-09-13 — why szechuan converged, and it was NOT M2
+
+Priority 2 from the last handoff is closed by measurement. The difference between the two runs is
+**ledger TRACTABILITY**, not the scoring wire — neither run had M2 deployed.
+
+| | stalled `a4d141e1` | converged `d2e834e1` |
+|---|---|---|
+| largest entry | **1690 code lines, complexity 366** | 88 lines |
+| szechuan commits | **1**, touching NO ledger entry | **8**, each closing a named entry |
+| final ledger | 6 | **0** |
+
+**The control is `buildCitadelAuditReport`:** unresolved at 122 lines in the stalled run, split
+successfully in the converged one. It was never intractable — it was starved behind an entry no
+iteration can finish. Filed as **GitHub #23** and dispatched as R4.
+
+**#22 does not solve it.** Removing the three FALSE entries (46/47/49 code lines against a ceiling of
+120) leaves roughly ONE real entry, which stalls just as certainly with less noise.
+
 ### Open, in priority order
 
-1. **The next run is the field test for M1/M2/M4.** Read szechuan's basis lines and the post-final
+1. **Read B-RATCHET's szechuan and post-final output as the M1/M2/M4 field test.** Baseline should now
+   seed a ledger and classify on `set_ops` from iteration 2; a `post_final_tier_degraded` should finally
+   carry a `diagnostics` tail saying why. **Neither is validated yet — the fixes were undeployed during
+   the run that built them.** Read szechuan's basis lines and the post-final
    verdict's `diagnostics` channel. If a `post_final_tier_degraded` fires now, it should finally say why.
 2. **szechuan's convergence cause is UNIDENTIFIED** and was wrongly nearly attributed to M2. Worth one
    measured pass: what differed between the stalling run and the converging one, given neither ran M2.
@@ -471,8 +506,8 @@ the AC-G3 net-LOC number whatever it says.
 
 ## 🐙 GITHUB ISSUES → BUNDLE MAP (re-measured 2026-09-12; #15-#18 closed 2026-09-13 by beta.26)
 
-**Backlog as of 2026-09-13 19:15Z:** #19, #20, #21, #22 all SHIPPED in beta.27 and closed. Only #5
-(enhancement, unscheduled) remains open.
+**Backlog as of 2026-09-13 19:55Z:** #23 (unresolvable ledger entry guarantees a stall, filed from
+measurement, dispatched as B-RATCHET R4) and #5 (enhancement, unscheduled). #19-#22 shipped in beta.27.
 
 **Seven of the nine open issues were CLOSED on 2026-09-12** after verifying each one by MECHANISM grep
 at HEAD, not by ticket title. The B-MEGADRAIN continuation run (`2026-09-09-e959390b`, 23/23 Done) had
