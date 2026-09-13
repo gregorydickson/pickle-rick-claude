@@ -409,12 +409,11 @@ const anchorAbsenceAllowlist = new Map([
   ['extension/src/hooks/CLAUDE.md::parseFirstShellWord', 'negative: entry says an anchor naming it is stale and matches nothing'],
   ['extension/src/bin/CLAUDE.md::runIt', 'meta: illustrative snippet of an unparseable method shape, not a symbol'],
   // AP-BIN-ITER1-01: surfaced the moment the catalog set stopped being hand-listed and the sweep
-  // reached repo-root bin/CLAUDE.md. Three are fragments the tokenizer lifts out of a larger span
-  // (two regex groups and a filename); the fourth is a local a still-OPEN entry PRESCRIBES.
+  // reached repo-root bin/CLAUDE.md. All three are fragments the tokenizer lifts out of a larger
+  // span (two regex groups and a filename).
   ['bin/CLAUDE.md::VarFolder', 'artifact: alternation branch inside a PATTERN_SHAPE regex, not a symbol'],
   ['bin/CLAUDE.md::RUNTIME_ARTIFACT_PATH', 'artifact: optional-group tail inside a PATTERN_SHAPE regex; the live symbol is DEFAULT_RUNTIME_ARTIFACT_PATH'],
   ['bin/CLAUDE.md::resolveSubsystems', 'artifact: fragment of the test FILENAME the entry names; the live symbol is discoverSubsystems'],
-  ['bin/CLAUDE.md::auditExisted', 'meta: local the OPEN AP-BIN-ITER14-01 fix would introduce; both of its files are outside this branch scope fence'],
 ]);
 
 /**

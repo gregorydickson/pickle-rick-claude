@@ -87,7 +87,9 @@ function appendAudit() {
   };
   if (!dryRun) {
     fs.mkdirSync(runtimeRoot, { recursive: true });
-    fs.appendFileSync(auditPath, `${JSON.stringify(event)}\n`);
+    const auditExisted = pathExists(auditPath);
+    fs.appendFileSync(auditPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+    if (!auditExisted) fs.chmodSync(auditPath, 0o600);
   }
 }
 

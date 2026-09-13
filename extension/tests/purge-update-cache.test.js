@@ -2,7 +2,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -114,6 +114,24 @@ describe('purge-update-cache.js', () => {
       }
       assert.equal(typeof audit.ts, 'string');
     } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER14-01: install.sh's post-install mode check exits 1 on any
+  // deploy-audit.log mode but 600, and purge is the file's first creator on a
+  // healthy box. Pin umask 022 so the case cannot pass on a 077 runner.
+  test('AP-BIN-ITER14-01 creates deploy-audit.log at mode 600 so the next install passes its mode check', { skip: process.platform === 'win32' }, () => {
+    const fixture = makeFixture();
+    const priorUmask = process.umask(0o022);
+    try {
+      assert.equal(existsSync(fixture.auditPath), false, 'fixture must start without an audit log');
+      const result = runPurge(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.equal(existsSync(fixture.auditPath), true, 'purge removed paths, so it must create the audit log');
+      assert.equal(statSync(fixture.auditPath).mode & 0o777, 0o600);
+    } finally {
+      process.umask(priorUmask);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
