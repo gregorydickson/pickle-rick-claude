@@ -54,7 +54,6 @@ function summarize(findings, decisions) {
         medium: countSeverity(findings, 'Medium'),
         low: countSeverity(findings, 'Low'),
         decision_required: decisions.length,
-        decisions: decisions.length,
         unguarded_trap_doors: countUnguardedTrapDoors(findings),
     };
 }

@@ -55,7 +55,6 @@ export interface CitadelSummary {
   medium: number;
   low: number;
   decision_required: number;
-  decisions: number;
   unguarded_trap_doors: number;
 }
 
@@ -132,7 +131,6 @@ function summarize(findings: CitadelFinding[], decisions: CitadelDecision[]): Ci
     medium: countSeverity(findings, 'Medium'),
     low: countSeverity(findings, 'Low'),
     decision_required: decisions.length,
-    decisions: decisions.length,
     unguarded_trap_doors: countUnguardedTrapDoors(findings),
   };
 }
