@@ -11401,11 +11401,15 @@ async function applyRateLimitCycleOutcome(input) {
     return { kind: 'proceed', consecutiveRateLimits };
 }
 /**
- * R-WSWA-2 pre-spawn half: snapshot the per-ticket review/conformance artifact count BEFORE
- * the worker spawn; the AFTER snapshot + delta persistence happen once it exits
- * (`recordPostSpawnWorkerProgress`).
+ * Pre-spawn half of the iteration: the iteration window (working dir, HEAD, start time) and the
+ * R-WSWA-2 per-ticket review/conformance artifact count, taken BEFORE the worker spawn; the AFTER
+ * snapshot + delta persistence happen once it exits (`recordPostSpawnWorkerProgress`).
  */
-function snapshotPreSpawnArtifactProgress(state, sessionDir) {
+function snapshotPreSpawnIteration(state, sessionDir) {
+    const iterWorkingDir = state.working_dir || process.cwd();
+    const preIterSha = readHeadCommit(iterWorkingDir);
+    // 90574654: iteration-window start — freshness base for silent-death salvage probes.
+    const iterStartMs = Date.now();
     const apTicketId = state.current_ticket || null;
     // AC-A4 (B-RRH): a large-tier ticket's first N spawns credit early-phase
     // (research/plan) artifacts as progress. Compute the flag from the PRIOR
@@ -11415,7 +11419,7 @@ function snapshotPreSpawnArtifactProgress(state, sessionDir) {
         ? resolveCreditEarlyPhases(sessionDir, apTicketId, apPriorSpawnCount, resolveWmwEarlyPhaseK())
         : false;
     const apBeforeCount = apTicketId ? countWorkerArtifacts(path.join(sessionDir, apTicketId), { creditEarlyPhases: apCreditEarlyPhases }) : 0;
-    return { apTicketId, apCreditEarlyPhases, apBeforeCount };
+    return { iterWorkingDir, preIterSha, iterStartMs, apTicketId, apCreditEarlyPhases, apBeforeCount };
 }
 /**
  * Post-spawn bookkeeping, in the loop's original order: R-MWIS-3 exit-path salvage, the AC-A5
@@ -11614,70 +11618,52 @@ function recoverHeadRegressionAfterModelDone(input) {
     }
     return false;
 }
+/** True when the ticket the loop moved past already reads Done in its frontmatter. */
+function isModelAttestedDone(sessionDir, prevTicketInfo) {
+    if (!prevTicketInfo?.id)
+        return false;
+    return normalizedStatus(getTicketStatus(sessionDir, prevTicketInfo.id)) === 'done';
+}
 /**
- * Validate the ticket the loop just moved past: a model-attested Done must carry completion
- * evidence (F3 / R-DWC guard), otherwise the drift path runs the auto-completion validation.
- * `continue` parks the ticket and continues the phase loop (the caller records the wasted
- * iteration); `return` is the head-regression suppression-cap halt.
+ * A model-attested Done must carry completion evidence (F3 / R-DWC guard). `continue` parks
+ * the ticket and continues the phase loop (the caller records the wasted iteration);
+ * `return` is the head-regression suppression-cap halt. The drift branch's
+ * `applyAutoTicketCompletionValidation` call site stays in the loop body.
  */
-function validatePriorTicketCompletion(input) {
-    const { sessionDir, statePath, state, previousTicket, previousTicketStartCommit, prevTicketInfo, iteration, log } = input;
-    if (prevTicketInfo?.id && normalizedStatus(getTicketStatus(sessionDir, prevTicketInfo.id)) === 'done') {
-        // F3 / R-DWC: worker-self-attested Done must have explicit completion_commit.
-        // Recurring failure class — Finding #2 (codex Done-without-commit).
-        const guard = guardCompletionCommitBeforeDone({
-            sessionDir,
-            ticketId: prevTicketInfo.id,
-            // AP-EXT-ITER124-01: ladder, not `||` selection.
-            ...completionDirLadder(prevTicketInfo.working_dir, state.working_dir),
-            flags: state.flags ?? null,
-        });
-        if (!guard.ok) {
-            const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
-            log(msg);
-            process.stderr.write(`${msg}\n`);
-            // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
-            // the residual, park this ticket (leave it un-Done), and
-            // continue the phase loop instead of halting the session.
-            recordExitReason(statePath, 'done_without_commit_evidence');
-            return 'continue';
-        }
-        // R-PEDC: clear stale prior-iteration stamp on recovery.
-        clearStaleDoneWithoutCommitEvidence(statePath);
-        log(`Ticket ${previousTicket} already marked Done by model — skipping validation (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
-        if (previousTicketStartCommit && recoverHeadRegressionAfterModelDone({
-            ...input,
-            ticketId: prevTicketInfo.id,
-            ticketWorkingDir: prevTicketInfo.working_dir,
-            startCommit: previousTicketStartCommit,
-            completionCommitSha: guard.sha || null,
-        })) {
-            return 'return';
-        }
-        return 'proceed';
-    }
-    // Drift scenario: model changed current_ticket without following protocol
-    const autoValidation = applyAutoTicketCompletionValidation({
+function validateModelAttestedDone(input) {
+    const { sessionDir, statePath, state, previousTicket, previousTicketStartCommit, prevTicketInfo, log } = input;
+    // F3 / R-DWC: worker-self-attested Done must have explicit completion_commit.
+    // Recurring failure class — Finding #2 (codex Done-without-commit).
+    const guard = guardCompletionCommitBeforeDone({
         sessionDir,
-        ticketId: previousTicket,
-        // AP-EXT-ITER125-01: this site already held the (per-ticket, session)
-        // pair and spent it on an `||` SELECTION, so a non-empty-but-unusable
-        // per-ticket `working_dir` won and the session dir was never consulted.
-        ...completionDirLadder(prevTicketInfo?.working_dir, state.working_dir),
-        startCommit: previousTicketStartCommit,
-        iteration,
-        log,
-        statePath,
+        ticketId: prevTicketInfo.id,
+        // AP-EXT-ITER124-01: ladder, not `||` selection.
+        ...completionDirLadder(prevTicketInfo.working_dir, state.working_dir),
         flags: state.flags ?? null,
     });
-    // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — the callee
-    // already recorded the residual exit_reason and no longer
-    // deactivates the session, so park this ticket (leave it un-Done)
-    // and continue the phase loop.
-    if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
-        return 'continue';
+    if (!guard.ok) {
+        const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
+        log(msg);
+        process.stderr.write(`${msg}\n`);
+        // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — record
+        // the residual, park this ticket (leave it un-Done), and
+        // continue the phase loop instead of halting the session.
+        recordExitReason(statePath, 'done_without_commit_evidence');
+        return { kind: 'continue' };
     }
-    return 'proceed';
+    // R-PEDC: clear stale prior-iteration stamp on recovery.
+    clearStaleDoneWithoutCommitEvidence(statePath);
+    log(`Ticket ${previousTicket} already marked Done by model — skipping validation (completion_commit: ${formatCompletionCommitForLog(guard.sha)})`);
+    if (previousTicketStartCommit && recoverHeadRegressionAfterModelDone({
+        ...input,
+        ticketId: prevTicketInfo.id,
+        ticketWorkingDir: prevTicketInfo.working_dir,
+        startCommit: previousTicketStartCommit,
+        completionCommitSha: guard.sha || null,
+    })) {
+        return { kind: 'return' };
+    }
+    return { kind: 'proceed' };
 }
 /** The between-ticket record for the ticket the loop just moved past (landed status + its repo). */
 function describeCompletedTicketBoundary(input, prevTicketInfo, postState, postTicket) {
@@ -11713,35 +11699,25 @@ function resolveNextTicketStartCommit(input, nextTicket, lifecycleState) {
         ? readHeadCommit(nextTicketInfo?.working_dir || lifecycleState.working_dir || process.cwd())
         : null;
 }
-function applyTicketTransitionAfterIteration(input) {
-    const { sessionDir, statePath, previousTicket, previousTicketStartCommit, log } = input;
-    try {
-        const postState = readRunnerState(statePath);
-        const postTicket = postState.current_ticket || null;
-        let completedBoundary = null;
-        if (previousTicket && postTicket !== previousTicket) {
-            // Check if the model already marked it Done via prompt-driven validation
-            const tickets = collectTickets(sessionDir);
-            const prevTicketInfo = tickets.find(t => t.id === previousTicket);
-            const verdict = validatePriorTicketCompletion({ ...input, previousTicket, prevTicketInfo });
-            if (verdict !== 'proceed')
-                return { kind: verdict };
-            completedBoundary = describeCompletedTicketBoundary({ ...input, previousTicket }, prevTicketInfo, postState, postTicket);
-        }
-        const postStep = inferTicketLifecycleStep(sessionDir, postTicket, postState.step);
-        const lifecycleState = updateMuxLifecycleState(statePath, { currentTicket: postTicket, step: postStep });
-        const nextTicket = lifecycleState.current_ticket || null;
-        if (completedBoundary) {
-            completedBoundary.nextTicketId = nextTicket;
-            runCompletedBoundaryFastGate(completedBoundary, statePath, log);
-        }
-        const nextTicketStartCommit = resolveNextTicketStartCommit(input, nextTicket, lifecycleState);
-        return { kind: 'proceed', previousTicket: nextTicket, previousTicketStartCommit: nextTicketStartCommit };
+/**
+ * Tail of the ticket transition, after the prior ticket's completion was validated: persist
+ * the post-iteration lifecycle, run the between-ticket fast gate for a completed boundary, and
+ * hand back the next `previousTicket` / `previousTicketStartCommit` pair. Runs inside the
+ * loop's swallowing try, so a throw here leaves the caller's pair unchanged.
+ */
+function completeTicketTransition(input) {
+    const { sessionDir, statePath, previousTicket, postState, postTicket, log } = input;
+    const completedBoundary = previousTicket && postTicket !== previousTicket
+        ? describeCompletedTicketBoundary({ ...input, previousTicket }, input.prevTicketInfo, postState, postTicket)
+        : null;
+    const postStep = inferTicketLifecycleStep(sessionDir, postTicket, postState.step);
+    const lifecycleState = updateMuxLifecycleState(statePath, { currentTicket: postTicket, step: postStep });
+    const nextTicket = lifecycleState.current_ticket || null;
+    if (completedBoundary) {
+        completedBoundary.nextTicketId = nextTicket;
+        runCompletedBoundaryFastGate(completedBoundary, statePath, log);
     }
-    catch {
-        /* state read failed — skip transition check */
-        return { kind: 'proceed', previousTicket, previousTicketStartCommit };
-    }
+    return { previousTicket: nextTicket, previousTicketStartCommit: resolveNextTicketStartCommit(input, nextTicket, lifecycleState) };
 }
 /**
  * Circuit breaker: record the iteration outcome (the caller skips subprocess failures and a
@@ -11811,7 +11787,52 @@ function recordCircuitBreakerIteration(input) {
     }
     return { cbState, tripped: false };
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 1156 code lines against a ceiling of 120, and complexity 232 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowers it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle first), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/**
+ * First-pass seed of the ticket the transition check compares against, and HEAD of its repo.
+ * With no current ticket the prior start commit is handed back unchanged.
+ */
+function seedPreviousTicket(state, sessionDir, previousTicketStartCommit) {
+    const previousTicket = state.current_ticket || null;
+    if (!previousTicket)
+        return { previousTicket, previousTicketStartCommit };
+    const ticketInfo = collectTickets(sessionDir).find(t => t.id === previousTicket);
+    return {
+        previousTicket,
+        previousTicketStartCommit: readHeadCommit(ticketInfo?.working_dir || state.working_dir || process.cwd()),
+    };
+}
+/**
+ * FR-B3/B4/B12/B14 per-ticket timeout bookkeeping (the counter is loop-local, never persisted):
+ * resolve the ticket the iteration ended on, advance the counter, and write the timeout stub for
+ * a timed-out spawn. The caller assigns the counter and runs the `counterNext.halt` block.
+ */
+function advancePerTicketTimeoutCounter(input) {
+    const { state, outcome } = input;
+    let ticketForTimeout = state.current_ticket || null;
+    try {
+        const postState = readRunnerState(input.statePath);
+        ticketForTimeout = postState.current_ticket || null;
+    }
+    catch { /* keep pre-iteration ticket as fallback */ }
+    const counterNext = applyTimeoutCounterForLoop({
+        prev: input.prev,
+        ticketNow: ticketForTimeout,
+        timedOut: outcome.timedOut === true,
+        completedClean: outcome.completion === 'task_completed',
+    });
+    if (outcome.timedOut) {
+        writeTimeoutStub(input.sessionDir, {
+            ticketId: ticketForTimeout,
+            iteration: input.iteration,
+            wallSeconds: outcome.wallSeconds,
+            workerTimeoutSeconds: Number(state.worker_timeout_seconds) || 0,
+            timeoutCount: counterNext.count,
+            logFile: input.iterLogFile,
+        });
+    }
+    return { ticketForTimeout, counterNext };
+}
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 1159 code lines against a ceiling of 120, and complexity 230 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowers it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle first), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
@@ -12029,11 +12050,7 @@ async function runMuxRunnerMain() {
             state = readRunnerState(statePath);
         }
         if (previousTicket === null) {
-            previousTicket = state.current_ticket || null;
-            if (previousTicket) {
-                const ticketInfo = collectTickets(sessionDir).find(t => t.id === previousTicket);
-                previousTicketStartCommit = readHeadCommit(ticketInfo?.working_dir || state.working_dir || process.cwd());
-            }
+            ({ previousTicket, previousTicketStartCommit } = seedPreviousTicket(state, sessionDir, previousTicketStartCommit));
         }
         // R-CCPM-3: orphan-session detection at iteration boundary
         state = recordOrphanSessionsAtIterationBoundary(state, statePath, sessionDir, log);
@@ -12387,12 +12404,8 @@ async function runMuxRunnerMain() {
         }
         // Per-spawn codegraph staleness sync (fail-open — bounded by sync_timeout_ms in the service).
         await codegraph.syncIfStale();
-        const iterWorkingDir = state.working_dir || process.cwd();
-        const preIterSha = readHeadCommit(iterWorkingDir);
-        // 90574654: iteration-window start — freshness base for silent-death salvage probes.
-        const iterStartMs = Date.now();
-        // R-WSWA-2: snapshot the per-ticket artifact count BEFORE the worker spawn.
-        const { apTicketId, apCreditEarlyPhases, apBeforeCount } = snapshotPreSpawnArtifactProgress(state, sessionDir);
+        // 90574654 iteration window + R-WSWA-2 per-ticket artifact count, both taken BEFORE the worker spawn.
+        const { iterWorkingDir, preIterSha, iterStartMs, apTicketId, apCreditEarlyPhases, apBeforeCount } = snapshotPreSpawnIteration(state, sessionDir);
         // B-WSPU WS-1: all tiers route through the single synchronous spawn path.
         const outcome = await runIteration(sessionDir, iteration, extensionRoot).catch((err) => {
             const msg = err instanceof Error ? err.message : String(err);
@@ -12644,17 +12657,55 @@ async function runMuxRunnerMain() {
         // Move iterLogFile computation BEFORE transition block (needed by classifyTicketCompletion)
         const iterLogFile = path.join(sessionDir, `tmux_iteration_${iteration}.log`);
         // Detect ticket transitions: validate completion before marking Done
-        const transition = applyTicketTransitionAfterIteration({
-            sessionDir, statePath, state, previousTicket, previousTicketStartCommit, iteration, iterStartMs, log,
-        });
-        if (transition.kind === 'continue') {
-            emitWastedIterOnce();
-            continue;
+        try {
+            const postState = readRunnerState(statePath);
+            const postTicket = postState.current_ticket || null;
+            let prevTicketInfo;
+            if (previousTicket && postTicket !== previousTicket) {
+                // Check if the model already marked it Done via prompt-driven validation
+                prevTicketInfo = collectTickets(sessionDir).find(t => t.id === previousTicket);
+                if (isModelAttestedDone(sessionDir, prevTicketInfo)) {
+                    const verdict = validateModelAttestedDone({
+                        sessionDir, statePath, state, previousTicket, previousTicketStartCommit, prevTicketInfo, iteration, iterStartMs, log,
+                    });
+                    if (verdict.kind === 'continue') {
+                        emitWastedIterOnce();
+                        continue;
+                    }
+                    if (verdict.kind === 'return')
+                        return;
+                }
+                else {
+                    // Drift scenario: model changed current_ticket without following protocol
+                    const autoValidation = applyAutoTicketCompletionValidation({
+                        sessionDir,
+                        ticketId: previousTicket,
+                        // AP-EXT-ITER125-01: this site already held the (per-ticket, session)
+                        // pair and spent it on an `||` SELECTION, so a non-empty-but-unusable
+                        // per-ticket `working_dir` won and the session dir was never consulted.
+                        ...completionDirLadder(prevTicketInfo?.working_dir, state.working_dir),
+                        startCommit: previousTicketStartCommit,
+                        iteration,
+                        log,
+                        statePath,
+                        flags: state.flags ?? null,
+                    });
+                    // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — the callee
+                    // already recorded the residual exit_reason and no longer
+                    // deactivates the session, so park this ticket (leave it un-Done)
+                    // and continue the phase loop.
+                    if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
+                        emitWastedIterOnce();
+                        continue;
+                    }
+                }
+            }
+            ({ previousTicket, previousTicketStartCommit } = completeTicketTransition({
+                sessionDir, statePath, state, previousTicket, previousTicketStartCommit, iteration, iterStartMs, log,
+                postState, postTicket, prevTicketInfo,
+            }));
         }
-        if (transition.kind === 'return')
-            return;
-        previousTicket = transition.previousTicket;
-        previousTicketStartCommit = transition.previousTicketStartCommit;
+        catch { /* state read failed — skip transition check */ }
         // --- Rate limit classification (MUST run before CB to prevent CB poisoning) ---
         const exitResult = classifyIterationExit(outcome.completion, iterLogFile, {
             didTimeout: outcome.timedOut,
@@ -12676,30 +12727,11 @@ async function runMuxRunnerMain() {
         if (rateLimitStep.kind === 'parked')
             continue; // Skip CB recording + result branching entirely
         // --- Per-ticket timeout halt (FR-B3/B4/B12/B14) — MUST run BEFORE CB recording ---
-        let ticketForTimeout = state.current_ticket || null;
-        try {
-            const postState = readRunnerState(statePath);
-            ticketForTimeout = postState.current_ticket || null;
-        }
-        catch { /* keep pre-iteration ticket as fallback */ }
-        const counterNext = applyTimeoutCounterForLoop({
-            prev: { count: timeoutCount, ticket: lastTimeoutTicket },
-            ticketNow: ticketForTimeout,
-            timedOut: outcome.timedOut === true,
-            completedClean: result === 'task_completed',
+        const { ticketForTimeout, counterNext } = advancePerTicketTimeoutCounter({
+            statePath, sessionDir, state, outcome, iteration, iterLogFile, prev: { count: timeoutCount, ticket: lastTimeoutTicket },
         });
         timeoutCount = counterNext.count;
         lastTimeoutTicket = counterNext.ticket;
-        if (outcome.timedOut) {
-            writeTimeoutStub(sessionDir, {
-                ticketId: ticketForTimeout,
-                iteration,
-                wallSeconds: outcome.wallSeconds,
-                workerTimeoutSeconds: Number(state.worker_timeout_seconds) || 0,
-                timeoutCount,
-                logFile: iterLogFile,
-            });
-        }
         if (counterNext.halt) {
             // R-WTB-A1: check artifact progress before halting — if the worker produced new
             // artifacts or commits within the no-progress window, reset the counter and continue.
