@@ -46,8 +46,8 @@ import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX }
 // phase's `state.exit_reason` (no re-mapping — single source of truth in microverse-runner).
 import { classifyMicroverseDisposition } from './microverse-runner.js';
 // WS-B (f8559470): consume WS-A's single test-dimension reader to detect a ticket
-// flipped Done over a red worker_gate_tests_verdict, so the residual can raise
-// counters.nonConvergent (see collectDoneTicketsWithRedTestVerdict below).
+// Done over a red worker_gate_tests_verdict. B-RELVERD V1 derives that withholding term
+// at finalize from the CURRENT verdicts (see computePipelineVerdict).
 import { readTicketWorkerGateTestsVerdict } from './setup.js';
 // The per-ANALYST -> per-TICKET collapse has ONE home (spawn-refinement-team.ts). Every
 // cardinality question over `refinement_manifest.json:tickets` routes through it; see
@@ -4603,19 +4603,27 @@ function finalizeNonSuccessTerminal(
 /**
  * The three verdict terms every downstream reader shares, derived once.
  *
- * AC-OA-1c: ran-to-completion ≠ reported-success. `nonConvergent` is the term BOTH degradation
- * paths raise, so a degraded phase withholds the success verdict just as a phase shortfall does.
- * A handoff stop is a deliberate pause, not a failure — folded out of `effectiveFailed` once here
- * rather than re-tested at each use.
+ * AC-OA-1c: ran-to-completion ≠ reported-success. `nonConvergent` counts the degradations a phase
+ * withheld mid-run, so a degraded phase withholds the success verdict just as a phase shortfall
+ * does. A handoff stop is a deliberate pause, not a failure — folded out of `effectiveFailed` once
+ * here rather than re-tested at each use.
+ *
+ * B-RELVERD V1 (f04ff132): the done-over-red term is NOT in that counter. A red
+ * `worker_gate_tests_verdict` is a per-ticket, repairable fact and the counter can only rise, so
+ * latching it at the pickle boundary let one ticket repaired later doom a four-phase run. It is
+ * derived HERE from every Done ticket's CURRENT verdict: "is this bundle red now?", not "was any
+ * ticket ever red?". Only a run that has a pickle phase asks, exactly as before.
  */
-function computePipelineVerdict(runtime: PipelineRuntime, counters: PhaseCounters): {
+export function computePipelineVerdict(runtime: PipelineRuntime, counters: PhaseCounters): {
   pipelineFailed: boolean;
   unsuccessful: boolean;
   handoffStop: boolean;
   effectiveFailed: boolean;
 } {
   const pipelineFailed = (counters.completed + counters.skipped) < runtime.config.phases.length;
-  const unsuccessful = pipelineFailed || counters.nonConvergent > 0;
+  const doneOverRed = runtime.config.phases.includes('pickle')
+    && reportDoneOverRedTestVerdict(runtime, counters, runtime.log);
+  const unsuccessful = pipelineFailed || counters.nonConvergent > 0 || doneOverRed;
   const handoffStop = !!readHandoffExitReason(runtime.statePath);
   return { pipelineFailed, unsuccessful, handoffStop, effectiveFailed: unsuccessful && !handoffStop };
 }
@@ -5346,17 +5354,16 @@ function readDegradedPostFinalVerdict(statePath: string): { state: string; dimen
 }
 
 /**
- * R-NOPOSTTIER (AC-2): a degraded post-final verdict raises the SAME `counters.nonConvergent`
- * term the WS-B red-offender branch above raises, so `finalizePipeline`'s
- * `unsuccessful = pipelineFailed || counters.nonConvergent > 0` withholds the success verdict
- * and skips closer-release. No new gate, field, halt, or exit reason.
+ * R-NOPOSTTIER (AC-2): a degraded post-final verdict raises `counters.nonConvergent`, so
+ * `computePipelineVerdict`'s `unsuccessful` withholds the success verdict and skips
+ * closer-release. No new gate, field, halt, or exit reason.
  *
  * Reaching completion and reporting success are separate wires: this never returns an outcome,
  * so control falls through to `counters.completed++` — every phase still executes, no ticket is
  * demoted, and no work is discarded.
  *
- * The disposition APPENDS rather than assigns: the red-offender branch may already have named
- * itself for this phase, and both attributions are true.
+ * The disposition APPENDS rather than assigns: finalize's done-over-red report also names itself
+ * under the pickle phase, and both attributions are true.
  */
 function withholdForDegradedPostFinalVerdict(
   runtime: PipelineRuntime,
@@ -5383,40 +5390,37 @@ function withholdForDegradedPostFinalVerdict(
  * `tests/pipeline-finalize-honesty.test.js`.
  */
 /**
- * WS-B (f8559470): the pickle phase graduated, but ≥1 ticket flipped Done over a red
- * worker_gate_tests_verdict. The run STILL executes every remaining phase (AC-B2 — the caller's
- * `completed++` is unaffected) and closer-release still needs the caller to see a name; raise the
- * existing `nonConvergent` term so `finalizePipeline`'s
- * `unsuccessful = pipelineFailed || counters.nonConvergent > 0` withholds the success verdict
- * (AC-B1) and skips closer-release, without adding a new gate, field, or halt.
+ * WS-B (f8559470) + B-RELVERD V1 (f04ff132): name the Done tickets whose CURRENT
+ * worker_gate_tests_verdict is red, and return whether any is a MEASURED red. Done is never
+ * blocked on a red verdict. This only feeds `computePipelineVerdict`'s withholding term (AC-B1)
+ * and names the offenders in the pickle disposition. It adds no gate, field, halt, or counter.
+ *
+ * Called at FINALIZE, never at the pickle boundary. A disposition written mid-run is persisted by
+ * `writeRunningStatus`, and `readResumePhasePlan` counts persisted dispositions into
+ * `nonConvergent`, so a boundary-time marker would re-latch a repaired ticket across a crash-resume.
  */
-function withholdForDoneOverRedTestVerdict(
+function reportDoneOverRedTestVerdict(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
-  rawPhase: PhaseName,
   log: (msg: string) => void,
-): void {
+): boolean {
   const { measured, unmeasured } = collectDoneTicketsWithRedTestVerdict(runtime);
+  const names = (list: { id: string; title: string }[]): string =>
+    list.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
+  const ids = (list: { id: string }[]): string => list.map((o) => o.id).join(',');
 
   if (unmeasured.length > 0) {
-    const unmeasuredNames = unmeasured.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
-    appendPhaseDisposition(
-      counters,
-      rawPhase,
-      `done_over_unmeasured_worker_gate_tests:${unmeasured.map((o) => o.id).join(',')}`,
-    );
+    appendPhaseDisposition(counters, 'pickle', `done_over_unmeasured_worker_gate_tests:${ids(unmeasured)}`);
     log(
-      `Phase ${rawPhase}: ${unmeasured.length} ticket(s) flipped Done over an empty-because-unmeasured ` +
-      `worker_gate_tests_verdict (no corroborating failure evidence) — NOT withholding: ${unmeasuredNames}`,
+      `Finalize: ${unmeasured.length} ticket(s) Done over an empty-because-unmeasured ` +
+      `worker_gate_tests_verdict (no corroborating failure evidence) — NOT withholding: ${names(unmeasured)}`,
     );
   }
 
-  if (measured.length === 0) return;
-  counters.nonConvergent += measured.length;
-  const names = measured.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
-  appendPhaseDisposition(counters, rawPhase, `done_over_red_worker_gate_tests:${measured.map((o) => o.id).join(',')}`);
-  log(`Phase ${rawPhase}: ${measured.length} ticket(s) flipped Done over a red worker_gate_tests_verdict — withholding success verdict: ${names}`);
-  try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
+  if (measured.length === 0) return false;
+  appendPhaseDisposition(counters, 'pickle', `done_over_red_worker_gate_tests:${ids(measured)}`);
+  log(`Finalize: ${measured.length} ticket(s) Done over a red worker_gate_tests_verdict — withholding success verdict: ${names(measured)}`);
+  return true;
 }
 
 /**
@@ -5499,10 +5503,7 @@ export function finalizePhaseSuccess(
   // let a breaker/error pickle exit silently graduate with pending tickets.
   const graduationBreak = maybeStampPhaseGraduation(runtime, rawPhase, exitCode, counters, log);
   if (graduationBreak) { return graduationBreak; }
-  if (rawPhase === 'pickle') {
-    withholdForDoneOverRedTestVerdict(runtime, counters, rawPhase, log);
-    withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log);
-  }
+  if (rawPhase === 'pickle') withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log);
   if (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce') {
     let exitReason: unknown = null;
     try { exitReason = sm.read(runtime.statePath).exit_reason; } catch { /* best-effort — unreadable state defers to the success path below */ }
