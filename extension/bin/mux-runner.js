@@ -1884,7 +1884,7 @@ function maybeAutoCloseSplitOriginal(input, ticket, allTickets) {
     }
     return flipSplitOriginalDoneOnTwinEvidence(input, ticket.id, dirs, twinEvidence, canonicalSha);
 }
-// eslint-disable-next-line complexity -- R-PDUP adds the todo/failed auto-close branch; R-AFCC-DEEP-3B requires batchLoopPhantomDoneKind to stay in this function body (audit-phantom-done-call-sites.sh invariant)
+// eslint-disable-next-line complexity -- HT-1 reviewed: measured complexity 16 against a ceiling of 15, one over. R-PDUP adds the todo/failed auto-close branch; R-AFCC-DEEP-3B requires batchLoopPhantomDoneKind to stay in this function body (audit-phantom-done-call-sites.sh invariant), so the branch cannot be extracted without breaking that invariant. Tracked in GitHub #21.
 export function correctPhantomDoneTickets(input) {
     const allTickets = collectTickets(input.sessionDir);
     let corrected = 0;
@@ -10915,7 +10915,7 @@ function restorePersistedRateLimitPark(opts) {
         catch { /* best-effort */ }
     }
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- legacy mux runner loop retained behavior-preserving for global bin acceptance
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 1690 code lines against a ceiling of 120, and complexity 366 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips, so decomposition is deliberately NOT attempted as a side effect of making it visible — B-MEASURE root M3 names that an explicit non-goal. The numbers above are the ratchet baseline; a later bundle lowers them against this recorded ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const sessionDir = process.argv[2];
     const statePath = sessionDir ? path.join(sessionDir, 'state.json') : '';
