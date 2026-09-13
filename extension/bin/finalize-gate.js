@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { runGate, filterByScope } from '../services/convergence-gate.js';
+import { runGate, filterByScope, isCheckUnmeasured } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 import { readMicroverseState, readRecoverableJsonObject } from '../services/microverse-state.js';
 import { logActivity } from '../services/activity-logger.js';
@@ -212,6 +212,27 @@ function spawnStrictRemediator(ctx, rt, cycle, briefContent) {
         rt.err(`[finalize-gate] remediator exited non-zero or timed out: ${safeErrorMessage(e)}`);
     }
 }
+/**
+ * V3: a failure the remediator cannot act on — its check produced no measurement
+ * (`isCheckUnmeasured`, e.g. a timeout) AND it names no editable path (the same non-absolute arm
+ * `splitByScope` already forces in-scope). The path conjunct keeps a REAL failure of a check that
+ * timed out in a sibling target dir remediable, since check status escalates across dirs.
+ */
+function isUnmeasuredFailure(result, failure) {
+    return isCheckUnmeasured(result.check_status, failure.check) && !path.isAbsolute(failure.file);
+}
+/**
+ * The gate never measured what it reports, so a remediation cycle would only rediscover that. Report
+ * it and stop with a non-success code — the same disposition as cap exhaustion, reached without
+ * spending the cap.
+ */
+function reportUnmeasuredGate(ctx, rt, cycle, unmeasured) {
+    const reportPath = path.join(ctx.gateDir, `unmeasured_${rt.iso()}.md`);
+    const lines = unmeasured.map(f => `- [${f.check}] \`${f.file}\` ${f.ruleOrCode}: ${f.message.slice(0, 200)}`);
+    rt.writeFile(reportPath, `# Gate Unmeasured\n\nCycle: ${cycle + 1}\nSkill: ${ctx.skill}\nTimestamp: ${new Date().toISOString()}\n\n${lines.join('\n')}\n`);
+    rt.err(`[finalize-gate] gate UNMEASURED on cycle ${cycle + 1} (${unmeasured.length} non-actionable failure(s)) — no remediation cycle spent, exit 2 (report: ${reportPath})`);
+    return 2;
+}
 async function runStrictGateCycle(ctx, rt, cycle) {
     rt.out(`[finalize-gate] cycle ${cycle + 1}/${ctx.cap} — running strict gate`);
     let result;
@@ -239,7 +260,10 @@ async function runStrictGateCycle(ctx, rt, cycle) {
         rt.out('[finalize-gate] all failures are out-of-scope — exit 0 (closed within scope)');
         return { code: 0, result };
     }
-    const briefPath = await prepareRemediationBrief(ctx, rt, cycle, { ...result, failures: inScope });
+    const remediable = inScope.filter(f => !isUnmeasuredFailure(result, f));
+    if (remediable.length === 0)
+        return { code: reportUnmeasuredGate(ctx, rt, cycle, inScope), result };
+    const briefPath = await prepareRemediationBrief(ctx, rt, cycle, { ...result, failures: remediable });
     if (!briefPath)
         return { code: null, result };
     const briefContent = readBriefContent(briefPath, rt);

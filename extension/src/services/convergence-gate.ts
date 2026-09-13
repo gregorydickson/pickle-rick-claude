@@ -1103,7 +1103,9 @@ export function buildFailures(result: CheckResult, check: GateCheck, pkgDir: str
     file: pkgDir,
     line: 0,
     ruleOrCode: String(result.exitCode),
-    message: output.slice(0, 500) || `${check} failed with exit code ${result.exitCode}`,
+    // V3-3: keep the TAIL. A runner prints startup noise first and the failing test / summary last,
+    // so a head slice records the part that names nothing.
+    message: output.slice(-500) || `${check} failed with exit code ${result.exitCode}`,
     severity: 'error',
     occurrence_index: 0,
   }];

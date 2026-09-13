@@ -474,3 +474,76 @@ describe('error conditions', () => {
         }
     });
 });
+
+// ---------------------------------------------------------------------------
+// V3 (GitHub #15): a sentinel-only failing list must not burn a remediation cycle
+// ---------------------------------------------------------------------------
+
+describe('V3: unmeasured sentinel-only failures', () => {
+    // What runGate returns when a check times out: a `<timeout>` pseudo-file AND check_status 'failed'.
+    const timeoutFailure = { check: 'tests', file: '<timeout>', line: 0, ruleOrCode: 'GATE_CHECK_TIMEOUT', message: 'tests timed out after 300000ms', severity: 'error', occurrence_index: 0 };
+
+    function runV3(sessionRoot, gateResult) {
+        const calls = { gate: 0, briefPrep: 0, remediator: 0, briefFailures: [] };
+        const briefPath = path.join(sessionRoot, 'brief.md');
+        fs.writeFileSync(briefPath, 'fix the gate');
+        return finalizeGateMain({
+            argv: [sessionRoot, 'szechuan'],
+            env: {},
+            ...baseDeps(sessionRoot),
+            runGateFn: async () => { calls.gate += 1; return gateResult; },
+            spawnGateRemediatorMainFn: async (briefOpts) => {
+                calls.briefPrep += 1;
+                const resultPath = briefOpts.argv[briefOpts.argv.indexOf('--gate-result') + 1];
+                calls.briefFailures.push(JSON.parse(fs.readFileSync(resultPath, 'utf-8')).failures);
+                briefOpts.stdout?.(`BRIEF_PATH=${briefPath}`);
+                return 0;
+            },
+            spawnRemediatorFn: () => { calls.remediator += 1; },
+        }).then(code => ({ code, calls }));
+    }
+
+    test('V3-1: a sentinel-only failing list is reported unmeasured and spends no remediation cycle', async () => {
+        const sessionRoot = makeTmpDir();
+        const gateDir = path.join(sessionRoot, 'gate');
+        fs.mkdirSync(gateDir, { recursive: true });
+        const result = { ...makeGateResult('red', [timeoutFailure]), check_status: { typecheck: 'ran', lint: 'ran', tests: 'failed' } };
+
+        const { code, calls } = await runV3(sessionRoot, result);
+
+        assert.equal(calls.gate, 1, 'the gate is not re-run against a check that cannot measure');
+        assert.equal(calls.briefPrep, 0, 'no brief is prepared for a pseudo-file');
+        assert.equal(calls.remediator, 0, 'no remediator is spawned for a pseudo-file');
+        assert.equal(code, 2, 'unmeasured is not success');
+        assert.ok(fs.readdirSync(gateDir).some(f => f.startsWith('unmeasured_')), 'the unmeasured gate is reported');
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+
+    test('V3-4: a genuine failing file still consumes a cycle and is remediated — the sentinel is not in its brief', async () => {
+        const sessionRoot = makeTmpDir();
+        fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
+        const real = makeFailure('/tmp/wd/src/foo.ts');
+        const result = { ...makeGateResult('red', [timeoutFailure, real]), check_status: { typecheck: 'ran', lint: 'ran', tests: 'failed' } };
+
+        const { code, calls } = await runV3(sessionRoot, result);
+
+        assert.equal(code, 2, 'cap exhausted — gate never clears');
+        assert.equal(calls.remediator, 2, 'every cycle up to the cap spawns the remediator');
+        assert.deepEqual(calls.briefFailures.map(fs_ => fs_.map(f => f.file)), [[real.file], [real.file]]);
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+
+    test('V3-4: a real failure of a check that timed out in a sibling dir is still remediated', async () => {
+        const sessionRoot = makeTmpDir();
+        fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
+        // check_status escalates across target dirs, so one dir's timeout marks the whole check 'failed'.
+        const realTests = { ...timeoutFailure, file: '/tmp/wd/packages/b', ruleOrCode: '1', message: 'not ok 1 - b breaks' };
+        const result = { ...makeGateResult('red', [timeoutFailure, realTests]), check_status: { typecheck: 'ran', lint: 'ran', tests: 'failed' } };
+
+        const { calls } = await runV3(sessionRoot, result);
+
+        assert.equal(calls.remediator, 2);
+        assert.deepEqual(calls.briefFailures[0].map(f => f.file), ['/tmp/wd/packages/b']);
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+});

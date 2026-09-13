@@ -1170,3 +1170,18 @@ test('R-FBTN: a passing tests check is still green — granularity never invents
     'exit 0 short-circuits before any parsing, however many ✖ glyphs the output contains',
   );
 });
+
+// V3-3 (GitHub #15): a non-zero test exit the granular parser does not recognise used to record
+// `output.slice(0, 500)` — startup noise — dropping the failing test's name printed at the end.
+test('V3-3: the coarse fallback diagnostic keeps a known failing test name that follows long startup output', () => {
+  const failingName = 'PaymentService › refunds a partially captured charge';
+  const startup = Array.from({ length: 40 }, (_, i) => `> pkg@1.0.0 test\n  loading config module ${i}`).join('\n');
+  const output = `${startup}\n  FAIL  ${failingName}\nTests: 1 failed, 41 passed`;
+  // The pin can only prove something if the pre-fix head slice really would lose the name.
+  assert.ok(!output.slice(0, 500).includes(failingName), 'fixture: the name lies beyond the first 500 chars');
+
+  const failures = buildFailures({ stdout: output, stderr: '', exitCode: 1 }, 'tests', '/repo/pkg');
+
+  assert.equal(failures.length, 1, 'unrecognised reporter still takes the coarse fallback');
+  assert.ok(failures[0].message.includes(failingName), `diagnostic must name the failing test, got: ${failures[0].message}`);
+});
