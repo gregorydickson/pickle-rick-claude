@@ -12,7 +12,6 @@ export class Reporter {
         const exitCode = exitCodeFor(findings, decisions, input.strict);
         return {
             schema: '1.0',
-            schema_version: '1.0',
             prd_path: input.prdPath,
             diff_range: input.diffRange,
             exit_code: exitCode,

@@ -65,7 +65,6 @@ function makeRuntime(dir) {
 function citadelResult(findings) {
   return {
     schema: '1.0',
-    schema_version: '1.0',
     prd_path: 'prd.md',
     diff_range: 'abc1234..HEAD',
     exit_code: findings.length ? 2 : 0,
