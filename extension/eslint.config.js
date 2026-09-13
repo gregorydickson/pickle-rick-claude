@@ -35,10 +35,9 @@ export default tseslint.config(
       'pickle/no-sync-in-async': 'warn',
       'pickle/spawn-error-handler': 'error',
       'pickle/no-hardcoded-timeout': 'error',
-      // 'warn' not 'error': 10 (resp. 15) whole-tree hits exist today outside the
-      // did-we-count corpus's already-fixed shas — real defects, but out of this
-      // ticket's file-scope allowlist to fix. 'error' here would break the
-      // `--max-warnings=-1` release gate on unrelated files this ticket cannot touch.
+      // Left at 'warn': the release gate runs `--max-warnings=0`, so a fresh warn-level
+      // finding already fails it exactly as 'error' would. The V6-1 pin in
+      // tests/eslint-plugin-pickle.test.js drives every warn-level rule through that flag.
       'pickle/require-max-buffer-on-capture': 'warn',
       'pickle/require-spawn-result-error-check': 'warn',
       // 0 whole-tree hits for both — safe at 'error'.
