@@ -719,6 +719,62 @@ test('AP-EXT-ITER220-01 control: an over-reported judge score still converges wh
   }
 });
 
+// ---------------------------------------------------------------------------
+// M2 (GitHub #20) — the baseline seeds `state.violation_ledger` (see
+// `measureLlmBaseline` in microverse-runner.ts). These two cases model what
+// that seeded ledger looks like going into iteration 2 and pin the two ways
+// `measureAndClassifyIteration` must react to it: the same set stays 'held'
+// on the set_ops basis, and a set that gains new ids beyond it still
+// classifies as a regression (M2-4, the negative control).
+// ---------------------------------------------------------------------------
+
+test('M2-2: a baseline-seeded ledger makes iteration 2 classify on set_ops, not numeric, and is not a regression', async () => {
+  const violationIds = ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'];
+  const { mv, ctx, cleanup } = makeJudgeSession(
+    {
+      score: 2,
+      violations: violationIds.map(judgeViolation),
+      resolved: [], new: [], remaining: violationIds,
+    },
+    { convergenceTarget: 0, baselineScore: 6 },
+  );
+  // Simulate what the M2 baseline fix seeds: a ledger already carrying the six ids.
+  mv.violation_ledger = violationIds.map((id) => ({
+    id, path: `src/${id}.ts`, line: 1, severity: 'high', description: id,
+    first_seen_iter: 0, last_seen_iter: 0,
+  }));
+  try {
+    const result = await measureAndClassifyIteration(mv, { raw: '6', score: 6 }, ctx);
+    assert.equal(result.kind, 'unchanged', 'the same six ids reported again must not classify as a regression');
+    assert.equal(mv.violation_ledger.length, 6, 'the ledger still carries the six ids');
+  } finally {
+    cleanup();
+  }
+});
+
+test('M2-4 (negative control): new ids added beyond a seeded ledger still classify as a regression', async () => {
+  const priorIds = ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'];
+  const newIds = ['v7', 'v8'];
+  const { mv, ctx, cleanup } = makeJudgeSession(
+    {
+      score: 8,
+      violations: [...priorIds, ...newIds].map(judgeViolation),
+      resolved: [], new: newIds, remaining: priorIds,
+    },
+    { convergenceTarget: 0, baselineScore: 6 },
+  );
+  mv.violation_ledger = priorIds.map((id) => ({
+    id, path: `src/${id}.ts`, line: 1, severity: 'high', description: id,
+    first_seen_iter: 0, last_seen_iter: 0,
+  }));
+  try {
+    const result = await measureAndClassifyIteration(mv, { raw: '6', score: 6 }, ctx);
+    assert.deepEqual(result, { kind: 'regressed', rollback: true }, 'new ids beyond the seeded ledger must still report a regression');
+  } finally {
+    cleanup();
+  }
+});
+
 test('AP-EXT-ITER4-01 control: a drift BEYOND ±5 still takes a new id (the fix does not over-match)', () => {
   const state = createMicroverseState(AP_ITER4_OPTS);
   state.violation_ledger = [];

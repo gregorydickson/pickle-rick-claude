@@ -4074,7 +4074,21 @@ async function measureLlmBaseline(
     },
     state.allowed_paths ?? [],
   );
-  if (measured.metric) return measured.metric;
+  if (measured.metric) {
+    // M2: score and seed the ledger on the SAME wire the iteration arm uses
+    // (`measureAndClassifyIteration`) — never the judge's self-reported baseline integer for a
+    // full-shape answer. Without this, iteration 1 compares against an empty ledger and any
+    // full-shape answer classifies on the numeric basis instead of set_ops.
+    const baselineJudgeResult = parseLlmJudgeOutput(measured.metric.raw);
+    emitJudgeParseDiagnostic(baselineJudgeResult, measured.metric.raw);
+    emitJudgeLegacyShapeDiagnostic(baselineJudgeResult);
+    if (baselineJudgeResult.shape === 'full') {
+      updateViolationLedger(state, baselineJudgeResult, ctx.iteration);
+      emitJudgeLedgerDiagnostic(baselineJudgeResult, state.violation_ledger);
+      return { ...measured.metric, score: baselineJudgeResult.violations.length };
+    }
+    return measured.metric;
+  }
   const exitReason: JudgeMeasurementFailureExitReason = mapJudgeMeasurementFailure(measured);
   const activityEvent: ActivityEventType = mapExhaustedExitToActivityEvent(exitReason);
   const error = measured.lastError ?? `${exitReason} after ${measured.attempts} attempt(s)`;
