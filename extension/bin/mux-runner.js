@@ -11836,6 +11836,8 @@ function advancePerTicketTimeoutCounter(input) {
  * R2c: the R-CMWL-4 / R-CHTS-CODEX no-progress halt that `runMuxRunnerMain` ran verbatim in both its `inactive`
  * and `error` branches — counter update, recovery seam, terminal park — as one seam. `relaunch` means the pass made
  * progress and the caller proceeds to its relaunch; `continue` means the recovery ladder advanced the queue.
+ * `recovery_exhausted` is handed back unrecorded: each branch records that honest ladder terminal itself, one
+ * site per seam (the AC-W4b-3 per-seam census in tests/recovery-exhausted-terminal.test.js).
  */
 function resolveCodexManagerNoProgressStep(input) {
     const { statePath, sessionDir, postState, state, iteration, log } = input;
@@ -11860,13 +11862,8 @@ function resolveCodexManagerNoProgressStep(input) {
     });
     if (codexRecovery.kind === 'advanced')
         return { kind: 'continue' };
-    if (codexRecovery.kind === 'recovery_exhausted') {
-        writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
-        recordExitReason(statePath, 'recovery_exhausted');
-        safeDeactivate(statePath);
-        removeRunnerSessionMapEntry(statePath, log);
-        return { kind: 'exit', exitReason: 'recovery_exhausted' };
-    }
+    if (codexRecovery.kind === 'recovery_exhausted')
+        return { kind: 'recovery_exhausted' };
     // kind === 'halt' → fall through to existing park.
     log(`Codex manager made no progress for ${noProgress.consecutiveCount} consecutive relaunch passes — halting with codex_manager_no_progress.`);
     logActivity({ event: 'codex_manager_no_progress', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackendFromStateFileWithSource(statePath).backend, consecutive_count: noProgress.consecutiveCount, pending_count: input.pendingCount });
@@ -12258,7 +12255,45 @@ function relaunchOrEscapeAfterCleanManagerExit(input) {
     // decision.pendingCount === 0 → all terminal → legitimate clean exit, fall through.
     return { kind: 'fall_through' };
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 894 code lines against a ceiling of 120, and complexity 177 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/**
+ * R2c: the iteration-0 one-time gates in slot order (R-BUNDLE-1 bootstrap → readiness → R-TAQ-3 ticket audit → spawn).
+ * Each latch flips the first time its gate runs; returns the (possibly bootstrap-updated) state.
+ */
+function runIterationZeroGates(state, latches, input) {
+    const { curIter, sessionDir, extensionRoot, log } = input;
+    let nextState = state;
+    // R-BUNDLE-1 bundle bootstrap mode (once, iteration 0) — see applyBundleBootstrapExemption.
+    if (!latches.bundleBootstrapApplied && curIter === 0) {
+        latches.bundleBootstrapApplied = true;
+        nextState = applyBundleBootstrapExemption(nextState, sessionDir, log);
+    }
+    if (!latches.readinessGateChecked && curIter === 0) {
+        latches.readinessGateChecked = true;
+        runReadinessAdvisoryGate(nextState, sessionDir, extensionRoot, log);
+    }
+    // R-TAQ-3: ticket audit gate (slot: readiness → ticket-audit → spawn).
+    // Runs once on iteration-0 after readiness gate exits 0.
+    if (!latches.ticketAuditGateChecked && curIter === 0) {
+        latches.ticketAuditGateChecked = true;
+        runTicketAuditAdvisoryGate(nextState, sessionDir, extensionRoot, log);
+    }
+    return nextState;
+}
+/**
+ * R2c: update the outer-loop progress tracker for the commit-pending probe. First observation seeds both fields
+ * so a fresh session never trips the probe at iteration 1 from the default zero-init.
+ */
+function advanceCommitPendingTracker(tracker, curIter, iteration) {
+    if (tracker.lastObservedStateIteration < 0) {
+        tracker.lastObservedStateIteration = curIter;
+        tracker.lastProgressOuterIteration = iteration;
+    }
+    else if (curIter > tracker.lastObservedStateIteration) {
+        tracker.lastObservedStateIteration = curIter;
+        tracker.lastProgressOuterIteration = iteration;
+    }
+}
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 892 code lines against a ceiling of 120, and complexity 173 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
@@ -12278,8 +12313,7 @@ async function runMuxRunnerMain() {
     // Commit-pending probe: track the last outer-loop iteration where state.iteration
     // advanced. Used to detect stagnation independently of the circuit breaker (the
     // probe runs whether CB is enabled or not).
-    let lastProgressOuterIteration = 0;
-    let lastObservedStateIteration = -1;
+    const commitPendingTracker = { lastProgressOuterIteration: 0, lastObservedStateIteration: -1 };
     // R-MWIS-2: main-loop idle-stall watchdog. lastProgressEpoch is bumped on every
     // forward-progress marker (iteration advance / state write, worker spawn). The
     // gated watchdog check before each worker spawn detects a wedged loop that is NOT
@@ -12299,10 +12333,10 @@ async function runMuxRunnerMain() {
     let cpuLivenessAnchorEpoch = 0;
     let cpuLivenessAnchorCpuSeconds = null;
     let cpuLivenessAnchorMtimeMs = 0;
-    let readinessGateChecked = false;
-    let ticketAuditGateChecked = false;
+    const iterationZeroGates = {
+        bundleBootstrapApplied: false, readinessGateChecked: false, ticketAuditGateChecked: false,
+    };
     let smokeGateBypassEmitted = false;
-    let bundleBootstrapApplied = false;
     // WS-2c (R-PFNT): one-time target-toolchain pre-flight latch. Set after the first
     // pass so the cheap missing-node_modules probe runs ONCE per run, not per-iteration.
     let toolchainPreflightChecked = false;
@@ -12493,34 +12527,10 @@ async function runMuxRunnerMain() {
             exitReason = 'recovery_exhausted';
             break;
         }
-        // R-BUNDLE-1 bundle bootstrap mode (once, iteration 0) — see applyBundleBootstrapExemption.
-        if (!bundleBootstrapApplied && curIter === 0) {
-            bundleBootstrapApplied = true;
-            state = applyBundleBootstrapExemption(state, sessionDir, log);
-        }
-        if (!readinessGateChecked && curIter === 0) {
-            readinessGateChecked = true;
-            runReadinessAdvisoryGate(state, sessionDir, extensionRoot, log);
-        }
-        // R-TAQ-3: ticket audit gate (slot: readiness → ticket-audit → spawn).
-        // Runs once on iteration-0 after readiness gate exits 0.
-        if (!ticketAuditGateChecked && curIter === 0) {
-            ticketAuditGateChecked = true;
-            runTicketAuditAdvisoryGate(state, sessionDir, extensionRoot, log);
-        }
+        state = runIterationZeroGates(state, iterationZeroGates, { curIter, sessionDir, extensionRoot, log });
         // Multi-repo advisory check (once, on first iteration)
         warnOnMultiRepoSession(state, sessionDir, iteration, log);
-        // Update outer-loop progress tracker for the commit-pending probe.
-        // First observation seeds both fields so a fresh session never trips
-        // the probe at iteration 1 from the default zero-init.
-        if (lastObservedStateIteration < 0) {
-            lastObservedStateIteration = curIter;
-            lastProgressOuterIteration = iteration;
-        }
-        else if (curIter > lastObservedStateIteration) {
-            lastObservedStateIteration = curIter;
-            lastProgressOuterIteration = iteration;
-        }
+        advanceCommitPendingTracker(commitPendingTracker, curIter, iteration);
         // Pre-spawn commit-pending health probe (codex-only). RCA: codex
         // sometimes produces edits but never `git add` + `git commit`; if
         // stagnation persists past the threshold, nudge the next worker turn
@@ -12529,7 +12539,7 @@ async function runMuxRunnerMain() {
             state,
             sessionDir,
             iteration,
-            lastProgressIteration: lastProgressOuterIteration,
+            lastProgressIteration: commitPendingTracker.lastProgressOuterIteration,
             threshold: commitPendingProbeThreshold,
             log,
         });
@@ -13281,6 +13291,14 @@ async function runMuxRunnerMain() {
                         const codexStep = resolveCodexManagerNoProgressStep({
                             statePath, sessionDir, extensionRoot, postState, state, iteration, pendingCount: inactiveDecision.pendingCount, log,
                         });
+                        if (codexStep.kind === 'recovery_exhausted') {
+                            writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
+                            recordExitReason(statePath, 'recovery_exhausted');
+                            safeDeactivate(statePath);
+                            removeRunnerSessionMapEntry(statePath, log);
+                            exitReason = 'recovery_exhausted';
+                            break;
+                        }
                         if (codexStep.kind === 'exit') {
                             exitReason = codexStep.exitReason;
                             break;
@@ -13349,6 +13367,14 @@ async function runMuxRunnerMain() {
                 const codexStep = resolveCodexManagerNoProgressStep({
                     statePath, sessionDir, extensionRoot, postState, state, iteration, pendingCount: relaunchDecision.pendingCount, log,
                 });
+                if (codexStep.kind === 'recovery_exhausted') {
+                    writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
+                    recordExitReason(statePath, 'recovery_exhausted');
+                    safeDeactivate(statePath);
+                    removeRunnerSessionMapEntry(statePath, log);
+                    exitReason = 'recovery_exhausted';
+                    break;
+                }
                 if (codexStep.kind === 'exit') {
                     exitReason = codexStep.exitReason;
                     break;
