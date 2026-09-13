@@ -1197,10 +1197,9 @@ const noUnlimitedDisable = {
     schema: [],
   },
   create(context) {
-    const sourceCode = context.sourceCode ?? context.getSourceCode();
     return {
       Program() {
-        for (const directive of sourceCode.getDisableDirectives().directives) {
+        for (const directive of context.sourceCode.getDisableDirectives().directives) {
           if (directive.type === 'enable' || directive.value.trim() !== '') continue;
           context.report({ loc: directive.node.loc, messageId: 'unlimited', data: { type: directive.type } });
         }
