@@ -64,6 +64,33 @@ export function buildCitadelAuditReport(options) {
     const resolvedPrdPath = options.prdPath !== undefined
         ? path.resolve(repoRoot, options.prdPath)
         : undefined;
+    const sections = runCitadelAnalyzers(options, repoRoot, resolvedPrdPath);
+    const decisionRequired = [
+        ...sections.ac_shape.decisionsRequired,
+        ...sections.divergence_reconciliation.decisionsRequired,
+    ];
+    const reporter = new Reporter();
+    return reporter.build({
+        prdPath: resolvedPrdPath ?? '',
+        diffRange: options.diffRange,
+        header: buildCitadelReportHeader(options.sessionDir),
+        sections,
+        findings: collectSectionFindings(sections),
+        decisions: decisionRequired,
+        strict: options.strict,
+    });
+}
+// Findings follow section order (uniqueFindings renames duplicate ids first-wins).
+// Cross-phase findings arrive already attributed, so they are carried verbatim.
+function collectSectionFindings(sections) {
+    return uniqueFindings(Object.entries(sections).flatMap(([key, section]) => {
+        const sectionFindings = section.findings;
+        return key === 'cross_phase'
+            ? sectionFindings
+            : sectionFindings.map((finding) => withFindingSource(finding, key));
+    }));
+}
+function runCitadelAnalyzers(options, repoRoot, resolvedPrdPath) {
     const prdMarkdown = resolvedPrdPath ? readFileSync(resolvedPrdPath, 'utf-8') : '';
     // ticket 98dc9bed F3.1: parseWithComposes already handles PRDs without a
     // composes: front-matter block. Swallowing ComposesError here masks malformed
@@ -106,31 +133,7 @@ export function buildCitadelAuditReport(options) {
     const bannedConstructs = safeRunAnalyzer('citadel-banned-constructs', () => auditBannedConstructs(diff));
     const bannedCasts = safeRunAnalyzer('citadel-banned-casts', () => auditBannedCasts(diff));
     const patternConformance = safeRunAnalyzer('citadel-pattern-conformance', () => auditPatternConformance(diff));
-    const decisionRequired = [
-        ...acShape.decisionsRequired,
-        ...divergenceReconciliation.decisionsRequired,
-    ];
-    const findings = uniqueFindings([
-        ...siblingAuth.findings.map((finding) => withFindingSource(finding, 'sibling_auth_preconditions')),
-        ...frontendPropDrift.findings.map((finding) => withFindingSource(finding, 'frontend_prop_drift')),
-        ...acShape.findings.map((finding) => withFindingSource(finding, 'ac_shape')),
-        ...ruleSetInvariants.findings.map((finding) => withFindingSource(finding, 'rule_set_invariants')),
-        ...diffHygiene.findings.map((finding) => withFindingSource(finding, 'diff_hygiene')),
-        ...crossPhaseReport.findings,
-        ...acCoverage.findings.map((finding) => withFindingSource(finding, 'ac_coverage')),
-        ...allowlistDead.findings.map((finding) => withFindingSource(finding, 'allowlist_dead')),
-        ...stateTransitions.findings.map((finding) => withFindingSource(finding, 'state_transitions')),
-        ...trapDoorCoverage.findings.map((finding) => withFindingSource(finding, 'trap_door_coverage')),
-        ...endpointContractConformance.findings.map((finding) => withFindingSource(finding, 'endpoint_contract_conformance')),
-        ...schemaRegistryDrift.findings.map((finding) => withFindingSource(finding, 'schema_registry_drift')),
-        ...testAuthenticity.findings.map((finding) => withFindingSource(finding, 'test_authenticity')),
-        ...staleReference.findings.map((finding) => withFindingSource(finding, 'stale_reference')),
-        ...crossfileBehaviorDrift.findings.map((finding) => withFindingSource(finding, 'crossfile_behavior_drift')),
-        ...bannedConstructs.findings.map((finding) => withFindingSource(finding, 'banned_constructs')),
-        ...bannedCasts.findings.map((finding) => withFindingSource(finding, 'banned_casts')),
-        ...patternConformance.findings.map((finding) => withFindingSource(finding, 'pattern_conformance')),
-    ]);
-    const sections = {
+    return {
         sibling_auth_preconditions: siblingAuth,
         frontend_prop_drift: frontendPropDrift,
         ac_shape: acShape,
@@ -151,16 +154,6 @@ export function buildCitadelAuditReport(options) {
         banned_casts: bannedCasts,
         pattern_conformance: patternConformance,
     };
-    const reporter = new Reporter();
-    return reporter.build({
-        prdPath: resolvedPrdPath ?? '',
-        diffRange: options.diffRange,
-        header: buildCitadelReportHeader(options.sessionDir),
-        sections,
-        findings,
-        decisions: decisionRequired,
-        strict: options.strict,
-    });
 }
 export async function runCitadelStandalone(target, outputDir) {
     const repoRoot = path.resolve(target.workingDir);
