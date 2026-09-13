@@ -9,6 +9,9 @@ export type PostFinalVerdictState =
   | 'absent'
   | 'not_applicable';
 
+/** M1: one script-failure diagnostic tail carried beside `post_final_verdict.dimensions`. */
+export type PostFinalVerdictDiagnostic = { name: string; message: string };
+
 export interface State {
   active: boolean;
   working_dir: string;
@@ -174,7 +177,7 @@ export interface State {
      * name-only projection. Real TAP failures never populate this — empty unless the gate
      * died before any TAP output (e.g. in `pretest:fast`).
      */
-    diagnostics: { name: string; message: string }[];
+    diagnostics: PostFinalVerdictDiagnostic[];
   };
   /** Forward-created by R-CCPM-3: orphan session paths detected at session-map read time. */
   orphans_detected?: string[];

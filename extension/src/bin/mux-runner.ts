@@ -5,7 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
-import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type RateLimitProbeVerdict, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState } from '../types/index.js';
+import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type RateLimitProbeVerdict, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState, type PostFinalVerdictDiagnostic } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, formatCircuitBreakerTripReason, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
@@ -1019,7 +1019,7 @@ export type ClassifyPostFinalVerdictOutput = {
   degraded: boolean;
   dimensions: string[];
   /** M1: diagnostic tail for each `script_failure: true` entry, never concatenated into `dimensions`. */
-  diagnostics: { name: string; message: string }[];
+  diagnostics: PostFinalVerdictDiagnostic[];
 };
 
 function isMalformedGate(gate: BetweenTicketGateResult | null): boolean {
@@ -1059,7 +1059,7 @@ export function classifyPostFinalVerdict(
   const finalize = (
     state: PostFinalVerdictState,
     dimensions: string[],
-    diagnostics: { name: string; message: string }[] = [],
+    diagnostics: PostFinalVerdictDiagnostic[] = [],
   ): ClassifyPostFinalVerdictOutput => ({
     state,
     degraded: state === 'red' || state === 'inconclusive' || state === 'absent',
