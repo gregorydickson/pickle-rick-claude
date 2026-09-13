@@ -985,7 +985,11 @@ test('AC-G1-4 FAIL-CLOSED: a repo with no runnable gate reports not-applicable a
     log: () => {},
     runTestFast: runner,
   });
-  assert.deepEqual(verdict, { state: 'not_applicable', degraded: false, dimensions: [] });
+  // B-MEASURE M1 added `diagnostics`, the channel that carries a script failure's tail so a
+  // withheld verdict can be triaged (GitHub #19). The assertion stays EXHAUSTIVE rather than
+  // switching to per-field checks: an unexpected extra key on this verdict is exactly the kind
+  // of drift this pin exists to catch, so the new field is declared here instead of tolerated.
+  assert.deepEqual(verdict, { state: 'not_applicable', degraded: false, dimensions: [], diagnostics: [] });
   assert.notEqual(verdict.state, 'green');
   assert.equal(runner.calls.length, 0, 'still no command issued via the post-final wire');
 });

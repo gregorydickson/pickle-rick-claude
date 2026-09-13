@@ -383,7 +383,13 @@ test('mega bundle A-F smoke paths work together', () => {
     const legacyCarveOuts = grepLines(EXTENSION_ROOT, sourceFiles, 'eslint-disable-next-line');
     const unreviewedCarveOuts = legacyCarveOuts
       .filter(line => {
-        if (/eslint-disable-next-line\s*(--)?\s*$/.test(line)) return true;
+        // A rule-less directive is unreviewed by construction. The old form anchored on `$`,
+        // so it only matched when the line ENDED right after the optional `--` — a rule-less
+        // disable carrying a justification comment escaped this clause, and then escaped the
+        // rule-name clause below too, because it names no rule. That is exactly the shape that
+        // hid complexity 366 and a 1690-line function from a --max-warnings=0 gate (GitHub #21).
+        // Mutation-verified: re-baring a scoped directive left this whole test GREEN pre-fix.
+        if (/eslint-disable-next-line\s*(--|$)/.test(line)) return true;
         if (!/(outside T0|complexity|max-lines-per-function)/.test(line)) return false;
         return !line.includes('HT-1 reviewed:');
       });
