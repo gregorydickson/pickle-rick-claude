@@ -85,8 +85,8 @@ describe('citadel cross-phase fixture', () => {
       assert.equal(report.summary.critical, 1);
       assert.ok(report.summary.low >= 1);
       assert.equal(report.exitCode, 1);
-      assert.equal(report.json.schema, '1.0');
-      assert.equal(report.json.findings[0].severity, 'Critical');
+      assert.equal(report.schema, '1.0');
+      assert.equal(report.findings[0].severity, 'Critical');
       // Cross-phase fixture asserts cross-phase merging only; other analyzers may add additional findings
       // for the synthetic repo shape. Severity counts are restricted to cross-phase findings here.
       const xSeverities = report.sections.cross_phase.findings.map((f) => f.severity);

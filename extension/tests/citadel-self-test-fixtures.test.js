@@ -109,7 +109,7 @@ describe('citadel self-test fixtures', () => {
         `matched ${matched.length} stable issue ids: ${matched.join(', ')}`,
       );
       assert.equal(run.report.exitCode, fixture.expected.strictExitCode);
-      assert.equal(run.report.json.schema, '1.0');
+      assert.equal(run.report.schema, '1.0');
     } finally {
       cleanup(run);
     }

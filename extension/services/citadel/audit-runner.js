@@ -34,7 +34,7 @@ export async function runCitadelAudit(options) {
     const lockKey = `citadel:${path.resolve(options.sessionDir ?? path.dirname(reportPath))}`;
     await withLock(lockKey, {}, async () => {
         mkdirSync(path.dirname(reportPath), { recursive: true });
-        writeFileSync(reportPath, `${stableJson(report.json)}\n`, 'utf-8');
+        writeFileSync(reportPath, `${stableJson(report)}\n`, 'utf-8');
     });
     if (options.sessionDir) {
         writeSkepticSink(options.sessionDir, options.diffRange, path.resolve(options.repoRoot ?? process.cwd()));
@@ -168,7 +168,7 @@ export async function runCitadelStandalone(target, outputDir) {
     const reportPath = path.join(reportDir, 'citadel_report.json');
     const result = buildCitadelAuditReport({ diffRange: target.diffRange, repoRoot, reportPath });
     mkdirSync(path.dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, `${stableJson(result.json)}\n`, 'utf-8');
+    writeFileSync(reportPath, `${stableJson(result)}\n`, 'utf-8');
     writeSkepticSink(reportDir, target.diffRange, repoRoot);
     return result;
 }

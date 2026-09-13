@@ -9,7 +9,7 @@ import { walkDiff } from './diff-walker.js';
 import { auditRuleSetInvariants } from './rule-set-invariant-audit.js';
 import { auditDiffHygiene } from './diff-hygiene.js';
 import { reconcileDivergences, DivergenceDecisionRequired } from './divergence-reconciliation.js';
-import { CitadelFinding, CitadelJsonReport, CitadelReportHeader, CitadelRunResult, CitadelSeverity, Reporter } from './reporter.js';
+import { CitadelFinding, CitadelJsonReport, CitadelReportHeader, CitadelSeverity, Reporter } from './reporter.js';
 import { parseWithComposes, ParsedPrd } from './prd-parser.js';
 import { detectProjectShapes, ProjectShape } from './project-shape.js';
 import { buildAcCoverageScorecard } from './ac-coverage-scorecard.js';
@@ -71,9 +71,9 @@ export interface CitadelAuditOptions {
   strict?: boolean;
 }
 
-export type CitadelAuditReport = CitadelRunResult;
+export type CitadelAuditReport = CitadelJsonReport;
 
-export async function runCitadelAudit(options: CitadelAuditOptions): Promise<CitadelRunResult> {
+export async function runCitadelAudit(options: CitadelAuditOptions): Promise<CitadelJsonReport> {
   const report = buildCitadelAuditReport(options);
   if (!options.sessionDir && !options.reportPath) return report;
 
@@ -81,7 +81,7 @@ export async function runCitadelAudit(options: CitadelAuditOptions): Promise<Cit
   const lockKey = `citadel:${path.resolve(options.sessionDir ?? path.dirname(reportPath))}`;
   await withLock(lockKey, {}, async () => {
     mkdirSync(path.dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, `${stableJson(report.json)}\n`, 'utf-8');
+    writeFileSync(reportPath, `${stableJson(report)}\n`, 'utf-8');
   });
 
   if (options.sessionDir) {
@@ -240,13 +240,13 @@ export function buildCitadelAuditReport(options: CitadelAuditOptions): CitadelAu
 export async function runCitadelStandalone(
   target: CitadelStandaloneTarget,
   outputDir?: string,
-): Promise<CitadelRunResult> {
+): Promise<CitadelJsonReport> {
   const repoRoot = path.resolve(target.workingDir);
   const reportDir = outputDir !== undefined ? path.resolve(outputDir) : repoRoot;
   const reportPath = path.join(reportDir, 'citadel_report.json');
   const result = buildCitadelAuditReport({ diffRange: target.diffRange, repoRoot, reportPath });
   mkdirSync(path.dirname(reportPath), { recursive: true });
-  writeFileSync(reportPath, `${stableJson(result.json)}\n`, 'utf-8');
+  writeFileSync(reportPath, `${stableJson(result)}\n`, 'utf-8');
   writeSkepticSink(reportDir, target.diffRange, repoRoot);
   return result;
 }

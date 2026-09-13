@@ -10,7 +10,7 @@ export class Reporter {
         const decisions = [...input.decisions].sort(compareDecisions);
         const summary = summarize(findings, decisions);
         const exitCode = exitCodeFor(findings, decisions, input.strict);
-        const json = {
+        return {
             schema: '1.0',
             schema_version: '1.0',
             prd_path: input.prdPath,
@@ -25,7 +25,6 @@ export class Reporter {
             summary,
             markdown: renderMarkdown(findings, decisions, summary, exitCode),
         };
-        return { ...json, json };
     }
     renderMarkdown(report) {
         return renderMarkdown(report.findings, report.decisions, report.summary, report.exitCode);

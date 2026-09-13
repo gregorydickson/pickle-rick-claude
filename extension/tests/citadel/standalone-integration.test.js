@@ -64,14 +64,14 @@ describe('standalone-integration: full surface', () => {
 
   test('pattern_conformance section is present in M1', () => {
     assert.ok(
-      Object.prototype.hasOwnProperty.call(result.json.sections, 'pattern_conformance'),
+      Object.prototype.hasOwnProperty.call(result.sections, 'pattern_conformance'),
       'pattern_conformance section must be present in citadel_report',
     );
   });
 
   test('all expected section keys present in M1', () => {
     const missing = ALL_EXPECTED_SECTIONS.filter(
-      (k) => !Object.prototype.hasOwnProperty.call(result.json.sections, k),
+      (k) => !Object.prototype.hasOwnProperty.call(result.sections, k),
     );
     assert.deepStrictEqual(missing, [], `Missing sections: ${missing.join(', ')}`);
   });
@@ -79,14 +79,13 @@ describe('standalone-integration: full surface', () => {
   test('M2 findings are NOT in the M1 remediable set (report-only invariant)', () => {
     // skeptic_findings.json is written separately and must never appear as a section in M1
     assert.ok(
-      !Object.prototype.hasOwnProperty.call(result.json.sections, 'skeptic_findings'),
+      !Object.prototype.hasOwnProperty.call(result.sections, 'skeptic_findings'),
       'skeptic_findings must NOT be a section in citadel_report (M2 is report-only)',
     );
   });
 
   test('standalone result has correct exit_code shape', () => {
     assert.ok(typeof result.exitCode === 'number', 'result.exitCode must be numeric');
-    assert.ok(result.json, 'result.json must be present');
-    assert.strictEqual(result.json.schema, '1.0');
+    assert.strictEqual(result.schema, '1.0');
   });
 });

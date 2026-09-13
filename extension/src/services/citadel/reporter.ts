@@ -69,10 +69,6 @@ export interface ReporterInput {
   strict?: boolean;
 }
 
-export interface CitadelRunResult extends CitadelJsonReport {
-  json: CitadelJsonReport;
-}
-
 const SEVERITY_RANK: Record<CitadelSeverity, number> = {
   Critical: 0,
   High: 1,
@@ -81,12 +77,12 @@ const SEVERITY_RANK: Record<CitadelSeverity, number> = {
 };
 
 export class Reporter {
-  build(input: ReporterInput): CitadelRunResult {
+  build(input: ReporterInput): CitadelJsonReport {
     const findings = rankFindings(input.findings);
     const decisions = [...input.decisions].sort(compareDecisions);
     const summary = summarize(findings, decisions);
     const exitCode = exitCodeFor(findings, decisions, input.strict);
-    const json: CitadelJsonReport = {
+    return {
       schema: '1.0',
       schema_version: '1.0',
       prd_path: input.prdPath,
@@ -101,8 +97,6 @@ export class Reporter {
       summary,
       markdown: renderMarkdown(findings, decisions, summary, exitCode),
     };
-
-    return { ...json, json };
   }
 
   renderMarkdown(report: Pick<CitadelJsonReport, 'findings' | 'decisions' | 'summary' | 'exitCode'>): string {

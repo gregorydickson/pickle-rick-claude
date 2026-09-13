@@ -36,8 +36,7 @@ describe('runCitadelStandalone', () => {
     assert.ok(Array.isArray(parsed.findings), 'report must have findings array');
     assert.ok(typeof parsed.exit_code === 'number', 'report must have numeric exit_code');
 
-    assert.ok(result.json, 'returned result must have .json');
-    assert.strictEqual(result.json.schema, '1.0');
+    assert.strictEqual(result.schema, '1.0');
   });
 
   test('all expected section keys present in standalone run', async () => {
@@ -68,7 +67,7 @@ describe('runCitadelStandalone', () => {
     ];
 
     const missing = EXPECTED_SECTIONS.filter(
-      (k) => !Object.prototype.hasOwnProperty.call(result.json.sections, k),
+      (k) => !Object.prototype.hasOwnProperty.call(result.sections, k),
     );
     assert.deepStrictEqual(missing, [], `Missing sections: ${missing.join(', ')}`);
   });
@@ -96,7 +95,7 @@ describe('runCitadelStandalone', () => {
     // PRD-dependent sections must be skipped with 'no_prd' reason
     const skippedSections = ['ac_coverage', 'state_transitions', 'endpoint_contract_conformance'];
     for (const key of skippedSections) {
-      const section = result.json.sections[key];
+      const section = result.sections[key];
       assert.ok(section, `section ${key} must be present`);
       assert.strictEqual(section.skipped, 'no_prd', `section ${key} must have skipped: 'no_prd'`);
     }
