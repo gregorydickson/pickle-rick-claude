@@ -8,7 +8,7 @@ import {
   createMicroverseState,
   recordIteration,
 } from '../services/microverse-state.js';
-import { formatMetricComparisonFigures } from '../bin/microverse-runner.js';
+import { formatMetricComparisonFigures, METRIC_COMPARISON_BASES } from '../bin/microverse-runner.js';
 
 const BASE_OPTS = {
   prdPath: '/tmp/test.md',
@@ -92,6 +92,33 @@ test('AC-V1 case 3 (numeric control): a numeric decision keeps the previous=/tol
   const line = formatMetricComparisonFigures(comparison.figures);
   assert.match(line, /previous=10/);
   assert.match(line, /tolerance=1/);
+});
+
+// ---------------------------------------------------------------------------
+// M5 — every basis `formatMetricComparisonFigures` can report must name itself. The set of bases
+// is enumerated from `METRIC_COMPARISON_BASES` (microverse-runner.ts, a Record over the union that tsc
+// holds complete), never hand-listed here, so a fourth basis reds this test until it has a figures
+// builder below AND its formatter arm names it.
+// ---------------------------------------------------------------------------
+
+const FIGURES_BY_BASIS = {
+  set_ops: { basis: 'set_ops', resolved: 1, new: 2, remaining: 3 },
+  ledger_count: { basis: 'ledger_count', violationCount: 4, previous: 5 },
+  numeric: { basis: 'numeric', current: 6, previous: 7, tolerance: 8 },
+};
+
+test('M5: every METRIC_COMPARISON_BASES member is printed with its own basis= prefix', () => {
+  assert.ok(
+    METRIC_COMPARISON_BASES.length >= 3,
+    'non-vacuity floor: the enumerated basis set must not be empty or truncated',
+  );
+
+  for (const basis of METRIC_COMPARISON_BASES) {
+    const figures = FIGURES_BY_BASIS[basis];
+    assert.ok(figures, `no figures builder registered for basis "${basis}" — add one above`);
+    const line = formatMetricComparisonFigures(figures);
+    assert.match(line, new RegExp(`^basis=${basis}\\b`), `basis "${basis}" must be named at the start of its printed line`);
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -4543,6 +4543,16 @@ function maybeRecordPlateauFailedApproach(
   );
 }
 
+// A Record over the union: tsc rejects a missing or extra basis, so this list cannot drift from the type.
+const METRIC_COMPARISON_BASIS_KEYS: Record<MetricComparisonFigures['basis'], true> = {
+  set_ops: true,
+  ledger_count: true,
+  numeric: true,
+};
+
+/** Every `MetricComparisonFigures` basis, runtime-enumerable and derived from the union (M5). */
+export const METRIC_COMPARISON_BASES = Object.keys(METRIC_COMPARISON_BASIS_KEYS) as MetricComparisonFigures['basis'][];
+
 export function formatMetricComparisonFigures(figures: MetricComparisonFigures): string {
   switch (figures.basis) {
     case 'set_ops':
@@ -4550,7 +4560,7 @@ export function formatMetricComparisonFigures(figures: MetricComparisonFigures):
     case 'ledger_count':
       return `basis=ledger_count, violations=${figures.violationCount}, previous=${figures.previous}`;
     case 'numeric':
-      return `previous=${figures.previous}, tolerance=${figures.tolerance}`;
+      return `basis=numeric, previous=${figures.previous}, tolerance=${figures.tolerance}`;
   }
 }
 

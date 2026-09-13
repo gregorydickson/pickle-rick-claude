@@ -3486,6 +3486,14 @@ function maybeRecordPlateauFailedApproach(state, classification, iteration, scor
     }
     replaceMicroverseState(state, recordFailedApproach(state, `Iteration ${iteration}: score held at ${score} (no improvement from ${previousScore})`));
 }
+// A Record over the union: tsc rejects a missing or extra basis, so this list cannot drift from the type.
+const METRIC_COMPARISON_BASIS_KEYS = {
+    set_ops: true,
+    ledger_count: true,
+    numeric: true,
+};
+/** Every `MetricComparisonFigures` basis, runtime-enumerable and derived from the union (M5). */
+export const METRIC_COMPARISON_BASES = Object.keys(METRIC_COMPARISON_BASIS_KEYS);
 export function formatMetricComparisonFigures(figures) {
     switch (figures.basis) {
         case 'set_ops':
@@ -3493,7 +3501,7 @@ export function formatMetricComparisonFigures(figures) {
         case 'ledger_count':
             return `basis=ledger_count, violations=${figures.violationCount}, previous=${figures.previous}`;
         case 'numeric':
-            return `previous=${figures.previous}, tolerance=${figures.tolerance}`;
+            return `basis=numeric, previous=${figures.previous}, tolerance=${figures.tolerance}`;
     }
 }
 export async function measureAndClassifyIteration(state, baseline, ctx) {
