@@ -20,13 +20,22 @@ import { parseMetricsArgs } from '../bin/metrics.js';
 const CLI_PATH = path.join(import.meta.dirname, '..', 'bin', 'metrics.js');
 
 function runMetricsCli(args, env = {}) {
-    // 15s → 45s: budget for system load when run alongside concurrent
-    // codex/tmux work. Tests validate CLI output, not wall-clock.
-    return spawnSync(process.execPath, [CLI_PATH, ...args], {
-        encoding: 'utf-8',
-        timeout: 45000,
-        env: { ...process.env, ...env },
-    });
+    // Every CLI run gets its own empty data root. Without one, main() scans the
+    // HOST's activity log (GBs of JSONL) and writes the host's metrics cache:
+    // measured 22s standalone vs ~0s isolated, and 22-45s in the parallel fast
+    // tier, where the verdict then depended on other tests' I/O load. The
+    // timeout is a hang guard, not a budget. A caller-supplied
+    // PICKLE_DATA_ROOT still wins.
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-metrics-cli-data-'));
+    try {
+        return spawnSync(process.execPath, [CLI_PATH, ...args], {
+            encoding: 'utf-8',
+            timeout: 45000,
+            env: { ...process.env, PICKLE_DATA_ROOT: dataRoot, ...env },
+        });
+    } finally {
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
 }
 
 function makeTempProjectsDir() {

@@ -2694,11 +2694,7 @@ test('AP-EXT-ITER257-01: the resolved state path is threaded, never defaulted', 
 // predicate body the AP-EXT-ITER257-01 block above already pins for exactly
 // those two properties — mutation-checked: a literal `===` component compare
 // reds that block's two globbed spellings whether or not a third exists here.
-// The cost of adding them is not zero: they are handler SUBPROCESS spawns, and
-// AP-EXT-ITER257-01 measured that added spawns alone push `tests/metrics.test.js`
-// "CLI: default invocation with mock data" past its 45s cap in the parallel fast
-// tier while it passes standalone — re-measured this pass, at five spawns that
-// test reds in-tier and at three it does not.
+// Adding them would buy two more handler SUBPROCESS spawns and no new property.
 //
 // HOME is repointed at the fixture so the asserted depth is the same on every
 // platform: `<HOME>/.claude` always sits exactly one component above
