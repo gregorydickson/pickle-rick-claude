@@ -136,7 +136,7 @@ function gitListFiles(workingDir) {
         timeout: 30_000,
         maxBuffer: 64 * 1024 * 1024,
     });
-    if (res.status !== 0)
+    if (res.status !== 0 || res.error)
         return new Set();
     return new Set(res.stdout.split('\n').filter((l) => l.length > 0));
 }

@@ -1532,7 +1532,7 @@ async function runWorkerGateCheckPhase(cmdArgs, extensionDir, countErrors, parse
 /** eslint + tsc, in that order: the two static phases every gate tier runs. */
 async function runWorkerGateStaticChecks(lintTargets, extensionDir) {
     const lint = lintTargets.length > 0
-        ? await runWorkerGateCheckPhase(['eslint', ...lintTargets, '--max-warnings=-1'], extensionDir, countLintErrors, parseWorkerGateLintFailures)
+        ? await runWorkerGateCheckPhase(['eslint', ...lintTargets, '--max-warnings=0'], extensionDir, countLintErrors, parseWorkerGateLintFailures)
         : LINT_PHASE_NOT_RUN;
     const tsc = await runWorkerGateCheckPhase(['tsc', '--noEmit'], extensionDir, countTscErrors, parseWorkerGateTscFailures);
     return { lint, tsc };
@@ -2013,7 +2013,7 @@ async function runGateChecksWithAutofixRetry(opts) {
     if (!shouldRetryWorkerGate(firstPass.lintOk, firstPass.tscOk, opts.lintTargets.length)) {
         return { gateResult: firstPass, retryCount: 0, autofixApplied: false };
     }
-    await runCommand('npx', ['eslint', '--fix', ...opts.lintTargets, '--max-warnings=-1'], opts.extensionDir);
+    await runCommand('npx', ['eslint', '--fix', ...opts.lintTargets, '--max-warnings=0'], opts.extensionDir);
     writeActivityEntry(opts.args.statePath, {
         event: 'worker_lint_autofix_applied',
         ticket_id: opts.args.ticketId,

@@ -317,7 +317,7 @@ test('runWorkerGate: lints changed extension/src files, runs tsc, then runs test
     assert.equal(result.ok, true);
     assert.deepEqual(result.testFailures, []);
     const calls = JSON.parse(fs.readFileSync(logPath, 'utf8'));
-    assert.deepEqual(calls[0], ['npx', 'eslint', 'src/demo/one.ts', 'src/demo/two.ts', '--max-warnings=-1']);
+    assert.deepEqual(calls[0], ['npx', 'eslint', 'src/demo/one.ts', 'src/demo/two.ts', '--max-warnings=0']);
     assert.deepEqual(calls[1], ['npx', 'tsc', '--noEmit']);
     assert.deepEqual(calls[2], ['npm', 'run', 'test:fast']);
     assert.equal(calls.some((argv) => argv[0] === 'git' && argv[1] === 'commit'), false);
@@ -370,7 +370,7 @@ test('runWorkerGate: narrow tier stops after eslint and tsc and logs the downgra
     assert.equal(result.ok, true);
     const calls = JSON.parse(fs.readFileSync(logPath, 'utf8'));
     assert.deepEqual(calls, [
-      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=-1'],
+      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=0'],
       ['npx', 'tsc', '--noEmit'],
     ]);
     assert.equal(warnings.length, 1);
@@ -413,7 +413,7 @@ test('runWorkerGate: small tier skips test commands and emits tier_phase_skipped
     assert.deepEqual(result.testFailures, []);
     const calls = JSON.parse(fs.readFileSync(logPath, 'utf8'));
     assert.deepEqual(calls, [
-      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=-1'],
+      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=0'],
       ['npx', 'tsc', '--noEmit'],
     ]);
     const state = readState(path.dirname(statePath));
@@ -474,7 +474,7 @@ test('runWorkerGate: returns parsed testFailures when npm run test:fast fails af
     }]);
     const calls = JSON.parse(fs.readFileSync(logPath, 'utf8'));
     assert.deepEqual(calls, [
-      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=-1'],
+      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=0'],
       ['npx', 'tsc', '--noEmit'],
       ['npm', 'run', 'test:fast'],
     ]);
@@ -531,7 +531,7 @@ test('runWorkerGate: full tier runs test:fast and then test:integration', async 
     assert.equal(result.ok, true);
     const calls = JSON.parse(fs.readFileSync(logPath, 'utf8'));
     assert.deepEqual(calls, [
-      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=-1'],
+      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=0'],
       ['npx', 'tsc', '--noEmit'],
       ['npm', 'run', 'test:fast'],
       ['npm', 'run', 'test:integration'],
@@ -931,7 +931,7 @@ test('runWorkerGate: honors worker_test_gate_timeout_ms, reports timeout details
     assert.match(signals, /npm:SIGTERM/);
     const calls = JSON.parse(fs.readFileSync(logPath, 'utf8'));
     assert.deepEqual(calls, [
-      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=-1'],
+      ['npx', 'eslint', 'src/demo/one.ts', '--max-warnings=0'],
       ['npx', 'tsc', '--noEmit'],
       ['npm', 'run', 'test:fast'],
     ]);

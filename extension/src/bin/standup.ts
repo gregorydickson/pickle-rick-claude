@@ -2,7 +2,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { ActivityEvent } from '../types/index.js';
+import { ActivityEvent, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import { getDataRoot } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
 
@@ -224,6 +224,7 @@ export function getGitCommits(since: Date, untilExclusive?: Date): Map<string, G
     const output = execSync(`git log --after="${since.toISOString()}"${beforeArg} --pretty=format:"%aI%x09%H%x09%ae%x09%s"`, {
       encoding: 'utf-8',
       timeout: 10000,
+      maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     for (const line of output.split('\n')) {

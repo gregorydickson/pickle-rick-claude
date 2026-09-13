@@ -2,6 +2,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import { getDataRoot } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
 const sm = new StateManager();
@@ -185,6 +186,7 @@ export function getGitCommits(since, untilExclusive) {
         const output = execSync(`git log --after="${since.toISOString()}"${beforeArg} --pretty=format:"%aI%x09%H%x09%ae%x09%s"`, {
             encoding: 'utf-8',
             timeout: 10000,
+            maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
             stdio: ['pipe', 'pipe', 'pipe'],
         });
         for (const line of output.split('\n')) {

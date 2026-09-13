@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
+import { UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 // R-SIGF: shared detector module for signature-change-caller-gap analysis.
 // Consumed by check-readiness.ts (WS-1/WS-2) and forward by WS-3 (scope-resolution).
 // Moved here from check-readiness.ts to avoid divergent copies.
@@ -23,8 +24,9 @@ function gitTrackedFiles(repoRoot) {
         cwd: repoRoot,
         encoding: 'utf-8',
         timeout: GIT_LS_FILES_TIMEOUT_MS,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
-    if (result.status !== 0)
+    if (!enumerationCompleted(result))
         return [];
     return result.stdout.split('\n').filter(Boolean);
 }

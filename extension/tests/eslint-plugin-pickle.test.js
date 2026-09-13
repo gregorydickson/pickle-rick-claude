@@ -4,6 +4,11 @@ import assert from 'node:assert/strict';
 import { RuleTester } from 'eslint';
 import pickle from '../eslint-plugin-pickle/index.js';
 import eslintConfig from '../eslint.config.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ruleTester = new RuleTester({
   languageOptions: { ecmaVersion: 2025, sourceType: 'module' },
@@ -674,4 +679,103 @@ describe('AC-6’: eslint-plugin-pickle exports are wired in eslint.config.js', 
 
     assert.deepEqual(unwired, ['no-future-unwired-rule']);
   });
+});
+
+// ─── V6-1 (GitHub #18): the eslint leg FAILS on a fresh warn-level finding ────
+// `--max-warnings=-1` is ESLint's NO-LIMIT value, which made every 'warn' rule free.
+// The flag is READ from the root CLAUDE.md release gate (release-gate-parity pins the
+// workflows and check-wired.sh to it), and the eslint CLI's EXIT CODE is asserted, not a
+// printed count. V6-5 mutation: set that flag back to -1 and every case here reds.
+
+const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ESLINT_BIN = path.join(EXTENSION_ROOT, 'node_modules', 'eslint', 'bin', 'eslint.js');
+
+function releaseGateEslintFlag() {
+  const md = fs.readFileSync(path.join(EXTENSION_ROOT, '..', 'CLAUDE.md'), 'utf8');
+  const match = md.match(/npx eslint src\/ (--max-warnings=-?\d+)/);
+  assert.ok(match, 'root CLAUDE.md release gate names no `npx eslint src/ --max-warnings=<N>` leg');
+  return match[1];
+}
+
+/** Rules the real config leaves at 'warn', derived (later flat-config entries win). */
+function warnLevelRules(flatConfig) {
+  const levels = {};
+  for (const entry of flatConfig) {
+    if (!entry || entry.files || typeof entry.rules !== 'object' || entry.rules === null) continue;
+    for (const [name, value] of Object.entries(entry.rules)) {
+      levels[name] = Array.isArray(value) ? value[0] : value;
+    }
+  }
+  return Object.keys(levels).filter((name) => levels[name] === 'warn' || levels[name] === 1).sort();
+}
+
+const WARN_RULE_VIOLATIONS = {
+  '@typescript-eslint/no-explicit-any': {
+    ext: 'ts',
+    code: 'export const value: any = 1;\n',
+  },
+  'pickle/no-sync-in-async': {
+    ext: 'js',
+    code: "import * as fs from 'fs';\nexport async function foo() { fs.readFileSync('x'); }\n",
+  },
+  'pickle/require-max-buffer-on-capture': {
+    ext: 'js',
+    code: "import { spawnSync } from 'child_process';\nexport const result = spawnSync('git', ['ls-files'], { cwd: '.', encoding: 'utf-8', timeout: 30000 });\n",
+  },
+  'pickle/require-spawn-result-error-check': {
+    ext: 'js',
+    code: "import { spawnSync } from 'child_process';\nexport function f() { const result = spawnSync('git', ['ls-files'], { cwd: '.', encoding: 'utf-8', timeout: 30000, maxBuffer: 64 * 1024 * 1024 }); if (result.status !== 0) return []; return result.stdout; }\n",
+  },
+};
+
+describe('V6-1: the release-gate eslint leg fails on a fresh warn-level finding', () => {
+  it('every warn-level rule in eslint.config.js has a violation fixture here', () => {
+    assert.deepEqual(Object.keys(WARN_RULE_VIOLATIONS).sort(), warnLevelRules(eslintConfig));
+  });
+
+  it('the release gate eslint flag is a finite ceiling', () => {
+    const flag = releaseGateEslintFlag();
+    assert.notEqual(flag, '--max-warnings=-1', '-1 is ESLint NO LIMIT: warn-level rules could never fail the gate');
+  });
+
+  for (const [rule, violation] of Object.entries(WARN_RULE_VIOLATIONS)) {
+    it(`a fresh ${rule} finding makes the eslint CLI exit non-zero under the gate flag`, () => {
+      // realpath: macOS os.tmpdir() is a /var -> /private/var symlink, and eslint ignores a
+      // file whose spelling falls outside its (realpath) cwd base path.
+      const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-v6-eslint-')));
+      try {
+        const pluginUrl = pathToFileURL(path.join(EXTENSION_ROOT, 'eslint-plugin-pickle', 'index.js')).href;
+        const configPath = path.join(dir, 'eslint.config.mjs');
+        fs.writeFileSync(configPath, [
+          `import pickle from ${JSON.stringify(pluginUrl)};`,
+          `import tseslint from ${JSON.stringify(import.meta.resolve('typescript-eslint'))};`,
+          'export default [{',
+          "  files: ['**/*.js', '**/*.ts'],",
+          "  languageOptions: { parser: tseslint.parser, sourceType: 'module' },",
+          "  plugins: { pickle, '@typescript-eslint': tseslint.plugin },",
+          `  rules: ${JSON.stringify({ [rule]: 'warn' })},`,
+          '}];',
+          '',
+        ].join('\n'));
+        const filePath = path.join(dir, `violation.${violation.ext}`);
+        fs.writeFileSync(filePath, violation.code);
+
+        const result = spawnSync(
+          process.execPath,
+          [ESLINT_BIN, '--config', configPath, '--format', 'json', releaseGateEslintFlag(), filePath],
+          { cwd: dir, encoding: 'utf-8', timeout: 60_000, maxBuffer: 64 * 1024 * 1024 },
+        );
+        assert.equal(result.error, undefined, `eslint could not run: ${result.error?.message}`);
+        const [report] = JSON.parse(result.stdout);
+        assert.ok(
+          report.messages.some((m) => m.ruleId === rule && m.severity === 1),
+          `fixture did not trigger ${rule} at warn level: ${JSON.stringify(report.messages)}`,
+        );
+        assert.equal(report.errorCount, 0, 'the fixture must produce warnings only, so the ceiling alone decides the exit');
+        assert.equal(result.status, 1, `eslint exited ${result.status} on a fresh ${rule} warning — the gate would pass it`);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 });

@@ -2158,6 +2158,7 @@ function readRecentChangesForHandoff(mvState: MicroverseSessionState, workingDir
       cwd: workingDir,
       encoding: 'utf-8',
       timeout: 10_000,
+      maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
     return output.length > 0 ? output : null;
@@ -5034,7 +5035,7 @@ export function auditPostIterationScope(ctx: RunContext, state: MicroverseState)
     if (!inputs) return;
     const { scopeJsonPath, postHead, committedFiles } = inputs;
 
-    const result = checkScopeDiff({
+    const scopeResult = checkScopeDiff({
       scopeJsonPath,
       headRef: postHead,
       _getStagedPaths: () => committedFiles,
@@ -5045,15 +5046,15 @@ export function auditPostIterationScope(ctx: RunContext, state: MicroverseState)
     // `allowed_paths` array — falling through the `!== 'outside_scope'` return, so a
     // garbage fence produced the byte-identical observable to a clean iteration:
     // zero events, zero log lines. That is a disarmed R-SSOC audit, not a quiet pass.
-    if (isUnevaluableScopeStatus(result.status)) {
+    if (isUnevaluableScopeStatus(scopeResult.status)) {
       ctx.log(
         `[R-SSOC] post-iteration scope audit NOT evaluated for ${postHead} ` +
-        `(${result.status}): ${result.error ?? 'the fence could not render a verdict'} ` +
+        `(${scopeResult.status}): ${scopeResult.error ?? 'the fence could not render a verdict'} ` +
         '— scope drift is UNKNOWN, not absent',
       );
       return;
     }
-    if (result.status !== 'outside_scope') return;
+    if (scopeResult.status !== 'outside_scope') return;
 
     const ticketId = typeof state.current_subsystem === 'string' && state.current_subsystem.trim()
       ? state.current_subsystem
@@ -5063,14 +5064,14 @@ export function auditPostIterationScope(ctx: RunContext, state: MicroverseState)
       source: 'pickle',
       ...(ticketId ? { ticket_id: ticketId } : {}),
       gate_payload: {
-        scope_json_path: result.scope_json_path ?? scopeJsonPath,
-        staged_paths_outside_scope: result.staged_paths_outside_scope ?? [],
-        head_ref: result.head_ref ?? postHead,
-        suggested_remediation: result.suggested_remediation ?? '',
+        scope_json_path: scopeResult.scope_json_path ?? scopeJsonPath,
+        staged_paths_outside_scope: scopeResult.staged_paths_outside_scope ?? [],
+        head_ref: scopeResult.head_ref ?? postHead,
+        suggested_remediation: scopeResult.suggested_remediation ?? '',
       },
     });
     ctx.log(
-      `[R-SSOC] post-iteration scope drift: ${(result.staged_paths_outside_scope ?? []).length} ` +
+      `[R-SSOC] post-iteration scope drift: ${(scopeResult.staged_paths_outside_scope ?? []).length} ` +
       `committed path(s) outside scope.json — emitted worker_edit_outside_scope`,
     );
   } catch {

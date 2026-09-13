@@ -15,7 +15,7 @@ const CI_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml');
 
 const GATE = [
   'npx tsc --noEmit',
-  'npx eslint src/ --max-warnings=-1',
+  'npx eslint src/ --max-warnings=0',
   'npx tsc',
   'bash scripts/audit-test-tiers.sh',
   'bash scripts/audit-test-isolation.sh',

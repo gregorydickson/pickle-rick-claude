@@ -591,6 +591,7 @@ export function resetInterruptedTicketWorkForRelaunch(
     cwd: workingDir,
     encoding: 'utf-8',
     timeout: 30_000,
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -839,6 +840,7 @@ function cleanScopedDirtyPaths(workingDir: string, scopedPaths: string[]): void 
     cwd: workingDir,
     encoding: 'utf-8',
     timeout: 30_000,
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const tracked: string[] = [];
@@ -5659,7 +5661,7 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
   // cancelled run never reaches (handleShutdown calls process.exit directly) —
   // so a killed prior run's marker survives on disk and cancelledOutcome would
   // otherwise read it as this run's own cancellation on its very first phase.
-  try { fs.unlinkSync(cancelMarker); } catch { /* no stale marker to clear */ }
+  await fs.promises.unlink(cancelMarker).catch(() => { /* no stale marker to clear */ });
   const cleanupShutdownHandlers = installShutdownHandlers(runtime, counters, cancelMarker);
   const startTime = Date.now();
   phaseRunnerContext = {

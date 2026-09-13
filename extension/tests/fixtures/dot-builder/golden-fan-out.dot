@@ -16,14 +16,14 @@ digraph "emit_helper_fanout" {
   // ========== PHASE 2: api ==========
   api [label="api", shape="component", thread_id="phase_2"]
   merge_phases [label="merge_phases", shape="tripleoctagon"]
-  audit [label="audit", read_only="true", shape="parallelogram", tool_command="cd ${WORKING_DIR} && (npx tsc --noEmit 2>&1 || true) && (npx eslint src/ --max-warnings=-1 2>&1 || true) && (npm test 2>&1 || true)"]
+  audit [label="audit", read_only="true", shape="parallelogram", tool_command="cd ${WORKING_DIR} && (npx tsc --noEmit 2>&1 || true) && (npx eslint src/ --max-warnings=0 2>&1 || true) && (npm test 2>&1 || true)"]
   verify_typecheck [context_on_success="types_compile=true", label="verify_typecheck", max_visits="5", retry_target="fix_types", shape="parallelogram", timeout="30m", tool_command="cd ${WORKING_DIR} && npx tsc --noEmit"]
   fix_types [allowed_paths="src/auth/,src/api/,tests/auth/,__tests__/auth/,tests/api/,__tests__/api/", class="codergen", escalate_on="package.json,*.lock,*.config.*", label="Fix ONLY type errors reported by tsc --noEmit", max_visits="5", permission_mode="auto", timeout="30m"]
-  verify_lint [context_on_success="lint_clean=true", label="verify_lint", max_visits="5", retry_target="fix_lint", shape="parallelogram", timeout="30m", tool_command="cd ${WORKING_DIR} && npx eslint src/ --max-warnings=-1"]
+  verify_lint [context_on_success="lint_clean=true", label="verify_lint", max_visits="5", retry_target="fix_lint", shape="parallelogram", timeout="30m", tool_command="cd ${WORKING_DIR} && npx eslint src/ --max-warnings=0"]
   fix_lint [allowed_paths="src/auth/,src/api/,tests/auth/,__tests__/auth/,tests/api/,__tests__/api/", class="codergen", escalate_on="package.json,*.lock,*.config.*", label="Fix ONLY lint errors reported by eslint", max_visits="5", permission_mode="auto", timeout="30m"]
   verify_tests [context_on_success="api_done=true,auth_done=true,cli_contract=true,determinism=true,tests_pass=true,validation_rules=true", label="verify_tests", max_visits="5", retry_target="fix_tests", shape="parallelogram", timeout="30m", tool_command="cd ${WORKING_DIR} && npm test"]
   fix_tests [allowed_paths="src/auth/,src/api/,tests/auth/,__tests__/auth/,tests/api/,__tests__/api/", class="codergen", escalate_on="package.json,*.lock,*.config.*", label="Fix ONLY failing tests reported by npm test", max_visits="5", permission_mode="auto", timeout="30m"]
-  regression_check [label="regression_check", shape="parallelogram", timeout="30m", tool_command="cd ${WORKING_DIR} && npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npm test"]
+  regression_check [label="regression_check", shape="parallelogram", timeout="30m", tool_command="cd ${WORKING_DIR} && npx tsc --noEmit && npx eslint src/ --max-warnings=0 && npm test"]
   quality_review [class="review", label="Final quality review: verify all acceptance criteria met, no regressions, code is clean. Output STATUS: SUCCESS | FAIL.", read_only="true", timeout="15m"]
   exit [label="exit", shape="Msquare"]
   start -> setup_deps

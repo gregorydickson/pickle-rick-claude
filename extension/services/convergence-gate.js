@@ -643,7 +643,7 @@ function resolveLexicalRepoRoot(workingDir) {
     const result = spawnSync('git', ['rev-parse', '--show-prefix'], {
         cwd: workingDir, encoding: 'utf-8', timeout: 10_000,
     });
-    if ((result.status ?? 1) !== 0)
+    if (!enumerationCompleted(result))
         return workingDir;
     const depth = (result.stdout ?? '').trim().split('/').filter(Boolean).length;
     return depth === 0 ? workingDir : path.resolve(workingDir, ...Array(depth).fill('..'));

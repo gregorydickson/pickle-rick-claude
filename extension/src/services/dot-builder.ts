@@ -1489,7 +1489,7 @@ export class DotBuilder {
         label: 'audit',
         read_only: 'true',
         shape: 'parallelogram',
-        tool_command: "cd ${WORKING_DIR} && (npx tsc --noEmit 2>&1 || true) && (npx eslint src/ --max-warnings=-1 2>&1 || true) && (npm test 2>&1 || true)",
+        tool_command: "cd ${WORKING_DIR} && (npx tsc --noEmit 2>&1 || true) && (npx eslint src/ --max-warnings=0 2>&1 || true) && (npm test 2>&1 || true)",
       });
       link(prevId, 'audit', prevAttrs);
 
@@ -1542,7 +1542,7 @@ export class DotBuilder {
         retry_target: 'fix_lint',
         shape: 'parallelogram',
         timeout: '30m',
-        tool_command: 'cd ${WORKING_DIR} && npx eslint src/ --max-warnings=-1',
+        tool_command: 'cd ${WORKING_DIR} && npx eslint src/ --max-warnings=0',
       });
       emit('fix_lint', {
         allowed_paths: unionPaths,
@@ -1585,7 +1585,7 @@ export class DotBuilder {
         label: 'regression_check',
         shape: 'parallelogram',
         timeout: '30m',
-        tool_command: 'cd ${WORKING_DIR} && npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npm test',
+        tool_command: 'cd ${WORKING_DIR} && npx tsc --noEmit && npx eslint src/ --max-warnings=0 && npm test',
       });
       link('verify_tests', 'regression_check', { condition: 'outcome=success', label: 'pass' });
       link('regression_check', 'fix_types', { condition: 'outcome=fail', label: 'fail' });

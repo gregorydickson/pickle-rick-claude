@@ -2854,8 +2854,8 @@ function attemptOrphanChainReattach(input) {
     // Archive a dirty tree BEFORE ff-only (self-no-ops on a clean tree). ff-only
     // refuses a dirty tree, so a still-dirty tree after archive falls to the hold.
     archiveDirtyTreeBeforeFlip({ workingDir, sessionDir, ticketId, log });
-    const statusR = spawnSync('git', ['-C', workingDir, 'status', '--porcelain'], { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
-    if (statusR.status === 0 && (statusR.stdout || '').trim().length > 0) {
+    const statusR = spawnSync('git', ['-C', workingDir, 'status', '--porcelain'], { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
+    if (enumerationCompleted(statusR) && (statusR.stdout || '').trim().length > 0) {
         log(`[head-regression] working tree still dirty after archive — cannot ff-only to ${tip.slice(0, 8)}; holding`);
         return { recovered: false, candidateSha: tip };
     }
@@ -4839,7 +4839,7 @@ function defaultRecomputeCheck(bin, cmdArgs, dir) {
  * `runCheck` is injectable for tests; production wires the real spawns.
  */
 export function recomputeAbsentWorkerGateVerdict(extensionDir, runCheck = defaultRecomputeCheck) {
-    if (!runCheck('npx', ['eslint', 'src/', '--max-warnings=-1'], extensionDir))
+    if (!runCheck('npx', ['eslint', 'src/', '--max-warnings=0'], extensionDir))
         return 'red';
     if (!runCheck('npx', ['tsc', '--noEmit'], extensionDir))
         return 'red';
@@ -7819,7 +7819,7 @@ async function probeMuxRateLimitCleared(input) {
         cleanupJudgeRuntimeDir(spawnEnv);
     }
     try {
-        fs.writeFileSync(probeLogPath, transcript);
+        await fs.promises.writeFile(probeLogPath, transcript);
     }
     catch {
         return served ? 'cleared' : 'unknown';
@@ -8500,7 +8500,7 @@ function processReviewClean(ctx) {
 /** Observe current HEAD: returns { branch, sha } or null on git failure. */
 function observeCurrentHead(workingDir) {
     const r = spawnSync('git', ['-C', workingDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8', timeout: 5000 });
-    if (r.status !== 0)
+    if (!enumerationCompleted(r))
         return null;
     const sha = (r.stdout || '').trim();
     return sha ? { branch: getHeadBranch(workingDir), sha } : null;
@@ -9941,11 +9941,11 @@ function collectDirtyInScopePaths(workingDir, sessionDir) {
     if (!fs.existsSync(scopeJsonPath)) {
         return dirty;
     }
-    const result = checkScopeDiff({ scopeJsonPath, _getStagedPaths: () => dirty });
-    if (result.status !== 'outside_scope') {
+    const scopeResult = checkScopeDiff({ scopeJsonPath, _getStagedPaths: () => dirty });
+    if (scopeResult.status !== 'outside_scope') {
         return dirty;
     }
-    const outside = new Set(result.staged_paths_outside_scope ?? []);
+    const outside = new Set(scopeResult.staged_paths_outside_scope ?? []);
     return dirty.filter((p) => !outside.has(p));
 }
 /** Every ticket's frontmatter completion sha (explicit + inferred), lowercased. */
@@ -9983,7 +9983,7 @@ function findUnreferencedWindowCommit(workingDir, sessionDir, preIterSha) {
     const r = spawnSync('git', ['-C', workingDir, 'rev-list', `${preIterSha}..HEAD`], {
         encoding: 'utf-8', timeout: EVERYTHING_BUT_COMMIT_GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
     });
-    if (r.status !== 0) {
+    if (!enumerationCompleted(r)) {
         return null;
     }
     const shas = (r.stdout || '').split('\n').map((s) => s.trim()).filter(Boolean);

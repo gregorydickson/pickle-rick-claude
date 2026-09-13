@@ -574,11 +574,11 @@ Detect: `tsc --noEmit`, `mypy .`, `go vet ./...`. Skip for dynamically-typed pro
 audit [shape=parallelogram, tool_command="cd ${WORKING_DIR} && (npx tsc --noEmit 2>&1 || true) && (npx eslint src/ 2>&1 || true) && (npm test 2>&1 || true)", read_only=true]
 verify_typecheck [shape=parallelogram, goal_gate=true, retry_target="fix_types", max_visits=5, tool_command="cd ${WORKING_DIR} && npx tsc --noEmit 2>&1", context_on_success="types_compile=true"]
 fix_types [prompt="Fix ONLY TypeScript type errors. Do NOT modify test logic, lint config, or code unrelated to type errors.", class="codergen", timeout="30m", max_visits=5, allowed_paths="src/**"]
-verify_lint [shape=parallelogram, goal_gate=true, retry_target="fix_lint", max_visits=5, tool_command="cd ${WORKING_DIR} && npx eslint src/ --max-warnings=-1 2>&1", context_on_success="lint_clean=true"]
+verify_lint [shape=parallelogram, goal_gate=true, retry_target="fix_lint", max_visits=5, tool_command="cd ${WORKING_DIR} && npx eslint src/ --max-warnings=0 2>&1", context_on_success="lint_clean=true"]
 fix_lint [prompt="Fix ONLY ESLint errors. Do NOT modify test files or change logic.", class="codergen", timeout="30m", max_visits=5, allowed_paths="src/**"]
 verify_tests [shape=parallelogram, goal_gate=true, retry_target="fix_tests", max_visits=5, tool_command="cd ${WORKING_DIR} && npm test 2>&1", context_on_success="tests_pass=true"]
 fix_tests [prompt="Fix ONLY failing tests. Do NOT delete or skip tests.", class="codergen", timeout="30m", max_visits=5, allowed_paths="src/**, tests/**"]
-regression_check [shape=parallelogram, tool_command="cd ${WORKING_DIR} && npx tsc --noEmit && npx eslint src/ --max-warnings=-1 && npm test 2>&1"]
+regression_check [shape=parallelogram, tool_command="cd ${WORKING_DIR} && npx tsc --noEmit && npx eslint src/ --max-warnings=0 && npm test 2>&1"]
 quality_review [class="review", read_only=true, prompt="Review git diff for code quality. Output STATUS: SUCCESS | FAIL."]
 ```
 
