@@ -10922,8 +10922,11 @@ function restorePersistedRateLimitPark(opts) {
         catch { /* best-effort */ }
     }
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 1690 code lines against a ceiling of 120, and complexity 366 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips, so decomposition is deliberately NOT attempted as a side effect of making it visible — B-MEASURE root M3 names that an explicit non-goal. The numbers above are the ratchet baseline; a later bundle lowers them against this recorded ceiling. Tracked in GitHub #21.
-async function runMuxRunnerMain() {
+/**
+ * R2a session bootstrap: argv validation, the runner log, ownership take, session resources and the
+ * persisted rate-limit park — the steps `runMuxRunnerMain` runs before reading loop settings, in order.
+ */
+function initializeMuxRunnerSession() {
     const sessionDir = process.argv[2];
     const statePath = sessionDir ? path.join(sessionDir, 'state.json') : '';
     if (!sessionDir
@@ -10973,9 +10976,16 @@ async function runMuxRunnerMain() {
         log,
     });
     restorePersistedRateLimitPark({ sessionDir, statePath, ownerState, log });
+    return { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers };
+}
+/**
+ * R2a: the loop settings `runMuxRunnerMain` reads once at startup, in their original read order
+ * (the circuit breaker is initialised here, so its file write keeps its place in the sequence).
+ */
+function loadMuxLoopSettings(extensionRoot, sessionDir) {
     const cbSettings = loadSettings(extensionRoot);
     const cbEnabled = cbSettings.enabled;
-    let cbState = cbEnabled ? initCircuitBreaker(sessionDir, cbSettings) : null;
+    const initialCbState = cbEnabled ? initCircuitBreaker(sessionDir, cbSettings) : null;
     const cbPath = path.join(sessionDir, 'circuit_breaker.json');
     const runnerSettingsBag = loadSettingsBag(extensionRoot, 'mux-runner:main:maxTurns');
     const runnerMaxTurns = positiveIntegerOrNull(runnerSettingsBag.default_tmux_max_turns)
@@ -10984,6 +10994,417 @@ async function runMuxRunnerMain() {
     const { waitMinutes: rateLimitWaitMinutes, maxRetries: maxRateLimitRetries } = loadRateLimitSettings(extensionRoot);
     const { max_park_minutes: maxParkMinutes } = resolveRateLimitSettings(loadPickleSettingsBag(extensionRoot));
     const startTime = Date.now();
+    // Settings bag for the commit-pending probe threshold (default 2). Read once
+    // at startup; the loop is short-lived enough that hot-reloading isn't worth
+    // the disk traffic.
+    const probeSettings = loadSettingsBag(extensionRoot, 'mux-runner:commit-pending-probe:settings');
+    const rawProbeThreshold = Number(probeSettings.commit_pending_probe_threshold);
+    const commitPendingProbeThreshold = Number.isFinite(rawProbeThreshold) && rawProbeThreshold > 0 ? rawProbeThreshold : 2;
+    const idleStallThresholdSeconds = resolveIdleStallThresholdSeconds();
+    // L2: bound consecutive idle-stall self-recoveries. A genuinely wedged loop that
+    // re-arms the stall every pass must escalate instead of spinning forever; any
+    // real forward progress resets the streak.
+    const idleStallRecoveryCap = resolveIdleStallRecoveryCap();
+    return {
+        cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries,
+        maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap,
+    };
+}
+/**
+ * WS-2c (R-PFNT) target-toolchain pre-flight body (the once-per-run latch stays at the call
+ * site). Returns true after stamping `toolchain_unavailable`, so the caller breaks the loop.
+ * Best-effort: a probe error is logged and never aborts a real run.
+ */
+function haltOnMissingTargetToolchain(statePath, workingDir, log) {
+    try {
+        if (targetToolchainMissing(workingDir)) {
+            const msg = `toolchain_unavailable: target repo '${workingDir}' has package.json but no installed node_modules — `
+                + 'failing fast instead of churning iterations against a missing toolchain.';
+            log(msg);
+            process.stderr.write(`${msg}\n`);
+            try {
+                writeActivityEntry(statePath, {
+                    event: 'session_end',
+                    ts: new Date().toISOString(),
+                    reason: 'toolchain_unavailable',
+                    terminal_exit_reason: 'toolchain_unavailable',
+                    gate_payload: { working_dir: workingDir ?? null },
+                });
+            }
+            catch { /* best-effort */ }
+            recordExitReason(statePath, 'toolchain_unavailable');
+            safeDeactivate(statePath);
+            return true;
+        }
+    }
+    catch (err) {
+        // Pre-flight is best-effort — never let a probe error abort a real run.
+        log(`toolchain pre-flight skipped (ignored): ${safeErrorMessage(err)}`);
+    }
+    return false;
+}
+/**
+ * B-PXBO WS-3-FacetB body (rationale at the call site): a resumed `current_ticket` that is already
+ * Done with a durable commit has its inherited per-ticket cache cleared BEFORE the cap-check reads it.
+ * Returns the state to continue with (unchanged when nothing was cleared or the clear failed).
+ */
+function skipResumedDoneTicketCapCache(statePath, sessionDir, state, log) {
+    if (typeof state.current_ticket === 'string'
+        && state.current_ticket.length > 0
+        && isResumedDoneWithDurableCommit(sessionDir, state.current_ticket, state.working_dir || process.cwd())) {
+        const skipTicket = state.current_ticket;
+        log(`B-PXBO WS-3-FacetB: resumed current_ticket ${skipTicket} is Done with durable commit — skipping before per-ticket cap-check`);
+        try {
+            return sm.update(statePath, s => {
+                clearStaleTicketCacheFields(s);
+            });
+        }
+        catch (err) {
+            log(`B-PXBO WS-3-FacetB: cap-cache clear failed (ignored): ${safeErrorMessage(err)}`);
+        }
+    }
+    return state;
+}
+/**
+ * R-ICP-1 + R-CNAR-1 part 2: two independent cap exits.
+ *   (a) PER-TICKET budget exhaustion — current ticket isn't progressing
+ *       within its tier ceiling (current_ticket_max_iterations).
+ *   (b) GLOBAL manager-loop cap exhaustion — total iterations across all
+ *       tickets reached operator-set state.max_iterations.
+ * Both exit_reason='iteration_cap_exhausted' so pipeline-runner halts
+ * (exit code 3, R-ICP-1 contract). Forensic-style deactivation preserves
+ * step/current_ticket so postmortem can show the unfinished queue. The
+ * `Max iterations reached ...` log line is retained as a stable marker
+ * for grep-based forensics.
+ *
+ * R-CNAR-7 stale-cache guard: when state.current_ticket is null/undefined
+ * but state.current_ticket_max_iterations carries a stale value from the
+ * previously-completed ticket, the per-ticket cap-check would fire with
+ * no ticket to attribute the exit to. This is the run-#6 attempt-1 trip:
+ * a clean-success exit via finalizeTerminalState left max_iterations
+ * populated; --resume re-entered the loop and the very first cap-check
+ * tripped before any ticket started. Self-heal: emit
+ * cap_check_skipped_stale_cache + clear the stale fields, continue.
+ *
+ * Returns the exit reason already stamped, or null to keep iterating.
+ */
+function evaluateIterationCapExit(state, statePath, sessionDir, curIter, log) {
+    const rawGlobalMaxIter = Number(state.max_iterations);
+    const globalMaxIter = Number.isFinite(rawGlobalMaxIter) ? rawGlobalMaxIter : 0;
+    const ticketCacheValid = isValidPerTicketCapCache(state);
+    const ticketMaxIter = ticketCacheValid
+        ? Number(state.current_ticket_max_iterations)
+        : 0;
+    const budgetIter = ticketBudgetIterationCount(state, curIter);
+    if (shouldEmitStalePerTicketCapSkip(state)) {
+        log(stalePerTicketCacheDiagnostic(state));
+        logActivity({
+            event: 'cap_check_skipped_stale_cache',
+            source: 'pickle',
+            session: path.basename(sessionDir),
+            iteration: curIter,
+            gate_payload: {
+                current_ticket: state.current_ticket,
+                current_ticket_max_iterations: state.current_ticket_max_iterations,
+                current_ticket_budget_start_iteration: state.current_ticket_budget_start_iteration,
+                current_ticket_tier: state.current_ticket_tier,
+            },
+        });
+    }
+    else if (ticketMaxIter > 0 && budgetIter >= ticketMaxIter) {
+        const tier = typeof state.current_ticket_tier === 'string' ? state.current_ticket_tier : 'unknown';
+        const ticketId = state.current_ticket ?? 'unknown';
+        log(`mux-runner exiting with code 3: per-ticket budget (${budgetIter}/${ticketMaxIter}, tier=${tier}) exhausted on ticket ${ticketId} without ${PromiseTokens.EPIC_COMPLETED} promise`);
+        log(`Max iterations reached (${budgetIter}/${ticketMaxIter}). Exiting.`);
+        recordExitReason(statePath, 'iteration_cap_exhausted');
+        safeDeactivate(statePath);
+        return 'iteration_cap_exhausted';
+    }
+    if (globalMaxIter > 0 && curIter >= globalMaxIter) {
+        log(`mux-runner exiting with code 3: global iteration cap (${curIter}/${globalMaxIter}) exhausted without ${PromiseTokens.EPIC_COMPLETED} promise`);
+        log(`Max iterations reached (${curIter}/${globalMaxIter}). Exiting.`);
+        recordExitReason(statePath, 'iteration_cap_exhausted');
+        safeDeactivate(statePath);
+        return 'iteration_cap_exhausted';
+    }
+    return null;
+}
+/** Operator-set `max_time_minutes` wall-clock exit (opt-in: absent/0 disables it). Returns `'limit'` once finalized, else null. */
+function evaluateTimeLimitExit(state, statePath, iteration, log) {
+    const rawStartEpoch = Number(state.start_time_epoch);
+    const startEpoch = Number.isFinite(rawStartEpoch) ? rawStartEpoch : 0;
+    const rawMaxTimeMins = Number(state.max_time_minutes);
+    const maxTimeMins = Number.isFinite(rawMaxTimeMins) ? rawMaxTimeMins : 0;
+    const elapsed = startEpoch > 0 ? Math.max(0, Math.floor(Date.now() / 1000) - startEpoch) : 0;
+    if (maxTimeMins > 0 && startEpoch > 0 && elapsed >= maxTimeMins * 60) {
+        log(`Time limit reached (${elapsed}s). Exiting.`);
+        finalizeTerminalState(statePath, { step: 'completed', runnerIteration: iteration, exitReason: 'limit' });
+        return 'limit';
+    }
+    return null;
+}
+/** R-RMBS-3 runnability event + R-REIN recovery-budget refund for the pre-iteration ticket; no-op without one. */
+function emitTicketRunnabilityAndRefund(statePath, sessionDir, currentTicket, preTicket, iteration, log) {
+    if (!preTicket)
+        return;
+    // R-RMBS-3: emit per-iteration runnability decision for observability.
+    // Frontmatter status is the authoritative source — runnable means status is
+    // Todo or In Progress (per isPendingMuxTicket).
+    try {
+        const frontmatterStatus = getTicketStatus(sessionDir, preTicket);
+        const normalized = normalizeTicketStatus(frontmatterStatus);
+        const runnable = normalized !== 'done' && normalized !== 'skipped';
+        const reasonSource = currentTicket === preTicket ? 'state_current_ticket' : 'frontmatter_pending';
+        logActivity({
+            event: 'ticket_runnability_resolved',
+            source: 'pickle',
+            session: path.basename(sessionDir),
+            ticket_id: preTicket,
+            gate_payload: {
+                frontmatter_status: frontmatterStatus ?? null,
+                runnable,
+                reason: reasonSource,
+            },
+        });
+    }
+    catch { /* best-effort */ }
+    // R-REIN: refund the per-ticket recovery budget when the operator has explicitly
+    // reset this ticket's frontmatter status back to Todo. Without this, the spent
+    // ledger entries survive the reset and force the ticket terminal again on its first
+    // relaunch — re-exiting `recovery_exhausted` in ~2s and making the documented
+    // "reset to Todo + relaunch" recovery INERT. Covers ALL three per-ticket budgets
+    // (ticket-identity keyed, no strategy list). The helper is conservative (no-op
+    // unless frontmatter is Todo AND this ticket has ledger entries).
+    refundRecoveryBudgetOnReset(statePath, sessionDir, preTicket, iteration, log);
+}
+/** R-CCPM-3 orphan-session detection at the iteration boundary; returns the state to continue with. Best-effort. */
+function recordOrphanSessionsAtIterationBoundary(state, statePath, sessionDir, log) {
+    let next = state;
+    try {
+        const dataRoot = getDataRoot();
+        const orphans = detectOrphanSessions(state, dataRoot, sessionDir);
+        if (orphans.length > 0) {
+            next = sm.update(statePath, s => {
+                if (!Array.isArray(s.orphans_detected))
+                    s.orphans_detected = [];
+                for (const orphan of orphans) {
+                    const basename = path.basename(orphan.orphan_session_path);
+                    if (!s.orphans_detected.includes(basename)) {
+                        s.orphans_detected.push(basename);
+                    }
+                }
+            });
+            for (const orphan of orphans) {
+                logActivity({
+                    event: 'orphan_session_detected',
+                    source: 'pickle',
+                    session: path.basename(sessionDir),
+                    orphan_session_path: orphan.orphan_session_path,
+                    orphan_started_at: orphan.orphan_started_at,
+                    parent_session_hash: orphan.parent_session_hash,
+                    orphan_pid: orphan.orphan_pid,
+                });
+            }
+        }
+    }
+    catch (err) {
+        log(`orphan detection error (ignored): ${safeErrorMessage(err)}`);
+    }
+    return next;
+}
+/**
+ * R-BUNDLE-1 / W1a: bundle bootstrap mode — auto-apply the quality-gate skip
+ * exemption for allowlisted sessions. Returns state with local state.flags updated so the
+ * readiness + ticket-audit gate checks read the derived skip reason (the once-per-run latch
+ * stays at the call site). W1a: writes ONLY the unified `skip_quality_gates_reason` (the single
+ * operator-facing quality-gate bypass surface). Conflict-resolution rule: an
+ * existing non-empty `skip_quality_gates_reason` WINS over the derived
+ * reason (operator intent preserved).
+ */
+function applyBundleBootstrapExemption(state, sessionDir, log) {
+    const bootstrapMode = typeof state.flags?.bundle_bootstrap_mode === 'string'
+        ? state.flags.bundle_bootstrap_mode
+        : null;
+    if (bootstrapMode === null || !BUNDLE_BOOTSTRAP_ALLOWLIST[bootstrapMode]?.has(path.basename(sessionDir))) {
+        return state;
+    }
+    const derivedReason = `bundle_bootstrap_mode=${bootstrapMode}`;
+    const existingFlags = state.flags ?? {};
+    const existingUnified = typeof existingFlags.skip_quality_gates_reason === 'string'
+        ? existingFlags.skip_quality_gates_reason.trim()
+        : '';
+    const skipQualityGatesReason = existingUnified.length > 0 ? existingUnified : derivedReason;
+    const next = { ...state, flags: { ...existingFlags, skip_quality_gates_reason: skipQualityGatesReason } };
+    logActivity({
+        event: 'bundle_bootstrap_exemption_applied',
+        source: 'pickle',
+        session: path.basename(sessionDir),
+        gate_payload: {
+            bundle_id: bootstrapMode,
+            skip_quality_gates_reason: skipQualityGatesReason,
+        },
+    });
+    log(`bundle bootstrap mode applied: ${bootstrapMode} — quality gates auto-skipped via skip_quality_gates_reason for session ${path.basename(sessionDir)}`);
+    return next;
+}
+/** Iteration-0 readiness gate body (the once-per-run latch stays at the call site). */
+function runReadinessAdvisoryGate(state, sessionDir, extensionRoot, log) {
+    const skipReason = resolveQualityGateSkipReason(state, log, path.basename(sessionDir), 'readiness_gate').reason;
+    const readinessStatus = runMuxReadinessGate({
+        sessionDir,
+        repoRoot: state.working_dir || process.cwd(),
+        extensionRoot,
+        log,
+        skipReason,
+    });
+    if (readinessStatus !== 0) {
+        // R-GATE-ADVISORY: the readiness gate is ADVISORY, not blocking. Its
+        // contract/path/symbol checks are heuristic pre-build validations that
+        // historically false-blocked legitimate bundles (R-RTRC reached a 5th
+        // recurrence; R-ATBG is the "guard around a brittle guard" archetype) and
+        // forced a large band-aid surface (forward-ref annotation grammar,
+        // allowlists, carve-outs, the skip flag). A genuinely-bad path fails the
+        // BUILD itself, and the review phases catch the rest — so log + proceed,
+        // never halt an autonomous run on a heuristic pre-flight.
+        log(`readiness advisory: check-readiness exited ${readinessStatus} — findings logged, NOT halting (advisory gate)`);
+    }
+}
+/** R-TAQ-3 iteration-0 ticket-audit gate body (the once-per-run latch stays at the call site). */
+function runTicketAuditAdvisoryGate(state, sessionDir, extensionRoot, log) {
+    const skipAuditReason = resolveQualityGateSkipReason(state, log, path.basename(sessionDir), 'ticket_audit_gate').reason;
+    const auditResult = runTicketAuditGate({
+        sessionDir,
+        extensionRoot,
+        log,
+        skipReason: skipAuditReason,
+    });
+    if (auditResult.status === 'bypassed') {
+        logActivity({
+            event: 'ticket_audit_bypassed',
+            source: 'pickle',
+            session: path.basename(sessionDir),
+            reason: auditResult.reason,
+        });
+    }
+    else if (auditResult.status === 'failed') {
+        // R-GATE-ADVISORY: ticket-audit is ADVISORY, not blocking (see the readiness
+        // gate). Its path-drift/cross-doc-naming heuristics false-blocked
+        // legitimate bundles at iteration 0 (e.g. a `file.ts:symbol` token mis-read
+        // as a missing path → fatal). The findings stay logged for the operator, but
+        // a defective bundle surfaces at the build/review phases — not by silently
+        // killing the run before any work. Log + proceed, never halt.
+        log(`ticket audit advisory: audit-ticket-bundle exited ${auditResult.exitCode} — findings logged, NOT halting (advisory gate)`);
+    }
+}
+/** Multi-repo advisory check, first iteration only. */
+function warnOnMultiRepoSession(state, sessionDir, iteration, log) {
+    if (iteration !== 1)
+        return;
+    const multiRepoDirs = detectMultiRepo(sessionDir, state.working_dir || process.cwd());
+    if (multiRepoDirs) {
+        log(`⚠️  MULTI-REPO DETECTED: Tickets span [${multiRepoDirs.join(', ')}]. Pickle Rick works best with single-repo sessions.`);
+        logActivity({ event: 'multi_repo_warning', source: 'pickle', session: path.basename(sessionDir) });
+    }
+}
+/** Pre-spawn commit-pending health probe body (rationale at the call site). Best-effort. */
+function runPreSpawnCommitPendingProbe(input) {
+    const { state, sessionDir, iteration, log } = input;
+    try {
+        const probeBackend = resolveBackend(state);
+        const probeWorkingDir = state.working_dir || process.cwd();
+        const probeResult = commitPendingProbe({
+            sessionDir,
+            workingDir: probeWorkingDir,
+            backend: probeBackend,
+            iteration,
+            lastProgressIteration: input.lastProgressIteration,
+            threshold: input.threshold,
+            pid: process.pid,
+            log,
+        });
+        if (probeResult === 'fired') {
+            logActivity({
+                event: 'commit_pending_probe_fired',
+                source: 'pickle',
+                session: path.basename(sessionDir),
+                iteration,
+            });
+        }
+    }
+    catch (err) {
+        // Probe is best-effort — never block the iteration on probe failure.
+        log(`commit-pending probe threw (ignored): ${safeErrorMessage(err)}`);
+    }
+}
+/**
+ * R-CNAR-6 spark smoke gate body (rationale at the call site). Returns whether the loop must halt —
+ * `codex_unhealthy_consecutive_failures` is already stamped when it must — and the once-per-session
+ * `smoke_gate_bypassed` latch to carry forward.
+ */
+function applySparkSmokeGateAtIteration(state, statePath, sessionDir, bypassEmitted, log) {
+    let emitted = bypassEmitted;
+    const smokeDecision = evaluateSparkSmokeGate(state, sessionDir);
+    if (smokeDecision.action === 'bypass' && !emitted) {
+        emitted = true;
+        log(`spark smoke gate bypassed: ${smokeDecision.reason}`);
+        logActivity({
+            event: 'smoke_gate_bypassed',
+            source: 'pickle',
+            session: path.basename(sessionDir),
+            reason: smokeDecision.reason,
+        });
+    }
+    if (smokeDecision.action === 'halt') {
+        log(`SMOKE GATE HALT: ${smokeDecision.reason} (rule=${smokeDecision.rule})`);
+        logActivity({
+            event: 'codex_unhealthy_consecutive_failures',
+            source: 'pickle',
+            session: path.basename(sessionDir),
+            reason: smokeDecision.reason,
+        });
+        recordExitReason(statePath, 'codex_unhealthy_consecutive_failures');
+        safeDeactivate(statePath);
+        return { halt: true, bypassEmitted: emitted };
+    }
+    return { halt: false, bypassEmitted: emitted };
+}
+/**
+ * Rate-limit cycle (MUST run before CB recording to prevent CB poisoning). An `api_limit` exit parks
+ * through `runMainLoopRateLimitPark` and writes the resume handoff — the caller then skips CB recording
+ * and result branching. A `success` exit ends the rate-limit episode. Returns the counter to carry forward.
+ */
+async function applyRateLimitCycleOutcome(input) {
+    const { exitResult } = input;
+    const exitType = exitResult.type;
+    let consecutiveRateLimits = input.consecutiveRateLimits;
+    if (exitType === 'api_limit') {
+        consecutiveRateLimits++;
+        const park = await runMainLoopRateLimitPark({ ...input, exitResult, consecutiveRateLimits });
+        if (park.kind === 'exit') {
+            return { kind: 'exit', exitReason: park.exitReason };
+        }
+        writeHandoffAtomic(input.sessionDir, park.handoffContent, process.pid, input.log);
+        return { kind: 'parked', consecutiveRateLimits: park.consecutiveRateLimits };
+    }
+    if (exitType === 'success') {
+        consecutiveRateLimits = 0;
+        // B5: a clean iteration ENDS the rate-limit episode — drop the park ledger so
+        // max_park_minutes measures one episode, not cumulative wall across the session.
+        // Stateless (survives --resume): clear only when an arm is actually present.
+        try {
+            if (readRunnerState(input.statePath).rate_limit_park) {
+                sm.update(input.statePath, (s) => { s.rate_limit_park = null; });
+            }
+        }
+        catch { /* best-effort */ }
+    }
+    return { kind: 'proceed', consecutiveRateLimits };
+}
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 1397 code lines against a ceiling of 120, and complexity 300 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowers it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle first), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+async function runMuxRunnerMain() {
+    const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
+    const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
+    let cbState = initialCbState;
     let iteration = 0;
     let lastStateIteration = -1;
     let stallCount = 0;
@@ -11001,22 +11422,11 @@ async function runMuxRunnerMain() {
     // probe runs whether CB is enabled or not).
     let lastProgressOuterIteration = 0;
     let lastObservedStateIteration = -1;
-    // Settings bag for the commit-pending probe threshold (default 2). Read once
-    // at startup; the loop is short-lived enough that hot-reloading isn't worth
-    // the disk traffic.
-    const probeSettings = loadSettingsBag(extensionRoot, 'mux-runner:commit-pending-probe:settings');
-    const rawProbeThreshold = Number(probeSettings.commit_pending_probe_threshold);
-    const commitPendingProbeThreshold = Number.isFinite(rawProbeThreshold) && rawProbeThreshold > 0 ? rawProbeThreshold : 2;
     // R-MWIS-2: main-loop idle-stall watchdog. lastProgressEpoch is bumped on every
     // forward-progress marker (iteration advance / state write, worker spawn). The
     // gated watchdog check before each worker spawn detects a wedged loop that is NOT
     // in any legitimate wait state and self-recovers instead of sitting at 0% CPU.
     const muxNow = () => Date.now();
-    const idleStallThresholdSeconds = resolveIdleStallThresholdSeconds();
-    // L2: bound consecutive idle-stall self-recoveries. A genuinely wedged loop that
-    // re-arms the stall every pass must escalate instead of spinning forever; any
-    // real forward progress resets the streak.
-    const idleStallRecoveryCap = resolveIdleStallRecoveryCap();
     let idleStallRecoveryCount = 0;
     // Seeded so the watchdog never trips on a fresh loop; the iteration-advance write
     // (below) always refreshes it before the watchdog reads it each pass.
@@ -11066,31 +11476,9 @@ async function runMuxRunnerMain() {
         // definite missing-toolchain signal trips this (see targetToolchainMissing).
         if (!toolchainPreflightChecked) {
             toolchainPreflightChecked = true;
-            try {
-                if (targetToolchainMissing(state.working_dir)) {
-                    const msg = `toolchain_unavailable: target repo '${state.working_dir}' has package.json but no installed node_modules — `
-                        + 'failing fast instead of churning iterations against a missing toolchain.';
-                    log(msg);
-                    process.stderr.write(`${msg}\n`);
-                    try {
-                        writeActivityEntry(statePath, {
-                            event: 'session_end',
-                            ts: new Date().toISOString(),
-                            reason: 'toolchain_unavailable',
-                            terminal_exit_reason: 'toolchain_unavailable',
-                            gate_payload: { working_dir: state.working_dir ?? null },
-                        });
-                    }
-                    catch { /* best-effort */ }
-                    recordExitReason(statePath, 'toolchain_unavailable');
-                    safeDeactivate(statePath);
-                    exitReason = 'toolchain_unavailable';
-                    break;
-                }
-            }
-            catch (err) {
-                // Pre-flight is best-effort — never let a probe error abort a real run.
-                log(`toolchain pre-flight skipped (ignored): ${safeErrorMessage(err)}`);
+            if (haltOnMissingTargetToolchain(statePath, state.working_dir, log)) {
+                exitReason = 'toolchain_unavailable';
+                break;
             }
         }
         state = clearStalePerTicketCacheAtIterationStart(statePath, state, log, sessionDir);
@@ -11108,91 +11496,16 @@ async function runMuxRunnerMain() {
         // cap-check sees no live ticket and `resolvePreTicket` re-routes to the next pending
         // ticket via `findNextPendingTicketId`. This does NOT widen `updateMuxLifecycleState`'s
         // ticketChanged trigger; the same-Done-ticket resume path clears here.
-        if (typeof state.current_ticket === 'string'
-            && state.current_ticket.length > 0
-            && isResumedDoneWithDurableCommit(sessionDir, state.current_ticket, state.working_dir || process.cwd())) {
-            const skipTicket = state.current_ticket;
-            log(`B-PXBO WS-3-FacetB: resumed current_ticket ${skipTicket} is Done with durable commit — skipping before per-ticket cap-check`);
-            try {
-                state = sm.update(statePath, s => {
-                    clearStaleTicketCacheFields(s);
-                });
-            }
-            catch (err) {
-                log(`B-PXBO WS-3-FacetB: cap-cache clear failed (ignored): ${safeErrorMessage(err)}`);
-            }
-        }
-        const rawGlobalMaxIter = Number(state.max_iterations);
-        const globalMaxIter = Number.isFinite(rawGlobalMaxIter) ? rawGlobalMaxIter : 0;
-        const ticketCacheValid = isValidPerTicketCapCache(state);
-        const ticketMaxIter = ticketCacheValid
-            ? Number(state.current_ticket_max_iterations)
-            : 0;
+        state = skipResumedDoneTicketCapCache(statePath, sessionDir, state, log);
         const rawCurIter = Number(state.iteration);
         const curIter = Number.isFinite(rawCurIter) ? rawCurIter : 0;
         iteration = curIter;
-        const budgetIter = ticketBudgetIterationCount(state, curIter);
-        // R-ICP-1 + R-CNAR-1 part 2: two independent cap exits.
-        //   (a) PER-TICKET budget exhaustion — current ticket isn't progressing
-        //       within its tier ceiling (current_ticket_max_iterations).
-        //   (b) GLOBAL manager-loop cap exhaustion — total iterations across all
-        //       tickets reached operator-set state.max_iterations.
-        // Both exit_reason='iteration_cap_exhausted' so pipeline-runner halts
-        // (exit code 3, R-ICP-1 contract). Forensic-style deactivation preserves
-        // step/current_ticket so postmortem can show the unfinished queue. The
-        // `Max iterations reached ...` log line is retained as a stable marker
-        // for grep-based forensics.
-        //
-        // R-CNAR-7 stale-cache guard: when state.current_ticket is null/undefined
-        // but state.current_ticket_max_iterations carries a stale value from the
-        // previously-completed ticket, the per-ticket cap-check would fire with
-        // no ticket to attribute the exit to. This is the run-#6 attempt-1 trip:
-        // a clean-success exit via finalizeTerminalState left max_iterations
-        // populated; --resume re-entered the loop and the very first cap-check
-        // tripped before any ticket started. Self-heal: emit
-        // cap_check_skipped_stale_cache + clear the stale fields, continue.
-        if (shouldEmitStalePerTicketCapSkip(state)) {
-            log(stalePerTicketCacheDiagnostic(state));
-            logActivity({
-                event: 'cap_check_skipped_stale_cache',
-                source: 'pickle',
-                session: path.basename(sessionDir),
-                iteration: curIter,
-                gate_payload: {
-                    current_ticket: state.current_ticket,
-                    current_ticket_max_iterations: state.current_ticket_max_iterations,
-                    current_ticket_budget_start_iteration: state.current_ticket_budget_start_iteration,
-                    current_ticket_tier: state.current_ticket_tier,
-                },
-            });
-        }
-        else if (ticketMaxIter > 0 && budgetIter >= ticketMaxIter) {
-            const tier = typeof state.current_ticket_tier === 'string' ? state.current_ticket_tier : 'unknown';
-            const ticketId = state.current_ticket ?? 'unknown';
-            log(`mux-runner exiting with code 3: per-ticket budget (${budgetIter}/${ticketMaxIter}, tier=${tier}) exhausted on ticket ${ticketId} without ${PromiseTokens.EPIC_COMPLETED} promise`);
-            log(`Max iterations reached (${budgetIter}/${ticketMaxIter}). Exiting.`);
-            recordExitReason(statePath, 'iteration_cap_exhausted');
-            safeDeactivate(statePath);
-            exitReason = 'iteration_cap_exhausted';
-            break;
-        }
-        if (globalMaxIter > 0 && curIter >= globalMaxIter) {
-            log(`mux-runner exiting with code 3: global iteration cap (${curIter}/${globalMaxIter}) exhausted without ${PromiseTokens.EPIC_COMPLETED} promise`);
-            log(`Max iterations reached (${curIter}/${globalMaxIter}). Exiting.`);
-            recordExitReason(statePath, 'iteration_cap_exhausted');
-            safeDeactivate(statePath);
-            exitReason = 'iteration_cap_exhausted';
-            break;
-        }
-        const rawStartEpoch = Number(state.start_time_epoch);
-        const startEpoch = Number.isFinite(rawStartEpoch) ? rawStartEpoch : 0;
-        const rawMaxTimeMins = Number(state.max_time_minutes);
-        const maxTimeMins = Number.isFinite(rawMaxTimeMins) ? rawMaxTimeMins : 0;
-        const elapsed = startEpoch > 0 ? Math.max(0, Math.floor(Date.now() / 1000) - startEpoch) : 0;
-        if (maxTimeMins > 0 && startEpoch > 0 && elapsed >= maxTimeMins * 60) {
-            log(`Time limit reached (${elapsed}s). Exiting.`);
-            finalizeTerminalState(statePath, { step: 'completed', runnerIteration: iteration, exitReason: 'limit' });
-            exitReason = 'limit';
+        // Cap exits (R-ICP-1 + R-CNAR-1 part 2, R-CNAR-7 stale-cache self-heal), then the
+        // operator-set wall-clock limit — the time check only runs when no cap exit fired.
+        const limitExit = evaluateIterationCapExit(state, statePath, sessionDir, curIter, log)
+            ?? evaluateTimeLimitExit(state, statePath, iteration, log);
+        if (limitExit) {
+            exitReason = limitExit;
             break;
         }
         // Circuit breaker gate: if CB is OPEN, exit immediately
@@ -11239,37 +11552,7 @@ async function runMuxRunnerMain() {
         });
         const preTicket = resolvePreTicket(sessionDir, state.current_ticket, state.working_dir || process.cwd());
         const preStep = inferTicketLifecycleStep(sessionDir, preTicket, state.step);
-        if (preTicket) {
-            // R-RMBS-3: emit per-iteration runnability decision for observability.
-            // Frontmatter status is the authoritative source — runnable means status is
-            // Todo or In Progress (per isPendingMuxTicket).
-            try {
-                const frontmatterStatus = getTicketStatus(sessionDir, preTicket);
-                const normalized = normalizeTicketStatus(frontmatterStatus);
-                const runnable = normalized !== 'done' && normalized !== 'skipped';
-                const reasonSource = state.current_ticket === preTicket ? 'state_current_ticket' : 'frontmatter_pending';
-                logActivity({
-                    event: 'ticket_runnability_resolved',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    ticket_id: preTicket,
-                    gate_payload: {
-                        frontmatter_status: frontmatterStatus ?? null,
-                        runnable,
-                        reason: reasonSource,
-                    },
-                });
-            }
-            catch { /* best-effort */ }
-            // R-REIN: refund the per-ticket recovery budget when the operator has explicitly
-            // reset this ticket's frontmatter status back to Todo. Without this, the spent
-            // ledger entries survive the reset and force the ticket terminal again on its first
-            // relaunch — re-exiting `recovery_exhausted` in ~2s and making the documented
-            // "reset to Todo + relaunch" recovery INERT. Covers ALL three per-ticket budgets
-            // (ticket-identity keyed, no strategy list). The helper is conservative (no-op
-            // unless frontmatter is Todo AND this ticket has ledger entries).
-            refundRecoveryBudgetOnReset(statePath, sessionDir, preTicket, iteration, log);
-        }
+        emitTicketRunnabilityAndRefund(statePath, sessionDir, state.current_ticket, preTicket, iteration, log);
         state = updateMuxLifecycleState(statePath, { iteration, currentTicket: preTicket, step: preStep });
         // R-MWIS-2: iteration advance + state write is a forward-progress marker.
         lastProgressEpoch = muxNow();
@@ -11342,36 +11625,7 @@ async function runMuxRunnerMain() {
             }
         }
         // R-CCPM-3: orphan-session detection at iteration boundary
-        try {
-            const dataRoot = getDataRoot();
-            const orphans = detectOrphanSessions(state, dataRoot, sessionDir);
-            if (orphans.length > 0) {
-                state = sm.update(statePath, s => {
-                    if (!Array.isArray(s.orphans_detected))
-                        s.orphans_detected = [];
-                    for (const orphan of orphans) {
-                        const basename = path.basename(orphan.orphan_session_path);
-                        if (!s.orphans_detected.includes(basename)) {
-                            s.orphans_detected.push(basename);
-                        }
-                    }
-                });
-                for (const orphan of orphans) {
-                    logActivity({
-                        event: 'orphan_session_detected',
-                        source: 'pickle',
-                        session: path.basename(sessionDir),
-                        orphan_session_path: orphan.orphan_session_path,
-                        orphan_started_at: orphan.orphan_started_at,
-                        parent_session_hash: orphan.parent_session_hash,
-                        orphan_pid: orphan.orphan_pid,
-                    });
-                }
-            }
-        }
-        catch (err) {
-            log(`orphan detection error (ignored): ${safeErrorMessage(err)}`);
-        }
+        state = recordOrphanSessionsAtIterationBoundary(state, statePath, sessionDir, log);
         log(`--- Iteration ${iteration} (state.iteration=${state.iteration}) ---`);
         logActivity({ event: 'iteration_start', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackend(state) });
         try {
@@ -11411,97 +11665,23 @@ async function runMuxRunnerMain() {
             exitReason = 'recovery_exhausted';
             break;
         }
-        // R-BUNDLE-1 / W1a: bundle bootstrap mode — auto-apply the quality-gate skip
-        // exemption for allowlisted sessions. Updates local state.flags so the
-        // readiness + ticket-audit gate checks below read the derived skip reason.
-        // W1a: writes ONLY the unified `skip_quality_gates_reason` (the single
-        // operator-facing quality-gate bypass surface). Conflict-resolution rule: an
-        // existing non-empty `skip_quality_gates_reason` WINS over the derived
-        // reason (operator intent preserved).
+        // R-BUNDLE-1 bundle bootstrap mode (once, iteration 0) — see applyBundleBootstrapExemption.
         if (!bundleBootstrapApplied && curIter === 0) {
             bundleBootstrapApplied = true;
-            const bootstrapMode = typeof state.flags?.bundle_bootstrap_mode === 'string'
-                ? state.flags.bundle_bootstrap_mode
-                : null;
-            if (bootstrapMode !== null && BUNDLE_BOOTSTRAP_ALLOWLIST[bootstrapMode]?.has(path.basename(sessionDir))) {
-                const derivedReason = `bundle_bootstrap_mode=${bootstrapMode}`;
-                const existingFlags = state.flags ?? {};
-                const existingUnified = typeof existingFlags.skip_quality_gates_reason === 'string'
-                    ? existingFlags.skip_quality_gates_reason.trim()
-                    : '';
-                const skipQualityGatesReason = existingUnified.length > 0 ? existingUnified : derivedReason;
-                state = { ...state, flags: { ...existingFlags, skip_quality_gates_reason: skipQualityGatesReason } };
-                logActivity({
-                    event: 'bundle_bootstrap_exemption_applied',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    gate_payload: {
-                        bundle_id: bootstrapMode,
-                        skip_quality_gates_reason: skipQualityGatesReason,
-                    },
-                });
-                log(`bundle bootstrap mode applied: ${bootstrapMode} — quality gates auto-skipped via skip_quality_gates_reason for session ${path.basename(sessionDir)}`);
-            }
+            state = applyBundleBootstrapExemption(state, sessionDir, log);
         }
         if (!readinessGateChecked && curIter === 0) {
             readinessGateChecked = true;
-            const skipReason = resolveQualityGateSkipReason(state, log, path.basename(sessionDir), 'readiness_gate').reason;
-            const readinessStatus = runMuxReadinessGate({
-                sessionDir,
-                repoRoot: state.working_dir || process.cwd(),
-                extensionRoot,
-                log,
-                skipReason,
-            });
-            if (readinessStatus !== 0) {
-                // R-GATE-ADVISORY: the readiness gate is ADVISORY, not blocking. Its
-                // contract/path/symbol checks are heuristic pre-build validations that
-                // historically false-blocked legitimate bundles (R-RTRC reached a 5th
-                // recurrence; R-ATBG is the "guard around a brittle guard" archetype) and
-                // forced a large band-aid surface (forward-ref annotation grammar,
-                // allowlists, carve-outs, the skip flag). A genuinely-bad path fails the
-                // BUILD itself, and the review phases catch the rest — so log + proceed,
-                // never halt an autonomous run on a heuristic pre-flight.
-                log(`readiness advisory: check-readiness exited ${readinessStatus} — findings logged, NOT halting (advisory gate)`);
-            }
+            runReadinessAdvisoryGate(state, sessionDir, extensionRoot, log);
         }
         // R-TAQ-3: ticket audit gate (slot: readiness → ticket-audit → spawn).
         // Runs once on iteration-0 after readiness gate exits 0.
         if (!ticketAuditGateChecked && curIter === 0) {
             ticketAuditGateChecked = true;
-            const skipAuditReason = resolveQualityGateSkipReason(state, log, path.basename(sessionDir), 'ticket_audit_gate').reason;
-            const auditResult = runTicketAuditGate({
-                sessionDir,
-                extensionRoot,
-                log,
-                skipReason: skipAuditReason,
-            });
-            if (auditResult.status === 'bypassed') {
-                logActivity({
-                    event: 'ticket_audit_bypassed',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    reason: auditResult.reason,
-                });
-            }
-            else if (auditResult.status === 'failed') {
-                // R-GATE-ADVISORY: ticket-audit is ADVISORY, not blocking (see the readiness
-                // gate above). Its path-drift/cross-doc-naming heuristics false-blocked
-                // legitimate bundles at iteration 0 (e.g. a `file.ts:symbol` token mis-read
-                // as a missing path → fatal). The findings stay logged for the operator, but
-                // a defective bundle surfaces at the build/review phases — not by silently
-                // killing the run before any work. Log + proceed, never halt.
-                log(`ticket audit advisory: audit-ticket-bundle exited ${auditResult.exitCode} — findings logged, NOT halting (advisory gate)`);
-            }
+            runTicketAuditAdvisoryGate(state, sessionDir, extensionRoot, log);
         }
         // Multi-repo advisory check (once, on first iteration)
-        if (iteration === 1) {
-            const multiRepoDirs = detectMultiRepo(sessionDir, state.working_dir || process.cwd());
-            if (multiRepoDirs) {
-                log(`⚠️  MULTI-REPO DETECTED: Tickets span [${multiRepoDirs.join(', ')}]. Pickle Rick works best with single-repo sessions.`);
-                logActivity({ event: 'multi_repo_warning', source: 'pickle', session: path.basename(sessionDir) });
-            }
-        }
+        warnOnMultiRepoSession(state, sessionDir, iteration, log);
         // Update outer-loop progress tracker for the commit-pending probe.
         // First observation seeds both fields so a fresh session never trips
         // the probe at iteration 1 from the default zero-init.
@@ -11517,58 +11697,22 @@ async function runMuxRunnerMain() {
         // sometimes produces edits but never `git add` + `git commit`; if
         // stagnation persists past the threshold, nudge the next worker turn
         // to commit + signal Done so the breaker doesn't strand orphan work.
-        try {
-            const probeBackend = resolveBackend(state);
-            const probeWorkingDir = state.working_dir || process.cwd();
-            const probeResult = commitPendingProbe({
-                sessionDir,
-                workingDir: probeWorkingDir,
-                backend: probeBackend,
-                iteration,
-                lastProgressIteration: lastProgressOuterIteration,
-                threshold: commitPendingProbeThreshold,
-                pid: process.pid,
-                log,
-            });
-            if (probeResult === 'fired') {
-                logActivity({
-                    event: 'commit_pending_probe_fired',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    iteration,
-                });
-            }
-        }
-        catch (err) {
-            // Probe is best-effort — never block the iteration on probe failure.
-            log(`commit-pending probe threw (ignored): ${safeErrorMessage(err)}`);
-        }
+        runPreSpawnCommitPendingProbe({
+            state,
+            sessionDir,
+            iteration,
+            lastProgressIteration: lastProgressOuterIteration,
+            threshold: commitPendingProbeThreshold,
+            log,
+        });
         // R-CNAR-6: spark codex smoke-run gate. Active only when state.backend='codex'
         // AND state.codex_model matches /^gpt-5\.3-codex-spark/. Halt exits with
         // exit_reason='codex_unhealthy_consecutive_failures'; auto-resume.sh STOPS per
         // R-CNAR-4(c) (any non-pipeline_phase_incomplete exit halts the resume loop).
         {
-            const smokeDecision = evaluateSparkSmokeGate(state, sessionDir);
-            if (smokeDecision.action === 'bypass' && !smokeGateBypassEmitted) {
-                smokeGateBypassEmitted = true;
-                log(`spark smoke gate bypassed: ${smokeDecision.reason}`);
-                logActivity({
-                    event: 'smoke_gate_bypassed',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    reason: smokeDecision.reason,
-                });
-            }
-            if (smokeDecision.action === 'halt') {
-                log(`SMOKE GATE HALT: ${smokeDecision.reason} (rule=${smokeDecision.rule})`);
-                logActivity({
-                    event: 'codex_unhealthy_consecutive_failures',
-                    source: 'pickle',
-                    session: path.basename(sessionDir),
-                    reason: smokeDecision.reason,
-                });
-                recordExitReason(statePath, 'codex_unhealthy_consecutive_failures');
-                safeDeactivate(statePath);
+            const smoke = applySparkSmokeGateAtIteration(state, statePath, sessionDir, smokeGateBypassEmitted, log);
+            smokeGateBypassEmitted = smoke.bypassEmitted;
+            if (smoke.halt) {
                 exitReason = 'codex_unhealthy_consecutive_failures';
                 break;
             }
@@ -12346,32 +12490,17 @@ async function runMuxRunnerMain() {
         const exitType = exitResult.type;
         logActivity({ event: 'iteration_end', source: 'pickle', session: path.basename(sessionDir), iteration, exit_type: exitType, backend: resolveBackend(state) });
         emitWastedIterOnce();
-        if (exitType === 'api_limit') {
-            consecutiveRateLimits++;
-            const park = await runMainLoopRateLimitPark({
-                exitResult, consecutiveRateLimits, maxRateLimitRetries, rateLimitWaitMinutes,
-                maxParkMinutes, statePath, sessionDir, state, iteration, log,
-            });
-            if (park.kind === 'exit') {
-                exitReason = park.exitReason;
-                break;
-            }
-            consecutiveRateLimits = park.consecutiveRateLimits;
-            writeHandoffAtomic(sessionDir, park.handoffContent, process.pid, log);
+        const rateLimitStep = await applyRateLimitCycleOutcome({
+            exitResult, consecutiveRateLimits, maxRateLimitRetries, rateLimitWaitMinutes,
+            maxParkMinutes, statePath, sessionDir, state, iteration, log,
+        });
+        if (rateLimitStep.kind === 'exit') {
+            exitReason = rateLimitStep.exitReason;
+            break;
+        }
+        consecutiveRateLimits = rateLimitStep.consecutiveRateLimits;
+        if (rateLimitStep.kind === 'parked')
             continue; // Skip CB recording + result branching entirely
-        }
-        if (exitType === 'success') {
-            consecutiveRateLimits = 0;
-            // B5: a clean iteration ENDS the rate-limit episode — drop the park ledger so
-            // max_park_minutes measures one episode, not cumulative wall across the session.
-            // Stateless (survives --resume): clear only when an arm is actually present.
-            try {
-                if (readRunnerState(statePath).rate_limit_park) {
-                    sm.update(statePath, (s) => { s.rate_limit_park = null; });
-                }
-            }
-            catch { /* best-effort */ }
-        }
         // --- Per-ticket timeout halt (FR-B3/B4/B12/B14) — MUST run BEFORE CB recording ---
         let ticketForTimeout = state.current_ticket || null;
         try {
