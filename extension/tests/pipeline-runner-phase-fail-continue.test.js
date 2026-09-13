@@ -352,6 +352,81 @@ test('--strict-phases halts at runtime and persists pipeline_continue_on_phase_f
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
+// ---------------------------------------------------------------------------
+// B-RELVERD ROOT V2 (GitHub #15): a microverse phase exits all_judge_backends_exhausted and its
+// fallback finalize gate ALSO fails. That is a measurement failure, not the crash floor, so the
+// run must reach the NEXT phase — asserted on the phase index reached, never the exit code.
+// ---------------------------------------------------------------------------
+
+function stubFailedFinalizeGate(sessionDir) {
+  const spawnCalls = [];
+  __setSpawnRunnerForTests(async (cmd, args) => {
+    spawnCalls.push([...args]);
+    const script = path.basename(String(args[0]));
+    if (script === 'microverse-runner.js') {
+      const statePath = path.join(sessionDir, 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      state.exit_reason = 'all_judge_backends_exhausted';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+      return { exitCode: 1, stdout: '', stderr: '' };
+    }
+    return { exitCode: script === 'finalize-gate.js' ? 1 : 0, stdout: '', stderr: '' };
+  });
+  return spawnCalls;
+}
+
+function finalizeGateSkills(spawnCalls) {
+  return spawnCalls
+    .filter((args) => path.basename(String(args[0])) === 'finalize-gate.js')
+    .map((args) => args[2]);
+}
+
+test('V2-2: a failed all-backends-exhausted finalize gate continues to the next phase', async () => {
+  const { repo, sessionDir } = makePipelineSession({
+    createFollowupCommit: true,
+    pipelineOverrides: { phases: ['anatomy-park', 'szechuan-sauce'] },
+  });
+  const spawnCalls = stubFailedFinalizeGate(sessionDir);
+
+  await expectMainExit(sessionDir, 1);
+
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(runnerLog, /PHASE 2\/2: SZECHUAN-SAUCE/, 'the run must reach phase index 2');
+  assert.deepEqual(finalizeGateSkills(spawnCalls), ['anatomy-park', 'szechuan']);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('V2-3: --strict-phases still stops on a failed all-backends-exhausted finalize gate', async () => {
+  const { repo, sessionDir } = makePipelineSession({
+    createFollowupCommit: true,
+    pipelineOverrides: { phases: ['anatomy-park', 'szechuan-sauce'] },
+  });
+  const spawnCalls = stubFailedFinalizeGate(sessionDir);
+
+  await expectMainExit(sessionDir, 1, { strictPhases: true });
+
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.doesNotMatch(runnerLog, /PHASE 2\/2: SZECHUAN-SAUCE/, 'strict mode must not reach phase index 2');
+  assert.deepEqual(finalizeGateSkills(spawnCalls), ['anatomy-park']);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('V2-4: continuing past a failed finalize gate still reports failed and names the phase', async () => {
+  const { repo, sessionDir } = makePipelineSession({
+    createFollowupCommit: true,
+    pipelineOverrides: { phases: ['anatomy-park', 'szechuan-sauce'] },
+  });
+  stubFailedFinalizeGate(sessionDir);
+
+  await expectMainExit(sessionDir, 1);
+
+  const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+  assert.equal(status.status, 'failed', 'continuing is not claiming success');
+  assert.equal(status.completed_phases, 0);
+  assert.match(status.phase_dispositions?.['anatomy-park'] ?? '', /^finalize_gate_failed:all_judge_backends_exhausted$/);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
 test('recoverable_phase_failure emitted on every non-fatal exit during simulated 4-phase pipeline', () => {
   const { runtime } = makeRuntime({ createFollowupCommit: true });
   const phases = runtime.config.phases;

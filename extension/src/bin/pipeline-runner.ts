@@ -3353,15 +3353,20 @@ export function shouldHaltAfterPhase(phase: PhaseName, exitCode: number, runtime
   // function on a genuine misconfiguration (missing PRD/start_commit), which isFatalPhaseFailure
   // still treats as halting. Every phase now follows the same fatal-failure / strict-policy path.
   if (isFatalPhaseFailure(phase, runtime)) return true;
-  // Strict phase policy: persisted pipeline_continue_on_phase_fail=false (via --strict-phases or
-  // upstream config) halts on any non-zero exit even when downstream remediation phases exist.
+  return isStrictPhasePolicy(runtime);
+}
+
+/**
+ * Strict phase policy: persisted pipeline_continue_on_phase_fail=false (via --strict-phases or
+ * upstream config) halts on any non-zero exit even when downstream remediation phases exist.
+ * The ONE reader of the opt-in; an unreadable state is best-effort non-strict.
+ */
+function isStrictPhasePolicy(runtime: Pick<PipelineRuntime, 'statePath'>): boolean {
   try {
-    const runnerState = sm.read(runtime.statePath);
-    if (runnerState.pipeline_continue_on_phase_fail === false) return true;
+    return sm.read(runtime.statePath).pipeline_continue_on_phase_fail === false;
   } catch {
-    // best-effort; fall through to non-halt
+    return false;
   }
-  return false;
 }
 
 function getRecoverablePhaseFailureReason(
@@ -4914,10 +4919,13 @@ export async function runJudgeTimeoutFinalizeGate(
 
 /**
  * The `run-finalize-gate-incomplete` destination: spawn finalize-gate; on pass continue the
- * phase (matches `runJudgeTimeoutFinalizeGate`); on fail break the pipeline.
+ * phase (matches `runJudgeTimeoutFinalizeGate`).
  * AC-OA-1b: the reason re-read here lands in `phaseDispositions[rawPhase]` → `pipeline-status.json`,
  * so distinct reasons yield distinct residuals. AC-OA-1c: the phase DEGRADED — `completed++` stays
  * (AC-OA-4 pin) and `nonConvergent++` rides alongside it, withholding the success verdict.
+ * B-RELVERD V2: a FAILED gate is a measurement verdict, not the crash floor, so it also continues
+ * the phase loop — named `finalize_gate_failed:<reason>`, NOT counted completed (so `pipelineFailed`
+ * reports it too) — unless the operator opted into `--strict-phases`, the one way to stop here.
  */
 export async function runAllBackendsExhaustedFinalizeGate(
   runtime: PipelineRuntime,
@@ -4941,16 +4949,19 @@ export async function runAllBackendsExhaustedFinalizeGate(
     runtime.sessionDir,
     skill,
   ], runtime.phaseEnv);
+  // Both arms are the same degraded phase with different evidence, so they share ONE raise.
+  counters.nonConvergent++;
   if (gateResult.exitCode === 0) {
     counters.completed++;
-    counters.nonConvergent++;
     counters.phaseDispositions[rawPhase] = reason;
     writeRunningStatus(runtime, counters, null);
     log(`Phase ${rawPhase} finalize-gate passed after ${reason} — phase degraded, run cannot report success`);
     return { action: 'continue' };
   }
-  log(`Phase ${rawPhase} finalize-gate failed after ${reason} (exit ${gateResult.exitCode})`);
-  return { action: 'break' };
+  counters.phaseDispositions[rawPhase] = `finalize_gate_failed:${reason}`;
+  writeRunningStatus(runtime, counters, null);
+  log(`Phase ${rawPhase} finalize-gate failed after ${reason} (exit ${gateResult.exitCode}) — phase not completed, run cannot report success`);
+  return isStrictPhasePolicy(runtime) ? { action: 'break' } : { action: 'continue' };
 }
 
 /**

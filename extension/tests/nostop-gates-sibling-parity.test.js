@@ -75,11 +75,12 @@ function writeState(sessionDir, overrides = {}) {
 }
 
 /** Build a minimal PipelineRuntime object the way production code does. */
-function makeRuntime({ startCommit, repo } = {}) {
+function makeRuntime({ startCommit, repo, stateOverrides = {} } = {}) {
   const sessionDir = tmpDir('sibling-parity-session-');
   const statePath = writeState(sessionDir, {
     working_dir: repo,
     start_commit: startCommit,
+    ...stateOverrides,
   });
   return {
     sessionDir,
@@ -134,9 +135,25 @@ describe('runAllBackendsExhaustedFinalizeGate', () => {
     assert.equal(counters.completed, 1);
   });
 
-  test('failing gate (exitCode 1) still breaks', async () => {
+  // B-RELVERD V2-1: a failed gate is a measurement verdict, not the crash floor.
+  test('failing gate (exitCode 1) continues, names the disposition, withholds success', async () => {
     const { repo, startCommit } = makeRepo();
-    const runtime = makeRuntime({ repo, startCommit });
+    const runtime = makeRuntime({ repo, startCommit, stateOverrides: { pipeline_continue_on_phase_fail: true } });
+    const counters = freshCounters();
+    stubGateExit(1);
+
+    const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+
+    assert.equal(outcome.action, 'continue');
+    assert.equal(counters.completed, 0, 'a failed gate is not a completed phase');
+    assert.equal(counters.nonConvergent, 1, 'success is withheld by the same term the pass arm uses');
+    assert.equal(counters.phaseDispositions['anatomy-park'], 'finalize_gate_failed:all_judge_backends_exhausted');
+  });
+
+  // B-RELVERD V2-3: the strict opt-in is the only way to get the old stop.
+  test('failing gate under pipeline_continue_on_phase_fail=false still breaks and still reports', async () => {
+    const { repo, startCommit } = makeRepo();
+    const runtime = makeRuntime({ repo, startCommit, stateOverrides: { pipeline_continue_on_phase_fail: false } });
     const counters = freshCounters();
     stubGateExit(1);
 
@@ -144,6 +161,8 @@ describe('runAllBackendsExhaustedFinalizeGate', () => {
 
     assert.equal(outcome.action, 'break');
     assert.equal(counters.completed, 0);
+    assert.equal(counters.nonConvergent, 1);
+    assert.match(counters.phaseDispositions['anatomy-park'], /^finalize_gate_failed:/);
   });
 });
 
