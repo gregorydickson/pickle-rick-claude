@@ -197,9 +197,15 @@ export function isTestFile(name) {
     const lower = name.toLowerCase();
     return TEST_PATTERNS.some(p => lower.includes(p));
 }
+function tallySourceEntry(child, tally) {
+    if (!child.isFile() || !SOURCE_EXTS.has(path.extname(child.name)))
+        return;
+    tally.sourceCount++;
+    if (isTestFile(child.name))
+        tally.testCount++;
+}
 function countSourceFiles(dir) {
-    let sourceCount = 0;
-    let testCount = 0;
+    const tally = { sourceCount: 0, testCount: 0 };
     const visited = new Set();
     const walk = (p) => {
         // Resolve real path to detect symlink loops
@@ -221,18 +227,14 @@ function countSourceFiles(dir) {
             return;
         }
         for (const child of children) {
-            if (child.isDirectory() && !EXCLUDED_DIRS.has(child.name)) {
+            if (child.isDirectory() && !EXCLUDED_DIRS.has(child.name))
                 walk(path.join(p, child.name));
-            }
-            else if (child.isFile() && SOURCE_EXTS.has(path.extname(child.name))) {
-                sourceCount++;
-                if (isTestFile(child.name))
-                    testCount++;
-            }
+            else
+                tallySourceEntry(child, tally);
         }
     };
     walk(dir);
-    return { sourceCount, testCount };
+    return tally;
 }
 /**
  * ROOT W: resolve the absolute directories anatomy-park rotates over.

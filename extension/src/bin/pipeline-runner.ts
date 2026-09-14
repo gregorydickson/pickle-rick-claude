@@ -359,9 +359,16 @@ export function isTestFile(name: string): boolean {
   return TEST_PATTERNS.some(p => lower.includes(p));
 }
 
-function countSourceFiles(dir: string): { sourceCount: number; testCount: number } {
-  let sourceCount = 0;
-  let testCount = 0;
+interface SourceFileTally { sourceCount: number; testCount: number }
+
+function tallySourceEntry(child: fs.Dirent, tally: SourceFileTally): void {
+  if (!child.isFile() || !SOURCE_EXTS.has(path.extname(child.name))) return;
+  tally.sourceCount++;
+  if (isTestFile(child.name)) tally.testCount++;
+}
+
+function countSourceFiles(dir: string): SourceFileTally {
+  const tally: SourceFileTally = { sourceCount: 0, testCount: 0 };
   const visited = new Set<string>();
 
   const walk = (p: string) => {
@@ -374,17 +381,13 @@ function countSourceFiles(dir: string): { sourceCount: number; testCount: number
     let children: fs.Dirent[];
     try { children = fs.readdirSync(p, { withFileTypes: true }); } catch { return; }
     for (const child of children) {
-      if (child.isDirectory() && !EXCLUDED_DIRS.has(child.name)) {
-        walk(path.join(p, child.name));
-      } else if (child.isFile() && SOURCE_EXTS.has(path.extname(child.name))) {
-        sourceCount++;
-        if (isTestFile(child.name)) testCount++;
-      }
+      if (child.isDirectory() && !EXCLUDED_DIRS.has(child.name)) walk(path.join(p, child.name));
+      else tallySourceEntry(child, tally);
     }
   };
   walk(dir);
 
-  return { sourceCount, testCount };
+  return tally;
 }
 
 /**
