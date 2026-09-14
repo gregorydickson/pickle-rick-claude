@@ -950,6 +950,9 @@ export function isRespawnWatchdogDisabled(env: NodeJS.ProcessEnv = process.env):
   return env.PICKLE_MONITOR_WATCHDOG === 'off';
 }
 
+/** Default watchdog logger when the caller supplies none: drops the message. */
+function discardWatchdogLog(_msg: string): void {}
+
 /**
  * R-MWR-1: register a continuous watchdog inside the monitor pane that
  * re-runs `restartDeadWatcherPanes` every {@link RESPAWN_WATCHDOG_INTERVAL_MS}.
@@ -1004,7 +1007,7 @@ export function startRespawnWatchdog(opts: {
     return null;
   }
   const intervalMs = opts.intervalMs ?? RESPAWN_WATCHDOG_INTERVAL_MS;
-  const log = opts.logger || (() => { /* no-op */ });
+  const log = opts.logger ?? discardWatchdogLog;
   // R-MWCL-5: one-shot flag so the first tick logs errors to stderr in
   // addition to the logger; subsequent interval ticks use logger only.
   let isFirstTick = true;
