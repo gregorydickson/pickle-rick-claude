@@ -74,72 +74,70 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-14 07:05Z. **v2.1.0-beta.28 SHIPPED — the first run that REPORTED SUCCESS.**
+## 🚢 SESSION HANDOFF — 2026-09-14 15:05Z. **v2.1.0-beta.29 SHIPPED.** Read this FIRST.
 
-**Three releases in three days.** beta.26 fixed the verdict layer's DISPOSITIONS, beta.27 the
-MEASUREMENTS it consumes, beta.28 made the recorded ceiling ENFORCEABLE and used it.
+**Four releases in four days.** beta.26 the verdict layer's DISPOSITIONS · beta.27 the MEASUREMENTS it
+consumes · beta.28 the recorded ceiling made ENFORCEABLE · beta.29 the LEDGER that tracks it all.
 
 | | |
 |---|---|
-| tag | **v2.1.0-beta.28** → `3a13a168`, verified EQUAL to the branch sha (rc 0) |
-| run verdict | **`status: completed`, 4/4 phases, NO dispositions** — the first success verdict in this series |
-| gate | **20 legs**, all rc 0 · fast **9889** `failures=0 runs 5/5` · soak genuinely **1803.8s** |
-| backlog | **#23 closed.** Only #5 (enhancement) open |
+| tag | **v2.1.0-beta.29** → `1f7bd9b5`, verified EQUAL to the branch sha (rc 0) |
+| gate | **21 legs**, all rc 0 · fast **9905** `failures=0 runs 5/5` · soak genuinely **1803.8s** |
+| run | 4/4 phases, 277m40s. szechuan degraded honestly (finalize-gate passed, phase incomplete, success withheld). **Pickle boundary CLEAN — no disposition.** |
+| backlog | **#24 closed.** Open: **#25** (exit-reason mislabel) + #5 (enhancement) |
 
-### 🎯 THE HEADLINE: the run reported SUCCESS
+### What shipped — [[B-PROBE]], 4 roots → 5 tickets, 5/5 Done
 
-Every prior bundle ran its phases and reported `failed` over a tree that measured green. This one did
-not. `pipeline-status.json` carries **no `phase_dispositions` key at all** — no
-`done_over_unmeasured_worker_gate_tests`, no `post_final_tier_degraded`. B-RELVERD's V1 (derive at
-finalize, never latch) is what made a clean boundary expressible; this is the first run that had one.
+- **N1** every `OPEN BUG`/`TOP ITEM` row carries a runnable PROBE; `audit-ledger-probes.sh` runs them in
+  the gate. A row marked open that reports FIXED reds the build; a row with NO probe reds it too.
+- **N2** (#24) ledger entry size is a STRUCTURED field, no longer recovered from judge prose.
+- **N3** `runMuxRunnerMain` **892 → 449 code lines, complexity 173 → 84**, two staged extractions.
+- **N4** sweep finished; three-way consistency check reads **2 / 2 / 2** (stated, audit-confirmed, raw
+  headings).
 
-### ✅ M2 VALIDATED IN THE FIELD — this time genuinely deployed
+### 📉 THE RATCHET, THREE BUNDLES IN
 
-The retracted claim two runs ago is now properly earned. Baseline logged **15**, and the FIRST
-classification reads `basis=set_ops, resolved=1, new=0, remaining=14`. The baseline seeds a ledger, so
-set-ops engages from iteration ONE. Szechuan drove **15 → 0, converged in 17 iterations**.
+| | lines | complexity |
+|---|---|---|
+| beta.27 (recorded, unenforced) | 1690 | 366 |
+| beta.28 | 892 | 173 |
+| **beta.29** | **449** | **84** |
 
-Against the pre-fix run: baseline 2 → metric 6 → `regressed (previous=2, tolerance=0)` [basis
-**numeric**] → dead in 15 minutes. That is the defect closed, measured on both sides.
+Ceilings are 120 and 15. Each step bounded, behaviour-preserving, and verified against the RECORDED
+figure by `audit-recorded-ceilings.sh` rather than against a claim. **Next step: 449 → ~225.**
 
-**NOT claimed, because absence is not evidence:** the judge emitted no `hard limit 50` citation and no
-size-class violations at all, which is CONSISTENT with M4 but does not prove it — nothing in the diff
-may have neared the ceiling. And `post_final_verdict` came back `{state: green, degraded: false,
-dimensions: [], diagnostics: []}` — M1's channel exists and does not fabricate content, but its FAILURE
-path is still unexercised.
+### ⚠ WHY THE LEDGER ROTS — measured, not estimated
 
-### What shipped — [[B-RATCHET]], 5 roots → 8 tickets, 8/8 Done, 4/4 phases, 546m
+Sweeping six open rows found **FOUR already fixed**. The documented estimate was one in three. Three
+releases in three days closed defects faster than the ledger recorded them, and a row's `OPEN` label
+means only that nobody re-read it.
 
-- **R1** the ceiling is a real ratchet now: `audit-recorded-ceilings.sh` parses each marker's figures,
-  measures by AST + eslint, and fails THREE ways — measured above recorded, figure missing, and
-  measured BELOW recorded (naming the new number). `163 files scanned, 1 carve-outs checked, 48
-  figure-less directives ignored` — the 48 are the over-trigger control.
-- **R2** `runMuxRunnerMain` **1690 code lines / complexity 366 → 894**, across three extraction tickets.
-  `eslint src/bin/mux-runner.ts` is now SILENT, so no helper merely relocated the violation.
-- **R3** `correctPhantomDoneTickets` at complexity 15, disable **DELETED** not lowered.
-- **R4** partial ledger progress counts (#23); a no-change worker still stalls.
-- **R5** bounded split of the 3232-line catch-all module.
+**The worked example, and the reason N1 demands a BEHAVIOUR probe:** B-OFFREPO's row named
+`path.join(args.workingDir, 'extension')` as its defect. **That literal is still in the source today.**
+Reading the row says OPEN. Grepping the string says OPEN. Only reading the BRANCH shows it is now a
+repo-shape discriminator routing to `runOffRepoWorkerGate`. **A string is not a mechanism.**
 
-### ⚠ MY OWN GATE RUNNER HAD THE BUG THIS BUNDLE EXISTS TO FIX
+### 🔁 MY OWN INSTRUMENT HAD THE BUG, AND THE FIX PROVED ITSELF
 
-The runner used for beta.26 and beta.27 carried a **hardcoded audit list** and silently dropped
-`audit-recorded-ceilings` the moment R1 added it. Canonical gate: **11 audits**. My runner ran **10**.
-Caught by diffing the runner's list against `grep -oE 'bash scripts/audit-[a-z-]+\.sh' CLAUDE.md`, then
-running the missing leg at the SAME commit (rc 0, so the 20-leg gate is genuinely green).
-
-The runner now **derives** its list from CLAUDE.md and fails loudly if the derivation comes back empty.
-**A hardcoded list of cases is correct only until the world adds one, and it fails silently** — the
-complexity clause, and the instrument enforcing it was the violator.
+The gate runner used through beta.27 carried a **hardcoded audit list** and silently dropped each newly
+added audit. Fixed in beta.28 to DERIVE the list from the canonical command. **This release's gate ran
+21 legs, not 20** — it picked up N1's brand-new `audit-ledger-probes` automatically. The fix
+demonstrating itself one release later is the cleanest evidence available that deriving beats listing.
 
 ### Open, in priority order
 
-1. **M4 and M1's failure path are UNPROVEN.** Neither was exercised. Do not close them mentally. M4 wants
-   a diff containing a function between 50 and 120 code lines: pre-fix it files a violation, post-fix it
-   must not. M1 wants a genuine `pretest` script failure: the tail must reach `diagnostics`.
-2. **`runMuxRunnerMain` is 894, ceiling 120.** The ratchet is armed and R1-3 fails if the record drifts
-   above measured. Next bundle halves it again — ~894 → ~450.
-3. **#5** — enhancement, read before the next redesign decision.
-4. The stale-premise sweep still lists rows never re-measured. Re-grep the MECHANISM before scoping.
+1. **[[#25]] — an ITERATION metric failure is stamped `baseline_unmeasurable_unrecoverable`.** This run
+   logged `LLM baseline metric: 3` at 12:18 and failed an ITERATION at 12:30; the exit reason blamed the
+   baseline. One shared `mapJudgeMeasurementFailure`, two call sites in different phases
+   (`measureLlmBaseline` :4098, `measureLlmIteration` :4445), every result named after ONE of them.
+   **Consequence for this file: every earlier run recorded under `baseline_unmeasurable_*` — B-MEGADRAIN
+   included — has a SUSPECT attribution.** Renaming touches the persisted `ExitReason` schema, so it
+   needs legacy-value migration.
+2. **Ratchet 449 → ~225.** The audit fails in both directions, so the record cannot drift.
+3. **M4 still UNPROVEN in the field.** The judge's inputs are correct (zero stale 50-line claims; the
+   principles doc states 120 code lines + the counting method) but no run has yet contained a function
+   between 50 and 120 code lines to exercise it. **Do not close it mentally.**
+4. **#5** — enhancement, read before the next redesign decision.
 
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
@@ -460,8 +458,8 @@ the AC-G3 net-LOC number whatever it says.
 
 ## 🐙 GITHUB ISSUES → BUNDLE MAP (re-measured 2026-09-12; #15-#18 closed 2026-09-13 by beta.26)
 
-**Backlog as of 2026-09-14 07:05Z:** #23 SHIPPED in beta.28 and closed. Only #5 (enhancement,
-unscheduled) remains open. #19-#22 shipped in beta.27; #6-#11 and #14-#15 closed earlier.
+**Backlog as of 2026-09-14 15:05Z:** #25 (iteration failure stamped with the baseline's name, filed
+from measurement) and #5 (enhancement, unscheduled). #24 shipped in beta.29; everything else closed.
 
 **Seven of the nine open issues were CLOSED on 2026-09-12** after verifying each one by MECHANISM grep
 at HEAD, not by ticket title. The B-MEGADRAIN continuation run (`2026-09-09-e959390b`, 23/23 Done) had
