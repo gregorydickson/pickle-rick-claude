@@ -3804,6 +3804,10 @@ export function writeFinalReport(
     `- **Reverted**: ${reverted}`,
     `- **Failed Approaches**: ${mvState.failed_approaches.length}`,
   ];
+  const unmovable = exitReason === 'stalled_below_target' ? findUnmovableLedgerEntries(mvState, iterations) : [];
+  if (unmovable.length > 0) {
+    report.push(`- **Unmovable Ledger Entries**: ${unmovable.length} (${describeLedgerEntries(unmovable)})`);
+  }
 
   if (convergenceMode === 'worker') {
     const convergenceFile = mvState.convergence_file
@@ -4543,17 +4547,41 @@ function maybeRecordPlateauFailedApproach(
   );
 }
 
+export type LedgerSizeFigureKind = 'lines' | 'complexity';
+
+/**
+ * R4 (GitHub #23): the basis that reports measurable partial progress. The ledger metric counts open
+ * entries and an entry leaves only when fully resolved, so a pass that shrinks an entry no single
+ * iteration can finish reads `held` and feeds the stall. This basis names the one comparison that can see
+ * it — a path's largest size figure falling between two ledger snapshots.
+ */
+export interface PartialProgressFigures {
+  basis: 'partial_progress';
+  path: string;
+  figure: LedgerSizeFigureKind;
+  previous: number;
+  current: number;
+}
+
+export type ReportedComparisonFigures = MetricComparisonFigures | PartialProgressFigures;
+
+export interface ReportedComparison {
+  classification: 'improved' | 'held' | 'regressed';
+  figures: ReportedComparisonFigures;
+}
+
 // A Record over the union: tsc rejects a missing or extra basis, so this list cannot drift from the type.
-const METRIC_COMPARISON_BASIS_KEYS: Record<MetricComparisonFigures['basis'], true> = {
+const METRIC_COMPARISON_BASIS_KEYS: Record<ReportedComparisonFigures['basis'], true> = {
   set_ops: true,
   ledger_count: true,
   numeric: true,
+  partial_progress: true,
 };
 
-/** Every `MetricComparisonFigures` basis, runtime-enumerable and derived from the union (M5). */
-export const METRIC_COMPARISON_BASES = Object.keys(METRIC_COMPARISON_BASIS_KEYS) as MetricComparisonFigures['basis'][];
+/** Every reported comparison basis, runtime-enumerable and derived from the union (M5). */
+export const METRIC_COMPARISON_BASES = Object.keys(METRIC_COMPARISON_BASIS_KEYS) as ReportedComparisonFigures['basis'][];
 
-export function formatMetricComparisonFigures(figures: MetricComparisonFigures): string {
+export function formatMetricComparisonFigures(figures: ReportedComparisonFigures): string {
   switch (figures.basis) {
     case 'set_ops':
       return `basis=set_ops, resolved=${figures.resolved}, new=${figures.new}, remaining=${figures.remaining}`;
@@ -4561,7 +4589,74 @@ export function formatMetricComparisonFigures(figures: MetricComparisonFigures):
       return `basis=ledger_count, violations=${figures.violationCount}, previous=${figures.previous}`;
     case 'numeric':
       return `basis=numeric, previous=${figures.previous}, tolerance=${figures.tolerance}`;
+    case 'partial_progress':
+      return `basis=partial_progress, path=${figures.path}, ${figures.figure}=${figures.previous}->${figures.current}`;
   }
+}
+
+// The figures come from the judge's own description prose ("~2202 lines", "3232-line", "complexity 366"):
+// a measurement the ledger already carries, so partial progress costs no spawn and no runtime AST
+// (typescript/eslint are devDependencies only). Every match is read and the largest kept, so a ceiling the
+// description also quotes ("the 50-line hard limit") cannot stand in for the entry's own size.
+const LEDGER_SIZE_FIGURE_PATTERNS: Record<LedgerSizeFigureKind, RegExp> = {
+  lines: /(\d[\d,]*)\s*-?\s*(?:code\s+)?lines?\b/gi,
+  complexity: /complexity\s*(?:of\s*)?(\d[\d,]*)/gi,
+};
+
+type LedgerFigures = Partial<Record<LedgerSizeFigureKind, number>>;
+type LedgerFigureEntry = Pick<ViolationLedger, 'path' | 'description'>;
+
+export function readLedgerSizeFigures(description: unknown): LedgerFigures {
+  const figures: LedgerFigures = {};
+  if (typeof description !== 'string') return figures;
+  for (const kind of Object.keys(LEDGER_SIZE_FIGURE_PATTERNS) as LedgerSizeFigureKind[]) {
+    const values = [...description.matchAll(LEDGER_SIZE_FIGURE_PATTERNS[kind])].map((m) => Number(m[1].replace(/,/g, '')));
+    if (values.length > 0) figures[kind] = Math.max(...values);
+  }
+  return figures;
+}
+
+function largestLedgerFiguresByPath(entries: readonly LedgerFigureEntry[]): Map<string, LedgerFigures> {
+  const byPath = new Map<string, LedgerFigures>();
+  for (const entry of entries) {
+    const key = entry.path ?? '';
+    const folded = byPath.get(key) ?? {};
+    for (const [kind, value] of Object.entries(readLedgerSizeFigures(entry.description)) as [LedgerSizeFigureKind, number][]) {
+      folded[kind] = Math.max(folded[kind] ?? value, value);
+    }
+    byPath.set(key, folded);
+  }
+  return byPath;
+}
+
+/**
+ * R4-1: a `held` pass whose ledger shows a path's largest size figure strictly falling is progress, not a
+ * stall. Keyed on PATH, not id, because the observed shape of a shrinking entry is a split — the judge
+ * resolves the old id and reports a smaller one on the same file (session 2026-09-13-d2e834e1, iteration 5:
+ * 122 lines -> 88 lines, logged `held`). Only `held` is upgraded; `regressed` stays regressed, and a pass
+ * with no figure change is returned unchanged, so a worker that produces no change still stalls (R4-2).
+ */
+export function applyLedgerPartialProgress(
+  comparison: ReportedComparison,
+  priorEntries?: readonly LedgerFigureEntry[],
+  currentEntries?: readonly LedgerFigureEntry[],
+): ReportedComparison {
+  if (comparison.classification !== 'held' || !Array.isArray(priorEntries) || !Array.isArray(currentEntries)) {
+    return comparison;
+  }
+  const prior = largestLedgerFiguresByPath(priorEntries);
+  for (const [entryPath, current] of largestLedgerFiguresByPath(currentEntries)) {
+    for (const [kind, value] of Object.entries(current) as [LedgerSizeFigureKind, number][]) {
+      const previous = prior.get(entryPath)?.[kind];
+      if (previous !== undefined && value < previous) {
+        return {
+          classification: 'improved',
+          figures: { basis: 'partial_progress', path: entryPath, figure: kind, previous, current: value },
+        };
+      }
+    }
+  }
+  return comparison;
 }
 
 export async function measureAndClassifyIteration(
@@ -4573,6 +4668,9 @@ export async function measureAndClassifyIteration(
   let metricResult: MetricSnapshot;
   let currentLedger: { resolved: string[]; new: string[]; remaining: string[] } | undefined;
   let previousLedger: { resolved: string[]; new: string[]; remaining: string[] } | undefined;
+  // R4-1: the ledger BEFORE this pass's update, descriptions intact. `updateViolationLedger` reassigns
+  // `state.violation_ledger`, so this reference is the prior snapshot the partial-progress term reads.
+  let priorLedgerEntries: ViolationLedger[] | undefined;
   if (state.key_metric.type === 'llm') {
     const llmOutcome = await measureLlmIteration(state, ctx, backend);
     if (llmOutcome.kind === 'failed') return { kind: 'failed', exitReason: llmOutcome.exitReason };
@@ -4588,7 +4686,8 @@ export async function measureAndClassifyIteration(
       // and satisfied `isConverged`'s `convergence_target` branch while its own ledger
       // held 3 open violations. One array, one number derived from it, one wire.
       metricResult = { ...metricResult, score: judgeResult.violations.length };
-      previousLedger = { resolved: [], new: [], remaining: state.violation_ledger?.map((entry) => entry.id) ?? [] };
+      priorLedgerEntries = state.violation_ledger;
+      previousLedger = { resolved: [], new: [], remaining: priorLedgerEntries?.map((entry) => entry.id) ?? [] };
       updateViolationLedger(state, judgeResult, ctx.iteration);
       emitJudgeLedgerDiagnostic(judgeResult, state.violation_ledger);
       currentLedger = {
@@ -4613,13 +4712,17 @@ export async function measureAndClassifyIteration(
   adoptLateBaseline(state, baseline, metricResult, metricConv, ctx);
 
   const previousScore = lastAccepted ? lastAccepted.score : state.baseline_score;
-  const comparison = compareMetricWithBasis(
-    metricResult.score,
-    previousScore,
-    state.key_metric.tolerance,
-    state.key_metric.direction,
-    currentLedger,
-    previousLedger,
+  const comparison = applyLedgerPartialProgress(
+    compareMetricWithBasis(
+      metricResult.score,
+      previousScore,
+      state.key_metric.tolerance,
+      state.key_metric.direction,
+      currentLedger,
+      previousLedger,
+    ),
+    priorLedgerEntries,
+    state.violation_ledger,
   );
   const classification = comparison.classification;
   ctx.log(`Classification: ${classification} (${formatMetricComparisonFigures(comparison.figures)})`);
@@ -4756,9 +4859,38 @@ export function currentExitForFailureHistory(state: MicroverseState, ctx: RunCon
  * `'stall'` means the loop ran out of patience, NOT that the metric reached its
  * target — reporting it as `converged` is the mislabel AC-JPCM-8 forbids. Both
  * convergence-exit sites route through here so the two cannot drift again.
+ *
+ * R4-3 (GitHub #23): a stall over ledger entries the loop repeatedly failed to move is NAMED as such —
+ * here in the runner log and in `writeFinalReport` — instead of a bare `stalled_below_target` that reads as
+ * "the worker made no progress". A typed detail derived from state already on disk, not a new exit reason and
+ * not a new state field: the disposition and exit code are unchanged, only the attribution is added.
  */
-function convergenceExitReason(branch: 'target' | 'stall'): ExitReason {
-  return branch === 'target' ? 'converged' : 'stalled_below_target';
+export function convergenceExitReason(
+  branch: 'target' | 'stall',
+  state: MicroverseState,
+  ctx: Pick<RunContext, 'iteration' | 'log'>,
+): ExitReason {
+  if (branch === 'target') return 'converged';
+  const unmovable = findUnmovableLedgerEntries(state, ctx.iteration);
+  if (unmovable.length > 0) {
+    ctx.log(`stalled_below_target: ${unmovable.length} ledger entries open for the whole stall window — ${describeLedgerEntries(unmovable)}`);
+  }
+  return 'stalled_below_target';
+}
+
+/**
+ * Ledger entries present for the entire stall window. Any resolve or measurable shrink inside the window
+ * would have reset `stall_counter`, so an entry first seen at or before the window start is one the loop
+ * repeatedly failed to move.
+ */
+export function findUnmovableLedgerEntries(state: MicroverseState, iteration: number): ViolationLedger[] {
+  const windowStart = iteration - state.convergence.stall_counter + 1;
+  const ledger = Array.isArray(state.violation_ledger) ? state.violation_ledger : [];
+  return ledger.filter((entry) => entry.first_seen_iter <= windowStart);
+}
+
+function describeLedgerEntries(entries: readonly ViolationLedger[]): string {
+  return entries.map((entry) => (entry.path ? `${entry.id} (${entry.path})` : entry.id)).join('; ');
 }
 
 /**
@@ -4846,7 +4978,7 @@ export async function handleNoCommitStall(
   writeMicroverseState(ctx.sessionDir, state);
   const convergedBranch = isConverged(state);
   if (convergedBranch) {
-    const exitReason = convergenceExitReason(convergedBranch);
+    const exitReason = convergenceExitReason(convergedBranch, state, ctx);
     ctx.log(`${exitReason} (stall limit reached with no new commits)`);
     return exitReason;
   }
@@ -5548,7 +5680,7 @@ async function handleMetricMode(
   maybeEmitConsecutiveNoProgressWarning(state, ctx.sessionDir);
   const convergedBranch = isConverged(state);
   if (!convergedBranch) return null;
-  const exitReason = convergenceExitReason(convergedBranch);
+  const exitReason = convergenceExitReason(convergedBranch, state, ctx);
   ctx.log(`${exitReason} after ${ctx.iteration} iterations (${convergedBranch === 'target' ? `target=${state.convergence_target} reached` : `stall_counter=${state.convergence.stall_counter}`})`);
   return exitReason;
 }

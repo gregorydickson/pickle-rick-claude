@@ -17,8 +17,20 @@ import {
   classifyNoCommitExit,
   handleIterationOutcome,
   handleNoCommitStall,
+  applyLedgerPartialProgress,
+  readLedgerSizeFigures,
+  findUnmovableLedgerEntries,
+  convergenceExitReason,
+  writeFinalReport,
 } from '../bin/microverse-runner.js';
-import { createMicroverseState, updateViolationLedger, compareMetric } from '../services/microverse-state.js';
+import {
+  createMicroverseState,
+  updateViolationLedger,
+  compareMetric,
+  compareMetricWithBasis,
+  recordIteration,
+  isConverged,
+} from '../services/microverse-state.js';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
 const TEST_METRIC = {
@@ -786,4 +798,162 @@ test('AC-H7 control: an absent, empty or malformed ledger adds no Open Violation
   }
   assert.deepEqual(selectLedgerEntriesForPrompt(undefined), []);
   assert.deepEqual(selectLedgerEntriesForPrompt('nonsense'), []);
+});
+
+// ---------------------------------------------------------------------------
+// R4 (GitHub #23): an unresolvable ledger entry guarantees a stall.
+// Fixtures are distilled from the two measured sessions (see each fixture's `note`).
+// ---------------------------------------------------------------------------
+
+const R4_FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'r4-szechuan-ledger-replay');
+const readR4Fixture = (name) => JSON.parse(fs.readFileSync(path.join(R4_FIXTURE_DIR, name), 'utf-8'));
+const AUDIT_RUNNER = 'extension/src/services/citadel/audit-runner.ts';
+const HELD_SET_OPS = { classification: 'held', figures: { basis: 'set_ops', resolved: 1, new: 1, remaining: 3 } };
+
+test('R4-1: a held pass whose entry measurably shrank (122 -> 88 lines, same path) classifies improved', () => {
+  const result = applyLedgerPartialProgress(
+    HELD_SET_OPS,
+    [{ path: AUDIT_RUNNER, description: 'buildCitadelAuditReport is 122 lines (hard limit 50); orchestrates 20+ analyzers inline' }],
+    [{ path: AUDIT_RUNNER, description: 'runCitadelAnalyzers is 88 lines (hard limit 50); orchestrates 20 analyzer calls inline' }],
+  );
+  assert.equal(result.classification, 'improved');
+  assert.deepEqual(result.figures, { basis: 'partial_progress', path: AUDIT_RUNNER, figure: 'lines', previous: 122, current: 88 });
+});
+
+test('R4-1: a falling complexity figure is partial progress too', () => {
+  const result = applyLedgerPartialProgress(
+    HELD_SET_OPS,
+    [{ path: 'src/mux.ts', description: 'runMuxRunnerMain is 1690 code lines, complexity 366' }],
+    [{ path: 'src/mux.ts', description: 'runMuxRunnerMain is 1690 code lines, complexity 300' }],
+  );
+  assert.equal(result.classification, 'improved');
+  assert.equal(result.figures.figure, 'complexity');
+});
+
+test('R4-2 (negative control): an entry whose figures did not change stays held (121 -> 121)', () => {
+  const prior = [{ path: AUDIT_RUNNER, description: 'buildCitadelAuditReport is 121 lines (hard limit 50)' }];
+  const current = [{ path: AUDIT_RUNNER, description: 'buildCitadelAuditReport is 121 lines (hard limit 50)' }];
+  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, prior, current), HELD_SET_OPS);
+  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, undefined, current), HELD_SET_OPS, 'no prior snapshot, no progress claim');
+});
+
+test('R4-2: partial progress never upgrades a regression, and a shrink on another path does not count', () => {
+  const regressed = { classification: 'regressed', figures: { basis: 'set_ops', resolved: 0, new: 2, remaining: 1 } };
+  const shrink = [[{ path: 'a.ts', description: 'fn is 200 lines' }], [{ path: 'a.ts', description: 'fn is 90 lines' }]];
+  assert.equal(applyLedgerPartialProgress(regressed, ...shrink), regressed);
+  assert.equal(
+    applyLedgerPartialProgress(HELD_SET_OPS, [{ path: 'a.ts', description: 'fn is 200 lines' }], [{ path: 'b.ts', description: 'fn is 90 lines' }]),
+    HELD_SET_OPS,
+  );
+});
+
+test('R4-1: size figures are read from the judge description the ledger already carries', () => {
+  const cases = [
+    ['runMuxRunnerMain is ~2202 lines — violating the 50-line hard limit', { lines: 2202 }],
+    ['3232-line catch-all module bundles unrelated concerns', { lines: 3232 }],
+    ['runMuxRunnerMain is 1,690 code lines, complexity 366', { lines: 1690, complexity: 366 }],
+    ['CitadelJsonReport declares both exit_code and exitCode', {}],
+    [undefined, {}],
+  ];
+  for (const [description, expected] of cases) {
+    assert.deepEqual(readLedgerSizeFigures(description), expected, `figures for ${JSON.stringify(description)}`);
+  }
+});
+
+function r4ReplayState(fixture, stallLimit) {
+  const state = createMicroverseState({
+    prdPath: '/tmp/r4-replay.md',
+    metric: { description: 'violations', validation: 'judge', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: fixture.direction },
+    stallLimit,
+    convergenceTarget: fixture.convergence_target,
+  });
+  state.baseline_score = fixture.baseline_score;
+  return state;
+}
+
+/** Replays each recorded judge pass through the runner's comparator chain and the real stall counter. */
+function replayJudgePasses(fixture, stallLimit, withPartialProgress) {
+  let state = r4ReplayState(fixture, stallLimit);
+  const classifications = [];
+  for (const { iteration, judge } of fixture.iterations) {
+    const priorEntries = state.violation_ledger;
+    const previousLedger = { resolved: [], new: [], remaining: priorEntries.map((entry) => entry.id) };
+    updateViolationLedger(state, { ...judge, shape: 'full' }, iteration);
+    const score = judge.violations.length;
+    const lastAccepted = [...state.convergence.history].reverse().find((h) => h.action === 'accept');
+    const base = compareMetricWithBasis(
+      score, lastAccepted ? lastAccepted.score : state.baseline_score, 0, fixture.direction,
+      { resolved: judge.resolved, new: judge.new, remaining: judge.remaining }, previousLedger,
+    );
+    const comparison = withPartialProgress ? applyLedgerPartialProgress(base, priorEntries, state.violation_ledger) : base;
+    const entry = {
+      iteration, metric_value: String(score), score, action: comparison.classification === 'regressed' ? 'revert' : 'accept',
+      description: comparison.classification, pre_iteration_sha: '', timestamp: '',
+    };
+    state = recordIteration(state, entry, comparison.classification);
+    classifications.push(comparison.classification);
+  }
+  return { state, classifications };
+}
+
+function r4StallCtx(iteration) {
+  const logs = [];
+  return { ctx: { iteration, log: (msg) => logs.push(msg) }, logs };
+}
+
+test('R4-4 replay fidelity: without the partial-progress term the replay reproduces every recorded classification', () => {
+  for (const name of ['converged-2026-09-13-d2e834e1.json', 'stalled-2026-09-12-a4d141e1.json']) {
+    const fixture = readR4Fixture(name);
+    const { classifications } = replayJudgePasses(fixture, 5, false);
+    assert.deepEqual(classifications, fixture.iterations.map((i) => i.recorded_classification), name);
+  }
+});
+
+test('R4-4 replay: the converged run still converges, and its 122 -> 88 split now reads as progress', () => {
+  const fixture = readR4Fixture('converged-2026-09-13-d2e834e1.json');
+  const { state, classifications } = replayJudgePasses(fixture, fixture.stall_limit, true);
+  assert.equal(classifications[3], 'improved', 'iteration 5 (logged held) is measurable partial progress');
+  assert.deepEqual(state.convergence.history.map((h) => h.score), fixture.recorded_history_scores, 'scores are unchanged');
+  const branch = isConverged(state);
+  assert.equal(branch, 'target');
+  const { ctx } = r4StallCtx(9);
+  assert.equal(convergenceExitReason(branch, state, ctx), fixture.recorded_exit_reason);
+});
+
+test('R4-3/R4-4 replay: the stalled run names the ledger entries the loop failed to move', () => {
+  const fixture = readR4Fixture('stalled-2026-09-12-a4d141e1.json');
+  assert.deepEqual(replayJudgePasses(fixture, 5, true).classifications, ['regressed'], 'its one scored pass is not upgraded');
+  const state = r4ReplayState(fixture, fixture.convergence.stall_limit);
+  state.convergence.stall_counter = fixture.convergence.stall_counter;
+  state.violation_ledger = fixture.violation_ledger;
+  const branch = isConverged(state);
+  assert.equal(branch, 'stall');
+  const { ctx, logs } = r4StallCtx(fixture.exit_iteration);
+  assert.equal(convergenceExitReason(branch, state, ctx), fixture.recorded_exit_reason, 'the exit reason and disposition class are unchanged');
+  const ledgerIds = fixture.violation_ledger.map((entry) => entry.id);
+  assert.deepEqual(findUnmovableLedgerEntries(state, fixture.exit_iteration).map((entry) => entry.id), ledgerIds);
+  assert.ok(logs.some((line) => ledgerIds.every((id) => line.includes(id))), 'the log names every unmoved entry');
+
+  const sessionDir = tmpDir('pickle-r4-report-');
+  writeFinalReport(sessionDir, state, fixture.recorded_exit_reason, fixture.exit_iteration, 900);
+  const memoryDir = path.join(sessionDir, 'memory');
+  const report = fs.readFileSync(path.join(memoryDir, fs.readdirSync(memoryDir)[0]), 'utf-8');
+  assert.match(report, /\*\*Exit Reason\*\*: stalled_below_target/);
+  assert.ok(
+    report.includes(`**Unmovable Ledger Entries**: ${ledgerIds.length} (${ledgerIds[0]} `),
+    'the final report attributes the stall to the unmoved entries',
+  );
+  assert.deepEqual(classifyMicroverseDisposition(fixture.recorded_exit_reason), { reportAs: 'non-convergent', exitCode: 1 });
+});
+
+test('R4-3 control: a stall over entries first seen inside the stall window is not attributed to them', () => {
+  const state = r4ReplayState({ direction: 'lower', convergence_target: 0, baseline_score: 2 }, 3);
+  state.convergence.stall_counter = 3;
+  state.violation_ledger = [
+    { id: 'late', path: 'a.ts', line: 1, severity: 'low', description: 'x', first_seen_iter: 7, last_seen_iter: 8 },
+  ];
+  assert.deepEqual(findUnmovableLedgerEntries(state, 8), [], 'window starts at iteration 6; an entry first seen at 7 had no full window');
+  const { ctx, logs } = r4StallCtx(8);
+  assert.equal(convergenceExitReason('stall', state, ctx), 'stalled_below_target');
+  assert.equal(logs.length, 0);
 });

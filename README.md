@@ -471,7 +471,11 @@ successfully`; only a genuine `converged` exit reports success. Non-convergent d
 `pipeline-status.json`'s additive-optional `phase_dispositions` field (older status files without the
 field still parse), and the end-of-pipeline summary shows a `Non-convergent` count whenever any phase
 reports one — so a give-up is always visible in the artifact an operator actually reads, never silently
-printed as success. Citadel carries no disposition (it reports its own audit exit code, not a microverse
+printed as success. A szechuan stall over violation-ledger entries that sat open for the whole stall
+window also names those entries in the runner log and the microverse final report (derived from the ledger
+already on disk — no new state field), so the stall is attributed to entries the loop repeatedly failed to move rather than to a worker that made
+no progress; a pass that measurably shrinks an entry (its line or complexity figure falls) counts as
+progress rather than a held pass. Citadel carries no disposition (it reports its own audit exit code, not a microverse
 exit reason).
 
 ### 🕸️ Code Graph — Symbol-Graph Worker Context *(v2.0, beta)*

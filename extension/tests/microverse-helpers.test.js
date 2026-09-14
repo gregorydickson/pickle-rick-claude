@@ -940,3 +940,48 @@ test('AP-EXT-ITER9-01 control: a disambiguated id is re-claimed next pass, never
     'both entries keep their age — the disambiguated id is a real, claimable identity',
   );
 });
+
+// ---------------------------------------------------------------------------
+// R4 (GitHub #23) — the REAL `measureAndClassifyIteration` path, judge stubbed. An entry no single
+// iteration can finish keeps the violation COUNT flat, so the id-set comparator reads `held`. R4-1: a
+// pass whose judge-reported size figure for that entry FELL must reset the stall. R4-2 (negative
+// control): the same entry at the same size must still stall. Asserted on `isConverged`, never on the
+// classification string.
+// ---------------------------------------------------------------------------
+
+const R4_BIG_ENTRY = (lines) => ({
+  id: 'big-fn', path: 'src/big.ts', line: 10, severity: 'high',
+  description: `bigFn is ${lines} lines (hard limit 50)`,
+});
+
+async function runTwoSizedJudgePasses(firstLines, secondLines) {
+  const { mv, ctx, cleanup } = makeJudgeSession(
+    { score: 1, violations: [R4_BIG_ENTRY(firstLines)], resolved: [], new: ['big-fn'], remaining: [] },
+    { convergenceTarget: 0, baselineScore: 1 },
+  );
+  mv.convergence.stall_limit = 2;
+  try {
+    await measureAndClassifyIteration(mv, { raw: '1', score: 1 }, ctx);
+    const second = { score: 1, violations: [R4_BIG_ENTRY(secondLines)], resolved: [], new: [], remaining: ['big-fn'] };
+    _deps.execFileSync = (_cmd, args) => (
+      Array.isArray(args) && args[0] === '--version' ? 'Claude Code 2.1.126' : JSON.stringify(second)
+    );
+    ctx.iteration = 3;
+    await measureAndClassifyIteration(mv, { raw: '1', score: 1 }, ctx);
+    return { converged: isConverged(mv), stallCounter: mv.convergence.stall_counter };
+  } finally {
+    cleanup();
+  }
+}
+
+test('R4-1 seam: a pass that shrinks an unresolvable entry (1690 -> 1400 lines) resets the stall', async () => {
+  const result = await runTwoSizedJudgePasses(1690, 1400);
+  assert.equal(result.stallCounter, 0, 'measurable partial progress is progress, not a held pass');
+  assert.equal(result.converged, null, 'the loop keeps iterating instead of stalling');
+});
+
+test('R4-2 seam (negative control): the same entry at the same size still stalls', async () => {
+  const result = await runTwoSizedJudgePasses(1690, 1690);
+  assert.equal(result.stallCounter, 2, 'no change is still counted toward the stall');
+  assert.equal(result.converged, 'stall', 'stalling stays reachable');
+});

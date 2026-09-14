@@ -105,6 +105,7 @@ const FIGURES_BY_BASIS = {
   set_ops: { basis: 'set_ops', resolved: 1, new: 2, remaining: 3 },
   ledger_count: { basis: 'ledger_count', violationCount: 4, previous: 5 },
   numeric: { basis: 'numeric', current: 6, previous: 7, tolerance: 8 },
+  partial_progress: { basis: 'partial_progress', path: 'src/a.ts', figure: 'lines', previous: 122, current: 88 },
 };
 
 test('M5: every METRIC_COMPARISON_BASES member is printed with its own basis= prefix', () => {

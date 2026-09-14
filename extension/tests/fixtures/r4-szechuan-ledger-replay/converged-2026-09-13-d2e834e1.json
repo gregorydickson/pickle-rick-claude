@@ -1,0 +1,328 @@
+{
+  "source_session": "2026-09-13-d2e834e1",
+  "note": "Distilled from microverse.json (final state) and microverse-runner.log (raw judge output + logged classification per scored iteration, iterations 2-9).",
+  "recorded_exit_reason": "converged",
+  "baseline_score": 2,
+  "convergence_target": 0,
+  "direction": "lower",
+  "stall_limit": 5,
+  "recorded_history_scores": [
+    5,
+    5,
+    4,
+    4,
+    3,
+    2,
+    1,
+    0
+  ],
+  "iterations": [
+    {
+      "iteration": 2,
+      "judge": {
+        "score": 5,
+        "violations": [
+          {
+            "id": "audit-runner-buildcitadel-fn-too-long",
+            "path": "extension/src/services/citadel/audit-runner.ts",
+            "line": 117,
+            "severity": "high",
+            "description": "buildCitadelAuditReport is 121 lines (hard limit 50); orchestrates 20+ analyzers inline without extraction into named helpers"
+          },
+          {
+            "id": "reporter-duplicate-exit-code-fields",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 40,
+            "severity": "med",
+            "description": "CitadelJsonReport declares both exit_code and exitCode holding the same value — two fields for one piece of data violates SSoT/DRY"
+          },
+          {
+            "id": "reporter-duplicate-decision-count-fields",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 57,
+            "severity": "med",
+            "description": "CitadelSummary has both decision_required and decisions set to decisions.length in summarize() — identical data stored under two keys"
+          },
+          {
+            "id": "reporter-duplicate-schema-fields",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 36,
+            "severity": "low",
+            "description": "CitadelJsonReport has both schema: '1.0' and schema_version: '1.0' — two fields carrying the same constant violates SSoT"
+          },
+          {
+            "id": "reporter-citadelrunresult-redundant-fields",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 73,
+            "severity": "low",
+            "description": "CitadelRunResult re-declares exitCode and decisions that are already inherited from CitadelJsonReport — redundant DRY violation"
+          }
+        ],
+        "resolved": [],
+        "new": [
+          "audit-runner-buildcitadel-fn-too-long",
+          "reporter-duplicate-exit-code-fields",
+          "reporter-duplicate-decision-count-fields",
+          "reporter-duplicate-schema-fields",
+          "reporter-citadelrunresult-redundant-fields"
+        ],
+        "remaining": []
+      },
+      "recorded_classification": "regressed"
+    },
+    {
+      "iteration": 3,
+      "judge": {
+        "score": 5,
+        "violations": [
+          {
+            "id": "dbba02da",
+            "path": "extension/src/services/citadel/audit-runner.ts",
+            "line": 117,
+            "severity": "high",
+            "description": "buildCitadelAuditReport is 121 lines (hard limit 50); orchestrates 20+ analyzers inline without extraction into named helpers"
+          },
+          {
+            "id": "3fe6a968",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 40,
+            "severity": "med",
+            "description": "CitadelJsonReport declares both exit_code and exitCode holding the same value — two fields for one piece of data violates SSoT/DRY"
+          },
+          {
+            "id": "6678709a",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 57,
+            "severity": "med",
+            "description": "CitadelSummary has both decision_required and decisions set to decisions.length in summarize() — identical data stored under two keys"
+          },
+          {
+            "id": "701bf5d4",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 36,
+            "severity": "low",
+            "description": "CitadelJsonReport has both schema: '1.0' and schema_version: '1.0' — two fields carrying the same constant violates SSoT"
+          },
+          {
+            "id": "99cd8333",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 72,
+            "severity": "low",
+            "description": "CitadelRunResult extends CitadelJsonReport and build() spreads all json fields plus json itself — json property duplicates every inherited field"
+          }
+        ],
+        "resolved": [],
+        "new": [],
+        "remaining": [
+          "dbba02da",
+          "3fe6a968",
+          "6678709a",
+          "701bf5d4",
+          "99cd8333"
+        ]
+      },
+      "recorded_classification": "held"
+    },
+    {
+      "iteration": 4,
+      "judge": {
+        "score": 4,
+        "violations": [
+          {
+            "id": "dbba02da",
+            "path": "extension/src/services/citadel/audit-runner.ts",
+            "line": 117,
+            "severity": "high",
+            "description": "buildCitadelAuditReport is 122 lines (hard limit 50); orchestrates 20+ analyzers inline without extraction into named helpers"
+          },
+          {
+            "id": "3fe6a968",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 40,
+            "severity": "med",
+            "description": "CitadelJsonReport declares both exit_code and exitCode holding the same value — two fields for one piece of data violates SSoT/DRY"
+          },
+          {
+            "id": "6678709a",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 134,
+            "severity": "med",
+            "description": "CitadelSummary has both decision_required and decisions set to decisions.length in summarize() — identical data stored under two keys"
+          },
+          {
+            "id": "701bf5d4",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 36,
+            "severity": "low",
+            "description": "CitadelJsonReport has both schema: '1.0' and schema_version: '1.0' — two fields carrying the same constant violates SSoT"
+          }
+        ],
+        "resolved": [
+          "99cd8333"
+        ],
+        "new": [],
+        "remaining": [
+          "dbba02da",
+          "3fe6a968",
+          "6678709a",
+          "701bf5d4"
+        ]
+      },
+      "recorded_classification": "improved"
+    },
+    {
+      "iteration": 5,
+      "judge": {
+        "score": 4,
+        "violations": [
+          {
+            "id": "run-citadel-analyzers-too-long",
+            "path": "extension/src/services/citadel/audit-runner.ts",
+            "line": 152,
+            "severity": "high",
+            "description": "runCitadelAnalyzers is 88 lines (hard limit 50); orchestrates 20 analyzer calls inline without extraction into named helpers"
+          },
+          {
+            "id": "3fe6a968",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 40,
+            "severity": "med",
+            "description": "CitadelJsonReport declares both exit_code and exitCode holding the same value — two fields for one piece of data violates SSoT/DRY"
+          },
+          {
+            "id": "e4a02b80",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 134,
+            "severity": "med",
+            "description": "CitadelSummary has both decision_required and decisions set to decisions.length in summarize() — identical data stored under two keys"
+          },
+          {
+            "id": "701bf5d4",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 36,
+            "severity": "low",
+            "description": "CitadelJsonReport has both schema: '1.0' and schema_version: '1.0' — two fields carrying the same constant violates SSoT"
+          }
+        ],
+        "resolved": [
+          "dbba02da"
+        ],
+        "new": [
+          "run-citadel-analyzers-too-long"
+        ],
+        "remaining": [
+          "3fe6a968",
+          "e4a02b80",
+          "701bf5d4"
+        ]
+      },
+      "recorded_classification": "held"
+    },
+    {
+      "iteration": 6,
+      "judge": {
+        "score": 3,
+        "violations": [
+          {
+            "id": "3fe6a968",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 40,
+            "severity": "med",
+            "description": "CitadelJsonReport declares both exit_code and exitCode holding the same value — two fields for one piece of data violates SSoT/DRY"
+          },
+          {
+            "id": "e4a02b80",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 56,
+            "severity": "med",
+            "description": "CitadelSummary has both decision_required and decisions set to decisions.length in summarize() — identical data stored under two keys"
+          },
+          {
+            "id": "701bf5d4",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 36,
+            "severity": "low",
+            "description": "CitadelJsonReport has both schema: '1.0' and schema_version: '1.0' — two fields carrying the same constant violates SSoT"
+          }
+        ],
+        "resolved": [
+          "6c66e619"
+        ],
+        "new": [],
+        "remaining": [
+          "3fe6a968",
+          "e4a02b80",
+          "701bf5d4"
+        ]
+      },
+      "recorded_classification": "improved"
+    },
+    {
+      "iteration": 7,
+      "judge": {
+        "score": 2,
+        "violations": [
+          {
+            "id": "3fe6a968",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 40,
+            "severity": "med",
+            "description": "CitadelJsonReport declares both exit_code and exitCode holding the same value — two fields for one piece of data violates SSoT/DRY"
+          },
+          {
+            "id": "701bf5d4",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 36,
+            "severity": "low",
+            "description": "CitadelJsonReport has both schema: '1.0' and schema_version: '1.0' — two fields carrying the same constant violates SSoT"
+          }
+        ],
+        "resolved": [
+          "fe25c13f"
+        ],
+        "new": [],
+        "remaining": [
+          "3fe6a968",
+          "701bf5d4"
+        ]
+      },
+      "recorded_classification": "improved"
+    },
+    {
+      "iteration": 8,
+      "judge": {
+        "score": 1,
+        "violations": [
+          {
+            "id": "701bf5d4",
+            "path": "extension/src/services/citadel/reporter.ts",
+            "line": 36,
+            "severity": "low",
+            "description": "CitadelJsonReport has both schema: '1.0' and schema_version: '1.0' — two fields carrying the same constant violates SSoT"
+          }
+        ],
+        "resolved": [
+          "3fe6a968"
+        ],
+        "new": [],
+        "remaining": [
+          "701bf5d4"
+        ]
+      },
+      "recorded_classification": "improved"
+    },
+    {
+      "iteration": 9,
+      "judge": {
+        "score": 0,
+        "violations": [],
+        "resolved": [
+          "3fe6a968"
+        ],
+        "new": [],
+        "remaining": []
+      },
+      "recorded_classification": "improved"
+    }
+  ]
+}
