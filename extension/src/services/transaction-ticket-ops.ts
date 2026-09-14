@@ -487,14 +487,16 @@ function appendActivity(state: State, entry: ActivityLogEntry): void {
   state.activity = [...existing, entry];
 }
 
-function applyPlannedWrite(
-  ledgerPath: string,
-  step: number,
-  operation: 'add_ticket' | 'kill_ticket',
-  ticketId: string,
-  file: PlannedFileWrite,
-  nowIso: string,
-): void {
+/** One numbered ledger step: which ticket operation wrote which file. */
+interface PlannedWriteStep {
+  step: number;
+  operation: 'add_ticket' | 'kill_ticket';
+  ticketId: string;
+  file: PlannedFileWrite;
+}
+
+function applyPlannedWrite(ledgerPath: string, planned: PlannedWriteStep, nowIso: string): void {
+  const { step, operation, ticketId, file } = planned;
   assertWithinRoot(file.path, path.dirname(ledgerPath));
   const existed = fs.existsSync(file.path);
   let beforeContent: string | null = null;
@@ -724,15 +726,15 @@ function applyTicketFileWrites(ctx: CourseCorrectionApplyContext): number {
 
   for (const ticketId of ctx.killedTicketIds) {
     step += 1;
-    const planned = updateTicketStatusInTransaction(ticketId, 'Killed', sessionRoot, { now: nowIso });
-    applyPlannedWrite(ledgerPath, step, 'kill_ticket', ticketId, planned, nowIso);
+    const file = updateTicketStatusInTransaction(ticketId, 'Killed', sessionRoot, { now: nowIso });
+    applyPlannedWrite(ledgerPath, { step, operation: 'kill_ticket', ticketId, file }, nowIso);
   }
 
   for (const ticket of ctx.addedTickets) {
     const plan = materializeNewTicket({ ...ticket, sessionRoot });
     for (const file of plan.files) {
       step += 1;
-      applyPlannedWrite(ledgerPath, step, 'add_ticket', ticket.ticketId, file, nowIso);
+      applyPlannedWrite(ledgerPath, { step, operation: 'add_ticket', ticketId: ticket.ticketId, file }, nowIso);
     }
   }
 

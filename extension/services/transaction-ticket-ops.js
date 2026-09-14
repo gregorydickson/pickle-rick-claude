@@ -329,7 +329,8 @@ function appendActivity(state, entry) {
     const existing = Array.isArray(state.activity) ? state.activity : [];
     state.activity = [...existing, entry];
 }
-function applyPlannedWrite(ledgerPath, step, operation, ticketId, file, nowIso) {
+function applyPlannedWrite(ledgerPath, planned, nowIso) {
+    const { step, operation, ticketId, file } = planned;
     assertWithinRoot(file.path, path.dirname(ledgerPath));
     const existed = fs.existsSync(file.path);
     let beforeContent = null;
@@ -532,14 +533,14 @@ function applyTicketFileWrites(ctx) {
     let step = 0;
     for (const ticketId of ctx.killedTicketIds) {
         step += 1;
-        const planned = updateTicketStatusInTransaction(ticketId, 'Killed', sessionRoot, { now: nowIso });
-        applyPlannedWrite(ledgerPath, step, 'kill_ticket', ticketId, planned, nowIso);
+        const file = updateTicketStatusInTransaction(ticketId, 'Killed', sessionRoot, { now: nowIso });
+        applyPlannedWrite(ledgerPath, { step, operation: 'kill_ticket', ticketId, file }, nowIso);
     }
     for (const ticket of ctx.addedTickets) {
         const plan = materializeNewTicket({ ...ticket, sessionRoot });
         for (const file of plan.files) {
             step += 1;
-            applyPlannedWrite(ledgerPath, step, 'add_ticket', ticket.ticketId, file, nowIso);
+            applyPlannedWrite(ledgerPath, { step, operation: 'add_ticket', ticketId: ticket.ticketId, file }, nowIso);
         }
     }
     return step;
