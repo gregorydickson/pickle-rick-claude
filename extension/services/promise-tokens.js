@@ -13,24 +13,13 @@ export const PROMISE_TOKENS = [
  * is FORBIDDEN from emitting. The worker's only valid completion signal is
  * `<promise>I AM DONE</promise>`. Every other token is orchestrator-scoped.
  *
- * This list is intentionally a literal of token *string values* (not the
- * symbolic constant names from PROMISE_TOKENS) because:
- * - PROMISE_TOKENS contains `WORKER_DONE` whose string value is `'I AM DONE'` —
- *   that's the worker's valid token, NOT a forbidden one.
- * - Hardcoding the values keeps the forbidden set obvious and grep-friendly.
+ * Derived from PROMISE_TOKENS minus `WORKER_DONE` (the worker's own token), so
+ * a newly added orchestrator token is forbidden to workers by default.
  *
  * Used by `scrubForbiddenWorkerTokens` to rewrite worker-emitted log content
  * before the manager (or any downstream consumer) reads it.
  */
-export const FORBIDDEN_WORKER_TOKENS = [
-    'EPIC_COMPLETED',
-    'TASK_COMPLETED',
-    'PRD_COMPLETE',
-    'TICKET_SELECTED',
-    'EXISTENCE_IS_PAIN',
-    'THE_CITADEL_APPROVES',
-    'ANALYSIS_DONE',
-];
+export const FORBIDDEN_WORKER_TOKENS = PROMISE_TOKENS.filter((token) => token !== 'WORKER_DONE');
 /**
  * Rewrite worker-emitted promise tokens that the worker has no authority to emit.
  *
