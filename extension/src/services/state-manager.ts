@@ -615,6 +615,9 @@ function hasActivityEvent(activity: State['activity'], event: string): boolean {
 /** Minimum untouched age before a paused session with a dead mapped PID is demoted as orphaned. */
 export const PAUSED_ORPHAN_MIN_AGE_MS = 5 * 60 * 1000;
 
+/** Ceiling on one exponential-backoff sleep between state-lock acquisition retries. */
+const MAX_LOCK_RETRY_DELAY_MS = 5000;
+
 /**
  * Evaluates whether a paused session qualifies for orphan demotion.
  * Demotion requires BOTH conditions: the state is age-stale (≥5 min untouched)
@@ -1267,7 +1270,7 @@ export class StateManager {
       if (attempt < this.opts.maxLockRetries) {
         const base = this.opts.baseLockDelayMs * Math.pow(2, attempt);
         const jitter = this.opts.lockJitter ? Math.random() * this.opts.baseLockDelayMs : 0;
-        sleepSync(Math.min(base + jitter, 5000));
+        sleepSync(Math.min(base + jitter, MAX_LOCK_RETRY_DELAY_MS));
       }
     }
 
