@@ -655,22 +655,7 @@ function cleanScopedDirtyPaths(workingDir, scopedPaths) {
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
         stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const tracked = [];
-    const untracked = [];
-    const tokens = (statusResult.stdout || '').split('\0').filter((t) => t.length > 0);
-    for (let i = 0; i < tokens.length; i++) {
-        const token = tokens[i];
-        if (token.length < 4)
-            continue;
-        const xy = token.slice(0, 2);
-        const filePath = token.slice(3);
-        if (xy[0] === 'R' || xy[0] === 'C' || xy[1] === 'R' || xy[1] === 'C')
-            i++;
-        if (xy === '??')
-            untracked.push(filePath);
-        else
-            tracked.push(filePath);
-    }
+    const { trackedPaths: tracked, untrackedPaths: untracked } = splitPorcelainStatusPaths(statusResult.stdout || '');
     if (tracked.length > 0) {
         spawnSync('git', ['checkout', '--', ...tracked], {
             cwd: workingDir,
