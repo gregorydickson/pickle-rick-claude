@@ -4566,7 +4566,7 @@ export interface PartialProgressFigures {
 export type ReportedComparisonFigures = MetricComparisonFigures | PartialProgressFigures;
 
 export interface ReportedComparison {
-  classification: 'improved' | 'held' | 'regressed';
+  classification: ReturnType<typeof compareMetric>;
   figures: ReportedComparisonFigures;
 }
 
