@@ -87,7 +87,7 @@ export function reconcileTicketTruth(
 ): TicketTruth {
   const { sessionDir, workingDir } = input;
   const dirtyPaths = deps.dirtyPaths(workingDir);
-  const dirty = dirtyPaths.length > 0 ? true : deps.isDirty(workingDir);
+  const dirty = dirtyPaths.length > 0 || deps.isDirty(workingDir);
   const tickets = deps.collectTickets(sessionDir);
   const ticketStatuses: Record<string, string | null> = {};
   for (const t of tickets) {
