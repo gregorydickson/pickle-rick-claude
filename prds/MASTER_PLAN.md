@@ -3411,7 +3411,7 @@ in 8 min. Workaround: relaunch with explicit `--max-iterations 500` (the non-aut
 
 ## OPEN BUG — R-ORSR-2 recovery flips a ticket Done without the impl landing (2026-07-16, capture-only)
 
-> **DISPOSITION — STILL OPEN BY DESIGN, re-measured 2026-09-14 after O1 (`54f9e2e6`) and O2 (`7f64006e`)
+> **DISPOSITION (AC-O3) — STILL OPEN BY DESIGN, re-measured 2026-09-14 after O1 (`54f9e2e6`) and O2 (`7f64006e`)
 > landed on top of B-BUGZERO Z1.** Z1 made the Done-flip run a ticket's executable acceptance assertion
 > and park on failure, reached via `commitAndContinueDoneFlip` → `guardCompletionCommitBeforeDone`'s Z1
 > arm, `findFailedAcceptanceAssertion`. The residual this row names — the extractor's contract requires
