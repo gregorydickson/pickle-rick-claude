@@ -76,23 +76,27 @@ function cartesian(keySets: Array<[string, string[]]>): Array<Record<string, str
   return result;
 }
 
+function parseContextAssignments(raw: string): Array<[string, string]> {
+  const pairs: Array<[string, string]> = [];
+  for (const kv of raw.split(',')) {
+    const eq = kv.indexOf('=');
+    if (eq < 0) continue;
+    const k = kv.slice(0, eq).trim();
+    const v = kv.slice(eq + 1).trim();
+    if (k && v) pairs.push([k, v]);
+  }
+  return pairs;
+}
+
 function collectObservedValues(graph: Graph): Map<string, Set<string>> {
   const observed = new Map<string, Set<string>>();
-  function add(key: string, val: string): void {
-    if (!observed.has(key)) observed.set(key, new Set());
-    observed.get(key)!.add(val);
-  }
-  for (const node of graph.nodes) {
-    for (const attr of ['context_on_success', 'context_on_failure'] as const) {
-      const raw = node[attr];
-      if (typeof raw !== 'string') continue;
-      for (const kv of raw.split(',')) {
-        const eq = kv.indexOf('=');
-        if (eq < 0) continue;
-        const k = kv.slice(0, eq).trim();
-        const v = kv.slice(eq + 1).trim();
-        if (k && v) add(k, v);
-      }
+  const rawAssignments = graph.nodes.flatMap((node) => [node['context_on_success'], node['context_on_failure']]);
+  for (const raw of rawAssignments) {
+    if (typeof raw !== 'string') continue;
+    for (const [k, v] of parseContextAssignments(raw)) {
+      const values = observed.get(k) ?? new Set<string>();
+      values.add(v);
+      observed.set(k, values);
     }
   }
   return observed;
