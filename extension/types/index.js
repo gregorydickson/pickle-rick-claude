@@ -630,7 +630,7 @@ export const MICROVERSE_EXIT_REASONS = [
     'stalled_below_target', 'iteration_budget_exhausted', 'time_budget_exhausted',
 ];
 /**
- * Z2 (GitHub #25): exit reasons persisted by an older runtime, and the reason each one reads as
+ * AC-Z2 (GitHub #25): exit reasons persisted by an older runtime, and the reason each one reads as
  * now. The shared judge/command measurement mapper once named every failure after ONE of its two
  * callers (`baseline_`), so an iteration failure was stamped as a baseline one. Read-time only and
  * schema-neutral (the `signal` -> `signal:SIGINT` precedent): nothing writes these any more.

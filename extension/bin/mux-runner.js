@@ -5107,7 +5107,7 @@ export function advisoryWorkerGateResidualDetail(verdict, site) {
     };
 }
 /**
- * Z1 (R-ORSR-2): the named disposition a Done-flip carries when the ticket's own EXECUTABLE
+ * AC-Z1 (R-ORSR-2): the named disposition a Done-flip carries when the ticket's own EXECUTABLE
  * acceptance assertion measured false. A ticked box is a claim; the command it names is the
  * measurement. The refusal is LOCAL: the ticket parks (never Done) and the loop continues. No
  * exit_reason is stamped and no EXIT_REASONS member exists for it.

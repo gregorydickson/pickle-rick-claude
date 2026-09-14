@@ -1223,7 +1223,7 @@ function printCompletionPanel(finalResults, allSuccess) {
     printMinimalPanel('Refinement Team Complete', Object.fromEntries(finalResults.map((r) => [r.roleId, r.success ? '✅ analysis written' : '❌ failed — check log'])), allSuccess ? 'GREEN' : 'YELLOW', '🥒');
 }
 const AC_SHAPE_SECTION_RE = /^##+\s+ac_shape_smells\s*$/im;
-// Z3: recognize NEGATIVE universals too. "No rule emits an invalid response" and "a FAIL
+// AC-Z3: recognize NEGATIVE universals too. "No rule emits an invalid response" and "a FAIL
 // never renders below a PASS" state the same universal claim as "every rule emits a valid
 // response" — ordinary English negates the predicate, not the quantifier. Measured
 // pre-widening: of five probe titles carrying a universal claim, only the two affirmative
