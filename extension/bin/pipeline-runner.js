@@ -673,14 +673,7 @@ function cleanScopedDirtyPaths(workingDir, scopedPaths) {
         catch { /* best effort */ }
     }
 }
-/**
- * Pure branch decision for the dirty-tree preflight self-heal — no side effects,
- * so it is unit-testable. Builds the scope set from `currentTicket`'s declared
- * files (Branch 1) or the UNION of all passed declared files (Branch 2, when
- * `currentTicket === null`). An empty union is NOT an error — it yields branch
- * `clean` / `unowned_quarantine`, never a FATAL.
- */
-export function classifyDirtyTreeBranch(repoRoot, workingDir, blocking, currentTicket, declaredFilesByTicket) {
+export function classifyDirtyTreeBranch({ repoRoot, workingDir, blocking, currentTicket, declaredFilesByTicket, }) {
     if (blocking.length === 0)
         return { branch: 'clean', outside: [], inScope: [], unowned: [] };
     const outside = blocking.filter((p) => !isDirtyPathUnderWorkingDir(repoRoot, workingDir, p));
@@ -708,7 +701,7 @@ export function quarantineCrashedTicketFilesOrFatal(args) {
     const ticketDir = currentTicket ? path.join(sessionDir, currentTicket) : null;
     const repoRoot = gitRepoRoot(workingDir);
     const blocking = allowedDirtyPathsForLaunch(workingDir, { exemptSegments, allowedPaths });
-    const decision = classifyDirtyTreeBranch(repoRoot, workingDir, blocking, currentTicket, declaredFilesByTicket);
+    const decision = classifyDirtyTreeBranch({ repoRoot, workingDir, blocking, currentTicket, declaredFilesByTicket });
     if (decision.branch === 'clean')
         return;
     // Branch 4: dirt outside workingDir → FATAL (no scope creep, no archive).

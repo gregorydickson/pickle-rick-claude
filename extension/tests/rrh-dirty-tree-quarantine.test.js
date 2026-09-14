@@ -76,26 +76,26 @@ const NO_OP_LOG = () => {};
 // ---------------------------------------------------------------------------
 
 test('classifyDirtyTreeBranch: clean tree → branch=clean', () => {
-  const d = classifyDirtyTreeBranch('/repo', '/repo', [], 't1', new Map([['t1', ['src/a.ts']]]));
+  const d = classifyDirtyTreeBranch({ repoRoot: '/repo', workingDir: '/repo', blocking: [], currentTicket: 't1', declaredFilesByTicket: new Map([['t1', ['src/a.ts']]]) });
   assert.equal(d.branch, 'clean');
 });
 
 test('classifyDirtyTreeBranch: empty-set-because-null → never outside/fatal', () => {
   // current_ticket null + empty declared map + no dirt → clean, no FATAL classification.
-  const d = classifyDirtyTreeBranch('/repo', '/repo', [], null, new Map());
+  const d = classifyDirtyTreeBranch({ repoRoot: '/repo', workingDir: '/repo', blocking: [], currentTicket: null, declaredFilesByTicket: new Map() });
   assert.equal(d.branch, 'clean');
 });
 
 test('classifyDirtyTreeBranch: union scope when current_ticket==null', () => {
   const decl = new Map([['t1', ['src/a.ts']], ['t2', ['src/b.ts']]]);
-  const d = classifyDirtyTreeBranch('/repo', '/repo', ['src/b.ts'], null, decl);
+  const d = classifyDirtyTreeBranch({ repoRoot: '/repo', workingDir: '/repo', blocking: ['src/b.ts'], currentTicket: null, declaredFilesByTicket: decl });
   assert.equal(d.branch, 'in_scope');
   assert.deepEqual(d.inScope, ['src/b.ts']);
 });
 
 test('classifyDirtyTreeBranch: unowned dirt → quarantine branch', () => {
   const decl = new Map([['t1', ['src/a.ts']]]);
-  const d = classifyDirtyTreeBranch('/repo', '/repo', ['src/unowned.ts'], 't1', decl);
+  const d = classifyDirtyTreeBranch({ repoRoot: '/repo', workingDir: '/repo', blocking: ['src/unowned.ts'], currentTicket: 't1', declaredFilesByTicket: decl });
   assert.equal(d.branch, 'unowned_quarantine');
   assert.deepEqual(d.unowned, ['src/unowned.ts']);
 });
@@ -103,7 +103,7 @@ test('classifyDirtyTreeBranch: unowned dirt → quarantine branch', () => {
 test('classifyDirtyTreeBranch: repo-relative path above workingDir subdir → outside_working_dir', () => {
   // repoRoot=/repo, workingDir=/repo/sub; a repo-relative 'outside.txt' resolves
   // to /repo/outside.txt which is NOT under /repo/sub → Branch 4.
-  const d = classifyDirtyTreeBranch('/repo', '/repo/sub', ['outside.txt'], null, new Map());
+  const d = classifyDirtyTreeBranch({ repoRoot: '/repo', workingDir: '/repo/sub', blocking: ['outside.txt'], currentTicket: null, declaredFilesByTicket: new Map() });
   assert.equal(d.branch, 'outside_working_dir');
   assert.deepEqual(d.outside, ['outside.txt']);
 });

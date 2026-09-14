@@ -917,13 +917,18 @@ export interface DirtyTreeClassification {
  * `currentTicket === null`). An empty union is NOT an error — it yields branch
  * `clean` / `unowned_quarantine`, never a FATAL.
  */
-export function classifyDirtyTreeBranch(
-  repoRoot: string,
-  workingDir: string,
-  blocking: string[],
-  currentTicket: string | null,
-  declaredFilesByTicket: Map<string, string[]>,
-): DirtyTreeClassification {
+export interface DirtyTreeClassificationInput {
+  repoRoot: string;
+  workingDir: string;
+  /** Dirty paths that block launch (repo-relative). */
+  blocking: string[];
+  currentTicket: string | null;
+  declaredFilesByTicket: Map<string, string[]>;
+}
+
+export function classifyDirtyTreeBranch({
+  repoRoot, workingDir, blocking, currentTicket, declaredFilesByTicket,
+}: DirtyTreeClassificationInput): DirtyTreeClassification {
   if (blocking.length === 0) return { branch: 'clean', outside: [], inScope: [], unowned: [] };
 
   const outside = blocking.filter((p) => !isDirtyPathUnderWorkingDir(repoRoot, workingDir, p));
@@ -955,7 +960,7 @@ export function quarantineCrashedTicketFilesOrFatal(args: CrashedTicketQuarantin
 
   const repoRoot = gitRepoRoot(workingDir);
   const blocking = allowedDirtyPathsForLaunch(workingDir, { exemptSegments, allowedPaths });
-  const decision = classifyDirtyTreeBranch(repoRoot, workingDir, blocking, currentTicket, declaredFilesByTicket);
+  const decision = classifyDirtyTreeBranch({ repoRoot, workingDir, blocking, currentTicket, declaredFilesByTicket });
 
   if (decision.branch === 'clean') return;
 
