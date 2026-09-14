@@ -1,5 +1,5 @@
 // @tier: fast
-// O2: audit-acceptance-assertion-coverage.sh runs against temp-dir ticket corpora, never the real git index.
+// AC-O2: audit-acceptance-assertion-coverage.sh runs against temp-dir ticket corpora, never the real git index.
 // The floor is READ from the committed JSON; each arm moves ONE count relative to the at-floor control.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# audit-acceptance-assertion-coverage.sh — O2: executable-assertion coverage is a ratchet, not a hope.
+# audit-acceptance-assertion-coverage.sh — AC-O2: executable-assertion coverage is a ratchet, not a hope.
 #
 # If an authoring path stops emitting the backticked `<command>` exits|returns <N> form, every new ticket is
 # unguarded and nothing notices. This audit measures, over the ticket corpus, how many tickets with a non-empty
