@@ -825,6 +825,18 @@ function migrateLegacyBaselineExitReason(state: State): boolean {
   return false;
 }
 
+/**
+ * Rewrites every legacy field spelling in place. Returns true only when a
+ * persist-worthy field (relaunch count or signal exit reason) changed; the
+ * baseline exit-reason rename rides along on whatever persist follows.
+ */
+function migrateLegacyStateFields(state: State): boolean {
+  const didMigrateRelaunch = migrateLegacyManagerRelaunchCount(state);
+  const didMigrateSignal = migrateLegacySignalExitReason(state);
+  migrateLegacyBaselineExitReason(state);
+  return didMigrateRelaunch || didMigrateSignal;
+}
+
 function isStateSnapshotNewer(
   currentState: { iteration?: unknown },
   currentMtimeMs: number,
@@ -1084,9 +1096,7 @@ export class StateManager {
       process.stderr.write(`[state-manager] schema_version missing in ${statePath} — migrating to 1\n`);
       // Best-effort persist migration — don't throw if write fails
       normalizeUpToVersion(state, this.opts.schemaVersion);
-      migrateLegacyManagerRelaunchCount(state);
-      migrateLegacySignalExitReason(state);
-      migrateLegacyBaselineExitReason(state);
+      migrateLegacyStateFields(state);
       persistMigrationBestEffort(statePath, state);
     }
 
@@ -1100,20 +1110,16 @@ export class StateManager {
     if (state.schema_version < this.opts.schemaVersion) {
       state.schema_version = this.opts.schemaVersion;
       normalizeUpToVersion(state, this.opts.schemaVersion);
-      migrateLegacyManagerRelaunchCount(state);
-      migrateLegacySignalExitReason(state);
-      migrateLegacyBaselineExitReason(state);
+      migrateLegacyStateFields(state);
       process.stderr.write(`[state-manager] migrating ${statePath} to schema_version ${this.opts.schemaVersion}\n`);
       persistMigrationBestEffort(statePath, state);
     } else if (state.schema_version >= 3) {
       const missingPipelineContinueOnPhaseFail = typeof state.pipeline_continue_on_phase_fail !== 'boolean';
       normalizeUpToVersion(state, state.schema_version);
-      const didMigrateRelaunch = migrateLegacyManagerRelaunchCount(state);
-      const didMigrateSignal = migrateLegacySignalExitReason(state);
-      if (missingPipelineContinueOnPhaseFail || didMigrateRelaunch || didMigrateSignal) {
+      const didMigrateLegacy = migrateLegacyStateFields(state);
+      if (missingPipelineContinueOnPhaseFail || didMigrateLegacy) {
         persistMigrationBestEffort(statePath, state);
       }
-      migrateLegacyBaselineExitReason(state);
     }
   }
 
