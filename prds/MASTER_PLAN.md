@@ -74,118 +74,72 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-13 19:15Z. **v2.1.0-beta.27 SHIPPED.** Read this FIRST.
+## 🚢 SESSION HANDOFF — 2026-09-14 07:05Z. **v2.1.0-beta.28 SHIPPED — the first run that REPORTED SUCCESS.**
 
-**Two releases in two days.** beta.26 fixed the verdict layer's DISPOSITIONS (B-RELVERD); beta.27 fixed
-the MEASUREMENTS that layer consumes (B-MEASURE).
+**Three releases in three days.** beta.26 fixed the verdict layer's DISPOSITIONS, beta.27 the
+MEASUREMENTS it consumes, beta.28 made the recorded ceiling ENFORCEABLE and used it.
 
 | | |
 |---|---|
-| tag | **v2.1.0-beta.27** → `e46a7108`, verified EQUAL to the branch sha (`verify-release-tag.sh` rc 0) |
-| gate | **19 legs, all rc 0**, every exit code captured directly, same-run end marker |
-| counts | fast **9859** `failures=0 runs 5/5` · integration **721** parallel / **699** serial · contract 99 · soak genuinely **1803.7s** |
-| tree | clean · compiled JS matches TS · deploy verified BY CONTENT (1 intentional symlink, services 0) |
-| backlog | **#19 #20 #21 #22 closed.** Only #5 (enhancement) open |
+| tag | **v2.1.0-beta.28** → `3a13a168`, verified EQUAL to the branch sha (rc 0) |
+| run verdict | **`status: completed`, 4/4 phases, NO dispositions** — the first success verdict in this series |
+| gate | **20 legs**, all rc 0 · fast **9889** `failures=0 runs 5/5` · soak genuinely **1803.8s** |
+| backlog | **#23 closed.** Only #5 (enhancement) open |
 
-### What shipped — [[B-MEASURE]], 5 roots, 7/7 tickets Done, 4/4 phases, 162m
+### 🎯 THE HEADLINE: the run reported SUCCESS
 
-- **M3** two RULE-LESS eslint disables hid **complexity 366** + **1690 code lines** from a
-  `--max-warnings=0` gate. Census: 49 disables, 47 scoped, 2 bare. Now scoped + review-marked with the
-  measured numbers as a ratchet baseline; new `pickle/no-unlimited-disable` keys on ESLint's own
-  directive list, so a justification comment cannot hide one.
-- **M4** judge measured SPAN against a 50-line limit nothing enforces (eslint enforces **120** code
-  lines). 3 of 6 prior ledger entries were false at 46/47/49 code lines.
-- **M1** the post-final verdict dropped the diagnostic tail it had already built.
-- **M2** the baseline kept the judge's self-report while every iteration used the ledger count.
-- **M5** the numeric comparison arm would not name its basis, and it was the arm that misfired.
+Every prior bundle ran its phases and reported `failed` over a tree that measured green. This one did
+not. `pipeline-status.json` carries **no `phase_dispositions` key at all** — no
+`done_over_unmeasured_worker_gate_tests`, no `post_final_tier_degraded`. B-RELVERD's V1 (derive at
+finalize, never latch) is what made a clean boundary expressible; this is the first run that had one.
 
-### ⚠ THE PREDICTION I GOT WRONG — read before claiming any field validation
+### ✅ M2 VALIDATED IN THE FIELD — this time genuinely deployed
 
-I reported that szechuan would be "the first run scored on the M2 and M4 fixes." **It was not, and the
-claim was structurally impossible.** The pipeline executes DEPLOYED JavaScript; source lands only at
-`install.sh`. M2 was committed 13:15Z; the deployed `microverse-runner.js` was last written 08:25Z.
-Measured: `baselineJudgeResult` appeared **7× in source, 0× in the deployed runtime** during that phase.
+The retracted claim two runs ago is now properly earned. Baseline logged **15**, and the FIRST
+classification reads `basis=set_ops, resolved=1, new=0, remaining=14`. The baseline seeds a ledger, so
+set-ops engages from iteration ONE. Szechuan drove **15 → 0, converged in 17 iterations**.
 
-**A bundle's own fixes CANNOT validate on the run that builds them.** CLAUDE.md states this isolation as
-a property; its consequence for validation claims is the part that bites. szechuan DID converge to 0 in
-9 iterations (first ever in this series) — that is real, and its cause is **UNIDENTIFIED**. Do not
-attribute it to M2. As of this release M1/M2/M4 ARE deployed (`baselineJudgeResult` now 7 in the
-deployed tree), so the **next** run is the genuine field test.
+Against the pre-fix run: baseline 2 → metric 6 → `regressed (previous=2, tolerance=0)` [basis
+**numeric**] → dead in 15 minutes. That is the defect closed, measured on both sides.
 
-### 🔬 The mutation that found a guard blind to its own subject
+**NOT claimed, because absence is not evidence:** the judge emitted no `hard limit 50` citation and no
+size-class violations at all, which is CONSISTENT with M4 but does not prove it — nothing in the diff
+may have neared the ceiling. And `post_final_verdict` came back `{state: green, degraded: false,
+dimensions: [], diagnostics: []}` — M1's channel exists and does not fabricate content, but its FAILURE
+path is still unexercised.
 
-B-MEASURE's fixes reddened two gate legs. One was an exhaustive-equality pin meeting M1's new
-`diagnostics` key — declared it rather than loosening the assertion. The other was **not** a stale pin:
-a carve-out invariant correctly fired once M3 scoped the two directives, because they lacked the
-`HT-1 reviewed:` marker.
+### What shipped — [[B-RATCHET]], 5 roots → 8 tickets, 8/8 Done, 4/4 phases, 546m
 
-**Then mutation found the real defect.** Re-baring a scoped directive — reproducing the exact original
-bug — left that entire test **GREEN**. Its rule-less clause anchored on `$`, so it matched only when the
-line ENDED right after the separator; a rule-less disable carrying a justification escaped it, then
-escaped the rule-name clause too because it names no rule. **The guard that should have caught
-complexity 366 was blind to it by construction.** Widened and re-verified both ways, 47 scoped disables
-green as the over-trigger control.
+- **R1** the ceiling is a real ratchet now: `audit-recorded-ceilings.sh` parses each marker's figures,
+  measures by AST + eslint, and fails THREE ways — measured above recorded, figure missing, and
+  measured BELOW recorded (naming the new number). `163 files scanned, 1 carve-outs checked, 48
+  figure-less directives ignored` — the 48 are the over-trigger control.
+- **R2** `runMuxRunnerMain` **1690 code lines / complexity 366 → 894**, across three extraction tickets.
+  `eslint src/bin/mux-runner.ts` is now SILENT, so no helper merely relocated the violation.
+- **R3** `correctPhantomDoneTickets` at complexity 15, disable **DELETED** not lowered.
+- **R4** partial ledger progress counts (#23); a no-change worker still stalls.
+- **R5** bounded split of the 3232-line catch-all module.
 
-**Standing rule:** when you fix a defect class, MUTATE the guard that should have caught it. A guard
-passing over your fix proves nothing about whether it can see the defect.
+### ⚠ MY OWN GATE RUNNER HAD THE BUG THIS BUNDLE EXISTS TO FIX
 
-### Also worth keeping from this session
+The runner used for beta.26 and beta.27 carried a **hardcoded audit list** and silently dropped
+`audit-recorded-ceilings` the moment R1 added it. Canonical gate: **11 audits**. My runner ran **10**.
+Caught by diffing the runner's list against `grep -oE 'bash scripts/audit-[a-z-]+\.sh' CLAUDE.md`, then
+running the missing leg at the SAME commit (rc 0, so the 20-leg gate is genuinely green).
 
-- **A `js_ts_drift 1` red was mine**: I edited a TS comment and committed without regenerating the
-  emitted mirror. Re-ran the FULL gate rather than reasoning the 2-line delta was benign — the audits
-  read git history, and a new commit changes that input.
-- **Four of B-MEASURE's five roots were ONE omission:** a fix landed where it was filed while its twin
-  sat in a sibling. **Sweep the CLASS, not the cited call site.**
-- **#7 was closed on partial verification** (it reported two defects; one was checked). **#11 was
-  reported half-fixed when it was fully fixed** (read the neighbour, not the arm). Both corrected
-  publicly.
-
-### 🚀 IN FLIGHT — [[B-RATCHET]], launched 2026-09-13 19:51Z
-
-Session `2026-09-13-0a4d0d85`, tmux `pipeline-0a4d0d85`, PRD
-`prds/p1-b-ratchet-a-recorded-ceiling-that-nothing-enforces-is-a-comment.md`. **This is also the field
-test for M1/M2/M4**, which are deployed as of beta.27 (`baselineJudgeResult` now 7 in the deployed tree).
-
-| root | finding |
-|---|---|
-| **R1** (first) | the ceiling beta.27 recorded is PROSE — nothing parses `1690` or `complexity 366`; make it a ratchet that fails BOTH ways |
-| R3 | delete the small carve-out outright: `correctPhantomDoneTickets` complexity 16 → ≤15 |
-| R2 | halve `runMuxRunnerMain`: 1690 code lines → ≤900, complexity 366 → ≤180. STRUCTURAL ONLY |
-| R4 | an unresolvable ledger entry guarantees a stall and then blames the worker (#23) |
-| R5 | bounded split of `pickle-utils.ts`, 3232 lines / 128 exports → <2600 |
-
-### ✅ ANSWERED 2026-09-13 — why szechuan converged, and it was NOT M2
-
-Priority 2 from the last handoff is closed by measurement. The difference between the two runs is
-**ledger TRACTABILITY**, not the scoring wire — neither run had M2 deployed.
-
-| | stalled `a4d141e1` | converged `d2e834e1` |
-|---|---|---|
-| largest entry | **1690 code lines, complexity 366** | 88 lines |
-| szechuan commits | **1**, touching NO ledger entry | **8**, each closing a named entry |
-| final ledger | 6 | **0** |
-
-**The control is `buildCitadelAuditReport`:** unresolved at 122 lines in the stalled run, split
-successfully in the converged one. It was never intractable — it was starved behind an entry no
-iteration can finish. Filed as **GitHub #23** and dispatched as R4.
-
-**#22 does not solve it.** Removing the three FALSE entries (46/47/49 code lines against a ceiling of
-120) leaves roughly ONE real entry, which stalls just as certainly with less noise.
+The runner now **derives** its list from CLAUDE.md and fails loudly if the derivation comes back empty.
+**A hardcoded list of cases is correct only until the world adds one, and it fails silently** — the
+complexity clause, and the instrument enforcing it was the violator.
 
 ### Open, in priority order
 
-1. **Read B-RATCHET's szechuan and post-final output as the M1/M2/M4 field test.** Baseline should now
-   seed a ledger and classify on `set_ops` from iteration 2; a `post_final_tier_degraded` should finally
-   carry a `diagnostics` tail saying why. **Neither is validated yet — the fixes were undeployed during
-   the run that built them.** Read szechuan's basis lines and the post-final
-   verdict's `diagnostics` channel. If a `post_final_tier_degraded` fires now, it should finally say why.
-2. **szechuan's convergence cause is UNIDENTIFIED** and was wrongly nearly attributed to M2. Worth one
-   measured pass: what differed between the stalling run and the converging one, given neither ran M2.
-3. **`runMuxRunnerMain` decomposition** — 1690 code lines, complexity 366, now RECORDED as a ratchet
-   baseline in its own review marker. A later bundle lowers it against that ceiling. Deliberately not
-   attempted blind.
-4. **#5** — enhancement, read before the next redesign decision.
-5. The stale-premise sweep still lists rows never re-measured. Re-grep the MECHANISM before scoping.
+1. **M4 and M1's failure path are UNPROVEN.** Neither was exercised. Do not close them mentally. M4 wants
+   a diff containing a function between 50 and 120 code lines: pre-fix it files a violation, post-fix it
+   must not. M1 wants a genuine `pretest` script failure: the tail must reach `diagnostics`.
+2. **`runMuxRunnerMain` is 894, ceiling 120.** The ratchet is armed and R1-3 fails if the record drifts
+   above measured. Next bundle halves it again — ~894 → ~450.
+3. **#5** — enhancement, read before the next redesign decision.
+4. The stale-premise sweep still lists rows never re-measured. Re-grep the MECHANISM before scoping.
 
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
@@ -506,8 +460,8 @@ the AC-G3 net-LOC number whatever it says.
 
 ## 🐙 GITHUB ISSUES → BUNDLE MAP (re-measured 2026-09-12; #15-#18 closed 2026-09-13 by beta.26)
 
-**Backlog as of 2026-09-13 19:55Z:** #23 (unresolvable ledger entry guarantees a stall, filed from
-measurement, dispatched as B-RATCHET R4) and #5 (enhancement, unscheduled). #19-#22 shipped in beta.27.
+**Backlog as of 2026-09-14 07:05Z:** #23 SHIPPED in beta.28 and closed. Only #5 (enhancement,
+unscheduled) remains open. #19-#22 shipped in beta.27; #6-#11 and #14-#15 closed earlier.
 
 **Seven of the nine open issues were CLOSED on 2026-09-12** after verifying each one by MECHANISM grep
 at HEAD, not by ticket title. The B-MEGADRAIN continuation run (`2026-09-09-e959390b`, 23/23 Done) had
