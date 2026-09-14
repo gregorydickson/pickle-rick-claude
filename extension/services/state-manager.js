@@ -454,14 +454,20 @@ function writeMigrationStateFile(statePath, state) {
  * only means the next read migrates again. It must not throw, but it must not be silent either —
  * an unwritable state file is exactly what an operator needs a breadcrumb for.
  */
-function persistMigrationBestEffort(statePath, state) {
+function persistBestEffort(label, statePath, write) {
     try {
-        writeMigrationStateFile(statePath, state);
+        write();
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[state-manager] migration write failed for ${statePath} (non-fatal): ${msg}\n`);
+        process.stderr.write(`[state-manager] ${label} write failed for ${statePath} (non-fatal): ${msg}\n`);
     }
+}
+function persistMigrationBestEffort(statePath, state) {
+    persistBestEffort('migration', statePath, () => writeMigrationStateFile(statePath, state));
+}
+function persistDemotionBestEffort(statePath, state) {
+    persistBestEffort('demotion', statePath, () => writeStateFile(statePath, state));
 }
 const V3_STATE_SHAPE_MARKERS = [
     'prd_path',
@@ -1262,10 +1268,7 @@ export class StateManager {
             ts: new Date().toISOString(),
         });
         trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
-        try {
-            writeStateFile(statePath, state);
-        }
-        catch { /* best-effort */ }
+        persistDemotionBestEffort(statePath, state);
         return true;
     }
     recoverStaleActiveFlag(statePath, state, preMigrationMtimeMs = 0) {
@@ -1295,10 +1298,7 @@ export class StateManager {
                 ts: new Date().toISOString(),
             });
             trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
-            try {
-                writeStateFile(statePath, state);
-            }
-            catch { /* best-effort */ }
+            persistDemotionBestEffort(statePath, state);
             return;
         }
         const pid = Number(state.pid);
@@ -1307,10 +1307,7 @@ export class StateManager {
         if (!isProcessAlive(pid)) {
             state.active = false;
             trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
-            try {
-                writeStateFile(statePath, state);
-            }
-            catch { /* best-effort */ }
+            persistDemotionBestEffort(statePath, state);
         }
     }
 }

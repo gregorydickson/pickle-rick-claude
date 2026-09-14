@@ -511,13 +511,21 @@ function writeMigrationStateFile(statePath: string, state: State): void {
  * only means the next read migrates again. It must not throw, but it must not be silent either —
  * an unwritable state file is exactly what an operator needs a breadcrumb for.
  */
-function persistMigrationBestEffort(statePath: string, state: State): void {
+function persistBestEffort(label: string, statePath: string, write: () => void): void {
   try {
-    writeMigrationStateFile(statePath, state);
+    write();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[state-manager] migration write failed for ${statePath} (non-fatal): ${msg}\n`);
+    process.stderr.write(`[state-manager] ${label} write failed for ${statePath} (non-fatal): ${msg}\n`);
   }
+}
+
+function persistMigrationBestEffort(statePath: string, state: State): void {
+  persistBestEffort('migration', statePath, () => writeMigrationStateFile(statePath, state));
+}
+
+function persistDemotionBestEffort(statePath: string, state: State): void {
+  persistBestEffort('demotion', statePath, () => writeStateFile(statePath, state));
 }
 
 const V3_STATE_SHAPE_MARKERS = [
@@ -1386,7 +1394,7 @@ export class StateManager {
       ts: new Date().toISOString(),
     });
     trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
-    try { writeStateFile(statePath, state); } catch { /* best-effort */ }
+    persistDemotionBestEffort(statePath, state);
     return true;
   }
 
@@ -1415,7 +1423,7 @@ export class StateManager {
         ts: new Date().toISOString(),
       });
       trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
-      try { writeStateFile(statePath, state); } catch { /* best-effort */ }
+      persistDemotionBestEffort(statePath, state);
       return;
     }
 
@@ -1425,7 +1433,7 @@ export class StateManager {
     if (!isProcessAlive(pid)) {
       state.active = false;
       trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
-      try { writeStateFile(statePath, state); } catch { /* best-effort */ }
+      persistDemotionBestEffort(statePath, state);
     }
   }
 }

@@ -748,6 +748,32 @@ test('StateManager.read: clears active flag when pid is dead', () => {
   });
 });
 
+test('StateManager.read: failed dead-pid demotion write is non-fatal but leaves a stderr breadcrumb', (t) => {
+  withDir((dir) => {
+    const sp = path.join(dir, 'state.json');
+    writeStateFile(sp, makeState({ active: true, pid: 99999999 }));
+    fs.chmodSync(dir, 0o555);
+    const messages = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    try {
+      // Self-check: chmod does not bind uid 0, so the write-failure arm would be vacuous there.
+      const probe = path.join(dir, 'probe');
+      try { fs.writeFileSync(probe, 'x'); fs.unlinkSync(probe); t.skip('directory still writable (root?)'); return; } catch { /* unwritable, as intended */ }
+      process.stderr.write = (msg) => { messages.push(String(msg)); return true; };
+      const result = new StateManager().read(sp);
+      process.stderr.write = origWrite;
+      assert.equal(result.active, false);
+      assert.ok(
+        messages.some((m) => m.includes('demotion write failed') && m.includes(sp)),
+        `expected demotion-write-failure breadcrumb, got: ${JSON.stringify(messages)}`,
+      );
+    } finally {
+      process.stderr.write = origWrite;
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+});
+
 test('StateManager.read: preserves active flag when no pid set', () => {
   withDir((dir) => {
     const sm = new StateManager();
