@@ -3050,7 +3050,7 @@ completion-evidence PROVEN, LOA-1363 run 4) are preserved in
 | **Total open** | **30** | **10** | **20** |
 
 **Open `OPEN BUG` + `TOP ITEM` sections (N4 re-census 2026-09-14): 2** — the `9` above is the 2026-08-31
-figure. Every open section carries a behaviour probe run by `extension/scripts/audit-ledger-probes.sh`. Check
+figure (AC-N4 sweep). Every open section carries a behaviour probe run by `extension/scripts/audit-ledger-probes.sh`. Check
 that this stated count, the audit's confirmed probes and the raw open headings agree:
 `s=$(grep -oE 'N4 re-census 2026-09-14\): [0-9]+' prds/MASTER_PLAN.md | grep -oE '[0-9]+$'); a=$(bash extension/scripts/audit-ledger-probes.sh | grep -oE '[0-9]+ probes confirmed OPEN' | grep -oE '^[0-9]+'); h=$(grep -cE '^## (OPEN BUG|TOP ITEM)' prds/MASTER_PLAN.md); test "$s" = "$a" && test "$a" = "$h"`
 
