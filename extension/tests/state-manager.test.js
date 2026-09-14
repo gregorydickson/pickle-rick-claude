@@ -508,6 +508,34 @@ test('StateManager.read: logs to stderr on undefined schema_version migration', 
   });
 });
 
+test('StateManager.read: failed migration write is non-fatal but leaves a stderr breadcrumb', (t) => {
+  withDir((dir) => {
+    const sp = path.join(dir, 'state.json');
+    const state = makeState();
+    delete state.schema_version;
+    fs.writeFileSync(sp, JSON.stringify(state, null, 2));
+    fs.chmodSync(dir, 0o555);
+    const messages = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    try {
+      // Self-check: chmod does not bind uid 0, so the write-failure arm would be vacuous there.
+      const probe = path.join(dir, 'probe');
+      try { fs.writeFileSync(probe, 'x'); fs.unlinkSync(probe); t.skip('directory still writable (root?)'); return; } catch { /* unwritable, as intended */ }
+      process.stderr.write = (msg) => { messages.push(String(msg)); return true; };
+      const result = new StateManager().read(sp);
+      process.stderr.write = origWrite;
+      assert.equal(typeof result.schema_version, 'number');
+      assert.ok(
+        messages.some((m) => m.includes('migration write failed') && m.includes(sp)),
+        `expected migration-write-failure breadcrumb, got: ${JSON.stringify(messages)}`,
+      );
+    } finally {
+      process.stderr.write = origWrite;
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // read — recovery: orphan tmp files
 // ---------------------------------------------------------------------------

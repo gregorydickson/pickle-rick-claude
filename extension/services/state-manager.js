@@ -449,6 +449,20 @@ function writeMigrationStateFile(statePath, state) {
         throw err;
     }
 }
+/**
+ * Migration persistence is best-effort: the in-memory state is already migrated, so a failed write
+ * only means the next read migrates again. It must not throw, but it must not be silent either —
+ * an unwritable state file is exactly what an operator needs a breadcrumb for.
+ */
+function persistMigrationBestEffort(statePath, state) {
+    try {
+        writeMigrationStateFile(statePath, state);
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[state-manager] migration write failed for ${statePath} (non-fatal): ${msg}\n`);
+    }
+}
 const V3_STATE_SHAPE_MARKERS = [
     'prd_path',
     'start_commit',
@@ -942,10 +956,7 @@ export class StateManager {
             migrateLegacyManagerRelaunchCount(state);
             migrateLegacySignalExitReason(state);
             migrateLegacyBaselineExitReason(state);
-            try {
-                writeMigrationStateFile(statePath, state);
-            }
-            catch { /* migration write failed, non-fatal */ }
+            persistMigrationBestEffort(statePath, state);
         }
         if (state.schema_version > this.opts.schemaVersion) {
             throw new StateError('SCHEMA_MISMATCH', `State file schema_version ${state.schema_version} is newer than supported version ${this.opts.schemaVersion}`);
@@ -957,10 +968,7 @@ export class StateManager {
             migrateLegacySignalExitReason(state);
             migrateLegacyBaselineExitReason(state);
             process.stderr.write(`[state-manager] migrating ${statePath} to schema_version ${this.opts.schemaVersion}\n`);
-            try {
-                writeMigrationStateFile(statePath, state);
-            }
-            catch { /* migration write failed, non-fatal */ }
+            persistMigrationBestEffort(statePath, state);
         }
         else if (state.schema_version >= 3) {
             const missingPipelineContinueOnPhaseFail = typeof state.pipeline_continue_on_phase_fail !== 'boolean';
@@ -968,10 +976,7 @@ export class StateManager {
             const didMigrateRelaunch = migrateLegacyManagerRelaunchCount(state);
             const didMigrateSignal = migrateLegacySignalExitReason(state);
             if (missingPipelineContinueOnPhaseFail || didMigrateRelaunch || didMigrateSignal) {
-                try {
-                    writeMigrationStateFile(statePath, state);
-                }
-                catch { /* migration write failed, non-fatal */ }
+                persistMigrationBestEffort(statePath, state);
             }
             migrateLegacyBaselineExitReason(state);
         }
