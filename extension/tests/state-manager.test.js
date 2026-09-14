@@ -6,7 +6,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { StateManager, writeActivityEntry, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, InvalidActivityEventError } from '../services/state-manager.js';
+import { StateManager, inspectLockFile, writeActivityEntry, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, assertSchemaVersionDeployParity, SchemaVersionDeployDriftError, InvalidActivityEventError } from '../services/state-manager.js';
 import {
   StateError,
   LockError,
@@ -771,6 +771,29 @@ test('StateManager.read: failed dead-pid demotion write is non-fatal but leaves 
       process.stderr.write = origWrite;
       fs.chmodSync(dir, 0o755);
     }
+  });
+});
+
+test('inspectLockFile: an unreadable lock is null WITH a breadcrumb; an absent lock is null silently', () => {
+  withDir((dir) => {
+    const messages = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    // A directory at the lock path fails the read with EISDIR regardless of uid.
+    const unreadable = path.join(dir, 'held.lock');
+    fs.mkdirSync(unreadable);
+    const absent = path.join(dir, 'absent.lock');
+    try {
+      process.stderr.write = (msg) => { messages.push(String(msg)); return true; };
+      assert.equal(inspectLockFile(absent), null);
+      assert.equal(messages.length, 0, `ENOENT must stay silent, got: ${JSON.stringify(messages)}`);
+      assert.equal(inspectLockFile(unreadable), null);
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    assert.ok(
+      messages.some((m) => m.includes('lock inspect failed') && m.includes(unreadable)),
+      `expected lock-inspect-failure breadcrumb, got: ${JSON.stringify(messages)}`,
+    );
   });
 });
 

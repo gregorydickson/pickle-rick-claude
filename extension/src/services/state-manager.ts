@@ -251,6 +251,16 @@ function sameLock(a: { ino: number; raw: string }, b: { ino: number; raw: string
 }
 
 /**
+ * A lock that exists but cannot be read (EACCES, EISDIR, …) still inspects as null — every caller
+ * treats null as "do not steal", so that is fail-closed — but unlike a plain ENOENT it is a fault,
+ * so it leaves a breadcrumb instead of passing for an absent lock.
+ */
+function reportUninspectableLock(lockPath: string, err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  process.stderr.write(`[state-manager] lock inspect failed for ${lockPath} (treated as not inspectable): ${msg}\n`);
+}
+
+/**
  * Reads a lock's identity, age, and payload through ONE fd, so a staleness verdict can never be
  * assembled from two different inodes (a path can be re-pointed between two separate reads).
  */
@@ -258,7 +268,8 @@ export function inspectLockFile(lockPath: string): LockSnapshot | null {
   let fd: number;
   try {
     fd = fs.openSync(lockPath, 'r');
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') reportUninspectableLock(lockPath, err);
     return null;
   }
 
@@ -282,7 +293,8 @@ export function inspectLockFile(lockPath: string): LockSnapshot | null {
     }
 
     return { ino: st.ino, mtimeMs: st.mtimeMs, payload, nonce, raw };
-  } catch {
+  } catch (err) {
+    reportUninspectableLock(lockPath, err);
     return null;
   } finally {
     try { fs.closeSync(fd); } catch { /* already closed */ }
