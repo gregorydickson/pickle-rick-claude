@@ -1749,6 +1749,19 @@ export interface ViolationLedger {
   last_seen_iter: number;
   severity: 'high' | 'med' | 'low';
   description: string;
+  /** N2: the entry's own size, carried from the judge's `measured` at creation. See {@link Violation.measured}. */
+  measured?: ViolationMeasured;
+}
+
+/**
+ * N2: the CURRENT size of the unit a violation names, as the judge measured it. Optional and
+ * schema-neutral. When the key is present, partial progress reads sizes from here ONLY — a figure
+ * that is not a finite non-negative number is absent and earns no credit; it never falls back to
+ * the description prose, which cannot tell a current size from a ceiling or a previous size.
+ */
+export interface ViolationMeasured {
+  lines?: number;
+  complexity?: number;
 }
 
 /** Single violation item returned by the LLM judge in structured output mode. */
@@ -1759,6 +1772,7 @@ export interface Violation {
   rule?: string;
   severity: 'high' | 'med' | 'low';
   description: string;
+  measured?: ViolationMeasured;
 }
 
 /** Return type of parseLlmJudgeOutput — discriminated by shape. */

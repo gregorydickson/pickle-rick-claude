@@ -19,6 +19,9 @@ import {
   handleNoCommitStall,
   applyLedgerPartialProgress,
   readLedgerSizeFigures,
+  readLedgerEntryFigures,
+  parseLlmJudgeOutput,
+  JUDGE_SYSTEM_PROMPT,
   findUnmovableLedgerEntries,
   convergenceExitReason,
   writeFinalReport,
@@ -898,6 +901,94 @@ test('R4-1: size figures are read from the judge description the ledger already 
   for (const [description, expected] of cases) {
     assert.deepEqual(readLedgerSizeFigures(description), expected, `figures for ${JSON.stringify(description)}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// N2 (GitHub #24): the entry's size is a structured field. Prose is the legacy fallback only, because
+// "the largest number quoted" is right for a ceiling and wrong for a previous size.
+// ---------------------------------------------------------------------------
+
+const N2_PATH = 'src/mux.ts';
+const n2Progress = (prior, current) =>
+  applyLedgerPartialProgress(HELD_SET_OPS, [{ path: N2_PATH, ...prior }], [{ path: N2_PATH, ...current }], touchedPaths(N2_PATH));
+const n2JudgeReply = (violations) =>
+  parseLlmJudgeOutput(JSON.stringify({ score: violations.length, violations, resolved: [], new: violations.map((v) => v.id), remaining: [] }));
+
+test('N2-1: the judge output contract advertises the structured size figures', () => {
+  assert.ok(JUDGE_SYSTEM_PROMPT.includes('"measured": {"lines": <number>, "complexity": <number>}'));
+  assert.match(buildJudgePrompt({ goal: 'g', cwd: '/tmp' }), /`measured` is OPTIONAL/);
+});
+
+test('N2-1: the size is written at ledger-entry creation, refreshed on reuse, and cleared when a pass omits it', () => {
+  const state = createMicroverseState({
+    prdPath: '/tmp/n2.md',
+    metric: { description: 'violations', validation: 'judge', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'lower' },
+    stallLimit: 5,
+    convergenceTarget: 0,
+  });
+  const violation = {
+    id: 'mux-main', path: N2_PATH, line: 10, severity: 'high',
+    description: 'runMuxRunnerMain is 894 lines, was 1690 lines before extraction', measured: { lines: 894, complexity: 173 },
+  };
+  updateViolationLedger(state, n2JudgeReply([violation]), 1);
+  assert.deepEqual(state.violation_ledger[0].measured, { lines: 894, complexity: 173 });
+
+  updateViolationLedger(state, n2JudgeReply([{ ...violation, measured: { lines: 700 } }]), 2);
+  assert.equal(state.violation_ledger.length, 1);
+  assert.equal(state.violation_ledger[0].first_seen_iter, 1, 'the reuse arm claimed the prior entry');
+  assert.deepEqual(state.violation_ledger[0].measured, { lines: 700 });
+
+  const legacy = { ...violation };
+  delete legacy.measured;
+  updateViolationLedger(state, n2JudgeReply([legacy]), 3);
+  assert.equal(state.violation_ledger[0].measured, undefined, 'a stale figure never survives a pass that omitted it');
+});
+
+test('N2-2 (control, ceiling): a description quoting a ceiling still yields the entry\'s own size', () => {
+  const current = { description: 'fn is 88 lines (hard limit 50)', measured: { lines: 88 } };
+  assert.deepEqual(readLedgerEntryFigures(current), { lines: 88 });
+  const result = n2Progress({ description: 'fn is 122 lines (hard limit 50)', measured: { lines: 122 } }, current);
+  assert.deepEqual(result.figures, { basis: 'partial_progress', path: N2_PATH, figure: 'lines', previous: 122, current: 88 });
+});
+
+test('N2-3 (control, history): a description quoting a previous size yields the CURRENT size', () => {
+  const rows = [
+    [{ description: 'runMuxRunnerMain is 894 lines', measured: { lines: 894 } },
+      { description: 'runMuxRunnerMain is 700 lines, was 1690 lines before extraction', measured: { lines: 700 } }, 894, 700],
+    [{ description: 'a 200-line function', measured: { lines: 200 } },
+      { description: 'extracted 3 helpers from a 200-line function; now 80 lines', measured: { lines: 80 } }, 200, 80],
+  ];
+  for (const [prior, current, previous, now] of rows) {
+    const result = n2Progress(prior, current);
+    assert.equal(result.classification, 'improved', current.description);
+    assert.deepEqual(result.figures, { basis: 'partial_progress', path: N2_PATH, figure: 'lines', previous, current: now });
+  }
+  // The two MISS rows from the ticket, read from a structured entry.
+  assert.deepEqual(readLedgerEntryFigures({ description: 'runMuxRunnerMain is 894 lines, was 1690 lines before extraction', measured: { lines: 894 } }), { lines: 894 });
+  assert.deepEqual(readLedgerEntryFigures({ description: 'extracted 3 helpers from a 200-line function; now 80 lines', measured: { lines: 80 } }), { lines: 80 });
+});
+
+test('N2-4: a legacy entry with no structured field keeps today\'s prose reading and never throws', () => {
+  const miss = 'runMuxRunnerMain is 894 lines, was 1690 lines before extraction';
+  assert.deepEqual(readLedgerEntryFigures({ description: miss }), { lines: 1690 }, 'legacy behaviour is unchanged, MISS row included');
+  assert.deepEqual(readLedgerEntryFigures({ description: undefined }), {});
+  assert.equal(n2Progress({ description: 'fn is 200 lines' }, { description: 'fn is 90 lines' }).classification, 'improved');
+  assert.equal(
+    n2Progress({ description: 'fn is 200 lines' }, { description: 'fn is smaller now', measured: { lines: 90 } }).classification,
+    'improved',
+    'a legacy prior entry compares against a structured current one',
+  );
+});
+
+test('N2 fail-closed: a garbage structured figure earns no progress credit and never falls back to prose', () => {
+  for (const garbage of [{ lines: NaN }, { lines: -5 }, { lines: '80' }, { lines: Infinity }, {}, 'eighty', null, 42]) {
+    const result = n2Progress({ description: 'fn is 200 lines' }, { description: 'fn is 90 lines', measured: garbage });
+    assert.equal(result, HELD_SET_OPS, `measured=${String(JSON.stringify(garbage))}`);
+  }
+  const parsed = n2JudgeReply([{ id: 'g', path: N2_PATH, line: 1, severity: 'low', description: 'fn is 90 lines', measured: { lines: '80', complexity: -3 } }]);
+  assert.deepEqual(parsed.violations[0].measured, {}, 'the normalizer keeps only valid figures');
+  const absent = n2JudgeReply([{ id: 'h', path: N2_PATH, line: 1, severity: 'low', description: 'd' }]);
+  assert.equal('measured' in absent.violations[0], false, 'an absent field stays absent, so the entry reads as legacy');
 });
 
 function r4ReplayState(fixture, stallLimit) {

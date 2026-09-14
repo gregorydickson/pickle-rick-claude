@@ -654,6 +654,9 @@ export function updateViolationLedger(
         ...identity,
         severity: violation.severity,
         description: violation.description,
+        // N2: this pass's figures replace the prior entry's, and a pass that omitted them clears
+        // them — a stale size would otherwise be compared as current.
+        measured: violation.measured,
         last_seen_iter: iter,
       });
     } else {
@@ -666,6 +669,7 @@ export function updateViolationLedger(
         last_seen_iter: iter,
         severity: violation.severity,
         description: violation.description,
+        ...(violation.measured !== undefined ? { measured: violation.measured } : {}),
       });
     }
   }
