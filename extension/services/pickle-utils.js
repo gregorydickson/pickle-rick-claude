@@ -1953,6 +1953,28 @@ export function wrapWithStderrRedirect(cmd, sessionDir, pane) {
     // The redirect survives the exec either way.
     return `bash -c 'exec ${cmd} 2>>"${logPath}"'`;
 }
+async function _killPidGracefully(pid) {
+    try {
+        process.kill(pid, 0);
+        process.kill(pid, 'SIGTERM');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        try {
+            process.kill(pid, 0);
+            process.kill(pid, 'SIGKILL');
+        }
+        catch { /* already gone */ }
+    }
+    catch { /* pid already dead — nothing to do */ }
+}
+export async function _killOldMonitorPid(smLocal, statePath) {
+    try {
+        const s = smLocal.read(statePath);
+        const oldPid = s.monitor_pid;
+        if (typeof oldPid === 'number' && oldPid > 0)
+            await _killPidGracefully(oldPid);
+    }
+    catch { /* best-effort */ }
+}
 /** Default timeout for macOS notification shell-outs (`osascript`). Kept short
  *  because notifications run on the exit path — a wedged Notification Center /
  *  AppleEvent daemon must NOT block `process.exit` on the runner. Four prior

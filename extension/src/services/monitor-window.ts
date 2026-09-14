@@ -6,6 +6,7 @@ import * as path from 'path';
 import type { ActivityEvent } from '../types/index.js';
 import { StateManager } from './state-manager.js';
 import {
+  _killOldMonitorPid,
   formatLocalDateKey,
   getDataRoot,
   getExtensionRoot,
@@ -689,23 +690,6 @@ export interface RespawnMonitorWindowForModeOpts {
   inTmux?: boolean;
   /** Optional logger written to pipeline-runner.log via the caller's log function. */
   log?: (msg: string) => void;
-}
-
-async function _killPidGracefully(pid: number): Promise<void> {
-  try {
-    process.kill(pid, 0);
-    process.kill(pid, 'SIGTERM');
-    await new Promise<void>(resolve => setTimeout(resolve, 1000));
-    try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
-  } catch { /* pid already dead — nothing to do */ }
-}
-
-async function _killOldMonitorPid(smLocal: StateManager, statePath: string): Promise<void> {
-  try {
-    const s = smLocal.read(statePath) as unknown as Record<string, unknown>;
-    const oldPid = s.monitor_pid;
-    if (typeof oldPid === 'number' && oldPid > 0) await _killPidGracefully(oldPid);
-  } catch { /* best-effort */ }
 }
 
 function _resolveTmuxSessionName(

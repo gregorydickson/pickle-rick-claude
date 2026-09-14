@@ -4,7 +4,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { StateManager } from './state-manager.js';
-import { formatLocalDateKey, getDataRoot, getExtensionRoot, resolveExtensionRoot, safeErrorMessage, wrapWithStderrRedirect, } from './pickle-utils.js';
+import { _killOldMonitorPid, formatLocalDateKey, getDataRoot, getExtensionRoot, resolveExtensionRoot, safeErrorMessage, wrapWithStderrRedirect, } from './pickle-utils.js';
 /**
  * Infers monitor mode from state.json's command_template. Defaults to 'pickle'.
  * Glob mapping: pickle*→pickle, council*→council.
@@ -520,28 +520,6 @@ export function monitorModesCompatible(existing, want) {
         case 'anatomy-park':
             return existing === 'anatomy-park';
     }
-}
-async function _killPidGracefully(pid) {
-    try {
-        process.kill(pid, 0);
-        process.kill(pid, 'SIGTERM');
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        try {
-            process.kill(pid, 0);
-            process.kill(pid, 'SIGKILL');
-        }
-        catch { /* already gone */ }
-    }
-    catch { /* pid already dead — nothing to do */ }
-}
-async function _killOldMonitorPid(smLocal, statePath) {
-    try {
-        const s = smLocal.read(statePath);
-        const oldPid = s.monitor_pid;
-        if (typeof oldPid === 'number' && oldPid > 0)
-            await _killPidGracefully(oldPid);
-    }
-    catch { /* best-effort */ }
 }
 function _resolveTmuxSessionName(spawnSyncFn, log, mode) {
     const r = spawnSyncFn('tmux', ['display-message', '-p', '#S'], { encoding: 'utf-8', timeout: 5_000 });
