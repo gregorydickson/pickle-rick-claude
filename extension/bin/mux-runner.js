@@ -5127,7 +5127,7 @@ const EXECUTABLE_ASSERTION_RE = /`([^`\n]+)`[ \t]+(exits|returns)[ \t]+`?(\d+)\b
  * `## Acceptance Criteria` spelling for checkbox state, and most live tickets spell the heading
  * `### Acceptance criteria`.
  */
-function executableAcceptanceSection(content) {
+export function executableAcceptanceSection(content) {
     const open = /^(#{2,3})[ \t]+Acceptance Criteria\b.*$/im.exec(content);
     if (!open)
         return '';
@@ -5136,7 +5136,7 @@ function executableAcceptanceSection(content) {
     return close ? rest.slice(0, close.index) : rest;
 }
 /** Every executable assertion the ticket's own criteria declare; `[manager]` criteria are deferred, not run. */
-function readExecutableAcceptanceAssertions(content) {
+export function readExecutableAcceptanceAssertions(content) {
     return executableAcceptanceSection(content)
         .split('\n')
         .filter((line) => !/\[manager\]/i.test(line))

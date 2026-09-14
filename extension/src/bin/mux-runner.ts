@@ -6093,7 +6093,7 @@ type DoneFlipGuardRefusal = {
  * `## Acceptance Criteria` spelling for checkbox state, and most live tickets spell the heading
  * `### Acceptance criteria`.
  */
-function executableAcceptanceSection(content: string): string {
+export function executableAcceptanceSection(content: string): string {
   const open = /^(#{2,3})[ \t]+Acceptance Criteria\b.*$/im.exec(content);
   if (!open) return '';
   const rest = content.slice(open.index + open[0].length);
@@ -6102,7 +6102,7 @@ function executableAcceptanceSection(content: string): string {
 }
 
 /** Every executable assertion the ticket's own criteria declare; `[manager]` criteria are deferred, not run. */
-function readExecutableAcceptanceAssertions(content: string): AcceptanceAssertion[] {
+export function readExecutableAcceptanceAssertions(content: string): AcceptanceAssertion[] {
   return executableAcceptanceSection(content)
     .split('\n')
     .filter((line) => !/\[manager\]/i.test(line))

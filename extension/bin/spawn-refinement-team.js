@@ -537,7 +537,7 @@ const REQUIREMENTS_ROLE_INSTRUCTIONS = `## Your Role: Requirements Analyst Morty
 Analyze the PRD EXCLUSIVELY for requirements completeness:
 1. **Critical User Journeys (CUJs)**: Are all major user flows documented? Are they step-by-step enough for engineering to implement without guessing?
 2. **Functional Requirements Table**: Are P0/P1/P2 requirements complete? Are there obvious missing use cases, alternate flows, or error scenarios?
-3. **Acceptance Criteria**: Can each requirement be tested? Are success states and failure states defined?
+3. **Acceptance Criteria**: Can each requirement be tested? Are success states and failure states defined? When a criterion reduces to a single integer, flag it for the executable form — a backticked command immediately followed by \`exits N\` or \`returns N\`. Worked example: \`grep -c FIRSTCOLONY src/gate.ts\` returns 0. Prose criteria remain fully valid and unguarded — never invent a command to satisfy this form.
 4. **Edge Cases & Boundary Conditions**: What empty states, error states, race conditions, or limits are missing?
 5. **User Stories**: Are "As a user, I want..." stories specific enough to code against, or are they vague aspirations?
 

@@ -67,6 +67,7 @@ Automated conformance (no human review):
 
 N/A sections allowed with justification. Small features (<3 files) may consolidate into Acceptance Criteria.
 For closer-style follow-up work, the consolidated acceptance-criteria list must preserve the `[worker]` / `[manager]` ownership tags so worker conformance can defer manager-only actions into handoff instead of failing execution.
+When a Verification Command reduces to a single integer, phrase it as a backticked command immediately followed by `exits N` (exit status) or `returns N` (trimmed stdout) so a downstream ticket can carry the same form and the Done-flip guard can check it automatically. Worked example: `grep -c FIRSTCOLONY src/gate.ts` returns 0. Prose criteria remain fully valid and unguarded — this form is an enhancement, never a requirement; never invent a command to satisfy it.
 ### Verification Commands
 | Check | Command | Expected |
 |:---|:---|:---|

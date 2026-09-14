@@ -258,6 +258,7 @@ links:
 **Inputs**: [types] | **Outputs**: [types] | **Errors**: [shapes] | **Invariants**: [conditions]
 ## Acceptance Criteria
 - [ ] [Criterion] — Verify: `[command]` — Type: [test|typecheck|lint|curl|llm-conformance]
+- **Executable form** (optional, unlocks automatic Done-flip verification): when `[command]` reduces to a single integer, write it as a backticked command immediately followed by `exits N` (exit status) or `returns N` (trimmed stdout). Worked example: `grep -c FIRSTCOLONY src/gate.ts` returns 0. Prose criteria remain fully valid and unguarded — never invent a command to satisfy this form.
 - For closer/release/hardening tickets, prefix each criterion with `[worker]` or `[manager]` when ownership differs. Manager-only deploy/install/release steps MUST stay tagged `[manager]` rather than being folded into worker-owned execution criteria.
 - Use `verify_pre:` only for criteria that must be checked before implementation and are expected to pass at readiness time.
 - Default criteria are `verify_post` and are checked after implementation; omit the prefix unless a pre-flight check is intentional.
