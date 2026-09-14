@@ -88,7 +88,7 @@ describe('AC-S529-3: park-then-success — rate_limited exhaustion parks and ret
   });
 });
 
-describe('AC-S529-6: ceiling exhaustion — park ceiling exhausted → baseline_unmeasurable_transient', () => {
+describe('AC-S529-6: ceiling exhaustion — park ceiling exhausted → metric_unmeasurable_transient', () => {
   test('probe ok + 12x 429 (3 park cycles) exhausts 3000ms ceiling → metric null, exhaustedFailureKind rate_limited', async () => {
     // metricParkMaxMs=3000, metricParkWaitMs=1500: allows 2 park sleeps (1500+1500=3000).
     // Round 1: 4×429 → park (1500ms, cumulative=1500)

@@ -88,7 +88,7 @@ const PIPELINE_OBSERVABILITY_EVENTS = [
   'child_mux_runner_wedge_detected',
 ];
 
-const MICROVERSE_RUNNER_EVENTS = ['judge_unreachable', 'judge_timeout', 'judge_measurement_attempted', 'baseline_attempt_timeout', 'baseline_unmeasurable', 'judge_cli_missing'];
+const MICROVERSE_RUNNER_EVENTS = ['judge_unreachable', 'judge_timeout', 'judge_measurement_attempted', 'baseline_attempt_timeout', 'metric_unmeasurable', 'judge_cli_missing'];
 
 test('bmad-events: transaction-ticket-ops + correct-course events are in VALID_ACTIVITY_EVENTS', () => {
   // Per prds/citadel.md:1012, every emitted event MUST appear in VALID_ACTIVITY_EVENTS.

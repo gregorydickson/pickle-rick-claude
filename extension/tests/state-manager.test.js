@@ -15,6 +15,7 @@ import {
   STATE_MANAGER_DEFAULTS,
   LATEST_SCHEMA_VERSION,
   VALID_ACTIVITY_EVENTS,
+  LEGACY_MICROVERSE_EXIT_REASON_RENAMES,
 } from '../types/index.js';
 import { writeStateFile } from '../services/pickle-utils.js';
 
@@ -288,7 +289,7 @@ test('StateManager.read: legacy baseline_unmeasurable upgraded', () => {
 
     const result = sm.read(sp);
 
-    assert.equal(result.exit_reason, 'baseline_unmeasurable_unrecoverable');
+    assert.equal(result.exit_reason, 'metric_unmeasurable_unrecoverable');
   });
 });
 
@@ -299,14 +300,14 @@ test('StateManager.read: baseline_unmeasurable upgrade idempotent', () => {
     writeStateFile(sp, makeState({
       schema_version: LATEST_SCHEMA_VERSION,
       session_dir: dir,
-      exit_reason: 'baseline_unmeasurable_unrecoverable',
+      exit_reason: 'metric_unmeasurable_unrecoverable',
     }));
 
     const first = sm.read(sp);
     const second = sm.read(sp);
 
-    assert.equal(first.exit_reason, 'baseline_unmeasurable_unrecoverable');
-    assert.equal(second.exit_reason, 'baseline_unmeasurable_unrecoverable');
+    assert.equal(first.exit_reason, 'metric_unmeasurable_unrecoverable');
+    assert.equal(second.exit_reason, 'metric_unmeasurable_unrecoverable');
   });
 });
 
@@ -340,6 +341,31 @@ test('StateManager.read: baseline_unmeasurable upgrade leaves unrelated value un
 
     assert.equal(result.exit_reason, 'converged');
   });
+});
+
+test('StateManager.read: Z2-4 every legacy baseline_unmeasurable_* reads back as its renamed reason', () => {
+  // Derived from the exported rename map, so a fourth legacy spelling cannot be added without a row.
+  for (const [legacy, current] of Object.entries(LEGACY_MICROVERSE_EXIT_REASON_RENAMES)) {
+    withDir((dir) => {
+      const sm = new StateManager();
+      const sp = path.join(dir, 'state.json');
+      writeStateFile(sp, makeState({ schema_version: LATEST_SCHEMA_VERSION, session_dir: dir, exit_reason: legacy }));
+
+      const first = sm.read(sp);
+      const second = sm.read(sp);
+
+      assert.equal(first.exit_reason, current, `${legacy} must read back as ${current}`);
+      assert.equal(second.exit_reason, current, `${legacy} rename must be idempotent`);
+      assert.notEqual(current, legacy);
+      assert.equal(current.startsWith('baseline_'), false, `${current} must not carry the baseline_ prefix`);
+    });
+  }
+});
+
+test('StateManager.read: Z2-4 the rename map covers exactly the three legacy spellings', () => {
+  assert.deepEqual(Object.keys(LEGACY_MICROVERSE_EXIT_REASON_RENAMES).sort(), [
+    'baseline_unmeasurable', 'baseline_unmeasurable_transient', 'baseline_unmeasurable_unrecoverable',
+  ]);
 });
 
 test('StateManager.read: throws SCHEMA_MISMATCH for future schema version', () => {

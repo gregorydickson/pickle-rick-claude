@@ -53,9 +53,8 @@ const EXPECTED = {
   judge_unreachable: { reportAs: 'failure', exitCode: 1 },
   judge_timeout: { reportAs: 'non-fatal-halt', exitCode: 1 },
   all_judge_backends_exhausted: { reportAs: 'non-fatal-halt', exitCode: 1 },
-  baseline_unmeasurable_transient: { reportAs: 'non-fatal-halt', exitCode: 1 },
-  baseline_unmeasurable: { reportAs: 'failure', exitCode: 1 },
-  baseline_unmeasurable_unrecoverable: { reportAs: 'failure', exitCode: 1 },
+  metric_unmeasurable_transient: { reportAs: 'non-fatal-halt', exitCode: 1 },
+  metric_unmeasurable_unrecoverable: { reportAs: 'failure', exitCode: 1 },
   judge_cli_missing: { reportAs: 'failure', exitCode: 1 },
 };
 

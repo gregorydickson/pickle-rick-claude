@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { Backend, State } from '../types/index.js';
-import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, type MicroverseFatalReason } from '../types/index.js';
+import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage, type GraduationCounts, type FinalizeOpts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import {
@@ -3275,7 +3275,7 @@ function isCrashFloorExitReason(reason: unknown): boolean {
  * actual abort, because `classifyMicroverseHaltDecision` aborts on nothing else.
  *
  * B-ONEABORT FR-B1: this used to be three arms — the crash floor, an inline
- * `judge_timeout || all_judge_backends_exhausted || baseline_unmeasurable_transient` literal
+ * `judge_timeout || all_judge_backends_exhausted || <transient measurement failure>` literal
  * triple, and a five-member failure allowlist in types/index.ts. Eight hand-maintained literals
  * across two lists, and the comment justifying the split claimed the triple was held out of that
  * allowlist "so logPhaseHaltReason can route them through finalize-gate". That was false at the
@@ -3289,13 +3289,12 @@ function isCrashFloorExitReason(reason: unknown): boolean {
  * and were deleted, so the membership is now READ, not restated. `MICROVERSE_DISPOSITIONS` is an
  * exhaustive `Record<MicroverseExitReason, …>`, so a new exit reason cannot slip past this arm by
  * omission — tsc demands a disposition and halt-eligibility follows from it. `non-fatal-halt` is
- * set-equal to the deleted triple (its very name encodes the halt property). Bare
- * `baseline_unmeasurable` is the one reason whose disposition (`failure`) disagreed with the old
- * predicate, and it is unreachable: every
- * `sm.read` normalises it to `baseline_unmeasurable_unrecoverable` via
- * `migrateLegacyBaselineExitReason` (state-manager.ts) on all three migrate branches, including the
- * already-current-schema one. That normalisation is load-bearing for this collapse and is pinned in
- * `nostop-gates-invariant.test.js`; deleting it would hand that reason a gate-fail break.
+ * set-equal to the deleted triple (its very name encodes the halt property). Z2 (GitHub #25) took
+ * the legacy `baseline_`-prefixed measurement reasons OUT of the union; every `sm.read` renames them
+ * through `normalizeMicroverseExitReason` (types/index.ts) via `migrateLegacyBaselineExitReason`
+ * (state-manager.ts) on all three migrate branches, including the already-current-schema one. That
+ * normalisation is load-bearing — pinned in `nostop-gates-invariant.test.js` — because a legacy
+ * name read raw would get the DEFAULT disposition and drop out of halt-eligibility.
  */
 function isMicroverseArmFatal(reason: unknown): boolean {
   if (isMicroverseFatalReason(reason)) return true;
@@ -5214,14 +5213,17 @@ export interface MicroverseHaltDecision {
   recognizedExitReason: string | null;
 }
 
-export function classifyMicroverseHaltDecision(exitReason: unknown): MicroverseHaltDecision {
+export function classifyMicroverseHaltDecision(rawExitReason: unknown): MicroverseHaltDecision {
   // B-ONEABORT AC-OA-1a: a halted run has no output, and no output has no quality — the abort
   // surface is the crash floor alone. NO member of `MICROVERSE_EXIT_REASONS` aborts; the union IS
   // the subject list, so a new reason inherits that. The floor is named against the union it lives
   // in: `session_state_corrupted` is in `MICROVERSE_FATAL_REASONS`, NOT the exit union.
-  if (typeof exitReason !== 'string') {
+  if (typeof rawExitReason !== 'string') {
     return { action: 'abort', recognizedExitReason: null };
   }
+  // Z2-4: a legacy `baseline_unmeasurable_*` from an older run left the union; read it as its
+  // renamed reason so it parks exactly as it did, instead of falling through to the abort below.
+  const exitReason = normalizeMicroverseExitReason(rawExitReason);
   // R-PRJT-2: a transient measurement timeout over already-converged work — the phase completes.
   if (exitReason === 'judge_timeout') {
     return { action: 'run-finalize-gate', recognizedExitReason: exitReason };

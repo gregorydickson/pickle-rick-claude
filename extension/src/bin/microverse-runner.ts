@@ -4,8 +4,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFileSync, execFile, spawn, spawnSync, type ChildProcess } from 'child_process';
 import { pathToFileURL } from 'node:url';
-import { State, Defaults, MicroverseExitReason, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
-import type { ActivityEventType, Backend, IterationExitType, MicroverseSessionState, MicroverseHistoryEntry, ViolationLedger, FailureClass, GateResult, GateFailure, GateBaselineFile, StallClassification, StallRecoveryAction, JudgeResult, Violation, PickleSettings, RateLimitPark, RateLimitAction, RateLimitProbeVerdict } from '../types/index.js';
+import { State, Defaults, MicroverseExitReason, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, normalizeMicroverseExitReason } from '../types/index.js';
+import type { ActivityEventType, MetricMeasurementPhase, Backend, IterationExitType, MicroverseSessionState, MicroverseHistoryEntry, ViolationLedger, FailureClass, GateResult, GateFailure, GateBaselineFile, StallClassification, StallRecoveryAction, JudgeResult, Violation, PickleSettings, RateLimitPark, RateLimitAction, RateLimitProbeVerdict } from '../types/index.js';
 import type { ErrorRecord } from '../types/index.js';
 import {
   resolveBackend,
@@ -101,7 +101,7 @@ type IterationRunOutcome = Awaited<ReturnType<typeof runIteration>>;
 type ClassifiedIterationExit = ReturnType<typeof classifyIterationExit>;
 export type MetricSnapshot = { raw: string; score: number };
 type JudgeFailureExitReason = Extract<ExitReason, 'judge_timeout' | 'judge_cli_missing' | 'all_judge_backends_exhausted' | 'judge_unreachable'>;
-type JudgeMeasurementFailureExitReason = Extract<ExitReason, 'judge_timeout' | 'judge_cli_missing' | 'baseline_unmeasurable_unrecoverable' | 'baseline_unmeasurable_transient' | 'all_judge_backends_exhausted'>;
+type JudgeMeasurementFailureExitReason = Extract<ExitReason, 'judge_timeout' | 'judge_cli_missing' | 'metric_unmeasurable_unrecoverable' | 'metric_unmeasurable_transient' | 'all_judge_backends_exhausted'>;
 type CommandMeasurementFailureKind = 'timeout' | 'cli_missing' | 'spawn_failure' | 'failed';
 type ProbeJudgeBackend = Extract<Backend, 'claude' | 'codex'>;
 export type IterationClassification =
@@ -3918,7 +3918,7 @@ export function mapBaselineMeasureExitReason(
     case 'timeout':
       return 'judge_timeout';
     default:
-      return 'baseline_unmeasurable_unrecoverable';
+      return 'metric_unmeasurable_unrecoverable';
   }
 }
 
@@ -3938,26 +3938,27 @@ function mapJudgeMeasurementFailure(
     // CLI rejects in the first moments does not clear by waiting, which is the same reason the
     // attempt is not retried.
     case 'judge_unreachable':
-      return 'baseline_unmeasurable_unrecoverable';
+      return 'metric_unmeasurable_unrecoverable';
     case 'judge_timeout':
       return measured.exhaustedFailureKind === 'timeout'
         ? 'judge_timeout'
         : measured.exhaustedFailureKind === 'rate_limited'
-          ? 'baseline_unmeasurable_transient'
-          : 'baseline_unmeasurable_unrecoverable';
+          ? 'metric_unmeasurable_transient'
+          : 'metric_unmeasurable_unrecoverable';
     default:
-      return 'baseline_unmeasurable_unrecoverable';
+      return 'metric_unmeasurable_unrecoverable';
   }
 }
 
-/** Maps an exhausted judge-measurement exit reason to its telemetry activity event.
- * Both the transient and unrecoverable baseline failures surface as `baseline_unmeasurable`;
+/** Maps an exhausted metric-measurement exit reason to its telemetry activity event.
+ * Both the transient and unrecoverable measurement failures surface as `metric_unmeasurable`, with
+ * the phase carried in `gate_payload.phase` rather than in any name (Z2);
  * `all_judge_backends_exhausted` is a routing-only reason (not a registered activity event) so it
- * emits `judge_timeout` per the R-SJET-4 "no new event" constraint. Shared by `measureLlmBaseline`
- * and `measureLlmIteration` so the two telemetry sites cannot drift. */
+ * emits `judge_timeout` per the R-SJET-4 "no new event" constraint. Shared by all four baseline and
+ * iteration failure sites so the telemetry cannot drift. */
 function mapExhaustedExitToActivityEvent(exitReason: JudgeMeasurementFailureExitReason): ActivityEventType {
-  if (exitReason === 'baseline_unmeasurable_unrecoverable' || exitReason === 'baseline_unmeasurable_transient') {
-    return 'baseline_unmeasurable';
+  if (exitReason === 'metric_unmeasurable_unrecoverable' || exitReason === 'metric_unmeasurable_transient') {
+    return 'metric_unmeasurable';
   }
   if (exitReason === 'all_judge_backends_exhausted') {
     return 'judge_timeout';
@@ -3967,7 +3968,7 @@ function mapExhaustedExitToActivityEvent(exitReason: JudgeMeasurementFailureExit
 
 function mapCommandMeasurementFailure(
   measured: CommandMeasurementResult,
-): Exclude<JudgeMeasurementFailureExitReason, 'baseline_unmeasurable_transient'> {
+): Exclude<JudgeMeasurementFailureExitReason, 'metric_unmeasurable_transient'> {
   if ('metric' in measured && measured.metric) {
     throw new Error('mapCommandMeasurementFailure requires a failed command measurement');
   }
@@ -3977,7 +3978,7 @@ function mapCommandMeasurementFailure(
     case 'timeout':
       return 'judge_timeout';
     default:
-      return 'baseline_unmeasurable_unrecoverable';
+      return 'metric_unmeasurable_unrecoverable';
   }
 }
 
@@ -4096,11 +4097,11 @@ async function measureLlmBaseline(
     return measured.metric;
   }
   const exitReason: JudgeMeasurementFailureExitReason = mapJudgeMeasurementFailure(measured);
-  const activityEvent: ActivityEventType = mapExhaustedExitToActivityEvent(exitReason);
+  const phase: MetricMeasurementPhase = 'baseline';
   const error = measured.lastError ?? `${exitReason} after ${measured.attempts} attempt(s)`;
-  ctx.log(`ERROR: Could not measure LLM baseline (${exitReason}) after ${measured.attempts} attempt(s): ${error}`);
-  logActivity({
-    event: activityEvent,
+  ctx.log(`ERROR: Could not measure LLM baseline (${exitReason}, phase: ${phase}) after ${measured.attempts} attempt(s): ${error}`);
+  _deps.logActivity({
+    event: mapExhaustedExitToActivityEvent(exitReason),
     source: 'pickle',
     session: path.basename(ctx.sessionDir),
     iteration: ctx.iteration,
@@ -4108,6 +4109,7 @@ async function measureLlmBaseline(
     gate_payload: {
       attempts: measured.attempts,
       backend,
+      phase,
     },
   });
   state.status = 'stopped';
@@ -4127,16 +4129,12 @@ async function measureCommandBaseline(
     ctx.workingDir,
   );
   if (measured.metric) return measured.metric;
-  const exitReason: ExitReason = mapCommandMeasurementFailure(measured);
-  const activityEvent: ActivityEventType = exitReason === 'baseline_unmeasurable_unrecoverable'
-    ? 'baseline_unmeasurable'
-    : exitReason === 'all_judge_backends_exhausted'
-      ? 'judge_timeout'
-      : exitReason;
+  const exitReason = mapCommandMeasurementFailure(measured);
+  const phase: MetricMeasurementPhase = 'baseline';
   const error = measured.lastError ?? `${exitReason} after ${measured.attempts} attempt(s)`;
-  ctx.log(`ERROR: Could not measure baseline metric (${exitReason}) after ${measured.attempts} attempt(s): ${error}`);
-  logActivity({
-    event: activityEvent,
+  ctx.log(`ERROR: Could not measure baseline metric (${exitReason}, phase: ${phase}) after ${measured.attempts} attempt(s): ${error}`);
+  _deps.logActivity({
+    event: mapExhaustedExitToActivityEvent(exitReason),
     source: 'pickle',
     session: path.basename(ctx.sessionDir),
     iteration: ctx.iteration,
@@ -4144,6 +4142,7 @@ async function measureCommandBaseline(
     gate_payload: {
       attempts: measured.attempts,
       failure_kind: measured.failureKind,
+      phase,
     },
   });
   state.status = 'stopped';
@@ -4443,9 +4442,10 @@ async function measureLlmIteration(
   );
   if (measured.metric) return { kind: 'ok', metric: measured.metric };
   const exitReason = mapJudgeMeasurementFailure(measured);
+  const phase: MetricMeasurementPhase = 'iteration';
   const error = measured.lastError ?? `${exitReason} after ${measured.attempts} attempt(s)`;
-  ctx.log(`ERROR: Metric measurement failed (${exitReason}) after ${measured.attempts} attempt(s): ${error}`);
-  logActivity({
+  ctx.log(`ERROR: Metric measurement failed (${exitReason}, phase: ${phase}) after ${measured.attempts} attempt(s): ${error}`);
+  _deps.logActivity({
     event: mapExhaustedExitToActivityEvent(exitReason),
     source: 'pickle',
     session: path.basename(ctx.sessionDir),
@@ -4454,6 +4454,7 @@ async function measureLlmIteration(
     gate_payload: {
       attempts: measured.attempts,
       backend,
+      phase,
     },
   });
   return { kind: 'failed', exitReason };
@@ -4473,14 +4474,11 @@ async function measureCommandIteration(
   );
   if (measured.metric) return { kind: 'ok', metric: measured.metric };
   const exitReason = mapCommandMeasurementFailure(measured);
+  const phase: MetricMeasurementPhase = 'iteration';
   const error = measured.lastError ?? `${exitReason} after ${measured.attempts} attempt(s)`;
-  ctx.log(`ERROR: Metric measurement failed (${exitReason}) after ${measured.attempts} attempt(s): ${error}`);
-  logActivity({
-    event: exitReason === 'baseline_unmeasurable_unrecoverable'
-      ? 'baseline_unmeasurable'
-      : exitReason === 'all_judge_backends_exhausted'
-        ? 'judge_timeout'
-        : exitReason,
+  ctx.log(`ERROR: Metric measurement failed (${exitReason}, phase: ${phase}) after ${measured.attempts} attempt(s): ${error}`);
+  _deps.logActivity({
+    event: mapExhaustedExitToActivityEvent(exitReason),
     source: 'pickle',
     session: path.basename(ctx.sessionDir),
     iteration: ctx.iteration,
@@ -4488,6 +4486,7 @@ async function measureCommandIteration(
     gate_payload: {
       attempts: measured.attempts,
       failure_kind: measured.failureKind,
+      phase,
     },
   });
   return { kind: 'failed', exitReason };
@@ -6172,14 +6171,15 @@ const MICROVERSE_DISPOSITIONS: Record<MicroverseExitReason, MicroverseDispositio
   judge_unreachable: { reportAs: 'failure', exitCode: 1 },
   judge_timeout: { reportAs: 'non-fatal-halt', exitCode: 1 },
   all_judge_backends_exhausted: { reportAs: 'non-fatal-halt', exitCode: 1 },
-  baseline_unmeasurable_transient: { reportAs: 'non-fatal-halt', exitCode: 1 },
-  baseline_unmeasurable: { reportAs: 'failure', exitCode: 1 },
-  baseline_unmeasurable_unrecoverable: { reportAs: 'failure', exitCode: 1 },
+  metric_unmeasurable_transient: { reportAs: 'non-fatal-halt', exitCode: 1 },
+  metric_unmeasurable_unrecoverable: { reportAs: 'failure', exitCode: 1 },
   judge_cli_missing: { reportAs: 'failure', exitCode: 1 },
 };
 
 export function classifyMicroverseDisposition(exitReason: string): MicroverseDisposition {
-  return (MICROVERSE_DISPOSITIONS as Record<string, MicroverseDisposition>)[exitReason] ?? DEFAULT_MICROVERSE_DISPOSITION;
+  // Z2-4: a legacy `baseline_unmeasurable_*` reads as its renamed reason, never the DEFAULT disposition.
+  const current = normalizeMicroverseExitReason(exitReason);
+  return (MICROVERSE_DISPOSITIONS as Record<string, MicroverseDisposition>)[current] ?? DEFAULT_MICROVERSE_DISPOSITION;
 }
 
 function microverseExitCode(exitReason: ExitReason): number {

@@ -248,7 +248,7 @@ export const VALID_ACTIVITY_EVENTS = [
     'judge_timeout',
     'judge_measurement_attempted',
     'baseline_attempt_timeout',
-    'baseline_unmeasurable',
+    'metric_unmeasurable',
     'judge_cli_missing',
     'multi_repo_warning',
     'pending_tickets_on_completion',
@@ -624,11 +624,26 @@ export const MUX_ITERATION_REASONS = [
 export const MICROVERSE_EXIT_REASONS = [
     'converged', 'limit_reached', 'stopped', 'error',
     'rate_limit_exhausted', 'approach_exhaustion', 'no_progress',
-    'judge_unreachable', 'judge_timeout', 'baseline_unmeasurable', 'judge_cli_missing',
-    'baseline_unmeasurable_transient', 'baseline_unmeasurable_unrecoverable',
+    'judge_unreachable', 'judge_timeout', 'judge_cli_missing',
+    'metric_unmeasurable_transient', 'metric_unmeasurable_unrecoverable',
     'all_judge_backends_exhausted', 'anatomy_non_convergent',
     'stalled_below_target', 'iteration_budget_exhausted', 'time_budget_exhausted',
 ];
+/**
+ * Z2 (GitHub #25): exit reasons persisted by an older runtime, and the reason each one reads as
+ * now. The shared judge/command measurement mapper once named every failure after ONE of its two
+ * callers (`baseline_`), so an iteration failure was stamped as a baseline one. Read-time only and
+ * schema-neutral (the `signal` -> `signal:SIGINT` precedent): nothing writes these any more.
+ */
+export const LEGACY_MICROVERSE_EXIT_REASON_RENAMES = {
+    baseline_unmeasurable: 'metric_unmeasurable_unrecoverable',
+    baseline_unmeasurable_unrecoverable: 'metric_unmeasurable_unrecoverable',
+    baseline_unmeasurable_transient: 'metric_unmeasurable_transient',
+};
+/** The ONE reader of the rename map: a legacy spelling reads as its current reason, anything else passes through. */
+export function normalizeMicroverseExitReason(reason) {
+    return LEGACY_MICROVERSE_EXIT_REASON_RENAMES[reason] ?? reason;
+}
 export const MICROVERSE_FATAL_REASONS = [
     'session_state_corrupted',
 ];

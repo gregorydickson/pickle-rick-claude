@@ -25,6 +25,7 @@ import {
   TransactionError,
   SchemaVersionMismatchError,
   VALID_ACTIVITY_EVENTS,
+  normalizeMicroverseExitReason,
 } from '../types/index.js';
 import { writeStateFile, safeErrorMessage, getDataRoot, formatLocalDateKey, sleepSync } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
@@ -818,11 +819,11 @@ function migrateLegacySignalExitReason(state: State): boolean {
 }
 
 function migrateLegacyBaselineExitReason(state: State): boolean {
-  if (state.exit_reason === 'baseline_unmeasurable') {
-    state.exit_reason = 'baseline_unmeasurable_unrecoverable';
-    return true;
-  }
-  return false;
+  if (typeof state.exit_reason !== 'string') return false;
+  const current = normalizeMicroverseExitReason(state.exit_reason);
+  if (current === state.exit_reason) return false;
+  state.exit_reason = current;
+  return true;
 }
 
 /**

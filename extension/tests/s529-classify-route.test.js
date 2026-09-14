@@ -192,15 +192,15 @@ describe('backoff exhaustion: all-429 attempts → exhaustedFailureKind rate_lim
 });
 
 describe('AC-S529-4: isFatalPhaseFailure + classifyMicroverseHaltDecision', () => {
-  test('classifyMicroverseHaltDecision(baseline_unmeasurable_transient) → run-finalize-gate-incomplete', () => {
-    const decision = classifyMicroverseHaltDecision('baseline_unmeasurable_transient');
+  test('classifyMicroverseHaltDecision(metric_unmeasurable_transient) → run-finalize-gate-incomplete', () => {
+    const decision = classifyMicroverseHaltDecision('metric_unmeasurable_transient');
     assert.equal(decision.action, 'run-finalize-gate-incomplete');
-    assert.equal(decision.recognizedExitReason, 'baseline_unmeasurable_transient');
+    assert.equal(decision.recognizedExitReason, 'metric_unmeasurable_transient');
   });
 
-  test('isFatalPhaseFailure anatomy-park with baseline_unmeasurable_transient → true', () => {
+  test('isFatalPhaseFailure anatomy-park with metric_unmeasurable_transient → true', () => {
     const sessionDir = tmpDir('s529-fatal-');
-    const statePath = writeStateWithExitReason(sessionDir, 'baseline_unmeasurable_transient');
+    const statePath = writeStateWithExitReason(sessionDir, 'metric_unmeasurable_transient');
     const runtime = {
       sessionDir,
       extensionRoot: process.cwd(),
@@ -216,9 +216,9 @@ describe('AC-S529-4: isFatalPhaseFailure + classifyMicroverseHaltDecision', () =
     assert.equal(isFatalPhaseFailure('anatomy-park', runtime), true);
   });
 
-  test('isFatalPhaseFailure szechuan-sauce with baseline_unmeasurable_transient → true', () => {
+  test('isFatalPhaseFailure szechuan-sauce with metric_unmeasurable_transient → true', () => {
     const sessionDir = tmpDir('s529-fatal-sz-');
-    const statePath = writeStateWithExitReason(sessionDir, 'baseline_unmeasurable_transient');
+    const statePath = writeStateWithExitReason(sessionDir, 'metric_unmeasurable_transient');
     const runtime = {
       sessionDir,
       extensionRoot: process.cwd(),

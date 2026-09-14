@@ -13,7 +13,7 @@ Operator reference for diagnosing and resolving LLM judge backend issues in the 
 | `[warn] judge probe timed out` in log | First availability probe timed out (`probeJudgeBackendAvailability`). Treated as non-fatal — runner falls through to measurement loop. |
 | `judge_cli_missing` exit reason | `claude` binary not on PATH at judge spawn time. Install Claude Code CLI or set `PATH`. |
 | `all_judge_backends_exhausted` exit reason | Primary AND fallback judge backends both failed typed measurement. See § 5 for pipeline routing. |
-| `baseline_unmeasurable_unrecoverable` exit reason | Measurement exhausted all retries with non-timeout failures. |
+| `metric_unmeasurable_unrecoverable` exit reason | Measurement exhausted all retries with non-timeout failures. The `metric_unmeasurable` activity event's `gate_payload.phase` (and `phase:` in the runner log line) says whether it was the `baseline` or an `iteration` measurement. Runs before Z2 recorded this as `baseline_unmeasurable_unrecoverable` in either phase; that spelling is read as this reason. |
 
 **Probe vs measurement distinction** (R-MJCP-8): `probeJudgeBackendAvailability` is a fail-fast existence check (≥5 s). Only `kind: 'missing'` (ENOENT-class) → `judge_cli_missing`. A probe timeout falls through to the measurement loop, so a slow cold-start does NOT kill the run.
 
@@ -92,8 +92,9 @@ Pipeline routing introduced by commit `5a25ef7b` (ticket `23393a69`):
 |---|---|---|
 | `judge_timeout` | `run-finalize-gate` | Finalize gate runs on converged work; continue or halt by gate exit code |
 | `all_judge_backends_exhausted` | `run-finalize-gate-incomplete` | Gate pass → `reportPhaseIncomplete` (exit 3, auto-resume eligible via R-CNAR); gate fail → exit 1 |
-| `judge_cli_missing` | Fatal abort | `baseline_unmeasurable_unrecoverable` — pipeline aborts, no gate |
-| `baseline_unmeasurable_unrecoverable` | Fatal abort | As above |
+| `judge_cli_missing` | `run-finalize-gate-incomplete` | Parks and reports; success withheld (no longer a fatal abort) |
+| `metric_unmeasurable_transient` | `run-finalize-gate-incomplete` | As above (legacy spelling `baseline_unmeasurable_transient` reads as this) |
+| `metric_unmeasurable_unrecoverable` | `run-finalize-gate-incomplete` | As above (legacy spellings `baseline_unmeasurable` / `baseline_unmeasurable_unrecoverable` read as this) |
 | `judge_unreachable` | Failure exit | `isMicroverseFailureExit` → pipeline failure |
 
 **`all_judge_backends_exhausted` recovery path** (R-SJET-4):

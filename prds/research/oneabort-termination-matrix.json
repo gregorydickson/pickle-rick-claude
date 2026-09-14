@@ -72,14 +72,6 @@
     "is_floor": false
   },
   {
-    "reason": "baseline_unmeasurable",
-    "action": "run-finalize-gate-incomplete",
-    "pipeline_reached_finalize": true,
-    "residual_reason": "baseline_unmeasurable_unrecoverable",
-    "expected_residual_reason": "baseline_unmeasurable_unrecoverable",
-    "is_floor": false
-  },
-  {
     "reason": "judge_cli_missing",
     "action": "run-finalize-gate-incomplete",
     "pipeline_reached_finalize": true,
@@ -88,19 +80,19 @@
     "is_floor": false
   },
   {
-    "reason": "baseline_unmeasurable_transient",
+    "reason": "metric_unmeasurable_transient",
     "action": "run-finalize-gate-incomplete",
     "pipeline_reached_finalize": true,
-    "residual_reason": "baseline_unmeasurable_transient",
-    "expected_residual_reason": "baseline_unmeasurable_transient",
+    "residual_reason": "metric_unmeasurable_transient",
+    "expected_residual_reason": "metric_unmeasurable_transient",
     "is_floor": false
   },
   {
-    "reason": "baseline_unmeasurable_unrecoverable",
+    "reason": "metric_unmeasurable_unrecoverable",
     "action": "run-finalize-gate-incomplete",
     "pipeline_reached_finalize": true,
-    "residual_reason": "baseline_unmeasurable_unrecoverable",
-    "expected_residual_reason": "baseline_unmeasurable_unrecoverable",
+    "residual_reason": "metric_unmeasurable_unrecoverable",
+    "expected_residual_reason": "metric_unmeasurable_unrecoverable",
     "is_floor": false
   },
   {

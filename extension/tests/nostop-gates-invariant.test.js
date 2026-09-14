@@ -69,6 +69,7 @@ import { StateManager } from '../services/state-manager.js';
 import {
   CRASH_FLOOR_EXIT_REASONS,
   EXIT_REASONS,
+  LEGACY_MICROVERSE_EXIT_REASON_RENAMES,
   MICROVERSE_EXIT_REASONS,
   MICROVERSE_FATAL_REASONS,
   classifyExitReason,
@@ -429,7 +430,7 @@ describe('AC-OA-3a — ONE RULE, channel 2: no microverse exit_reason aborts', (
  */
 describe('AC-OA-3a — channel 2 crash floor (the invariant is bounded, not universal)', () => {
   // Ticket 2ecd5464: sharpened from "session_state_corrupted is in there somewhere" (3 members)
-  // to "it is the ONLY member" — judge_cli_missing and baseline_unmeasurable_unrecoverable are
+  // to "it is the ONLY member" — judge_cli_missing and metric_unmeasurable_unrecoverable are
   // demoted to park-and-report per B-NOSTOP-GATES (see oneabort-termination-invariant.test.js's
   // AC-2ecd5464 block for the full four-property proof on the actual recovery path).
   test('MICROVERSE_FATAL_REASONS has exactly one member: session_state_corrupted', () => {
@@ -602,7 +603,7 @@ describe('AC-NSG-5b — structural producer enumeration (widened reach)', () => 
  * `isFatalPhaseFailure`'s anatomy-park / szechuan-sauce branch).
  *
  * It used to be THREE arms: the crash floor, an inline `judge_timeout ||
- * all_judge_backends_exhausted || baseline_unmeasurable_transient` literal triple, and
+ * all_judge_backends_exhausted || metric_unmeasurable_transient` literal triple, and
  * a five-member failure allowlist in types/index.ts — eight hand-maintained literals across two
  * lists,
  * i.e. the enumerated-set shape root CLAUDE.md names as "a liability with a maintenance schedule".
@@ -641,13 +642,15 @@ describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never rest
     }
   });
 
-  test('the effective set is 10 reasons — the count B-ONEABORT recorded as 6', () => {
+  test('the effective set is 9 reasons — the count B-ONEABORT recorded as 6', () => {
     const { repo, startCommit } = makeRepo();
     // Guards the derivation in the direction the derived expectation above cannot: if BOTH the arm
     // and MICROVERSE_DISPOSITIONS were widened together, the deepEqual would still pass. This
-    // number is the measurement MASTER_PLAN's B-ONEABORT section was corrected to.
+    // number is the measurement MASTER_PLAN's B-ONEABORT section was corrected to (10), less the
+    // legacy bare `baseline_unmeasurable` Z2 took out of the union — it was an alias of the
+    // unrecoverable reason, never a distinct halt, and it still reads as that reason (pin below).
     for (const phase of MICROVERSE_PHASES) {
-      assert.equal(observedFatalReasons(phase, repo, startCommit).length, 10,
+      assert.equal(observedFatalReasons(phase, repo, startCommit).length, 9,
         `${phase}: arm membership changed — re-measure before editing this number, and check no `
         + 'reason gained a gate-fail break (PRIME DIRECTIVE: no new abort condition)');
     }
@@ -660,24 +663,28 @@ describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never rest
     assert.deepEqual(
       MICROVERSE_EXIT_REASONS
         .filter((r) => classifyMicroverseDisposition(r).reportAs === 'non-fatal-halt').sort(),
-      ['all_judge_backends_exhausted', 'baseline_unmeasurable_transient', 'judge_timeout'],
+      ['all_judge_backends_exhausted', 'judge_timeout', 'metric_unmeasurable_transient'],
     );
   });
 
-  test('sm.read normalises bare baseline_unmeasurable — the load-bearing invariant', () => {
-    // Bare `baseline_unmeasurable` is the ONE reason whose disposition ('failure') disagrees with
-    // the pre-collapse predicate, which excluded it. The collapse is safe only because
-    // `migrateLegacyBaselineExitReason` (state-manager.ts) rewrites it on EVERY read — including
-    // the already-current-schema branch — so the arm can never observe it. Delete that migration
-    // while microverse-runner still emits the bare reason and it gains a gate-fail break: a new
-    // abort condition. This pin fails first if that happens.
-    const sessionDir = tmpDir('frb1-legacy-baseline-');
-    const statePath = writeState(sessionDir, { exit_reason: 'baseline_unmeasurable' });
-    const observed = new StateManager().read(statePath).exit_reason;
+  test('sm.read normalises every legacy baseline_unmeasurable spelling — the load-bearing invariant', () => {
+    // Z2 (GitHub #25) took the three `baseline_`-prefixed measurement reasons out of the union. A
+    // state.json persisted by an older run still carries them, and the arm reads its reason through
+    // `sm.read` — so `migrateLegacyBaselineExitReason` (state-manager.ts) must rewrite each one on
+    // EVERY read, including the already-current-schema branch. Delete that migration and a legacy
+    // reason gets the DEFAULT disposition: it drops out of halt-eligibility. The expected targets
+    // are DERIVED from the exported rename map, never transcribed.
+    for (const [legacy, current] of Object.entries(LEGACY_MICROVERSE_EXIT_REASON_RENAMES)) {
+      const sessionDir = tmpDir('frb1-legacy-baseline-');
+      const statePath = writeState(sessionDir, { exit_reason: legacy });
+      const observed = new StateManager().read(statePath).exit_reason;
 
-    assert.notEqual(observed, 'baseline_unmeasurable',
-      'bare baseline_unmeasurable must be normalised before any consumer sees it');
-    assert.equal(observed, 'baseline_unmeasurable_unrecoverable');
+      assert.notEqual(observed, legacy, `${legacy} must be normalised before any consumer sees it`);
+      assert.equal(observed, current);
+      assert.ok(MICROVERSE_EXIT_REASONS.includes(current), `${current} must be a live union member`);
+    }
+    assert.equal(Object.keys(LEGACY_MICROVERSE_EXIT_REASON_RENAMES).length, 3,
+      'the rename map must cover bare, _transient and _unrecoverable');
   });
 
   // AP-EXT-ITER46-01. `isMicroverseArmFatal` carries TWO fail-open arms, and until this pin only

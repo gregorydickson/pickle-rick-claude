@@ -13,7 +13,7 @@ import { threadId } from 'node:worker_threads';
 import * as path from 'node:path';
 import { isRecord } from '../lib/is-record.js';
 import { isProcessAlive } from '../lib/process-liveness.js';
-import { STATE_MANAGER_DEFAULTS, LATEST_SCHEMA_VERSION, StateError, LockError, TransactionError, SchemaVersionMismatchError, VALID_ACTIVITY_EVENTS, } from '../types/index.js';
+import { STATE_MANAGER_DEFAULTS, LATEST_SCHEMA_VERSION, StateError, LockError, TransactionError, SchemaVersionMismatchError, VALID_ACTIVITY_EVENTS, normalizeMicroverseExitReason, } from '../types/index.js';
 import { writeStateFile, safeErrorMessage, getDataRoot, formatLocalDateKey, sleepSync } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 // ---------------------------------------------------------------------------
@@ -750,11 +750,13 @@ function migrateLegacySignalExitReason(state) {
     return false;
 }
 function migrateLegacyBaselineExitReason(state) {
-    if (state.exit_reason === 'baseline_unmeasurable') {
-        state.exit_reason = 'baseline_unmeasurable_unrecoverable';
-        return true;
-    }
-    return false;
+    if (typeof state.exit_reason !== 'string')
+        return false;
+    const current = normalizeMicroverseExitReason(state.exit_reason);
+    if (current === state.exit_reason)
+        return false;
+    state.exit_reason = current;
+    return true;
 }
 /**
  * Rewrites every legacy field spelling in place. Returns true only when a

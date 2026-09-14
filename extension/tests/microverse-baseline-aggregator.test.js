@@ -27,5 +27,5 @@ test('aggregator 3-way mapping source uses switch over measured.exitReason', () 
 test('aggregator 3-way mapping', () => {
   assert.equal(mapBaselineMeasureExitReason('judge_cli_missing'), 'judge_cli_missing');
   assert.equal(mapBaselineMeasureExitReason('judge_timeout'), 'judge_timeout');
-  assert.equal(mapBaselineMeasureExitReason('failed'), 'baseline_unmeasurable_unrecoverable');
+  assert.equal(mapBaselineMeasureExitReason('failed'), 'metric_unmeasurable_unrecoverable');
 });

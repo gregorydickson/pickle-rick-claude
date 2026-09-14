@@ -155,16 +155,6 @@ function stubGateExit(exitCode) {
 /** The reasons that route to the incomplete gate — every union member except the R-PRJT-2 one. */
 const INCOMPLETE_GATE_REASONS = MICROVERSE_EXIT_REASONS.filter((r) => r !== 'judge_timeout');
 
-/**
- * The ONE reason pair that legitimately shares a residual key. `state-manager.ts`
- * `migrateLegacyBaselineExitReason` rewrites the legacy bare `baseline_unmeasurable` to
- * `baseline_unmeasurable_unrecoverable` on every `StateManager.read()`, so the bare form can never
- * survive a read to reach the classifier. That collapse is upstream of this ticket and deliberate;
- * pinning it here keeps it the ONLY one — any other pair sharing a key reddens the cardinality
- * assertion below.
- */
-const LEGACY_MIGRATED_ON_READ = { baseline_unmeasurable: 'baseline_unmeasurable_unrecoverable' };
-const residualFor = (reason) => LEGACY_MIGRATED_ON_READ[reason] ?? reason;
 
 afterEach(() => {
   __setSpawnRunnerForTests(null);
@@ -203,7 +193,7 @@ describe('AC-OA-1a: no member of the exported exit-reason union resolves to abor
 
 describe('AC-OA-1a: the crash floor still aborts', () => {
   // Ticket 2ecd5464 (B-ONEABORT residual): the floor set itself is sharpened from 3 members to
-  // exactly 1 — `judge_cli_missing` and `baseline_unmeasurable_unrecoverable` are demoted to
+  // exactly 1 — `judge_cli_missing` and `metric_unmeasurable_unrecoverable` are demoted to
   // park-and-report (see the AC-2ecd5464 block below). Asserted directly, not just observed.
   test('MICROVERSE_FATAL_REASONS has exactly one member: session_state_corrupted', () => {
     assert.deepEqual([...MICROVERSE_FATAL_REASONS], ['session_state_corrupted']);
@@ -251,7 +241,7 @@ describe('AC-OA-1b: the residual carries the reason, so distinct reasons yield d
       assert.equal(outcome.action, 'continue');
       assert.equal(
         counters.phaseDispositions['anatomy-park'],
-        residualFor(reason),
+        reason,
         `${reason} must reach the residual verbatim, not collapse into one key`,
       );
       observed.set(reason, counters.phaseDispositions['anatomy-park']);
@@ -259,7 +249,7 @@ describe('AC-OA-1b: the residual carries the reason, so distinct reasons yield d
     // Distinct reason ⇒ distinct residual value, modulo the one documented read-time migration.
     assert.equal(
       new Set(observed.values()).size,
-      new Set(INCOMPLETE_GATE_REASONS.map(residualFor)).size,
+      new Set(INCOMPLETE_GATE_REASONS).size,
       'residual keys collapsed — distinct reasons must not share one ledger key',
     );
   });
@@ -279,18 +269,18 @@ describe('AC-OA-1b: the residual carries the reason, so distinct reasons yield d
 
   test('the log names the reason, not a generic "recovery attempted"', async () => {
     const { repo, startCommit } = makeRepo();
-    const runtime = makeRuntime({ repo, startCommit, exitReason: 'baseline_unmeasurable_transient' });
+    const runtime = makeRuntime({ repo, startCommit, exitReason: 'metric_unmeasurable_transient' });
     const lines = [];
     stubGateExit(0);
 
     await runAllBackendsExhaustedFinalizeGate(runtime, freshCounters(), 'anatomy-park', (m) => lines.push(m));
 
-    assert.match(lines.join('\n'), /finalize-gate passed after baseline_unmeasurable_transient/);
+    assert.match(lines.join('\n'), /finalize-gate passed after metric_unmeasurable_transient/);
   });
 });
 
 describe('AC-OA-4: the incumbent reasons keep their existing counter behaviour', () => {
-  for (const reason of ['baseline_unmeasurable_transient', 'all_judge_backends_exhausted', 'no_progress']) {
+  for (const reason of ['metric_unmeasurable_transient', 'all_judge_backends_exhausted', 'no_progress']) {
     test(`${reason}: a passing gate still increments counters.completed`, async () => {
       const { repo, startCommit } = makeRepo();
       const runtime = makeRuntime({ repo, startCommit, exitReason: reason });
@@ -346,7 +336,7 @@ describe('AC-OA-4: the incumbent reasons keep their existing counter behaviour',
 
 /**
  * Ticket 2ecd5464 (B-ONEABORT residual): `judge_cli_missing` (a measurement-tooling absence) and
- * `baseline_unmeasurable_unrecoverable` (a measurement verdict) are demoted out of
+ * `metric_unmeasurable_unrecoverable` (a measurement verdict) are demoted out of
  * `MICROVERSE_FATAL_REASONS` — B-NOSTOP-GATES requires both to park-and-report, never halt. This
  * block names each reason explicitly and asserts all four park-and-report properties together:
  * (1) not the crash floor, (2) the classifier parks rather than aborting, (3) the phase loop
@@ -354,8 +344,8 @@ describe('AC-OA-4: the incumbent reasons keep their existing counter behaviour',
  * withheld (the degraded verdict rides `nonConvergent`, never `completed` alone — AC-OA-4's
  * pinned convention above).
  */
-describe('AC-2ecd5464: judge_cli_missing / baseline_unmeasurable_unrecoverable park-and-report, not fatal', () => {
-  for (const reason of ['judge_cli_missing', 'baseline_unmeasurable_unrecoverable']) {
+describe('AC-2ecd5464: judge_cli_missing / metric_unmeasurable_unrecoverable park-and-report, not fatal', () => {
+  for (const reason of ['judge_cli_missing', 'metric_unmeasurable_unrecoverable']) {
     test(`${reason}: not the crash floor, classifier parks, phase continues, success withheld`, async () => {
       // (1) not the crash floor — the only remaining fatal member is session_state_corrupted.
       assert.ok(
@@ -380,7 +370,7 @@ describe('AC-2ecd5464: judge_cli_missing / baseline_unmeasurable_unrecoverable p
       assert.equal(outcome.action, 'continue', `${reason} must let the pipeline continue to the next phase`);
       assert.equal(
         counters.phaseDispositions['anatomy-park'],
-        residualFor(reason),
+        reason,
         `${reason} must be recorded as a residual for a human, not silently dropped`,
       );
       assert.equal(
@@ -399,7 +389,7 @@ describe('AC-2ecd5464: judge_cli_missing / baseline_unmeasurable_unrecoverable p
  * from the literal 2026-08-06 symptom (a prose-only judge answer with no parseable number) through to
  * the final non-abort disposition — the AC-2ecd5464 block above starts mid-stream at the `exit_reason`
  * string. This closes that gap: it drives `extractScore` on a realistic non-numeric judge answer,
- * confirms it maps through `mapBaselineMeasureExitReason` to `baseline_unmeasurable_unrecoverable`
+ * confirms it maps through `mapBaselineMeasureExitReason` to `metric_unmeasurable_unrecoverable`
  * (never the crash floor), and feeds that derived reason into the same classifier + phase-loop
  * assertions as AC-2ecd5464, so the composition is genuine rather than a hand-typed restatement.
  */
@@ -412,12 +402,12 @@ describe('R-JUNS (C2): an unparseable judge answer never aborts the pipeline', (
     );
   });
 
-  test('the null score maps to baseline_unmeasurable_unrecoverable, never the crash floor', () => {
+  test('the null score maps to metric_unmeasurable_unrecoverable, never the crash floor', () => {
     const derivedReason = mapBaselineMeasureExitReason('failed');
-    assert.equal(derivedReason, 'baseline_unmeasurable_unrecoverable');
+    assert.equal(derivedReason, 'metric_unmeasurable_unrecoverable');
     assert.ok(
       !MICROVERSE_FATAL_REASONS.includes(derivedReason),
-      'AC-M7: baseline_unmeasurable_unrecoverable must not re-enter MICROVERSE_FATAL_REASONS',
+      'AC-M7: metric_unmeasurable_unrecoverable must not re-enter MICROVERSE_FATAL_REASONS',
     );
     assert.deepEqual(
       [...MICROVERSE_FATAL_REASONS],
@@ -598,7 +588,7 @@ describe('AC-OA-1c: a degraded phase never claims success', () => {
       if (spawnCount === 1) {
         // The phase itself exits non-zero having degraded: a judge that answered in prose.
         const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-        state.exit_reason = 'baseline_unmeasurable_unrecoverable';
+        state.exit_reason = 'metric_unmeasurable_unrecoverable';
         fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
         return { exitCode: 1, stdout: '', stderr: '' };
       }
@@ -630,7 +620,7 @@ describe('AC-OA-1c: a degraded phase never claims success', () => {
     assert.equal(status.status, 'failed', 'a degraded run must not report a completed status');
     assert.equal(
       status.phase_dispositions['anatomy-park'],
-      'baseline_unmeasurable_unrecoverable',
+      'metric_unmeasurable_unrecoverable',
       'the residual must name the degradation for the operator',
     );
     fs.rmSync(repo, { recursive: true, force: true });

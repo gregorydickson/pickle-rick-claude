@@ -519,8 +519,8 @@ describe('R-ORCG: judge XDG_RUNTIME_DIR cleanup', () => {
 // R-JUNS (FR-B2, ticket 57cd73e0) — VERIFY-FIRST disposal.
 //
 // The filed defect says `mapJudgeMeasurementFailure` sends an unparseable judge answer through its
-// `default:` arm to `baseline_unmeasurable_unrecoverable`, and asks for it to be routed to
-// `baseline_unmeasurable_transient` instead. Measurement refutes the premise three ways:
+// `default:` arm to `metric_unmeasurable_unrecoverable`, and asks for it to be routed to
+// `metric_unmeasurable_transient` instead. Measurement refutes the premise three ways:
 //
 //   1. That `default:` arm is STATICALLY UNREACHABLE. `JudgeFailureExitReason`
 //      (microverse-runner.ts:99) has exactly three members and the switch cases all three. A parse
@@ -612,7 +612,7 @@ describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () =
     // The disposition half — this is the assertion the ticket asks for, made end-to-end on the
     // reason rather than on the mapping function's return value. Both the reason a parse failure
     // routes to today and the one FR-B2 proposes must leave the phase loop intact.
-    for (const reason of ['baseline_unmeasurable_unrecoverable', 'baseline_unmeasurable_transient']) {
+    for (const reason of ['metric_unmeasurable_unrecoverable', 'metric_unmeasurable_transient']) {
       const decision = classifyMicroverseHaltDecision(reason);
       assert.notEqual(decision.action, 'abort',
         `${reason} must never abort the phase (CLAUDE.md: a gate may never break the phase loop)`);
@@ -629,8 +629,8 @@ describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () =
   });
 
   test('AC-JUNS-2: _transient and _unrecoverable are disposition-identical, so re-routing between them is a no-op', () => {
-    const transient = dispositionTuple('baseline_unmeasurable_transient');
-    const unrecoverable = dispositionTuple('baseline_unmeasurable_unrecoverable');
+    const transient = dispositionTuple('metric_unmeasurable_transient');
+    const unrecoverable = dispositionTuple('metric_unmeasurable_unrecoverable');
 
     // This is the measurement that disposes FR-B2: every observable a production consumer reads is
     // the same for both reasons, so routing parse failures from one to the other changes nothing.
@@ -640,10 +640,10 @@ describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () =
     // The single field that DOES differ is the one no production consumer reads: all four
     // `reportAs` consumers collapse 'failure' and 'non-fatal-halt' identically
     // (pipeline-runner.ts:3186 and :5262, microverse-runner.ts:5776 and microverseExitCode).
-    assert.equal(classifyMicroverseDisposition('baseline_unmeasurable_transient').reportAs, 'non-fatal-halt');
-    assert.equal(classifyMicroverseDisposition('baseline_unmeasurable_unrecoverable').reportAs, 'failure');
+    assert.equal(classifyMicroverseDisposition('metric_unmeasurable_transient').reportAs, 'non-fatal-halt');
+    assert.equal(classifyMicroverseDisposition('metric_unmeasurable_unrecoverable').reportAs, 'failure');
 
-    // TRIPWIRE, deliberate: if a later ticket legitimately demotes `baseline_unmeasurable_transient`
+    // TRIPWIRE, deliberate: if a later ticket legitimately demotes `metric_unmeasurable_transient`
     // to arm-non-fatal (which needs tests/s529-classify-route.test.js:210,228 in its fence), this
     // deepEqual goes RED. That is the intended signal, not a brittle assertion: it means R-JUNS has
     // become live again and FR-B2 should be re-opened rather than left closed as a no-op.
@@ -658,7 +658,7 @@ describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () =
     // deepEqual still passes, and a `converged` vs `_unrecoverable` control still passes too,
     // on the exitCode 0-vs-1 difference alone. These two reasons agree on both cheap fields, so
     // the collapse reddens this arm instead of hiding behind them.
-    const halting = dispositionTuple('baseline_unmeasurable_unrecoverable');
+    const halting = dispositionTuple('metric_unmeasurable_unrecoverable');
     const nonHalting = dispositionTuple('stalled_below_target');
 
     assert.equal(halting.haltAction, nonHalting.haltAction,

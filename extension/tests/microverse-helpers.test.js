@@ -190,7 +190,7 @@ test('measureAndClassifyIteration returns failed judge_timeout for command metri
   }
 });
 
-test('measureAndClassifyIteration returns failed baseline_unmeasurable_unrecoverable on command metric spawn failure', async () => {
+test('measureAndClassifyIteration returns failed metric_unmeasurable_unrecoverable on command metric spawn failure', async () => {
   const { sessionDir, workingDir, runnerState, mv } = makeSession(60);
   const originalSpawn = _deps.spawn;
   const originalSleep = _deps.sleep;
@@ -213,7 +213,7 @@ test('measureAndClassifyIteration returns failed baseline_unmeasurable_unrecover
     };
     const ctx = makeContext(sessionDir, workingDir, runnerState);
     const result = await measureAndClassifyIteration(mv, { raw: '50', score: 50 }, ctx);
-    assert.deepEqual(result, { kind: 'failed', exitReason: 'baseline_unmeasurable_unrecoverable' });
+    assert.deepEqual(result, { kind: 'failed', exitReason: 'metric_unmeasurable_unrecoverable' });
   } finally {
     _deps.spawn = originalSpawn;
     _deps.sleep = originalSleep;
