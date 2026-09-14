@@ -413,3 +413,23 @@ test('refreshScope: empty diff at non-anatomy phase is tolerated (no throw)', ()
         cleanup(repo, session);
     }
 });
+
+test('refreshScope: unreadable state.json is logged, not swallowed, before treating the phase as not entered', () => {
+    const repo = makeRepo();
+    const session = makeSession(repo);
+    try {
+        fs.writeFileSync(path.join(session, 'state.json'), '{ not json');
+        const logs = [];
+        try {
+            refreshScope(session, 'anatomy-park', { repoRoot: repo, log: (m) => logs.push(m) });
+        } catch {
+            // Downstream behaviour on a corrupt state is not under test here.
+        }
+        assert.ok(
+            logs.some((m) => m.includes('scope-refresh: phase=anatomy-park could not read')),
+            `expected a state-read breadcrumb, got: ${JSON.stringify(logs)}`,
+        );
+    } finally {
+        cleanup(repo, session);
+    }
+});

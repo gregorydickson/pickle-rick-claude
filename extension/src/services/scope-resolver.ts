@@ -316,7 +316,8 @@ export function refreshScope(
 ): ScopeJson | null {
   const statePath = path.join(sessionRoot, 'state.json');
   const sm = new StateManager();
-  if (isPhaseAlreadyEntered(sm, statePath, phase)) return null;
+  const log = opts.log ?? ((msg: string) => { process.stderr.write(`${msg}\n`); });
+  if (isPhaseAlreadyEntered(sm, statePath, phase, log)) return null;
 
   const scopePath = path.join(sessionRoot, 'scope.json');
   // A killed initial writer may leave the only valid scope in a sibling `.tmp.<pid>`.
@@ -325,7 +326,6 @@ export function refreshScope(
   const scope = readRecoverableJsonObject(scopePath) as ScopeJson | null;
   if (!scope) return null;
   const repoRoot = opts.repoRoot ?? resolveRepoRootFromState(sm, statePath);
-  const log = opts.log ?? ((msg: string) => { process.stderr.write(`${msg}\n`); });
   const newHead = getHeadSha(repoRoot);
 
   const newAllowed = computeRefreshedAllowed(scope, newHead, repoRoot, opts.target);
@@ -350,12 +350,19 @@ export function refreshScope(
   return refreshed;
 }
 
-function isPhaseAlreadyEntered(sm: StateManager, statePath: string, phase: string): boolean {
+function isPhaseAlreadyEntered(
+  sm: StateManager,
+  statePath: string,
+  phase: string,
+  log: (msg: string) => void,
+): boolean {
   if (!fs.existsSync(statePath)) return false;
   try {
     const state = sm.read(statePath);
     return (state.phases_entered ?? []).includes(phase);
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`scope-refresh: phase=${phase} could not read ${statePath} (treating as not entered): ${msg}`);
     return false;
   }
 }

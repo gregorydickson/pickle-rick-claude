@@ -225,7 +225,8 @@ function computeAllowedFromDiff(baseSha, headSha, repoRoot) {
 export function refreshScope(sessionRoot, phase, opts = {}) {
     const statePath = path.join(sessionRoot, 'state.json');
     const sm = new StateManager();
-    if (isPhaseAlreadyEntered(sm, statePath, phase))
+    const log = opts.log ?? ((msg) => { process.stderr.write(`${msg}\n`); });
+    if (isPhaseAlreadyEntered(sm, statePath, phase, log))
         return null;
     const scopePath = path.join(sessionRoot, 'scope.json');
     // A killed initial writer may leave the only valid scope in a sibling `.tmp.<pid>`.
@@ -235,7 +236,6 @@ export function refreshScope(sessionRoot, phase, opts = {}) {
     if (!scope)
         return null;
     const repoRoot = opts.repoRoot ?? resolveRepoRootFromState(sm, statePath);
-    const log = opts.log ?? ((msg) => { process.stderr.write(`${msg}\n`); });
     const newHead = getHeadSha(repoRoot);
     const newAllowed = computeRefreshedAllowed(scope, newHead, repoRoot, opts.target);
     if (newAllowed.length === 0 && phase === 'anatomy-park') {
@@ -253,14 +253,16 @@ export function refreshScope(sessionRoot, phase, opts = {}) {
     log(`scope-refresh: phase=${phase} head=${newHead} allowed=${newAllowed.length}`);
     return refreshed;
 }
-function isPhaseAlreadyEntered(sm, statePath, phase) {
+function isPhaseAlreadyEntered(sm, statePath, phase, log) {
     if (!fs.existsSync(statePath))
         return false;
     try {
         const state = sm.read(statePath);
         return (state.phases_entered ?? []).includes(phase);
     }
-    catch {
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`scope-refresh: phase=${phase} could not read ${statePath} (treating as not entered): ${msg}`);
         return false;
     }
 }
