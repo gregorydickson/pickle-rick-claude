@@ -612,6 +612,9 @@ function hasActivityEvent(activity: State['activity'], event: string): boolean {
   return Array.isArray(activity) && activity.some(a => isRecord(a) && a.event === event);
 }
 
+/** Minimum untouched age before a paused session with a dead mapped PID is demoted as orphaned. */
+const PAUSED_ORPHAN_MIN_AGE_MS = 5 * 60 * 1000;
+
 /**
  * Evaluates whether a paused session qualifies for orphan demotion.
  * Demotion requires BOTH conditions: the state is age-stale (≥5 min untouched)
@@ -630,7 +633,7 @@ function getPausedOrphanDemotion(statePath: string, state: State, preMigrationMt
   return {
     ageMs,
     mappedPid,
-    shouldDemote: ageMs >= 300_000 && deadMappedPid,
+    shouldDemote: ageMs >= PAUSED_ORPHAN_MIN_AGE_MS && deadMappedPid,
   };
 }
 
