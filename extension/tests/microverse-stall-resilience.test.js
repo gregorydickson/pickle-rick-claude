@@ -809,12 +809,15 @@ const R4_FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '
 const readR4Fixture = (name) => JSON.parse(fs.readFileSync(path.join(R4_FIXTURE_DIR, name), 'utf-8'));
 const AUDIT_RUNNER = 'extension/src/services/citadel/audit-runner.ts';
 const HELD_SET_OPS = { classification: 'held', figures: { basis: 'set_ops', resolved: 1, new: 1, remaining: 3 } };
+const touchedPaths = (...paths) => () => new Set(paths);
+const NOTHING_TOUCHED = () => new Set();
 
 test('R4-1: a held pass whose entry measurably shrank (122 -> 88 lines, same path) classifies improved', () => {
   const result = applyLedgerPartialProgress(
     HELD_SET_OPS,
     [{ path: AUDIT_RUNNER, description: 'buildCitadelAuditReport is 122 lines (hard limit 50); orchestrates 20+ analyzers inline' }],
     [{ path: AUDIT_RUNNER, description: 'runCitadelAnalyzers is 88 lines (hard limit 50); orchestrates 20 analyzer calls inline' }],
+    touchedPaths(AUDIT_RUNNER),
   );
   assert.equal(result.classification, 'improved');
   assert.deepEqual(result.figures, { basis: 'partial_progress', path: AUDIT_RUNNER, figure: 'lines', previous: 122, current: 88 });
@@ -825,6 +828,7 @@ test('R4-1: a falling complexity figure is partial progress too', () => {
     HELD_SET_OPS,
     [{ path: 'src/mux.ts', description: 'runMuxRunnerMain is 1690 code lines, complexity 366' }],
     [{ path: 'src/mux.ts', description: 'runMuxRunnerMain is 1690 code lines, complexity 300' }],
+    touchedPaths('src/mux.ts'),
   );
   assert.equal(result.classification, 'improved');
   assert.equal(result.figures.figure, 'complexity');
@@ -833,18 +837,54 @@ test('R4-1: a falling complexity figure is partial progress too', () => {
 test('R4-2 (negative control): an entry whose figures did not change stays held (121 -> 121)', () => {
   const prior = [{ path: AUDIT_RUNNER, description: 'buildCitadelAuditReport is 121 lines (hard limit 50)' }];
   const current = [{ path: AUDIT_RUNNER, description: 'buildCitadelAuditReport is 121 lines (hard limit 50)' }];
-  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, prior, current), HELD_SET_OPS);
-  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, undefined, current), HELD_SET_OPS, 'no prior snapshot, no progress claim');
+  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, prior, current, touchedPaths(AUDIT_RUNNER)), HELD_SET_OPS);
+  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, undefined, current, touchedPaths(AUDIT_RUNNER)), HELD_SET_OPS, 'no prior snapshot, no progress claim');
 });
 
 test('R4-2: partial progress never upgrades a regression, and a shrink on another path does not count', () => {
   const regressed = { classification: 'regressed', figures: { basis: 'set_ops', resolved: 0, new: 2, remaining: 1 } };
   const shrink = [[{ path: 'a.ts', description: 'fn is 200 lines' }], [{ path: 'a.ts', description: 'fn is 90 lines' }]];
-  assert.equal(applyLedgerPartialProgress(regressed, ...shrink), regressed);
+  assert.equal(applyLedgerPartialProgress(regressed, ...shrink, touchedPaths('a.ts')), regressed);
   assert.equal(
-    applyLedgerPartialProgress(HELD_SET_OPS, [{ path: 'a.ts', description: 'fn is 200 lines' }], [{ path: 'b.ts', description: 'fn is 90 lines' }]),
+    applyLedgerPartialProgress(
+      HELD_SET_OPS,
+      [{ path: 'a.ts', description: 'fn is 200 lines' }],
+      [{ path: 'b.ts', description: 'fn is 90 lines' }],
+      touchedPaths('a.ts', 'b.ts'),
+    ),
     HELD_SET_OPS,
   );
+});
+
+// AP-EXT-ITER265-01: the size figure is the judge's ESTIMATE and it jitters on an entry nobody touched — the
+// converged session's own fixture reads `dbba02da` as "121 lines" at iterations 0-1 and "122 lines" at 2.
+test('AP-EXT-ITER265-01: a figure that falls on a path no commit touched is judge jitter, not progress', () => {
+  const prior = [{ path: AUDIT_RUNNER, description: 'buildCitadelAuditReport is 122 lines (hard limit 50)' }];
+  const current = [{ path: AUDIT_RUNNER, description: 'buildCitadelAuditReport is 121 lines (hard limit 50)' }];
+  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, prior, current, NOTHING_TOUCHED), HELD_SET_OPS, 'untouched path');
+  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, prior, current, touchedPaths('other.ts')), HELD_SET_OPS, 'a sibling was touched');
+  assert.equal(applyLedgerPartialProgress(HELD_SET_OPS, prior, current, () => null), HELD_SET_OPS, 'unmeasurable range');
+  assert.equal(
+    applyLedgerPartialProgress(HELD_SET_OPS, prior, current, touchedPaths(AUDIT_RUNNER)).classification,
+    'improved',
+    'control: the same fall on a committed path is progress',
+  );
+});
+
+test('AP-EXT-ITER265-01: the committed-path range is enumerated at most once, and only when a figure fell', () => {
+  let calls = 0;
+  const counting = () => { calls += 1; return new Set(['b.ts']); };
+  const unchanged = [{ path: 'a.ts', description: 'fn is 90 lines' }];
+  applyLedgerPartialProgress(HELD_SET_OPS, unchanged, unchanged, counting);
+  assert.equal(calls, 0, 'no fall, no git enumeration');
+  const result = applyLedgerPartialProgress(
+    HELD_SET_OPS,
+    [{ path: 'a.ts', description: 'fn is 200 lines' }, { path: 'b.ts', description: 'fn is 200 lines' }],
+    [{ path: 'a.ts', description: 'fn is 190 lines' }, { path: 'b.ts', description: 'fn is 150 lines' }],
+    counting,
+  );
+  assert.equal(calls, 1);
+  assert.equal(result.figures.path, 'b.ts', 'an untouched fall is skipped, the touched one still counts');
 });
 
 test('R4-1: size figures are read from the judge description the ledger already carries', () => {
@@ -885,7 +925,11 @@ function replayJudgePasses(fixture, stallLimit, withPartialProgress) {
       score, lastAccepted ? lastAccepted.score : state.baseline_score, 0, fixture.direction,
       { resolved: judge.resolved, new: judge.new, remaining: judge.remaining }, previousLedger,
     );
-    const comparison = withPartialProgress ? applyLedgerPartialProgress(base, priorEntries, state.violation_ledger) : base;
+    // The fixtures record judge passes, not commit ranges: model a worker that edited every ledger path.
+    const everyLedgerPath = () => new Set([...priorEntries, ...state.violation_ledger].map((entry) => entry.path));
+    const comparison = withPartialProgress
+      ? applyLedgerPartialProgress(base, priorEntries, state.violation_ledger, everyLedgerPath)
+      : base;
     const entry = {
       iteration, metric_value: String(score), score, action: comparison.classification === 'regressed' ? 'revert' : 'accept',
       description: comparison.classification, pre_iteration_sha: '', timestamp: '',

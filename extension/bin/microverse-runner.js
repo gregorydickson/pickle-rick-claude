@@ -3548,16 +3548,25 @@ function largestLedgerFiguresByPath(entries) {
  * resolves the old id and reports a smaller one on the same file (session 2026-09-13-d2e834e1, iteration 5:
  * 122 lines -> 88 lines, logged `held`). Only `held` is upgraded; `regressed` stays regressed, and a pass
  * with no figure change is returned unchanged, so a worker that produces no change still stalls (R4-2).
+ *
+ * AP-EXT-ITER265-01: the figure is the judge's ESTIMATE, re-worded every pass — the same untouched entry read
+ * "121 lines" then "122 lines" in session 2026-09-13-d2e834e1 — so a fall alone is not evidence. It counts
+ * only on a path this iteration's commits TOUCHED. `committedPaths` is asked lazily, once, and only when a
+ * fall is found; an unmeasurable range (`null`) makes no progress claim.
  */
-export function applyLedgerPartialProgress(comparison, priorEntries, currentEntries) {
+export function applyLedgerPartialProgress(comparison, priorEntries, currentEntries, committedPaths) {
     if (comparison.classification !== 'held' || !Array.isArray(priorEntries) || !Array.isArray(currentEntries)) {
         return comparison;
     }
     const prior = largestLedgerFiguresByPath(priorEntries);
+    let touched;
     for (const [entryPath, current] of largestLedgerFiguresByPath(currentEntries)) {
         for (const [kind, value] of Object.entries(current)) {
             const previous = prior.get(entryPath)?.[kind];
-            if (previous !== undefined && value < previous) {
+            if (previous === undefined || value >= previous)
+                continue;
+            touched = touched === undefined ? committedPaths() : touched;
+            if (touched?.has(entryPath)) {
                 return {
                     classification: 'improved',
                     figures: { basis: 'partial_progress', path: entryPath, figure: kind, previous, current: value },
@@ -3566,6 +3575,13 @@ export function applyLedgerPartialProgress(comparison, priorEntries, currentEntr
         }
     }
     return comparison;
+}
+/** AP-EXT-ITER265-01: the paths this iteration's commits touched, or `null` when the range cannot be measured. */
+function committedPathSet(ctx) {
+    if (!ctx.preIterSha || !ctx.postIterSha)
+        return null;
+    const files = listCommittedFilesInRange(ctx.workingDir, ctx.preIterSha, ctx.postIterSha);
+    return files === null ? null : new Set(files);
 }
 export async function measureAndClassifyIteration(state, baseline, ctx) {
     const backend = resolveWorkerBackendFromState(ctx.currentRunnerState).backend;
@@ -3619,7 +3635,7 @@ export async function measureAndClassifyIteration(state, baseline, ctx) {
     const lastAccepted = findLastAcceptedEntry(metricConv.history);
     adoptLateBaseline(state, baseline, metricResult, metricConv, ctx);
     const previousScore = lastAccepted ? lastAccepted.score : state.baseline_score;
-    const comparison = applyLedgerPartialProgress(compareMetricWithBasis(metricResult.score, previousScore, state.key_metric.tolerance, state.key_metric.direction, currentLedger, previousLedger), priorLedgerEntries, state.violation_ledger);
+    const comparison = applyLedgerPartialProgress(compareMetricWithBasis(metricResult.score, previousScore, state.key_metric.tolerance, state.key_metric.direction, currentLedger, previousLedger), priorLedgerEntries, state.violation_ledger, () => committedPathSet(ctx));
     const classification = comparison.classification;
     ctx.log(`Classification: ${classification} (${formatMetricComparisonFigures(comparison.figures)})`);
     const entry = buildMetricHistoryEntry(state, metricResult, previousScore, classification, ctx);

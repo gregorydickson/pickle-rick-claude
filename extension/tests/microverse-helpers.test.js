@@ -670,6 +670,50 @@ const judgeViolation = (id) => ({
   id, path: `src/${id}.ts`, line: 1, severity: 'high', description: id,
 });
 
+// AP-EXT-ITER265-01 — R4 partial progress drives the REAL classification path. The judge re-estimates an
+// untouched entry "122 lines" -> "121 lines"; only a commit range that touched that path may call it progress.
+async function classifyReestimatedPass(committedStdout) {
+  const judge = {
+    score: 1,
+    violations: [{ id: 'big-fn', path: 'src/big.ts', line: 1, severity: 'high', description: 'bigFn is 121 lines (hard limit 50)' }],
+    resolved: [], new: [], remaining: ['big-fn'],
+  };
+  const { mv, ctx, cleanup } = makeJudgeSession(judge, { convergenceTarget: 0, baselineScore: 1 });
+  mv.violation_ledger = [{
+    id: 'big-fn', path: 'src/big.ts', line: 1, severity: 'high',
+    description: 'bigFn is 122 lines (hard limit 50)', first_seen_iter: 1, last_seen_iter: 1,
+  }];
+  const originalSpawn = _deps.spawnSync;
+  const diffRanges = [];
+  _deps.spawnSync = (cmd, args, opts) => {
+    if (cmd === 'git' && Array.isArray(args) && args[0] === 'diff') {
+      diffRanges.push(args[args.length - 1]);
+      return { status: 0, stdout: committedStdout, stderr: '' };
+    }
+    return originalSpawn(cmd, args, opts);
+  };
+  try {
+    const outcome = await measureAndClassifyIteration(mv, { raw: '1', score: 1 }, ctx);
+    return { outcome, diffRanges, history: mv.convergence.history };
+  } finally {
+    _deps.spawnSync = originalSpawn;
+    cleanup();
+  }
+}
+
+test('AP-EXT-ITER265-01: a re-estimated figure on a path no commit touched stays held and advances the stall', async () => {
+  const { outcome, diffRanges, history } = await classifyReestimatedPass('src/other.ts\0');
+  assert.equal(outcome.kind, 'unchanged');
+  assert.equal(history.at(-1)?.classification, 'held');
+  assert.deepEqual(diffRanges, [`${'a'.repeat(40)}..${'b'.repeat(40)}`], 'the iteration commit range is what was asked');
+});
+
+test('AP-EXT-ITER265-01 control: the same fall on a committed path is partial progress', async () => {
+  const { outcome, history } = await classifyReestimatedPass('src/big.ts\0');
+  assert.equal(outcome.kind, 'improved');
+  assert.equal(history.at(-1)?.classification, 'improved');
+});
+
 test('AP-EXT-ITER220-01: an under-reported judge score cannot converge the loop against its own ledger', async () => {
   const { mv, ctx, cleanup } = makeJudgeSession(
     {
@@ -960,6 +1004,14 @@ async function runTwoSizedJudgePasses(firstLines, secondLines) {
     { convergenceTarget: 0, baselineScore: 1 },
   );
   mv.convergence.stall_limit = 2;
+  // AP-EXT-ITER265-01: a size fall counts only on a path the iteration's commits touched — model the worker
+  // having edited the entry's file, as the recorded session did.
+  const originalSpawn = _deps.spawnSync;
+  _deps.spawnSync = (cmd, args, opts) => (
+    cmd === 'git' && Array.isArray(args) && args[0] === 'diff'
+      ? { status: 0, stdout: 'src/big.ts\0', stderr: '' }
+      : originalSpawn(cmd, args, opts)
+  );
   try {
     await measureAndClassifyIteration(mv, { raw: '1', score: 1 }, ctx);
     const second = { score: 1, violations: [R4_BIG_ENTRY(secondLines)], resolved: [], new: [], remaining: ['big-fn'] };
@@ -970,6 +1022,7 @@ async function runTwoSizedJudgePasses(firstLines, secondLines) {
     await measureAndClassifyIteration(mv, { raw: '1', score: 1 }, ctx);
     return { converged: isConverged(mv), stallCounter: mv.convergence.stall_counter };
   } finally {
+    _deps.spawnSync = originalSpawn;
     cleanup();
   }
 }
