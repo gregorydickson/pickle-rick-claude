@@ -13,18 +13,18 @@ function getBranch(repoPath) {
         return 'unknown';
     }
 }
+function hasStateTmpSnapshot(sessionDir) {
+    try {
+        return fs.readdirSync(sessionDir).some((entry) => entry.startsWith('state.json.tmp.'));
+    }
+    catch {
+        return false;
+    }
+}
 export function addToJar(sessionDir) {
     // 1. Read state.json
     const statePath = path.join(sessionDir, 'state.json');
-    const hasStateSnapshot = fs.existsSync(statePath) || (() => {
-        try {
-            return fs.readdirSync(sessionDir).some((entry) => entry.startsWith('state.json.tmp.'));
-        }
-        catch {
-            return false;
-        }
-    })();
-    if (!hasStateSnapshot) {
+    if (!fs.existsSync(statePath) && !hasStateTmpSnapshot(sessionDir)) {
         throw new Error(`state.json not found in ${sessionDir}`);
     }
     if (!fs.existsSync(statePath)) {
