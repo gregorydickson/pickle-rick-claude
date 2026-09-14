@@ -31,6 +31,7 @@ const AUDIT_SCRIPTS = [
   'bash scripts/audit-did-we-count.sh',
   'bash scripts/audit-recorded-ceilings.sh',
   'bash scripts/audit-ledger-probes.sh',
+  'bash scripts/audit-acceptance-assertion-coverage.sh',
 ].join(' && ');
 const RELEASE_GATE_COMMAND = `npx tsc --noEmit && npx eslint src/ --max-warnings=0 && npx tsc && ${AUDIT_SCRIPTS} && npm run test:fast:budget && npm run test:integration && npm run test:contract && RUN_EXPENSIVE_TESTS=1 npm run test:expensive`;
 
