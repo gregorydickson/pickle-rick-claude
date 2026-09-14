@@ -13,27 +13,22 @@ const CLAUDE_PATH = path.join(REPO_ROOT, 'CLAUDE.md');
 const RELEASE_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'release.yml');
 const CI_WORKFLOW = path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml');
 
-const GATE = [
-  'npx tsc --noEmit',
-  'npx eslint src/ --max-warnings=0',
-  'npx tsc',
-  'bash scripts/audit-test-tiers.sh',
-  'bash scripts/audit-test-isolation.sh',
-  'bash scripts/audit-subprocess-heavy-tests.sh',
-  'bash scripts/audit-fix-commits.sh',
-  'bash scripts/audit-bundle-thesis.sh',
-  'bash scripts/audit-quarantine.sh',
-  'bash scripts/audit-trap-door-enforcement.sh',
-  'bash scripts/audit-guarded-reset.sh',
-  'bash scripts/audit-un-terminalize-single-path.sh',
-  'bash scripts/audit-did-we-count.sh',
-  'npm run test:fast:budget',
-  'npm run test:integration',
-  'npm run test:contract',
-  'RUN_EXPENSIVE_TESTS=1 npm run test:expensive',
-].join(' && ');
+// AP-EXT-ITER266-01: the canonical gate is READ from the root CLAUDE.md `## Versioning` line,
+// never restated as a step list here — a hand copy missed a newly registered audit and reddened
+// this tier over mirrors that all agreed. release-gate-parity.test.js holds the one pinned copy.
+function versioningGate(text) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.indexOf('## Versioning');
+  assert.notEqual(start, -1, 'CLAUDE.md is missing the ## Versioning section');
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('## '));
+  const gateLine = lines
+    .slice(start + 1, end === -1 ? lines.length : end)
+    .find(line => /^`npx tsc --noEmit .*`$/.test(line));
+  assert.ok(gateLine, 'CLAUDE.md ## Versioning carries no release gate line');
+  return gateLine.slice(1, -1);
+}
 
-const FULL_CMD = `cd extension && npm ci && ${GATE}`;
+const FULL_CMD = `cd extension && npm ci && ${versioningGate(readFileSync(CLAUDE_PATH, 'utf8'))}`;
 
 function extractClaudeGate(text) {
   const line = text.split(/\r?\n/).find(l => l.startsWith('cd extension &&'));

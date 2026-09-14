@@ -1,7 +1,11 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync,
+} from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -332,4 +336,77 @@ test('every tier the test runner accepts is invoked by the release gate', () => 
       + `invokes it, so every '// @tier: ${tier}' file is audited green and never executed`,
     );
   }
+});
+
+// AP-EXT-ITER266-01: check-wired.sh held its own literal copy of the gate, so every new gate step
+// had to be registered there by hand. 13337b1a registered audit-recorded-ceilings.sh at the four
+// real mirrors plus this file and missed it, and the script exited 1 over three sources that all
+// agreed — reddening the expensive tier of the release gate. The script now READS the gate from
+// the CLAUDE.md Versioning line. The separating case is the first one: a step no hand list names,
+// carried by every mirror, must pass.
+const CHECK_WIRED_SCRIPT = path.join(__dirname, '..', 'scripts', 'check-wired.sh');
+const FIXTURE_GATE = 'npx tsc --noEmit && bash scripts/audit-alpha.sh && bash scripts/audit-added-later.sh && npm run test:fast:budget';
+const DROPPED_STEP_GATE = 'npx tsc --noEmit && bash scripts/audit-alpha.sh && npm run test:fast:budget';
+
+function runCheckWiredFixture({
+  versioningLine = `\`${FIXTURE_GATE}\``,
+  ciGate = FIXTURE_GATE,
+  scripts = ['audit-alpha.sh', 'audit-added-later.sh'],
+} = {}) {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'check-wired-')));
+  try {
+    const scriptsDir = path.join(root, 'extension', 'scripts');
+    const workflowsDir = path.join(root, '.github', 'workflows');
+    mkdirSync(scriptsDir, { recursive: true });
+    mkdirSync(workflowsDir, { recursive: true });
+    copyFileSync(CHECK_WIRED_SCRIPT, path.join(scriptsDir, 'check-wired.sh'));
+    for (const name of scripts) {
+      writeFileSync(path.join(scriptsDir, name), '#!/usr/bin/env bash\nexit 0\n');
+      chmodSync(path.join(scriptsDir, name), 0o755);
+    }
+    writeFileSync(
+      path.join(root, 'CLAUDE.md'),
+      `# Fixture\n\n## Build & Test\n\ncd extension && npm ci && ${FIXTURE_GATE}\n\n`
+        + `## Versioning\n\nBefore tagging:\n\n${versioningLine}\n\n## Architecture\n`,
+    );
+    const workflow = (gate) => `jobs:\n  gate:\n    steps:\n      - name: Gate\n        run: cd extension && npm ci && ${gate}\n`;
+    writeFileSync(path.join(workflowsDir, 'release.yml'), workflow(FIXTURE_GATE));
+    writeFileSync(path.join(workflowsDir, 'ci.yml'), workflow(ciGate));
+    const result = spawnSync('bash', [path.join(scriptsDir, 'check-wired.sh')], { encoding: 'utf8', timeout: 30000 });
+    assert.equal(result.error, undefined, `check-wired.sh did not run: ${result.error}`);
+    return result;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER266-01: check-wired passes a gate step no hand list names when every mirror carries it', () => {
+  const result = runCheckWiredFixture();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /check-wired: OK/);
+});
+
+test('AP-EXT-ITER266-01: check-wired still reds a mirror that drops a step', () => {
+  const result = runCheckWiredFixture({ ciGate: DROPPED_STEP_GATE });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ci\.yml gate mismatch/);
+  assert.doesNotMatch(result.stderr, /release\.yml gate mismatch/);
+});
+
+test('AP-EXT-ITER266-01: check-wired fails closed when the Versioning gate line is absent', () => {
+  const result = runCheckWiredFixture({ versioningLine: 'No gate recorded here.' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /## Versioning carries no release gate line/);
+});
+
+test('AP-EXT-ITER266-01: check-wired reds a derived gate step whose script is not on disk', () => {
+  const result = runCheckWiredFixture({ scripts: ['audit-alpha.sh'] });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /referenced script not found: scripts\/audit-added-later\.sh/);
+});
+
+test('AP-EXT-ITER266-01: check-wired exits 0 against the real tree', () => {
+  const result = spawnSync('bash', [CHECK_WIRED_SCRIPT], { encoding: 'utf8', timeout: 30000 });
+  assert.equal(result.error, undefined, `check-wired.sh did not run: ${result.error}`);
+  assert.equal(result.status, 0, result.stderr);
 });

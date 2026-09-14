@@ -25,12 +25,12 @@ const BUDGET_TOKEN = `${FAST}:budget`;
 // Matches single-pass test:fast NOT immediately followed by ":budget".
 const SINGLE_PASS_RE = new RegExp(`${FAST.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!:budget)`);
 
-// Each mirror -> the file that carries its copy of the canonical gate command.
+// Each mirror -> the file that carries its copy of the canonical gate command. check-wired.sh is
+// NOT a mirror: it reads the gate from CLAUDE.md (AP-EXT-ITER266-01), so it carries no copy.
 const MIRRORS = {
   'CLAUDE.md': path.join(REPO_ROOT, 'CLAUDE.md'),
   'ci.yml': path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml'),
   'release.yml': path.join(REPO_ROOT, '.github', 'workflows', 'release.yml'),
-  'check-wired.sh': path.join(EXTENSION_ROOT, 'scripts', 'check-wired.sh'),
   'release-gate-wiring.test.js': fileURLToPath(import.meta.url),
 };
 

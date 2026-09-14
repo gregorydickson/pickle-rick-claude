@@ -9,8 +9,14 @@ CLAUDE_PATH="$REPO_ROOT/CLAUDE.md"
 RELEASE_YML="$REPO_ROOT/.github/workflows/release.yml"
 CI_YML="$REPO_ROOT/.github/workflows/ci.yml"
 
-# Canonical gate command — byte-identical in all three sources
-GATE="npx tsc --noEmit && npx eslint src/ --max-warnings=0 && npx tsc && bash scripts/audit-test-tiers.sh && bash scripts/audit-test-isolation.sh && bash scripts/audit-subprocess-heavy-tests.sh && bash scripts/audit-fix-commits.sh && bash scripts/audit-bundle-thesis.sh && bash scripts/audit-quarantine.sh && bash scripts/audit-trap-door-enforcement.sh && bash scripts/audit-guarded-reset.sh && bash scripts/audit-un-terminalize-single-path.sh && bash scripts/audit-did-we-count.sh && npm run test:fast:budget && npm run test:integration && npm run test:contract && RUN_EXPENSIVE_TESTS=1 npm run test:expensive"
+# Canonical gate command — READ from the root CLAUDE.md `## Versioning` line, the documented
+# release-gate source of truth. A literal copy here had to be re-registered by hand for every new
+# gate step, and a missed registration reddened this script over mirrors that all agreed.
+GATE="$(awk '/^## Versioning$/ { in_section = 1; next } in_section && /^## / { exit } in_section && /^`npx tsc --noEmit .*`$/ { print; exit }' "$CLAUDE_PATH" 2>/dev/null | sed 's/^`//; s/`$//')"
+if [ -z "$GATE" ]; then
+  echo "check-wired: FAIL: $CLAUDE_PATH: ## Versioning carries no release gate line to check against" >&2
+  exit 1
+fi
 FULL_CMD="cd extension && npm ci && $GATE"
 
 status=0
