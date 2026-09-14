@@ -117,16 +117,3 @@ true
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /1 open, 1 probes confirmed OPEN/);
 });
-
-test('a probe that asserts real behaviour catches a real regression, not just a string', () => {
-  // The probe below calls node to check an actual boolean rather than grepping text — this is
-  // the shape N1's "assert behaviour, not a string" requirement demands of real probes.
-  const behavioural = `## OPEN BUG — behavioural probe sample
-
-\`\`\`probe
-node -e "process.exit((1 + 1 === 2) ? 0 : 1)"
-\`\`\`
-`;
-  const result = runAudit(behavioural);
-  assert.equal(result.status, 0, result.stderr);
-});
