@@ -3411,26 +3411,35 @@ in 8 min. Workaround: relaunch with explicit `--max-iterations 500` (the non-aut
 
 ## OPEN BUG — R-ORSR-2 recovery flips a ticket Done without the impl landing (2026-07-16, capture-only)
 
-> **⚠ NARROWED, NOT CLOSED — measured 2026-09-14 after B-BUGZERO Z1 landed.** Z1 made the Done-flip run
-> a ticket's executable acceptance assertion and park on failure. The guard is reached on this route:
-> `commitAndContinueDoneFlip` calls `guardCompletionCommitBeforeDone`, whose Z1 arm runs
-> `findFailedAcceptanceAssertion`. **The residual is the EXTRACTOR's contract:**
+> **DISPOSITION — STILL OPEN BY DESIGN, re-measured 2026-09-14 after O1 (`54f9e2e6`) and O2 (`7f64006e`)
+> landed on top of B-BUGZERO Z1.** Z1 made the Done-flip run a ticket's executable acceptance assertion
+> and park on failure, reached via `commitAndContinueDoneFlip` → `guardCompletionCommitBeforeDone`'s Z1
+> arm, `findFailedAcceptanceAssertion`. The residual this row names — the extractor's contract requires
+> the acceptance command to be BACKTICKED, because inferring a runnable command from prose is the
+> non-goal this PRD forbids — is unchanged, and O1/O2 do not close it; they make the tradeoff visible and
+> keep it from silently regressing.
 >
-> ```
-> EXECUTABLE_ASSERTION_RE = /`([^`\n]+)`[ \t]+(exits|returns)[ \t]+`?(\d+)\b/g
-> ```
+> - **O1** makes every ticket-authoring path (`.claude/commands/pickle-prd.md`,
+>   `.claude/commands/pickle-refine-prd.md`, and the refinement-team requirements-analyst prompt built by
+>   `buildWorkerPrompt` in `spawn-refinement-team.ts`) document a backticked worked example AND state
+>   that prose criteria remain fully valid and unguarded, end to end — pinned, including a mutation
+>   control asserting a backtick-stripped copy of the same example fails to parse, by
+>   `extension/tests/acceptance-assertion-authoring-form.test.js`.
+> - **O2** turns coverage into a ratchet, not a one-time census: `bash
+>   extension/scripts/audit-acceptance-assertion-coverage.sh` measures, over every git-tracked
+>   `rick_ticket_*.md`, how many tickets with a non-empty Acceptance Criteria section carry >=1
+>   executable assertion, and refuses to drift below (or past, unnoticed) the recorded floor in
+>   `extension/scripts/acceptance-assertion-coverage-floor.json`. Re-run 2026-09-14: exits 0, measured
+>   `1/8`, matching the recorded floor exactly. That corpus is the git-tracked ticket corpus (currently
+>   fixture tickets), not the "8 real session tickets" this blockquote previously censused by hand — a
+>   different denominator, not a regression from the earlier 5-in-8 figure.
 >
-> The command must be BACKTICKED. That is deliberate — the PRD's own non-goal forbids inferring runnable
-> commands from prose, because inference is how this bug class is created. So an unbackticked criterion
-> is out of contract by design, not by accident.
->
-> **Coverage, censused over real session tickets:** of 8 tickets carrying an `## Acceptance Criteria`
-> section, **5 carry a backticked `exits`/`returns` assertion and 3 do not.** The 3 are still unguarded.
->
-> **The row's probe uses an UNBACKTICKED fixture, so it reports OPEN and is RIGHT to** — a residual
-> genuinely remains. Do not "fix" the probe by backticking its fixture; that would hide the gap. The
-> real closure is either a ticket-authoring guarantee that acceptance commands are always backticked, or
-> an explicit decision to accept 5-in-8 coverage and say so.
+> **Verdict is unchanged: the row's probe still reports OPEN.** `bash
+> extension/scripts/audit-ledger-probes.sh` re-run 2026-09-14: 1 probe confirmed OPEN — this row. The
+> probe's fixture stays deliberately unbackticked; backticking it would hide the residual rather than
+> close it, and it is untouched by O1/O2. The real closure remains either a ticket-authoring GUARANTEE
+> that acceptance commands are always backticked (not merely documented and encouraged), or an explicit
+> standing decision to accept partial coverage and say so — neither has happened, so this stays OPEN.
 
 
 **`prds/BUG-REPORT-2026-07-16-r-orsr2-recovery-flips-ticket-done-without-impl.md`**
