@@ -1223,7 +1223,21 @@ function printCompletionPanel(finalResults, allSuccess) {
     printMinimalPanel('Refinement Team Complete', Object.fromEntries(finalResults.map((r) => [r.roleId, r.success ? '✅ analysis written' : '❌ failed — check log'])), allSuccess ? 'GREEN' : 'YELLOW', '🥒');
 }
 const AC_SHAPE_SECTION_RE = /^##+\s+ac_shape_smells\s*$/im;
-const UNIVERSAL_QUANTIFIER_RE = /\b(?:all|every|for any|each)\b/i;
+// Z3: recognize NEGATIVE universals too. "No rule emits an invalid response" and "a FAIL
+// never renders below a PASS" state the same universal claim as "every rule emits a valid
+// response" — ordinary English negates the predicate, not the quantifier. Measured
+// pre-widening: of five probe titles carrying a universal claim, only the two affirmative
+// ones (`all`, `every`) matched; `no`, `never`, and bare `any` did not, so a correctly
+// parametrized ticket phrased negatively failed `isParametrizedTicket` and
+// `evaluateAcShapeEnforcement`'s single-ticket-collapse branch turned that into
+// `runAcShapeEnforcement` -> 2 -> `process.exit(2)` in `main()` AFTER `writeManifestAtomic`
+// — the documented operator halt, charged for the shape the gate itself asks for.
+// `\b` anchoring keeps this safe against false starts: "known"/"none"/"not" don't carry a
+// word-bounded "no", and "anybody"/"anything"/"many" don't carry a word-bounded "any".
+// `for any` is dropped as a literal alternative: bare `\bany\b` already matches it (the
+// substring is bounded by spaces on both sides), so widening also subtracts one alternative
+// instead of only adding — one pattern, no framework-spelling list to grow further.
+const UNIVERSAL_QUANTIFIER_RE = /\b(?:all|every|any|each|no|never)\b/i;
 const JUSTIFICATION_RE = /\/\/\s*JUSTIFICATION:/i;
 const NON_EMPTY_RE = /\S/;
 // AP-EXT-ITER122-01: match the PARAMETRIZED SHAPE, not one framework's spelling of

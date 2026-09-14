@@ -24,6 +24,7 @@ import {
     countContentLines,
     findStaleAnchorWarnings,
     evaluateAcShapeEnforcement,
+    runAcShapeEnforcement,
     detectBundleOfBundlesOverCollapse,
     computeRequirementCoverageGap,
 } from '../bin/spawn-refinement-team.js';
@@ -1943,6 +1944,60 @@ test('AP-EXT-ITER122-01: a genuinely unparametrized single-ticket collapse still
     for (const violation of violations) {
         assert.match(violation.reason, /single-ticket collapse/, 'and it must be the single-collapse branch');
     }
+});
+
+// ---------------------------------------------------------------------------
+// Z3 — UNIVERSAL_QUANTIFIER_RE recognizes negative universals, through the REAL
+// buildRefinementManifest -> evaluateAcShapeEnforcement -> runAcShapeEnforcement
+// path (not a unit stub of the regex).
+//
+// Title text below is copied verbatim from this bundle's own sibling ticket
+// 7d42b8d6's real Acceptance Criteria (Z1-3): "a ticket with NO executable
+// assertion yields the same decision as before the change (control case)." — a
+// genuine negative-universal criterion authored during this campaign's own PRD
+// refinement, not an invented string.
+// ---------------------------------------------------------------------------
+
+test('Z3-4: a real negative-universal single-ticket collapse flips runAcShapeEnforcement from blocking to passing', () => {
+    const realNegativeUniversalTitle = 'a ticket with NO executable assertion yields the same decision as before the change (control case).';
+    const manifest = buildAcShapeManifest(
+        tmpDir('pickle-acshape-z3-'),
+        () => [{
+            id: 'T-Z3-4',
+            title: realNegativeUniversalTitle,
+            source_ac_ids: ['AC-Z3'],
+            acceptance_test: "describeEach([['a'], ['b']])('%s yields the same decision', ...)",
+        }],
+        { ac_id: 'AC-Z3', headline: 'enumerated AC collapsed to one ticket', ticket_ids: ['T-Z3-4'] },
+    );
+
+    assert.equal(
+        runAcShapeEnforcement(manifest, {}), 0,
+        'a real negative-universal criterion paired with a describeEach table must PASS the gate',
+    );
+    assert.deepEqual(evaluateAcShapeEnforcement(manifest), []);
+});
+
+test('Z3-4 (negative control): the identical shape WITHOUT a negative-universal word still blocks', () => {
+    // Same length, same structure, same describeEach acceptance test — only the
+    // negative-universal word ("NO") is replaced, so the flip above is provably
+    // caused by the widened quantifier recognition, not by anything else in the shape.
+    const controlTitle = 'a ticket with SOME executable assertion yields the same decision as before the change (control case).';
+    const manifest = buildAcShapeManifest(
+        tmpDir('pickle-acshape-z3-control-'),
+        () => [{
+            id: 'T-Z3-4-CTRL',
+            title: controlTitle,
+            source_ac_ids: ['AC-Z3-CTRL'],
+            acceptance_test: "describeEach([['a'], ['b']])('%s yields the same decision', ...)",
+        }],
+        { ac_id: 'AC-Z3-CTRL', headline: 'enumerated AC collapsed to one ticket', ticket_ids: ['T-Z3-4-CTRL'] },
+    );
+
+    assert.equal(
+        runAcShapeEnforcement(manifest, {}), 2,
+        'without a universal quantifier of any spelling, the single-ticket collapse must still block',
+    );
 });
 
 // ─── decomposition_quality_flags: one flag per TICKET, not per ANALYST ───────

@@ -582,3 +582,139 @@ test('AP-EXT-ITER234-01: the halt is the consequence — runAcShapeEnforcement e
     'exactly one channel combination may halt the refinement phase'
   );
 });
+
+// ─── Z3: UNIVERSAL_QUANTIFIER_RE recognizes negative universals ─────────────
+//
+// `UNIVERSAL_QUANTIFIER_RE` matched only affirmative quantifiers (`all`, `every`,
+// `for any`, `each`). "No rule emits an invalid response" and "a FAIL never renders
+// below a PASS" state the same universal claim negated, and ordinary "any handler
+// that throws is retried" is a bare-`any` universal — none of the three matched,
+// so a correctly-parametrized ticket phrased that way failed `isParametrizedTicket`
+// and single-ticket-collapse enforcement halted the refinement (exit 2) over the
+// shape the gate itself asked for.
+//
+// `isParametrizedTicket` requires the quantifier AND a `describeEach(...)`-shaped
+// acceptance test; pairing every title below with a fixed describeEach acceptance
+// test isolates the quantifier bit through the real exported predicate.
+const EACH_TABLE_ACCEPTANCE_TEST = "describeEach([['a'], ['b']])('%s passes', ...)";
+
+test('Z3-1: all five probe titles are recognized as universal-quantifier tickets', () => {
+  const probes = [
+    'All rules emit valid responses',
+    'Every rule emits valid responses',
+    'NO rule emits an invalid response',
+    'A FAIL never renders below a PASS',
+    'any handler that throws is retried',
+  ];
+  for (const title of probes) {
+    assert.ok(
+      isParametrizedTicket({
+        id: 'T-Z3-1',
+        title,
+        source_ac_ids: [],
+        acceptance_test: EACH_TABLE_ACCEPTANCE_TEST,
+      }),
+      `probe title must be recognized as a universal-quantifier ticket: "${title}"`,
+    );
+  }
+});
+
+test('Z3-3: the four previously-recognized spellings (all, every, for any, each) still match', () => {
+  const previouslyPassing = [
+    'All handlers pass',
+    'Every handler passes',
+    'validated for any input',
+    'each handler passes',
+  ];
+  for (const title of previouslyPassing) {
+    assert.ok(
+      isParametrizedTicket({
+        id: 'T-Z3-3',
+        title,
+        source_ac_ids: [],
+        acceptance_test: EACH_TABLE_ACCEPTANCE_TEST,
+      }),
+      `previously-recognized spelling must still match: "${title}"`,
+    );
+  }
+});
+
+test('Z3-3: the two committed real-corpus fixtures do not regress', () => {
+  const corpusRoot = path.resolve(__dirname, 'fixtures', 'greenfield-corpus');
+  const positive = JSON.parse(fs.readFileSync(path.join(corpusRoot, 'loa727-ac-shape', 'manifest.json'), 'utf-8'));
+  const negative = JSON.parse(fs.readFileSync(path.join(corpusRoot, 'negative-ac-shape', 'manifest.json'), 'utf-8'));
+
+  assert.deepEqual(
+    evaluateAcShapeEnforcement(positive), [],
+    'the already-parametrized real corpus ticket must still pass with zero violations',
+  );
+  const negativeViolations = evaluateAcShapeEnforcement(negative);
+  assert.ok(
+    negativeViolations.length > 0,
+    'the genuinely-unparametrized real corpus ticket must still violate — widening must not strip the gate of its teeth',
+  );
+});
+
+// Z3-2 over-trigger control, plus a positive replay: text below is copied verbatim
+// from real Acceptance Criteria bullets authored in this bundle's own sibling
+// tickets (session 2026-09-14-859d5d65, tickets 7d42b8d6 and f666fc52) — not
+// invented strings. Replayed against the OLD and NEW pattern during research; see
+// research_2026-09-14.md for the full before/after table.
+const REAL_CORPUS_NO_QUANTIFIER = [
+  // Z2-1
+  'the shared mapper returns metric_unmeasurable_unrecoverable / metric_unmeasurable_transient, and the phase (baseline | iteration) is recorded as a separate field.',
+  // Z2-2
+  'a genuine baseline failure records phase baseline.',
+  // Z2-4
+  'a state.json persisted with exit_reason: baseline_unmeasurable_unrecoverable (and _transient) reads back and classifies identically through classifyMicroverseHaltDecision / isFatalPhaseFailure.',
+  // Z1-4
+  'the sole ticket-tagged commit is a commit-and-continue recovery (R-ORSR-2) commit, and a grep AC is demonstrably false. The ticket does NOT reach Done through the commitAndContinueDoneFlip path.',
+  // Z1-5
+  'real work is committed and the executable AC is TRUE. The ticket flips Done on the first attempt.',
+];
+
+const REAL_CORPUS_AFFIRMATIVE_UNIVERSAL = [
+  // Z2-5 (contains "each")
+  'disposition parity. For each renamed reason, reportAs, exitCode, fatal-ness and halt-decision action equal the old reasons values (asserted by a test that derives the old values, not a hand-copied table).',
+  // Z1-1 (contains "every")
+  'a ticket whose AC carries an explicit executable assertion that FAILS does not reach Done at the Done-flip seam, even with every checkbox ticked.',
+];
+
+const REAL_CORPUS_NEGATIVE_UNIVERSAL = [
+  // Z1-2
+  'that refusal parks the ticket with a named reason and the loop continues. A test asserts no exit_reason is recorded and the decision is not a halt.',
+  // Z1-3
+  'a ticket with NO executable assertion yields the same decision as before the change (control case).',
+  // Z2-3
+  'an iteration failure after a successful baseline records phase iteration, and no emitted reason/log/event carries a baseline_-prefixed name (the ec274d75 worked case).',
+];
+
+test('Z3-2 (over-trigger control): real criteria stating no universal never become parametrized', () => {
+  for (const title of REAL_CORPUS_NO_QUANTIFIER) {
+    assert.equal(
+      isParametrizedTicket({ id: 'T-Z3-2-neg', title, source_ac_ids: [], acceptance_test: EACH_TABLE_ACCEPTANCE_TEST }),
+      false,
+      `criterion stating no universal must not become parametrized: "${title}"`,
+    );
+  }
+});
+
+test('Z3-2/Z3-3: real criteria already stating an affirmative universal are unaffected', () => {
+  for (const title of REAL_CORPUS_AFFIRMATIVE_UNIVERSAL) {
+    assert.equal(
+      isParametrizedTicket({ id: 'T-Z3-3-real', title, source_ac_ids: [], acceptance_test: EACH_TABLE_ACCEPTANCE_TEST }),
+      true,
+      `real criterion already carrying an affirmative universal must still match: "${title}"`,
+    );
+  }
+});
+
+test('Z3-2: real criteria genuinely stating a negative universal are now recognized', () => {
+  for (const title of REAL_CORPUS_NEGATIVE_UNIVERSAL) {
+    assert.equal(
+      isParametrizedTicket({ id: 'T-Z3-2-pos', title, source_ac_ids: [], acceptance_test: EACH_TABLE_ACCEPTANCE_TEST }),
+      true,
+      `real criterion genuinely stating a negative universal must now be recognized: "${title}"`,
+    );
+  }
+});
