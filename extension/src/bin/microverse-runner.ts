@@ -4611,7 +4611,7 @@ type LedgerFigures = Partial<Record<LedgerSizeFigureKind, number>>;
 type LedgerFigureEntry = Pick<ViolationLedger, 'path' | 'description' | 'measured'>;
 
 /**
- * N2: keep only the figures that are finite non-negative numbers. Anything else is ABSENT, so a garbage
+ * AC-N2: keep only the figures that are finite non-negative numbers. Anything else is ABSENT, so a garbage
  * structured value earns no progress credit rather than a fabricated one.
  */
 export function readMeasuredFigures(measured: unknown): LedgerFigures {

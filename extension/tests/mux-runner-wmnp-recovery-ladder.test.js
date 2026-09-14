@@ -6,6 +6,7 @@
 // advance a near-green ticket; only a genuinely exhausted ladder escalates to
 // recovery_exhausted. It must reuse the shared seam (attemptRecoveryBeforeTerminal
 // + state.recovery_attempts), never a forked parallel ladder.
+// AC-N3: updated with the behaviour-preserving runMuxRunnerMain seam extraction (9a419376).
 
 import { test } from 'node:test';
 import assert from 'node:assert';

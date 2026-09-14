@@ -1,5 +1,6 @@
 // @tier: fast
-// N1: audit-ledger-probes.sh runs against temp-dir fixtures, never the real prds/MASTER_PLAN.md.
+// AC-N1: audit-ledger-probes.sh runs against temp-dir fixtures, never the real prds/MASTER_PLAN.md.
+// AC-N4: N4-2 rests on the N1-3 case below — a row that survives the sweep with no probe reds this audit.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

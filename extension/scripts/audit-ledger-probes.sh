@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# audit-ledger-probes.sh — N1: every OPEN BUG / TOP ITEM row in prds/MASTER_PLAN.md carries a
+# audit-ledger-probes.sh — AC-N1: every OPEN BUG / TOP ITEM row in prds/MASTER_PLAN.md carries a
 # runnable PROBE, and this audit runs them.
 #
 # Open-bug rows rot green: a row read as "still broken" purely from the human's memory of writing

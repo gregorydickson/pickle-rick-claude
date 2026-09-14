@@ -904,7 +904,7 @@ test('R4-1: size figures are read from the judge description the ledger already 
 });
 
 // ---------------------------------------------------------------------------
-// N2 (GitHub #24): the entry's size is a structured field. Prose is the legacy fallback only, because
+// AC-N2 (GitHub #24): the entry's size is a structured field. Prose is the legacy fallback only, because
 // "the largest number quoted" is right for a ceiling and wrong for a previous size.
 // ---------------------------------------------------------------------------
 

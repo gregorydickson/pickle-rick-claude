@@ -14649,7 +14649,7 @@ function advanceCommitPendingTracker(
 type IterationStartStep = { kind: 'retry' } | { kind: 'exit'; exitReason: ExitReason } | { kind: 'ready'; state: State };
 
 /**
- * 7c5a706b (N3 stage 1): the state read, inactive exit, one-time target-toolchain pre-flight and the three per-ticket
+ * 7c5a706b (AC-N3 stage 1): the state read, inactive exit, one-time target-toolchain pre-flight and the three per-ticket
  * cache normalizers `runMuxRunnerMain` runs first on every pass. The pre-flight latch is flipped in place, so the
  * pre-flight still runs once per run.
  */
