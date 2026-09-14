@@ -347,10 +347,17 @@ test('mux-runner: applyAutoTicketCompletionValidation call site parks on the fat
     "the call site must check the verdict's reason for the fatal guard-failure case specifically (not a bare action === 'leave' check, which would also fire on the benign ticket_already_terminal / malformed_or_missing_ticket_frontmatter leave-reasons)",
   );
 
+  // 7ac3038c moved the transition check out of the loop into `resolveTicketTransition`, which hands its
+  // parking decision back as a `continue` step; the loop turns that step into a `continue;` (second assert).
   assert.match(
     window,
-    /reason\s*===\s*'guard_failed_no_commit_evidence'\)\s*\{\s*[\s\S]{0,40}?continue;/,
-    "on the fatal guard-failure verdict, the call site must `continue;` the phase loop — never break, never (re)assign exitReason to 'done_without_commit_evidence' (ticket 96444430)",
+    /reason\s*===\s*'guard_failed_no_commit_evidence'\)\s*\{\s*[\s\S]{0,40}?return \{ kind: 'continue' \};/,
+    "on the fatal guard-failure verdict, the call site must park via a `continue` step — never break, never (re)assign exitReason to 'done_without_commit_evidence' (ticket 96444430)",
+  );
+  assert.match(
+    source,
+    /transition\.kind === 'continue'\) \{\s*emitWastedIterOnce\(\);\s*continue;/,
+    'the main loop must turn the transition `continue` step into a loop `continue;` — never a break',
   );
 
   assert.doesNotMatch(

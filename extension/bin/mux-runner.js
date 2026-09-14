@@ -12682,7 +12682,367 @@ function maybeRecordCircuitBreakerIteration(input) {
         return { cbState, tripped: false };
     return recordCircuitBreakerIteration({ ...recordInput, cbState });
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 665 code lines against a ceiling of 120, and complexity 122 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/**
+ * 7ac3038c: AC-R-WMNP-4 — route the terminal no-progress trigger through the SAME RecoveryController ladder as
+ * closer_handoff_terminal BEFORE the bare Failed flip / respawn. A near-green diff (fix-forward-trivial /
+ * execute-converged-plan / auto-split) advances the ticket instead of being respawned indefinitely; only a genuinely
+ * exhausted ladder escalates to recovery_exhausted. A fall_through (nothing to recover) proceeds to the next stage.
+ */
+function routeWmwRecoveryLadder(input) {
+    const { state, statePath, sessionDir, extensionRoot, iteration, apTicketId, log } = input;
+    // AC-2 fail-safe: missing working_dir must halt this git-mutating
+    // recovery call, never fall back to process.cwd() (the real repo).
+    if (!state.working_dir) {
+        recordExitReason(statePath, 'state_working_dir_missing');
+        safeDeactivate(statePath);
+        return { kind: 'exit', exitReason: 'state_working_dir_missing' };
+    }
+    const wmwRecovery = routeRecoveryBeforeTerminal({
+        sessionDir,
+        statePath,
+        extensionRoot,
+        workingDir: state.working_dir,
+        ticketId: apTicketId,
+        iteration,
+        flags: state.flags ?? null,
+        log,
+        mode: 'worker',
+    });
+    if (wmwRecovery.kind === 'advanced') {
+        log(`recovery: ${wmwRecovery.strategy} advanced ${apTicketId} before wmw-auto-skip Failed flip — continuing.`);
+        // Reset the zero-progress counter so a recovered ticket is not re-skipped on the next spawn.
+        try {
+            sm.update(statePath, s => {
+                const entry = s.worker_artifact_progress?.[apTicketId];
+                if (entry)
+                    entry.zero_progress_count = 0;
+            });
+        }
+        catch { /* best-effort */ }
+        return { kind: 'continue', resetStall: true };
+    }
+    if (wmwRecovery.kind === 'exhausted') {
+        // AC-A2 (B-RRH): per-ticket ladder exhaustion advances to the next runnable
+        // Todo (emitting ticket_ladder_exhausted) instead of killing the whole run;
+        // run-exit only when no runnable ticket remains.
+        const ladderAction = advanceOrExitOnLadderExhaustion({
+            sessionDir,
+            statePath,
+            workingDir: state.working_dir || process.cwd(),
+            ticketId: apTicketId,
+            reason: `recovery_exhausted: ${wmwRecovery.reason}`,
+            log,
+        });
+        if (ladderAction === 'advance') {
+            log(`ticket_ladder_exhausted: ${apTicketId} (${wmwRecovery.reason}) — advancing to next runnable ticket at iteration ${iteration}.`);
+            return { kind: 'continue', resetStall: true };
+        }
+        log(`recovery_exhausted: ladder exhausted for ${apTicketId} (${wmwRecovery.reason}) and no runnable ticket remains — exiting at iteration ${iteration}.`);
+        writeRecoveryHandoffArtifact(sessionDir, apTicketId, `wmw_oversized: ${wmwRecovery.reason}`, log);
+        recordExitReason(statePath, 'recovery_exhausted');
+        safeDeactivate(statePath);
+        removeRunnerSessionMapEntry(statePath, log);
+        return { kind: 'exit', exitReason: 'recovery_exhausted' };
+    }
+    // fall_through → proceed to the Failed-flip suppression stage.
+    return { kind: 'fall_through' };
+}
+/**
+ * 7ac3038c: 7eb9fa20 — evidence-backed flip-intents are suppressed (held) instead of flipped. Evidence absent →
+ * archive a dirty tree first, then fall through to the flip (the wmw flip itself preserves the dirty tree; archival
+ * guards the runner's downstream reset paths). Cap reached → advance, or the no-progress halt when none remains.
+ */
+function routeWmwFailedFlipSuppression(input) {
+    const { state, statePath, sessionDir, iteration, apTicketId, iterStartMs, preIterSha, log } = input;
+    const wmwWorkingDir = state.working_dir || process.cwd();
+    const ffDecision = routeFailedFlipSuppression({
+        sessionDir,
+        statePath,
+        ticketId: apTicketId,
+        workingDir: wmwWorkingDir,
+        iteration,
+        callsite: 'wmw_auto_skip',
+        windowStartMs: iterStartMs,
+        windowEndMs: Date.now(),
+        preSha: preIterSha,
+        log,
+        mode: 'worker',
+    });
+    if (ffDecision.action === 'suppress') {
+        const holdMsg = `[wmw-auto-skip] ticket ${apTicketId}: Failed flip suppressed (${ffDecision.evidence}) — ticket held, status preserved`;
+        log(holdMsg);
+        process.stderr.write(`${holdMsg}\n`);
+        // Clear current_ticket so the next iteration selects past the held
+        // ticket (resolvePreTicket also refuses to re-engage a held ticket).
+        updateMuxLifecycleState(statePath, { currentTicket: null });
+        return { kind: 'continue', resetStall: false };
+    }
+    if (ffDecision.action === 'escalate') {
+        const capMsg = `[wmw-auto-skip] ticket ${apTicketId}: suppression cap ${ffDecision.cap} reached.`;
+        log(capMsg);
+        process.stderr.write(`${capMsg}\n`);
+        // AC-A2 (B-RRH): suppression-cap exhaustion advances while a runnable Todo
+        // remains; run-exit only when none remains.
+        const ladderAction = advanceOrExitOnLadderExhaustion({
+            sessionDir,
+            statePath,
+            workingDir: wmwWorkingDir,
+            ticketId: apTicketId,
+            reason: `suppression_cap_reached: ${ffDecision.cap}`,
+            log,
+        });
+        if (ladderAction === 'advance') {
+            log(`ticket_ladder_exhausted: ${apTicketId} (suppression cap ${ffDecision.cap}) — advancing to next runnable ticket at iteration ${iteration}.`);
+            return { kind: 'continue', resetStall: true };
+        }
+        log(`recovery_exhausted: suppression cap reached for ${apTicketId} and no runnable ticket remains — halting.`);
+        writeRecoveryHandoffArtifact(sessionDir, apTicketId, `wmw_suppression_cap: ${ffDecision.cap}`, log);
+        recordExitReason(statePath, 'recovery_exhausted');
+        safeDeactivate(statePath);
+        removeRunnerSessionMapEntry(statePath, log);
+        return { kind: 'exit', exitReason: 'recovery_exhausted' };
+    }
+    archiveDirtyTreeBeforeFlip({ workingDir: wmwWorkingDir, sessionDir, ticketId: apTicketId, log });
+    return { kind: 'fall_through' };
+}
+/** 7ac3038c: the terminal Failed/<no-progress reason> flip for a ticket past `PICKLE_WMW_SKIP_K` zero-progress spawns. */
+function flipWmwTicketFailed(input) {
+    const { statePath, sessionDir, apTicketId, apProgressResult, skipK, log } = input;
+    // WS-2d (R-PFNT): finer no-progress reason in place of the misleading single literal.
+    const apFailureReason = classifyNoProgressFailureReason(sessionDir);
+    const skipMsg = `[wmw-auto-skip] ticket ${apTicketId}: ${apProgressResult.zeroProgressCount}/${skipK} consecutive zero-progress spawns — flipping to Failed/${apFailureReason}`;
+    log(skipMsg);
+    process.stderr.write(`${skipMsg}\n`);
+    try {
+        updateTicketFrontmatter(apTicketId, sessionDir, { status: 'Failed', completion_commit: null });
+        const tfPath = ticketFilePath(sessionDir, apTicketId);
+        const tfRaw = fs.readFileSync(tfPath, 'utf-8');
+        const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', apFailureReason);
+        if (tfUpdated)
+            fs.writeFileSync(tfPath, tfUpdated);
+    }
+    catch (err) {
+        log(`[wmw-auto-skip] frontmatter flip failed (ignored): ${safeErrorMessage(err)}`);
+    }
+    try {
+        writeActivityEntry(statePath, {
+            event: 'worker_auto_skip_oversized',
+            ts: new Date().toISOString(),
+            ticket: apTicketId,
+            gate_payload: {
+                spawn_count: apProgressResult.spawnCount,
+                zero_progress_count: apProgressResult.zeroProgressCount,
+                skip_k: skipK,
+                failure_reason: apFailureReason,
+            },
+        });
+    }
+    catch { /* best-effort */ }
+    // AC-R-WMNP-3: a terminal no-progress flip clears current_ticket (+ the
+    // per-ticket cache, via updateMuxLifecycleState's ticket-change path) so the
+    // next iteration's resolvePreTicket selects the next pending ticket rather
+    // than re-engaging the just-flipped Failed ticket (order-deadlock).
+    updateMuxLifecycleState(statePath, { currentTicket: null });
+}
+/**
+ * 7ac3038c: R-WSWA-3 — at `PICKLE_WMW_SKIP_K` consecutive zero-progress spawns: the recovery ladder, then the
+ * Failed-flip suppression, then the Failed flip (dirty tree preserved). Every non-exit outcome advances the loop.
+ */
+function runWmwAutoSkip(input) {
+    const ladderStep = routeWmwRecoveryLadder(input);
+    if (ladderStep.kind !== 'fall_through')
+        return ladderStep;
+    const suppressionStep = routeWmwFailedFlipSuppression(input);
+    if (suppressionStep.kind !== 'fall_through')
+        return suppressionStep;
+    flipWmwTicketFailed(input);
+    return { kind: 'continue', resetStall: false };
+}
+/**
+ * 7ac3038c: the iteration head before the closer check — the HEAD-pin drift check, phantom-Done correction, pre-ticket
+ * resolution, this iteration's lifecycle write, the ticket/state desync reconcile, and the ticket tier budget.
+ */
+function advanceIterationLifecycle(input) {
+    const { statePath, sessionDir, iteration, now, log } = input;
+    let state = input.state;
+    const checkState = readRunnerState(statePath);
+    const checkDir = checkState.working_dir || process.cwd();
+    if (checkHeadPinMismatch(checkState, checkDir, sessionDir, statePath, log)) {
+        return { kind: 'exit', exitReason: 'working_tree_modified_externally' };
+    }
+    correctPhantomDoneTickets({
+        sessionDir,
+        workingDir: state.working_dir || process.cwd(),
+        startCommit: state.start_commit || null,
+        iteration,
+        flags: state.flags,
+        log,
+    });
+    const preTicket = resolvePreTicket(sessionDir, state.current_ticket, state.working_dir || process.cwd());
+    const preStep = inferTicketLifecycleStep(sessionDir, preTicket, state.step);
+    emitTicketRunnabilityAndRefund(statePath, sessionDir, state.current_ticket, preTicket, iteration, log);
+    state = updateMuxLifecycleState(statePath, { iteration, currentTicket: preTicket, step: preStep });
+    // R-MWIS-2: iteration advance + state write is a forward-progress marker.
+    const progressEpochMs = now();
+    reconcileTicketStateDesync(statePath, sessionDir, state.current_ticket || null, iteration, log);
+    state = sm.update(statePath, s => {
+        applyTicketTierBudget(s, sessionDir);
+    });
+    return { kind: 'ready', state, preTicket, progressEpochMs };
+}
+/**
+ * 7ac3038c: the closer terminal check at the iteration head. The decision QUERY is consumed here, at its single call
+ * site; a non-exit decision persists the handoff tracker and hands back the re-read state.
+ */
+function resolveCloserTerminalStep(input) {
+    const { state, statePath, sessionDir, extensionRoot, iteration, log } = input;
+    const closerDecision = evaluateCloserTerminalState({
+        state,
+        sessionDir,
+        workingDir: state.working_dir || process.cwd(),
+        headSha: observeCurrentHead(state.working_dir || process.cwd())?.sha ?? null,
+        failedBudget: readCloserHandoffBudget(extensionRoot),
+    });
+    if (closerDecision.action === 'exit') {
+        // R-ORSR-2: intercept the closer_handoff_terminal park with the recovery
+        // ladder. (TIER-1.2 gh-11: manager_handoff_pending no longer reaches this
+        // branch — it is a non-halting residual logged by evaluateCloserTerminalState.)
+        if (closerDecision.reason === 'closer_handoff_terminal') {
+            const closerRecovery = routeCloserHandoffRecovery({ state, statePath, sessionDir, extensionRoot, iteration, log });
+            if (closerRecovery.kind === 'continue') {
+                // Kept from the inline arm: this re-read's schema-ahead exit still runs before the next pass.
+                readRunnerState(statePath);
+                return { kind: 'continue' };
+            }
+            if (closerRecovery.kind === 'exit')
+                return { kind: 'exit', exitReason: closerRecovery.exitReason };
+        }
+        const exitReason = exitForCloserTerminalState(statePath, sessionDir, iteration, closerDecision, log);
+        return { kind: 'exit', exitReason };
+    }
+    persistCloserHandoffTracker(statePath, closerDecision.tracker);
+    return { kind: 'ready', state: readRunnerState(statePath) };
+}
+/**
+ * 7ac3038c: the finished-roster exits, in order. Every ticket Done → `success`. L5: `applyAllTicketsDoneCompletion`
+ * does NOT catch the all-terminal-Failed case (e.g. every pending ticket flipped oversized_no_progress), so when
+ * `preTicket` resolved to null AND no runnable ticket remains, exit CLEANLY rather than entering `runIteration` with a
+ * null ticket (which spawns a manager with no work and re-arms the idle-stall watchdog every pass). Null while work
+ * remains.
+ */
+function exitOnFinishedRoster(input) {
+    const { state, statePath, sessionDir, iteration, preTicket, log } = input;
+    if (applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, state.working_dir || ''))
+        return 'success';
+    if (!preTicket && noRunnableTicketsRemain(sessionDir)) {
+        // W4b empty-roster resolution: all-Done already exited above via
+        // applyAllTicketsDoneCompletion (→ completion). Reaching here means the
+        // roster is all-Failed with no runnable Todo — the honest ladder terminal
+        // `recovery_exhausted` (single CUJ-1 entry state, ∈ isFailureExit so
+        // auto-resume.sh stops).
+        log('empty roster (all-Failed, no runnable ticket) — honest terminal recovery_exhausted before runIteration.');
+        writeRecoveryHandoffArtifact(sessionDir, null, 'empty_roster_all_failed_no_runnable', log);
+        recordExitReason(statePath, 'recovery_exhausted');
+        safeDeactivate(statePath);
+        removeRunnerSessionMapEntry(statePath, log);
+        return 'recovery_exhausted';
+    }
+    return null;
+}
+/**
+ * 7ac3038c: the C6 watchdog's legitimate-wait gates — a live rate-limit park, an OPEN breaker, a recorded error or a
+ * subprocess error each exempt a quiet worker from the CPU-stall verdict. Spread LAST into the watchdog input so every
+ * field is still evaluated in its original order.
+ */
+function cpuLivenessWaitGates(state, sessionDir, cbEnabled, cbState) {
+    return {
+        rateLimitWaiting: rateLimitParkStillLive(sessionDir),
+        circuitBreakerExecutable: !cbEnabled || !cbState || canExecute(cbState),
+        lastError: state.last_error ?? null,
+        consecutiveSubprocessErrors: state.last_subprocess_error != null ? 1 : 0,
+    };
+}
+/** 7ac3038c: a thrown `runIteration` is treated as a spawn error, so the loop classifies it like any failed spawn. */
+function treatRunIterationThrowAsSpawnError(log) {
+    return (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`runIteration threw (treating as spawn error): ${msg}`);
+        process.stderr.write(`[mux-runner] runIteration threw: ${msg}\n`);
+        return { completion: 'error', timedOut: false, exitCode: null, wallSeconds: 0 };
+    };
+}
+/**
+ * 7ac3038c: 2ed9a852 (C1) — the once-per-iteration wasted_iter emitter. HEAD is read inside the thunk, at emit time.
+ * 7addedbf: `artifactDelta` is the worker-handoff observable — the same before/after difference the production
+ * breadcrumb consumes; null when no ticket was in flight.
+ */
+function bindWastedIterEmitter(input) {
+    const { apProgressResult, apBeforeCount } = input;
+    return createWastedIterEmitter(() => ({
+        sessionDir: input.sessionDir,
+        iteration: input.iteration,
+        action: input.action,
+        preIterSha: input.preIterSha,
+        postIterSha: readHeadCommit(input.iterWorkingDir),
+        artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
+    }));
+}
+/**
+ * 7ac3038c: detect a ticket transition and validate completion before marking Done — the model-attested path, then the
+ * manager-drift path, then the transition bookkeeping. A state read failure skips the transition check.
+ */
+function resolveTicketTransition(input) {
+    const { sessionDir, statePath, state, previousTicket, previousTicketStartCommit, iteration, iterStartMs, log } = input;
+    try {
+        const postState = readRunnerState(statePath);
+        const postTicket = postState.current_ticket || null;
+        let prevTicketInfo;
+        if (previousTicket && postTicket !== previousTicket) {
+            // Check if the model already marked it Done via prompt-driven validation
+            prevTicketInfo = collectTickets(sessionDir).find(t => t.id === previousTicket);
+            if (isModelAttestedDone(sessionDir, prevTicketInfo)) {
+                const verdict = validateModelAttestedDone({
+                    sessionDir, statePath, state, previousTicket, previousTicketStartCommit, prevTicketInfo, iteration, iterStartMs, log,
+                });
+                if (verdict.kind === 'continue')
+                    return { kind: 'continue' };
+                if (verdict.kind === 'return')
+                    return { kind: 'return' };
+            }
+            else {
+                // Drift scenario: model changed current_ticket without following protocol
+                const autoValidation = applyAutoTicketCompletionValidation({
+                    sessionDir,
+                    ticketId: previousTicket,
+                    // AP-EXT-ITER125-01: this site already held the (per-ticket, session)
+                    // pair and spent it on an `||` SELECTION, so a non-empty-but-unusable
+                    // per-ticket `working_dir` won and the session dir was never consulted.
+                    ...completionDirLadder(prevTicketInfo?.working_dir, state.working_dir),
+                    startCommit: previousTicketStartCommit,
+                    iteration,
+                    log,
+                    statePath,
+                    flags: state.flags ?? null,
+                });
+                // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — the callee
+                // already recorded the residual exit_reason and no longer
+                // deactivates the session, so park this ticket (leave it un-Done)
+                // and continue the phase loop.
+                if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
+                    return { kind: 'continue' };
+                }
+            }
+        }
+        const next = completeTicketTransition({
+            sessionDir, statePath, state, previousTicket, previousTicketStartCommit, iteration, iterStartMs, log,
+            postState, postTicket, prevTicketInfo,
+        });
+        return { kind: 'proceed', previousTicket: next.previousTicket, previousTicketStartCommit: next.previousTicketStartCommit };
+    }
+    catch { /* state read failed — skip transition check */ }
+    return { kind: 'proceed', previousTicket, previousTicketStartCommit };
+}
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 449 code lines against a ceiling of 120, and complexity 84 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
@@ -12764,63 +13124,25 @@ async function runMuxRunnerMain() {
         stallCount = stall.stallCount;
         lastStateIteration = stall.lastStateIteration;
         iteration = curIter + 1;
-        {
-            const checkState = readRunnerState(statePath);
-            const checkDir = checkState.working_dir || process.cwd();
-            if (checkHeadPinMismatch(checkState, checkDir, sessionDir, statePath, log)) {
-                exitReason = 'working_tree_modified_externally';
-                break;
-            }
+        const lifecycle = advanceIterationLifecycle({ state, statePath, sessionDir, iteration, now: muxNow, log });
+        if (lifecycle.kind === 'exit') {
+            exitReason = lifecycle.exitReason;
+            break;
         }
-        correctPhantomDoneTickets({
-            sessionDir,
-            workingDir: state.working_dir || process.cwd(),
-            startCommit: state.start_commit || null,
-            iteration,
-            flags: state.flags,
-            log,
-        });
-        const preTicket = resolvePreTicket(sessionDir, state.current_ticket, state.working_dir || process.cwd());
-        const preStep = inferTicketLifecycleStep(sessionDir, preTicket, state.step);
-        emitTicketRunnabilityAndRefund(statePath, sessionDir, state.current_ticket, preTicket, iteration, log);
-        state = updateMuxLifecycleState(statePath, { iteration, currentTicket: preTicket, step: preStep });
-        // R-MWIS-2: iteration advance + state write is a forward-progress marker.
-        lastProgressEpoch = muxNow();
-        state = reconcileTicketStateDesync(statePath, sessionDir, state.current_ticket || null, iteration, log);
-        state = sm.update(statePath, s => {
-            applyTicketTierBudget(s, sessionDir);
-        });
-        {
-            const closerDecision = evaluateCloserTerminalState({
-                state,
-                sessionDir,
-                workingDir: state.working_dir || process.cwd(),
-                headSha: observeCurrentHead(state.working_dir || process.cwd())?.sha ?? null,
-                failedBudget: readCloserHandoffBudget(extensionRoot),
-            });
-            if (closerDecision.action === 'exit') {
-                // R-ORSR-2: intercept the closer_handoff_terminal park with the recovery
-                // ladder. (TIER-1.2 gh-11: manager_handoff_pending no longer reaches this
-                // branch — it is a non-halting residual logged by evaluateCloserTerminalState.)
-                if (closerDecision.reason === 'closer_handoff_terminal') {
-                    const closerRecovery = routeCloserHandoffRecovery({ state, statePath, sessionDir, extensionRoot, iteration, log });
-                    if (closerRecovery.kind === 'continue') {
-                        lastStateIteration = -1;
-                        stallCount = 0;
-                        state = readRunnerState(statePath);
-                        continue;
-                    }
-                    if (closerRecovery.kind === 'exit') {
-                        exitReason = closerRecovery.exitReason;
-                        break;
-                    }
-                }
-                exitReason = exitForCloserTerminalState(statePath, sessionDir, iteration, closerDecision, log);
-                break;
-            }
-            persistCloserHandoffTracker(statePath, closerDecision.tracker);
-            state = readRunnerState(statePath);
+        state = lifecycle.state;
+        const preTicket = lifecycle.preTicket;
+        lastProgressEpoch = lifecycle.progressEpochMs;
+        const closerStep = resolveCloserTerminalStep({ state, statePath, sessionDir, extensionRoot, iteration, log });
+        if (closerStep.kind === 'exit') {
+            exitReason = closerStep.exitReason;
+            break;
         }
+        if (closerStep.kind === 'continue') {
+            lastStateIteration = -1;
+            stallCount = 0;
+            continue;
+        }
+        state = closerStep.state;
         if (previousTicket === null) {
             ({ previousTicket, previousTicketStartCommit } = seedPreviousTicket(state, sessionDir, previousTicketStartCommit));
         }
@@ -12829,29 +13151,9 @@ async function runMuxRunnerMain() {
         log(`--- Iteration ${iteration} (state.iteration=${state.iteration}) ---`);
         logActivity({ event: 'iteration_start', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackend(state) });
         reapOrphansAtIterationStart(statePath, sessionDir, log);
-        if (applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, state.working_dir || '')) {
-            exitReason = 'success';
-            break;
-        }
-        // L5: all-terminal short-circuit. `applyAllTicketsDoneCompletion` only fires
-        // when every ticket is Done; it does NOT catch the all-terminal-Failed case
-        // (e.g. every pending ticket flipped oversized_no_progress). When `preTicket`
-        // resolved to null AND no runnable ticket remains, exit CLEANLY here rather
-        // than entering `runIteration` with a null ticket (which spawns a manager with
-        // no work and re-arms the idle-stall watchdog every pass). Matches the all-Done
-        // clean-deactivation pattern but with a distinct, non-failure exit reason.
-        if (!preTicket && noRunnableTicketsRemain(sessionDir)) {
-            // W4b empty-roster resolution: all-Done already exited above via
-            // applyAllTicketsDoneCompletion (→ completion). Reaching here means the
-            // roster is all-Failed with no runnable Todo — the honest ladder terminal
-            // `recovery_exhausted` (single CUJ-1 entry state, ∈ isFailureExit so
-            // auto-resume.sh stops).
-            log('empty roster (all-Failed, no runnable ticket) — honest terminal recovery_exhausted before runIteration.');
-            writeRecoveryHandoffArtifact(sessionDir, null, 'empty_roster_all_failed_no_runnable', log);
-            recordExitReason(statePath, 'recovery_exhausted');
-            safeDeactivate(statePath);
-            removeRunnerSessionMapEntry(statePath, log);
-            exitReason = 'recovery_exhausted';
+        const rosterExit = exitOnFinishedRoster({ state, statePath, sessionDir, iteration, preTicket, log });
+        if (rosterExit) {
+            exitReason = rosterExit;
             break;
         }
         {
@@ -12968,10 +13270,7 @@ async function runMuxRunnerMain() {
                         windowSeconds,
                         cpuFloorSeconds: DEFAULT_CPU_LIVENESS_FLOOR_SECONDS,
                         artifactMtimeAdvanced: nowMtimeMs > cpuLivenessAnchorMtimeMs,
-                        rateLimitWaiting: rateLimitParkStillLive(sessionDir),
-                        circuitBreakerExecutable: !cbEnabled || !cbState || canExecute(cbState),
-                        lastError: state.last_error ?? null,
-                        consecutiveSubprocessErrors: state.last_subprocess_error != null ? 1 : 0,
+                        ...cpuLivenessWaitGates(state, sessionDir, cbEnabled, cbState),
                     });
                     if (cpuDecision.stalled) {
                         log(`[cpu-liveness] worker ${workerPid} alive but accrued ${cpuDecision.cpuSecondsDelta}s CPU over ${windowSeconds}s (< ${DEFAULT_CPU_LIVENESS_FLOOR_SECONDS}s) with no artifact-mtime advance — wedged at 0% CPU despite fresh output`);
@@ -13041,12 +13340,7 @@ async function runMuxRunnerMain() {
         // 90574654 iteration window + R-WSWA-2 per-ticket artifact count, both taken BEFORE the worker spawn.
         const { iterWorkingDir, preIterSha, iterStartMs, apTicketId, apCreditEarlyPhases, apBeforeCount } = snapshotPreSpawnIteration(state, sessionDir);
         // B-WSPU WS-1: all tiers route through the single synchronous spawn path.
-        const outcome = await runIteration(sessionDir, iteration, extensionRoot).catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            log(`runIteration threw (treating as spawn error): ${msg}`);
-            process.stderr.write(`[mux-runner] runIteration threw: ${msg}\n`);
-            return { completion: 'error', timedOut: false, exitCode: null, wallSeconds: 0 };
-        });
+        const outcome = await runIteration(sessionDir, iteration, extensionRoot).catch(treatRunIterationThrowAsSpawnError(log));
         const result = outcome.completion;
         // R-MWIS-3: worker-exit path. A silent/0-byte worker exit may leave a
         // gate-passing deliverable uncommitted in the tree; route it through the
@@ -13079,18 +13373,10 @@ async function runMuxRunnerMain() {
         if (apProgressResult && apProgressResult.zeroProgressCount === 0)
             idleStallRecoveryCount = 0;
         // 2ed9a852 (C1): bound above the first post-iteration `continue` so every early exit
-        // below can record its verdict. Emits at most once per iteration; HEAD is read inside
-        // the thunk, at emit time.
-        const emitWastedIterOnce = createWastedIterEmitter(() => ({
-            sessionDir,
-            iteration,
-            action: result,
-            preIterSha,
-            postIterSha: readHeadCommit(iterWorkingDir),
-            // 7addedbf: the worker-handoff observable — same before/after difference the
-            // production breadcrumb consumes above. null when no ticket was in flight.
-            artifactDelta: apProgressResult ? apProgressResult.lastArtifactCount - apBeforeCount : null,
-        }));
+        // below can record its verdict. Emits at most once per iteration.
+        const emitWastedIterOnce = bindWastedIterEmitter({
+            sessionDir, iteration, action: result, preIterSha, iterWorkingDir, apProgressResult, apBeforeCount,
+        });
         // AC-A1 (B-RRH): a Done ticket with completion evidence that produced no new
         // artifacts is NOT stuck — reset (handled in recordWorkerArtifactProgress), clear
         // current_ticket, advance, no increment (B-LERD: run-exit on a Done ticket).
@@ -13100,246 +13386,49 @@ async function runMuxRunnerMain() {
             emitWastedIterOnce();
             continue;
         }
-        // R-WSWA-3: at PICKLE_WMW_SKIP_K (default 5) consecutive zero-progress spawns, flip the
-        // ticket to Failed/oversized_no_progress (dirty tree preserved) and advance the loop.
+        // R-WSWA-3: at PICKLE_WMW_SKIP_K (default 5) consecutive zero-progress spawns, route the
+        // recovery ladder, then the Failed-flip suppression, then flip the ticket to
+        // Failed/oversized_no_progress (dirty tree preserved) and advance the loop.
         const skipK = resolveWmwSkipK();
         if (apTicketId && apProgressResult && apProgressResult.zeroProgressCount >= skipK) {
-            // AC-R-WMNP-4: route the terminal no-progress trigger through the SAME
-            // RecoveryController ladder as closer_handoff_terminal BEFORE the bare Failed
-            // flip / respawn. A near-green diff (fix-forward-trivial / execute-converged-plan
-            // / auto-split) advances the ticket instead of being respawned indefinitely;
-            // only a genuinely exhausted ladder escalates to recovery_exhausted. A
-            // fall_through (nothing to recover) proceeds to the existing terminal flip.
-            {
-                // AC-2 fail-safe: missing working_dir must halt this git-mutating
-                // recovery call, never fall back to process.cwd() (the real repo).
-                if (!state.working_dir) {
-                    recordExitReason(statePath, 'state_working_dir_missing');
-                    safeDeactivate(statePath);
-                    exitReason = 'state_working_dir_missing';
-                    break;
-                }
-                const wmwRecovery = routeRecoveryBeforeTerminal({
-                    sessionDir,
-                    statePath,
-                    extensionRoot,
-                    workingDir: state.working_dir,
-                    ticketId: apTicketId,
-                    iteration,
-                    flags: state.flags ?? null,
-                    log,
-                    mode: 'worker',
-                });
-                if (wmwRecovery.kind === 'advanced') {
-                    log(`recovery: ${wmwRecovery.strategy} advanced ${apTicketId} before wmw-auto-skip Failed flip — continuing.`);
-                    // Reset the zero-progress counter so a recovered ticket is not re-skipped on the next spawn.
-                    try {
-                        sm.update(statePath, s => {
-                            const entry = s.worker_artifact_progress?.[apTicketId];
-                            if (entry)
-                                entry.zero_progress_count = 0;
-                        });
-                    }
-                    catch { /* best-effort */ }
-                    lastStateIteration = -1;
-                    stallCount = 0;
-                    emitWastedIterOnce();
-                    continue;
-                }
-                if (wmwRecovery.kind === 'exhausted') {
-                    // AC-A2 (B-RRH): per-ticket ladder exhaustion advances to the next runnable
-                    // Todo (emitting ticket_ladder_exhausted) instead of killing the whole run;
-                    // run-exit only when no runnable ticket remains.
-                    const ladderAction = advanceOrExitOnLadderExhaustion({
-                        sessionDir,
-                        statePath,
-                        workingDir: state.working_dir || process.cwd(),
-                        ticketId: apTicketId,
-                        reason: `recovery_exhausted: ${wmwRecovery.reason}`,
-                        log,
-                    });
-                    if (ladderAction === 'advance') {
-                        log(`ticket_ladder_exhausted: ${apTicketId} (${wmwRecovery.reason}) — advancing to next runnable ticket at iteration ${iteration}.`);
-                        lastStateIteration = -1;
-                        stallCount = 0;
-                        emitWastedIterOnce();
-                        continue;
-                    }
-                    log(`recovery_exhausted: ladder exhausted for ${apTicketId} (${wmwRecovery.reason}) and no runnable ticket remains — exiting at iteration ${iteration}.`);
-                    writeRecoveryHandoffArtifact(sessionDir, apTicketId, `wmw_oversized: ${wmwRecovery.reason}`, log);
-                    recordExitReason(statePath, 'recovery_exhausted');
-                    safeDeactivate(statePath);
-                    removeRunnerSessionMapEntry(statePath, log);
-                    exitReason = 'recovery_exhausted';
-                    break;
-                }
-                // fall_through → proceed to the existing terminal Failed flip below.
+            const wmwStep = runWmwAutoSkip({
+                state, statePath, sessionDir, extensionRoot, iteration, apTicketId, apProgressResult, skipK, iterStartMs, preIterSha, log,
+            });
+            if (wmwStep.kind === 'exit') {
+                exitReason = wmwStep.exitReason;
+                break;
             }
-            // 7eb9fa20: evidence-backed flip-intents are suppressed (held) instead of
-            // flipped. Evidence absent → archive a dirty tree first, then flip (the
-            // wmw flip itself preserves the dirty tree; archival guards the runner's
-            // downstream reset paths). Cap reached → existing no-progress halt.
-            {
-                const wmwWorkingDir = state.working_dir || process.cwd();
-                const ffDecision = routeFailedFlipSuppression({
-                    sessionDir,
-                    statePath,
-                    ticketId: apTicketId,
-                    workingDir: wmwWorkingDir,
-                    iteration,
-                    callsite: 'wmw_auto_skip',
-                    windowStartMs: iterStartMs,
-                    windowEndMs: Date.now(),
-                    preSha: preIterSha,
-                    log,
-                    mode: 'worker',
-                });
-                if (ffDecision.action === 'suppress') {
-                    const holdMsg = `[wmw-auto-skip] ticket ${apTicketId}: Failed flip suppressed (${ffDecision.evidence}) — ticket held, status preserved`;
-                    log(holdMsg);
-                    process.stderr.write(`${holdMsg}\n`);
-                    // Clear current_ticket so the next iteration selects past the held
-                    // ticket (resolvePreTicket also refuses to re-engage a held ticket).
-                    updateMuxLifecycleState(statePath, { currentTicket: null });
-                    emitWastedIterOnce();
-                    continue;
-                }
-                if (ffDecision.action === 'escalate') {
-                    const capMsg = `[wmw-auto-skip] ticket ${apTicketId}: suppression cap ${ffDecision.cap} reached.`;
-                    log(capMsg);
-                    process.stderr.write(`${capMsg}\n`);
-                    // AC-A2 (B-RRH): suppression-cap exhaustion advances while a runnable Todo
-                    // remains; run-exit only when none remains.
-                    const ladderAction = advanceOrExitOnLadderExhaustion({
-                        sessionDir,
-                        statePath,
-                        workingDir: wmwWorkingDir,
-                        ticketId: apTicketId,
-                        reason: `suppression_cap_reached: ${ffDecision.cap}`,
-                        log,
-                    });
-                    if (ladderAction === 'advance') {
-                        log(`ticket_ladder_exhausted: ${apTicketId} (suppression cap ${ffDecision.cap}) — advancing to next runnable ticket at iteration ${iteration}.`);
-                        lastStateIteration = -1;
-                        stallCount = 0;
-                        emitWastedIterOnce();
-                        continue;
-                    }
-                    log(`recovery_exhausted: suppression cap reached for ${apTicketId} and no runnable ticket remains — halting.`);
-                    writeRecoveryHandoffArtifact(sessionDir, apTicketId, `wmw_suppression_cap: ${ffDecision.cap}`, log);
-                    recordExitReason(statePath, 'recovery_exhausted');
-                    safeDeactivate(statePath);
-                    removeRunnerSessionMapEntry(statePath, log);
-                    exitReason = 'recovery_exhausted';
-                    break;
-                }
-                archiveDirtyTreeBeforeFlip({ workingDir: wmwWorkingDir, sessionDir, ticketId: apTicketId, log });
+            if (wmwStep.resetStall) {
+                lastStateIteration = -1;
+                stallCount = 0;
             }
-            // WS-2d (R-PFNT): finer no-progress reason in place of the misleading single literal.
-            const apFailureReason = classifyNoProgressFailureReason(sessionDir);
-            const skipMsg = `[wmw-auto-skip] ticket ${apTicketId}: ${apProgressResult.zeroProgressCount}/${skipK} consecutive zero-progress spawns — flipping to Failed/${apFailureReason}`;
-            log(skipMsg);
-            process.stderr.write(`${skipMsg}\n`);
-            try {
-                updateTicketFrontmatter(apTicketId, sessionDir, { status: 'Failed', completion_commit: null });
-                const tfPath = ticketFilePath(sessionDir, apTicketId);
-                // eslint-disable-next-line pickle/no-sync-in-async
-                const tfRaw = fs.readFileSync(tfPath, 'utf-8');
-                const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', apFailureReason);
-                // eslint-disable-next-line pickle/no-sync-in-async
-                if (tfUpdated)
-                    fs.writeFileSync(tfPath, tfUpdated);
-            }
-            catch (err) {
-                log(`[wmw-auto-skip] frontmatter flip failed (ignored): ${safeErrorMessage(err)}`);
-            }
-            try {
-                writeActivityEntry(statePath, {
-                    event: 'worker_auto_skip_oversized',
-                    ts: new Date().toISOString(),
-                    ticket: apTicketId,
-                    gate_payload: {
-                        spawn_count: apProgressResult.spawnCount,
-                        zero_progress_count: apProgressResult.zeroProgressCount,
-                        skip_k: skipK,
-                        failure_reason: apFailureReason,
-                    },
-                });
-            }
-            catch { /* best-effort */ }
-            // AC-R-WMNP-3: a terminal no-progress flip clears current_ticket (+ the
-            // per-ticket cache, via updateMuxLifecycleState's ticket-change path) so the
-            // next iteration's resolvePreTicket selects the next pending ticket rather
-            // than re-engaging the just-flipped Failed ticket (order-deadlock).
-            updateMuxLifecycleState(statePath, { currentTicket: null });
             emitWastedIterOnce();
             continue;
         }
         // R-WSE-2 / 90574654 / R-WSE-3 / R-WSDO: classify the exit and route silent death.
-        {
-            const silentDeathHalt = evaluateIterationPartialLifecycleExit({
-                sessionDir, statePath, iterTicket: state.current_ticket, iterWorkingDir, iteration, preIterSha,
-                iterStartMs, apProgressResult, apBeforeCount, log,
-            });
-            if (silentDeathHalt) {
-                exitReason = silentDeathHalt;
-                break;
-            }
+        const silentDeathHalt = evaluateIterationPartialLifecycleExit({
+            sessionDir, statePath, iterTicket: state.current_ticket, iterWorkingDir, iteration, preIterSha,
+            iterStartMs, apProgressResult, apBeforeCount, log,
+        });
+        if (silentDeathHalt) {
+            exitReason = silentDeathHalt;
+            break;
         }
         // B-DURA T10: commit the gate-passing deliverable BEFORE the Done-detection block below.
         commitBoundaryDeliverableAfterIteration({ sessionDir, statePath, state, iterWorkingDir, extensionRoot, preIterSha, log });
         // Move iterLogFile computation BEFORE transition block (needed by classifyTicketCompletion)
         const iterLogFile = path.join(sessionDir, `tmux_iteration_${iteration}.log`);
         // Detect ticket transitions: validate completion before marking Done
-        try {
-            const postState = readRunnerState(statePath);
-            const postTicket = postState.current_ticket || null;
-            let prevTicketInfo;
-            if (previousTicket && postTicket !== previousTicket) {
-                // Check if the model already marked it Done via prompt-driven validation
-                prevTicketInfo = collectTickets(sessionDir).find(t => t.id === previousTicket);
-                if (isModelAttestedDone(sessionDir, prevTicketInfo)) {
-                    const verdict = validateModelAttestedDone({
-                        sessionDir, statePath, state, previousTicket, previousTicketStartCommit, prevTicketInfo, iteration, iterStartMs, log,
-                    });
-                    if (verdict.kind === 'continue') {
-                        emitWastedIterOnce();
-                        continue;
-                    }
-                    if (verdict.kind === 'return')
-                        return;
-                }
-                else {
-                    // Drift scenario: model changed current_ticket without following protocol
-                    const autoValidation = applyAutoTicketCompletionValidation({
-                        sessionDir,
-                        ticketId: previousTicket,
-                        // AP-EXT-ITER125-01: this site already held the (per-ticket, session)
-                        // pair and spent it on an `||` SELECTION, so a non-empty-but-unusable
-                        // per-ticket `working_dir` won and the session dir was never consulted.
-                        ...completionDirLadder(prevTicketInfo?.working_dir, state.working_dir),
-                        startCommit: previousTicketStartCommit,
-                        iteration,
-                        log,
-                        statePath,
-                        flags: state.flags ?? null,
-                    });
-                    // B-GTRUTH WS-A2 / ticket 96444430: per-ticket verdict — the callee
-                    // already recorded the residual exit_reason and no longer
-                    // deactivates the session, so park this ticket (leave it un-Done)
-                    // and continue the phase loop.
-                    if (autoValidation.action === 'leave' && autoValidation.reason === 'guard_failed_no_commit_evidence') {
-                        emitWastedIterOnce();
-                        continue;
-                    }
-                }
-            }
-            ({ previousTicket, previousTicketStartCommit } = completeTicketTransition({
-                sessionDir, statePath, state, previousTicket, previousTicketStartCommit, iteration, iterStartMs, log,
-                postState, postTicket, prevTicketInfo,
-            }));
+        const transition = resolveTicketTransition({
+            sessionDir, statePath, state, previousTicket, previousTicketStartCommit, iteration, iterStartMs, log,
+        });
+        if (transition.kind === 'continue') {
+            emitWastedIterOnce();
+            continue;
         }
-        catch { /* state read failed — skip transition check */ }
+        if (transition.kind === 'return')
+            return;
+        ({ previousTicket, previousTicketStartCommit } = transition);
         // --- Rate limit classification (MUST run before CB to prevent CB poisoning) ---
         const exitResult = classifyIterationExit(outcome.completion, iterLogFile, {
             didTimeout: outcome.timedOut,
@@ -13401,6 +13490,7 @@ async function runMuxRunnerMain() {
             exitReason = 'circuit_open';
             break;
         }
+        let managerStep = null;
         if (result === 'task_completed') {
             // EPIC_COMPLETED / TASK_COMPLETED
             const claim = resolveTaskCompletedClaim({ state, statePath, sessionDir, iteration, iterLogFile, log });
@@ -13488,31 +13578,24 @@ async function runMuxRunnerMain() {
             }
         }
         else if (result === 'inactive') {
-            const inactiveStep = handleInactiveIterationResult({
+            managerStep = handleInactiveIterationResult({
                 outcome, state, statePath, sessionDir, extensionRoot, iteration, iterLogFile, runnerMaxTurns, cbState, log,
                 attemptWindow: { sessionDir, iterationStartMs: iterStartMs, commitWindow: { workingDir: iterWorkingDir, preIterSha } },
             });
-            if (inactiveStep.kind === 'exit') {
-                exitReason = inactiveStep.exitReason;
-                break;
-            }
-            lastStateIteration = -1;
-            stallCount = 0;
-            await sleep(1000);
-            continue;
         }
         else if (result === 'error') {
-            const errorStep = handleErrorIterationResult({
+            managerStep = handleErrorIterationResult({
                 outcome, state, statePath, sessionDir, extensionRoot, iteration, iterLogFile, runnerMaxTurns, cbState, log,
             });
-            if (errorStep.kind === 'exit') {
-                exitReason = errorStep.exitReason;
-                break;
-            }
+        }
+        // Both manager-exit branches: an exit step ends the run; a relaunch resets the stall trackers and sleeps.
+        if (managerStep?.kind === 'exit') {
+            exitReason = managerStep.exitReason;
+            break;
+        }
+        if (managerStep) {
             lastStateIteration = -1;
             stallCount = 0;
-            await sleep(1000);
-            continue;
         }
         await sleep(1000);
     }

@@ -16,10 +16,12 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = fs.readFileSync(path.resolve(__dirname, '../src/bin/mux-runner.ts'), 'utf-8');
 
-// Isolate the wmw-auto-skip block: from the skip-K guard to its `continue;`/flip.
+// Isolate the wmw-auto-skip stages. 7ac3038c moved them out of the main loop into module-private
+// step helpers (ladder -> suppression -> flip), so the slice starts at the first stage's definition
+// rather than at the loop's skip-K guard; the guard itself is pinned by autoSkipCallSite() below.
 function autoSkipBlock() {
-  const start = SRC.indexOf('zeroProgressCount >= skipK');
-  assert.ok(start > 0, 'auto-skip guard present');
+  const start = SRC.indexOf('function routeWmwRecoveryLadder(');
+  assert.ok(start > 0, 'wmw-auto-skip ladder stage present');
   // The block ends at the clear AFTER the terminal Failed flip. 7eb9fa20 added
   // an earlier suppress-branch clear (evidence-backed hold), so anchor the end
   // search past the flip itself rather than at the first clear.
@@ -44,10 +46,40 @@ test('AC-R-WMNP-4: ladder is invoked BEFORE the bare Failed flip', () => {
   assert.ok(recoveryIdx < flipIdx, 'the ladder runs BEFORE the terminal Failed flip, not after');
 });
 
+// The loop call site: the skip-K guard through the arm's closing `continue;`.
+function autoSkipCallSite() {
+  const start = SRC.indexOf('zeroProgressCount >= skipK');
+  assert.ok(start > 0, 'auto-skip guard present');
+  const end = SRC.indexOf('continue;', start);
+  assert.ok(end > start, 'auto-skip loop arm continues');
+  return SRC.slice(start, end + 'continue;'.length);
+}
+
+// The brace-matched body of the block opened by `needle` (bounded by the language, not an end needle).
+function bracedBodyAfter(text, needle) {
+  const at = text.indexOf(needle);
+  assert.ok(at >= 0, `${needle} present`);
+  const open = text.indexOf('{', at + needle.length - 1);
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    if (text[i] === '{') depth += 1;
+    else if (text[i] === '}' && (depth -= 1) === 0) return text.slice(open, i + 1);
+  }
+  assert.fail(`${needle} block is unterminated`);
+}
+
+test('AC-R-WMNP-4: the loop guard reaches the wmw stages and advances the loop', () => {
+  const callSite = autoSkipCallSite();
+  assert.match(callSite, /runWmwAutoSkip\(/, 'the skip-K guard routes into the wmw-auto-skip stages');
+  assert.match(callSite, /emitWastedIterOnce\(\);\s*continue;$/, 'every non-exit wmw outcome records its iteration and continues the loop');
+});
+
 test('AC-R-WMNP-4: advanced → continue; exhausted → recovery_exhausted; fall_through → flip', () => {
   const block = autoSkipBlock();
   assert.match(block, /wmwRecovery\.kind === 'advanced'/, 'handles ladder advance');
-  assert.match(block, /continue;/, 'an advanced recovery continues the loop instead of flipping Failed');
+  const advancedArm = bracedBodyAfter(block, "if (wmwRecovery.kind === 'advanced') {");
+  assert.match(advancedArm, /return \{ kind: 'continue'/, 'an advanced recovery continues the loop instead of flipping Failed');
+  assert.doesNotMatch(advancedArm, /status: 'Failed'/, 'the advanced arm never reaches the Failed flip');
   assert.match(block, /wmwRecovery\.kind === 'exhausted'/, 'handles ladder exhaustion');
   assert.match(block, /recordExitReason\(statePath, 'recovery_exhausted'\)/, 'exhausted ladder escalates to recovery_exhausted');
 });
