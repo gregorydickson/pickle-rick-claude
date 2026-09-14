@@ -3380,7 +3380,11 @@ inferred-completion accepts it, but it is a RECOVERY commit and the ACs are veri
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
 
-## 🎯 TOP ITEM — [[B-ONEABORT]]: two termination channels, one subtraction (2026-08-06, P1) — 🔶 PARTIAL, remeasured 2026-08-31
+## ✅ RESOLVED (was TOP ITEM) — [[B-ONEABORT]] — **STRUCK 2026-09-14 by re-measurement**
+
+> `MICROVERSE_FATAL_REASONS = ['session_state_corrupted']` — **exactly ONE member** at
+> `types/index.ts:1560`, which IS B-ONEABORT's stated target. The `PARTIAL` label was stale. Original
+> text below.
 
 > **✔ SURFACE B CLOSED 2026-09-01 by FR-B1 — and the counts this section carried were WRONG. Re-measured, not re-read.**
 > `MICROVERSE_FATAL_REASONS` (`src/types/index.ts:1451`) is **exactly ONE member** (`session_state_corrupted`) and
@@ -3646,7 +3650,13 @@ the existing `evaluateCompletionEvidence`/`reconcileTicketTruth` oracles before 
 correctly through all 4 phases (`non-fatal pickle exit, commits present`; citadel `remediation cap
 exhausted … continuing pipeline (no halt)`), 489m, 23 commits, clean tree — [[B-NOSTOP-GATES]] worked.
 
-## 🚨 OPEN BUG — B-OFFREPO: the worker quality gate does not exist on any repo that is not pickle-rick (2026-08-04, P1)
+## ✅ RESOLVED (was OPEN BUG) — B-OFFREPO — **STRUCK 2026-09-14 by re-measurement**
+
+> The `path.join(args.workingDir, 'extension')` at `spawn-morty.ts:2548` is no longer a hardcoded
+> assumption — it is a repo-shape DISCRIMINATOR. When that tree is absent the gate routes to
+> `runOffRepoWorkerGate`, which runs against the target's own toolchain via `detectProjectType` plus the
+> shared `data/gate-commands.json` map. The in-source comment cites AC-OFFREPO-2: *"this branch makes it
+> actually RUN"*. **Read the branch, not the path literal.** Original text below.
 
 > **🔎 VERIFY-FIRST RE-MEASURE 2026-09-05 (babysitter, against HEAD `a8ef0566`): PARTIALLY SHIPPED — do NOT
 > scope this row as written, and do NOT close it either.** `AC-OFFREPO-1`, `-2a`, `-2c` and `-2d` are
@@ -3723,7 +3733,11 @@ to attributable-work, and fix the capture failure. ⛔ **Do NOT bound the respaw
 and leaves the misdiagnosis, and routing the class into `silent_death_respawn_cap` would wire the one
 signal that has never stopped a pipeline straight to the halt. Build **ATTENDED** (recovery path).
 
-## 🔺 OPEN BUG — [[B-LINTGATE]]: the lint gate reads strict, is configured unlimited, and ignores 16 fail-open defects it already found (2026-09-01, P2)
+## ✅ RESOLVED (was OPEN BUG) — [[B-LINTGATE]] — **STRUCK 2026-09-14 by re-measurement**
+
+> Fixed by B-MEASURE V6 (beta.27). `max-warnings=0` in BOTH root `CLAUDE.md` and
+> `.github/workflows/release.yml`; `eslint src/ --max-warnings=0` exits **0** at HEAD. The 17 findings
+> were fixed, not downgraded. Original text retained below for forensics.
 
 *(measured 2026-09-01 at HEAD `f1eaa022`, operator-requested)*
 
@@ -3788,7 +3802,13 @@ downgrade-to-`warn` move above is exactly how this row was created.
 **Intended home:** `prds/b-drainall-open-bugs.md` as a 4th surface (same "verdict honesty" thesis as
 [[B-OFFREPO]]). WS-2/WS-3 change gate strictness, so they carry release consequences.
 
-## OPEN BUG — R-ACNP acceptance-criteria checkbox gate is a consumer with no producer (2026-08-04, capture-only)
+## ✅ RESOLVED (was OPEN BUG) — R-ACNP — **STRUCK 2026-09-14 by re-measurement**
+
+> The producer exists: `acceptanceCriteriaState(content)` returns `absent` / `unchecked` / checked, and
+> `mux-runner.ts:3738-3744` routes `absent` to `{action:'leave'}` rather than a skip. Its own comment
+> states the closure: *"A ticket whose criteria are plain bullets rather than checkboxes is parked for
+> the next iteration, never flipped to Skipped with a reason that asserts a measurement the scan did not
+> make."* Original text below.
 
 **`prds/BUG-REPORT-2026-08-04-r-acnp-acceptance-criteria-checkbox-no-producer.md`**
 
