@@ -902,6 +902,8 @@ export class BundlePreflightError extends Error {
     }
 }
 const R_CODE_RE = /R-[A-Z]+-\d+/;
+/** Bundle preflight floor: a megadrain refinement must decompose into at least this many DISTINCT tickets. */
+const MIN_BUNDLE_TICKET_COUNT = 26;
 function resolveComposePath(composePath, workingDir) {
     return path.isAbsolute(composePath) ? composePath : path.join(workingDir, composePath);
 }
@@ -987,8 +989,8 @@ export function runBundlePreflight(sessionRoot) {
         }
     }
     catch { /* ticketCount stays 0 */ }
-    if (ticketCount < 26) {
-        const reason = `refinement manifest has ${ticketCount} distinct tickets, expected >= 26`;
+    if (ticketCount < MIN_BUNDLE_TICKET_COUNT) {
+        const reason = `refinement manifest has ${ticketCount} distinct tickets, expected >= ${MIN_BUNDLE_TICKET_COUNT}`;
         emitPreflightFailed(sessionRoot, 'manifest_R_code_count_ge_26', reason);
         throw new BundlePreflightError('manifest_R_code_count_ge_26', reason);
     }
