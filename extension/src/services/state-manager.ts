@@ -1422,43 +1422,50 @@ export class StateManager {
     return true;
   }
 
+  /**
+   * Paused-orphan demotion: no process ever claimed this session (pid=null).
+   * If the state file is stale (>5 min), or its mapped owner PID is dead,
+   * it will never be claimed — demote.
+   */
+  private demotePausedOrphanSession(statePath: string, state: State, preMigrationMtimeMs: number): void {
+    if (hasActivityEvent(state.activity, 'paused_session_orphan_demoted')) return;
+    const demotion = getPausedOrphanDemotion(statePath, state, preMigrationMtimeMs);
+    if (!demotion.shouldDemote) return;
+    state.active = false;
+    state.exit_reason = 'orphan-paused-no-claim';
+    state.activity = state.activity ?? [];
+    state.activity.push({
+      event: 'paused_session_orphan_demoted',
+      kind: 'paused_session_orphan_demoted',
+      pid_orig: null,
+      mtime_age_seconds: Math.floor(demotion.ageMs / 1000),
+      mapped_pid: demotion.mappedPid,
+      ts: new Date().toISOString(),
+    });
+    trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
+    persistDemotionBestEffort(statePath, state);
+  }
+
+  /** Dead-process demotion: a claimed session whose finite owner pid is no longer alive. */
+  private demoteDeadProcessSession(statePath: string, state: State): void {
+    const pid = Number(state.pid);
+    if (!Number.isFinite(pid) || pid <= 0) return;
+    if (isProcessAlive(pid)) return;
+    state.active = false;
+    trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
+    persistDemotionBestEffort(statePath, state);
+  }
+
   private recoverStaleActiveFlag(statePath: string, state: State, preMigrationMtimeMs = 0): void {
     if (state.active !== true) return;
 
-    if (state.pid === undefined || state.pid === null) {
-      // Phantom demotion bypasses the 300s age gate; if it claimed the session, stop here.
-      if (this.demotePhantomSession(statePath, state)) return;
-
-      // Paused-orphan demotion: no process ever claimed this session (pid=null).
-      // If the state file is stale (>5 min), or its mapped owner PID is dead,
-      // it will never be claimed — demote.
-      if (hasActivityEvent(state.activity, 'paused_session_orphan_demoted')) return;
-      const demotion = getPausedOrphanDemotion(statePath, state, preMigrationMtimeMs);
-      if (!demotion.shouldDemote) return;
-      state.active = false;
-      state.exit_reason = 'orphan-paused-no-claim';
-      state.activity = state.activity ?? [];
-      state.activity.push({
-        event: 'paused_session_orphan_demoted',
-        kind: 'paused_session_orphan_demoted',
-        pid_orig: null,
-        mtime_age_seconds: Math.floor(demotion.ageMs / 1000),
-        mapped_pid: demotion.mappedPid,
-        ts: new Date().toISOString(),
-      });
-      trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
-      persistDemotionBestEffort(statePath, state);
+    if (state.pid !== undefined && state.pid !== null) {
+      this.demoteDeadProcessSession(statePath, state);
       return;
     }
-
-    const pid = Number(state.pid);
-    if (!Number.isFinite(pid) || pid <= 0) return;
-
-    if (!isProcessAlive(pid)) {
-      state.active = false;
-      trimActivityRing(state); // D2 (84c209ae): bound the ring at this direct-write site too.
-      persistDemotionBestEffort(statePath, state);
-    }
+    // Phantom demotion bypasses the 300s age gate; if it claimed the session, stop here.
+    if (this.demotePhantomSession(statePath, state)) return;
+    this.demotePausedOrphanSession(statePath, state, preMigrationMtimeMs);
   }
 }
 
