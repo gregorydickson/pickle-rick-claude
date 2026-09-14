@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { runGit } from '../git-utils.js';
+import { runGitSafe } from '../git-utils.js';
 import { CitadelFinding, CitadelSeverity, slugify, uniqueSortedStrings } from './reporter.js';
 import { ChangedLineRange, DiffSummary } from './diff-walker.js';
 
@@ -112,7 +112,7 @@ export function auditStaleReferences(diff: DiffSummary): StaleReferenceResult {
     // Fail safe: never flag when the HEAD probe fails (default present=true).
     let present = true;
     try {
-      const out = runGit(['grep', '-l', '-F', '--', identifier, diff.head], diff.repoRoot, false);
+      const out = runGitSafe(['grep', '-l', '-F', '--', identifier, diff.head], diff.repoRoot);
       present = out.trim().length > 0;
     } catch {
       // HEAD grep unavailable — leave present=true so we never emit a false stale finding.

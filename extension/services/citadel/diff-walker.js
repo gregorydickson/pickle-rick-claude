@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { getDiffFiles, runGit } from '../git-utils.js';
+import { getDiffFiles, runGitSafe } from '../git-utils.js';
 import { TEST_FILE_PATTERN, toPosixPath, uniqueSortedStrings } from './reporter.js';
 const DEFAULT_HEAD = 'HEAD';
 const SKIPPED_CLAUDE_DIRS = new Set(['.git', 'node_modules']);
@@ -57,7 +57,7 @@ function getChangedLineRanges(filePath, range, repoRoot) {
     // throws out of buildCitadelAuditReport and crashes the ENTIRE Citadel audit.
     // getDiffFiles already succeeded (check=true); degrade this file's metadata to
     // empty (check=false → '' on non-zero exit) instead of killing the whole run.
-    const out = runGit(['diff', `${range.base}...${range.head}`, '--unified=0', '--', filePath], repoRoot, false);
+    const out = runGitSafe(['diff', `${range.base}...${range.head}`, '--unified=0', '--', filePath], repoRoot);
     const ranges = [];
     for (const line of out.split(/\r?\n/)) {
         const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
@@ -92,7 +92,7 @@ function summarizeBlame(filePath, changedLines, head, repoRoot) {
         // diff makes `git blame -L start,end head -- file` exit non-zero ("fatal: no
         // such path"). walkDiff is UNwrapped (audit-runner.ts:84), so an unguarded
         // throw here would crash the entire Citadel audit over one un-blameable file.
-        const output = runGit(['blame', '--line-porcelain', '-L', `${range.start},${range.end}`, head, '--', filePath], repoRoot, false);
+        const output = runGitSafe(['blame', '--line-porcelain', '-L', `${range.start},${range.end}`, head, '--', filePath], repoRoot);
         for (const block of parseBlamePorcelain(output)) {
             if (block.line === undefined)
                 continue;

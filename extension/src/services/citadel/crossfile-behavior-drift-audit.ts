@@ -1,4 +1,4 @@
-import { runGit } from '../git-utils.js';
+import { runGitSafe } from '../git-utils.js';
 import { CitadelFinding, slugify, toPosixPath, uniqueSortedStrings } from './reporter.js';
 import { DiffSummary } from './diff-walker.js';
 
@@ -50,10 +50,9 @@ export function extractChangedGateCommands(diffText: string): string[] {
 }
 
 function unifiedDiffForFile(diff: DiffSummary, filePath: string): string {
-  return runGit(
+  return runGitSafe(
     ['diff', `${diff.base}...${diff.head}`, '--unified=0', '--', filePath],
     diff.repoRoot,
-    false,
   );
 }
 
@@ -65,7 +64,7 @@ export function findCrossfilePins(
   changedPaths: Set<string>,
 ): string[] {
   if (corpusPathspecs.length === 0) return [];
-  const out = runGit(['grep', '-l', '-F', '-e', token, '--', ...corpusPathspecs], repoRoot, false);
+  const out = runGitSafe(['grep', '-l', '-F', '-e', token, '--', ...corpusPathspecs], repoRoot);
   const hits: string[] = [];
   for (const raw of out.split(/\r?\n/)) {
     const file = toPosixPath(raw.trim());
@@ -80,10 +79,9 @@ function symbolStillDefinedInProduction(symbol: string, repoRoot: string): boole
   // POSIX ERE (-E): git grep's -E flavor does NOT support \s or \b; use [[:space:]]
   // and an explicit word-boundary character class so this stays portable across
   // hosts that lack PCRE (-P) support.
-  const out = runGit(
+  const out = runGitSafe(
     ['grep', '-l', '-E', '-e', `(function|class|const|let|var)[[:space:]]+${symbol}([^A-Za-z0-9_$]|$)`, '--', 'extension/src'],
     repoRoot,
-    false,
   );
   return out.trim().length > 0;
 }

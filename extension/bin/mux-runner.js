@@ -18,7 +18,7 @@ import { emitOrphanReapSummary, reapOrphanedWorkerProcs, killProcessGroup } from
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
-import { runGit, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES } from '../services/git-utils.js';
+import { runGitSafe, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
@@ -5986,7 +5986,7 @@ function probeTreeDirty(workingDir) {
     // scope-resolver.ts `assertIsRepo`): `rev-parse --git-dir` answers repo-or-not even
     // when `status` cannot run. If it fails too, the answer stays unmeasurable.
     try {
-        return runGit(['rev-parse', '--git-dir'], workingDir, false).trim().length > 0 ? null : false;
+        return runGitSafe(['rev-parse', '--git-dir'], workingDir).trim().length > 0 ? null : false;
     }
     catch {
         return null;

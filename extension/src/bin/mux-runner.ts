@@ -23,7 +23,7 @@ import {
   type ManagerRelaunchExitKind,
   type ManagerRelaunchDecision,
 } from '../services/manager-relaunch.js';
-import { runGit, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
+import { runGitSafe, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible, type PlanPhase, type RecoveryDeps, type RecoveryEvidence, type RecoveryOutcome, type ReExecutionSeam } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds, type ArtifactProgressSnapshot } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, type EvidenceCtx, type RevertDecision, type CompletionDecisionCtx, type CompletionDecisionKind } from '../services/ticket-completion-evidence.js';
@@ -7157,7 +7157,7 @@ function probeTreeDirty(workingDir: string): boolean | null {
   // Same predicate the two existing non-repo probes use (setup.ts `isInsideGitRepo`,
   // scope-resolver.ts `assertIsRepo`): `rev-parse --git-dir` answers repo-or-not even
   // when `status` cannot run. If it fails too, the answer stays unmeasurable.
-  try { return runGit(['rev-parse', '--git-dir'], workingDir, false).trim().length > 0 ? null : false; }
+  try { return runGitSafe(['rev-parse', '--git-dir'], workingDir).trim().length > 0 ? null : false; }
   catch { return null; }
 }
 

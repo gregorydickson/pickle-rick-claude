@@ -6,8 +6,12 @@ import { runCmd, extractFrontmatter, formatLocalDateKey } from './pickle-utils.j
 import { syncLinearTicketStatus } from './linear-integration.js';
 import { writeActivityEntry } from './state-manager.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
-export function runGit(cmd, cwd, check = true) {
-    return runCmd(['git', ...cmd], { cwd, check });
+export function runGit(cmd, cwd) {
+    return runCmd(['git', ...cmd], { cwd, check: true });
+}
+/** Soft form of runGit: a non-zero git exit yields '' instead of throwing. */
+export function runGitSafe(cmd, cwd) {
+    return runCmd(['git', ...cmd], { cwd, check: false });
 }
 export function getGithubUser() {
     try {
@@ -190,7 +194,7 @@ export function getHeadSha(cwd) {
     return runGit(['rev-parse', 'HEAD'], cwd).trim();
 }
 export function getHeadBranch(cwd) {
-    const result = runGit(['symbolic-ref', '--short', 'HEAD'], cwd, false).trim();
+    const result = runGitSafe(['symbolic-ref', '--short', 'HEAD'], cwd).trim();
     return result || null;
 }
 function buildCleanArgs(preservePrefixes) {

@@ -1,4 +1,4 @@
-import { runGit } from '../git-utils.js';
+import { runGitSafe } from '../git-utils.js';
 import { slugify, toPosixPath, uniqueSortedStrings } from './reporter.js';
 const DRIFT_SEVERITY = 'Medium';
 // Top-level production declaration whose name the diff REMOVED. The bundle
@@ -42,13 +42,13 @@ export function extractChangedGateCommands(diffText) {
     return uniqueSortedStrings([...removed].filter((command) => !added.has(command)));
 }
 function unifiedDiffForFile(diff, filePath) {
-    return runGit(['diff', `${diff.base}...${diff.head}`, '--unified=0', '--', filePath], diff.repoRoot, false);
+    return runGitSafe(['diff', `${diff.base}...${diff.head}`, '--unified=0', '--', filePath], diff.repoRoot);
 }
 /** Out-of-diff files (within the corpus pathspecs) that still pin `token`. */
 export function findCrossfilePins(token, repoRoot, corpusPathspecs, changedPaths) {
     if (corpusPathspecs.length === 0)
         return [];
-    const out = runGit(['grep', '-l', '-F', '-e', token, '--', ...corpusPathspecs], repoRoot, false);
+    const out = runGitSafe(['grep', '-l', '-F', '-e', token, '--', ...corpusPathspecs], repoRoot);
     const hits = [];
     for (const raw of out.split(/\r?\n/)) {
         const file = toPosixPath(raw.trim());
@@ -63,7 +63,7 @@ function symbolStillDefinedInProduction(symbol, repoRoot) {
     // POSIX ERE (-E): git grep's -E flavor does NOT support \s or \b; use [[:space:]]
     // and an explicit word-boundary character class so this stays portable across
     // hosts that lack PCRE (-P) support.
-    const out = runGit(['grep', '-l', '-E', '-e', `(function|class|const|let|var)[[:space:]]+${symbol}([^A-Za-z0-9_$]|$)`, '--', 'extension/src'], repoRoot, false);
+    const out = runGitSafe(['grep', '-l', '-E', '-e', `(function|class|const|let|var)[[:space:]]+${symbol}([^A-Za-z0-9_$]|$)`, '--', 'extension/src'], repoRoot);
     return out.trim().length > 0;
 }
 function corpusPathspecs() {

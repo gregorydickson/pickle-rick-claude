@@ -8,8 +8,13 @@ import { writeActivityEntry } from './state-manager.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import type { PreResetPayload } from '../types/index.js';
 
-export function runGit(cmd: string[], cwd?: string, check: boolean = true): string {
-  return runCmd(['git', ...cmd], { cwd, check });
+export function runGit(cmd: string[], cwd?: string): string {
+  return runCmd(['git', ...cmd], { cwd, check: true });
+}
+
+/** Soft form of runGit: a non-zero git exit yields '' instead of throwing. */
+export function runGitSafe(cmd: string[], cwd?: string): string {
+  return runCmd(['git', ...cmd], { cwd, check: false });
 }
 
 export function getGithubUser(): string {
@@ -207,7 +212,7 @@ export function getHeadSha(cwd: string): string {
 }
 
 export function getHeadBranch(cwd: string): string | null {
-  const result = runGit(['symbolic-ref', '--short', 'HEAD'], cwd, false).trim();
+  const result = runGitSafe(['symbolic-ref', '--short', 'HEAD'], cwd).trim();
   return result || null;
 }
 

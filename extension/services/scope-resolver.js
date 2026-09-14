@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { runGit, getHeadSha, getDiffFiles, getMergeBase } from './git-utils.js';
+import { runGitSafe, getHeadSha, getDiffFiles, getMergeBase } from './git-utils.js';
 import { StateManager } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
@@ -155,7 +155,7 @@ function resolveAllowedFromDiffMode(parsed, args, headSha, repoRoot) {
     // means HEAD is a strict ancestor of baseRef (baseRef has moved past HEAD). Explicit
     // `diff:<ref>` scopes are never silently swapped.
     if (parsed.mode !== 'diff' && baseSha === headSha) {
-        const baseRefTipSha = runGit(['rev-parse', baseRef], repoRoot, false)?.trim();
+        const baseRefTipSha = runGitSafe(['rev-parse', baseRef], repoRoot)?.trim();
         if (baseRefTipSha && baseRefTipSha !== headSha) {
             const forkPointBase = resolveForkPointBase(repoRoot, baseRef, headSha);
             if (forkPointBase) {
@@ -439,19 +439,19 @@ export function computeOneHop(diffFiles, repoRoot, options = {}) {
 // Internals
 // ---------------------------------------------------------------------------
 function assertIsRepo(repoRoot) {
-    const out = runGit(['rev-parse', '--git-dir'], repoRoot, false);
+    const out = runGitSafe(['rev-parse', '--git-dir'], repoRoot);
     if (!out || out.length === 0) {
         throw new ScopeError('SCOPE_NOT_A_REPO', `Not a git repository: ${repoRoot}`);
     }
 }
 function resolveDefaultBase(repoRoot) {
-    const currentBranch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, false)?.trim();
-    const upstream = runGit(['rev-parse', '--abbrev-ref', '@{upstream}'], repoRoot, false)?.trim();
+    const currentBranch = runGitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot)?.trim();
+    const upstream = runGitSafe(['rev-parse', '--abbrev-ref', '@{upstream}'], repoRoot)?.trim();
     if (upstream && upstream.length > 0) {
         if (!currentBranch || upstream !== `origin/${currentBranch}`)
             return upstream;
     }
-    const remoteHead = runGit(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoRoot, false)?.trim();
+    const remoteHead = runGitSafe(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoRoot)?.trim();
     if (remoteHead && remoteHead.length > 0)
         return remoteHead;
     return 'origin/main';
@@ -459,7 +459,7 @@ function resolveDefaultBase(repoRoot) {
 /**
  * R-PSCG (B-1SEAM WS-2): best-effort review base for sessions that
  * bootstrapped outside a git worktree and never captured one. Soft git form
- * throughout (`runGit(..., false)` — the R-SSBR precedent), so a missing ref
+ * throughout (`runGitSafe(...)` — the R-SSBR precedent), so a missing ref
  * never throws. Resolution order:
  *  (a) HEAD unreadable (non-git dir / unborn HEAD) → `null`;
  *  (b) merge-base({@link resolveDefaultBase}, HEAD) — upstream → origin/HEAD →
@@ -470,12 +470,12 @@ function resolveDefaultBase(repoRoot) {
  *      citadel diff beats killing the whole review tail.
  */
 export function computeReviewBase(repoRoot) {
-    const headSha = runGit(['rev-parse', 'HEAD'], repoRoot, false)?.trim();
+    const headSha = runGitSafe(['rev-parse', 'HEAD'], repoRoot)?.trim();
     if (!headSha)
         return null;
     const bases = [resolveDefaultBase(repoRoot), 'refs/heads/main', 'refs/heads/master'];
     for (const base of bases) {
-        const mergeBase = runGit(['merge-base', base, 'HEAD'], repoRoot, false)?.trim();
+        const mergeBase = runGitSafe(['merge-base', base, 'HEAD'], repoRoot)?.trim();
         if (mergeBase)
             return mergeBase;
     }
@@ -486,38 +486,38 @@ export function computeReviewBase(repoRoot) {
 /**
  * R-SSBR: when the auto-default base has moved past HEAD (`baseSha === headSha` but `baseRef`'s
  * own tip differs from `headSha`), search for a genuinely divergent base to recompute the diff
- * against instead of failing closed. Soft git form throughout (`runGit(..., false)`) — mirrors
+ * against instead of failing closed. Soft git form throughout (`runGitSafe(...)`) — mirrors
  * {@link resolveDefaultBase}; `getMergeBase`'s default `check=true` would throw and break the
  * fallback chain. Returns the first candidate whose `candidate...headSha` diff is non-empty, or
  * `null` if none recover a usable base.
  */
 function resolveForkPointBase(repoRoot, baseRef, headSha) {
     const candidates = [];
-    const forkPoint = runGit(['merge-base', '--fork-point', baseRef, 'HEAD'], repoRoot, false)?.trim();
+    const forkPoint = runGitSafe(['merge-base', '--fork-point', baseRef, 'HEAD'], repoRoot)?.trim();
     if (forkPoint)
         candidates.push(forkPoint);
     // Plain merge-base only helps if it differs from headSha — otherwise it reproduces the same
     // false-empty result the ancestry check above already detected.
-    const plainMergeBase = runGit(['merge-base', baseRef, 'HEAD'], repoRoot, false)?.trim();
+    const plainMergeBase = runGitSafe(['merge-base', baseRef, 'HEAD'], repoRoot)?.trim();
     if (plainMergeBase && plainMergeBase !== headSha)
         candidates.push(plainMergeBase);
-    const localMain = runGit(['rev-parse', 'refs/heads/main'], repoRoot, false)?.trim();
+    const localMain = runGitSafe(['rev-parse', 'refs/heads/main'], repoRoot)?.trim();
     if (localMain)
         candidates.push(localMain);
-    const localMaster = runGit(['rev-parse', 'refs/heads/master'], repoRoot, false)?.trim();
+    const localMaster = runGitSafe(['rev-parse', 'refs/heads/master'], repoRoot)?.trim();
     if (localMaster)
         candidates.push(localMaster);
     for (const candidate of candidates) {
         if (!candidate || candidate === headSha)
             continue;
-        const diff = runGit(['diff', `${candidate}...${headSha}`, '--name-only'], repoRoot, false);
+        const diff = runGitSafe(['diff', `${candidate}...${headSha}`, '--name-only'], repoRoot);
         if (diff && diff.trim().length > 0)
             return candidate;
     }
     return null;
 }
 function listTrackedAndUntracked(repoRoot) {
-    const out = runGit(['ls-files', '-co', '--exclude-standard', '-z'], repoRoot, false);
+    const out = runGitSafe(['ls-files', '-co', '--exclude-standard', '-z'], repoRoot);
     if (!out)
         return [];
     return out.split('\0').filter((p) => p.length > 0);
@@ -530,7 +530,7 @@ function listTrackedAndUntracked(repoRoot) {
  * `-z` an unusual path arrives quoted — neither matches the enumeration.
  */
 function listUndiffablePaths(baseSha, headSha, repoRoot) {
-    const out = runGit(['diff', '--numstat', '-M100', '-z', `${baseSha}...${headSha}`], repoRoot, false);
+    const out = runGitSafe(['diff', '--numstat', '-M100', '-z', `${baseSha}...${headSha}`], repoRoot);
     if (!out)
         return [];
     const tokens = out.split('\0');
@@ -560,7 +560,7 @@ function listUndiffablePaths(baseSha, headSha, repoRoot) {
  * `.gitattributes`) — a declaration, not a detection.
  */
 function getDeclaredNoDiffPaths(paths, repoRoot) {
-    const out = runGit(['check-attr', '-z', 'diff', '--', ...paths], repoRoot, false);
+    const out = runGitSafe(['check-attr', '-z', 'diff', '--', ...paths], repoRoot);
     const declared = new Set();
     if (!out)
         return declared;
