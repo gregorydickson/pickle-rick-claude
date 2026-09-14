@@ -3337,6 +3337,22 @@ five, six of nine analyst-authored tickets failed the collapse check **while bei
 the gate wanted**. The blocking was still valuable — rounds 4–5 surfaced real correctness bugs — but the run had
 to override the gate with a documented reason to proceed.
 
+> **N1 re-measurement (2026-09-14):** the inline-array-literal complaint above is FIXED —
+> `DESCRIBE_EACH_RE` (`spawn-refinement-team.ts:1646`) now accepts a derived array/identifier, not
+> only a literal `[`. The **negative-universal** complaint is still live —
+> `UNIVERSAL_QUANTIFIER_RE` (`:1626`) still omits `no`/`never`/bare `any`. The probe below pins the
+> surviving claim; disposition of the row itself is N4's (`ecc235f8`), not this ticket's.
+
+```probe
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+node -e "
+import('file://$REPO_ROOT/extension/bin/spawn-refinement-team.js').then(({ isParametrizedTicket }) => {
+  const ticket = { title: 'NO rule ever emits an invalid response', acceptance_test: 'describeEach(RULES) verifies behavior' };
+  process.exit(isParametrizedTicket(ticket) === false ? 0 : 1);
+});
+"
+```
+
 ---
 
 ## ✅ RESOLVED (was OPEN BUG) — pipeline `--max-iterations 0` stops after ONE ticket + manager orphans its worker (2026-07-14, capture-only)
@@ -3379,6 +3395,47 @@ AC should block Done). Adjacent to R-AICF/R-CECX but distinct — the commit exi
 inferred-completion accepts it, but it is a RECOVERY commit and the ACs are verifiably unmet.
 Workaround: the 2-line gate deletion is a trivial manual fix, tracked for hand-application after the
 pipeline's citadel/anatomy/szechuan phases complete.
+
+> **N1 re-measurement (2026-09-14):** still live. `commitAndContinueDoneFlip`
+> (`mux-runner.ts:6633`) stamps a `Pickle-Ticket` trailer onto a
+> `fix(<id>): commit-and-continue recovery (R-ORSR-2)` commit and calls
+> `guardCompletionCommitBeforeDone`, which accepts it as completion evidence via
+> `readEvidence`'s trailer scan — that scan never reads the ticket's own `## Acceptance
+> Criteria`. `runAcPhaseGate` (the only AC-command runner in this repo) is called only from
+> `finalize-gate.ts`/`pipeline-runner.ts`/`spawn-refinement-team.ts` (phase/bundle/refinement
+> boundaries), never from the per-ticket Done-flip path.
+
+```probe
+D="$(mktemp -d)"
+git -C "$D" init -q
+git -C "$D" config user.email probe@pickle.local
+git -C "$D" config user.name probe
+echo x > "$D/f.txt"
+git -C "$D" add f.txt
+git -C "$D" commit -q -m init
+echo y > "$D/f.txt"
+git -C "$D" add f.txt
+git -C "$D" commit -q -m "$(printf 'fix(abcd1234): commit-and-continue recovery (R-ORSR-2)\n\nPickle-Ticket: abcd1234\n')"
+TFILE="$D/rick_ticket_abcd1234.md"
+cat > "$TFILE" <<'TICKET'
+---
+id: abcd1234
+status: "In Progress"
+---
+## Acceptance Criteria
+- AC-1: grep -q 'NEVER_PRESENT_TOKEN' src/nonexistent.ts
+TICKET
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+node -e "
+import('file://$REPO_ROOT/extension/services/ticket-completion-evidence.js').then(({ readEvidence }) => {
+  const r = readEvidence({ ticketPath: '$TFILE', workingDir: '$D' });
+  process.exit(r.kind === 'committed' ? 0 : 1);
+});
+"
+STATUS=$?
+rm -rf "$D"
+exit "$STATUS"
+```
 
 ## ✅ RESOLVED (was TOP ITEM) — [[B-ONEABORT]] — **STRUCK 2026-09-14 by re-measurement**
 
