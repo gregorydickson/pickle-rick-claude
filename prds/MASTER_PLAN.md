@@ -3049,6 +3049,11 @@ completion-evidence PROVEN, LOA-1363 run 4) are preserved in
 | Drain Queue rows marked remaining | 19 | 8 | **11** |
 | **Total open** | **30** | **10** | **20** |
 
+**Open `OPEN BUG` + `TOP ITEM` sections (N4 re-census 2026-09-14): 2** — the `9` above is the 2026-08-31
+figure. Every open section carries a behaviour probe run by `extension/scripts/audit-ledger-probes.sh`. Check
+that this stated count, the audit's confirmed probes and the raw open headings agree:
+`s=$(grep -oE 'N4 re-census 2026-09-14\): [0-9]+' prds/MASTER_PLAN.md | grep -oE '[0-9]+$'); a=$(bash extension/scripts/audit-ledger-probes.sh | grep -oE '[0-9]+ probes confirmed OPEN' | grep -oE '^[0-9]+'); h=$(grep -cE '^## (OPEN BUG|TOP ITEM)' prds/MASTER_PLAN.md); test "$s" = "$a" && test "$a" = "$h"`
+
 **Verified FIXED and re-stated in place (evidence in each row/section):** `R-ISSC`, the 2026-08-07
 crash-floor P2, `R-SJLAGMT`, `R-GBANNER`, `R-NOPOSTTIER`, `R-GENVL`, `R-WGTORPH`, `R-ORCG`, `R-MPVU`,
 `R-BCFR`. (`R-WGFR` was already marked done; its row now carries the confirming evidence.)
@@ -3079,6 +3084,8 @@ a bundle.** Rows not re-measured: `R-TIERWEDGE`, `R-RWNF`, `R-JPCM`, `B-APRP`,
 `R-FBTN`, the 3 id-less/`119` rows, and the `OPEN BUG` sections for `describe.each`,
 `--max-iterations 0`, `R-ORSR-2`, `R-EROS`, `B-OFFREPO`, `B-LOGEV`, `R-ACNP`.
 (`R-TCVC`, `R-HNCG` re-measured and struck 2026-09-07 — see Addendum G5 below.)
+(`describe.each` and `R-ORSR-2` re-measured 2026-09-14 by N4 `ecc235f8` by exercising the gate and the Done-flip —
+both still OPEN; describe.each's derived-form headline struck. Evidence in each section.)
 
 **Addendum 2026-09-01:** three further rows closed by B-CIGREEN3 measurement (`R-EROS`,
 `--max-iterations 0`, `R-TIERWEDGE`) and one NEW row filed from measurement ([[B-LINTGATE]], P2,
@@ -3319,7 +3326,7 @@ Closer manager-handoff runbook: `../docs/closer-ticket-manager-handoff.md`. Baby
 
 ---
 
-## OPEN BUG — AC-shape gate rejects DERIVED `describe.each` (2026-07-14, capture-only)
+## OPEN BUG — AC-shape gate halts refinement on a NEGATIVE-universal collapse (NO / never / any) (2026-07-14, capture-only; derived-`describe.each` headline STRUCK 2026-09-14 by re-measurement)
 
 **`prds/BUG-REPORT-2026-07-14-ac-shape-gate-rejects-derived-describe-each.md`**
 
@@ -3343,14 +3350,32 @@ to override the gate with a documented reason to proceed.
 > `UNIVERSAL_QUANTIFIER_RE` (`:1626`) still omits `no`/`never`/bare `any`. The probe below pins the
 > surviving claim; disposition of the row itself is N4's (`ecc235f8`), not this ticket's.
 
+> **N4 re-measurement (2026-09-14, ticket `ecc235f8`) — verdict: headline STRUCK, row OPEN on the
+> negative-universal claim.** Measured by running the real gate (`evaluateAcShapeEnforcement` +
+> `runAcShapeEnforcement`, `spawn-refinement-team.ts:2139`/`:2226`, whose non-zero return `main()` process.exits
+> at `:2924`) over one-smell / one-ticket manifests, compiled JS at `9a419376`:
+>
+> | title / acceptance_test | violations | gate exit | pre-fix `/describe\.each\s*\(\s*\[/s` |
+> |---|---|---|---|
+> | `All rules emit valid responses` / `describe.each(EXPORTED_RULES)(…)` | 0 | 0 | no match (would reject) |
+> | `Every rule emits valid responses` / `describeEach(EXPORTED_RULES)(…)` | 0 | 0 | no match |
+> | `A FAIL never renders below a PASS` / `describeEach(RENDER_CASES)(…)` | 1 | **2** | no match |
+>
+> The DERIVED form passes the gate that the pre-fix regex would have failed, so the headline is dead. A
+> correctly-written negative universal in the repo's own `describeEach` idiom still fails
+> `UNIVERSAL_QUANTIFIER_RE` (`:1626`) in the single-ticket-collapse branch and the gate returns 2 — and the smell
+> prompt (`:151`) tags exactly such ACs, because their headline "lacks all / every / for any". Unfiled side
+> observation: with the jest spelling `describe.each(` the quantifier is satisfied by the `.each` token itself.
+> The probe below asserts the gate EXIT CODE; control: retitling to `Every FAIL renders above a PASS` exits 1.
+
 ```probe
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 node -e "
-import('file://$REPO_ROOT/extension/bin/spawn-refinement-team.js').then(({ isParametrizedTicket }) => {
-  const ticket = { title: 'NO rule ever emits an invalid response', acceptance_test: 'describeEach(RULES) verifies behavior' };
-  process.exit(isParametrizedTicket(ticket) === false ? 0 : 1);
+import('file://$REPO_ROOT/extension/bin/spawn-refinement-team.js').then(({ runAcShapeEnforcement }) => {
+  const manifest = { ac_shape_smells: [{ ac_id: 'AC-1' }], prd_advisory_shape_concerns: [], tickets: [{ id: 't1', title: 'A FAIL never renders below a PASS', acceptance_test: 'describeEach(RENDER_CASES) verifies ordering', source_ac_ids: ['AC-1'] }] };
+  process.exit(runAcShapeEnforcement(manifest, {}) === 2 ? 0 : 1);
 });
-"
+" 2>/dev/null
 ```
 
 ---
@@ -3405,35 +3430,50 @@ pipeline's citadel/anatomy/szechuan phases complete.
 > `finalize-gate.ts`/`pipeline-runner.ts`/`spawn-refinement-team.ts` (phase/bundle/refinement
 > boundaries), never from the per-ticket Done-flip path.
 
+> **N4 re-measurement (2026-09-14, ticket `ecc235f8`) — verdict: OPEN.** The N1 probe measured `readEvidence`, not
+> the flip; this one drives the flip. `commitAndContinueDoneFlip` (`mux-runner.ts:6642`) stamps the
+> `commit-and-continue recovery (R-ORSR-2)` commit, stamps the runner-authored verdict (`:6662`), passes
+> `guardCompletionCommitBeforeDone` (`:6663`) and reaches `finalizeDoneFlipAfterCommit` (`:6596`), whose ONLY
+> withhold is `shouldWithholdDoneFlipOnUnrunGate` (`not_run`). Fixture: a repo whose only dirt is `notes.md` (no
+> impl), ticket AC `grep -c FIRSTCOLONY src/gate.ts returns 0` unmet, env scrubbed (`env -i`), compiled JS at `9a419376`:
+>
+> | target repo | `allowDoneWhenGateNotRun` | `gateMeasured` | status after | `worker_gate_verdict` |
+> |---|---|---|---|---|
+> | no `package.json` | `false` (rung 1) | — | In Progress (withheld) | — |
+> | `scripts["test:fast"]` declared | `false` (rung 1, `attemptRecoveryBeforeTerminal` `:8015`) | `true` | **Done** | green |
+> | `scripts["test:fast"]` declared | default (exit path) | `true` | **Done** | green |
+> | `scripts["test:fast"]` declared | `false` (rung 1) | `false` | In Progress (withheld) | not_run |
+>
+> 92e33eb3 + AP-EXT-ITER157-04 closed the UNMEASURED-gate arm only. Once the repo-wide gate measures green, a
+> recovery commit carrying no implementation flips Done — the incident's exact `status: Done` +
+> `worker_gate_verdict: green` shape — and the ticket's own acceptance criteria are never consulted. The probe
+> asserts the on-disk Done over an unmet AC; control: `gateMeasured: false` exits 1.
+
 ```probe
 D="$(mktemp -d)"
+S="$(mktemp -d)"
 git -C "$D" init -q
 git -C "$D" config user.email probe@pickle.local
 git -C "$D" config user.name probe
-echo x > "$D/f.txt"
-git -C "$D" add f.txt
+mkdir -p "$D/src" "$S/abcd1234"
+echo 'const gate = "FIRSTCOLONY";' > "$D/src/gate.ts"
+echo '{"name":"probe","scripts":{"test:fast":"true"}}' > "$D/package.json"
+git -C "$D" add -A
 git -C "$D" commit -q -m init
-echo y > "$D/f.txt"
-git -C "$D" add f.txt
-git -C "$D" commit -q -m "$(printf 'fix(abcd1234): commit-and-continue recovery (R-ORSR-2)\n\nPickle-Ticket: abcd1234\n')"
-TFILE="$D/rick_ticket_abcd1234.md"
-cat > "$TFILE" <<'TICKET'
----
-id: abcd1234
-status: "In Progress"
----
-## Acceptance Criteria
-- AC-1: grep -q 'NEVER_PRESENT_TOKEN' src/nonexistent.ts
-TICKET
+printf -- '---\nid: abcd1234\nstatus: "In Progress"\ncomplexity_tier: small\n---\n## Acceptance Criteria\n- AC-1: grep -c FIRSTCOLONY src/gate.ts returns 0\n' > "$S/abcd1234/rick_ticket_abcd1234.md"
+echo 'salvaged handoff note, no impl' > "$D/notes.md"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-node -e "
-import('file://$REPO_ROOT/extension/services/ticket-completion-evidence.js').then(({ readEvidence }) => {
-  const r = readEvidence({ ticketPath: '$TFILE', workingDir: '$D' });
-  process.exit(r.kind === 'committed' ? 0 : 1);
+env -i HOME="$HOME" PATH="$PATH" node -e "
+const fs = require('fs');
+import('file://$REPO_ROOT/extension/bin/mux-runner.js').then((m) => {
+  const r = m.commitAndContinueDoneFlip({ sessionDir: '$S', ticketId: 'abcd1234', workingDir: '$D', statePath: '$S/absent.json', flags: {}, log: () => {}, allowDoneWhenGateNotRun: false, gateMeasured: true });
+  const done = /^status: \"?Done\"?$/m.test(fs.readFileSync('$S/abcd1234/rick_ticket_abcd1234.md', 'utf8'));
+  const acUnmet = fs.readFileSync('$D/src/gate.ts', 'utf8').includes('FIRSTCOLONY');
+  process.exit(r.ok && done && acUnmet ? 0 : 1);
 });
-"
+" 2>/dev/null
 STATUS=$?
-rm -rf "$D"
+rm -rf "$D" "$S"
 exit "$STATUS"
 ```
 
