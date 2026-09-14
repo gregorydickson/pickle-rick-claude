@@ -12293,7 +12293,396 @@ function advanceCommitPendingTracker(tracker, curIter, iteration) {
         tracker.lastProgressOuterIteration = iteration;
     }
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 892 code lines against a ceiling of 120, and complexity 173 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/**
+ * 7c5a706b (N3 stage 1): the state read, inactive exit, one-time target-toolchain pre-flight and the three per-ticket
+ * cache normalizers `runMuxRunnerMain` runs first on every pass. The pre-flight latch is flipped in place, so the
+ * pre-flight still runs once per run.
+ */
+function readIterationStartState(input) {
+    const { statePath, sessionDir, log } = input;
+    let state;
+    try {
+        state = readRunnerState(statePath);
+    }
+    catch (err) {
+        const decision = classifyCapCheckReadError(err, sessionDir, log);
+        return decision === 'continue' ? { kind: 'retry' } : { kind: 'exit', exitReason: 'error' };
+    }
+    if (state.active !== true) {
+        log('Session inactive. Exiting.');
+        return { kind: 'exit', exitReason: 'cancelled' };
+    }
+    // WS-2c (R-PFNT): one-time target-toolchain pre-flight. If the target repo
+    // declares a Node toolchain (package.json) but has NO node_modules, every worker
+    // spawn churns ~30 Done/Skipped iterations of red gates before anyone notices.
+    // Fail fast ONCE here with a distinct exit_reason instead. Conservative: only the
+    // definite missing-toolchain signal trips this (see targetToolchainMissing).
+    if (!input.toolchainPreflight.checked) {
+        input.toolchainPreflight.checked = true;
+        if (haltOnMissingTargetToolchain(statePath, state.working_dir, log)) {
+            return { kind: 'exit', exitReason: 'toolchain_unavailable' };
+        }
+    }
+    state = clearStalePerTicketCacheAtIterationStart(statePath, state, log, sessionDir);
+    // W4c (AC-W4c-1): re-assert the per-ticket no-progress cap from frontmatter
+    // ground truth so a SET ticket can never reach the cap-check below with an
+    // invalid cache (ticketMaxIter=0 → cap silently disabled → R-WMNP unbounded
+    // respawn).
+    state = repopulateNoProgressCapFromFrontmatter(statePath, state, log, sessionDir);
+    // B-PXBO WS-3-FacetB: a crash-resume relaunch can inherit a `state.current_ticket`
+    // that is ALREADY Done with a durable git commit. The per-ticket cap-check below
+    // reads the inherited (spent) per-ticket cache keyed to that ticket and would flip
+    // it Done->Failed (AC-CRSR-3 violation). Skip it BEFORE the cap-check reads the
+    // stale persisted cache: clear the per-ticket cache via the EXISTING reset helper
+    // (subtract — reuse `clearStaleTicketCacheFields`, do not add a new clearer) so the
+    // cap-check sees no live ticket and `resolvePreTicket` re-routes to the next pending
+    // ticket via `findNextPendingTicketId`. This does NOT widen `updateMuxLifecycleState`'s
+    // ticketChanged trigger; the same-Done-ticket resume path clears here.
+    state = skipResumedDoneTicketCapCache(statePath, sessionDir, state, log);
+    return { kind: 'ready', state };
+}
+/** 7c5a706b: the circuit-breaker gate — if CB is OPEN, record `circuit_open`, deactivate, and hand back the exit. */
+function exitOnOpenCircuitBreaker(cbEnabled, cbState, statePath, log) {
+    if (!cbEnabled || !cbState || canExecute(cbState))
+        return null;
+    log(`Circuit breaker OPEN: ${cbState.reason}. Exiting.`);
+    recordExitReason(statePath, 'circuit_open');
+    safeDeactivate(statePath);
+    return 'circuit_open';
+}
+/**
+ * 7c5a706b: stall detection fallback (only when CB is disabled). On `halt` the `stall` exit is already recorded and
+ * the caller breaks without adopting the trackers; otherwise the caller adopts both.
+ */
+function evaluateStallFallback(input) {
+    const { curIter, statePath, log } = input;
+    if (input.cbEnabled)
+        return { halt: false, stallCount: input.stallCount, lastStateIteration: input.lastStateIteration };
+    let stallCount = input.stallCount;
+    if (curIter === input.lastStateIteration) {
+        stallCount++;
+        if (stallCount >= 2) { // Stall threshold only consulted when !cbEnabled; CB-enabled sessions use CB's own progress threshold
+            log(`WARNING: state.iteration has not advanced in 2 outer-loop iterations (stuck at ${input.state.iteration}). Exiting to avoid wasted API calls.`);
+            recordExitReason(statePath, 'stall');
+            safeDeactivate(statePath);
+            return { halt: true, stallCount, lastStateIteration: input.lastStateIteration };
+        }
+    }
+    else {
+        stallCount = 0;
+    }
+    return { halt: false, stallCount, lastStateIteration: curIter };
+}
+/** 7c5a706b: the two best-effort iteration-start reapers (orphaned managers, then orphaned worker procs). */
+function reapOrphansAtIterationStart(statePath, sessionDir, log) {
+    try {
+        reapOrphanedManagersAtIterationStart(statePath, sessionDir, log);
+    }
+    catch (err) {
+        log(`orphan manager reaper failed (ignored): ${safeErrorMessage(err)}`);
+    }
+    try {
+        runPipelineOrphanWorkerReap(statePath, path.join(getDataRoot(), 'sessions'), log);
+    }
+    catch (err) {
+        log(`iteration-start orphan worker-proc reaper failed (ignored): ${safeErrorMessage(err)}`);
+    }
+}
+/**
+ * 7c5a706b: R-WTB-A1 artifact-progress probe. If the worker produced new artifacts or commits within the no-progress
+ * window, emit `ticket_timeout_progress_extension` and report `progressed` so the caller resets the counter.
+ */
+function probeTimeoutArtifactProgress(input) {
+    const { statePath, sessionDir, state, ticketForTimeout, timeoutCount, lastArtifactProgressSnapshot, noProgressWindowS, log } = input;
+    const ticketDir = ticketForTimeout ? path.join(sessionDir, ticketForTimeout) : null;
+    const scopeJsonPath = path.join(sessionDir, 'scope.json');
+    if (!ticketDir || !fs.existsSync(ticketDir))
+        return { progressed: false, snapshot: lastArtifactProgressSnapshot };
+    const pResult = detectArtifactProgress(ticketDir, lastArtifactProgressSnapshot, {
+        workingDir: state.working_dir || sessionDir,
+        scopeJsonPath,
+    });
+    const snapshot = { latestMtimeEpoch: pResult.latestMtimeEpoch, latestCommitSha: pResult.latestCommitSha };
+    if (!pResult.progressed)
+        return { progressed: false, snapshot };
+    writeActivityEntry(statePath, {
+        event: 'ticket_timeout_progress_extension',
+        ts: new Date().toISOString(),
+        ticket: ticketForTimeout,
+        gate_payload: {
+            latest_mtime_epoch: pResult.latestMtimeEpoch,
+            latest_commit_sha: pResult.latestCommitSha,
+            timeout_count: timeoutCount,
+            no_progress_window_seconds: noProgressWindowS,
+        },
+    });
+    log(`[info] Artifact progress detected for ticket ${ticketForTimeout} — timeout counter reset (window: ${noProgressWindowS}s)`);
+    return { progressed: true, snapshot };
+}
+/**
+ * 7c5a706b: no progress inside the window — emit `ticket_timeout_halted_no_progress`, then route through the single
+ * recovery choke point before the bare timeout park. `recovered` means the ladder advanced the ticket.
+ */
+function routeTimeoutNoProgress(input) {
+    const { statePath, sessionDir, state, ticketForTimeout, timeoutCount, snapshot, log } = input;
+    writeActivityEntry(statePath, {
+        event: 'ticket_timeout_halted_no_progress',
+        ts: new Date().toISOString(),
+        ticket: ticketForTimeout,
+        gate_payload: {
+            timeout_count: timeoutCount,
+            no_progress_window_seconds: input.noProgressWindowS,
+            latest_mtime_epoch: snapshot.latestMtimeEpoch,
+            latest_commit_sha: snapshot.latestCommitSha,
+        },
+    });
+    // W4a: route through the single choke point before the bare timeout park.
+    // AC-2 fail-safe: a git-mutating recovery call MUST have an explicit
+    // working_dir (never process.cwd() / the real repo).
+    if (ticketForTimeout && state.working_dir) {
+        const recovery = routeRecoveryBeforeTerminal({
+            sessionDir,
+            statePath,
+            extensionRoot: input.extensionRoot,
+            workingDir: state.working_dir,
+            ticketId: ticketForTimeout,
+            iteration: input.iteration,
+            flags: state.flags ?? null,
+            log,
+            mode: 'worker',
+            evidence: { halt_site: 'timeout_repeat', timeout_count: timeoutCount },
+        });
+        if (recovery.kind === 'advanced') {
+            log(`recovery: ${recovery.strategy} advanced ${ticketForTimeout} before timeout_repeat halt — continuing.`);
+            return 'recovered';
+        }
+    }
+    return 'halt';
+}
+/** 7c5a706b: the whole `counterNext.halt` decision — probe for progress first, then the no-progress recovery route. */
+function resolveTimeoutHaltStep(input) {
+    const noProgressWindowS = resolveNoProgressWindowSeconds();
+    const probe = probeTimeoutArtifactProgress({ ...input, noProgressWindowS });
+    if (probe.progressed)
+        return { kind: 'extended', snapshot: probe.snapshot };
+    const kind = routeTimeoutNoProgress({ ...input, noProgressWindowS, snapshot: probe.snapshot });
+    return { kind, snapshot: probe.snapshot };
+}
+/** 7c5a706b: the `inactive` result branch — codex session-inactive relaunch, clean-exit relaunch/escape, else cancel. */
+function handleInactiveIterationResult(input) {
+    const { outcome, state, statePath, sessionDir, extensionRoot, iteration, iterLogFile, log } = input;
+    if (detectManagerInactiveExit(outcome)) {
+        let postState = state;
+        try {
+            postState = readRunnerState(statePath);
+        }
+        catch { /* fall back */ }
+        const inactiveExitKind = classifyManagerRelaunchExit(postState, outcome, iterLogFile, input.runnerMaxTurns);
+        if (inactiveExitKind === 'codex_session_inactive') {
+            const inactiveDecision = evaluateManagerRelaunch(postState, collectTickets(sessionDir), input.cbState, inactiveExitKind);
+            if (inactiveDecision.reason === 'time_limit') {
+                log('Time limit reached. Exiting.');
+                finalizeTerminalState(statePath, { step: 'completed', runnerIteration: iteration, exitReason: 'limit' });
+                return { kind: 'exit', exitReason: 'limit' };
+            }
+            if (inactiveDecision.shouldRelaunch) {
+                const codexStep = resolveCodexManagerNoProgressStep({
+                    statePath, sessionDir, extensionRoot, postState, state, iteration, pendingCount: inactiveDecision.pendingCount, log,
+                });
+                if (codexStep.kind === 'recovery_exhausted') {
+                    writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
+                    recordExitReason(statePath, 'recovery_exhausted');
+                    safeDeactivate(statePath);
+                    removeRunnerSessionMapEntry(statePath, log);
+                    return { kind: 'exit', exitReason: 'recovery_exhausted' };
+                }
+                if (codexStep.kind === 'exit')
+                    return { kind: 'exit', exitReason: codexStep.exitReason };
+                if (codexStep.kind === 'continue')
+                    return { kind: 'relaunch' };
+                const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
+                log(`${relaunchBackend} manager subprocess exited via ${inactiveExitKind} with ${inactiveDecision.pendingCount} ticket(s) still pending — relaunching (count ${inactiveDecision.nextRelaunchCount}/${inactiveDecision.cap}).`);
+                recordManagerRelaunch(statePath, sessionDir, inactiveDecision, iteration, log);
+                return { kind: 'relaunch' };
+            }
+        }
+        // AC-A2 (B-DSAN2 WS-A): a clean manager exit (end_turn / max-turns) must NOT exit 0
+        // while tickets remain non-terminal. Reuse evaluateManagerRelaunch (the existing
+        // completion authority) to relaunch on a pending bundle; only an all-terminal queue
+        // may fall through to the clean exit. No new parallel guard.
+        if (inactiveExitKind !== 'codex_session_inactive') {
+            const cleanExitStep = relaunchOrEscapeAfterCleanManagerExit({
+                postState, state, statePath, sessionDir, extensionRoot, iteration, cbState: input.cbState, exitKind: inactiveExitKind, log,
+                attemptWindow: input.attemptWindow,
+            });
+            if (cleanExitStep.kind === 'exit')
+                return { kind: 'exit', exitReason: cleanExitStep.exitReason };
+            if (cleanExitStep.kind === 'continue')
+                return { kind: 'relaunch' };
+        }
+    }
+    log('Session deactivated. Exiting loop.');
+    return { kind: 'exit', exitReason: 'cancelled' };
+}
+/**
+ * 7c5a706b: the `error` result branch. Codex tmux_mode runs ONE long-lived manager subprocess that loops
+ * across many tickets internally. The 4h hang-guard SIGTERMs it with
+ * `{ completion: 'error', timedOut: true }`. Treating that as terminal
+ * strands every Todo ticket the manager hadn't picked up yet. Bounded
+ * relaunch path keeps the queue draining; CB-OPEN and the cap still
+ * fall through to the legacy exit-on-error.
+ */
+function handleErrorIterationResult(input) {
+    const { outcome, state, statePath, sessionDir, extensionRoot, iteration, iterLogFile, log } = input;
+    let postState = state;
+    try {
+        postState = readRunnerState(statePath);
+    }
+    catch { /* fall back */ }
+    const exitKind = classifyManagerRelaunchExit(postState, outcome, iterLogFile, input.runnerMaxTurns);
+    const relaunchDecision = evaluateManagerRelaunch(postState, collectTickets(sessionDir), input.cbState, exitKind);
+    if (relaunchDecision.reason === 'time_limit') {
+        log('Time limit reached. Exiting.');
+        finalizeTerminalState(statePath, { step: 'completed', runnerIteration: iteration, exitReason: 'limit' });
+        return { kind: 'exit', exitReason: 'limit' };
+    }
+    if (relaunchDecision.shouldRelaunch && !isGenuineCrashOrSpawnFailure(relaunchDecision, outcome, iterLogFile)) {
+        const codexStep = resolveCodexManagerNoProgressStep({
+            statePath, sessionDir, extensionRoot, postState, state, iteration, pendingCount: relaunchDecision.pendingCount, log,
+        });
+        if (codexStep.kind === 'recovery_exhausted') {
+            writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
+            recordExitReason(statePath, 'recovery_exhausted');
+            safeDeactivate(statePath);
+            removeRunnerSessionMapEntry(statePath, log);
+            return { kind: 'exit', exitReason: 'recovery_exhausted' };
+        }
+        if (codexStep.kind === 'exit')
+            return { kind: 'exit', exitReason: codexStep.exitReason };
+        if (codexStep.kind === 'continue')
+            return { kind: 'relaunch' };
+        const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
+        const detail = relaunchDecision.exitKind === 'other_error'
+            ? 'errored'
+            : `exited via ${relaunchDecision.exitKind}`;
+        log(`${relaunchBackend} manager subprocess ${detail} with ${relaunchDecision.pendingCount} ticket(s) still pending — ` +
+            `relaunching (count ${relaunchDecision.nextRelaunchCount}/${relaunchDecision.cap}).`);
+        recordManagerRelaunch(statePath, sessionDir, relaunchDecision, iteration, log);
+        // Relaunch IS progress for outer-loop stall detection — reset stall.
+        // Do NOT clear the circuit breaker: a 4h hang-guard timeout is the
+        // exact event the CB should observe across relaunches.
+        return { kind: 'relaunch' };
+    }
+    log('Subprocess error. Exiting loop.');
+    recordExitReason(statePath, 'error');
+    safeDeactivate(statePath);
+    removeRunnerSessionMapEntry(statePath, log);
+    return { kind: 'exit', exitReason: 'error' };
+}
+/** 7c5a706b: the pre-finalize half of the `task_completed` branch. */
+function resolveTaskCompletedClaim(input) {
+    const { state, statePath, sessionDir, iteration, iterLogFile, log } = input;
+    let curState;
+    try {
+        curState = readRunnerState(statePath);
+    }
+    catch (err) {
+        const msg = safeErrorMessage(err);
+        log(`ERROR: Cannot read state.json after task_completed: ${msg}. Exiting.`);
+        return { kind: 'exit', exitReason: 'success' };
+    }
+    // Verify EPIC_COMPLETED against ticket frontmatter. The pure helper
+    // below is the only place that decides genuine vs. recoverable vs.
+    // pathological — a single false EPIC_COMPLETED no longer kills the
+    // pipeline. See `evaluateEpicCompletion` for the full state machine.
+    const allTickets = withFreshTicketStatuses(sessionDir, collectTickets(sessionDir));
+    const decision = evaluateEpicCompletion({
+        tickets: allTickets,
+        currentTicket: curState.current_ticket || null,
+        priorFalseCount: Number(curState.false_epic_completed_count) || 0,
+        priorFalseTicket: curState.false_epic_completed_ticket ?? null,
+        // B-DURA T40: conjunctive Failed-terminal guard git context.
+        failedTerminalGitContext: {
+            sessionDir,
+            workingDir: curState.working_dir || process.cwd(),
+            startCommit: typeof curState.start_commit === 'string' ? curState.start_commit : null,
+        },
+    });
+    if (decision.kind === 'persistent_hallucination') {
+        return { kind: 'exit', exitReason: haltOnPersistentHallucination({ decision, statePath, sessionDir, iterLogFile, log }) };
+    }
+    if (decision.kind === 'recover_advance' || decision.kind === 'recover_retry') {
+        const falseEpicStep = recoverFalseEpicCompletion({ decision, curState, state, statePath, sessionDir, iteration, iterLogFile, log });
+        return falseEpicStep.parked ? { kind: 'park' } : { kind: 'retry' };
+    }
+    if (markFinalTicketDoneBeforeFinalize({ curState, state, statePath, sessionDir, log }).kind === 'continue')
+        return { kind: 'park' };
+    return { kind: 'finalize', curState };
+}
+/** 7c5a706b: the pre-finalize half of the `review_clean` branch — state re-read and the min_iterations gate. */
+function resolveReviewCleanClaim(input) {
+    const { state, statePath, sessionDir, iteration, log } = input;
+    let curState;
+    try {
+        curState = readRunnerState(statePath);
+    }
+    catch (err) {
+        const msg = safeErrorMessage(err);
+        log(`ERROR: Cannot read state.json after review_clean: ${msg}. Treating as completed.`);
+        // B-GROUND2 WS1: even on a state-read failure the EPIC-success finalize
+        // routes through the authority; `muxBundleScan` reads frontmatter
+        // independently of state.json, so the pending-scan still fail-closes.
+        finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
+        return { kind: 'exit' };
+    }
+    const rawMinIter = Number(curState.min_iterations);
+    const minIter = Number.isFinite(rawMinIter) ? rawMinIter : 0;
+    const rawCurIter2 = Number(curState.iteration);
+    const curIterNow = Number.isFinite(rawCurIter2) ? rawCurIter2 : 0;
+    if (minIter > 0 && curIterNow < minIter) {
+        log(`Clean pass at iteration ${curIterNow}, but min_iterations=${minIter}. Continuing.`);
+        return { kind: 'below_min' };
+    }
+    return { kind: 'finalize', curState };
+}
+/**
+ * 7c5a706b: the pre-spawn gates and probes that precede the preskip check — iteration-0 gates, the multi-repo
+ * advisory, the commit-pending tracker + probe, and the R-CNAR-6 spark smoke-run gate. `halt` means the smoke gate
+ * stopped the run with `codex_unhealthy_consecutive_failures` already recorded.
+ */
+function runPreSpawnGatesAndProbes(input) {
+    const { statePath, sessionDir, extensionRoot, curIter, iteration, commitPendingTracker, log } = input;
+    const state = runIterationZeroGates(input.state, input.iterationZeroGates, { curIter, sessionDir, extensionRoot, log });
+    // Multi-repo advisory check (once, on first iteration)
+    warnOnMultiRepoSession(state, sessionDir, iteration, log);
+    advanceCommitPendingTracker(commitPendingTracker, curIter, iteration);
+    // Pre-spawn commit-pending health probe (codex-only). RCA: codex
+    // sometimes produces edits but never `git add` + `git commit`; if
+    // stagnation persists past the threshold, nudge the next worker turn
+    // to commit + signal Done so the breaker doesn't strand orphan work.
+    runPreSpawnCommitPendingProbe({
+        state,
+        sessionDir,
+        iteration,
+        lastProgressIteration: commitPendingTracker.lastProgressOuterIteration,
+        threshold: input.commitPendingProbeThreshold,
+        log,
+    });
+    // R-CNAR-6: spark codex smoke-run gate. Active only when state.backend='codex'
+    // AND state.codex_model matches /^gpt-5\.3-codex-spark/. Halt exits with
+    // exit_reason='codex_unhealthy_consecutive_failures'; auto-resume.sh STOPS per
+    // R-CNAR-4(c) (any non-pipeline_phase_incomplete exit halts the resume loop).
+    const smoke = applySparkSmokeGateAtIteration(state, statePath, sessionDir, input.smokeGateBypassEmitted, log);
+    return { state, smokeGateBypassEmitted: smoke.bypassEmitted, halt: smoke.halt };
+}
+/** 7c5a706b: circuit-breaker recording — only on a CB-enabled run, and skipped for subprocess failures. */
+function maybeRecordCircuitBreakerIteration(input) {
+    const { cbEnabled, cbState, result, ...recordInput } = input;
+    if (!cbEnabled || !cbState || result === 'error' || result === 'inactive')
+        return { cbState, tripped: false };
+    return recordCircuitBreakerIteration({ ...recordInput, cbState });
+}
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 665 code lines against a ceiling of 120, and complexity 122 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
@@ -12339,92 +12728,41 @@ async function runMuxRunnerMain() {
     let smokeGateBypassEmitted = false;
     // WS-2c (R-PFNT): one-time target-toolchain pre-flight latch. Set after the first
     // pass so the cheap missing-node_modules probe runs ONCE per run, not per-iteration.
-    let toolchainPreflightChecked = false;
+    const toolchainPreflight = { checked: false };
     // Initialize the session-scoped codegraph (fail-open — never blocks session start).
     await codegraph.init();
     while (true) {
-        let state;
-        try {
-            state = readRunnerState(statePath);
+        const startStep = readIterationStartState({ statePath, sessionDir, toolchainPreflight, log });
+        if (startStep.kind === 'retry') {
+            await sleep(1000);
+            continue;
         }
-        catch (err) {
-            const decision = classifyCapCheckReadError(err, sessionDir, log);
-            if (decision === 'continue') {
-                await sleep(1000);
-                continue;
-            }
-            exitReason = 'error';
+        if (startStep.kind === 'exit') {
+            exitReason = startStep.exitReason;
             break;
         }
-        if (state.active !== true) {
-            log('Session inactive. Exiting.');
-            exitReason = 'cancelled';
-            break;
-        }
-        // WS-2c (R-PFNT): one-time target-toolchain pre-flight. If the target repo
-        // declares a Node toolchain (package.json) but has NO node_modules, every worker
-        // spawn churns ~30 Done/Skipped iterations of red gates before anyone notices.
-        // Fail fast ONCE here with a distinct exit_reason instead. Conservative: only the
-        // definite missing-toolchain signal trips this (see targetToolchainMissing).
-        if (!toolchainPreflightChecked) {
-            toolchainPreflightChecked = true;
-            if (haltOnMissingTargetToolchain(statePath, state.working_dir, log)) {
-                exitReason = 'toolchain_unavailable';
-                break;
-            }
-        }
-        state = clearStalePerTicketCacheAtIterationStart(statePath, state, log, sessionDir);
-        // W4c (AC-W4c-1): re-assert the per-ticket no-progress cap from frontmatter
-        // ground truth so a SET ticket can never reach the cap-check below with an
-        // invalid cache (ticketMaxIter=0 → cap silently disabled → R-WMNP unbounded
-        // respawn).
-        state = repopulateNoProgressCapFromFrontmatter(statePath, state, log, sessionDir);
-        // B-PXBO WS-3-FacetB: a crash-resume relaunch can inherit a `state.current_ticket`
-        // that is ALREADY Done with a durable git commit. The per-ticket cap-check below
-        // reads the inherited (spent) per-ticket cache keyed to that ticket and would flip
-        // it Done->Failed (AC-CRSR-3 violation). Skip it BEFORE the cap-check reads the
-        // stale persisted cache: clear the per-ticket cache via the EXISTING reset helper
-        // (subtract — reuse `clearStaleTicketCacheFields`, do not add a new clearer) so the
-        // cap-check sees no live ticket and `resolvePreTicket` re-routes to the next pending
-        // ticket via `findNextPendingTicketId`. This does NOT widen `updateMuxLifecycleState`'s
-        // ticketChanged trigger; the same-Done-ticket resume path clears here.
-        state = skipResumedDoneTicketCapCache(statePath, sessionDir, state, log);
+        let state = startStep.state;
         const rawCurIter = Number(state.iteration);
         const curIter = Number.isFinite(rawCurIter) ? rawCurIter : 0;
         iteration = curIter;
         // Cap exits (R-ICP-1 + R-CNAR-1 part 2, R-CNAR-7 stale-cache self-heal), then the
-        // operator-set wall-clock limit — the time check only runs when no cap exit fired.
+        // operator-set wall-clock limit — the time check only runs when no cap exit fired —
+        // then the circuit breaker gate (if CB is OPEN, exit immediately).
         const limitExit = evaluateIterationCapExit(state, statePath, sessionDir, curIter, log)
-            ?? evaluateTimeLimitExit(state, statePath, iteration, log);
+            ?? evaluateTimeLimitExit(state, statePath, iteration, log)
+            ?? exitOnOpenCircuitBreaker(cbEnabled, cbState, statePath, log);
         if (limitExit) {
             exitReason = limitExit;
             break;
         }
-        // Circuit breaker gate: if CB is OPEN, exit immediately
-        if (cbEnabled && cbState && !canExecute(cbState)) {
-            log(`Circuit breaker OPEN: ${cbState.reason}. Exiting.`);
-            recordExitReason(statePath, 'circuit_open');
-            safeDeactivate(statePath);
-            exitReason = 'circuit_open';
+        // Stall detection fallback (only when CB is disabled)
+        const stall = evaluateStallFallback({ cbEnabled, curIter, lastStateIteration, stallCount, state, statePath, log });
+        if (stall.halt) {
+            exitReason = 'stall';
             break;
         }
-        // Stall detection fallback (only when CB is disabled)
-        if (!cbEnabled) {
-            if (curIter === lastStateIteration) {
-                stallCount++;
-                if (stallCount >= 2) { // Stall threshold only consulted when !cbEnabled; CB-enabled sessions use CB's own progress threshold
-                    log(`WARNING: state.iteration has not advanced in 2 outer-loop iterations (stuck at ${state.iteration}). Exiting to avoid wasted API calls.`);
-                    recordExitReason(statePath, 'stall');
-                    safeDeactivate(statePath);
-                    exitReason = 'stall';
-                    break;
-                }
-            }
-            else {
-                stallCount = 0;
-            }
-            lastStateIteration = curIter;
-        }
+        stallCount = stall.stallCount;
+        lastStateIteration = stall.lastStateIteration;
         iteration = curIter + 1;
         {
             const checkState = readRunnerState(statePath);
@@ -12490,18 +12828,7 @@ async function runMuxRunnerMain() {
         state = recordOrphanSessionsAtIterationBoundary(state, statePath, sessionDir, log);
         log(`--- Iteration ${iteration} (state.iteration=${state.iteration}) ---`);
         logActivity({ event: 'iteration_start', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackend(state) });
-        try {
-            reapOrphanedManagersAtIterationStart(statePath, sessionDir, log);
-        }
-        catch (err) {
-            log(`orphan manager reaper failed (ignored): ${safeErrorMessage(err)}`);
-        }
-        try {
-            runPipelineOrphanWorkerReap(statePath, path.join(getDataRoot(), 'sessions'), log);
-        }
-        catch (err) {
-            log(`iteration-start orphan worker-proc reaper failed (ignored): ${safeErrorMessage(err)}`);
-        }
+        reapOrphansAtIterationStart(statePath, sessionDir, log);
         if (applyAllTicketsDoneCompletion(statePath, sessionDir, iteration, log, state.working_dir || '')) {
             exitReason = 'success';
             break;
@@ -12527,30 +12854,14 @@ async function runMuxRunnerMain() {
             exitReason = 'recovery_exhausted';
             break;
         }
-        state = runIterationZeroGates(state, iterationZeroGates, { curIter, sessionDir, extensionRoot, log });
-        // Multi-repo advisory check (once, on first iteration)
-        warnOnMultiRepoSession(state, sessionDir, iteration, log);
-        advanceCommitPendingTracker(commitPendingTracker, curIter, iteration);
-        // Pre-spawn commit-pending health probe (codex-only). RCA: codex
-        // sometimes produces edits but never `git add` + `git commit`; if
-        // stagnation persists past the threshold, nudge the next worker turn
-        // to commit + signal Done so the breaker doesn't strand orphan work.
-        runPreSpawnCommitPendingProbe({
-            state,
-            sessionDir,
-            iteration,
-            lastProgressIteration: commitPendingTracker.lastProgressOuterIteration,
-            threshold: commitPendingProbeThreshold,
-            log,
-        });
-        // R-CNAR-6: spark codex smoke-run gate. Active only when state.backend='codex'
-        // AND state.codex_model matches /^gpt-5\.3-codex-spark/. Halt exits with
-        // exit_reason='codex_unhealthy_consecutive_failures'; auto-resume.sh STOPS per
-        // R-CNAR-4(c) (any non-pipeline_phase_incomplete exit halts the resume loop).
         {
-            const smoke = applySparkSmokeGateAtIteration(state, statePath, sessionDir, smokeGateBypassEmitted, log);
-            smokeGateBypassEmitted = smoke.bypassEmitted;
-            if (smoke.halt) {
+            const preSpawn = runPreSpawnGatesAndProbes({
+                state, statePath, sessionDir, extensionRoot, curIter, iteration, iterationZeroGates, commitPendingTracker,
+                commitPendingProbeThreshold, smokeGateBypassEmitted, log,
+            });
+            state = preSpawn.state;
+            smokeGateBypassEmitted = preSpawn.smokeGateBypassEmitted;
+            if (preSpawn.halt) {
                 exitReason = 'codex_unhealthy_consecutive_failures';
                 break;
             }
@@ -13058,72 +13369,22 @@ async function runMuxRunnerMain() {
         if (counterNext.halt) {
             // R-WTB-A1: check artifact progress before halting — if the worker produced new
             // artifacts or commits within the no-progress window, reset the counter and continue.
-            const noProgressWindowS = resolveNoProgressWindowSeconds();
-            const ticketDir = ticketForTimeout ? path.join(sessionDir, ticketForTimeout) : null;
-            const scopeJsonPath = path.join(sessionDir, 'scope.json');
-            let progressDetected = false;
-            // eslint-disable-next-line pickle/no-sync-in-async -- intentional blocking call
-            if (ticketDir && fs.existsSync(ticketDir)) {
-                const pResult = detectArtifactProgress(ticketDir, lastArtifactProgressSnapshot, {
-                    workingDir: state.working_dir || sessionDir,
-                    scopeJsonPath,
-                });
-                lastArtifactProgressSnapshot = { latestMtimeEpoch: pResult.latestMtimeEpoch, latestCommitSha: pResult.latestCommitSha };
-                if (pResult.progressed) {
-                    progressDetected = true;
-                    writeActivityEntry(statePath, {
-                        event: 'ticket_timeout_progress_extension',
-                        ts: new Date().toISOString(),
-                        ticket: ticketForTimeout,
-                        gate_payload: {
-                            latest_mtime_epoch: pResult.latestMtimeEpoch,
-                            latest_commit_sha: pResult.latestCommitSha,
-                            timeout_count: timeoutCount,
-                            no_progress_window_seconds: noProgressWindowS,
-                        },
-                    });
-                    timeoutCount = 1;
-                    lastTimeoutTicket = ticketForTimeout;
-                    log(`[info] Artifact progress detected for ticket ${ticketForTimeout} — timeout counter reset (window: ${noProgressWindowS}s)`);
-                }
+            const timeoutStep = resolveTimeoutHaltStep({
+                statePath, sessionDir, state, extensionRoot, iteration, ticketForTimeout, timeoutCount, lastArtifactProgressSnapshot, log,
+            });
+            lastArtifactProgressSnapshot = timeoutStep.snapshot;
+            if (timeoutStep.kind === 'extended') {
+                timeoutCount = 1;
+                lastTimeoutTicket = ticketForTimeout;
             }
-            if (!progressDetected) {
-                writeActivityEntry(statePath, {
-                    event: 'ticket_timeout_halted_no_progress',
-                    ts: new Date().toISOString(),
-                    ticket: ticketForTimeout,
-                    gate_payload: {
-                        timeout_count: timeoutCount,
-                        no_progress_window_seconds: noProgressWindowS,
-                        latest_mtime_epoch: lastArtifactProgressSnapshot.latestMtimeEpoch,
-                        latest_commit_sha: lastArtifactProgressSnapshot.latestCommitSha,
-                    },
-                });
-                // W4a: route through the single choke point before the bare timeout park.
-                // AC-2 fail-safe: a git-mutating recovery call MUST have an explicit
-                // working_dir (never process.cwd() / the real repo).
-                if (ticketForTimeout && state.working_dir) {
-                    const recovery = routeRecoveryBeforeTerminal({
-                        sessionDir,
-                        statePath,
-                        extensionRoot,
-                        workingDir: state.working_dir,
-                        ticketId: ticketForTimeout,
-                        iteration,
-                        flags: state.flags ?? null,
-                        log,
-                        mode: 'worker',
-                        evidence: { halt_site: 'timeout_repeat', timeout_count: timeoutCount },
-                    });
-                    if (recovery.kind === 'advanced') {
-                        log(`recovery: ${recovery.strategy} advanced ${ticketForTimeout} before timeout_repeat halt — continuing.`);
-                        timeoutCount = 0;
-                        lastTimeoutTicket = null;
-                        lastStateIteration = -1;
-                        stallCount = 0;
-                        continue;
-                    }
-                }
+            else if (timeoutStep.kind === 'recovered') {
+                timeoutCount = 0;
+                lastTimeoutTicket = null;
+                lastStateIteration = -1;
+                stallCount = 0;
+                continue;
+            }
+            else {
                 log(`Timeout halt: ticket ${ticketForTimeout} timed out ${timeoutCount} consecutive iterations`);
                 executeTimeoutHalt({ statePath, sessionDir, ticketNow: ticketForTimeout, timeoutCount });
                 exitReason = 'timeout_repeat';
@@ -13132,53 +13393,24 @@ async function runMuxRunnerMain() {
         }
         // === Existing CB recording — only reached for non-rate-limit ===
         // Circuit breaker: record iteration outcome (skip for subprocess failures)
-        if (cbEnabled && cbState && result !== 'error' && result !== 'inactive') {
-            const cbStep = recordCircuitBreakerIteration({
-                cbState, cbSettings, cbPath, statePath, sessionDir, state, iteration, iterLogFile, log,
-            });
-            cbState = cbStep.cbState;
-            if (cbStep.tripped) {
-                exitReason = 'circuit_open';
-                break;
-            }
+        const cbStep = maybeRecordCircuitBreakerIteration({
+            cbEnabled, cbState, result, cbSettings, cbPath, statePath, sessionDir, state, iteration, iterLogFile, log,
+        });
+        cbState = cbStep.cbState;
+        if (cbStep.tripped) {
+            exitReason = 'circuit_open';
+            break;
         }
         if (result === 'task_completed') {
             // EPIC_COMPLETED / TASK_COMPLETED
-            let curState;
-            try {
-                curState = readRunnerState(statePath);
-            }
-            catch (err) {
-                const msg = safeErrorMessage(err);
-                log(`ERROR: Cannot read state.json after task_completed: ${msg}. Exiting.`);
-                exitReason = 'success';
+            const claim = resolveTaskCompletedClaim({ state, statePath, sessionDir, iteration, iterLogFile, log });
+            if (claim.kind === 'exit') {
+                exitReason = claim.exitReason;
                 break;
             }
-            // Verify EPIC_COMPLETED against ticket frontmatter. The pure helper
-            // below is the only place that decides genuine vs. recoverable vs.
-            // pathological — a single false EPIC_COMPLETED no longer kills the
-            // pipeline. See `evaluateEpicCompletion` for the full state machine.
-            const allTickets = withFreshTicketStatuses(sessionDir, collectTickets(sessionDir));
-            const decision = evaluateEpicCompletion({
-                tickets: allTickets,
-                currentTicket: curState.current_ticket || null,
-                priorFalseCount: Number(curState.false_epic_completed_count) || 0,
-                priorFalseTicket: curState.false_epic_completed_ticket ?? null,
-                // B-DURA T40: conjunctive Failed-terminal guard git context.
-                failedTerminalGitContext: {
-                    sessionDir,
-                    workingDir: curState.working_dir || process.cwd(),
-                    startCommit: typeof curState.start_commit === 'string' ? curState.start_commit : null,
-                },
-            });
-            if (decision.kind === 'persistent_hallucination') {
-                exitReason = haltOnPersistentHallucination({ decision, statePath, sessionDir, iterLogFile, log });
-                break;
-            }
-            if (decision.kind === 'recover_advance' || decision.kind === 'recover_retry') {
-                const falseEpicStep = recoverFalseEpicCompletion({ decision, curState, state, statePath, sessionDir, iteration, iterLogFile, log });
-                if (falseEpicStep.parked)
-                    continue;
+            if (claim.kind === 'park')
+                continue;
+            if (claim.kind === 'retry') {
                 // Reset stall counter so the recovery iteration isn't immediately
                 // killed by the no-progress detector — the manager IS making progress
                 // (we just disagree about whether it's done).
@@ -13187,8 +13419,7 @@ async function runMuxRunnerMain() {
                 await sleep(1000);
                 continue;
             }
-            if (markFinalTicketDoneBeforeFinalize({ curState, state, statePath, sessionDir, log }).kind === 'continue')
-                continue;
+            const curState = claim.curState;
             // TIER-1.2 gh-11: manager_handoff_pending no longer halts — this is park-and-flag
             // only. closer_handoff_terminal requires status 'failed', which cannot hold on the
             // ticket just marked Done above, so what this path wants is the residual COMMAND,
@@ -13231,28 +13462,13 @@ async function runMuxRunnerMain() {
         }
         else if (result === 'review_clean') {
             // review_clean (EXISTENCE_IS_PAIN / THE_CITADEL_APPROVES) — apply min_iterations gate
-            let curState;
-            try {
-                curState = readRunnerState(statePath);
-            }
-            catch (err) {
-                const msg = safeErrorMessage(err);
-                log(`ERROR: Cannot read state.json after review_clean: ${msg}. Treating as completed.`);
-                // B-GROUND2 WS1: even on a state-read failure the EPIC-success finalize
-                // routes through the authority; `muxBundleScan` reads frontmatter
-                // independently of state.json, so the pending-scan still fail-closes.
-                finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
+            const reviewClaim = resolveReviewCleanClaim({ state, statePath, sessionDir, iteration, log });
+            if (reviewClaim.kind === 'exit') {
                 exitReason = 'success';
                 break;
             }
-            const rawMinIter = Number(curState.min_iterations);
-            const minIter = Number.isFinite(rawMinIter) ? rawMinIter : 0;
-            const rawCurIter2 = Number(curState.iteration);
-            const curIterNow = Number.isFinite(rawCurIter2) ? rawCurIter2 : 0;
-            if (minIter > 0 && curIterNow < minIter) {
-                log(`Clean pass at iteration ${curIterNow}, but min_iterations=${minIter}. Continuing.`);
-            }
-            else {
+            if (reviewClaim.kind === 'finalize') {
+                const curState = reviewClaim.curState;
                 log('Review clean. Exiting loop.');
                 // B-GROUND2 WS1: EPIC-success finalize through the single authority.
                 const finalizeResult = finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, curState.working_dir || state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
@@ -13272,140 +13488,31 @@ async function runMuxRunnerMain() {
             }
         }
         else if (result === 'inactive') {
-            if (detectManagerInactiveExit(outcome)) {
-                let postState = state;
-                try {
-                    postState = readRunnerState(statePath);
-                }
-                catch { /* fall back */ }
-                const inactiveExitKind = classifyManagerRelaunchExit(postState, outcome, iterLogFile, runnerMaxTurns);
-                if (inactiveExitKind === 'codex_session_inactive') {
-                    const inactiveDecision = evaluateManagerRelaunch(postState, collectTickets(sessionDir), cbState, inactiveExitKind);
-                    if (inactiveDecision.reason === 'time_limit') {
-                        log('Time limit reached. Exiting.');
-                        finalizeTerminalState(statePath, { step: 'completed', runnerIteration: iteration, exitReason: 'limit' });
-                        exitReason = 'limit';
-                        break;
-                    }
-                    if (inactiveDecision.shouldRelaunch) {
-                        const codexStep = resolveCodexManagerNoProgressStep({
-                            statePath, sessionDir, extensionRoot, postState, state, iteration, pendingCount: inactiveDecision.pendingCount, log,
-                        });
-                        if (codexStep.kind === 'recovery_exhausted') {
-                            writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
-                            recordExitReason(statePath, 'recovery_exhausted');
-                            safeDeactivate(statePath);
-                            removeRunnerSessionMapEntry(statePath, log);
-                            exitReason = 'recovery_exhausted';
-                            break;
-                        }
-                        if (codexStep.kind === 'exit') {
-                            exitReason = codexStep.exitReason;
-                            break;
-                        }
-                        if (codexStep.kind === 'continue') {
-                            lastStateIteration = -1;
-                            stallCount = 0;
-                            await sleep(1000);
-                            continue;
-                        }
-                        const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
-                        log(`${relaunchBackend} manager subprocess exited via ${inactiveExitKind} with ${inactiveDecision.pendingCount} ticket(s) still pending — relaunching (count ${inactiveDecision.nextRelaunchCount}/${inactiveDecision.cap}).`);
-                        recordManagerRelaunch(statePath, sessionDir, inactiveDecision, iteration, log);
-                        lastStateIteration = -1;
-                        stallCount = 0;
-                        await sleep(1000);
-                        continue;
-                    }
-                }
-                // AC-A2 (B-DSAN2 WS-A): a clean manager exit (end_turn / max-turns) must NOT exit 0
-                // while tickets remain non-terminal. Reuse evaluateManagerRelaunch (the existing
-                // completion authority) to relaunch on a pending bundle; only an all-terminal queue
-                // may fall through to the clean exit. No new parallel guard.
-                if (inactiveExitKind !== 'codex_session_inactive') {
-                    const cleanExitStep = relaunchOrEscapeAfterCleanManagerExit({
-                        postState, state, statePath, sessionDir, extensionRoot, iteration, cbState, exitKind: inactiveExitKind, log,
-                        attemptWindow: { sessionDir, iterationStartMs: iterStartMs, commitWindow: { workingDir: iterWorkingDir, preIterSha } },
-                    });
-                    if (cleanExitStep.kind === 'exit') {
-                        exitReason = cleanExitStep.exitReason;
-                        break;
-                    }
-                    if (cleanExitStep.kind === 'continue') {
-                        lastStateIteration = -1;
-                        stallCount = 0;
-                        await sleep(1000);
-                        continue;
-                    }
-                }
-            }
-            log('Session deactivated. Exiting loop.');
-            exitReason = 'cancelled';
-            break;
-        }
-        else if (result === 'error') {
-            // Codex tmux_mode runs ONE long-lived manager subprocess that loops
-            // across many tickets internally. The 4h hang-guard SIGTERMs it with
-            // `{ completion: 'error', timedOut: true }`. Treating that as terminal
-            // strands every Todo ticket the manager hadn't picked up yet. Bounded
-            // relaunch path keeps the queue draining; CB-OPEN and the cap still
-            // fall through to the legacy exit-on-error.
-            let postState = state;
-            try {
-                postState = readRunnerState(statePath);
-            }
-            catch { /* fall back */ }
-            const exitKind = classifyManagerRelaunchExit(postState, outcome, iterLogFile, runnerMaxTurns);
-            const relaunchDecision = evaluateManagerRelaunch(postState, collectTickets(sessionDir), cbState, exitKind);
-            if (relaunchDecision.reason === 'time_limit') {
-                log('Time limit reached. Exiting.');
-                finalizeTerminalState(statePath, { step: 'completed', runnerIteration: iteration, exitReason: 'limit' });
-                exitReason = 'limit';
+            const inactiveStep = handleInactiveIterationResult({
+                outcome, state, statePath, sessionDir, extensionRoot, iteration, iterLogFile, runnerMaxTurns, cbState, log,
+                attemptWindow: { sessionDir, iterationStartMs: iterStartMs, commitWindow: { workingDir: iterWorkingDir, preIterSha } },
+            });
+            if (inactiveStep.kind === 'exit') {
+                exitReason = inactiveStep.exitReason;
                 break;
             }
-            if (relaunchDecision.shouldRelaunch && !isGenuineCrashOrSpawnFailure(relaunchDecision, outcome, iterLogFile)) {
-                const codexStep = resolveCodexManagerNoProgressStep({
-                    statePath, sessionDir, extensionRoot, postState, state, iteration, pendingCount: relaunchDecision.pendingCount, log,
-                });
-                if (codexStep.kind === 'recovery_exhausted') {
-                    writeRecoveryHandoffArtifact(sessionDir, state.current_ticket ?? null, 'codex_manager_no_progress: ladder_exhausted', log);
-                    recordExitReason(statePath, 'recovery_exhausted');
-                    safeDeactivate(statePath);
-                    removeRunnerSessionMapEntry(statePath, log);
-                    exitReason = 'recovery_exhausted';
-                    break;
-                }
-                if (codexStep.kind === 'exit') {
-                    exitReason = codexStep.exitReason;
-                    break;
-                }
-                if (codexStep.kind === 'continue') {
-                    lastStateIteration = -1;
-                    stallCount = 0;
-                    await sleep(1000);
-                    continue;
-                }
-                const relaunchBackend = resolveBackendFromStateFileWithSource(statePath).backend;
-                const detail = relaunchDecision.exitKind === 'other_error'
-                    ? 'errored'
-                    : `exited via ${relaunchDecision.exitKind}`;
-                log(`${relaunchBackend} manager subprocess ${detail} with ${relaunchDecision.pendingCount} ticket(s) still pending — ` +
-                    `relaunching (count ${relaunchDecision.nextRelaunchCount}/${relaunchDecision.cap}).`);
-                recordManagerRelaunch(statePath, sessionDir, relaunchDecision, iteration, log);
-                // Relaunch IS progress for outer-loop stall detection — reset stall.
-                // Do NOT clear the circuit breaker: a 4h hang-guard timeout is the
-                // exact event the CB should observe across relaunches.
-                lastStateIteration = -1;
-                stallCount = 0;
-                await sleep(1000);
-                continue;
+            lastStateIteration = -1;
+            stallCount = 0;
+            await sleep(1000);
+            continue;
+        }
+        else if (result === 'error') {
+            const errorStep = handleErrorIterationResult({
+                outcome, state, statePath, sessionDir, extensionRoot, iteration, iterLogFile, runnerMaxTurns, cbState, log,
+            });
+            if (errorStep.kind === 'exit') {
+                exitReason = errorStep.exitReason;
+                break;
             }
-            log('Subprocess error. Exiting loop.');
-            recordExitReason(statePath, 'error');
-            safeDeactivate(statePath);
-            removeRunnerSessionMapEntry(statePath, log);
-            exitReason = 'error';
-            break;
+            lastStateIteration = -1;
+            stallCount = 0;
+            await sleep(1000);
+            continue;
         }
         await sleep(1000);
     }
