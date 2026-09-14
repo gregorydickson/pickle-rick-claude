@@ -7486,3 +7486,171 @@ test('AP-EXT-ITER238-R2: an indented ## line inside a body does not end the sect
         'an indented ## line must not split ## Dead Ends into a droppable priority-3 section',
     );
 });
+
+// --- Z1 (R-ORSR-2): an explicit executable acceptance assertion at the Done-flip seam ---
+//
+// A ticked box is a claim; the command a criterion names is the measurement. The guard runs
+// `<cmd>` exits N / `<cmd>` returns N assertions once the flip would otherwise be accepted,
+// parks the ticket on a FALSE measurement, and records no exit_reason. Every git child in this
+// block carries an explicit timeout.
+
+const Z1_GIT_TIMEOUT_MS = 30000;
+
+function z1Git(dir, args) {
+    return spawnSync('git', args, { cwd: dir, encoding: 'utf-8', timeout: Z1_GIT_TIMEOUT_MS });
+}
+
+function z1Repo() {
+    const repo = makeTmpRoot();
+    z1Git(repo, ['init', '-q']);
+    z1Git(repo, ['config', 'user.email', 'test@test.com']);
+    z1Git(repo, ['config', 'user.name', 'Test']);
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'if (org === "FIRSTCOLONY") return;\nif (tenant === "FIRSTCOLONY") skip();\n');
+    z1Git(repo, ['add', '-A']);
+    z1Git(repo, ['commit', '-q', '-m', 'seed', '--no-gpg-sign']);
+    return { repo, startCommit: z1Git(repo, ['rev-parse', 'HEAD']).stdout.trim() };
+}
+
+function z1Session(repo, startCommit, ticketId) {
+    const sessionDir = makeTmpRoot();
+    const statePath = path.join(sessionDir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({
+        session_dir: sessionDir,
+        working_dir: repo,
+        active: true,
+        start_commit: startCommit,
+        pinned_sha: startCommit,
+        start_time_epoch: Math.floor(Date.now() / 1000) - 600,
+        current_ticket: ticketId,
+        activity: [],
+    }));
+    return { sessionDir, statePath };
+}
+
+function z1CommitTrailered(repo, rel, content, ticketId) {
+    fs.writeFileSync(path.join(repo, rel), content);
+    z1Git(repo, ['add', rel]);
+    z1Git(repo, ['commit', '-q', '-m', `work for ${ticketId}`, '--trailer', `Pickle-Ticket: ${ticketId}`, '--no-gpg-sign']);
+}
+
+function z1ExitReason(statePath) {
+    return JSON.parse(fs.readFileSync(statePath, 'utf-8')).exit_reason ?? null;
+}
+
+const Z1_FIELD_AC = "- Z1-4: `grep -o '\"FIRSTCOLONY\"' src/app.ts | wc -l` returns 0";
+
+test('Z1-2 control (R-ORSR-2): the fixture state.json accepts an exit_reason stamp, so its absence below is a measurement', async () => {
+    const { recordExitReason } = await import('../services/state-manager.js');
+    const { repo, startCommit } = z1Repo();
+    const { statePath } = z1Session(repo, startCommit, 'z1-control');
+    recordExitReason(statePath, 'done_without_commit_evidence');
+    assert.equal(z1ExitReason(statePath), 'done_without_commit_evidence');
+});
+
+test('Z1-1/Z1-2 (R-ORSR-2): a FAILING executable assertion parks the drift ticket (leave, not Done) and records no exit_reason', async () => {
+    const { applyAutoTicketCompletionValidation, ACCEPTANCE_ASSERTION_FAILED } = await import('../bin/mux-runner.js');
+    const { repo, startCommit } = z1Repo();
+    const ticketId = 'z1-failing-drift';
+    const { sessionDir, statePath } = z1Session(repo, startCommit, ticketId);
+    writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'In Progress', ['- [x] Z1: `grep -c NEEDLE marker.txt` returns 0']);
+    z1CommitTrailered(repo, 'marker.txt', 'NEEDLE\nNEEDLE\n', ticketId);
+
+    const verdict = withProductionGuard(() => applyAutoTicketCompletionValidation({
+        sessionDir, ticketId, workingDir: repo, startCommit, iteration: 1, statePath, flags: null,
+    }));
+
+    assert.deepEqual(verdict, { action: 'leave', reason: ACCEPTANCE_ASSERTION_FAILED }, 'a park verdict, not a halt');
+    assert.notEqual(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done', 'every checkbox is ticked, yet the measurement refuses Done');
+    assert.equal(z1ExitReason(statePath), null, 'the refusal is LOCAL: no exit_reason is recorded');
+});
+
+test('Z1-1 (R-ORSR-2): a worker self-flipped Done over a failing assertion is un-claimed to In Progress at the guard', async () => {
+    const { guardCompletionCommitBeforeDone, isAcceptanceAssertionRefusal } = await import('../bin/mux-runner.js');
+    const { repo, startCommit } = z1Repo();
+    const ticketId = 'z1-self-flipped';
+    const { sessionDir } = z1Session(repo, startCommit, ticketId);
+    writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'Done', ['- Z1: `grep -c NEEDLE marker.txt` returns 0']);
+    z1CommitTrailered(repo, 'marker.txt', 'NEEDLE\n', ticketId);
+
+    const guard = withProductionGuard(() => guardCompletionCommitBeforeDone({
+        sessionDir, ticketId, workingDir: repo, flags: null, rereadBackoffMs: 0,
+    }));
+
+    assert.equal(guard.ok, false);
+    assert.equal(isAcceptanceAssertionRefusal(guard), true);
+    assert.match(guard.reason, /acceptance_assertion_failed/);
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'In Progress');
+});
+
+test('Z1-3 (R-ORSR-2): a ticket with NO executable assertion (prose + bare backticked identifier) flips Done exactly as before', async () => {
+    const { applyAutoTicketCompletionValidation } = await import('../bin/mux-runner.js');
+    const { repo, startCommit } = z1Repo();
+    const ticketId = 'z1-no-assertion';
+    const { sessionDir, statePath } = z1Session(repo, startCommit, ticketId);
+    writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'In Progress', [
+        '- [x] Z1 control: `marker.txt` is committed and a grep for the gate returns 0 in prose',
+    ]);
+    z1CommitTrailered(repo, 'marker.txt', 'NEEDLE\n', ticketId);
+
+    const verdict = withProductionGuard(() => applyAutoTicketCompletionValidation({
+        sessionDir, ticketId, workingDir: repo, startCommit, iteration: 1, statePath, flags: null,
+    }));
+
+    assert.equal(verdict.action, 'done');
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done');
+});
+
+test('Z1-3 (R-ORSR-2): an assertion whose command cannot run is UNMEASURED, never a refusal', async () => {
+    const { applyAutoTicketCompletionValidation } = await import('../bin/mux-runner.js');
+    const { repo, startCommit } = z1Repo();
+    const ticketId = 'z1-unmeasured';
+    const { sessionDir, statePath } = z1Session(repo, startCommit, ticketId);
+    writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'In Progress', ['- [x] Z1: `z1-definitely-not-a-command` exits 0']);
+    z1CommitTrailered(repo, 'marker.txt', 'NEEDLE\n', ticketId);
+
+    const verdict = withProductionGuard(() => applyAutoTicketCompletionValidation({
+        sessionDir, ticketId, workingDir: repo, startCommit, iteration: 1, statePath, flags: null,
+    }));
+
+    assert.equal(verdict.action, 'done');
+    assert.equal(z1ExitReason(statePath), null);
+});
+
+test('Z1-4 (R-ORSR-2 field case): a commit-and-continue recovery over a FALSE grep AC does not reach Done', async () => {
+    const { commitAndContinueDoneFlip } = await import('../bin/mux-runner.js');
+    const { repo, startCommit } = z1Repo();
+    const ticketId = 'adb35445';
+    const { sessionDir, statePath } = z1Session(repo, startCommit, ticketId);
+    writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'In Progress', [Z1_FIELD_AC]);
+    fs.writeFileSync(path.join(repo, 'notes.txt'), 'salvaged, not the edit\n');
+
+    const result = withProductionGuard(() => commitAndContinueDoneFlip({
+        sessionDir, statePath, workingDir: repo, ticketId, flags: null, log: () => {},
+    }));
+
+    const subjects = z1Git(repo, ['log', '--format=%s', `${startCommit}..HEAD`]).stdout.trim().split('\n');
+    assert.deepEqual(subjects, [`fix(${ticketId}): commit-and-continue recovery (R-ORSR-2)`], 'the sole ticket-tagged commit is the recovery commit');
+    const measured = spawnSync('sh', ['-c', "grep -o '\"FIRSTCOLONY\"' src/app.ts | wc -l"], { cwd: repo, encoding: 'utf-8', timeout: Z1_GIT_TIMEOUT_MS });
+    assert.equal(measured.stdout.trim(), '2', 'the grep AC is demonstrably false');
+    assert.equal(result.ok, true, 'the commit landed and the loop advances');
+    assert.notEqual(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done', 'the Done flip is withheld');
+    assert.equal(z1ExitReason(statePath), null);
+});
+
+test('Z1-5 (R-ORSR-2 over-trigger control): real work committed and the AC TRUE flips Done on the first attempt', async () => {
+    const { commitAndContinueDoneFlip } = await import('../bin/mux-runner.js');
+    const { repo, startCommit } = z1Repo();
+    const ticketId = 'adb35446';
+    const { sessionDir, statePath } = z1Session(repo, startCommit, ticketId);
+    writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'In Progress', [Z1_FIELD_AC]);
+    fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'run();\n');
+
+    const result = withProductionGuard(() => commitAndContinueDoneFlip({
+        sessionDir, statePath, workingDir: repo, ticketId, flags: null, log: () => {},
+    }));
+
+    assert.equal(result.ok, true);
+    assert.ok(result.sha, 'the guard resolved a completion sha');
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done');
+});

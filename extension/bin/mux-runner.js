@@ -22,6 +22,7 @@ import { runGitSafe, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty,
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
+import { isUnrunnableCheckResult } from '../services/convergence-gate.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
 import { salvageTicket } from '../lib/salvage-ticket.js';
@@ -3232,7 +3233,9 @@ export function applyAutoTicketCompletionValidation(input) {
             flags: input.flags ?? {},
         });
         if (!guard.ok) {
-            return reportDoneWithoutCommitEvidence(input, guard.reason);
+            return isAcceptanceAssertionRefusal(guard)
+                ? { action: 'leave', reason: ACCEPTANCE_ASSERTION_FAILED }
+                : reportDoneWithoutCommitEvidence(input, guard.reason);
         }
         // R-PEDC: clear any stale done_without_commit_evidence before marking Done.
         clearStaleDoneWithoutCommitEvidence(input.statePath);
@@ -5103,6 +5106,110 @@ export function advisoryWorkerGateResidualDetail(verdict, site) {
         reason: targetRepoRed ? WORKER_GATE_TARGET_REPO_RED_REASON : WORKER_GATE_NOT_RUN_REASON,
     };
 }
+/**
+ * Z1 (R-ORSR-2): the named disposition a Done-flip carries when the ticket's own EXECUTABLE
+ * acceptance assertion measured false. A ticked box is a claim; the command it names is the
+ * measurement. The refusal is LOCAL: the ticket parks (never Done) and the loop continues. No
+ * exit_reason is stamped and no EXIT_REASONS member exists for it.
+ */
+export const ACCEPTANCE_ASSERTION_FAILED = 'acceptance_assertion_failed';
+/** One assertion's runtime bound. A timeout is UNMEASURED, never a refusal. */
+const ACCEPTANCE_ASSERTION_TIMEOUT_MS = 120_000;
+/**
+ * SYNTACTIC grammar, the narrowest the live ticket corpus uses: a backticked command immediately
+ * followed by `exits <N>` (exit status) or `returns <N>` (trimmed stdout, one integer). Prose is
+ * never executable.
+ */
+const EXECUTABLE_ASSERTION_RE = /`([^`\n]+)`[ \t]+(exits|returns)[ \t]+`?(\d+)\b/g;
+/**
+ * The Acceptance Criteria section at `##` or `###` depth, closed by the next heading of the same
+ * or shallower depth. Not `acceptanceCriteriaSection`: that reader is pinned to the exact
+ * `## Acceptance Criteria` spelling for checkbox state, and most live tickets spell the heading
+ * `### Acceptance criteria`.
+ */
+function executableAcceptanceSection(content) {
+    const open = /^(#{2,3})[ \t]+Acceptance Criteria\b.*$/im.exec(content);
+    if (!open)
+        return '';
+    const rest = content.slice(open.index + open[0].length);
+    const close = new RegExp(`^#{1,${open[1].length}}[ \\t]`, 'm').exec(rest);
+    return close ? rest.slice(0, close.index) : rest;
+}
+/** Every executable assertion the ticket's own criteria declare; `[manager]` criteria are deferred, not run. */
+function readExecutableAcceptanceAssertions(content) {
+    return executableAcceptanceSection(content)
+        .split('\n')
+        .filter((line) => !/\[manager\]/i.test(line))
+        .flatMap((line) => [...line.matchAll(EXECUTABLE_ASSERTION_RE)])
+        .map((m) => ({ command: m[1].trim(), kind: m[2] === 'exits' ? 'exits' : 'returns', expected: Number(m[3]) }));
+}
+/**
+ * Run one assertion in the ticket's working dir under subsystem contract #3 (finite timeout,
+ * bounded buffer). Anything short of a clean measurement is UNMEASURED and never refuses: a spawn
+ * error, `status === null` (timeout, ENOBUFS, signal), a command that could not run
+ * (`isUnrunnableCheckResult`: exit 127, missing script, ENOENT), or `returns` output that is not
+ * one integer.
+ */
+function measureAcceptanceAssertion(assertion, workingDir) {
+    const spawned = spawnSync(assertion.command, {
+        cwd: workingDir,
+        shell: true,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: ACCEPTANCE_ASSERTION_TIMEOUT_MS,
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+    });
+    if (spawned.error || spawned.status === null) {
+        return { verdict: 'unmeasured', observed: spawned.error ? safeErrorMessage(spawned.error) : `signal ${spawned.signal ?? 'none'}` };
+    }
+    const exitCode = spawned.status;
+    const stdout = spawned.stdout ?? '';
+    if (isUnrunnableCheckResult({ stdout, stderr: spawned.stderr ?? '', exitCode })) {
+        return { verdict: 'unmeasured', observed: `exit ${exitCode} (command could not run)` };
+    }
+    if (assertion.kind === 'exits') {
+        return { verdict: exitCode === assertion.expected ? 'pass' : 'fail', observed: `exit ${exitCode}` };
+    }
+    const count = stdout.trim();
+    if (!/^\d+$/.test(count))
+        return { verdict: 'unmeasured', observed: `output ${JSON.stringify(count.slice(0, 80))}` };
+    return { verdict: Number(count) === assertion.expected ? 'pass' : 'fail', observed: count };
+}
+/** The first executable assertion that measured FALSE, or null (none declared, all pass, or unmeasured). */
+function findFailedAcceptanceAssertion(sessionDir, ticketId, workingDir) {
+    let content;
+    try {
+        content = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf-8');
+    }
+    catch {
+        return null;
+    }
+    for (const assertion of readExecutableAcceptanceAssertions(content)) {
+        const { verdict, observed } = measureAcceptanceAssertion(assertion, workingDir);
+        if (verdict === 'fail')
+            return { ...assertion, observed };
+        if (verdict === 'unmeasured') {
+            process.stderr.write(`[mux-runner:acceptance-assertion] ticket ${ticketId}: \`${assertion.command}\` UNMEASURED (${observed}), not a refusal\n`);
+        }
+    }
+    return null;
+}
+/** Z1: park the ticket (un-claim a worker's self-flipped Done) and refuse the flip with the named disposition. */
+function refuseDoneOnFailedAcceptanceAssertion(args, failed, testsVerdict) {
+    try {
+        if (normalizedStatus(getTicketStatus(args.sessionDir, args.ticketId)) === 'done') {
+            writeTicketStatus(args.sessionDir, args.ticketId, 'In Progress');
+        }
+    }
+    catch { /* best-effort: the refusal below still withholds the flip */ }
+    const reason = `ticket ${args.ticketId} cannot flip Done: ${ACCEPTANCE_ASSERTION_FAILED}: \`${failed.command}\` ${failed.kind} ${failed.expected}, measured ${failed.observed}. Parked, not Done; the loop continues.`;
+    process.stderr.write(`[mux-runner:acceptance-assertion] ${reason}\n`);
+    return { ok: false, source: 'explicit-reachable', disposition: ACCEPTANCE_ASSERTION_FAILED, reason, testsVerdict };
+}
+/** Z1: true only for the LOCAL park refusal; every other refusal keeps its existing residual. */
+export function isAcceptanceAssertionRefusal(guard) {
+    return !guard.ok && guard.disposition === ACCEPTANCE_ASSERTION_FAILED;
+}
 export function guardCompletionCommitBeforeDone(args) {
     // WS-A (2e77f26e): one predicate for the test dimension, consumed by BOTH
     // Done-flip authorities (this guard and setup.ts's resumeReattachDoneRefusal).
@@ -5153,6 +5260,11 @@ export function guardCompletionCommitBeforeDone(args) {
         emitWorkerGateNotRunResidual(path.join(args.sessionDir, 'state.json'), args.ticketId, advisoryWorkerGateResidualDetail(resolvedGate.verdict, 'guardCompletionCommitBeforeDone'));
     }
     if (decision.ok) {
+        // Z1 (R-ORSR-2): evidence alone is a claim; an explicit executable acceptance assertion is
+        // the measurement. Runs only once the flip would otherwise be accepted, on every route.
+        const failedAssertion = findFailedAcceptanceAssertion(args.sessionDir, args.ticketId, args.workingDir);
+        if (failedAssertion)
+            return refuseDoneOnFailedAcceptanceAssertion(args, failedAssertion, testsVerdict);
         // B-GTRUTH WS-A1 shape mapping ONLY: a declared zero-diff accept has no SHA, so
         // it maps to `sha: null`. No decision is taken here — the arm and all three of
         // its conditions live in evaluateCompletionEvidence (AC-GTRUTH-A1-5).
@@ -5607,6 +5719,11 @@ export function commitAndContinueDoneFlip(input) {
         flags: input.flags ?? {},
     });
     if (!guard.ok) {
+        if (isAcceptanceAssertionRefusal(guard)) {
+            // Z1: the commit landed; withhold the Done flip (the unrun-gate precedent) so the ladder advances.
+            input.log(`commit-and-continue: committed for ${input.ticketId} but withheld the Done flip. ${guard.reason}`);
+            return { ok: true };
+        }
         return { ok: false };
     }
     // AC-R2-3: commit action (above) and Done-flip action (here) are separate
@@ -8391,6 +8508,8 @@ function finalizeCurrentTicketBeforeEpicExit(state, ctx, curState) {
         flags: curState.flags ?? null,
     });
     if (!guard.ok) {
+        if (isAcceptanceAssertionRefusal(guard))
+            return { kind: 'continue', resetStall: true };
         const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
         ctx.log(msg);
         process.stderr.write(`${msg}\n`);
@@ -11642,6 +11761,8 @@ function validateModelAttestedDone(input) {
         flags: state.flags ?? null,
     });
     if (!guard.ok) {
+        if (isAcceptanceAssertionRefusal(guard))
+            return { kind: 'continue' };
         const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
         log(msg);
         process.stderr.write(`${msg}\n`);
@@ -12143,6 +12264,8 @@ function recoverFalseEpicCompletion(input) {
             flags: curState.flags ?? null,
         });
         if (!guard.ok) {
+            if (isAcceptanceAssertionRefusal(guard))
+                return { kind: 'continue', parked: true };
             const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
             log(msg);
             process.stderr.write(`${msg}\n`);
@@ -12193,6 +12316,8 @@ function markFinalTicketDoneBeforeFinalize(input) {
         flags: curState.flags ?? null,
     });
     if (!guard.ok) {
+        if (isAcceptanceAssertionRefusal(guard))
+            return { kind: 'continue' };
         const msg = `[fatal] ${new Date().toISOString()} ${guard.reason}`;
         log(msg);
         process.stderr.write(`${msg}\n`);
