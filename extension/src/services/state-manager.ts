@@ -613,7 +613,7 @@ function hasActivityEvent(activity: State['activity'], event: string): boolean {
 }
 
 /** Minimum untouched age before a paused session with a dead mapped PID is demoted as orphaned. */
-const PAUSED_ORPHAN_MIN_AGE_MS = 5 * 60 * 1000;
+export const PAUSED_ORPHAN_MIN_AGE_MS = 5 * 60 * 1000;
 
 /**
  * Evaluates whether a paused session qualifies for orphan demotion.

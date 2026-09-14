@@ -10,7 +10,7 @@ import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from 
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit } from './mux-runner.js';
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
-import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid } from '../services/state-manager.js';
+import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, PAUSED_ORPHAN_MIN_AGE_MS } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { emitOrphanReapSummary, reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 
@@ -1861,7 +1861,7 @@ export function scanPausedOrphans(sessionsRoot: string, config: SetupArgs, smIns
     const statePath = path.join(sessionsRoot, entry, 'state.json');
     let mtime: number;
     try { mtime = fs.statSync(statePath).mtimeMs; } catch { continue; }
-    if (now - mtime <= 300_000) continue;
+    if (now - mtime <= PAUSED_ORPHAN_MIN_AGE_MS) continue;
     const recovered = readRecoverableJsonObject(statePath);
     if (!recovered || typeof recovered !== 'object' || Array.isArray(recovered)) continue;
     const state = recovered as Record<string, unknown>;
@@ -1889,7 +1889,7 @@ export function precleanPausedOrphansBeforeCreate(sessionsRoot: string, smInstan
     const statePath = path.join(sessionDir, 'state.json');
     let mtime: number;
     try { mtime = fs.statSync(statePath).mtimeMs; } catch { continue; }
-    if (now - mtime <= 300_000) continue;
+    if (now - mtime <= PAUSED_ORPHAN_MIN_AGE_MS) continue;
     let raw: unknown;
     try { raw = readRecoverableJsonObject(statePath); } catch { continue; }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;

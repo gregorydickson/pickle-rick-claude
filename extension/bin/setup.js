@@ -10,7 +10,7 @@ import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from 
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGit } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
-import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid } from '../services/state-manager.js';
+import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, PAUSED_ORPHAN_MIN_AGE_MS } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { emitOrphanReapSummary, reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
@@ -1724,7 +1724,7 @@ export function scanPausedOrphans(sessionsRoot, config, smInstance) {
         catch {
             continue;
         }
-        if (now - mtime <= 300_000)
+        if (now - mtime <= PAUSED_ORPHAN_MIN_AGE_MS)
             continue;
         const recovered = readRecoverableJsonObject(statePath);
         if (!recovered || typeof recovered !== 'object' || Array.isArray(recovered))
@@ -1767,7 +1767,7 @@ export function precleanPausedOrphansBeforeCreate(sessionsRoot, smInstance) {
         catch {
             continue;
         }
-        if (now - mtime <= 300_000)
+        if (now - mtime <= PAUSED_ORPHAN_MIN_AGE_MS)
             continue;
         let raw;
         try {

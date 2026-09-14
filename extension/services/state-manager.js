@@ -551,7 +551,7 @@ function hasActivityEvent(activity, event) {
     return Array.isArray(activity) && activity.some(a => isRecord(a) && a.event === event);
 }
 /** Minimum untouched age before a paused session with a dead mapped PID is demoted as orphaned. */
-const PAUSED_ORPHAN_MIN_AGE_MS = 5 * 60 * 1000;
+export const PAUSED_ORPHAN_MIN_AGE_MS = 5 * 60 * 1000;
 /**
  * Evaluates whether a paused session qualifies for orphan demotion.
  * Demotion requires BOTH conditions: the state is age-stale (≥5 min untouched)
