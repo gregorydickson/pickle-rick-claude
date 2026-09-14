@@ -255,7 +255,15 @@ test('judge_cli_missing (union member) — finalize-gate IS spawned, gate fails,
 // B-ONEABORT AC-OA-1a: NO member of MICROVERSE_EXIT_REASONS aborts; the union IS the subject list,
 // so a newly-added reason inherits this without a matching test edit.
 test('every MICROVERSE_EXIT_REASONS member routes to a non-abort action (B-ONEABORT three-armed contract)', () => {
-  assert.equal(MICROVERSE_EXIT_REASONS.length, 18, 'union membership count changed — update this test deliberately if a reason was added/removed');
+  // Z2 (GitHub #25) moved the bare legacy `baseline_unmeasurable` OUT of the live union and into the
+  // read-time migration map, so the union is 17, not 18. That is the deliberate update this tripwire
+  // asks for, and it was verified before being made rather than after:
+  //   - `baseline_unmeasurable`, `baseline_unmeasurable_transient`, `baseline_unmeasurable_unrecoverable`
+  //     each still classify to `run-finalize-gate-incomplete`, migrating to the `metric_*` name.
+  //   - the two new `metric_unmeasurable_*` members classify to the same non-abort action.
+  // A legacy value is readable without being emittable, which is what keeps the union honest about
+  // what the system can still PRODUCE.
+  assert.equal(MICROVERSE_EXIT_REASONS.length, 17, 'union membership count changed — update this test deliberately if a reason was added/removed');
   for (const reason of MICROVERSE_EXIT_REASONS) {
     const decision = classifyMicroverseHaltDecision(reason);
     assert.notEqual(decision.action, 'abort', `${reason} must not abort — B-ONEABORT AC-OA-1a`);

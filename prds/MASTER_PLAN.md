@@ -3324,7 +3324,13 @@ Closer manager-handoff runbook: `../docs/closer-ticket-manager-handoff.md`. Baby
 
 ---
 
-## OPEN BUG — AC-shape gate halts refinement on a NEGATIVE-universal collapse (NO / never / any) (2026-07-14, capture-only; derived-`describe.each` headline STRUCK 2026-09-14 by re-measurement)
+## ✅ RESOLVED (was OPEN BUG) — AC-shape gate halts refinement on a NEGATIVE-universal collapse — **STRUCK 2026-09-14 by its own probe**
+
+> Fixed by B-BUGZERO root Z3 (`UNIVERSAL_QUANTIFIER_RE` now recognises `no` / `never` / bare `any`).
+> **This row was struck because the ledger-probe audit caught it lying**, which is the audit shipped in
+> beta.29 doing exactly its job: the row's own probe reported FIXED while the heading still said OPEN,
+> and `audit-ledger-probes` reddened the release gate rather than waiting for a human sweep. Original
+> text below for forensics.
 
 **`prds/BUG-REPORT-2026-07-14-ac-shape-gate-rejects-derived-describe-each.md`**
 
@@ -3404,6 +3410,28 @@ in 8 min. Workaround: relaunch with explicit `--max-iterations 500` (the non-aut
 ---
 
 ## OPEN BUG — R-ORSR-2 recovery flips a ticket Done without the impl landing (2026-07-16, capture-only)
+
+> **⚠ NARROWED, NOT CLOSED — measured 2026-09-14 after B-BUGZERO Z1 landed.** Z1 made the Done-flip run
+> a ticket's executable acceptance assertion and park on failure. The guard is reached on this route:
+> `commitAndContinueDoneFlip` calls `guardCompletionCommitBeforeDone`, whose Z1 arm runs
+> `findFailedAcceptanceAssertion`. **The residual is the EXTRACTOR's contract:**
+>
+> ```
+> EXECUTABLE_ASSERTION_RE = /`([^`\n]+)`[ \t]+(exits|returns)[ \t]+`?(\d+)\b/g
+> ```
+>
+> The command must be BACKTICKED. That is deliberate — the PRD's own non-goal forbids inferring runnable
+> commands from prose, because inference is how this bug class is created. So an unbackticked criterion
+> is out of contract by design, not by accident.
+>
+> **Coverage, censused over real session tickets:** of 8 tickets carrying an `## Acceptance Criteria`
+> section, **5 carry a backticked `exits`/`returns` assertion and 3 do not.** The 3 are still unguarded.
+>
+> **The row's probe uses an UNBACKTICKED fixture, so it reports OPEN and is RIGHT to** — a residual
+> genuinely remains. Do not "fix" the probe by backticking its fixture; that would hide the gap. The
+> real closure is either a ticket-authoring guarantee that acceptance commands are always backticked, or
+> an explicit decision to accept 5-in-8 coverage and say so.
+
 
 **`prds/BUG-REPORT-2026-07-16-r-orsr2-recovery-flips-ticket-done-without-impl.md`**
 
