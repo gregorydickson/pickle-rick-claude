@@ -1,4 +1,10 @@
 {
-  "numerator": 1,
-  "denominator": 8
+  "git_index": {
+    "numerator": 1,
+    "denominator": 8
+  },
+  "session_min_ratio": {
+    "numerator": 13,
+    "denominator": 40
+  }
 }

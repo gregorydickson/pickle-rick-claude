@@ -2,22 +2,37 @@
 # audit-acceptance-assertion-coverage.sh — AC-O2: executable-assertion coverage is a ratchet, not a hope.
 #
 # If an authoring path stops emitting the backticked `<command>` exits|returns <N> form, every new ticket is
-# unguarded and nothing notices. This audit measures, over the ticket corpus, how many tickets with a non-empty
-# Acceptance Criteria section carry at least one executable assertion, and holds that figure to a recorded floor.
+# unguarded and nothing notices. This audit measures, over a ticket corpus, how many tickets with a non-empty
+# Acceptance Criteria section carry at least one executable assertion, and holds that figure to a recorded
+# floor. Every verdict line names the corpus it measured.
 #
-# Corpus: every git-tracked rick_ticket_*.md in the repo — DISCOVERED, never hand-listed.
+# Corpus precedence — DISCOVERED, never hand-listed:
+#   1. ACCEPTANCE_COVERAGE_ROOT_OVERRIDE=<dir> — scans every rick_ticket_*.md under <dir> (fixture tests).
+#   2. <data root>/sessions — the live session corpus, resolved via the SAME getDataRoot() the runtime uses
+#      (extension/services/pickle-utils.js) — when it holds >=1 ticket. This is the population actually at
+#      risk from an authoring-path regression.
+#   3. git index of the repo — a NAMED fallback (git ls-files -z -- '*rick_ticket_*.md') used only when no
+#      session corpus is found (e.g. CI, which has no sessions dir). The fallback is announced on stderr the
+#      moment it is chosen, independent of what runs afterward.
+#
 # Denominator: tickets whose section is non-empty per the exported executableAcceptanceSection; tickets with no
 # section are excluded. Numerator: tickets where the exported readExecutableAcceptanceAssertions yields >=1.
 # Both readers are imported from the compiled extension/bin/mux-runner.js — there is no second regex here.
 #
-# Recorded floor: acceptance-assertion-coverage-floor.json beside this script, integers only.
-#   below  fails when the measured ratio is below the recorded floor;
-#   raise  fails when the measured pair differs from the record otherwise, naming the pair to write.
-# Nothing measured is not clean: a failed enumeration, an unloadable extractor, a malformed floor or a
-# denominator of 0 exits non-zero with a named reason.
+# Recorded floor: acceptance-assertion-coverage-floor.json beside this script, integers only, two named
+# entries:
+#   git_index         — used for the override corpus AND the git-index fallback (both deterministic: they
+#                        change only when a human edits fixtures or the tracked ticket set). EXACT-PAIR,
+#                        raise-only: refuses below the recorded pair (regression) AND refuses any difference
+#                        above it (forces recording the improvement) — the house ratchet idiom.
+#   session_min_ratio — used for the auto-discovered session corpus, which grows every pipeline run by
+#                        construction. RATIO LOWER-BOUND ONLY: refuses a measured ratio below the recorded
+#                        one; never refuses for being above it, since "the corpus grew since last time" is
+#                        not a regression. Both floors are checked by the SAME cross-multiply comparison —
+#                        the session kind just skips the second (forced-exact) check.
+# A denominator of 0 reports UNMEASURED (named), never 0% and never below-floor. A failed enumeration, an
+# unloadable extractor/resolver, or a malformed floor exits non-zero with a named reason.
 #
-# ACCEPTANCE_COVERAGE_ROOT_OVERRIDE=<dir> scans every rick_ticket_*.md under <dir> instead of the git index
-# (fixture tests, or the live session corpus). The recorded floor is read either way.
 # A gate that refuses a COMMIT/release — never a run. Exits non-zero on any finding.
 set -u
 
@@ -25,6 +40,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTENSION_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$EXTENSION_ROOT/.." && pwd)"
 EXTRACTOR="$EXTENSION_ROOT/bin/mux-runner.js"
+UTILS="$EXTENSION_ROOT/services/pickle-utils.js"
 FLOOR_PATH="$SCRIPT_DIR/acceptance-assertion-coverage-floor.json"
 
 if ! command -v node >/dev/null 2>&1; then
@@ -35,14 +51,18 @@ if [ ! -f "$EXTRACTOR" ]; then
   echo "audit-acceptance-assertion-coverage: extractor not compiled at $EXTRACTOR — run ./node_modules/.bin/tsc" >&2
   exit 1
 fi
+if [ ! -f "$UTILS" ]; then
+  echo "audit-acceptance-assertion-coverage: data-root resolver not compiled at $UTILS — run ./node_modules/.bin/tsc" >&2
+  exit 1
+fi
 
-node --input-type=module - "$REPO_ROOT" "$EXTRACTOR" "$FLOOR_PATH" "${ACCEPTANCE_COVERAGE_ROOT_OVERRIDE:-}" <<'NODE'
+node --input-type=module - "$REPO_ROOT" "$EXTRACTOR" "$FLOOR_PATH" "${ACCEPTANCE_COVERAGE_ROOT_OVERRIDE:-}" "$UTILS" <<'NODE'
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-const [repoRoot, extractorPath, floorPath, overrideRoot] = process.argv.slice(2);
+const [repoRoot, extractorPath, floorPath, overrideRoot, utilsPath] = process.argv.slice(2);
 const TICKET_NAME_RE = /^rick_ticket_.*\.md$/;
 const refuse = (reason) => {
   process.stderr.write(`audit-acceptance-assertion-coverage: ${reason}\n`);
@@ -68,26 +88,71 @@ function trackedTickets() {
   return listed.stdout.split('\0').filter(Boolean).map((rel) => path.join(repoRoot, rel));
 }
 
+function validPair(p) {
+  return p && Number.isInteger(p.numerator) && Number.isInteger(p.denominator)
+    && p.numerator >= 0 && p.denominator > 0 && p.numerator <= p.denominator;
+}
+
 function readFloor() {
-  let floor;
+  let raw;
   try {
-    floor = JSON.parse(fs.readFileSync(floorPath, 'utf8'));
+    raw = JSON.parse(fs.readFileSync(floorPath, 'utf8'));
   } catch (err) {
     refuse(`cannot read recorded floor ${floorPath}: ${errText(err)}`);
   }
-  const { numerator, denominator } = floor ?? {};
-  if (!Number.isInteger(numerator) || !Number.isInteger(denominator) || numerator < 0 || denominator <= 0 || numerator > denominator) {
-    refuse(`recorded floor ${floorPath} must hold integers 0 <= numerator <= denominator, denominator > 0`);
+  const gitIndex = raw?.git_index;
+  const sessionMinRatio = raw?.session_min_ratio;
+  if (!validPair(gitIndex) || !validPair(sessionMinRatio)) {
+    refuse(`recorded floor ${floorPath} must hold {git_index, session_min_ratio}, each integers 0 <= numerator <= denominator, denominator > 0`);
   }
-  return { numerator, denominator };
+  return { git_index: gitIndex, session_min_ratio: sessionMinRatio };
 }
 
-let files;
-try {
-  files = overrideRoot ? walkTickets(overrideRoot) : trackedTickets();
-} catch (err) {
-  refuse(`cannot enumerate ${overrideRoot}: ${errText(err)}`);
+function resolveCorpus(getDataRoot) {
+  if (overrideRoot) {
+    let files;
+    try {
+      files = walkTickets(overrideRoot);
+    } catch (err) {
+      refuse(`cannot enumerate ${overrideRoot}: ${errText(err)}`);
+    }
+    return { kind: 'override', files, scopeLabel: `override corpus at ${overrideRoot}` };
+  }
+
+  const dataRoot = getDataRoot();
+  const sessionsDir = path.join(dataRoot, 'sessions');
+  let sessionFiles = [];
+  if (fs.existsSync(sessionsDir)) {
+    try {
+      sessionFiles = walkTickets(sessionsDir);
+    } catch (err) {
+      refuse(`cannot enumerate ${sessionsDir}: ${errText(err)}`);
+    }
+  }
+  if (sessionFiles.length > 0) {
+    return { kind: 'session', files: sessionFiles, scopeLabel: `session corpus at ${sessionsDir}` };
+  }
+
+  process.stderr.write(`audit-acceptance-assertion-coverage: falling back to git index — no sessions under ${sessionsDir}\n`);
+  return {
+    kind: 'git-index',
+    files: trackedTickets(),
+    scopeLabel: `git index of ${repoRoot} (no sessions under ${sessionsDir})`,
+  };
 }
+
+let utilsModule;
+try {
+  utilsModule = await import(pathToFileURL(utilsPath).href);
+} catch (err) {
+  refuse(`cannot load data-root resolver ${utilsPath}: ${errText(err)}`);
+}
+const { getDataRoot } = utilsModule;
+if (typeof getDataRoot !== 'function') {
+  refuse(`${utilsPath} does not export getDataRoot`);
+}
+
+const { kind, files, scopeLabel } = resolveCorpus(getDataRoot);
 
 let extractor;
 try {
@@ -100,7 +165,10 @@ if (typeof executableAcceptanceSection !== 'function' || typeof readExecutableAc
   refuse(`${extractorPath} does not export executableAcceptanceSection and readExecutableAcceptanceAssertions`);
 }
 
-const floor = readFloor();
+const floors = readFloor();
+const floor = kind === 'session' ? floors.session_min_ratio : floors.git_index;
+const floorLabel = kind === 'session' ? `session_min_ratio ${floor.numerator}/${floor.denominator}` : `git_index ${floor.numerator}/${floor.denominator}`;
+
 let denominator = 0;
 let numerator = 0;
 for (const file of files) {
@@ -110,15 +178,14 @@ for (const file of files) {
   if (readExecutableAcceptanceAssertions(content).length > 0) numerator += 1;
 }
 
-const scope = overrideRoot || `git index of ${repoRoot}`;
 if (denominator === 0) {
-  refuse(`${files.length} tickets under ${scope}, none with a non-empty Acceptance Criteria section — nothing measured is not clean`);
+  refuse(`${scopeLabel}: UNMEASURED — ${files.length} tickets scanned, none with a non-empty Acceptance Criteria section (nothing measured is not clean)`);
 }
-process.stdout.write(`audit-acceptance-assertion-coverage: ${files.length} tickets scanned, measured ${numerator}/${denominator} guarded, recorded floor ${floor.numerator}/${floor.denominator}\n`);
+process.stdout.write(`audit-acceptance-assertion-coverage: ${scopeLabel} — ${files.length} tickets scanned, measured ${numerator}/${denominator} guarded, recorded ${floorLabel}\n`);
 if (numerator * floor.denominator < floor.numerator * denominator) {
-  refuse(`below floor: measured ${numerator}/${denominator} is below the recorded ${floor.numerator}/${floor.denominator} — tickets are being authored without an executable assertion`);
+  refuse(`${scopeLabel}: below floor: measured ${numerator}/${denominator} is below the recorded ${floorLabel} — tickets are being authored without an executable assertion`);
 }
-if (numerator !== floor.numerator || denominator !== floor.denominator) {
-  refuse(`raise the floor: measured ${numerator}/${denominator} differs from the recorded ${floor.numerator}/${floor.denominator} — write numerator ${numerator}, denominator ${denominator} to ${floorPath}`);
+if (kind !== 'session' && (numerator !== floor.numerator || denominator !== floor.denominator)) {
+  refuse(`${scopeLabel}: raise the floor: measured ${numerator}/${denominator} differs from the recorded ${floorLabel} — write numerator ${numerator}, denominator ${denominator} to git_index in ${floorPath}`);
 }
 NODE
