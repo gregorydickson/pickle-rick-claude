@@ -74,61 +74,77 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-15 01:05Z. **v2.1.0-beta.31 SHIPPED.** Read this FIRST.
+## 🚢 SESSION HANDOFF — 2026-09-15 14:00Z. Context cleared here. **READ THIS FIRST.**
 
-**Six releases in six days.** beta.26 dispositions · beta.27 measurements · beta.28 the enforceable
-ceiling · beta.29 the self-probing ledger · beta.30 every open bug · beta.31 the producer/consumer shape.
+**Shipped this week: beta.26 → beta.32, seven releases in seven days.** Deployed version is
+`2.1.0-beta.32` (`bf031258`), tag verified. **HEAD is `29dafbf7` with 5 commits UNPUSHED and UNRELEASED.**
+
+### ▶ IMMEDIATE STATE
 
 | | |
 |---|---|
-| tag | **v2.1.0-beta.31** → `b7e830f0`, verified EQUAL to the branch sha |
-| gate | **22 legs**, all rc 0 · fast **9940** `failures=0 runs 5/5` |
-| run | 4/4 phases, 60m36s, `completed`, **no dispositions** — THIRD consecutive success verdict |
-| backlog | **#26** (new, filed from measurement) + **R-ORSR-2** (open by design) + #5 (enhancement) |
+| last run | [[B-ZERO]] session `2026-09-15-c5a7eb48` — **FINISHED**, 3/4 phases, `szechuan-sauce: stalled_below_target` |
+| tree | clean · **5 unpushed commits** |
+| open issues | **#27** (prd_path), **#28** (post-final `fail 0`), **#5** (enhancement) |
+| next action | **run the full gate at HEAD; if green, ship beta.33** (rule 3) |
+
+### ⚠ B-ZERO'S OUTCOME NEEDS READING BEFORE IT IS TRUSTED
+
+All 3 tickets are Done, but **Q3 did NOT reach its target.** It asked for ≤120 code lines / ≤15
+complexity and the DELETION of the last carve-out. Measured after the run:
+
+```
+runMuxRunnerMain: 217 code lines, complexity 38   (ceilings 120 / 15)
+carve-outs still carrying figures: 1
+```
+
+It moved 224→217 and 42→38, where the previous four steps roughly HALVED each time
+(1690→892→449→224, 366→173→84→42).
+
+**The PRD explicitly permitted this outcome** — "if ≤120/≤15 proves unreachable without changing
+behaviour, STOP and say so with the measured floor; lowering the figures and keeping the carve-out is
+acceptable, a behavioural change to hit a number is NOT." **UNVERIFIED: whether the worker actually hit
+that wall and said so, or simply stopped short.** Both readings fit the evidence. **Read the Q3 ticket's
+stated floor and reasoning (`742e1985`) before accepting or re-dispatching it.**
+
+Q1 (`a3a60a1a`) and Q2 (`9caa2556`) are Done and unverified in the field.
+
+### 🧰 OPERATING NOTES THAT COST TIME TO LEARN
+
+- **Gate runner:** `/private/tmp/claude-501/-Users-gregorydickson-pickle-rick-claude/60cf32ed-5a3a-4ec2-bf8c-55973dc5d96a/scratchpad/gate2.sh <logfile>`.
+  It **derives** its audit list from root `CLAUDE.md` — do NOT hardcode one. That fix has absorbed three
+  new audits across three releases that a hardcoded list would have silently skipped. Gate is now **22
+  legs**, ~68 min. Wait for the `GATE_END` marker; a leg count alone is not completion.
+- **#27 workaround, apply at EVERY launch until fixed:** copy the PRD to `<session>/prd.md` AND pre-set
+  `state.prd_path` via `StateManager.update`. Otherwise citadel may hard-fail at 1/4 after the whole
+  pickle phase completes. Measured rate: 1 in 8.
+- **NEVER launch a pipeline while a gate is running.** Contention fabricates reds; that is the measured
+  cause of both #28 occurrences.
+- `ps aux | grep -c 'pipeline-runner'` **matches the prompt text in your own shell invocation.** Use
+  `ps -eo pid,command | grep -E '[m]ux-runner\.js|[p]ipeline-runner\.js'`. I was fooled by this once.
+- `find -newermt '-50 minutes'` is not BSD syntax and returns a FALSE EMPTY. Use `-mmin -N`.
+- `stat -f '%Sm'` prints LOCAL time; prefix `TZ=UTC` before comparing against `date -u`.
+- Keep Bash output SMALL — it reached 25% of the context window this session.
 
 ### 🎯 THE OPERATOR'S OPEN DECISION — 2.1.0 GA
 
-The operator asked whether this line can drop `-beta`. **My earlier objection was partly wrong and is
-withdrawn:** I framed "2 of 7 runs succeeded" as instability. The right measure is phases completed
-unattended, and the GA criterion is *all-tier autonomy soaked*. Measured: **the last six runs all
-completed 4/4**, and a `failed` status among them is an honest verdict withholding, which is the
-designed behaviour. I also invented a "must run on a foreign repo" requirement the written criteria do
-not contain.
+Asked and still unanswered. **My earlier objection was partly wrong and is withdrawn:** I framed
+"2 of 7 runs succeeded" as instability, but the criterion is *all-tier autonomy soaked* and the right
+measure is phases completed unattended — which is strong. I also invented a "must run on a foreign repo"
+rule the written criteria do not contain.
 
-**What legitimately remains, and it is small:** the bug queue is not zero. `R-ORSR-2` is narrowed but
-open by design, and **#26** says the gate meant to watch its coverage is inert.
-
-**GA criterion 6 is the path the repo already wrote:** a release note recording "the remaining known
-manual-recovery limits — so GA does not over-promise stability the recovery ladder cannot yet meet."
-Shipping GA with those two limits NAMED is defensible; shipping it silently is not. **The call is the
-operator's and is still open.**
-
-### ⚠ #26 — the coverage gate cannot see what it watches (filed this pass)
-
-`audit-acceptance-assertion-coverage.sh` scans the **git index**. All 38 tracked `rick_ticket_*.md`
-files are hand-written fixtures under `extension/tests/fixtures/`. The tickets it is *about* are written
-to session dirs at runtime and are never scanned, so the fraction it ratchets **cannot move when an
-authoring path changes** — the regression it exists to detect.
-
-| corpus | AC sections | guarded |
-|---|---|---|
-| git index (what it scans) | 8 | **1** |
-| live session output (what it is about) | 11 | **7** |
-
-The script already accepts `ACCEPTANCE_COVERAGE_ROOT_OVERRIDE`; nothing sets it. **Falsifying test for
-the fix:** break an authoring path's emitted form and assert the fraction moves.
-
-**Correction:** the `5 of 8` in the beta.30 note was a WHOLE-FILE grep over live sessions. Section-scoped
-as the extractor reads it, on the grown corpus, it is **7 of 11**.
+**What legitimately remains: the bug queue is not zero** (#27, #28). GA criterion 6 is the repo's own
+path — a release note naming the remaining known limits. Shipping GA with them NAMED is defensible;
+shipping silently is not.
 
 ### Open, in priority order
 
-1. **#26** — an inert gate on the release path will look more reassuring the longer it runs.
-2. **R-ORSR-2** — open BY DESIGN. Do NOT close it by backticking its probe fixture; that hides the gap.
-   Real closure is an authoring guarantee or an explicit decision to accept partial coverage and say so.
-3. **2.1.0 GA** — operator decision, evidence summarised above.
-4. **#5** — enhancement. The bug queue has to settle first.
-5. Ratchet `runMuxRunnerMain` 449 → ~225; the recorded-ceiling audit fails in both directions.
+1. **Gate at HEAD → ship beta.33** (5 unpushed commits).
+2. **Read Q3's stated floor** (`742e1985`); re-dispatch only if it stopped short rather than hit a wall.
+3. **#27 / #28** — the last two bugs. Both filed with falsifying observations and suggested directions.
+4. **2.1.0 GA** — operator decision, evidence above.
+5. **szechuan `stalled_below_target`** returned this run. Two prior causes were measured and fixed
+   (#20 unit mismatch, #22 span counting); this is a THIRD occurrence and its cause is **unmeasured**.
 
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
