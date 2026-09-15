@@ -8,6 +8,51 @@ on purpose. Shipped-release detail and closed-finding forensics live in
 
 ---
 
+## ⛔ GATE-LEG DISCIPLINE (operator-set 2026-09-15, BINDING — the instrument is not exempt)
+
+**The release gate is itself an enumerated set, and it grew 10 → 13 audits in SEVEN DAYS.** One per
+finding, each individually justified, every one attached to a real defect. That is precisely the shape
+the complexity clause names, reproduced in the INSTRUMENT rather than the runtime — and it is the same
+`+41% classifiers while build failures stayed at ZERO` pattern already indicted at the top of root
+`CLAUDE.md`.
+
+**Full clause lives in root `CLAUDE.md` → "THE RELEASE GATE IS ITSELF AN ENUMERATED SET".** Four
+questions must be answered IN THE PRD before any new leg ships:
+
+1. **Can an EXISTING leg be widened?** Name the leg considered and why it could not stretch. A widened
+   predicate is a collapse; a new leg is an addition.
+2. **Would the next iteration have caught it?** Only SILENT, INDEFINITE rot earns a permanent check. A
+   number in a comment, a ledger row, an authoring convention rot. A transient red does not.
+3. **Is it pointed at the population at risk?** A leg watching fixtures while the risk lives in runtime
+   output is WORSE than no leg — see GitHub #26, where exactly that shipped and read as reassuring.
+4. **What is its falsifying control?** Break the watched thing and it MUST red, or it is a green light
+   wired to nothing.
+
+**Prefer: widen an existing leg → add a lint rule inside one → new leg LAST.**
+
+### The honest scorecard for 2026-09-08 → 09-15, measured against `v2.1.0-beta.25`
+
+| | then | now | direction |
+|---|---|---|---|
+| `runMuxRunnerMain` code lines | 1690 | **217** | ✅ −87% |
+| its complexity | 366 | **38** | ✅ −90% |
+| `pickle-utils.ts` lines | 3190 | **1434** | ✅ −55% |
+| `EXIT_REASONS` members | 42 | **37** | ✅ −5 states |
+| rule-less eslint disables | 2 | **0** | ✅ class closed |
+| carve-outs carrying figures | 2 | **1** | ✅ |
+| **gate audits** | **10** | **13** | ❌ **+30%** |
+| `src/` lines | 89,418 | 94,346 | ⚠ +4,928, mostly extraction overhead |
+| `tests/` lines | 247,370 | 267,077 | ✅ evidence, the sanctioned kind |
+
+**The state-count metric is moving the right way; the instrument count is not.** Three of the four
+audits added this week caught a real regression within one release, including one of my own fixes —
+which is the argument FOR them and also exactly what one says while accumulating an enumerated set.
+
+**Standing rule: state the gate's leg count in the release note whenever it changes.** A rising leg
+count against a flat defect-escape rate is the signal to SUBTRACT, not to keep adding.
+
+---
+
 ## ⛳ OPERATOR DIRECTIVES 2026-07-25 (BINDING — read FIRST, supersede on conflict)
 
 Set by the operator after the B-GTRUTH + R-WDTF-TO runs each wedged in the pipeline's own

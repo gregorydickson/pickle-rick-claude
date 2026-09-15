@@ -38,6 +38,35 @@ like a member that does not apply.
 **The metric is not lines — it is how many distinct states a reader must hold to know the system is
 correct.** Code that ADDS lines while removing ambiguity (an evidence test, a negative control, a typed
 degrade reason) is subtraction in the sense that matters.
+
+### ⛔ THE RELEASE GATE IS ITSELF AN ENUMERATED SET (operator-set 2026-09-15, BINDING)
+
+**A gate leg is a list member.** Every clause above applies to the gate with full force, and the gate is
+the easiest place to forget it, because each new leg arrives attached to a real finding and feels free.
+
+**Measured, and it is why this clause exists:** the gate went from **10 audits to 13 in seven days** —
+one per finding, each individually justified. That is the exact shape clause 1 names, and it is the
+`+41% classifiers while build failures stayed at ZERO` pattern the PRIME DIRECTIVE already indicts,
+reproduced in the instrument rather than the runtime.
+
+**Before proposing a NEW gate leg, answer these in the PRD, in order:**
+
+1. **Can an EXISTING leg be widened to cover this?** A widened predicate is a collapse; a new leg is an
+   addition. Name the leg you considered and why it could not stretch.
+2. **Would the next iteration have caught it?** If yes, add nothing — record it and move on. Only a
+   defect that rots SILENTLY and INDEFINITELY earns a permanent check. A number in a comment, a ledger
+   row, an authoring convention: those rot. A transient red does not.
+3. **What does it measure, and is that the population at risk?** A leg pointed at fixtures when the risk
+   lives in runtime output is worse than no leg — it reads more reassuring the longer it runs.
+4. **What is its falsifying control?** Break the thing it watches and it MUST red. A leg without that
+   control is a green light wired to nothing.
+
+**A leg that cannot answer all four does not ship.** Prefer widening, then a lint rule inside an existing
+leg, then a new leg last.
+
+**The count is the tell.** State the gate's leg count in the release note whenever it changes, so growth
+is visible at the moment it happens rather than discovered in a retrospective. **A rising leg count with
+a flat defect-escape rate is the signal to subtract, not to keep adding.**
 ## 🔁 THE SYSTEM IS AUTONOMOUS CONTINUOUS LOOPS (operator-set, BINDING, elaborates the PRIME DIRECTIVE)
 
 **Iterations do not need to be correct. The loop is the correctness mechanism.** An imperfect iteration
