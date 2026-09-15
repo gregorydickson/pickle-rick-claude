@@ -27,9 +27,65 @@ that path, and L5 treats it as an experiment to be measured rather than a founda
 | 8 Cleanup | always | **superset** (szechuan Part I) | — |
 | 9 Hazard enumeration | trigger | absent | — |
 
-**Ordering rationale:** L1 and L2 are methodology and lift every lens at once. L3 is one sentence with
+**Ordering rationale: L0 and L0b gate everything.** L0 protects what already beats the bar; L0b
+replaces theory with an inventory of what reviewers actually flag. Only then: L1 and L2 are methodology
+and lift every lens at once. L3 is one sentence with
 the highest yield. L4 is the one unconditional-for-us content gap. L5 is the substrate and is last
 because it must be measured before anything depends on it.
+
+---
+
+## 🔒 ROOT L0 — PRESERVE WHAT ALREADY BEATS THE BAR (gates every other root)
+
+**The risk this bundle carries is not that it fails. It is that "align to the external bar" reads as a
+licence to replace, and we lose the parts that are already better than the bar.** Measured, we are ahead
+in three places:
+
+| ours | versus the lean lens |
+|---|---|
+| szechuan Part I (KISS, YAGNI, Small Functions, Guard Clauses, Cognitive Load, Self-Documenting, Elegance) | **superset** of lens 8 |
+| szechuan Migration Hygiene — 4 scored Drizzle checks (CHECK-constraint drift, redundant churn, idempotency, schema drift) | **ahead** of lens 4's one-liner |
+| anatomy-park subsystem data-flow tracing + trap doors with `pattern_shape` | **no lens equivalent at all** |
+
+### AC-L0 (machine-checkable, and every other root is blocked on these)
+- L0-1: `szechuan-sauce-principles.md` Part I sections are **not deleted and not reworded**. Every change
+  to that file is an ADDITION, verified by diff: zero deleted lines in Parts I and II.
+- L0-2: Migration Hygiene keeps **all four** scored checks with their existing severities.
+- L0-3: anatomy-park's trap-door output keeps its `pattern_shape` contract and its severity scale.
+- L0-4 (the real control): **replay a known past finding from each phase — it must still fire.** Pick one
+  historical szechuan violation and one anatomy-park CRITICAL from our own git history, re-run the
+  current prompts over that code, and assert both are still reported. **A widening that silences a
+  finding we used to catch is a REGRESSION and fails this root.**
+- L0-5: no root in this bundle may remove a criterion. Additions only.
+
+**If L0-4 cannot be made to pass, STOP.** Report the silenced finding and do not land the widening. A
+review that trades an existing catch for a new one is not an improvement, it is a swap we cannot see.
+
+---
+
+## 📊 ROOT L0b — INVENTORY WHAT REVIEWERS ACTUALLY FLAG (gates L3 and L4)
+
+**This proposal's content roots were derived from what the skill SAYS it checks, not from what reviewers
+actually find.** Those differ, and only one is evidence. Operator-raised, and correct.
+
+`plugins/ll/scripts/pr-reviews` fetches all three review surfaces (review bodies, inline comments, issue
+comments) grouped by reviewer, with `--dump`. Run it across a sample of recent merged
+`loanlight-engineering/loanlight-api` PRs and classify every finding by lens.
+
+**Why this gates L3 and L4:** L4 proposes a performance lens on the strength of `grep -ic 'N+1'`
+returning **0** in our principles file. That measures what we do not check. It does NOT measure whether
+reviewers keep finding performance defects in our output. Those are different claims and I conflated
+them.
+
+### AC-L0b (machine-checkable)
+- L0b-1: findings from the sampled PRs are classified by lens, with counts per category.
+- L0b-2: **L3 and L4 adopt only categories the inventory supports.** A category with no observed
+  findings is dropped from this bundle, whatever the skill's lens list says.
+- L0b-3: categories the inventory surfaces that are NOT in the lens list are reported as candidates. The
+  inventory may promote something neither of us considered.
+- L0b-4: the sample size and selection are stated, and the classification is reproducible from the dump.
+- L0b-5 (honesty control): if the inventory is too small or too noisy to support a conclusion, SAY SO
+  and leave L3/L4 unscoped rather than adopting on a weak signal.
 
 ---
 
