@@ -975,6 +975,37 @@ export function runBundlePreflight(sessionRoot) {
         throw new BundlePreflightError('manifest_R_code_count_ge_26', reason);
     }
 }
+/**
+ * Q1 (GitHub #27): refuse a LAUNCH whose phase list still has `citadel` ahead of it when no
+ * PRD is resolvable, instead of halting at citadel hours later. A PRD counts as resolvable
+ * from exactly the two sources citadel itself accepts — a truthy `state.prd_path`, or the
+ * session-local PRD `healPipelineRequiredFields` adopts — so this can never refuse a run
+ * citadel would have accepted. Read-only: adoption stays with the heal. A resume whose plan
+ * index is already past citadel is not a launch of citadel and is never refused. Called only
+ * from the CLI entry, never from `main()`, so it cannot break a running phase loop.
+ */
+export function assertCitadelLaunchPrdResolvable(sessionRoot) {
+    const raw = readRecoverableJsonObject(path.join(sessionRoot, 'pipeline.json'));
+    if (!raw)
+        return;
+    const config = parsePipelineConfig(raw);
+    const citadelIndex = config.phases.indexOf('citadel');
+    if (citadelIndex === -1)
+        return;
+    if (readResumePhasePlan({ sessionDir: sessionRoot, config }).index > citadelIndex)
+        return;
+    const state = readRecoverableJsonObject(path.join(sessionRoot, 'state.json'));
+    const prdPath = state?.prd_path;
+    if (typeof prdPath === 'string' && prdPath.length > 0)
+        return;
+    if (resolveSessionPrdPath(sessionRoot))
+        return;
+    const reason = 'pipeline includes citadel but no PRD is resolvable: state.prd_path is unset and '
+        + `${sessionRoot} holds no prd_refined.md or prd.md — name the PRD file in the launch task `
+        + '(e.g. --task "... prds/<name>.md") or place prd.md in the session dir';
+    emitPreflightFailed(sessionRoot, 'citadel_prd_resolvable', reason);
+    throw new BundlePreflightError('citadel_prd_resolvable', reason);
+}
 // ---------------------------------------------------------------------------
 // Child Process Management
 // ---------------------------------------------------------------------------
@@ -4887,7 +4918,12 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'pipeline-runner.js') 
     const designSafeFlag = argv.includes('--design-safe') ? true :
         argv.includes('--no-design-safe') ? false :
             undefined;
-    main(sessionDir, { scopeFlag, scopeBase, strictPhases, designSafeFlag }).catch((err) => {
+    // Q1: the launch preflight runs first in the chain, so a refusal takes the fatal path below
+    // before the first worker spawns — no second disposition.
+    Promise.resolve().then(() => {
+        assertCitadelLaunchPrdResolvable(sessionDir);
+        return main(sessionDir, { scopeFlag, scopeBase, strictPhases, designSafeFlag });
+    }).catch((err) => {
         // AC-CWRR-5 / AP-EXT-ITER89-01: the crash attribution — `current_phase` (WHICH phase was
         // running when the crash hit), `phase_skips`, `phase_dispositions`,
         // `citadel_advisory_findings` — must survive a fatal exit, not just a clean finalize. Naming

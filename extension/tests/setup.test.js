@@ -8,6 +8,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArguments, initializeNewSession, evaluateLaunchSizing, countManifestTickets } from '../bin/setup.js';
 import { runRecover } from '../bin/pickle-recover.js';
+import { assertCitadelLaunchPrdResolvable } from '../bin/pipeline-runner.js';
 import { StateManager } from '../services/state-manager.js';
 import { LATEST_SCHEMA_VERSION } from '../types/index.js';
 import { compatibleCodexVersion, codexVersionLine } from './__helpers__/codex-shim.js';
@@ -365,6 +366,59 @@ test('setup CLI: fresh tmux PRD session persists prd_path and start_commit in st
     } finally {
         fs.rmSync(dataRoot, { recursive: true, force: true });
     }
+});
+
+// ── Q1 (GitHub #27): a PRD named mid-sentence in the launch task is recorded by construction ──
+
+function withSandboxDataRoot(prefix, fn) {
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    try {
+        return fn(dataRoot);
+    } finally {
+        if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = previousDataRoot;
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+}
+
+test('Q1-1: a PRD token followed by sentence punctuation resolves to the PRD path', () => {
+    withSandboxDataRoot('pickle-setup-q1-parse-', (dataRoot) => {
+        const prdPath = path.join(dataRoot, 'bundle-prd.md');
+        fs.writeFileSync(prdPath, '# Bundle PRD\n');
+        for (const task of [
+            `Build the bundle from ${prdPath}. Then ship.`,
+            `Build the bundle from \`${prdPath}\`. Then ship.`,
+            `Read ${prdPath}: every root.`,
+            `Is it ${prdPath}? Yes!`,
+        ]) {
+            assert.equal(parseArguments(['--tmux', '--task', task]).prdPath, prdPath, `task: ${task}`);
+        }
+        const missing = `Build from ${path.join(dataRoot, 'absent-prd.md')}. Then ship.`;
+        assert.equal(parseArguments(['--tmux', '--task', missing]).prdPath, undefined,
+            'a named PRD that does not exist must not be recorded');
+    });
+});
+
+test('Q1-1: a fresh session launched from a mid-sentence PRD task stamps state.prd_path', () => {
+    withSandboxDataRoot('pickle-setup-q1-stamp-', (dataRoot) => {
+        const prdPath = path.join(dataRoot, 'bundle-prd.md');
+        fs.writeFileSync(prdPath, '# Bundle PRD\n');
+        const session = initializeNewSession(parseArguments(['--tmux', '--task', `Build the bundle from ${prdPath}. Then ship.`]));
+        const persisted = JSON.parse(fs.readFileSync(path.join(session.sessionRoot, 'state.json'), 'utf-8'));
+        assert.equal(persisted.prd_path, prdPath);
+    });
+});
+
+test('Q1-5: the launch recording is what lets a citadel pipeline pass the launch preflight', () => {
+    withSandboxDataRoot('pickle-setup-q1-launch-', (dataRoot) => {
+        const prdPath = path.join(dataRoot, 'bundle-prd.md');
+        fs.writeFileSync(prdPath, '# Bundle PRD\n');
+        const session = initializeNewSession(parseArguments(['--tmux', '--task', `Build the bundle from ${prdPath}. Then ship.`]));
+        fs.writeFileSync(path.join(session.sessionRoot, 'pipeline.json'), JSON.stringify({ phases: ['pickle', 'citadel'] }));
+        assert.doesNotThrow(() => assertCitadelLaunchPrdResolvable(session.sessionRoot));
+    });
 });
 
 // ── R-PSCG (B-1SEAM WS-2): setup-side start_commit recompute + WARN ──────────

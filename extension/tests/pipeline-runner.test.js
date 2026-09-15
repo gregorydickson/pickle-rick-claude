@@ -23,6 +23,7 @@ import {
   claimPipelineRunnerActive,
   armChildMuxRunnerHeartbeat,
   runBundlePreflight,
+  assertCitadelLaunchPrdResolvable,
   BundlePreflightError,
   samplePhaseHistoryTimestamp,
   executeCitadelPhase,
@@ -2338,6 +2339,80 @@ describe('bundle bootstrap shape', () => {
     const raw = { ...CANONICAL_BUNDLE };
     assert.equal(raw.phases[0], 'pickle');
     assert.equal(raw.backend, 'claude');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assertCitadelLaunchPrdResolvable — Q1 (GitHub #27)
+// ---------------------------------------------------------------------------
+
+describe('assertCitadelLaunchPrdResolvable (Q1)', () => {
+  function makeLaunch({ phases, prdPath, sessionPrd = false, status } = {}) {
+    const dir = tmpDir();
+    const state = { active: true, working_dir: dir, session_dir: dir, schema_version: 3, ...(prdPath ? { prd_path: prdPath } : {}) };
+    fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(state));
+    fs.writeFileSync(path.join(dir, 'pipeline.json'), JSON.stringify({ phases, target: dir }));
+    if (sessionPrd) fs.writeFileSync(path.join(dir, 'prd.md'), '# Session PRD\n');
+    if (status) fs.writeFileSync(path.join(dir, 'pipeline-status.json'), JSON.stringify(status));
+    return dir;
+  }
+
+  function withLaunch(opts, fn) {
+    const dir = makeLaunch(opts);
+    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dir;
+    try {
+      return fn(dir);
+    } finally {
+      if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+      else process.env.PICKLE_DATA_ROOT = previousDataRoot;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  function assertRefused(dir) {
+    assert.throws(() => assertCitadelLaunchPrdResolvable(dir), (err) => {
+      assert.ok(err instanceof BundlePreflightError, 'should be BundlePreflightError');
+      assert.equal(err.failedAssertion, 'citadel_prd_resolvable');
+      assert.match(err.message, /state\.prd_path/, 'the refusal must name the missing field');
+      assert.match(err.message, /prd\.md/, 'the refusal must name what to supply');
+      return true;
+    });
+  }
+
+  test('Q1-2: a citadel launch with no resolvable PRD is refused before any phase runs', () => {
+    withLaunch({ phases: ['pickle', 'citadel'] }, (dir) => assertRefused(dir));
+  });
+
+  test('Q1-2: an auto-inserted citadel (pickle then anatomy-park) is refused the same way', () => {
+    withLaunch({ phases: ['pickle', 'anatomy-park'] }, (dir) => assertRefused(dir));
+  });
+
+  test('Q1-3: a launch with no citadel phase starts as today', () => {
+    withLaunch({ phases: ['pickle'] }, (dir) => {
+      assert.doesNotThrow(() => assertCitadelLaunchPrdResolvable(dir));
+    });
+  });
+
+  test('Q1-3: a citadel launch with a recorded prd_path starts as today', () => {
+    withLaunch({ phases: ['pickle', 'citadel'], prdPath: '/repo/prds/bundle-prd.md' }, (dir) => {
+      assert.doesNotThrow(() => assertCitadelLaunchPrdResolvable(dir));
+    });
+  });
+
+  test('Q1-3: a crash-resume already past citadel is never refused', () => {
+    const status = { status: 'running', completed_phases: 2, current_phase: 'anatomy-park' };
+    withLaunch({ phases: ['pickle', 'citadel', 'anatomy-park'], status }, (dir) => {
+      assert.doesNotThrow(() => assertCitadelLaunchPrdResolvable(dir));
+    });
+  });
+
+  test('Q1-4: a session-local PRD satisfies the preflight and adoption stays with the heal', () => {
+    withLaunch({ phases: ['pickle', 'citadel'], sessionPrd: true }, (dir) => {
+      assert.doesNotThrow(() => assertCitadelLaunchPrdResolvable(dir));
+      const state = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf-8'));
+      assert.equal(state.prd_path, undefined, 'the preflight is read-only; healPipelineRequiredFields adopts later');
+    });
   });
 });
 

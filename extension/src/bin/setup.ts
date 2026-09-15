@@ -844,7 +844,9 @@ function isMarkdownPrd(candidate: string): boolean {
 }
 
 function resolveExistingPrdPath(candidate: string): string | undefined {
-  const cleaned = candidate.trim().replace(/^["'`(<]+|[)"'`,>]+$/g, '');
+  // Q1 (GitHub #27): a PRD named mid-sentence ends in `.`/`:`/`;`/`!`/`?`, and any of
+  // those left last defeated the whole trailing strip, so `from prds/x.md.` never resolved.
+  const cleaned = candidate.trim().replace(/^["'`(<]+|[)"'`,>.:;!?]+$/g, '');
   if (!cleaned || !isMarkdownPrd(cleaned)) return undefined;
   const resolved = path.resolve(cleaned);
   try {
