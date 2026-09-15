@@ -394,6 +394,12 @@ export type BetweenTicketGateFailure = {
   script_failure?: boolean;
   /** Diagnostic text for a script failure: the tail of the gate's stdout/stderr. */
   message?: string;
+  /**
+   * Q2: stamped only on a script failure whose FULL output carried at least one node:test
+   * `fail N` summary, every one reporting 0, and no failure marker. The `message` tail cannot
+   * decide this — `test:fast` runs two halves, and the tail can omit the one that failed.
+   */
+  reported_zero_failures?: boolean;
 };
 
 export type BetweenTicketGateResult = {
@@ -714,6 +720,19 @@ function buildScriptFailureMessage(lines: string[]): string {
   return tail || 'npm run test:fast failed';
 }
 
+// Both node:test reporters close a run with `ℹ fail N` (spec) or `# fail N` (TAP). A cancelled
+// test is counted under `cancelled`, not `fail`, but still prints a `✖` line — hence the marker.
+const TEST_SUMMARY_FAIL_COUNT_RE = /^(?:ℹ|#)[ \t]+fail[ \t]+(\d+)[ \t]*$/gm;
+const TEST_FAILURE_MARKER_LINE_RE = /^[ \t]*(?:✖|not ok)[ \t]/m;
+
+/** Q2: the whole output reported test results, and none of them failed. */
+function reportsZeroTestFailures(output: string): boolean {
+  const failCounts = [...output.matchAll(TEST_SUMMARY_FAIL_COUNT_RE)].map(m => Number(m[1]));
+  return failCounts.length > 0
+    && failCounts.every(count => count === 0)
+    && !TEST_FAILURE_MARKER_LINE_RE.test(output);
+}
+
 function normalizeBetweenTicketFailureFile(rawFile: string, workingDir: string): string {
   const trimmed = rawFile.trim();
   if (!trimmed) return '';
@@ -771,6 +790,7 @@ export function parseBetweenTicketFastGateFailures(output: string, workingDir: s
     file: '',
     script_failure: true,
     message: buildScriptFailureMessage(lines),
+    ...(reportsZeroTestFailures(output) ? { reported_zero_failures: true } : {}),
   }];
 }
 
@@ -1110,6 +1130,12 @@ export function classifyPostFinalVerdict(
     .filter((f): f is BetweenTicketGateFailure & { message: string } =>
       typeof f.message === 'string' && f.message.length > 0)
     .map(f => ({ name: f.name, message: f.message }));
+  // Q2: a non-zero exit whose output reported test results with zero failures measured no
+  // regression — it is unmeasured, so it stays degraded and keeps its tail, but is not `red`.
+  // Output carrying no parseable fail count is never stamped, so it stays red.
+  if (failureNames.length > 0 && gate.failures.every(f => f.reported_zero_failures === true)) {
+    return finalize('inconclusive', failureNames, diagnostics);
+  }
   return finalize('red', failureNames, diagnostics);
 }
 

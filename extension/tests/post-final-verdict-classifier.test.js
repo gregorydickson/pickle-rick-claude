@@ -1,7 +1,7 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyPostFinalVerdict } from '../bin/mux-runner.js';
+import { classifyPostFinalVerdict, parseBetweenTicketFastGateFailures } from '../bin/mux-runner.js';
 
 // AP-EXT-ITER157-02: `measured` DEFAULTS off `timed_out` rather than to a bare `true`, because
 // that is what the producer does — a timed-out gate measured nothing. Every pre-existing case
@@ -363,4 +363,127 @@ test('AP-EXT-ITER157-02: an old-shape gate with no `measured` field classifies a
   });
   assert.strictEqual(result.state, 'absent');
   assert.strictEqual(result.degraded, true);
+});
+
+// ---------------------------------------------------------------------------
+// Q2 (ROOT Q2, PRD p1-b-zero-the-last-two-bugs-and-the-last-carve-out.md, GitHub #28): a tier that
+// exited NON-ZERO while every node:test summary it printed reported `fail 0` is UNMEASURED, not a
+// measured regression. It classifies `inconclusive` — still degraded, still carrying its tail.
+//
+// Every case below drives the REAL producer (`parseBetweenTicketFastGateFailures`) over tier output
+// and hands its entries to the classifier. The zero-failure fact is decided over the WHOLE output:
+// occurrence 1's recorded tail shows `parallel_exit=1 serial_exit=0` beside the SERIAL half's
+// `fail 0`, so the 20-line `message` tail alone can omit the half that actually failed.
+
+function classifyTierOutput(output, { measured = true } = {}) {
+  const failures = parseBetweenTicketFastGateFailures(output, '/repo');
+  const result = classifyPostFinalVerdict({
+    gate: gate({ ok: false, failures, measured }),
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  return { failures, result };
+}
+
+const BANNER = '> pickle-rick-scripts@2.1.0 test:fast:parallel\n> node bin/test-runner.js --tier fast\n';
+
+function specSummary({ tests = 5, fail = 0, cancelled = 0 } = {}) {
+  return [
+    `ℹ tests ${tests}`,
+    'ℹ suites 1',
+    `ℹ pass ${tests - fail - cancelled}`,
+    `ℹ fail ${fail}`,
+    `ℹ cancelled ${cancelled}`,
+    'ℹ skipped 0',
+    'ℹ todo 0',
+    'ℹ duration_ms 12.5',
+  ].join('\n');
+}
+
+// Recorded verbatim from the two sessions that withheld success on this shape.
+// 2026-09-14-ae80e917: state.json post_final_verdict.diagnostics[0].message.
+const OCCURRENCE_2_TAIL = "✔ AC-GTRUTH-A1-1: an ABSENT/un-injected worker gate refuses the zero-diff Done-flip (156.626208ms)\n✔ roster honesty: decision=attribution REFUSES a fully-declared zero-diff ticket (129.484666ms)\n✔ the arm is not inert: decision=phantom-watch KEEPS a declared zero-diff Done (120.844709ms)\n✔ phantom-watch keep does NOT extend to an undeclared absent-evidence Done (127.517209ms)\n✔ R-CXOR-2: a declaration does NOT launder a baseline-sha stamp (99.070375ms)\n✔ AC-GTRUTH-A1-3: no sentinel sha literal beyond the pre-existing test-mode bypass (257.723708ms)\n✔ AC-GTRUTH-A1-5: guardCompletionCommitBeforeDone stays policy-free (shape mapping only) (98.852709ms)\n✔ F9: `zero_diff_intent` is READ-ONLY in production — a producer must bring an authorship constraint (596.172083ms)\n✔ F9: the sanctioned read is still present — this pin fails closed (87.950375ms)\n✔ AP-EXT-ITER176-01: codeMask blanks comments by grammar, and moves nothing (0.465959ms)\n✔ AC-GTRUTH-A1-4: the zero-diff path performs no git write (4.389042ms)\n✔ AP-EXT-ITER182-01: no pin reads a source file outside the declared readers (4.6825ms)\nℹ tests 9538\nℹ suites 579\nℹ pass 9534\nℹ fail 0\nℹ cancelled 0\nℹ skipped 3\nℹ todo 1\nℹ duration_ms 254138.842834";
+// 2026-09-12-a4d141e1: its post_final_verdict predates M1 and kept no tail, so this is the same
+// gate's recorded entry at state.json last_between_ticket_gate.failures[0].
+const OCCURRENCE_1_ENTRY = {
+  name: 'script failure: test:fast:serial',
+  file: '',
+  script_failure: true,
+  message: "✔ AP-EXT-ITER123-01: the SCAN arm accepts over the R-CCR-1 fallbackDir, like its explicit sibling (139.15225ms)\n✔ AP-EXT-ITER123-01: the phantom-Done watcher KEEPS an inferred-stamped ticket whose working_dir is unusable (173.872125ms)\n✔ AP-EXT-ITER123-01: widening the accept arms does NOT launder a foreign-attributed inferred sha (135.309334ms)\n✔ AP-EXT-ITER123-01: a definite not-exists on the primary rung is still FINAL (no always-try-the-fallback degrade) (141.589333ms)\n✔ ref'd sole-settle-path timer: fires reliably with no other handle holding the loop (85.332583ms)\n✔ negative control: an unref'd sole-settle-path timer does NOT reliably fire (proves the mechanism) (33.264709ms)\n✔ no promise's sole settle path is an unref'd timer, anywhere under src/ or tests/ (861.633416ms)\n✔ every KNOWN_UNFIXED entry is still a real violation — the exception list rots red, not green (0.097042ms)\n✔ the sole-settle-path scan is not vacuous: it finds settling timers under EVERY root (0.082125ms)\n✔ the helper widening flags a helper-settled unref'd timer and spares a heartbeat (1.521667ms)\nℹ tests 403\nℹ suites 24\nℹ pass 401\nℹ fail 0\nℹ cancelled 0\nℹ skipped 2\nℹ todo 0\nℹ duration_ms 61630.713125\ntest:fast halves measured: parallel_exit=1 serial_exit=0\ntest:fast FAILED (parallel_exit=1 serial_exit=0)",
+};
+
+test('Q2-1: a non-zero tier exit whose summary reports zero test failures classifies inconclusive, not red', () => {
+  const output = `${BANNER}✔ passes (0.3ms)\n${specSummary()}`;
+  const { failures, result } = classifyTierOutput(output);
+  assert.strictEqual(result.state, 'inconclusive');
+  // Q2-3: inconclusive still withholds the success verdict and still records the diagnostic tail.
+  assert.strictEqual(result.degraded, true, 'an unmeasured tier must withhold the success verdict');
+  assert.deepStrictEqual(result.dimensions, ['script failure: test:fast:parallel']);
+  assert.deepStrictEqual(result.diagnostics, [{ name: failures[0].name, message: failures[0].message }]);
+  assert.match(result.diagnostics[0].message, /ℹ fail 0/);
+});
+
+test('Q2-2: a non-zero exit WITH reported test failures still classifies red', () => {
+  const output = `${BANNER}✔ passes (0.3ms)\n▶ suite\n  ✖ breaks (0.4ms)\n✖ suite (0.5ms)\n${specSummary({ fail: 1 })}\n✖ failing tests:`;
+  const { result } = classifyTierOutput(output);
+  assert.strictEqual(result.state, 'red');
+  assert.deepStrictEqual(result.dimensions, ['script failure: test:fast:parallel']);
+});
+
+test('Q2-2: a non-zero exit carrying NO parseable fail count stays red and is not stamped', () => {
+  const output = '> pickle-rick-scripts@2.1.0 pretest:fast\n> bash scripts/audit-test-tiers.sh\n\naudit-test-tiers.sh: FAIL — tests/foo.test.js missing @tier header';
+  const { failures, result } = classifyTierOutput(output, { measured: false });
+  assert.strictEqual(result.state, 'red');
+  assert.strictEqual('reported_zero_failures' in failures[0], false, 'no summary is no evidence of zero failures');
+});
+
+// node:test counts a timed-out test under `cancelled`, NOT `fail` (measured on node v24.19.0), so a
+// `fail 0` line can sit beside a test that did not pass. Its `✖` marker is the evidence.
+test('Q2-2: `fail 0` beside a cancelled test (✖ marker) stays red', () => {
+  const output = `${BANNER}✔ passes (0.3ms)\n✖ slow (51.3ms)\n${specSummary({ fail: 0, cancelled: 1 })}`;
+  const { result } = classifyTierOutput(output);
+  assert.strictEqual(result.state, 'red');
+});
+
+// The occurrence-1 hazard, isolated to the count conjunct (no marker in either half): the LAST
+// half's `fail 0` must not answer for an earlier half that reported failures.
+test('Q2-2: an earlier half reporting failures stays red even when the last half reports fail 0', () => {
+  const output = `${BANNER}${specSummary({ fail: 2 })}\n> pickle-rick-scripts@2.1.0 test:fast:serial\n${specSummary()}\ntest:fast FAILED (parallel_exit=1 serial_exit=0)`;
+  const { result } = classifyTierOutput(output);
+  assert.strictEqual(result.state, 'red');
+});
+
+test('Q2-2: a real TAP failure named by the parser stays red', () => {
+  const output = `${BANNER}not ok 1 - widget explodes\n  ---\n  location: '/repo/tests/widget.test.js:3:1'\n  ...\n# tests 1\n# fail 0`;
+  const { failures, result } = classifyTierOutput(output);
+  assert.strictEqual(failures[0].script_failure, undefined);
+  assert.strictEqual(result.state, 'red');
+});
+
+test('Q2-4: both recorded session shapes replay to inconclusive through the producer', () => {
+  for (const tail of [OCCURRENCE_2_TAIL, OCCURRENCE_1_ENTRY.message]) {
+    const { failures, result } = classifyTierOutput(tail);
+    assert.strictEqual(failures[0].reported_zero_failures, true);
+    assert.strictEqual(result.state, 'inconclusive');
+    assert.strictEqual(result.degraded, true);
+    assert.strictEqual(result.diagnostics[0].message, failures[0].message);
+  }
+});
+
+// The pre-fix record — the entry exactly as it was persisted, with no zero-failure stamp — still
+// classifies red. The classifier never re-derives the fact from a tail it cannot trust.
+test('Q2-4: the recorded entries without the producer stamp still classify red', () => {
+  const occurrence2Entry = { name: 'script failure: test:fast:parallel', file: '', script_failure: true, message: OCCURRENCE_2_TAIL };
+  for (const entry of [occurrence2Entry, OCCURRENCE_1_ENTRY]) {
+    const result = classifyPostFinalVerdict({
+      gate: gate({ ok: false, failures: [entry] }),
+      applicable: true,
+      verdictTs: 200,
+      finalCommitTs: 100,
+      baselineFailures: [],
+    });
+    assert.strictEqual(result.state, 'red');
+  }
 });
