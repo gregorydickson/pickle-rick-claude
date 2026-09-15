@@ -35,16 +35,19 @@
  *      PICKLE_TEST_MODE=1 (:4743), and the fast tier sets it. All three live
  *      guard sites branch on `!guard.ok`, so in this tier the guard never
  *      refuses and the halt can never fire.
- *   2. `runMuxRunnerMain` (:8815) is not exported, so the loop that owns the
- *      exit map cannot be driven in-process at all.
+ *   2. The loop itself is NO LONGER an obstacle: R2b (ticket 92bb9767) exported
+ *      `driveMuxRunnerMain`, which runs the real `runMuxRunnerMain` in-process
+ *      with only the manager spawn, the wall sleep and process exit injected
+ *      (tests/mux-runner-main-loop-behaviour.test.js). Fact 1 alone keeps
+ *      D2-2/D2-3 out of this tier.
  *
- * HANDOFF [manager] — to pin D2-2/D2-3 honestly they must move to the
- * integration tier: spawn mux-runner as a subprocess WITHOUT PICKLE_TEST_MODE,
- * against a synthetic tmp git repo whose ticket is Done with no
- * completion_commit, then assert the observed exit status is 1 and that a
+ * HANDOFF [manager] — to pin D2-2/D2-3 honestly they need a run WITHOUT
+ * PICKLE_TEST_MODE, against a synthetic tmp git repo whose ticket is Done with
+ * no completion_commit, asserting the observed exit status is 1 and that a
  * session_end event carrying error === 'done_without_commit_evidence' was
- * emitted. That needs a NEW integration-tier file, which is outside the file
- * fence of the ticket (31ed007a) that wrote this note.
+ * emitted. That run can now drive the loop through `driveMuxRunnerMain` instead
+ * of a subprocess, but it still belongs in a NEW integration-tier file, which is
+ * outside the file fence of the ticket (31ed007a) that wrote this note.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { test } from 'node:test';
@@ -137,8 +140,8 @@ test('mux-runner: every live done_without_commit_evidence residual is recorded t
 // two facts that make AC-MWMO-D2-2/D2-3 unreachable in this tier. It is not a
 // stand-in for those ACs — it pins the REASON they are absent, so the reason
 // cannot rot into a stale comment. If the PICKLE_TEST_MODE bypass is ever
-// removed or the runner main is ever exported, this test FAILS, which is the
-// signal to revisit whether D2-2/D2-3 have become reachable in-tier.
+// removed or the in-process loop driver is ever withdrawn, this test FAILS,
+// which is the signal to revisit this file's REPORTED GAP.
 test('mux-runner: the PICKLE_TEST_MODE=1 bypass disarms the completion guard — why AC-D2-2/D2-3 cannot be driven in this tier', () => {
   const originalTestMode = process.env.PICKLE_TEST_MODE;
   process.env.PICKLE_TEST_MODE = '1';
@@ -172,12 +175,15 @@ test('mux-runner: the PICKLE_TEST_MODE=1 bypass disarms the completion guard —
     }
   }
 
-  // The compounding half: even without the bypass, the loop that owns the exit
-  // map is unreachable in-process because its entry point is not exported.
+  // The loop half: the loop that owns the exit map IS drivable in-process, so the
+  // bypass above is the only thing keeping D2-2/D2-3 out of this tier. Pinning the
+  // driver's PRESENCE (not the loop's name) keeps the header honest: a test keyed
+  // on `runMuxRunnerMain` being unexported stayed green when R2b exported a driver
+  // under another name, and the header's "cannot be driven" claim went stale.
   assert.equal(
-    muxRunner.runMuxRunnerMain,
-    undefined,
-    'runMuxRunnerMain must remain unexported — if it is ever exported, AC-D2-2 (observed exit code) may become drivable in-process and this file\'s REPORTED GAP must be re-evaluated',
+    typeof muxRunner.driveMuxRunnerMain,
+    'function',
+    'driveMuxRunnerMain must drive the real loop in-process — if it is withdrawn, fact 2 of this file\'s REPORTED GAP is false again and the header must be re-evaluated',
   );
 });
 
