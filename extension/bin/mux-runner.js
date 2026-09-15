@@ -13472,6 +13472,13 @@ function readPreskipTerminalStatus(sessionDir, preskipTicket) {
     catch { /* unreadable frontmatter — fall through to normal spawn path */ }
     return preskipStatus === 'done' || preskipStatus === 'skipped' ? preskipStatus : null;
 }
+/** Q3: R-AISLOW — the already-terminal current ticket and the pending ticket the loop advances to, else null. */
+function readPreskipAdvance(sessionDir, preskipTicket) {
+    const preskipStatus = preskipTicket ? readPreskipTerminalStatus(sessionDir, preskipTicket) : null;
+    if (!preskipTicket || !preskipStatus)
+        return null;
+    return { preskipTicket, preskipStatus, nextPending: findNextPendingTicketId(sessionDir) };
+}
 /**
  * e9ef71c7: R-MWIS-2 main-loop idle-stall watchdog, then the C6 (B-MRSW) CPU/artifact liveness watchdog. Before each
  * worker spawn, check whether the loop has made no forward progress for longer than the bounded threshold while in NO
@@ -13610,8 +13617,22 @@ async function settleTaskCompletedClaim(input) {
     runManagerTokenPostFinalMeasurement(statePath, curState.working_dir || state.working_dir || '', curState.current_ticket || 'all-tickets-done', log);
     return { kind: 'finalize' };
 }
-// AC-P2: ratcheted to <=225 code lines and complexity <=45 by structural extraction only.
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 224 code lines against a ceiling of 120, and complexity 42 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize, then the iteration head, the C6 liveness watchdog and the run epilogue, then the pass opening, the pre-spawn liveness pair, the post-classification cycles and the completion-claim settle), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/**
+ * Q3: AC-D2' part 2 — a refused EPIC-success finalize parks the claim: log the refusal, reset the stall trackers and
+ * sleep, so the caller's `continue` re-enters the SAME loop instead of exiting on a `success` the ground truth refused.
+ */
+async function parkRefusedCompletionClaim(claimLabel, reason, stallTrackers, log) {
+    log(`${claimLabel} claim refused (${reason}) — a ticket remains unfinished; continuing instead of exiting.`);
+    stallTrackers.lastStateIteration = -1;
+    stallTrackers.stallCount = 0;
+    await sleep(1000);
+}
+/** Q3: the ground-truth bundle scan an EPIC-success finalize re-runs, over the first non-empty working dir. */
+function muxEpicFinalizeScan(sessionDir, ...workingDirs) {
+    return () => muxBundleScan(sessionDir, workingDirs.find(Boolean) || '');
+}
+// AC-P2: ratcheted to <=217 code lines and complexity <=38 by structural extraction only.
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 217 code lines against a ceiling of 120, and complexity 38 against a ceiling of 15. B-ZERO Q3 could not delete this carve-out inside its fence: tests/szechuan-sauce.test.js M4-2/M4-3 assert this function is still over the size ceiling, and the refused-finalize, preskip and timeout-halt source pins keep their loop continue/break statements inline here; a follow-up must scope those tests. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize, then the iteration head, the C6 liveness watchdog and the run epilogue, then the pass opening, the pre-spawn liveness pair, the post-classification cycles and the completion-claim settle), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
@@ -13658,10 +13679,9 @@ async function runMuxRunnerMain() {
         // completed the ticket but state.current_ticket wasn't cleared yet), skip
         // the manager spawn and advance current_ticket to the next pending ticket.
         // This avoids wasted 1h+ manager turns that just log "already Done, skipping".
-        const preskipTicket = state.current_ticket;
-        const preskipStatus = preskipTicket ? readPreskipTerminalStatus(sessionDir, preskipTicket) : null;
-        if (preskipTicket && preskipStatus) {
-            const nextPending = findNextPendingTicketId(sessionDir);
+        const preskip = readPreskipAdvance(sessionDir, state.current_ticket);
+        if (preskip) {
+            const { preskipTicket, preskipStatus, nextPending } = preskip;
             log(`[preskip] ${preskipTicket} already ${preskipStatus} — advancing to ${nextPending ?? 'none'} without manager spawn`);
             logActivity({
                 event: 'ticket_preskipped_already_terminal',
@@ -13671,11 +13691,11 @@ async function runMuxRunnerMain() {
                 ticket_id: preskipTicket,
                 gate_payload: {
                     frontmatter_status: preskipStatus,
-                    next_ticket_id: nextPending ?? null,
+                    next_ticket_id: nextPending,
                 },
             });
             // Advance via sanctioned state-write path; state re-read at top of next loop iteration
-            updateMuxLifecycleState(statePath, { currentTicket: nextPending ?? null });
+            updateMuxLifecycleState(statePath, { currentTicket: nextPending });
             continue; // skip runIteration — no manager spawn
         }
         // R-MWIS-2 idle-stall watchdog, then the C6 (B-MRSW) CPU/artifact liveness watchdog (see runPreSpawnLivenessWatchdogs).
@@ -13812,7 +13832,7 @@ async function runMuxRunnerMain() {
             // B-GROUND2 WS1: the EPIC-success finalize routes through the single
             // ground-truth authority — a residual pending ticket refuses the
             // `success` stamp and stamps the incomplete reason instead (fail-closed).
-            const finalizeResult = finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
+            const finalizeResult = finalizeIfTrulyComplete(statePath, muxEpicFinalizeScan(sessionDir, state.working_dir), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
             // AC-D2' part 2: a refused finalize means a residual ticket (e.g. still
             // `In Progress`) survived the ground-truth re-scan even though the
             // manager claimed completion. `finalizeIfTrulyComplete` already stamped
@@ -13824,10 +13844,7 @@ async function runMuxRunnerMain() {
             // it, so this collapses the ambiguous "clean exit, pending ticket"
             // case rather than adding a new guard to detect it downstream.
             if (!finalizeResult.finalized) {
-                log(`Task completed claim refused (${finalizeResult.reason}) — a ticket remains unfinished; continuing instead of exiting.`);
-                stallTrackers.lastStateIteration = -1;
-                stallTrackers.stallCount = 0;
-                await sleep(1000);
+                await parkRefusedCompletionClaim('Task completed', finalizeResult.reason, stallTrackers, log);
                 continue;
             }
             exitReason = 'success';
@@ -13844,16 +13861,13 @@ async function runMuxRunnerMain() {
                 const curState = reviewClaim.curState;
                 log('Review clean. Exiting loop.');
                 // B-GROUND2 WS1: EPIC-success finalize through the single authority.
-                const finalizeResult = finalizeIfTrulyComplete(statePath, () => muxBundleScan(sessionDir, curState.working_dir || state.working_dir || ''), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
+                const finalizeResult = finalizeIfTrulyComplete(statePath, muxEpicFinalizeScan(sessionDir, curState.working_dir, state.working_dir), { step: 'completed', runnerIteration: iteration, exitReason: 'success' });
                 // AC-D2' part 2: same collapse as the task_completed branch above — a
                 // refused finalize means a residual ticket survived the re-scan;
                 // continue instead of exiting with a `success` code that disagrees
                 // with the named disposition just stamped to state.json.
                 if (!finalizeResult.finalized) {
-                    log(`Review clean claim refused (${finalizeResult.reason}) — a ticket remains unfinished; continuing instead of exiting.`);
-                    stallTrackers.lastStateIteration = -1;
-                    stallTrackers.stallCount = 0;
-                    await sleep(1000);
+                    await parkRefusedCompletionClaim('Review clean', finalizeResult.reason, stallTrackers, log);
                     continue;
                 }
                 exitReason = 'success';
