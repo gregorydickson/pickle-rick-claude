@@ -2,11 +2,11 @@ import { execSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { StringDecoder } from 'string_decoder';
-import { VALID_STEPS, LockError, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
-import { StateManager, inspectLockFile, stealLockFile, acquireLockFile, releaseLockFile, isDeadPidPayload, withStealRight } from './state-manager.js';
+import { VALID_STEPS, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { StateManager } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { MAX_FUTURE_RECENCY_DRIFT_MS, readSessionsMapFallback, resolveSessionPath, selectScannedSessionPath } from './session-resolution.js';
+import { MANAGER_ROLE_FRAMING_BLOCK, stripSetupSection, stripStepOneBlock } from './manager-prompt.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
 import { isRecord } from '../lib/is-record.js';
 import { normalizeTicketComplexityTier } from './ticket-tier.js';
@@ -485,6 +485,9 @@ export function clearTicketResolutionTimestamps(content) {
 export { CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS, TICKET_TIER_BUDGETS, TIER_DIFF_ENVELOPE, TIER_LIFECYCLE, VALID_TICKET_COMPLEXITY_TIERS, VISUAL_DOMINANCE_THRESHOLD, classifyDiffVisualDominance, classifyTicketTier, getTicketTierBudgetWithOverrides, normalizeTicketComplexityTier, readPickleSettingsTierCaps, readStateTierCapOverrides, ticketInfoBudget, ticketTierBudget, } from './ticket-tier.js';
 export { DEFAULT_BOUNDED_TERMINAL_ESCAPE_CAP, DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS, DEFAULT_FAILED_FLIP_SUPPRESSION_CAP, DEFAULT_MAX_PARK_MINUTES, DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS, DEFAULT_SILENT_DEATH_RESPAWN_CAP, DEFAULT_TIER_STALL_THRESHOLD_MS, MIN_RATE_LIMIT_PROBE_INTERVAL_MS, RATE_LIMIT_PROBE_INTERVAL_ENV_VAR, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, RATE_LIMIT_PROBE_TIMEOUT_MS, TIER_STALL_THRESHOLD_ENV_VAR, TIER_STALL_THRESHOLD_FLOOR_MS, resolveCodegraphSettings, resolveHardeningSettings, resolveRateLimitProbeIntervalMs, resolveRateLimitSettings, resolveScopeSettings, resolveTierStallThresholdMs, } from './pickle-settings.js';
 export { resolveSessionPath } from './session-resolution.js';
+export { MatrixStyle, RAIN_CHARS, detectLogTruncation, drainLog, drainStreamJsonLines, latestIterationLog, matrixSeparator, } from './log-tail.js';
+export { sleepSync, withRetryLock } from './retry-lock.js';
+export { MANAGER_ROLE_FRAMING_BLOCK, resolveCommandTemplate, resolveManagerPromptPath, stripSetupSection, stripStepOneBlock, } from './manager-prompt.js';
 export function loadPickleSettingsBag(extensionRoot = getExtensionRoot()) {
     try {
         const settingsPath = path.join(extensionRoot, 'pickle_settings.json');
@@ -872,83 +875,6 @@ export function buildHandoffSummary(state, sessionDir, iterationNum) {
     appendResumeActionLines(lines, state, iterationNum);
     return lines.join('\n');
 }
-// Shared buffer for Atomics.wait()-based synchronous sleep (no CPU spin).
-const _sleepBuf = new Int32Array(new SharedArrayBuffer(4));
-/**
- * Synchronous sleep that yields to the OS scheduler instead of busy-waiting.
- * Contrast the async `sleep()` below — the `Sync` suffix is what matters at a
- * call site, not the unit.
- */
-export function sleepSync(ms) {
-    Atomics.wait(_sleepBuf, 0, 0, ms);
-}
-const RETRY_LOCK_DEFAULTS = {
-    maxRetries: 10,
-    baseLockDelayMs: 100,
-    staleLockTimeoutMs: 30_000,
-    lockJitter: true,
-};
-/**
- * The lock payload is the holder's pid (see `tryRunWithExclusiveLock`). Recovery runs under
- * `withStealRight`, so the lock inspected here is the lock removed here — no other stealer can be
- * mid-removal, and the dead holder this judges cannot release its own file.
- */
-function stealStaleLock(lockPath, staleLockTimeoutMs) {
-    withStealRight(lockPath, () => {
-        const snapshot = inspectLockFile(lockPath);
-        if (!snapshot)
-            return false; // lock file doesn't exist — expected
-        // A dead holder is stolen at once. Waiting out staleLockTimeoutMs is not merely slow, it is
-        // unreachable: the retry budget (~26.3s over 10 attempts) expires before the 30s window opens.
-        const stale = isDeadPidPayload(snapshot.payload)
-            || Date.now() - snapshot.mtimeMs > staleLockTimeoutMs;
-        return stale ? stealLockFile(lockPath, snapshot) : false;
-    });
-}
-function tryRunWithExclusiveLock(lockPath, fn) {
-    const held = acquireLockFile(lockPath, String(process.pid));
-    if (held === null)
-        return { acquired: false };
-    try {
-        return { acquired: true, value: fn() };
-    }
-    finally {
-        // Release only our own acquisition: a blind unlink would drop a successor's lock if ours was stolen.
-        releaseLockFile(lockPath, held);
-    }
-}
-function sleepBeforeRetry(attempt, baseLockDelayMs, lockJitter) {
-    const backoff = baseLockDelayMs * Math.pow(2, attempt);
-    const jitter = lockJitter ? Math.random() * baseLockDelayMs : 0;
-    sleepSync(Math.min(backoff + jitter, 5000));
-}
-/**
- * Acquires an exclusive file lock before executing fn, then releases it.
- * Uses O_EXCL atomic create for lock acquisition. Retries with exponential
- * backoff and optional jitter, stealing locks older than staleLockTimeoutMs.
- * Writes PID to lock file for stale detection. NEVER silently falls through —
- * throws LockError if maxRetries is exhausted.
- */
-export function withRetryLock(lockPath, fn, opts = {}) {
-    const maxRetries = opts.maxRetries ?? RETRY_LOCK_DEFAULTS.maxRetries;
-    const baseLockDelayMs = opts.baseLockDelayMs ?? RETRY_LOCK_DEFAULTS.baseLockDelayMs;
-    const staleLockTimeoutMs = opts.staleLockTimeoutMs ?? RETRY_LOCK_DEFAULTS.staleLockTimeoutMs;
-    const lockJitter = opts.lockJitter ?? RETRY_LOCK_DEFAULTS.lockJitter;
-    let attempt = 0;
-    while (true) {
-        // Steal stale lock if present — unlink + create in tight sequence to minimize TOCTOU window
-        stealStaleLock(lockPath, staleLockTimeoutMs);
-        // Atomic exclusive create; write PID for stale-detection by other processes
-        const locked = tryRunWithExclusiveLock(lockPath, fn);
-        if (locked.acquired)
-            return locked.value;
-        if (attempt >= maxRetries) {
-            throw new LockError(`[pickle] Lock acquisition failed after ${maxRetries} retries (${lockPath})`);
-        }
-        sleepBeforeRetry(attempt, baseLockDelayMs, lockJitter);
-        attempt++;
-    }
-}
 /**
  * R-SHB-5/6: Atomically prune `current_sessions.json` entries whose session
  * directory has been deleted or whose `state.json` is unreadable. This is the
@@ -1073,195 +999,8 @@ export function findSessionPathForCwd(cwd, options = {}) {
     }
     return mappedFallback;
 }
-/** Matrix palette shared across all monitor panes. */
-export const MatrixStyle = {
-    BRIGHT: '\x1b[1;32m', // bold green
-    GREEN: '\x1b[32m', // normal green
-    DIM: '\x1b[2;32m', // dim green
-    CYAN: '\x1b[36m', // cyan accent
-    ERR: '\x1b[1;31m', // bold red
-    WARN: '\x1b[33m', // yellow
-    R: '\x1b[0m', // reset
-};
-export const RAIN_CHARS = 'ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ012345789Z:."=*+-<>¦╌╎';
-/** Generates a Matrix-styled separator line with random rain characters. */
-export function matrixSeparator(width) {
-    const line = [];
-    for (let i = 0; i < width; i++) {
-        line.push(Math.random() < 0.2
-            ? RAIN_CHARS[Math.floor(Math.random() * RAIN_CHARS.length)]
-            : '─');
-    }
-    return `${MatrixStyle.DIM}${line.join('')}${MatrixStyle.R}`;
-}
-/**
- * Ranks one `tmux_iteration_N.log` as `[mtimeMs, iterationNumber]`.
- *
- * mtime is PRIMARY because the iteration-number namespace RESETS at every
- * pipeline phase boundary: `mux-runner.ts` (pickle) and `microverse-runner.ts`
- * (anatomy-park, szechuan-sauce) both write `tmux_iteration_<n>.log` into the
- * SAME session dir, each numbering from 1. A max-by-number pick therefore
- * returns the highest-numbered log of whichever phase ran LONGEST, not the live
- * one. The number stays as a deterministic tiebreak for same-millisecond writes.
- * An unstattable entry ranks last so it is picked only when nothing else exists.
- */
-function iterationLogRank(sessionDir, name) {
-    const num = parseInt(name.replace('tmux_iteration_', '').replace('.log', ''), 10) || 0;
-    try {
-        return [fs.statSync(path.join(sessionDir, name)).mtimeMs, num];
-    }
-    catch {
-        return [-Infinity, num];
-    }
-}
-/** Finds the most recent tmux_iteration_N.log in a session directory. */
-export function latestIterationLog(sessionDir) {
-    try {
-        const logs = fs
-            .readdirSync(sessionDir)
-            .filter((f) => f.startsWith('tmux_iteration_') && f.endsWith('.log'))
-            .map((name) => ({ name, rank: iterationLogRank(sessionDir, name) }))
-            .sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1]);
-        return logs.length > 0 ? path.join(sessionDir, logs[logs.length - 1].name) : null;
-    }
-    catch {
-        return null;
-    }
-}
-const ANSI_REGEX = /\x1b\[[0-9;]*[a-zA-Z]/g;
-const DRAIN_CHUNK = 65536; // 64 KiB
-/**
- * Reads stream-json log from `offset`, processes complete lines via the
- * provided `processor`, and emits output. Returns new offset and partial
- * trailing line buffer.
- *
- * AP-EXT-ITER7-01 replay: the read is chunked on a BYTE axis, so decoding must
- * run on the STREAM, never per chunk. A `StringDecoder` holds the incomplete
- * multi-byte sequence that straddles a `DRAIN_CHUNK` boundary until the next
- * chunk supplies its remaining bytes -- a per-chunk `.toString('utf-8')` renders
- * each half as U+FFFD instead. `drainLog` below decodes the same way.
- */
-export function drainStreamJsonLines(logPath, offset, lineBuf, processor, emit) {
-    let fd = null;
-    try {
-        const { size } = fs.statSync(logPath);
-        if (size <= offset)
-            return { offset, lineBuf };
-        fd = fs.openSync(logPath, 'r');
-        const decoder = new StringDecoder('utf-8');
-        let pos = offset;
-        let buf = lineBuf;
-        while (pos < size) {
-            const toRead = Math.min(DRAIN_CHUNK, size - pos);
-            const raw = Buffer.allocUnsafe(toRead);
-            const bytesRead = fs.readSync(fd, raw, 0, toRead, pos);
-            if (bytesRead === 0)
-                break;
-            buf += decoder.write(raw.subarray(0, bytesRead));
-            pos += bytesRead;
-        }
-        buf += decoder.end();
-        fs.closeSync(fd);
-        fd = null;
-        const lines = buf.split('\n');
-        const trailing = lines.pop() ?? '';
-        for (const line of lines) {
-            const result = processor(line);
-            if (result !== null)
-                emit(result);
-        }
-        return { offset: pos, lineBuf: trailing };
-    }
-    catch {
-        if (fd !== null) {
-            try {
-                fs.closeSync(fd);
-            }
-            catch { /* ignore */ }
-        }
-        return { offset, lineBuf };
-    }
-}
-/**
- * R-MWR-4: detect truncation of a file-tail watcher's current log.
- *
- * When the file at `logPath` is truncated (size shrinks below the
- * caller's recorded `offset`), tail-style watchers must reset their
- * offset and partial-line buffer so post-truncate content is consumed
- * instead of skipped. Without this hook, `drainStreamJsonLines` and
- * `drainLog` early-return on `size <= offset` and the watcher feeds a
- * dead chunk forever.
- *
- * Returns the post-check offset and lineBuf, plus a `truncated` flag
- * the caller uses to print exactly one dim `(reconnecting...)` line
- * per disconnect (R-MWR-6: banner stays reserved for liveness-probe
- * inactive exits, NOT for EOF).
- *
- * Returns the inputs unchanged if the file is missing or unreadable —
- * those cases are owned by the caller's own `latestIterationLog` /
- * worker-log discovery loop.
- */
-export function detectLogTruncation(logPath, offset, lineBuf) {
-    try {
-        const { size } = fs.statSync(logPath);
-        if (size < offset) {
-            return { offset: 0, lineBuf: '', truncated: true };
-        }
-    }
-    catch {
-        // Missing or unreadable — caller will pick this up on its next
-        // discovery iteration. Do not mutate offset.
-    }
-    return { offset, lineBuf, truncated: false };
-}
 export function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
-}
-/** Emits log content to stdout, stripping ANSI codes and truncating long lines. */
-function emitLog(content) {
-    const width = Math.min((process.stdout.columns || 80) - 2, 120);
-    const lines = content.replace(ANSI_REGEX, '').split('\n').filter((l) => l.trim());
-    for (const line of lines) {
-        process.stdout.write((line.length > width ? line.slice(0, width - 1) + '…' : line) + '\n');
-    }
-}
-/**
- * Reads new bytes from a log file starting at `offset`, emits them to stdout,
- * and returns the new offset. Reads in 64 KiB chunks to limit memory usage.
- */
-export function drainLog(logPath, offset) {
-    let fd = null;
-    try {
-        const { size } = fs.statSync(logPath);
-        if (size <= offset)
-            return offset;
-        fd = fs.openSync(logPath, 'r');
-        const decoder = new StringDecoder('utf-8');
-        let pos = offset;
-        while (pos < size) {
-            const toRead = Math.min(DRAIN_CHUNK, size - pos);
-            const buf = Buffer.allocUnsafe(toRead);
-            const bytesRead = fs.readSync(fd, buf, 0, toRead, pos);
-            if (bytesRead === 0)
-                break; // EOF — file was truncated
-            emitLog(decoder.write(buf.subarray(0, bytesRead)));
-            pos += bytesRead;
-        }
-        const trailing = decoder.end();
-        if (trailing)
-            emitLog(trailing);
-        fs.closeSync(fd);
-        return pos;
-    }
-    catch {
-        if (fd !== null) {
-            try {
-                fs.closeSync(fd);
-            }
-            catch { /* ignore double-close */ }
-        }
-        return offset;
-    }
 }
 /**
  * Atomically writes `state` as pretty-printed JSON to `filePath`.
@@ -1456,106 +1195,6 @@ export function pruneOldSessions(sessionsRoot, maxAgeDays = 7) {
         catch { /* skip unreadable or already-deleted sessions */ }
     }
 }
-// --- Manager prompt composition helpers ---
-/**
- * Strips the Setup section from dual-mode templates (e.g. szechuan-sauce.md).
- * The mux-runner always invokes with --resume, so Setup instructions are dead weight
- * that confuse the model. Strips from "## SETUP" (with or without " MODE" suffix) to
- * the next ##-level heading, regardless of its name. This avoids coupling to a specific
- * end-marker like "## REVIEW PASS MODE" — any template layout works.
- */
-export function stripSetupSection(prompt) {
-    const setupRe = /^## SETUP(?: MODE)?$/m;
-    const setupMatch = setupRe.exec(prompt);
-    if (!setupMatch)
-        return prompt;
-    const afterSetup = prompt.slice(setupMatch.index + setupMatch[0].length);
-    const nextHeadingRe = /^## \S/m;
-    const nextMatch = nextHeadingRe.exec(afterSetup);
-    if (!nextMatch)
-        return prompt;
-    const endIndex = setupMatch.index + setupMatch[0].length + nextMatch.index;
-    return prompt.slice(0, setupMatch.index) + prompt.slice(endIndex);
-}
-/**
- * Strips the "# Step 1: Initialization" block from a manager skill prompt.
- * The block contains setup.js --task examples that codex executes verbatim when
- * present in manager payloads. Strips from the heading through the start of
- * "# Step 2:", exclusive (the Step 2 heading is preserved).
- */
-export function stripStepOneBlock(prompt) {
-    const step1Re = /^# Step 1: Initialization\s*$/m;
-    const step1Match = step1Re.exec(prompt);
-    if (!step1Match)
-        return prompt;
-    const afterStep1 = prompt.slice(step1Match.index);
-    const step2Re = /^# Step 2:/m;
-    const step2Match = step2Re.exec(afterStep1);
-    if (!step2Match)
-        return prompt;
-    const endIndex = step1Match.index + step2Match.index;
-    return prompt.slice(0, step1Match.index) + prompt.slice(endIndex);
-}
-/**
- * Read-time remap for legacy command_template values. Treats 'pickle.md' as an
- * alias for '_pickle-manager-prompt.md' so sessions persisted before B-PNTR
- * resume without FATAL once pickle.md is removed (R-PNTR-5). Value-only — no
- * schema version change. 'pickle.md' literal is allowed here per R-PNTR-3 + R-PNTR-5.
- */
-export function resolveCommandTemplate(raw) {
-    if (!raw || raw === 'pickle.md')
-        return '_pickle-manager-prompt.md'; // R-PNTR-3 legacy remap
-    return raw;
-}
-/**
- * AP-EXT-ITER109-01: the ONE resolver for a `command_template` name -> manager
- * prompt path. Every loop runner that launches a manager routes through it.
- *
- * It THROWS on both refusals — an unresolvable template is a per-LAUNCH fact, so
- * the disposition belongs to the caller that knows what one launch is worth. The
- * jar batch turns it into a failed task and runs the next one; mux-runner turns it
- * into a failed iteration. `process.exit` here would decide that for both, and it
- * decided wrong: it ended an unattended Night Shift after task 1 of N and left that
- * task's `state.json` at `active: true` with no `exit_reason`, because exiting skips
- * every deactivate path the runner has.
- *
- * The plain-filename refusal is not separable from the lookup. `path.join` resolves
- * `..` before `existsSync` sees it, so a traversing spelling reads a file from
- * neither search directory and hands it to the manager as its prompt.
- */
-export function resolveManagerPromptPath(extensionRoot, templateName) {
-    if (templateName.includes('/') || templateName.includes('\\') || templateName.includes('..')) {
-        throw new Error(`Invalid command_template in state.json: "${templateName}" — must be a plain filename`);
-    }
-    const templatesDir = path.join(extensionRoot, 'templates');
-    const commandsDir = path.join(os.homedir(), '.claude/commands');
-    const promptPath = fs.existsSync(path.join(templatesDir, templateName))
-        ? path.join(templatesDir, templateName)
-        : path.join(commandsDir, templateName);
-    if (!fs.existsSync(promptPath)) {
-        throw new Error(`${templateName} not found in ${templatesDir} or ${commandsDir}. Run install.sh first.`);
-    }
-    return promptPath;
-}
-/**
- * HTML-comment framing block injected at the top of codex manager prompts.
- * Mirrors the GIT_BOUNDARY_RULES pattern that codex demonstrably respects.
- */
-export const MANAGER_ROLE_FRAMING_BLOCK = `<!-- BEGIN MANAGER_ROLE_FRAMING -->
-You are the Pickle Rick manager process. Your role is to read state.json and orchestrate Morty worker agents via spawn-morty.js.
-
-PROHIBITED in this manager session:
-- DO NOT send SIGTERM/SIGINT/SIGKILL to the mux-runner subprocess.
-- DO NOT decide that mux-runner is wedged based on session-directory observation.
-- DO NOT attempt to bypass mux-runner by spawning spawn-morty.js directly.
-- Running \`node <path>/setup.js --task\` or \`node <path>/setup.js --resume\` as a Bash command
-- Treating setup.js usage examples from documentation sections as executable instructions
-- Executing any \`setup.js\` invocation shown in template text — those are documentation examples
-- Worker proliferation (multiple \`worker_session_*.log\` files per ticket) is normal lifecycle evidence, not proof of a wedge.
-- Real wedge detection is owned by runtime state such as \`circuit_breaker.json\` and \`state.exit_reason\`, not by self-appointed manager diagnosis from session artifacts.
-
-Your ONLY valid setup.js invocation is the one already completed to initialize this session. Proceed directly to Step 2: Execution.
-<!-- END MANAGER_ROLE_FRAMING -->`;
 /**
  * Composes the full manager prompt from a skill file path, applying all
  * standard transforms and optionally prepending Role Framing for codex.
