@@ -484,6 +484,7 @@ export function clearTicketResolutionTimestamps(content) {
 }
 export { CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS, TICKET_TIER_BUDGETS, TIER_DIFF_ENVELOPE, TIER_LIFECYCLE, VALID_TICKET_COMPLEXITY_TIERS, VISUAL_DOMINANCE_THRESHOLD, classifyDiffVisualDominance, classifyTicketTier, getTicketTierBudgetWithOverrides, normalizeTicketComplexityTier, readPickleSettingsTierCaps, readStateTierCapOverrides, ticketInfoBudget, ticketTierBudget, } from './ticket-tier.js';
 export { DEFAULT_BOUNDED_TERMINAL_ESCAPE_CAP, DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS, DEFAULT_FAILED_FLIP_SUPPRESSION_CAP, DEFAULT_MAX_PARK_MINUTES, DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS, DEFAULT_SILENT_DEATH_RESPAWN_CAP, DEFAULT_TIER_STALL_THRESHOLD_MS, MIN_RATE_LIMIT_PROBE_INTERVAL_MS, RATE_LIMIT_PROBE_INTERVAL_ENV_VAR, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, RATE_LIMIT_PROBE_TIMEOUT_MS, TIER_STALL_THRESHOLD_ENV_VAR, TIER_STALL_THRESHOLD_FLOOR_MS, resolveCodegraphSettings, resolveHardeningSettings, resolveRateLimitProbeIntervalMs, resolveRateLimitSettings, resolveScopeSettings, resolveTierStallThresholdMs, } from './pickle-settings.js';
+// AC-P3: extracted concerns re-exported so every import path is preserved.
 export { resolveSessionPath } from './session-resolution.js';
 export { MatrixStyle, RAIN_CHARS, detectLogTruncation, drainLog, drainStreamJsonLines, latestIterationLog, matrixSeparator, } from './log-tail.js';
 export { sleepSync, withRetryLock } from './retry-lock.js';

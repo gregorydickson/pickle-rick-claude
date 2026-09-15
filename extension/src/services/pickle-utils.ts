@@ -626,6 +626,7 @@ export {
   resolveTierStallThresholdMs,
 } from './pickle-settings.js';
 
+// AC-P3: extracted concerns re-exported so every import path is preserved.
 export { resolveSessionPath } from './session-resolution.js';
 export {
   MatrixStyle,

@@ -4,7 +4,7 @@
 # If an authoring path stops emitting the backticked `<command>` exits|returns <N> form, every new ticket is
 # unguarded and nothing notices. This audit measures, over a ticket corpus, how many tickets with a non-empty
 # Acceptance Criteria section carry at least one executable assertion, and holds that figure to a recorded
-# floor. Every verdict line names the corpus it measured.
+# floor. Every verdict line names the corpus it measured (AC-P1, GitHub #26).
 #
 # Corpus precedence — DISCOVERED, never hand-listed:
 #   1. ACCEPTANCE_COVERAGE_ROOT_OVERRIDE=<dir> — scans every rick_ticket_*.md under <dir> (fixture tests).

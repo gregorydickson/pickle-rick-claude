@@ -13592,6 +13592,7 @@ async function settleTaskCompletedClaim(input) {
     runManagerTokenPostFinalMeasurement(statePath, curState.working_dir || state.working_dir || '', curState.current_ticket || 'all-tickets-done', log);
     return { kind: 'finalize' };
 }
+// AC-P2: ratcheted to <=225 code lines and complexity <=45 by structural extraction only.
 // eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 224 code lines against a ceiling of 120, and complexity 42 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize, then the iteration head, the C6 liveness watchdog and the run epilogue, then the pass opening, the pre-spawn liveness pair, the post-classification cycles and the completion-claim settle), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
