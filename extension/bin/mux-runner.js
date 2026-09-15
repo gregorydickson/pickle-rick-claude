@@ -13167,14 +13167,221 @@ function resolveTicketTransition(input) {
     catch { /* state read failed — skip transition check */ }
     return { kind: 'proceed', previousTicket, previousTicketStartCommit };
 }
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 449 code lines against a ceiling of 120, and complexity 84 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/**
+ * 08394aa1: the iteration head. Cap exits (R-ICP-1 + R-CNAR-1 part 2, R-CNAR-7 stale-cache self-heal), then the
+ * operator-set wall-clock limit — the time check only runs when no cap exit fired — then the circuit breaker gate (if CB
+ * is OPEN, exit immediately); the stall detection fallback (only when CB is disabled); the lifecycle advance; the closer
+ * terminal step.
+ */
+function resolveIterationHead(input) {
+    const { state, statePath, sessionDir, extensionRoot, cbEnabled, cbState, stallTrackers, now, log } = input;
+    const rawCurIter = Number(state.iteration);
+    const curIter = Number.isFinite(rawCurIter) ? rawCurIter : 0;
+    const limitExit = evaluateIterationCapExit(state, statePath, sessionDir, curIter, log)
+        ?? evaluateTimeLimitExit(state, statePath, curIter, log)
+        ?? exitOnOpenCircuitBreaker(cbEnabled, cbState, statePath, log);
+    if (limitExit)
+        return { kind: 'exit', exitReason: limitExit, iteration: curIter };
+    const stall = evaluateStallFallback({
+        cbEnabled, curIter, lastStateIteration: stallTrackers.lastStateIteration, stallCount: stallTrackers.stallCount,
+        state, statePath, log,
+    });
+    if (stall.halt)
+        return { kind: 'exit', exitReason: 'stall', iteration: curIter };
+    stallTrackers.stallCount = stall.stallCount;
+    stallTrackers.lastStateIteration = stall.lastStateIteration;
+    const iteration = curIter + 1;
+    const lifecycle = advanceIterationLifecycle({ state, statePath, sessionDir, iteration, now, log });
+    if (lifecycle.kind === 'exit')
+        return { kind: 'exit', exitReason: lifecycle.exitReason, iteration };
+    stallTrackers.lastProgressEpoch = lifecycle.progressEpochMs;
+    const closerStep = resolveCloserTerminalStep({ state: lifecycle.state, statePath, sessionDir, extensionRoot, iteration, log });
+    if (closerStep.kind === 'exit')
+        return { kind: 'exit', exitReason: closerStep.exitReason, iteration };
+    if (closerStep.kind === 'continue') {
+        stallTrackers.lastStateIteration = -1;
+        stallTrackers.stallCount = 0;
+        return { kind: 'continue', iteration };
+    }
+    return { kind: 'ready', iteration, curIter, state: closerStep.state, preTicket: lifecycle.preTicket };
+}
+/**
+ * C6 (B-MRSW): CPU/artifact liveness watchdog. The idle-stall watchdog keys on `lastProgressMs`, which a `/login`
+ * re-auth keeps falsely fresh; this complement keys on the worker's CPU-time delta + artifact-mtime advance (output
+ * recency is irrelevant). A worker alive but accruing <5s CPU over the window with no new artifact mtime is wedged —
+ * route to the C7 conformance-present salvage. Best-effort; never crash the loop.
+ */
+function runCpuLivenessWatchdog(input) {
+    const { state, sessionDir, idleStallThresholdSeconds, anchor, log } = input;
+    const muxNow = input.now;
+    const { cpuLivenessTicketId, cpuLivenessAnchorPid, cpuLivenessAnchorEpoch, cpuLivenessAnchorCpuSeconds, cpuLivenessAnchorMtimeMs, } = anchor;
+    try {
+        const cpuTicket = state.current_ticket ?? null;
+        const cpuWorkerPid = cpuTicket ? resolveCurrentWorkerPid(sessionDir, cpuTicket) : null;
+        // Re-anchor whenever the OBSERVED WORKER changes, not merely the ticket. The
+        // anchored quantities are ONE process's cumulative CPU-seconds and the artifact
+        // mtime at that process's first observation, but `resolveCurrentWorkerPid` returns
+        // the newest `worker_session_<pid>.log` and a single ticket spans many spawns (4
+        // distinct pids in one live ticket dir over 71 min). Anchoring on the ticket made
+        // `nowCpuSeconds - anchorCpuSeconds` subtract two unrelated processes' CPU times:
+        // `cpu(P1) > cpu(Pn)` clamps to 0 and force-salvages a healthy worker, `cpu(P1) <
+        // cpu(Pn)` reads `cpu_active` forever and blinds the watchdog to the hang it exists
+        // to catch. One identity — the pid — replaces the ticket key AND the separate lazy
+        // seed: an anchor whose CPU sample failed while a pid exists simply re-anchors.
+        if (shouldReanchorCpuLiveness({
+            ticketId: cpuTicket,
+            workerPid: cpuWorkerPid,
+            anchorTicketId: cpuLivenessTicketId,
+            anchorPid: cpuLivenessAnchorPid,
+            anchorCpuSeconds: cpuLivenessAnchorCpuSeconds,
+        })) {
+            anchor.cpuLivenessTicketId = cpuTicket;
+            anchor.cpuLivenessAnchorPid = cpuWorkerPid;
+            anchor.cpuLivenessAnchorEpoch = cpuTicket ? muxNow() : 0;
+            anchor.cpuLivenessAnchorCpuSeconds = cpuWorkerPid != null ? sampleWorkerCpuSeconds(cpuWorkerPid) : null;
+            anchor.cpuLivenessAnchorMtimeMs = cpuTicket ? latestTicketArtifactMtimeMs(sessionDir, cpuTicket) : 0;
+        }
+        else if (cpuTicket) {
+            const windowSeconds = Math.floor((muxNow() - cpuLivenessAnchorEpoch) / 1000);
+            const workerPid = cpuWorkerPid;
+            const nowCpuSeconds = workerPid != null ? sampleWorkerCpuSeconds(workerPid) : null;
+            const nowMtimeMs = latestTicketArtifactMtimeMs(sessionDir, cpuTicket);
+            // Only evaluate a full window; the anchor above guarantees both samples are the
+            // SAME pid, so the delta is one process's accrual over the window.
+            if (windowSeconds >= idleStallThresholdSeconds && cpuLivenessAnchorCpuSeconds != null && nowCpuSeconds != null) {
+                return runCpuLivenessWindow({
+                    ...input,
+                    cpuTicket,
+                    workerPid,
+                    windowSeconds,
+                    cpuSecondsDelta: nowCpuSeconds - cpuLivenessAnchorCpuSeconds,
+                    artifactMtimeAdvanced: nowMtimeMs > cpuLivenessAnchorMtimeMs,
+                });
+            }
+        }
+    }
+    catch (err) {
+        log(`cpu-liveness watchdog threw (ignored): ${safeErrorMessage(err)}`);
+    }
+    return { kind: 'proceed' };
+}
+/**
+ * 08394aa1: one full C6 window. On a CPU stall: the AC-2 working_dir fail-safe, the C7 conformance-present salvage, then
+ * self-recovery identical to the idle-stall path. Runs inside `runCpuLivenessWatchdog`'s best-effort try.
+ */
+function runCpuLivenessWindow(input) {
+    const { state, statePath, sessionDir, extensionRoot, iteration, curIter, idleStallThresholdSeconds, cbEnabled, cbState, anchor, stallTrackers, cpuTicket, workerPid, windowSeconds, log, } = input;
+    const muxNow = input.now;
+    const cpuDecision = evaluateCpuLivenessWatchdog({
+        active: state.active === true,
+        workerAlive: workerPid != null && isProcessAlive(workerPid),
+        cpuSecondsDelta: input.cpuSecondsDelta,
+        windowSeconds,
+        cpuFloorSeconds: DEFAULT_CPU_LIVENESS_FLOOR_SECONDS,
+        artifactMtimeAdvanced: input.artifactMtimeAdvanced,
+        ...cpuLivenessWaitGates(state, sessionDir, cbEnabled, cbState),
+    });
+    if (!cpuDecision.stalled)
+        return { kind: 'proceed' };
+    log(`[cpu-liveness] worker ${workerPid} alive but accrued ${cpuDecision.cpuSecondsDelta}s CPU over ${windowSeconds}s (< ${DEFAULT_CPU_LIVENESS_FLOOR_SECONDS}s) with no artifact-mtime advance — wedged at 0% CPU despite fresh output`);
+    process.stderr.write(`[mux-runner] cpu-liveness watchdog: worker ${workerPid} wedged (CPU stall) on ${cpuTicket}\n`);
+    logActivity({
+        event: 'mux_idle_stall_detected',
+        source: 'pickle',
+        session: path.basename(sessionDir),
+        iteration,
+        gate_payload: {
+            threshold_seconds: idleStallThresholdSeconds,
+            idle_seconds: windowSeconds,
+            observed_iteration: curIter,
+            current_ticket: cpuTicket,
+            step: typeof state.step === 'string' ? state.step : 'unknown',
+            liveness: 'cpu',
+            cpu_seconds_delta: cpuDecision.cpuSecondsDelta,
+            cpu_floor_seconds: DEFAULT_CPU_LIVENESS_FLOOR_SECONDS,
+        },
+    });
+    // AC-2 fail-safe: a git-mutating commit MUST have an explicit working_dir,
+    // never fall back to process.cwd() (the real repo).
+    if (!state.working_dir) {
+        recordExitReason(statePath, 'state_working_dir_missing');
+        safeDeactivate(statePath);
+        return { kind: 'exit', exitReason: 'state_working_dir_missing' };
+    }
+    // C7: salvage ONLY when the conformance-complete set is present (graded
+    // =conformance). The committer runs the armed gate TO COMPLETION (never
+    // infers from a stale artifact mtime) and commits reset-proof with an
+    // explicit completion_commit. INCOMPLETE set → DO NOT auto-commit; wait.
+    if (gradeConformanceComplete(sessionDir, cpuTicket)) {
+        routeExitPathSalvage({
+            sessionDir,
+            statePath,
+            workingDir: state.working_dir,
+            ticketId: cpuTicket,
+            extensionRoot,
+            flags: state.flags ?? null,
+            log,
+        });
+    }
+    else {
+        log(`[cpu-liveness] ticket ${cpuTicket}: conformance set INCOMPLETE — not auto-committing (waiting/escalating instead)`);
+    }
+    // Self-recover identically to the idle-stall path: re-select a pending ticket,
+    // reset the stall + progress trackers, and re-anchor the CPU window.
+    const nextPending = findNextPendingTicketId(sessionDir);
+    updateMuxLifecycleState(statePath, { currentTicket: nextPending ?? null });
+    stallTrackers.lastStateIteration = -1;
+    stallTrackers.stallCount = 0;
+    stallTrackers.lastProgressEpoch = muxNow();
+    anchor.cpuLivenessTicketId = null;
+    anchor.cpuLivenessAnchorPid = null;
+    anchor.cpuLivenessAnchorCpuSeconds = null;
+    return { kind: 'recovered' };
+}
+/**
+ * 08394aa1: the run epilogue — the terminal report and the process exit code derived from its verdict. The caller
+ * closes the phantom-Done watchers and exits with the returned code.
+ */
+function resolveMuxRunExitCode(input) {
+    const { exitReason } = input;
+    const completionVerdict = runTerminalReport(input);
+    // Bound to the verdict `runTerminalReport` already derived — NOT a second
+    // `isFailureExit(exitReason)` call. The NAME is load-bearing: the exit map is parsed
+    // out of this source by `deriveExitCodeMapFromSource`
+    // (`mux-runner-done-without-commit-evidence-exit.test.js`), which anchors the failure
+    // branch on the literal identifier `isFailedExit`.
+    const isFailedExit = completionVerdict.isFailure;
+    // Explicit exit code so parent processes (pipeline-runner) can detect failure.
+    // Matches microverse-runner.ts pattern.
+    // R-ICP-1: 'iteration_cap_exhausted' is a distinct exit code (3) so
+    // pipeline-runner can halt the pipeline instead of treating cap-without-
+    // EPIC_COMPLETED as either silent success (0) or a generic failure (1).
+    // B-GTRUTH WS-A2: 'done_without_commit_evidence' joins the cap exit on code 3 so
+    // pipeline-runner routes it through `reportPhaseIncomplete` (which consults the
+    // completion oracle to separate committed-but-unflipped from genuinely-unfinished)
+    // instead of fataling the whole pipeline over one ticket. Its own branch is
+    // REQUIRED: carrying verdict 'incomplete' rather than 'failure', it would otherwise
+    // reach the trailing success default and graduate the phase silently.
+    // (Deliberately phrased without the literal assignment text — the exit-map
+    // ordering pin in mux-runner-iteration-cap-exit.test.js locates the branches by
+    // `indexOf`, so restating them in prose here would shadow the real code sites.)
+    let exitCode;
+    if (exitReason === 'iteration_cap_exhausted')
+        exitCode = 3;
+    else if (exitReason === 'done_without_commit_evidence')
+        exitCode = 3;
+    else if (isFailedExit)
+        exitCode = 1;
+    else
+        exitCode = 0;
+    return exitCode;
+}
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 332 code lines against a ceiling of 120, and complexity 58 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize, then the iteration head, the C6 liveness watchdog and the run epilogue), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
     let cbState = initialCbState;
     let iteration = 0;
-    let lastStateIteration = -1;
-    let stallCount = 0;
     let consecutiveRateLimits = 0;
     let previousTicket = null;
     let previousTicketStartCommit = null;
@@ -13196,17 +13403,11 @@ async function runMuxRunnerMain() {
     let idleStallRecoveryCount = 0;
     // Seeded so the watchdog never trips on a fresh loop; the iteration-advance write
     // (below) always refreshes it before the watchdog reads it each pass.
-    // eslint-disable-next-line no-useless-assignment -- declaration-required seed; refreshed at iteration_start before any read
-    let lastProgressEpoch = muxNow();
-    // C6 (B-MRSW) CPU/artifact-liveness watchdog window anchors. Seeded per OBSERVED
-    // WORKER PID (not per ticket — one ticket spans many worker pids); the delta is only
-    // evaluated once the window reaches the idle-stall threshold. NOT persisted to
-    // state.json — pure loop-local liveness truth.
-    let cpuLivenessTicketId = null;
-    let cpuLivenessAnchorPid = null;
-    let cpuLivenessAnchorEpoch = 0;
-    let cpuLivenessAnchorCpuSeconds = null;
-    let cpuLivenessAnchorMtimeMs = 0;
+    const stallTrackers = { lastStateIteration: -1, stallCount: 0, lastProgressEpoch: muxNow() };
+    const cpuLivenessAnchor = {
+        cpuLivenessTicketId: null, cpuLivenessAnchorPid: null, cpuLivenessAnchorEpoch: 0,
+        cpuLivenessAnchorCpuSeconds: null, cpuLivenessAnchorMtimeMs: 0,
+    };
     const iterationZeroGates = {
         bundleBootstrapApplied: false, readinessGateChecked: false, ticketAuditGateChecked: false,
     };
@@ -13226,48 +13427,18 @@ async function runMuxRunnerMain() {
             exitReason = startStep.exitReason;
             break;
         }
-        let state = startStep.state;
-        const rawCurIter = Number(state.iteration);
-        const curIter = Number.isFinite(rawCurIter) ? rawCurIter : 0;
-        iteration = curIter;
-        // Cap exits (R-ICP-1 + R-CNAR-1 part 2, R-CNAR-7 stale-cache self-heal), then the
-        // operator-set wall-clock limit — the time check only runs when no cap exit fired —
-        // then the circuit breaker gate (if CB is OPEN, exit immediately).
-        const limitExit = evaluateIterationCapExit(state, statePath, sessionDir, curIter, log)
-            ?? evaluateTimeLimitExit(state, statePath, iteration, log)
-            ?? exitOnOpenCircuitBreaker(cbEnabled, cbState, statePath, log);
-        if (limitExit) {
-            exitReason = limitExit;
+        const head = resolveIterationHead({
+            state: startStep.state, statePath, sessionDir, extensionRoot, cbEnabled, cbState, stallTrackers, now: muxNow, log,
+        });
+        iteration = head.iteration;
+        if (head.kind === 'exit') {
+            exitReason = head.exitReason;
             break;
         }
-        // Stall detection fallback (only when CB is disabled)
-        const stall = evaluateStallFallback({ cbEnabled, curIter, lastStateIteration, stallCount, state, statePath, log });
-        if (stall.halt) {
-            exitReason = 'stall';
-            break;
-        }
-        stallCount = stall.stallCount;
-        lastStateIteration = stall.lastStateIteration;
-        iteration = curIter + 1;
-        const lifecycle = advanceIterationLifecycle({ state, statePath, sessionDir, iteration, now: muxNow, log });
-        if (lifecycle.kind === 'exit') {
-            exitReason = lifecycle.exitReason;
-            break;
-        }
-        state = lifecycle.state;
-        const preTicket = lifecycle.preTicket;
-        lastProgressEpoch = lifecycle.progressEpochMs;
-        const closerStep = resolveCloserTerminalStep({ state, statePath, sessionDir, extensionRoot, iteration, log });
-        if (closerStep.kind === 'exit') {
-            exitReason = closerStep.exitReason;
-            break;
-        }
-        if (closerStep.kind === 'continue') {
-            lastStateIteration = -1;
-            stallCount = 0;
+        if (head.kind === 'continue')
             continue;
-        }
-        state = closerStep.state;
+        const { curIter, preTicket } = head;
+        let state = head.state;
         if (previousTicket === null) {
             ({ previousTicket, previousTicketStartCommit } = seedPreviousTicket(state, sessionDir, previousTicketStartCommit));
         }
@@ -13333,7 +13504,8 @@ async function runMuxRunnerMain() {
         // current ticket / re-spawn) rather than sit silently at 0% CPU.
         {
             const idleStep = runIdleStallWatchdog({
-                state, statePath, sessionDir, extensionRoot, iteration, curIter, now: muxNow, lastProgressEpoch,
+                state, statePath, sessionDir, extensionRoot, iteration, curIter, now: muxNow,
+                lastProgressEpoch: stallTrackers.lastProgressEpoch,
                 idleStallThresholdSeconds, idleStallRecoveryCap, idleStallRecoveryCount, cbEnabled, cbState, log,
             });
             if (idleStep.kind === 'exit') {
@@ -13342,124 +13514,25 @@ async function runMuxRunnerMain() {
             }
             idleStallRecoveryCount = idleStep.idleStallRecoveryCount;
             if (idleStep.kind === 'recovered') {
-                lastStateIteration = -1;
-                stallCount = 0;
-                // eslint-disable-next-line no-useless-assignment -- kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it (dead store recorded in c87f5dfa conformance)
-                lastProgressEpoch = muxNow();
+                stallTrackers.lastStateIteration = -1;
+                stallTrackers.stallCount = 0;
+                // Kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it
+                // (dead store recorded in c87f5dfa conformance).
+                stallTrackers.lastProgressEpoch = muxNow();
                 continue;
             }
         }
-        // C6 (B-MRSW): CPU/artifact liveness watchdog. The idle-stall watchdog above keys on
-        // `lastProgressMs`, which a `/login` re-auth keeps falsely fresh; this complement keys
-        // on the worker's CPU-time delta + artifact-mtime advance (output recency is irrelevant).
-        // A worker alive but accruing <5s CPU over the window with no new artifact mtime is wedged
-        // — route to the C7 conformance-present salvage. Best-effort; never crash the loop.
-        try {
-            const cpuTicket = state.current_ticket ?? null;
-            const cpuWorkerPid = cpuTicket ? resolveCurrentWorkerPid(sessionDir, cpuTicket) : null;
-            // Re-anchor whenever the OBSERVED WORKER changes, not merely the ticket. The
-            // anchored quantities are ONE process's cumulative CPU-seconds and the artifact
-            // mtime at that process's first observation, but `resolveCurrentWorkerPid` returns
-            // the newest `worker_session_<pid>.log` and a single ticket spans many spawns (4
-            // distinct pids in one live ticket dir over 71 min). Anchoring on the ticket made
-            // `nowCpuSeconds - anchorCpuSeconds` subtract two unrelated processes' CPU times:
-            // `cpu(P1) > cpu(Pn)` clamps to 0 and force-salvages a healthy worker, `cpu(P1) <
-            // cpu(Pn)` reads `cpu_active` forever and blinds the watchdog to the hang it exists
-            // to catch. One identity — the pid — replaces the ticket key AND the separate lazy
-            // seed: an anchor whose CPU sample failed while a pid exists simply re-anchors.
-            if (shouldReanchorCpuLiveness({
-                ticketId: cpuTicket,
-                workerPid: cpuWorkerPid,
-                anchorTicketId: cpuLivenessTicketId,
-                anchorPid: cpuLivenessAnchorPid,
-                anchorCpuSeconds: cpuLivenessAnchorCpuSeconds,
-            })) {
-                cpuLivenessTicketId = cpuTicket;
-                cpuLivenessAnchorPid = cpuWorkerPid;
-                cpuLivenessAnchorEpoch = cpuTicket ? muxNow() : 0;
-                cpuLivenessAnchorCpuSeconds = cpuWorkerPid != null ? sampleWorkerCpuSeconds(cpuWorkerPid) : null;
-                cpuLivenessAnchorMtimeMs = cpuTicket ? latestTicketArtifactMtimeMs(sessionDir, cpuTicket) : 0;
-            }
-            else if (cpuTicket) {
-                const windowSeconds = Math.floor((muxNow() - cpuLivenessAnchorEpoch) / 1000);
-                const workerPid = cpuWorkerPid;
-                const nowCpuSeconds = workerPid != null ? sampleWorkerCpuSeconds(workerPid) : null;
-                const nowMtimeMs = latestTicketArtifactMtimeMs(sessionDir, cpuTicket);
-                // Only evaluate a full window; the anchor above guarantees both samples are the
-                // SAME pid, so the delta is one process's accrual over the window.
-                if (windowSeconds >= idleStallThresholdSeconds && cpuLivenessAnchorCpuSeconds != null && nowCpuSeconds != null) {
-                    const cpuDecision = evaluateCpuLivenessWatchdog({
-                        active: state.active === true,
-                        workerAlive: workerPid != null && isProcessAlive(workerPid),
-                        cpuSecondsDelta: nowCpuSeconds - cpuLivenessAnchorCpuSeconds,
-                        windowSeconds,
-                        cpuFloorSeconds: DEFAULT_CPU_LIVENESS_FLOOR_SECONDS,
-                        artifactMtimeAdvanced: nowMtimeMs > cpuLivenessAnchorMtimeMs,
-                        ...cpuLivenessWaitGates(state, sessionDir, cbEnabled, cbState),
-                    });
-                    if (cpuDecision.stalled) {
-                        log(`[cpu-liveness] worker ${workerPid} alive but accrued ${cpuDecision.cpuSecondsDelta}s CPU over ${windowSeconds}s (< ${DEFAULT_CPU_LIVENESS_FLOOR_SECONDS}s) with no artifact-mtime advance — wedged at 0% CPU despite fresh output`);
-                        process.stderr.write(`[mux-runner] cpu-liveness watchdog: worker ${workerPid} wedged (CPU stall) on ${cpuTicket}\n`);
-                        logActivity({
-                            event: 'mux_idle_stall_detected',
-                            source: 'pickle',
-                            session: path.basename(sessionDir),
-                            iteration,
-                            gate_payload: {
-                                threshold_seconds: idleStallThresholdSeconds,
-                                idle_seconds: windowSeconds,
-                                observed_iteration: curIter,
-                                current_ticket: cpuTicket,
-                                step: typeof state.step === 'string' ? state.step : 'unknown',
-                                liveness: 'cpu',
-                                cpu_seconds_delta: cpuDecision.cpuSecondsDelta,
-                                cpu_floor_seconds: DEFAULT_CPU_LIVENESS_FLOOR_SECONDS,
-                            },
-                        });
-                        // AC-2 fail-safe: a git-mutating commit MUST have an explicit working_dir,
-                        // never fall back to process.cwd() (the real repo).
-                        if (!state.working_dir) {
-                            recordExitReason(statePath, 'state_working_dir_missing');
-                            safeDeactivate(statePath);
-                            exitReason = 'state_working_dir_missing';
-                            break;
-                        }
-                        // C7: salvage ONLY when the conformance-complete set is present (graded
-                        // =conformance). The committer runs the armed gate TO COMPLETION (never
-                        // infers from a stale artifact mtime) and commits reset-proof with an
-                        // explicit completion_commit. INCOMPLETE set → DO NOT auto-commit; wait.
-                        if (gradeConformanceComplete(sessionDir, cpuTicket)) {
-                            routeExitPathSalvage({
-                                sessionDir,
-                                statePath,
-                                workingDir: state.working_dir,
-                                ticketId: cpuTicket,
-                                extensionRoot,
-                                flags: state.flags ?? null,
-                                log,
-                            });
-                        }
-                        else {
-                            log(`[cpu-liveness] ticket ${cpuTicket}: conformance set INCOMPLETE — not auto-committing (waiting/escalating instead)`);
-                        }
-                        // Self-recover identically to the idle-stall path: re-select a pending ticket,
-                        // reset the stall + progress trackers, and re-anchor the CPU window.
-                        const nextPending = findNextPendingTicketId(sessionDir);
-                        updateMuxLifecycleState(statePath, { currentTicket: nextPending ?? null });
-                        lastStateIteration = -1;
-                        stallCount = 0;
-                        lastProgressEpoch = muxNow();
-                        cpuLivenessTicketId = null;
-                        cpuLivenessAnchorPid = null;
-                        cpuLivenessAnchorCpuSeconds = null;
-                        continue;
-                    }
-                }
-            }
+        // C6 (B-MRSW): CPU/artifact liveness watchdog — best-effort, never crashes the loop (see runCpuLivenessWatchdog).
+        const cpuStep = runCpuLivenessWatchdog({
+            state, statePath, sessionDir, extensionRoot, iteration, curIter, now: muxNow, idleStallThresholdSeconds,
+            cbEnabled, cbState, anchor: cpuLivenessAnchor, stallTrackers, log,
+        });
+        if (cpuStep.kind === 'exit') {
+            exitReason = cpuStep.exitReason;
+            break;
         }
-        catch (err) {
-            log(`cpu-liveness watchdog threw (ignored): ${safeErrorMessage(err)}`);
-        }
+        if (cpuStep.kind === 'recovered')
+            continue;
         // Per-spawn codegraph staleness sync (fail-open — bounded by sync_timeout_ms in the service).
         await codegraph.syncIfStale();
         // 90574654 iteration window + R-WSWA-2 per-ticket artifact count, both taken BEFORE the worker spawn.
@@ -13487,8 +13560,9 @@ async function runMuxRunnerMain() {
             iteration, apTicketId, apBeforeCount, apCreditEarlyPhases, log,
         });
         if (postSpawn.exitCommitProgressMs !== null) {
-            // eslint-disable-next-line no-useless-assignment -- kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it (dead store recorded in 72817af8 conformance)
-            lastProgressEpoch = postSpawn.exitCommitProgressMs;
+            // Kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it
+            // (dead store recorded in 72817af8 conformance).
+            stallTrackers.lastProgressEpoch = postSpawn.exitCommitProgressMs;
             // L2: a committed deliverable is genuine forward progress — reset the streak.
             idleStallRecoveryCount = 0;
         }
@@ -13524,8 +13598,8 @@ async function runMuxRunnerMain() {
                 break;
             }
             if (wmwStep.resetStall) {
-                lastStateIteration = -1;
-                stallCount = 0;
+                stallTrackers.lastStateIteration = -1;
+                stallTrackers.stallCount = 0;
             }
             emitWastedIterOnce();
             continue;
@@ -13594,8 +13668,8 @@ async function runMuxRunnerMain() {
             else if (timeoutStep.kind === 'recovered') {
                 timeoutCount = 0;
                 lastTimeoutTicket = null;
-                lastStateIteration = -1;
-                stallCount = 0;
+                stallTrackers.lastStateIteration = -1;
+                stallTrackers.stallCount = 0;
                 continue;
             }
             else {
@@ -13629,8 +13703,8 @@ async function runMuxRunnerMain() {
                 // Reset stall counter so the recovery iteration isn't immediately
                 // killed by the no-progress detector — the manager IS making progress
                 // (we just disagree about whether it's done).
-                lastStateIteration = -1;
-                stallCount = 0;
+                stallTrackers.lastStateIteration = -1;
+                stallTrackers.stallCount = 0;
                 await sleep(1000);
                 continue;
             }
@@ -13667,8 +13741,8 @@ async function runMuxRunnerMain() {
             // case rather than adding a new guard to detect it downstream.
             if (!finalizeResult.finalized) {
                 log(`Task completed claim refused (${finalizeResult.reason}) — a ticket remains unfinished; continuing instead of exiting.`);
-                lastStateIteration = -1;
-                stallCount = 0;
+                stallTrackers.lastStateIteration = -1;
+                stallTrackers.stallCount = 0;
                 await sleep(1000);
                 continue;
             }
@@ -13693,8 +13767,8 @@ async function runMuxRunnerMain() {
                 // with the named disposition just stamped to state.json.
                 if (!finalizeResult.finalized) {
                     log(`Review clean claim refused (${finalizeResult.reason}) — a ticket remains unfinished; continuing instead of exiting.`);
-                    lastStateIteration = -1;
-                    stallCount = 0;
+                    stallTrackers.lastStateIteration = -1;
+                    stallTrackers.stallCount = 0;
                     await sleep(1000);
                     continue;
                 }
@@ -13719,49 +13793,14 @@ async function runMuxRunnerMain() {
             break;
         }
         if (managerStep) {
-            lastStateIteration = -1;
-            stallCount = 0;
+            stallTrackers.lastStateIteration = -1;
+            stallTrackers.stallCount = 0;
         }
         await sleep(1000);
     }
-    const completionVerdict = runTerminalReport({
-        codegraph,
-        sessionDir,
-        statePath,
-        exitReason,
-        iteration,
-        totalElapsed: Math.floor((Date.now() - startTime) / 1000),
-        log,
+    const exitCode = resolveMuxRunExitCode({
+        codegraph, sessionDir, statePath, exitReason, iteration, totalElapsed: Math.floor((Date.now() - startTime) / 1000), log,
     });
-    // Bound to the verdict `runTerminalReport` already derived — NOT a second
-    // `isFailureExit(exitReason)` call. The NAME is load-bearing: the exit map is parsed
-    // out of this source by `deriveExitCodeMapFromSource`
-    // (`mux-runner-done-without-commit-evidence-exit.test.js`), which anchors the failure
-    // branch on the literal identifier `isFailedExit`.
-    const isFailedExit = completionVerdict.isFailure;
-    // Explicit exit code so parent processes (pipeline-runner) can detect failure.
-    // Matches microverse-runner.ts pattern.
-    // R-ICP-1: 'iteration_cap_exhausted' is a distinct exit code (3) so
-    // pipeline-runner can halt the pipeline instead of treating cap-without-
-    // EPIC_COMPLETED as either silent success (0) or a generic failure (1).
-    // B-GTRUTH WS-A2: 'done_without_commit_evidence' joins the cap exit on code 3 so
-    // pipeline-runner routes it through `reportPhaseIncomplete` (which consults the
-    // completion oracle to separate committed-but-unflipped from genuinely-unfinished)
-    // instead of fataling the whole pipeline over one ticket. Its own branch is
-    // REQUIRED: carrying verdict 'incomplete' rather than 'failure', it would otherwise
-    // reach the trailing success default and graduate the phase silently.
-    // (Deliberately phrased without the literal assignment text — the exit-map
-    // ordering pin in mux-runner-iteration-cap-exit.test.js locates the branches by
-    // `indexOf`, so restating them in prose here would shadow the real code sites.)
-    let exitCode;
-    if (exitReason === 'iteration_cap_exhausted')
-        exitCode = 3;
-    else if (exitReason === 'done_without_commit_evidence')
-        exitCode = 3;
-    else if (isFailedExit)
-        exitCode = 1;
-    else
-        exitCode = 0;
     closePhantomDoneWatchers();
     process.exit(exitCode);
 }
