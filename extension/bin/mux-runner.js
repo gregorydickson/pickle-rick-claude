@@ -10347,7 +10347,7 @@ async function main() {
         process.stderr.write(`${schemaDrift}\n`);
         process.exit(1);
     }
-    await runMuxRunnerMain();
+    await runMuxRunnerMain(MUX_RUNNER_MAIN_DEPS);
 }
 /**
  * The ONE predicate for "this status may be RESTORED to a ticket by a phantom-Done
@@ -13639,10 +13639,16 @@ async function parkRefusedCompletionClaim(claimLabel, reason, stallTrackers, log
 export function muxEpicFinalizeScan(sessionDir, ...workingDirs) {
     return () => muxBundleScan(sessionDir, workingDirs.find(Boolean) || '');
 }
+/** R2b: the production seam values — the same functions and the same `process.exit` the loop called before the seam. */
+export const MUX_RUNNER_MAIN_DEPS = { runIteration, sleep, exit: (code) => process.exit(code) };
+/** R2b: drives the real mux loop with caller-supplied seams, so tests can observe its dispositions (the loop stays unexported). */
+export function driveMuxRunnerMain(deps) {
+    return runMuxRunnerMain(deps);
+}
 // AC-Q3: preskip advance, refused-finalize park and epic finalize scan extracted as structural moves.
 // AC-P2: ratcheted to <=217 code lines and complexity <=38 by structural extraction only.
 // eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 217 code lines against a ceiling of 120, and complexity 38 against a ceiling of 15. B-ZERO Q3 could not delete this carve-out inside its fence: tests/szechuan-sauce.test.js M4-2/M4-3 assert this function is still over the size ceiling, and the refused-finalize, preskip and timeout-halt source pins keep their loop continue/break statements inline here; a follow-up must scope those tests. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize, then the iteration head, the C6 liveness watchdog and the run epilogue, then the pass opening, the pre-spawn liveness pair, the post-classification cycles and the completion-claim settle), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
-async function runMuxRunnerMain() {
+async function runMuxRunnerMain({ runIteration, sleep, exit }) {
     const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
     const { cbSettings, cbEnabled, initialCbState, cbPath, runnerMaxTurns, rateLimitWaitMinutes, maxRateLimitRetries, maxParkMinutes, startTime, commitPendingProbeThreshold, idleStallThresholdSeconds, idleStallRecoveryCap, } = loadMuxLoopSettings(extensionRoot, sessionDir);
     let cbState = initialCbState;
@@ -13909,7 +13915,7 @@ async function runMuxRunnerMain() {
         codegraph, sessionDir, statePath, exitReason, iteration, totalElapsed: Math.floor((Date.now() - startTime) / 1000), log,
     });
     closePhantomDoneWatchers();
-    process.exit(exitCode);
+    exit(exitCode);
 }
 export function deriveCompletionVerdict(exitReason) {
     const isFailure = isFailureExit(exitReason);
