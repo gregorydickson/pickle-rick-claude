@@ -74,70 +74,61 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-14 15:05Z. **v2.1.0-beta.29 SHIPPED.** Read this FIRST.
+## 🚢 SESSION HANDOFF — 2026-09-15 01:05Z. **v2.1.0-beta.31 SHIPPED.** Read this FIRST.
 
-**Four releases in four days.** beta.26 the verdict layer's DISPOSITIONS · beta.27 the MEASUREMENTS it
-consumes · beta.28 the recorded ceiling made ENFORCEABLE · beta.29 the LEDGER that tracks it all.
+**Six releases in six days.** beta.26 dispositions · beta.27 measurements · beta.28 the enforceable
+ceiling · beta.29 the self-probing ledger · beta.30 every open bug · beta.31 the producer/consumer shape.
 
 | | |
 |---|---|
-| tag | **v2.1.0-beta.29** → `1f7bd9b5`, verified EQUAL to the branch sha (rc 0) |
-| gate | **21 legs**, all rc 0 · fast **9905** `failures=0 runs 5/5` · soak genuinely **1803.8s** |
-| run | 4/4 phases, 277m40s. szechuan degraded honestly (finalize-gate passed, phase incomplete, success withheld). **Pickle boundary CLEAN — no disposition.** |
-| backlog | **#24 closed.** Open: **#25** (exit-reason mislabel) + #5 (enhancement) |
+| tag | **v2.1.0-beta.31** → `b7e830f0`, verified EQUAL to the branch sha |
+| gate | **22 legs**, all rc 0 · fast **9940** `failures=0 runs 5/5` |
+| run | 4/4 phases, 60m36s, `completed`, **no dispositions** — THIRD consecutive success verdict |
+| backlog | **#26** (new, filed from measurement) + **R-ORSR-2** (open by design) + #5 (enhancement) |
 
-### What shipped — [[B-PROBE]], 4 roots → 5 tickets, 5/5 Done
+### 🎯 THE OPERATOR'S OPEN DECISION — 2.1.0 GA
 
-- **N1** every `OPEN BUG`/`TOP ITEM` row carries a runnable PROBE; `audit-ledger-probes.sh` runs them in
-  the gate. A row marked open that reports FIXED reds the build; a row with NO probe reds it too.
-- **N2** (#24) ledger entry size is a STRUCTURED field, no longer recovered from judge prose.
-- **N3** `runMuxRunnerMain` **892 → 449 code lines, complexity 173 → 84**, two staged extractions.
-- **N4** sweep finished; three-way consistency check reads **2 / 2 / 2** (stated, audit-confirmed, raw
-  headings).
+The operator asked whether this line can drop `-beta`. **My earlier objection was partly wrong and is
+withdrawn:** I framed "2 of 7 runs succeeded" as instability. The right measure is phases completed
+unattended, and the GA criterion is *all-tier autonomy soaked*. Measured: **the last six runs all
+completed 4/4**, and a `failed` status among them is an honest verdict withholding, which is the
+designed behaviour. I also invented a "must run on a foreign repo" requirement the written criteria do
+not contain.
 
-### 📉 THE RATCHET, THREE BUNDLES IN
+**What legitimately remains, and it is small:** the bug queue is not zero. `R-ORSR-2` is narrowed but
+open by design, and **#26** says the gate meant to watch its coverage is inert.
 
-| | lines | complexity |
+**GA criterion 6 is the path the repo already wrote:** a release note recording "the remaining known
+manual-recovery limits — so GA does not over-promise stability the recovery ladder cannot yet meet."
+Shipping GA with those two limits NAMED is defensible; shipping it silently is not. **The call is the
+operator's and is still open.**
+
+### ⚠ #26 — the coverage gate cannot see what it watches (filed this pass)
+
+`audit-acceptance-assertion-coverage.sh` scans the **git index**. All 38 tracked `rick_ticket_*.md`
+files are hand-written fixtures under `extension/tests/fixtures/`. The tickets it is *about* are written
+to session dirs at runtime and are never scanned, so the fraction it ratchets **cannot move when an
+authoring path changes** — the regression it exists to detect.
+
+| corpus | AC sections | guarded |
 |---|---|---|
-| beta.27 (recorded, unenforced) | 1690 | 366 |
-| beta.28 | 892 | 173 |
-| **beta.29** | **449** | **84** |
+| git index (what it scans) | 8 | **1** |
+| live session output (what it is about) | 11 | **7** |
 
-Ceilings are 120 and 15. Each step bounded, behaviour-preserving, and verified against the RECORDED
-figure by `audit-recorded-ceilings.sh` rather than against a claim. **Next step: 449 → ~225.**
+The script already accepts `ACCEPTANCE_COVERAGE_ROOT_OVERRIDE`; nothing sets it. **Falsifying test for
+the fix:** break an authoring path's emitted form and assert the fraction moves.
 
-### ⚠ WHY THE LEDGER ROTS — measured, not estimated
-
-Sweeping six open rows found **FOUR already fixed**. The documented estimate was one in three. Three
-releases in three days closed defects faster than the ledger recorded them, and a row's `OPEN` label
-means only that nobody re-read it.
-
-**The worked example, and the reason N1 demands a BEHAVIOUR probe:** B-OFFREPO's row named
-`path.join(args.workingDir, 'extension')` as its defect. **That literal is still in the source today.**
-Reading the row says OPEN. Grepping the string says OPEN. Only reading the BRANCH shows it is now a
-repo-shape discriminator routing to `runOffRepoWorkerGate`. **A string is not a mechanism.**
-
-### 🔁 MY OWN INSTRUMENT HAD THE BUG, AND THE FIX PROVED ITSELF
-
-The gate runner used through beta.27 carried a **hardcoded audit list** and silently dropped each newly
-added audit. Fixed in beta.28 to DERIVE the list from the canonical command. **This release's gate ran
-21 legs, not 20** — it picked up N1's brand-new `audit-ledger-probes` automatically. The fix
-demonstrating itself one release later is the cleanest evidence available that deriving beats listing.
+**Correction:** the `5 of 8` in the beta.30 note was a WHOLE-FILE grep over live sessions. Section-scoped
+as the extractor reads it, on the grown corpus, it is **7 of 11**.
 
 ### Open, in priority order
 
-1. **[[#25]] — an ITERATION metric failure is stamped `baseline_unmeasurable_unrecoverable`.** This run
-   logged `LLM baseline metric: 3` at 12:18 and failed an ITERATION at 12:30; the exit reason blamed the
-   baseline. One shared `mapJudgeMeasurementFailure`, two call sites in different phases
-   (`measureLlmBaseline` :4098, `measureLlmIteration` :4445), every result named after ONE of them.
-   **Consequence for this file: every earlier run recorded under `baseline_unmeasurable_*` — B-MEGADRAIN
-   included — has a SUSPECT attribution.** Renaming touches the persisted `ExitReason` schema, so it
-   needs legacy-value migration.
-2. **Ratchet 449 → ~225.** The audit fails in both directions, so the record cannot drift.
-3. **M4 still UNPROVEN in the field.** The judge's inputs are correct (zero stale 50-line claims; the
-   principles doc states 120 code lines + the counting method) but no run has yet contained a function
-   between 50 and 120 code lines to exercise it. **Do not close it mentally.**
-4. **#5** — enhancement, read before the next redesign decision.
+1. **#26** — an inert gate on the release path will look more reassuring the longer it runs.
+2. **R-ORSR-2** — open BY DESIGN. Do NOT close it by backticking its probe fixture; that hides the gap.
+   Real closure is an authoring guarantee or an explicit decision to accept partial coverage and say so.
+3. **2.1.0 GA** — operator decision, evidence summarised above.
+4. **#5** — enhancement. The bug queue has to settle first.
+5. Ratchet `runMuxRunnerMain` 449 → ~225; the recorded-ceiling audit fails in both directions.
 
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
