@@ -14,10 +14,10 @@
 // secondary `maybeStampPhaseGraduation` safety net, whose `reportPhaseIncomplete`
 // cause line is the AC-D2' part-1 defect this same ticket fixes.
 //
-// `runMuxRunnerMain` is not exported (see the `mux-runner-done-without-commit-
-// evidence-exit.test.js` REPORTED GAP and `post-final-verdict-oracle.test.js`'s
-// identical pattern) — this is a source-shape conformance pin against the LIVE
-// branch, distinguished from the dead `ctx.log(...)` `processTaskCompleted`/
+// The loop is drivable in-process through `driveMuxRunnerMain` (see the
+// `mux-runner-done-without-commit-evidence-exit.test.js` REPORTED GAP), but this
+// file predates that seam and stays a source-shape conformance pin against the
+// LIVE branch, distinguished from the dead `ctx.log(...)` `processTaskCompleted`/
 // `processCompletionBranch` siblings (zero production callers — see the "loop
 // helpers extracted, never wired" trap door in extension/CLAUDE.md) by excluding
 // any `.`-qualified log receiver.
