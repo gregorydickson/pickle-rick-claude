@@ -4,8 +4,9 @@ import * as path from 'path';
 import * as os from 'os';
 import { StringDecoder } from 'string_decoder';
 import { VALID_STEPS, LockError, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
-import { StateManager, isProcessAlive, inspectLockFile, stealLockFile, acquireLockFile, releaseLockFile, isDeadPidPayload, withStealRight } from './state-manager.js';
+import { StateManager, inspectLockFile, stealLockFile, acquireLockFile, releaseLockFile, isDeadPidPayload, withStealRight } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
+import { MAX_FUTURE_RECENCY_DRIFT_MS, readSessionsMapFallback, resolveSessionPath, selectScannedSessionPath } from './session-resolution.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
 import { isRecord } from '../lib/is-record.js';
 import { normalizeTicketComplexityTier } from './ticket-tier.js';
@@ -483,6 +484,7 @@ export function clearTicketResolutionTimestamps(content) {
 }
 export { CLASSIFIER_EXPENSIVE_VERIFY_KEYWORDS, TICKET_TIER_BUDGETS, TIER_DIFF_ENVELOPE, TIER_LIFECYCLE, VALID_TICKET_COMPLEXITY_TIERS, VISUAL_DOMINANCE_THRESHOLD, classifyDiffVisualDominance, classifyTicketTier, getTicketTierBudgetWithOverrides, normalizeTicketComplexityTier, readPickleSettingsTierCaps, readStateTierCapOverrides, ticketInfoBudget, ticketTierBudget, } from './ticket-tier.js';
 export { DEFAULT_BOUNDED_TERMINAL_ESCAPE_CAP, DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS, DEFAULT_FAILED_FLIP_SUPPRESSION_CAP, DEFAULT_MAX_PARK_MINUTES, DEFAULT_RATE_LIMIT_PROBE_INTERVAL_MS, DEFAULT_SILENT_DEATH_RESPAWN_CAP, DEFAULT_TIER_STALL_THRESHOLD_MS, MIN_RATE_LIMIT_PROBE_INTERVAL_MS, RATE_LIMIT_PROBE_INTERVAL_ENV_VAR, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, RATE_LIMIT_PROBE_TIMEOUT_MS, TIER_STALL_THRESHOLD_ENV_VAR, TIER_STALL_THRESHOLD_FLOOR_MS, resolveCodegraphSettings, resolveHardeningSettings, resolveRateLimitProbeIntervalMs, resolveRateLimitSettings, resolveScopeSettings, resolveTierStallThresholdMs, } from './pickle-settings.js';
+export { resolveSessionPath } from './session-resolution.js';
 export function loadPickleSettingsBag(extensionRoot = getExtensionRoot()) {
     try {
         const settingsPath = path.join(extensionRoot, 'pickle_settings.json');
@@ -1041,133 +1043,6 @@ function commitPrunedSessionMap(sessionsMapPath, survivors) {
         }
         catch { /* ignore */ }
         return false;
-    }
-}
-/**
- * Extracts the session path from a session map entry.
- * Handles both the legacy string format and the current object format ({ sessionPath, pid })
- * for backward compatibility with existing current_sessions.json files.
- */
-export function resolveSessionPath(entry) {
-    if (typeof entry === 'string')
-        return entry;
-    if (entry !== null && typeof entry === 'object' && typeof entry.sessionPath === 'string') {
-        return entry.sessionPath;
-    }
-    return '';
-}
-function sameWorkingDir(a, b) {
-    return typeof a === 'string' && path.resolve(a) === path.resolve(b);
-}
-const MAX_FUTURE_RECENCY_DRIFT_MS = 5 * 60 * 1000;
-function readSessionLookupState(sessionPath) {
-    try {
-        const statePath = path.join(sessionPath, 'state.json');
-        const recovered = readRecoverableJsonObject(statePath);
-        if (!recovered || typeof recovered !== 'object' || Array.isArray(recovered))
-            return null;
-        let stateMtimeMs = 0;
-        try {
-            stateMtimeMs = fs.statSync(statePath).mtimeMs;
-        }
-        catch { /* state may still be absent after failed promotion */ }
-        return {
-            active: recovered.active,
-            working_dir: recovered.working_dir,
-            started_at: recovered.started_at,
-            pid: recovered.pid,
-            state_mtime_ms: stateMtimeMs,
-        };
-    }
-    catch {
-        return null;
-    }
-}
-function hasParseableStartedAt(state) {
-    return typeof state.started_at === 'string'
-        && Number.isFinite(new Date(state.started_at).getTime());
-}
-function getSessionRecencyMs(state) {
-    if (typeof state.started_at === 'string') {
-        const startedAtMs = new Date(state.started_at).getTime();
-        const maxTrustedFutureMs = Date.now() + MAX_FUTURE_RECENCY_DRIFT_MS;
-        if (Number.isFinite(startedAtMs) && startedAtMs <= maxTrustedFutureMs) {
-            return startedAtMs;
-        }
-    }
-    return state.state_mtime_ms ?? 0;
-}
-/** True when state has a finite-integer pid whose process is provably dead. */
-function isDeadPidState(state) {
-    const pidNum = typeof state.pid === 'number' ? state.pid : Number(state.pid);
-    return Number.isInteger(pidNum) && !isProcessAlive(pidNum);
-}
-function preferNewerSession(best, candidate) {
-    if (!best)
-        return candidate;
-    if (candidate.recencyMs !== best.recencyMs) {
-        return candidate.recencyMs > best.recencyMs ? candidate : best;
-    }
-    // Recency tie: a stamped started_at is stronger evidence than coarse mtime.
-    if (candidate.hasStartedAt !== best.hasStartedAt) {
-        return candidate.hasStartedAt ? candidate : best;
-    }
-    // Both/neither stamped and recency still ties: keep the incumbent (stable,
-    // first-seen-wins on iteration order). No lexical path tie-break.
-    return best;
-}
-function selectScannedSessionPath(sessionPaths, cwd, requireActive) {
-    let activeMatch = null;
-    let inactiveMatch = null;
-    for (const sessionPath of sessionPaths) {
-        const state = readSessionLookupState(sessionPath);
-        if (!state)
-            continue;
-        if (!sameWorkingDir(state.working_dir, cwd))
-            continue;
-        const candidate = {
-            sessionPath,
-            recencyMs: getSessionRecencyMs(state),
-            hasStartedAt: hasParseableStartedAt(state),
-        };
-        // A dead-pid (finite pid && !isProcessAlive) active session is demoted out
-        // of activeMatch — a no-pid / non-finite-pid active session stays a live
-        // candidate because we cannot prove it dead.
-        if (state.active === true && !isDeadPidState(state)) {
-            activeMatch = preferNewerSession(activeMatch, candidate);
-            continue;
-        }
-        if (!requireActive) {
-            inactiveMatch = preferNewerSession(inactiveMatch, candidate);
-        }
-    }
-    return activeMatch?.sessionPath ?? inactiveMatch?.sessionPath ?? '';
-}
-function resolveMappedSessionForCwd(map, cwd, requireActive) {
-    const mappedPath = resolveSessionPath(map[cwd]);
-    if (!mappedPath || !fs.existsSync(mappedPath))
-        return '';
-    const state = readSessionLookupState(mappedPath);
-    if (!state) {
-        return requireActive ? '' : mappedPath;
-    }
-    if (sameWorkingDir(state.working_dir, cwd)) {
-        if (state.active === true)
-            return mappedPath;
-        return requireActive ? '' : mappedPath;
-    }
-    if (!requireActive && (state.working_dir == null || state.working_dir === '')) {
-        return mappedPath;
-    }
-    return '';
-}
-function readSessionsMapFallback(sessionsMapPath, cwd, requireActive) {
-    try {
-        const map = readRecoverableJsonObject(sessionsMapPath);
-        return map ? resolveMappedSessionForCwd(map, cwd, requireActive) ?? '' : '';
-    }
-    catch {
-        return '';
     }
 }
 /**
