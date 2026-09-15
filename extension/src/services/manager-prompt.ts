@@ -108,7 +108,7 @@ Your ONLY valid setup.js invocation is the one already completed to initialize t
 <!-- END MANAGER_ROLE_FRAMING -->`;
 
 /**
- * R1: single source for the executable acceptance-assertion worked example
+ * AC-R1: single source for the executable acceptance-assertion worked example
  * (`` `<cmd>` exits|returns <N> ``, parsed by EXECUTABLE_ASSERTION_RE in mux-runner.ts). Resolved into the
  * Phase 2 ticket-authoring template by `composeManagerPromptFromSkill` via the
  * `${ACCEPTANCE_CRITERIA_GUIDANCE}` placeholder, mirroring the existing `${EXTENSION_ROOT}` substitution.
