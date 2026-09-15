@@ -13676,10 +13676,9 @@ function snapshotPreSpawnIteration(
 
 /**
  * Post-spawn bookkeeping, in the loop's original order: R-MWIS-3 exit-path salvage, the AC-A5
- * no-progress-increment suppression probe, then the R-WSWA-2 artifact-progress record. The
- * caller keeps the AC-2 `working_dir` fail-safe (it breaks the main loop) and applies the
- * idle-stall resets; `exitCommitProgressMs` is the forward-progress epoch captured at the
- * point the salvage reported a commit, or null when it did not.
+ * no-progress-increment suppression probe, the R-WSWA-2 artifact-progress record, then the L2
+ * idle-stall resets on genuine forward progress. The caller keeps the AC-2 `working_dir`
+ * fail-safe (it breaks the main loop); the idle-stall recovery count travels in and back out.
  */
 function recordPostSpawnWorkerProgress(input: {
   sessionDir: string;
@@ -13693,8 +13692,10 @@ function recordPostSpawnWorkerProgress(input: {
   apTicketId: string | null;
   apBeforeCount: number;
   apCreditEarlyPhases: boolean;
+  stallTrackers: MuxStallTrackers;
+  idleStallRecoveryCount: number;
   log: (msg: string) => void;
-}): { exitCommitProgressMs: number | null; apProgressResult: ReturnType<typeof recordWorkerArtifactProgress> | null } {
+}): { apProgressResult: ReturnType<typeof recordWorkerArtifactProgress> | null; idleStallRecoveryCount: number } {
   const { sessionDir, statePath, state, extensionRoot, iteration, apTicketId, apBeforeCount, log } = input;
   let exitCommitProgressMs: number | null = null;
   try {
@@ -13747,7 +13748,18 @@ function recordPostSpawnWorkerProgress(input: {
       suppressIncrement: apSuppressIncrement,
     });
   } catch { /* best-effort observability — never block iteration on progress tracking */ }
-  return { exitCommitProgressMs, apProgressResult };
+  let idleStallRecoveryCount = input.idleStallRecoveryCount;
+  if (exitCommitProgressMs !== null) {
+    // Kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it
+    // (dead store recorded in 72817af8 conformance).
+    input.stallTrackers.lastProgressEpoch = exitCommitProgressMs;
+    // L2: a committed deliverable is genuine forward progress — reset the streak.
+    idleStallRecoveryCount = 0;
+  }
+  // L2: a worker that produced NEW artifacts (non-zero delta) made genuine
+  // progress — reset the consecutive idle-stall recovery streak.
+  if (apProgressResult && apProgressResult.zeroProgressCount === 0) idleStallRecoveryCount = 0;
+  return { apProgressResult, idleStallRecoveryCount };
 }
 
 /**
@@ -16022,7 +16034,297 @@ function resolveMuxRunExitCode(input: RunTerminalReportInput): number {
   return exitCode;
 }
 
-// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 332 code lines against a ceiling of 120, and complexity 58 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize, then the iteration head, the C6 liveness watchdog and the run epilogue), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
+/** e9ef71c7: the loop-local rate-limit and FR-B3/B4 per-ticket timeout counters — non-persisted, reset on runner restart. */
+interface MuxLoopCounters {
+  consecutiveRateLimits: number;
+  timeoutCount: number;
+  lastTimeoutTicket: string | null;
+  /** Artifact-progress snapshot for the R-WTB-A1 no-progress window check. */
+  lastArtifactProgressSnapshot: ArtifactProgressSnapshot;
+}
+
+/** e9ef71c7: the loop-local trackers `runMuxRunnerMain` carries across passes, seeded exactly as the loop seeded them. */
+function createMuxLoopTrackers(now: () => number): {
+  commitPendingTracker: { lastProgressOuterIteration: number; lastObservedStateIteration: number };
+  stallTrackers: MuxStallTrackers;
+  cpuLivenessAnchor: CpuLivenessAnchor;
+  iterationZeroGates: IterationZeroGateLatches;
+  toolchainPreflight: { checked: boolean };
+  counters: MuxLoopCounters;
+} {
+  return {
+    counters: {
+      consecutiveRateLimits: 0, timeoutCount: 0, lastTimeoutTicket: null,
+      lastArtifactProgressSnapshot: { latestMtimeEpoch: 0, latestCommitSha: null },
+    },
+    // Commit-pending probe: track the last outer-loop iteration where state.iteration
+    // advanced. Used to detect stagnation independently of the circuit breaker (the
+    // probe runs whether CB is enabled or not).
+    commitPendingTracker: { lastProgressOuterIteration: 0, lastObservedStateIteration: -1 },
+    // R-MWIS-2: lastProgressEpoch is bumped on every forward-progress marker. Seeded so the watchdog never trips on a
+    // fresh loop; the iteration-advance write always refreshes it before the watchdog reads it each pass.
+    stallTrackers: { lastStateIteration: -1, stallCount: 0, lastProgressEpoch: now() },
+    cpuLivenessAnchor: {
+      cpuLivenessTicketId: null, cpuLivenessAnchorPid: null, cpuLivenessAnchorEpoch: 0,
+      cpuLivenessAnchorCpuSeconds: null, cpuLivenessAnchorMtimeMs: 0,
+    },
+    iterationZeroGates: { bundleBootstrapApplied: false, readinessGateChecked: false, ticketAuditGateChecked: false },
+    // WS-2c (R-PFNT): one-time target-toolchain pre-flight latch. Set after the first
+    // pass so the cheap missing-node_modules probe runs ONCE per run, not per-iteration.
+    toolchainPreflight: { checked: false },
+  };
+}
+
+/**
+ * e9ef71c7: how a pass opens. `exit` ends the loop and `continue` starts the next pass, both carrying the iteration the
+ * loop held at that point; `ready` hands the loop this pass's state and the previous-ticket pair it carries forward.
+ */
+type IterationPassStep =
+  | { kind: 'exit'; exitReason: ExitReason; iteration: number }
+  | { kind: 'continue'; iteration: number }
+  | {
+    kind: 'ready';
+    iteration: number;
+    curIter: number;
+    state: State;
+    previousTicket: string | null;
+    previousTicketStartCommit: string | null;
+  };
+
+/**
+ * e9ef71c7: the pass opening, in the loop's original order — the start-of-pass state read (a retryable read failure
+ * sleeps 1s), the iteration head, the first-pass previous-ticket seed, R-CCPM-3 orphan-session detection at the
+ * iteration boundary, the iteration_start log + event, the orphan worker-proc reap and the finished-roster exit.
+ */
+async function openIterationPass(input: {
+  statePath: string;
+  sessionDir: string;
+  extensionRoot: string;
+  toolchainPreflight: { checked: boolean };
+  cbEnabled: boolean;
+  cbState: CircuitBreakerState | null;
+  stallTrackers: MuxStallTrackers;
+  iteration: number;
+  previousTicket: string | null;
+  previousTicketStartCommit: string | null;
+  now: () => number;
+  log: (msg: string) => void;
+}): Promise<IterationPassStep> {
+  const { statePath, sessionDir, extensionRoot, toolchainPreflight, cbEnabled, cbState, stallTrackers, now, log } = input;
+  const startStep = readIterationStartState({ statePath, sessionDir, toolchainPreflight, log });
+  if (startStep.kind === 'retry') {
+    await sleep(1000);
+    return { kind: 'continue', iteration: input.iteration };
+  }
+  if (startStep.kind === 'exit') return { kind: 'exit', exitReason: startStep.exitReason, iteration: input.iteration };
+  const head = resolveIterationHead({
+    state: startStep.state, statePath, sessionDir, extensionRoot, cbEnabled, cbState, stallTrackers, now, log,
+  });
+  if (head.kind !== 'ready') return head;
+  const { iteration, curIter, preTicket } = head;
+  let { previousTicket, previousTicketStartCommit } = input;
+  if (previousTicket === null) {
+    ({ previousTicket, previousTicketStartCommit } = seedPreviousTicket(head.state, sessionDir, previousTicketStartCommit));
+  }
+  // R-CCPM-3: orphan-session detection at iteration boundary
+  const state = recordOrphanSessionsAtIterationBoundary(head.state, statePath, sessionDir, log);
+
+  log(`--- Iteration ${iteration} (state.iteration=${state.iteration}) ---`);
+  logActivity({ event: 'iteration_start', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackend(state) });
+
+  reapOrphansAtIterationStart(statePath, sessionDir, log);
+
+  const rosterExit = exitOnFinishedRoster({ state, statePath, sessionDir, iteration, preTicket, log });
+  if (rosterExit) return { kind: 'exit', exitReason: rosterExit, iteration };
+  return { kind: 'ready', iteration, curIter, state, previousTicket, previousTicketStartCommit };
+}
+
+/** e9ef71c7: R-AISLOW — the current ticket's frontmatter status when it is already Done/Skipped, else null. */
+function readPreskipTerminalStatus(sessionDir: string, preskipTicket: string): 'done' | 'skipped' | null {
+  let preskipStatus: string | null = null;
+  try {
+    preskipStatus = normalizeTicketStatus(getTicketStatus(sessionDir, preskipTicket));
+  } catch { /* unreadable frontmatter — fall through to normal spawn path */ }
+  return preskipStatus === 'done' || preskipStatus === 'skipped' ? preskipStatus : null;
+}
+
+/** e9ef71c7: the pre-spawn liveness pair. `continue` starts the next pass; the idle-stall recovery count travels back out. */
+type PreSpawnLivenessStep =
+  | { kind: 'exit'; exitReason: ExitReason }
+  | { kind: 'continue' | 'proceed'; idleStallRecoveryCount: number };
+
+/**
+ * e9ef71c7: R-MWIS-2 main-loop idle-stall watchdog, then the C6 (B-MRSW) CPU/artifact liveness watchdog. Before each
+ * worker spawn, check whether the loop has made no forward progress for longer than the bounded threshold while in NO
+ * legitimate wait state (rate-limit wait, breaker OPEN, last_error, subprocess errors). If wedged, emit a diagnostic
+ * event and self-recover (re-evaluate the current ticket / re-spawn) rather than sit silently at 0% CPU. C6 is
+ * best-effort and never crashes the loop (see runCpuLivenessWatchdog).
+ */
+function runPreSpawnLivenessWatchdogs(
+  input: Omit<Parameters<typeof runIdleStallWatchdog>[0], 'lastProgressEpoch'> & {
+    stallTrackers: MuxStallTrackers;
+    anchor: CpuLivenessAnchor;
+  },
+): PreSpawnLivenessStep {
+  const { state, statePath, sessionDir, extensionRoot, iteration, curIter, now, idleStallThresholdSeconds, cbEnabled, cbState, stallTrackers, log } = input;
+  const idleStep = runIdleStallWatchdog({
+    state, statePath, sessionDir, extensionRoot, iteration, curIter, now,
+    lastProgressEpoch: stallTrackers.lastProgressEpoch,
+    idleStallThresholdSeconds, idleStallRecoveryCap: input.idleStallRecoveryCap, idleStallRecoveryCount: input.idleStallRecoveryCount,
+    cbEnabled, cbState, log,
+  });
+  if (idleStep.kind === 'exit') return idleStep;
+  if (idleStep.kind === 'recovered') {
+    stallTrackers.lastStateIteration = -1;
+    stallTrackers.stallCount = 0;
+    // Kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it
+    // (dead store recorded in c87f5dfa conformance).
+    stallTrackers.lastProgressEpoch = now();
+    return { kind: 'continue', idleStallRecoveryCount: idleStep.idleStallRecoveryCount };
+  }
+  const cpuStep = runCpuLivenessWatchdog({
+    state, statePath, sessionDir, extensionRoot, iteration, curIter, now, idleStallThresholdSeconds,
+    cbEnabled, cbState, anchor: input.anchor, stallTrackers, log,
+  });
+  if (cpuStep.kind === 'exit') return cpuStep;
+  return { kind: cpuStep.kind === 'recovered' ? 'continue' : 'proceed', idleStallRecoveryCount: idleStep.idleStallRecoveryCount };
+}
+
+/** e9ef71c7: rate-limit classification of the finished iteration (MUST run before CB to prevent CB poisoning) and its iteration_end event. */
+function classifyAndRecordIterationEnd(input: {
+  outcome: LoopIterationOutcome;
+  iterLogFile: string;
+  sessionDir: string;
+  iteration: number;
+  state: State;
+}): ReturnType<typeof classifyIterationExit> {
+  const { outcome, sessionDir, iteration, state } = input;
+  const exitResult = classifyIterationExit(outcome.completion, input.iterLogFile, {
+    didTimeout: outcome.timedOut,
+    exitCode: outcome.exitCode,
+    wallSeconds: outcome.wallSeconds,
+  });
+  logActivity({ event: 'iteration_end', source: 'pickle', session: path.basename(sessionDir), iteration, exit_type: exitResult.type, backend: resolveBackend(state) });
+  return exitResult;
+}
+
+/** e9ef71c7: how the post-classification cycles resolve; `parked`/`continue` start the next pass, `timeout_halt` names the ticket the loop halts on. */
+type IterationEndCycleStep =
+  | { kind: 'exit'; exitReason: ExitReason }
+  | { kind: 'parked' }
+  | { kind: 'continue' }
+  | { kind: 'timeout_halt'; ticketForTimeout: string | null }
+  | { kind: 'proceed'; cbState: CircuitBreakerState | null };
+
+type IterationEndCyclesInput = Pick<
+  Parameters<typeof applyRateLimitCycleOutcome>[0],
+  'exitResult' | 'maxRateLimitRetries' | 'rateLimitWaitMinutes' | 'maxParkMinutes' | 'statePath' | 'sessionDir' | 'state' | 'iteration' | 'log'
+> & Pick<Parameters<typeof maybeRecordCircuitBreakerIteration>[0], 'cbEnabled' | 'cbState' | 'cbSettings' | 'cbPath' | 'iterLogFile'> & {
+  outcome: LoopIterationOutcome;
+  extensionRoot: string;
+  counters: MuxLoopCounters;
+  stallTrackers: MuxStallTrackers;
+};
+
+/**
+ * e9ef71c7: the cycles after the exit classification, in the loop's original order — the rate-limit cycle (MUST run before
+ * CB recording to prevent CB poisoning), the FR-B3/B4/B12/B14 per-ticket timeout counter and its `counterNext.halt`
+ * decision (MUST run BEFORE CB recording), then circuit-breaker recording. The timeout halt itself stays in the loop.
+ */
+async function runIterationEndCycles(input: IterationEndCyclesInput): Promise<IterationEndCycleStep> {
+  const { counters, stallTrackers, outcome, statePath, sessionDir, state, iteration, iterLogFile, log } = input;
+  const rateLimitStep = await applyRateLimitCycleOutcome({
+    exitResult: input.exitResult, consecutiveRateLimits: counters.consecutiveRateLimits, maxRateLimitRetries: input.maxRateLimitRetries,
+    rateLimitWaitMinutes: input.rateLimitWaitMinutes, maxParkMinutes: input.maxParkMinutes, statePath, sessionDir, state, iteration, log,
+  });
+  if (rateLimitStep.kind === 'exit') return rateLimitStep;
+  counters.consecutiveRateLimits = rateLimitStep.consecutiveRateLimits;
+  if (rateLimitStep.kind === 'parked') return { kind: 'parked' };
+
+  const { ticketForTimeout, counterNext } = advancePerTicketTimeoutCounter({
+    statePath, sessionDir, state, outcome, iteration, iterLogFile,
+    prev: { count: counters.timeoutCount, ticket: counters.lastTimeoutTicket },
+  });
+  counters.timeoutCount = counterNext.count;
+  counters.lastTimeoutTicket = counterNext.ticket;
+  if (counterNext.halt) {
+    // R-WTB-A1: check artifact progress before halting — if the worker produced new
+    // artifacts or commits within the no-progress window, reset the counter and continue.
+    const timeoutStep = resolveTimeoutHaltStep({
+      statePath, sessionDir, state, extensionRoot: input.extensionRoot, iteration, ticketForTimeout,
+      timeoutCount: counters.timeoutCount, lastArtifactProgressSnapshot: counters.lastArtifactProgressSnapshot, log,
+    });
+    counters.lastArtifactProgressSnapshot = timeoutStep.snapshot;
+    if (timeoutStep.kind === 'extended') {
+      counters.timeoutCount = 1;
+      counters.lastTimeoutTicket = ticketForTimeout;
+    } else if (timeoutStep.kind === 'recovered') {
+      counters.timeoutCount = 0;
+      counters.lastTimeoutTicket = null;
+      stallTrackers.lastStateIteration = -1;
+      stallTrackers.stallCount = 0;
+      return { kind: 'continue' };
+    } else {
+      return { kind: 'timeout_halt', ticketForTimeout };
+    }
+  }
+
+  // === Existing CB recording — only reached for non-rate-limit ===
+  // Circuit breaker: record iteration outcome (skip for subprocess failures)
+  const cbStep = maybeRecordCircuitBreakerIteration({
+    cbEnabled: input.cbEnabled, cbState: input.cbState, result: outcome.completion, cbSettings: input.cbSettings, cbPath: input.cbPath,
+    statePath, sessionDir, state, iteration, iterLogFile, log,
+  });
+  if (cbStep.tripped) return { kind: 'exit', exitReason: 'circuit_open' };
+  return { kind: 'proceed', cbState: cbStep.cbState };
+}
+
+/**
+ * e9ef71c7: the pre-finalize half of the `task_completed` branch as a loop step — `continue` covers the parked claim and
+ * the retry (stall trackers reset, 1s sleep); `finalize` has already flagged the manager-handoff residual and recorded the
+ * manager-token post-final verdict on the re-read state.
+ */
+async function settleTaskCompletedClaim(
+  input: Parameters<typeof resolveTaskCompletedClaim>[0] & { stallTrackers: MuxStallTrackers },
+): Promise<MainLoopStep | { kind: 'finalize' }> {
+  const { state, statePath, sessionDir, stallTrackers, log } = input;
+  const claim = resolveTaskCompletedClaim(input);
+  if (claim.kind === 'exit') return claim;
+  if (claim.kind === 'park') return { kind: 'continue' };
+  if (claim.kind === 'retry') {
+    // Reset stall counter so the recovery iteration isn't immediately
+    // killed by the no-progress detector — the manager IS making progress
+    // (we just disagree about whether it's done).
+    stallTrackers.lastStateIteration = -1;
+    stallTrackers.stallCount = 0;
+    await sleep(1000);
+    return { kind: 'continue' };
+  }
+  const curState = claim.curState;
+  // TIER-1.2 gh-11: manager_handoff_pending no longer halts — this is park-and-flag
+  // only. closer_handoff_terminal requires status 'failed', which cannot hold on the
+  // ticket just marked Done above, so what this path wants is the residual COMMAND,
+  // not the decision query whose `CloserTerminalDecision` it would discard along with
+  // the two git subprocesses and the settings read spent populating arguments the
+  // 'failed' arm alone reads.
+  flagManagerHandoffResidual(sessionDir, curState);
+  // R-NOPOSTTIER (AC-13): this is the manager-token completion seam (the model
+  // itself emitted EPIC_COMPLETED/TASK_COMPLETED and evaluateEpicCompletion
+  // verified it genuine) — a second promise-synthesis path distinct from the
+  // proactive all-tickets-done scan in applyAllTicketsDoneCompletion. It owes
+  // the same verdict for the same reason: the bundle's final commit has
+  // landed and this is the last moment before finalizeIfTrulyComplete can
+  // turn it into a promise.
+  runManagerTokenPostFinalMeasurement(
+    statePath,
+    curState.working_dir || state.working_dir || '',
+    curState.current_ticket || 'all-tickets-done',
+    log,
+  );
+  return { kind: 'finalize' };
+}
+
+// eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 224 code lines against a ceiling of 120, and complexity 42 against a ceiling of 15. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize, then the iteration head, the C6 liveness watchdog and the run epilogue, then the pass opening, the pre-spawn liveness pair, the post-classification cycles and the completion-claim settle), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {
   const { sessionDir, statePath, extensionRoot, log, codegraph, closePhantomDoneWatchers } = initializeMuxRunnerSession();
   const {
@@ -16031,92 +16333,44 @@ async function runMuxRunnerMain() {
   } = loadMuxLoopSettings(extensionRoot, sessionDir);
   let cbState: CircuitBreakerState | null = initialCbState;
   let iteration = 0;
-  let consecutiveRateLimits = 0;
   let previousTicket: string | null = null;
   let previousTicketStartCommit: string | null = null;
   let exitReason: ExitReason;
-  // Non-persisted per-ticket timeout counter (FR-B3/B4) — resets on runner restart.
-  let timeoutCount = 0;
-  let lastTimeoutTicket: string | null = null;
-  // Artifact-progress snapshot for R-WTB-A1 no-progress window check.
-  let lastArtifactProgressSnapshot: ArtifactProgressSnapshot = { latestMtimeEpoch: 0, latestCommitSha: null };
-  // Commit-pending probe: track the last outer-loop iteration where state.iteration
-  // advanced. Used to detect stagnation independently of the circuit breaker (the
-  // probe runs whether CB is enabled or not).
-  const commitPendingTracker = { lastProgressOuterIteration: 0, lastObservedStateIteration: -1 };
-  // R-MWIS-2: main-loop idle-stall watchdog. lastProgressEpoch is bumped on every
-  // forward-progress marker (iteration advance / state write, worker spawn). The
-  // gated watchdog check before each worker spawn detects a wedged loop that is NOT
-  // in any legitimate wait state and self-recovers instead of sitting at 0% CPU.
+  // R-MWIS-2: main-loop idle-stall watchdog. The gated watchdog check before each worker spawn detects a wedged loop
+  // that is NOT in any legitimate wait state and self-recovers instead of sitting at 0% CPU.
   const muxNow = (): number => Date.now();
   let idleStallRecoveryCount = 0;
-  // Seeded so the watchdog never trips on a fresh loop; the iteration-advance write
-  // (below) always refreshes it before the watchdog reads it each pass.
-  const stallTrackers: MuxStallTrackers = { lastStateIteration: -1, stallCount: 0, lastProgressEpoch: muxNow() };
-  const cpuLivenessAnchor: CpuLivenessAnchor = {
-    cpuLivenessTicketId: null, cpuLivenessAnchorPid: null, cpuLivenessAnchorEpoch: 0,
-    cpuLivenessAnchorCpuSeconds: null, cpuLivenessAnchorMtimeMs: 0,
-  };
-  const iterationZeroGates: IterationZeroGateLatches = {
-    bundleBootstrapApplied: false, readinessGateChecked: false, ticketAuditGateChecked: false,
-  };
+  const { counters, commitPendingTracker, stallTrackers, cpuLivenessAnchor, iterationZeroGates, toolchainPreflight } =
+    createMuxLoopTrackers(muxNow);
   let smokeGateBypassEmitted = false;
-  // WS-2c (R-PFNT): one-time target-toolchain pre-flight latch. Set after the first
-  // pass so the cheap missing-node_modules probe runs ONCE per run, not per-iteration.
-  const toolchainPreflight = { checked: false };
 
   // Initialize the session-scoped codegraph (fail-open — never blocks session start).
   await codegraph.init();
 
   while (true) {
-    const startStep = readIterationStartState({ statePath, sessionDir, toolchainPreflight, log });
-    if (startStep.kind === 'retry') {
-      await sleep(1000);
-      continue;
-    }
-    if (startStep.kind === 'exit') {
-      exitReason = startStep.exitReason;
-      break;
-    }
-    const head = resolveIterationHead({
-      state: startStep.state, statePath, sessionDir, extensionRoot, cbEnabled, cbState, stallTrackers, now: muxNow, log,
+    const pass = await openIterationPass({
+      statePath, sessionDir, extensionRoot, toolchainPreflight, cbEnabled, cbState, stallTrackers, iteration,
+      previousTicket, previousTicketStartCommit, now: muxNow, log,
     });
-    iteration = head.iteration;
-    if (head.kind === 'exit') {
-      exitReason = head.exitReason;
+    iteration = pass.iteration;
+    if (pass.kind === 'exit') {
+      exitReason = pass.exitReason;
       break;
     }
-    if (head.kind === 'continue') continue;
-    const { curIter, preTicket } = head;
-    let state: State = head.state;
-    if (previousTicket === null) {
-      ({ previousTicket, previousTicketStartCommit } = seedPreviousTicket(state, sessionDir, previousTicketStartCommit));
-    }
-    // R-CCPM-3: orphan-session detection at iteration boundary
-    state = recordOrphanSessionsAtIterationBoundary(state, statePath, sessionDir, log);
+    if (pass.kind === 'continue') continue;
+    const { curIter } = pass;
+    let state: State = pass.state;
+    ({ previousTicket, previousTicketStartCommit } = pass);
 
-    log(`--- Iteration ${iteration} (state.iteration=${state.iteration}) ---`);
-    logActivity({ event: 'iteration_start', source: 'pickle', session: path.basename(sessionDir), iteration, backend: resolveBackend(state) });
-
-    reapOrphansAtIterationStart(statePath, sessionDir, log);
-
-    const rosterExit = exitOnFinishedRoster({ state, statePath, sessionDir, iteration, preTicket, log });
-    if (rosterExit) {
-      exitReason = rosterExit;
+    const preSpawn = runPreSpawnGatesAndProbes({
+      state, statePath, sessionDir, extensionRoot, curIter, iteration, iterationZeroGates, commitPendingTracker,
+      commitPendingProbeThreshold, smokeGateBypassEmitted, log,
+    });
+    state = preSpawn.state;
+    smokeGateBypassEmitted = preSpawn.smokeGateBypassEmitted;
+    if (preSpawn.halt) {
+      exitReason = 'codex_unhealthy_consecutive_failures';
       break;
-    }
-
-    {
-      const preSpawn = runPreSpawnGatesAndProbes({
-        state, statePath, sessionDir, extensionRoot, curIter, iteration, iterationZeroGates, commitPendingTracker,
-        commitPendingProbeThreshold, smokeGateBypassEmitted, log,
-      });
-      state = preSpawn.state;
-      smokeGateBypassEmitted = preSpawn.smokeGateBypassEmitted;
-      if (preSpawn.halt) {
-        exitReason = 'codex_unhealthy_consecutive_failures';
-        break;
-      }
     }
 
     // R-AISLOW: pre-spawn already-terminal check. If state.current_ticket is
@@ -16124,70 +16378,38 @@ async function runMuxRunnerMain() {
     // completed the ticket but state.current_ticket wasn't cleared yet), skip
     // the manager spawn and advance current_ticket to the next pending ticket.
     // This avoids wasted 1h+ manager turns that just log "already Done, skipping".
-    {
-      const preskipTicket = state.current_ticket;
-      if (preskipTicket) {
-        let preskipStatus: string | null = null;
-        try {
-          preskipStatus = normalizeTicketStatus(getTicketStatus(sessionDir, preskipTicket));
-        } catch { /* unreadable frontmatter — fall through to normal spawn path */ }
-        if (preskipStatus === 'done' || preskipStatus === 'skipped') {
-          const nextPending = findNextPendingTicketId(sessionDir);
-          log(`[preskip] ${preskipTicket} already ${preskipStatus} — advancing to ${nextPending ?? 'none'} without manager spawn`);
-          logActivity({
-            event: 'ticket_preskipped_already_terminal',
-            source: 'pickle',
-            session: path.basename(sessionDir),
-            iteration,
-            ticket_id: preskipTicket,
-            gate_payload: {
-              frontmatter_status: preskipStatus,
-              next_ticket_id: nextPending ?? null,
-            },
-          });
-          // Advance via sanctioned state-write path; state re-read at top of next loop iteration
-          updateMuxLifecycleState(statePath, { currentTicket: nextPending ?? null });
-          continue; // skip runIteration — no manager spawn
-        }
-      }
-    }
-
-    // R-MWIS-2: main-loop idle-stall watchdog. Before each worker spawn, check whether
-    // the loop has made no forward progress for longer than the bounded threshold while
-    // in NO legitimate wait state (rate-limit wait, breaker OPEN, last_error, subprocess
-    // errors). If wedged, emit a diagnostic event and self-recover (re-evaluate the
-    // current ticket / re-spawn) rather than sit silently at 0% CPU.
-    {
-      const idleStep = runIdleStallWatchdog({
-        state, statePath, sessionDir, extensionRoot, iteration, curIter, now: muxNow,
-        lastProgressEpoch: stallTrackers.lastProgressEpoch,
-        idleStallThresholdSeconds, idleStallRecoveryCap, idleStallRecoveryCount, cbEnabled, cbState, log,
+    const preskipTicket = state.current_ticket;
+    const preskipStatus = preskipTicket ? readPreskipTerminalStatus(sessionDir, preskipTicket) : null;
+    if (preskipTicket && preskipStatus) {
+      const nextPending = findNextPendingTicketId(sessionDir);
+      log(`[preskip] ${preskipTicket} already ${preskipStatus} — advancing to ${nextPending ?? 'none'} without manager spawn`);
+      logActivity({
+        event: 'ticket_preskipped_already_terminal',
+        source: 'pickle',
+        session: path.basename(sessionDir),
+        iteration,
+        ticket_id: preskipTicket,
+        gate_payload: {
+          frontmatter_status: preskipStatus,
+          next_ticket_id: nextPending ?? null,
+        },
       });
-      if (idleStep.kind === 'exit') {
-        exitReason = idleStep.exitReason;
-        break;
-      }
-      idleStallRecoveryCount = idleStep.idleStallRecoveryCount;
-      if (idleStep.kind === 'recovered') {
-        stallTrackers.lastStateIteration = -1;
-        stallTrackers.stallCount = 0;
-        // Kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it
-        // (dead store recorded in c87f5dfa conformance).
-        stallTrackers.lastProgressEpoch = muxNow();
-        continue;
-      }
+      // Advance via sanctioned state-write path; state re-read at top of next loop iteration
+      updateMuxLifecycleState(statePath, { currentTicket: nextPending ?? null });
+      continue; // skip runIteration — no manager spawn
     }
 
-    // C6 (B-MRSW): CPU/artifact liveness watchdog — best-effort, never crashes the loop (see runCpuLivenessWatchdog).
-    const cpuStep = runCpuLivenessWatchdog({
+    // R-MWIS-2 idle-stall watchdog, then the C6 (B-MRSW) CPU/artifact liveness watchdog (see runPreSpawnLivenessWatchdogs).
+    const liveness = runPreSpawnLivenessWatchdogs({
       state, statePath, sessionDir, extensionRoot, iteration, curIter, now: muxNow, idleStallThresholdSeconds,
-      cbEnabled, cbState, anchor: cpuLivenessAnchor, stallTrackers, log,
+      idleStallRecoveryCap, idleStallRecoveryCount, cbEnabled, cbState, stallTrackers, anchor: cpuLivenessAnchor, log,
     });
-    if (cpuStep.kind === 'exit') {
-      exitReason = cpuStep.exitReason;
+    if (liveness.kind === 'exit') {
+      exitReason = liveness.exitReason;
       break;
     }
-    if (cpuStep.kind === 'recovered') continue;
+    idleStallRecoveryCount = liveness.idleStallRecoveryCount;
+    if (liveness.kind === 'continue') continue;
 
     // Per-spawn codegraph staleness sync (fail-open — bounded by sync_timeout_ms in the service).
     await codegraph.syncIfStale();
@@ -16218,19 +16440,10 @@ async function runMuxRunnerMain() {
     }
     const postSpawn = recordPostSpawnWorkerProgress({
       sessionDir, statePath, state, workingDir: state.working_dir, previousTicket, extensionRoot, cbState,
-      iteration, apTicketId, apBeforeCount, apCreditEarlyPhases, log,
+      iteration, apTicketId, apBeforeCount, apCreditEarlyPhases, stallTrackers, idleStallRecoveryCount, log,
     });
-    if (postSpawn.exitCommitProgressMs !== null) {
-      // Kept as a pure move: the next pass's iteration_start write overwrites it before the idle watchdog reads it
-      // (dead store recorded in 72817af8 conformance).
-      stallTrackers.lastProgressEpoch = postSpawn.exitCommitProgressMs;
-      // L2: a committed deliverable is genuine forward progress — reset the streak.
-      idleStallRecoveryCount = 0;
-    }
+    idleStallRecoveryCount = postSpawn.idleStallRecoveryCount;
     const apProgressResult = postSpawn.apProgressResult;
-    // L2: a worker that produced NEW artifacts (non-zero delta) made genuine
-    // progress — reset the consecutive idle-stall recovery streak.
-    if (apProgressResult && apProgressResult.zeroProgressCount === 0) idleStallRecoveryCount = 0;
 
     // 2ed9a852 (C1): bound above the first post-iteration `continue` so every early exit
     // below can record its verdict. Emits at most once per iteration.
@@ -16296,108 +16509,38 @@ async function runMuxRunnerMain() {
     ({ previousTicket, previousTicketStartCommit } = transition);
 
     // --- Rate limit classification (MUST run before CB to prevent CB poisoning) ---
-    const exitResult = classifyIterationExit(outcome.completion, iterLogFile, {
-      didTimeout: outcome.timedOut,
-      exitCode: outcome.exitCode,
-      wallSeconds: outcome.wallSeconds,
-    });
-    const exitType = exitResult.type;
-    logActivity({ event: 'iteration_end', source: 'pickle', session: path.basename(sessionDir), iteration, exit_type: exitType, backend: resolveBackend(state) });
+    const exitResult = classifyAndRecordIterationEnd({ outcome, iterLogFile, sessionDir, iteration, state });
     emitWastedIterOnce();
 
-    const rateLimitStep = await applyRateLimitCycleOutcome({
-      exitResult, consecutiveRateLimits, maxRateLimitRetries, rateLimitWaitMinutes,
-      maxParkMinutes, statePath, sessionDir, state, iteration, log,
+    const cycle = await runIterationEndCycles({
+      exitResult, outcome, state, statePath, sessionDir, extensionRoot, iteration, iterLogFile, counters, stallTrackers,
+      maxRateLimitRetries, rateLimitWaitMinutes, maxParkMinutes, cbEnabled, cbState, cbSettings, cbPath, log,
     });
-    if (rateLimitStep.kind === 'exit') {
-      exitReason = rateLimitStep.exitReason;
+    if (cycle.kind === 'exit') {
+      exitReason = cycle.exitReason;
       break;
     }
-    consecutiveRateLimits = rateLimitStep.consecutiveRateLimits;
-    if (rateLimitStep.kind === 'parked') continue;  // Skip CB recording + result branching entirely
+    if (cycle.kind === 'parked') continue;  // Skip CB recording + result branching entirely
 
     // --- Per-ticket timeout halt (FR-B3/B4/B12/B14) — MUST run BEFORE CB recording ---
-    const { ticketForTimeout, counterNext } = advancePerTicketTimeoutCounter({
-      statePath, sessionDir, state, outcome, iteration, iterLogFile, prev: { count: timeoutCount, ticket: lastTimeoutTicket },
-    });
-    timeoutCount = counterNext.count;
-    lastTimeoutTicket = counterNext.ticket;
-
-    if (counterNext.halt) {
-      // R-WTB-A1: check artifact progress before halting — if the worker produced new
-      // artifacts or commits within the no-progress window, reset the counter and continue.
-      const timeoutStep = resolveTimeoutHaltStep({
-        statePath, sessionDir, state, extensionRoot, iteration, ticketForTimeout, timeoutCount, lastArtifactProgressSnapshot, log,
-      });
-      lastArtifactProgressSnapshot = timeoutStep.snapshot;
-      if (timeoutStep.kind === 'extended') {
-        timeoutCount = 1;
-        lastTimeoutTicket = ticketForTimeout;
-      } else if (timeoutStep.kind === 'recovered') {
-        timeoutCount = 0;
-        lastTimeoutTicket = null;
-        stallTrackers.lastStateIteration = -1;
-        stallTrackers.stallCount = 0;
-        continue;
-      } else {
-        log(`Timeout halt: ticket ${ticketForTimeout} timed out ${timeoutCount} consecutive iterations`);
-        executeTimeoutHalt({ statePath, sessionDir, ticketNow: ticketForTimeout, timeoutCount });
-        exitReason = 'timeout_repeat';
-        break;
-      }
-    }
-
-    // === Existing CB recording — only reached for non-rate-limit ===
-
-    // Circuit breaker: record iteration outcome (skip for subprocess failures)
-    const cbStep = maybeRecordCircuitBreakerIteration({
-      cbEnabled, cbState, result, cbSettings, cbPath, statePath, sessionDir, state, iteration, iterLogFile, log,
-    });
-    cbState = cbStep.cbState;
-    if (cbStep.tripped) {
-      exitReason = 'circuit_open';
+    if (cycle.kind === 'continue') continue;
+    if (cycle.kind === 'timeout_halt') {
+      log(`Timeout halt: ticket ${cycle.ticketForTimeout} timed out ${counters.timeoutCount} consecutive iterations`);
+      executeTimeoutHalt({ statePath, sessionDir, ticketNow: cycle.ticketForTimeout, timeoutCount: counters.timeoutCount });
+      exitReason = 'timeout_repeat';
       break;
     }
+    cbState = cycle.cbState;
 
     let managerStep: ManagerExitLoopStep | null = null;
     if (result === 'task_completed') {
       // EPIC_COMPLETED / TASK_COMPLETED
-      const claim = resolveTaskCompletedClaim({ state, statePath, sessionDir, iteration, iterLogFile, log });
+      const claim = await settleTaskCompletedClaim({ state, statePath, sessionDir, iteration, iterLogFile, stallTrackers, log });
       if (claim.kind === 'exit') {
         exitReason = claim.exitReason;
         break;
       }
-      if (claim.kind === 'park') continue;
-      if (claim.kind === 'retry') {
-        // Reset stall counter so the recovery iteration isn't immediately
-        // killed by the no-progress detector — the manager IS making progress
-        // (we just disagree about whether it's done).
-        stallTrackers.lastStateIteration = -1;
-        stallTrackers.stallCount = 0;
-        await sleep(1000);
-        continue;
-      }
-      const curState = claim.curState;
-      // TIER-1.2 gh-11: manager_handoff_pending no longer halts — this is park-and-flag
-      // only. closer_handoff_terminal requires status 'failed', which cannot hold on the
-      // ticket just marked Done above, so what this path wants is the residual COMMAND,
-      // not the decision query whose `CloserTerminalDecision` it would discard along with
-      // the two git subprocesses and the settings read spent populating arguments the
-      // 'failed' arm alone reads.
-      flagManagerHandoffResidual(sessionDir, curState);
-      // R-NOPOSTTIER (AC-13): this is the manager-token completion seam (the model
-      // itself emitted EPIC_COMPLETED/TASK_COMPLETED and evaluateEpicCompletion
-      // verified it genuine) — a second promise-synthesis path distinct from the
-      // proactive all-tickets-done scan in applyAllTicketsDoneCompletion. It owes
-      // the same verdict for the same reason: the bundle's final commit has
-      // landed and this is the last moment before finalizeIfTrulyComplete can
-      // turn it into a promise.
-      runManagerTokenPostFinalMeasurement(
-        statePath,
-        curState.working_dir || state.working_dir || '',
-        curState.current_ticket || 'all-tickets-done',
-        log,
-      );
+      if (claim.kind === 'continue') continue;
       log('Task completed. Exiting loop.');
       // B-GROUND2 WS1: the EPIC-success finalize routes through the single
       // ground-truth authority — a residual pending ticket refuses the
