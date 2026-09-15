@@ -6,7 +6,7 @@ import { State, VALID_STEPS, UNBOUNDED_READ_MAX_BUFFER, type ActivityEvent, type
 import { StateManager } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { MAX_FUTURE_RECENCY_DRIFT_MS, readSessionsMapFallback, resolveSessionPath, selectScannedSessionPath } from './session-resolution.js';
-import { MANAGER_ROLE_FRAMING_BLOCK, stripSetupSection, stripStepOneBlock, type ComposeManagerPromptOpts } from './manager-prompt.js';
+import { MANAGER_ROLE_FRAMING_BLOCK, ACCEPTANCE_CRITERIA_GUIDANCE, stripSetupSection, stripStepOneBlock, type ComposeManagerPromptOpts } from './manager-prompt.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
 import { isRecord } from '../lib/is-record.js';
 import type { MonitorPane } from './monitor-window.js';
@@ -640,6 +640,7 @@ export {
 export { type RetryLockOptions, sleepSync, withRetryLock } from './retry-lock.js';
 export {
   type ComposeManagerPromptOpts,
+  ACCEPTANCE_CRITERIA_GUIDANCE,
   MANAGER_ROLE_FRAMING_BLOCK,
   resolveCommandTemplate,
   resolveManagerPromptPath,
@@ -1422,6 +1423,7 @@ export function composeManagerPromptFromSkill(
   let content = fs.readFileSync(skillPath, 'utf-8');
   content = content.replace(/\$ARGUMENTS/g, opts.argumentSubstitution);
   content = content.replace(/\$\{EXTENSION_ROOT\}/g, getExtensionRoot());
+  content = content.replace(/\$\{ACCEPTANCE_CRITERIA_GUIDANCE\}/g, ACCEPTANCE_CRITERIA_GUIDANCE);
   content = stripSetupSection(content);
   content = stripStepOneBlock(content);
   if (opts.handoffText) content += '\n\n' + opts.handoffText;

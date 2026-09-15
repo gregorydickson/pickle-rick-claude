@@ -107,6 +107,14 @@ PROHIBITED in this manager session:
 Your ONLY valid setup.js invocation is the one already completed to initialize this session. Proceed directly to Step 2: Execution.
 <!-- END MANAGER_ROLE_FRAMING -->`;
 
+/**
+ * R1: single source for the executable acceptance-assertion worked example
+ * (`` `<cmd>` exits|returns <N> ``, parsed by EXECUTABLE_ASSERTION_RE in mux-runner.ts). Resolved into the
+ * Phase 2 ticket-authoring template by `composeManagerPromptFromSkill` via the
+ * `${ACCEPTANCE_CRITERIA_GUIDANCE}` placeholder, mirroring the existing `${EXTENSION_ROOT}` substitution.
+ */
+export const ACCEPTANCE_CRITERIA_GUIDANCE = 'When a criterion reduces to a single integer, write it as a backticked command immediately followed by `exits N` (exit status) or `returns N` (trimmed stdout). Worked example: `grep -c FIRSTCOLONY src/gate.ts` returns 0. Prose criteria remain fully valid and unguarded — never invent a command to satisfy this form.';
+
 export interface ComposeManagerPromptOpts {
   argumentSubstitution: string;
   handoffText?: string;

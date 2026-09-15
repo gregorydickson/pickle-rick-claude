@@ -6,7 +6,7 @@ import { VALID_STEPS, UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 import { StateManager } from './state-manager.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 import { MAX_FUTURE_RECENCY_DRIFT_MS, readSessionsMapFallback, resolveSessionPath, selectScannedSessionPath } from './session-resolution.js';
-import { MANAGER_ROLE_FRAMING_BLOCK, stripSetupSection, stripStepOneBlock } from './manager-prompt.js';
+import { MANAGER_ROLE_FRAMING_BLOCK, ACCEPTANCE_CRITERIA_GUIDANCE, stripSetupSection, stripStepOneBlock } from './manager-prompt.js';
 import { updateTicketStatusInTransaction } from './transaction-ticket-ops.js';
 import { isRecord } from '../lib/is-record.js';
 import { normalizeTicketComplexityTier } from './ticket-tier.js';
@@ -488,7 +488,7 @@ export { DEFAULT_BOUNDED_TERMINAL_ESCAPE_CAP, DEFAULT_BREAKER_RECOVERY_GRACE_SEC
 export { resolveSessionPath } from './session-resolution.js';
 export { MatrixStyle, RAIN_CHARS, detectLogTruncation, drainLog, drainStreamJsonLines, latestIterationLog, matrixSeparator, } from './log-tail.js';
 export { sleepSync, withRetryLock } from './retry-lock.js';
-export { MANAGER_ROLE_FRAMING_BLOCK, resolveCommandTemplate, resolveManagerPromptPath, stripSetupSection, stripStepOneBlock, } from './manager-prompt.js';
+export { ACCEPTANCE_CRITERIA_GUIDANCE, MANAGER_ROLE_FRAMING_BLOCK, resolveCommandTemplate, resolveManagerPromptPath, stripSetupSection, stripStepOneBlock, } from './manager-prompt.js';
 export function loadPickleSettingsBag(extensionRoot = getExtensionRoot()) {
     try {
         const settingsPath = path.join(extensionRoot, 'pickle_settings.json');
@@ -1205,6 +1205,7 @@ export function composeManagerPromptFromSkill(skillPath, backend, opts) {
     let content = fs.readFileSync(skillPath, 'utf-8');
     content = content.replace(/\$ARGUMENTS/g, opts.argumentSubstitution);
     content = content.replace(/\$\{EXTENSION_ROOT\}/g, getExtensionRoot());
+    content = content.replace(/\$\{ACCEPTANCE_CRITERIA_GUIDANCE\}/g, ACCEPTANCE_CRITERIA_GUIDANCE);
     content = stripSetupSection(content);
     content = stripStepOneBlock(content);
     if (opts.handoffText)

@@ -113,6 +113,8 @@ links:
 ## Problem to solve
 ## Solution
 ## Implementation Details
+## Acceptance Criteria
+${ACCEPTANCE_CRITERIA_GUIDANCE}
 ```
 
 4. List tickets to user. DO NOT pick first ticket or advance state.

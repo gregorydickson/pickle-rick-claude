@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readExecutableAcceptanceAssertions } from '../bin/mux-runner.js';
 import { buildWorkerPrompt } from '../bin/spawn-refinement-team.js';
+import { composeManagerPromptFromSkill } from '../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
@@ -65,6 +66,14 @@ const refinementPrompt = buildWorkerPrompt(
   1,
 );
 
+// R1: the REAL Phase 2 manager ticket-authoring path, composed exactly as the production call sites
+// (mux-runner.ts, jar-runner.ts) compose it — through the real composeManagerPromptFromSkill, over the
+// real template file on disk. This is "authored output" (the rendered template), never a doc-string claim.
+const managerTemplatePath = path.join(repoRoot, 'extension/templates/_pickle-manager-prompt.md');
+const managerPrompt = composeManagerPromptFromSkill(managerTemplatePath, 'claude', {
+  argumentSubstitution: 'R1 acceptance-assertion-authoring-form test session',
+});
+
 test('O1-1/O1-2: pickle-prd.md documents a worked example the real extractor parses', () => {
   const line = extractWorkedExampleLine(pickleprdContent, 'pickle-prd.md');
   assertDocumentedExampleParses(line, 'pickle-prd.md');
@@ -114,4 +123,43 @@ test('O1-4 (mutation): stripping backticks from the pickle-refine-prd.md example
 test('O1-4 (mutation): stripping backticks from the spawn-refinement-team.ts prompt example reds the extraction', () => {
   const line = extractWorkedExampleLine(refinementPrompt, 'spawn-refinement-team.ts');
   assertMutatedExampleFailsToParse(line, 'spawn-refinement-team.ts');
+});
+
+test('R1-1: the manager Phase 2 ticket-authoring template (real composeManagerPromptFromSkill output) documents a worked example the real extractor parses', () => {
+  const line = extractWorkedExampleLine(managerPrompt, '_pickle-manager-prompt.md');
+  assertDocumentedExampleParses(line, '_pickle-manager-prompt.md');
+});
+
+test('R1-1: the manager Phase 2 ticket-authoring template states prose criteria remain valid and unguarded', () => {
+  assert.ok(
+    managerPrompt.includes(PROSE_REMAINS_VALID_SENTINEL),
+    '_pickle-manager-prompt.md (composed) must state that prose criteria remain valid and unguarded',
+  );
+});
+
+test('R1-1 (mutation): stripping backticks from the manager-template example reds the extraction', () => {
+  const line = extractWorkedExampleLine(managerPrompt, '_pickle-manager-prompt.md');
+  assertMutatedExampleFailsToParse(line, '_pickle-manager-prompt.md');
+});
+
+test('R1-1: the ${ACCEPTANCE_CRITERIA_GUIDANCE} placeholder does not survive composition', () => {
+  assert.ok(
+    !managerPrompt.includes('${ACCEPTANCE_CRITERIA_GUIDANCE}'),
+    'composeManagerPromptFromSkill must resolve the placeholder, never leave it literal in the manager prompt',
+  );
+});
+
+test('R1-3: a prose-only acceptance criterion is neither rewritten into a fake command nor rejected', () => {
+  const proseOnlyCriterion = 'The dashboard renders the new widget without a console error.';
+  const ticketBody = `## Acceptance Criteria\n- ${proseOnlyCriterion}\n`;
+  const assertions = readExecutableAcceptanceAssertions(ticketBody);
+  assert.deepEqual(
+    assertions,
+    [],
+    'a prose-only criterion must not be fabricated into an executable assertion',
+  );
+  assert.ok(
+    ticketBody.includes(proseOnlyCriterion),
+    'the prose criterion text must survive unmodified — the authoring form never invents a command',
+  );
 });
