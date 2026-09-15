@@ -569,7 +569,7 @@ test('A5: suppressIncrement HOLDS the counter (never increments)', async () => {
 test('A5: resolveHardeningSettings().breaker_recovery_grace_seconds + isWithinBreakerRecoveryGrace', async () => {
   const { isWithinBreakerRecoveryGrace } = await import('../bin/mux-runner.js');
   // R-RRPC-1: resolveBreakerRecoveryGraceSeconds was folded into the canonical
-  // resolveHardeningSettings (services/pickle-utils.js) — the duplicate mux-runner.js
+  // resolveHardeningSettings (services/pickle-settings.js) — the duplicate mux-runner.js
   // resolver + its DEFAULT_BREAKER_RECOVERY_GRACE_SECONDS const are gone.
   const { resolveHardeningSettings } = await import('../services/pickle-utils.js');
   const grace = (bag) => resolveHardeningSettings(bag).breaker_recovery_grace_seconds;

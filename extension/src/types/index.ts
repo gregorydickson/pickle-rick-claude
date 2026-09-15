@@ -242,7 +242,7 @@ export interface RecoveryAttempt {
 /**
  * Ticket 90574654 — runtime-recovery hardening knobs resolved from the additive
  * `hardening:` block in `pickle_settings.json` (DISTINCT from `bmad_hardening`).
- * Resolver: `resolveHardeningSettings(bag)` in `services/pickle-utils.ts` —
+ * Resolver: `resolveHardeningSettings(bag)` in `services/pickle-settings.ts` —
  * absent/partial/malformed input falls back to compiled defaults per field.
  */
 export interface HardeningSettings {
@@ -280,7 +280,7 @@ export interface HardeningSettings {
 /**
  * Ticket e9bdac75 (Workstream B) — rate-limit park controls resolved from the
  * additive `rate_limit:` block in `pickle_settings.json`.
- * Resolver: `resolveRateLimitSettings(bag)` in `services/pickle-utils.ts` —
+ * Resolver: `resolveRateLimitSettings(bag)` in `services/pickle-settings.ts` —
  * absent/partial/malformed input falls back to the compiled default per field.
  */
 export interface RateLimitSettings {

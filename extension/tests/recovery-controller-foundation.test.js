@@ -108,7 +108,7 @@ test('R-ORSR-1 back-compat: existing recovery_attempts entries are preserved', a
 });
 
 // R-RRPC-1/3: breaker-grace + bounded-escape caps consolidated into the single
-// resolveHardeningSettings resolver (services/pickle-utils.ts) — one resolver,
+// resolveHardeningSettings resolver (services/pickle-settings.ts) — one resolver,
 // one compiled default per field (30 / 3).
 
 test('R-RRPC-1: resolveHardeningSettings resolves breaker_recovery_grace_seconds (default + override)', async () => {

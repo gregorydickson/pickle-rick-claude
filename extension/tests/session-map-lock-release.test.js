@@ -7,7 +7,7 @@
 // never registered in the map that resolve-state.ts uses to find a session by cwd.
 //
 // The bug: updateSessionMap's collision branch called process.exit(1) from INSIDE the
-// withRetryLock callback. Release lives in a `finally` (pickle-utils.ts tryRunWithExclusiveLock),
+// withRetryLock callback. Release lives in a `finally` (retry-lock.ts tryRunWithExclusiveLock),
 // and process.exit skips finally blocks — so the lockfile survived, holding a dead pid.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
