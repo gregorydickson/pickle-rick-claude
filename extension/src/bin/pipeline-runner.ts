@@ -1270,6 +1270,7 @@ export function runBundlePreflight(sessionRoot: string): void {
  * citadel would have accepted. Read-only: adoption stays with the heal. A resume whose plan
  * index is already past citadel is not a launch of citadel and is never refused. Called only
  * from the CLI entry, never from `main()`, so it cannot break a running phase loop.
+ * AC-Q1: the launch preflight for a citadel phase list with no resolvable PRD.
  */
 export function assertCitadelLaunchPrdResolvable(sessionRoot: string): void {
   const raw = readRecoverableJsonObject(path.join(sessionRoot, 'pipeline.json'));

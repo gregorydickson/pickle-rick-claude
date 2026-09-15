@@ -1130,6 +1130,7 @@ export function classifyPostFinalVerdict(
     .filter((f): f is BetweenTicketGateFailure & { message: string } =>
       typeof f.message === 'string' && f.message.length > 0)
     .map(f => ({ name: f.name, message: f.message }));
+  // AC-Q2: a non-zero tier exit reporting zero test failures classifies inconclusive, not red.
   // Q2: a non-zero exit whose output reported test results with zero failures measured no
   // regression — it is unmeasured, so it stays degraded and keeps its tail, but is not `red`.
   // Output carrying no parseable fail count is never stamped, so it stays red.
@@ -16381,6 +16382,7 @@ function muxEpicFinalizeScan(sessionDir: string, ...workingDirs: Array<string | 
   return () => muxBundleScan(sessionDir, workingDirs.find(Boolean) || '');
 }
 
+// AC-Q3: preskip advance, refused-finalize park and epic finalize scan extracted as structural moves.
 // AC-P2: ratcheted to <=217 code lines and complexity <=38 by structural extraction only.
 // eslint-disable-next-line max-lines-per-function, complexity -- HT-1 reviewed: measured 217 code lines against a ceiling of 120, and complexity 38 against a ceiling of 15. B-ZERO Q3 could not delete this carve-out inside its fence: tests/szechuan-sauce.test.js M4-2/M4-3 assert this function is still over the size ceiling, and the refused-finalize, preskip and timeout-halt source pins keep their loop continue/break statements inline here; a follow-up must scope those tests. This is the iteration loop that decides ticket lifecycle, salvage and Done-flips; B-RATCHET R2 lowered it in stages by extracting the loop's own seams as behaviour-preserving moves (session bootstrap and rate-limit cycle, then spawn/await and completion evidence, then the recovery ladder and EPIC finalize, then the iteration head, the C6 liveness watchdog and the run epilogue, then the pass opening, the pre-spawn liveness pair, the post-classification cycles and the completion-claim settle), re-recording the measured figures at each stage against this ceiling. Tracked in GitHub #21.
 async function runMuxRunnerMain() {

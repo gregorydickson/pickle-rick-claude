@@ -844,6 +844,7 @@ function isMarkdownPrd(candidate: string): boolean {
 }
 
 function resolveExistingPrdPath(candidate: string): string | undefined {
+  // AC-Q1: a launch-task PRD is recorded in prd_path by construction at launch.
   // Q1 (GitHub #27): a PRD named mid-sentence ends in `.`/`:`/`;`/`!`/`?`, and any of
   // those left last defeated the whole trailing strip, so `from prds/x.md.` never resolved.
   const cleaned = candidate.trim().replace(/^["'`(<]+|[)"'`,>.:;!?]+$/g, '');
