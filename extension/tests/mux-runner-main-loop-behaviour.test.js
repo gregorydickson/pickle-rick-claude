@@ -27,6 +27,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30000 }).trim();
 
 // Sandbox every side-effect channel BEFORE the module loads.
 const ROOT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-main-loop-')));
@@ -58,8 +59,6 @@ process.on('exit', reapRoot);
 after(reapRoot);
 
 const mux = await import('../bin/mux-runner.js');
-
-const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30000 }).trim();
 
 let sessionSeq = 0;
 
