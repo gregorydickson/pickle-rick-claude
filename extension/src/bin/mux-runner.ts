@@ -16196,8 +16196,9 @@ type PreSpawnLivenessStep =
  * legitimate wait state (rate-limit wait, breaker OPEN, last_error, subprocess errors). If wedged, emit a diagnostic
  * event and self-recover (re-evaluate the current ticket / re-spawn) rather than sit silently at 0% CPU. C6 is
  * best-effort and never crashes the loop (see runCpuLivenessWatchdog).
+ * Exported so tests can drive the liveness pair against a real temp session (R2a).
  */
-function runPreSpawnLivenessWatchdogs(
+export function runPreSpawnLivenessWatchdogs(
   input: Omit<Parameters<typeof runIdleStallWatchdog>[0], 'lastProgressEpoch'> & {
     stallTrackers: MuxStallTrackers;
     anchor: CpuLivenessAnchor;
@@ -16227,8 +16228,11 @@ function runPreSpawnLivenessWatchdogs(
   return { kind: cpuStep.kind === 'recovered' ? 'continue' : 'proceed', idleStallRecoveryCount: idleStep.idleStallRecoveryCount };
 }
 
-/** e9ef71c7: rate-limit classification of the finished iteration (MUST run before CB to prevent CB poisoning) and its iteration_end event. */
-function classifyAndRecordIterationEnd(input: {
+/**
+ * e9ef71c7: rate-limit classification of the finished iteration (MUST run before CB to prevent CB poisoning) and its iteration_end event.
+ * Exported so tests can assert the classification and the recorded event together (R2a).
+ */
+export function classifyAndRecordIterationEnd(input: {
   outcome: LoopIterationOutcome;
   iterLogFile: string;
   sessionDir: string;
@@ -16377,8 +16381,11 @@ async function parkRefusedCompletionClaim(
   await sleep(1000);
 }
 
-/** Q3: the ground-truth bundle scan an EPIC-success finalize re-runs, over the first non-empty working dir. */
-function muxEpicFinalizeScan(sessionDir: string, ...workingDirs: Array<string | undefined>): () => GraduationCounts | null {
+/**
+ * Q3: the ground-truth bundle scan an EPIC-success finalize re-runs, over the first non-empty working dir.
+ * Exported so tests can call the deferred scan against a real session and repos (R2a).
+ */
+export function muxEpicFinalizeScan(sessionDir: string, ...workingDirs: Array<string | undefined>): () => GraduationCounts | null {
   return () => muxBundleScan(sessionDir, workingDirs.find(Boolean) || '');
 }
 

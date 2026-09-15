@@ -13486,8 +13486,9 @@ function readPreskipAdvance(sessionDir, preskipTicket) {
  * legitimate wait state (rate-limit wait, breaker OPEN, last_error, subprocess errors). If wedged, emit a diagnostic
  * event and self-recover (re-evaluate the current ticket / re-spawn) rather than sit silently at 0% CPU. C6 is
  * best-effort and never crashes the loop (see runCpuLivenessWatchdog).
+ * Exported so tests can drive the liveness pair against a real temp session (R2a).
  */
-function runPreSpawnLivenessWatchdogs(input) {
+export function runPreSpawnLivenessWatchdogs(input) {
     const { state, statePath, sessionDir, extensionRoot, iteration, curIter, now, idleStallThresholdSeconds, cbEnabled, cbState, stallTrackers, log } = input;
     const idleStep = runIdleStallWatchdog({
         state, statePath, sessionDir, extensionRoot, iteration, curIter, now,
@@ -13513,8 +13514,11 @@ function runPreSpawnLivenessWatchdogs(input) {
         return cpuStep;
     return { kind: cpuStep.kind === 'recovered' ? 'continue' : 'proceed', idleStallRecoveryCount: idleStep.idleStallRecoveryCount };
 }
-/** e9ef71c7: rate-limit classification of the finished iteration (MUST run before CB to prevent CB poisoning) and its iteration_end event. */
-function classifyAndRecordIterationEnd(input) {
+/**
+ * e9ef71c7: rate-limit classification of the finished iteration (MUST run before CB to prevent CB poisoning) and its iteration_end event.
+ * Exported so tests can assert the classification and the recorded event together (R2a).
+ */
+export function classifyAndRecordIterationEnd(input) {
     const { outcome, sessionDir, iteration, state } = input;
     const exitResult = classifyIterationExit(outcome.completion, input.iterLogFile, {
         didTimeout: outcome.timedOut,
@@ -13628,8 +13632,11 @@ async function parkRefusedCompletionClaim(claimLabel, reason, stallTrackers, log
     stallTrackers.stallCount = 0;
     await sleep(1000);
 }
-/** Q3: the ground-truth bundle scan an EPIC-success finalize re-runs, over the first non-empty working dir. */
-function muxEpicFinalizeScan(sessionDir, ...workingDirs) {
+/**
+ * Q3: the ground-truth bundle scan an EPIC-success finalize re-runs, over the first non-empty working dir.
+ * Exported so tests can call the deferred scan against a real session and repos (R2a).
+ */
+export function muxEpicFinalizeScan(sessionDir, ...workingDirs) {
     return () => muxBundleScan(sessionDir, workingDirs.find(Boolean) || '');
 }
 // AC-Q3: preskip advance, refused-finalize park and epic finalize scan extracted as structural moves.
