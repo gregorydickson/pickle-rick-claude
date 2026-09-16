@@ -15,6 +15,7 @@
     "tests/check-readiness-skip.test.js",
     "tests/check-readiness-tilde-paths.test.js",
     "tests/check-scope-diff-emits-event.test.js",
+    "tests/citadel/trap-door-coverage-audit.test.js",
     "tests/codex-git-boundary-parity.test.js",
     "tests/dsan2-regression-corpus.test.js",
     "tests/eslint-plugin-pickle.test.js",
