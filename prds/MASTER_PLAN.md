@@ -132,7 +132,7 @@ reads `2.1.0`.
 |---|---|
 | released | **`v2.1.0`** — beta dropped. Gate17 **22/22 green at the tagged commit** |
 | last run | [[B-BEHAVE]] `2026-09-15-38bf786d` — 4/4, `completed`, no dispositions (4th straight success) |
-| open issues | **#5** (architecture enhancement) · **#31** (NEW — client identity in a public repo) |
+| open issues | **#5** (architecture) · **#31** (NEW — client identity in a public repo) · **#32** (NEW — `stalled_below_target` was two causes) |
 | tree | clean at `c20a9562`, branch pushed |
 | pipeline | none running — verified by reading `state.json` + `pipeline-status.json` |
 
@@ -207,9 +207,10 @@ client.**
 1. **#31** — client identity in a public repo. Operator decision, not an autonomous fix.
 2. **B-LENS review** — the revision is in; it needs the operator's read before dispatch.
 3. **#5** — the architecture enhancement (context cache, trap-door commit, worktree-as-proposal).
-4. szechuan `stalled_below_target` 3rd occurrence, cause unmeasured. Falsifier: compare the
-   per-iteration metric traces of the two runs — same shape = one cause, different = the disposition is
-   hiding two.
+4. **#32** — `stalled_below_target` is MEASURED and was hiding two causes (see ROOT S below).
+   Cause A (judge invents a 50-line ceiling; 4 of 6 findings false; an unnecessary revert) is
+   actionable by subtraction. Cause B (worker commits nothing, five iterations, ~30s each) is still
+   uncaused and is the more serious of the two.
 5. Restore docker if the Linux OS axis is wanted locally again.
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
@@ -324,9 +325,38 @@ unique.
 
 **Do NOT assume the two `stalled_below_target` runs share a cause** — the disposition is a threshold
 (metric never reached target within the stall budget), and two runs can hit the same threshold for
-different reasons. The falsifying observation: compare the per-iteration metric traces of
-`2026-09-06-f625727a` and `2026-09-08-f365390b`. Same trajectory shape = one cause; different = the
-disposition is again hiding two.
+different reasons. The falsifying observation: compare the per-iteration metric traces. Same trajectory
+shape = one cause; different = the disposition is again hiding two.
+
+### ✅ ANSWERED 2026-09-16 — the shapes DIFFER. Two causes, filed as **#32**.
+
+`2026-09-06-f625727a` and `2026-09-08-f365390b` are **pruned from disk**, so that exact comparison is no
+longer takeable — **stop citing it as pending.** Two NEWER `stalled_below_target` runs were on disk and
+were compared instead:
+
+| | `2026-09-12-a4d141e1` | `2026-09-15-c5a7eb48` |
+|---|---|---|
+| `convergence.history` | **1** entry (iter 2) | **0** entries |
+| `stall_counter` | 5/5 | 5/5 |
+| incrementer | `recordIteration` | **`recordStall`** (`microverse-state.ts:401`) |
+| mechanism | `score 6` vs `baseline 2` → `action: revert` | **five "No commits made"**, 28-61s apart |
+
+Those are the only two writers of `stall_counter`, and `recordIteration` moves history and counter
+together — so a full counter over an empty history is `recordStall` five times, not corruption.
+
+**Cause A is a threshold the judge INVENTED.** Its six violations cite *"the 50-line hard limit"* four
+times. `szechuan-sauce-principles.md:113` defers to the enforced `max-lines-per-function`, which
+`eslint.config.js:20` sets to **120** code lines. Measured by AST at the judged sha `a89b28b9`:
+`buildCitadelAuditReport` **119**, `reapOrphanedManagersAtIterationStart` **49**,
+`bootstrapSessionResources` **47**, `checkPartialLifecycleExit` **46** — **4 of 6 are non-violations**
+under our own ceiling. Strip them and the score is **2 = baseline**, `tolerance: 0` ⇒ `held`, **no
+regression and no revert.** The judge's *measurements* were exact (`runMuxRunnerMain` span **2202** at
+line **12911**, as reported); only the threshold was fabricated. **The fix direction is subtraction —
+read the ceiling from the config that enforces it, one fewer number to keep in sync.**
+
+**Cause B is a worker that committed nothing five times** in 12m09s over 6 iterations, with a
+`violation_ledger` entry at `first_seen_iter: 1` proving iterations ran. Why it produced nothing is
+**open** — a worker-productivity failure sharing only a disposition string with Cause A.
 
 **No release, and szechuan is not why.** `nonConvergent` was already 1 from the pickle-boundary withhold
 before szechuan ran. Second consecutive bundle where the release was foreclosed at phase 1.
