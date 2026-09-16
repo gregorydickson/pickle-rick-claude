@@ -126,6 +126,48 @@ NO measured basis. Large PRDs are not constrained by the cap.
 byte-identical, exactly one intentional difference (`bin/tmux-runner.js`, the symlink), deployed version
 reads `2.1.0`.
 
+### 🏁 B-JUDGESCOPE RAN — 4/4, 14/14 tickets, gate 22/22 green, **NOT released** (cadence)
+
+Session `2026-09-15-6d247e1b`, `status: completed`, `completed_phases: 4/4`, **14/14 tickets Done**,
+none Failed. Branch pushed (**40 commits ahead of the `v2.1.0` tag**), deployed, **no tag** — per the
+RELEASE CADENCE rule, not releasing after a green bundle is the NORMAL state and is not a blocker.
+
+| | |
+|---|---|
+| gate | **22/22 green at `fac71de3`**, same-run `GATE_END`, 69 min |
+| soak | **1,803,652 ms** vs `SOAK_SECONDS=1800`, `SOAK_UNRUN` 0 |
+| flake budget | `failures=0 runs_completed=5/5 tests=10028` (was 9974) |
+| deploy | verified BY CONTENT — 184 compared, **0 differing**, 1 intentional (`bin/tmux-runner.js` symlink) |
+| disposition | `pickle: done_over_unmeasured_worker_gate_tests:c1adb389` — **NOT a withhold** |
+
+**The disposition is a flag, not a withhold.** `pipeline-runner.log`: *"worker_gate_tests_verdict (no
+corroborating failure evidence) — NOT withholding"*; the worker's `tmux_iteration_11.log` carries
+`worker_gate_tests_verdict: "green"`; and the verdict agrees — `status: completed`, `unsuccessful` and
+`nonConvergent` both unset, unlike B-MEGADRAIN's `status: failed`. **Continue-and-flag working as
+designed.**
+
+### ⛔ THE RUN'S TWO FIRSTS ARE NOT ATTRIBUTABLE TO THE FIX — do not credit them to it
+
+`microverse.json` **`converged`** (baseline 2 → target 0, history 2) — the **first szechuan convergence
+on this branch**; `anatomy-park.json` converged at **2 passes per subsystem** against 11/17/37
+historically; `szechuan-sauce.json` 0 findings.
+
+**Every phase executed the PRE-FIX runtime.** Source and the deployed runtime are isolated and a diff
+goes live only at `install.sh`; the deployed tree's last write before the run was `01:22:43Z` (the GA
+deploy) and the run was `05:53Z → 11:21Z`. `install.sh` landed the bundle only afterwards.
+
+**What the convergence DOES establish:** the deadlock is **not deterministic**. The same pre-fix runtime
+that stalled five times converged here — consistent with the census that `allowed_paths` absence is a
+NECESSARY, not sufficient, condition. **#32 stays OPEN**; the next pipeline run is the first that
+exercises the fix, and closing it requires that run to show `allowed_paths` populated, the scoping clause
+in the prompt, and no pre-bundle ledger entry.
+
+**Deploy note:** before `install.sh`, 4 deployed JS files were stale (`microverse-runner`,
+`microverse-state`, `ac-phase-gate`, `citadel/diff-hygiene`) **and `bin/tmux-runner.js` was absent**.
+`install.sh` restored it (`install.sh:563` creates it as a symlink to `mux-runner.js`; it has no source
+counterpart). The deployed `version` read `2.1.0` throughout — **deploy drift is invisible to the version
+check, diff by CONTENT.**
+
 ### ▶ IMMEDIATE STATE
 
 | | |
