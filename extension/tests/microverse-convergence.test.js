@@ -2716,7 +2716,13 @@ test('WIRE: surface -> per-line drop -> ledger -> stall exit -> stall_dispositio
             ['touched line finding'],
             'the filtered ledger and the stall disposition must both round-trip to disk, not just stay in memory',
         );
-        assert.ok(persisted.stall_disposition, 'the persisted state must carry the stall_disposition too');
+        // e562164b (AC-J4-3): the persisted DERIVATION INPUTS, iteration included — the field the
+        // artifact otherwise lacks. `assert.ok` alone stayed GREEN with the runtime passing 0.
+        assert.deepEqual(
+            persisted.stall_disposition,
+            { cause: 'held', inputs: { last_stall_signal: 'held', iteration: 3 } },
+            'the persisted stall_disposition must carry the cause AND the inputs it was derived from, including the final iteration',
+        );
     } finally {
         delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
         _deps.execFileSync = originalExec;
