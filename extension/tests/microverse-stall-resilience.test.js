@@ -562,6 +562,109 @@ test('AP-EXT-ITER119-01 control: ownable dirt leaves the classifier verdict stan
   }
 });
 
+// Ticket 79686819: is `clean_pass` reachable through the REAL `autoRescueDirtyTree` ->
+// `handleNoCommitStall` sequence after db605b05 + da44ff00 (in-scope dirt is auto-committed)?
+// The control test above proves the PREDICATE tolerates owned dirt, but calls
+// `handleNoCommitStall` directly and its own comment says auto-rescue would have committed
+// that dirt in production — so it does not prove the state survives the real caller sequence.
+//
+// It does: `autoRescueDirtyTree` stages owned dirt and runs `git commit`, but a git failure
+// (index lock contention, a rejecting pre-commit hook, disk full, GPG failure ...) leaves the
+// dirt UNSTAGED-but-PRESENT (`git reset` only unstages) and `ctx.postIterSha` untouched.
+// `handleMetricMode` still sees `postIterSha === preIterSha` and calls `handleNoCommitStall`,
+// which re-evaluates `isProvablyNoOpIteration` — the same owned dirt is still there, so it
+// returns false and the classifier's independent `clean_pass` verdict is NOT overridden.
+//
+// Index-lock contention (not a pre-commit hook) is used to force the failure deterministically:
+// a rejecting `.git/hooks/pre-commit` is defeated by this repo's own ambient
+// `GIT_CONFIG_KEY_*=core.hooksPath` override (the pickle worker session's trailer-hooks
+// redirect), which every `git` spawn in this process inherits via `process.env`. Precedent for
+// the index-lock technique: `tests/concurrent-git-access-probe-launch.test.js`,
+// `tests/cancel-index-lock-preserved.test.js`.
+function jamGitIndexLock(dir) {
+  fs.writeFileSync(path.join(dir, '.git', 'index.lock'), '');
+}
+
+test('clean_pass is reachable: a failed auto-commit leaves owned dirt behind and the classifier still converges', async () => {
+  const { dir } = initRepo();
+  const sessionDir = tmpDir('pickle-mrs-session-');
+  try {
+    fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'real uncommitted work\n');
+    jamGitIndexLock(dir);
+    const sha = git(dir, ['rev-parse', 'HEAD']);
+    const ctx = {
+      sessionDir, workingDir: dir, preIterSha: sha, postIterSha: sha, iteration: 1, log: () => {},
+    };
+
+    // Real caller sequence: autoRescueDirtyTree runs first, exactly as handleIterationOutcome
+    // does when preIterSha === postIterSha.
+    autoRescueDirtyTree(ctx);
+
+    assert.equal(git(dir, ['rev-parse', 'HEAD']), sha, 'the rejected commit must not move HEAD');
+    assert.notEqual(
+      git(dir, ['status', '--porcelain']).trim(), '',
+      'the owned dirt must SURVIVE the failed commit — this is the state that makes clean_pass reachable',
+    );
+
+    const logPath = writeResultLog(sessionDir, 'tmux_iteration_1.log', {
+      subtype: 'success', num_turns: 60, result: 'Clean pass — no violations found.',
+    });
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    state.status = 'iterating';
+    ctx.postIterSha = sha;
+
+    const result = await handleNoCommitStall(state, ctx, logPath);
+
+    assert.equal(
+      result, 'converged',
+      'a failed auto-commit leaves real owned dirt on disk, and the surviving classifier verdict still converges',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('a failed auto-commit does not converge when the worker\'s own log is not clean_pass-shaped', async () => {
+  const { dir } = initRepo();
+  const sessionDir = tmpDir('pickle-mrs-session-');
+  const originalSleep = _deps.sleep;
+  _deps.sleep = async () => {};
+  try {
+    fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'real uncommitted work\n');
+    jamGitIndexLock(dir);
+    const sha = git(dir, ['rev-parse', 'HEAD']);
+    const ctx = {
+      sessionDir, workingDir: dir, preIterSha: sha, postIterSha: sha, iteration: 1, log: () => {},
+    };
+
+    autoRescueDirtyTree(ctx);
+    assert.notEqual(
+      git(dir, ['status', '--porcelain']).trim(), '',
+      'precondition: the owned dirt must survive the failed commit, same as the positive case',
+    );
+
+    const logPath = writeResultLog(sessionDir, 'tmux_iteration_1.log', {
+      subtype: 'success', num_turns: 60, result: 'Blocked — could not complete the task.',
+    });
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    state.status = 'iterating';
+    ctx.postIterSha = sha;
+
+    const result = await handleNoCommitStall(state, ctx, logPath);
+
+    assert.notEqual(
+      result, 'converged',
+      'the same failed-auto-commit state must NOT converge on its own — only the classifier\'s independent clean_pass verdict may',
+    );
+    assert.equal(state.convergence.stall_counter, 1, 'the stall arm ran');
+  } finally {
+    _deps.sleep = originalSleep;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 // AP-EXT-ITER184-01: the dirty-tree rescue belonged to ONE convergence mode, not to the iteration.
 //
 // Every case above runs the METRIC-mode sequence. `autoRescueDirtyTree` had exactly one production
