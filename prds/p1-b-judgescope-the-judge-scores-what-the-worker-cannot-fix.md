@@ -246,15 +246,16 @@ out-of-scope finding" are the same observable. Once J1+J3 land, the second canno
 ## 🔌 Interface Contracts
 
 All seams are **already exported**, so every AC is pinnable with no new export and no test-only seam.
-Verified at HEAD `3f6bda2e`.
+Verified at HEAD `3f6bda2e`; line numbers below re-verified against `48a7aa5a` after the bundle's own
+implementation tickets landed.
 
 | symbol | location | signature |
 |---|---|---|
-| `buildJudgePrompt` | `microverse-runner.ts:2059` | `(input: JudgePromptInput) => string` |
-| `classifyStall` | `microverse-runner.ts:1812` | `(input: StallClassifierInput) => <classification>` |
-| `classifyNoCommitExit` | `microverse-runner.ts:1869` | `(iterLogFile: string) => NoCommitExitClassification` |
-| `recordIteration` | `microverse-state.ts:371` | `(state, entry, classification?) => MicroverseSessionState` |
-| `recordStall` | `microverse-state.ts:402` | `(state) => MicroverseSessionState` |
+| `buildJudgePrompt` | `microverse-runner.ts:2060` | `(input: JudgePromptInput) => string` |
+| `classifyStall` | `microverse-runner.ts:1813` | `(input: StallClassifierInput) => <classification>` |
+| `classifyNoCommitExit` | `microverse-runner.ts:1870` | `(iterLogFile: string) => NoCommitExitClassification` |
+| `recordIteration` | `microverse-state.ts:378` | `(state, entry, classification?) => MicroverseSessionState` |
+| `recordStall` | `microverse-state.ts:410` | `(state) => MicroverseSessionState` |
 
 **J1/J3 — the review surface.**
 - **Output:** `{ paths: string[], base: string }`, `paths` non-empty on success.
