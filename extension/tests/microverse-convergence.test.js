@@ -21,6 +21,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
     compareMetric,
     createMicroverseState,
@@ -54,6 +55,7 @@ import {
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { loadMicroverseScope } from './helpers/microverse-corpora.js';
+import { setupSzechuanSauce, writePipelineStatus } from '../bin/pipeline-runner.js';
 
 function makeTmpDir() {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-conv-')));
@@ -2148,5 +2150,107 @@ test('446b99dd: scope-based out-of-scope-only dirt is salvage-anchored by the re
         _deps.sleep = originalSleep;
         fs.rmSync(workingDir, { recursive: true, force: true });
         fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 51d7d765 (AC-J1-7): isCodeFreeScope reachability — a scoped-but-
+// code-free microverse run DOES skip szechuan-sauce, the skip is intentional
+// and reported, and it reaches the phase artifact.
+//
+// Measurement: `isCodeFreeScope` (src/bin/pipeline-runner.ts:2227) has exactly
+// one call site, inside `shouldSkipSzechuanForEmptyScope`, consumed by
+// `setupSzechuanSauce`. src/bin/CLAUDE.md's R-PSSS trap door already declares
+// this skip MUST emit a WARN + `szechuan_sauce_empty_scope_skip` activity
+// event before the `init-microverse.js` spawn, and
+// extension/tests/szechuan-scope.test.js ("R-PSSS-2: szechuan-sauce skips a
+// code-free (doc-only) scope with a WARN") already pins the WARN and the
+// returned `{skipReason:'empty_scope'}` for this exact case — the skip is
+// intended, not an accident of the new surface. What was missing: no test
+// asserted the activity event itself fires for the CODE-FREE-scope cause
+// (only the sibling empty-branch-diff cause, AC-B1 in
+// szechuan-scope.test.js, checks event emission), and nothing tied this
+// specific skip reason through to the phase artifact (pipeline-status.json's
+// phase_skips — the generic wiring is R-PSSS-3, already tested for other
+// reasons, but never for this one). Both gaps are closed below by driving
+// the REAL `setupSzechuanSauce` and REAL `writePipelineStatus`; no behavior
+// change was needed in pipeline-runner.ts.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT_51D7D765 = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function readActivityEvents51d7d765(dataRoot, eventName) {
+    const activityDir = path.join(dataRoot, 'activity');
+    if (!fs.existsSync(activityDir)) return [];
+    const events = [];
+    for (const f of fs.readdirSync(activityDir).filter((n) => n.endsWith('.jsonl'))) {
+        for (const line of fs.readFileSync(path.join(activityDir, f), 'utf-8').split('\n').filter(Boolean)) {
+            try {
+                const parsed = JSON.parse(line);
+                if (parsed.event === eventName) events.push(parsed);
+            } catch { /* skip malformed */ }
+        }
+    }
+    return events;
+}
+
+function withPickleDataRoot51d7d765(dataRoot, fn) {
+    const prior = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    try {
+        return fn();
+    } finally {
+        if (prior === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = prior;
+    }
+}
+
+test('51d7d765/AC-J1-7: a scoped-but-code-free run skips szechuan-sauce via isCodeFreeScope, and the skip reaches the event log and the phase artifact', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-51d7d765-'));
+    const dataRoot = path.join(dir, 'data');
+    try {
+        const codeFreePaths = ['docs/guide.md', 'CHANGELOG.md'];
+        fs.writeFileSync(
+            path.join(dir, 'scope.json'),
+            JSON.stringify({ allowed_paths: codeFreePaths, mode: 'diff', strategy: 'strict', head_sha: 'abc' }),
+        );
+
+        const logs = [];
+        const result = withPickleDataRoot51d7d765(dataRoot, () =>
+            setupSzechuanSauce(dir, '/some/target', 5, REPO_ROOT_51D7D765, undefined, undefined, (m) => logs.push(m)));
+
+        // AC1/AC2: the skip DOES occur, via the isCodeFreeScope path, and is
+        // reported — never a silent no-op.
+        assert.deepStrictEqual(result, { skipReason: 'empty_scope' },
+            'a scoped, code-free run must skip szechuan-sauce with the empty_scope reason');
+        assert.match(logs.join('\n'), /no code files/, 'the WARN must name the code-free cause');
+        assert.equal(fs.existsSync(path.join(dir, 'microverse.json')), false,
+            'init-microverse.js must never be spawned on a code-free-scope skip');
+
+        // The genuinely missing pin: the activity event ITSELF, for this
+        // specific (code-free scope) cause — not merely the WARN + return
+        // value the pre-existing R-PSSS-2 test already covers.
+        const events = readActivityEvents51d7d765(dataRoot, 'szechuan_sauce_empty_scope_skip');
+        assert.equal(events.length, 1, `expected exactly 1 szechuan_sauce_empty_scope_skip event; got ${events.length}`);
+        assert.deepStrictEqual(events[0].gate_payload.in_scope_paths, codeFreePaths,
+            'the event must carry the code-free path set that made the scope reachable');
+
+        // AC3: the skip reaches the phase artifact. `runPhaseIteration`'s
+        // wiring from a PhaseSetupResult's skipReason into
+        // counters.phaseSkips -> pipeline-status.json:phase_skips is generic
+        // and already covered (R-PSSS-3); this proves it for the REAL
+        // skipReason THIS path produces, not a hand-authored stand-in.
+        writePipelineStatus(dir, 'running', {
+            current_phase: 'szechuan-sauce',
+            completed_phases: 0,
+            skipped_phases: 1,
+            total_phases: 1,
+            phase_skips: { 'szechuan-sauce': result.skipReason },
+        });
+        const status = JSON.parse(fs.readFileSync(path.join(dir, 'pipeline-status.json'), 'utf-8'));
+        assert.deepStrictEqual(status.phase_skips, { 'szechuan-sauce': 'empty_scope' },
+            'the code-free-scope skip reason must reach pipeline-status.json phase_skips');
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
     }
 });
