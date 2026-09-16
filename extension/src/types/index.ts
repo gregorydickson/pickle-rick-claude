@@ -1845,6 +1845,11 @@ export interface MicroverseSessionState {
   consecutive_subprocess_errors?: number;
   violation_ledger?: ViolationLedger[];
   current_subsystem?: string;
+  /** AC-J3 (da44ff00): running count of judge-reported violations dropped for lying outside the
+   * derived review surface (a pre-existing line in an in-scope file), before they were scored and
+   * before they reached `violation_ledger`. Additive/optional — absent on sessions predating this
+   * field. */
+  out_of_surface_findings_dropped?: number;
 }
 
 // ---------------------------------------------------------------------------

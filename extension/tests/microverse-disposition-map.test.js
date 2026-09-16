@@ -6,7 +6,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, _deps } from '../bin/microverse-runner.js';
+import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, _deps } from '../bin/microverse-runner.js';
+import { writeMicroverseState, readMicroverseState, createMicroverseState } from '../services/microverse-state.js';
 import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
 
 const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -199,6 +200,60 @@ test('finalize fallback stamps the disposition into state.json when finalizeTerm
     assert.equal(state.exit_reason, mv.exit_reason);
   } finally {
     _deps.finalizeTerminalState = realFinalize;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// da44ff00 (AC-J3-4): the drop count `dropOutOfSurfaceViolations` returns must reach the
+// persisted phase artifact (microverse.json), not merely an in-memory return value — the same
+// carries-into-the-artifact discipline every other WS-5 disposition test in this file already
+// pins for `exit_reason`.
+test('AC-J3-4: dropOutOfSurfaceViolations.droppedCount round-trips through microverse.json', () => {
+  const sessionDir = tmpDir();
+  try {
+    const originalSpawn = _deps.spawnSync;
+    _deps.spawnSync = () => ({
+      status: 0,
+      // git diff shows only line 9 of src/foo.ts as touched.
+      stdout: [
+        'diff --git a/src/foo.ts b/src/foo.ts',
+        '--- a/src/foo.ts',
+        '+++ b/src/foo.ts',
+        '@@ -9,1 +9,1 @@',
+        '-old',
+        '+new',
+      ].join('\n'),
+    });
+    let dropped;
+    try {
+      dropped = dropOutOfSurfaceViolations(
+        [
+          { id: 'pre', path: 'src/foo.ts', line: 3, severity: 'low', description: 'pre-existing, dropped' },
+          { id: 'touched', path: 'src/foo.ts', line: 9, severity: 'low', description: 'touched, kept' },
+        ],
+        { kind: 'derived', paths: ['src/foo.ts'], base: 'f'.repeat(40) },
+        sessionDir,
+      );
+    } finally {
+      _deps.spawnSync = originalSpawn;
+    }
+    assert.equal(dropped.droppedCount, 1, 'the return value itself must carry the count');
+
+    const mv = createMicroverseState({
+      prdPath: '/tmp/prd.md',
+      metric: { description: 'x', validation: 'x', type: 'llm', timeout_seconds: 60, tolerance: 0 },
+      stallLimit: 3,
+    });
+    mv.out_of_surface_findings_dropped = (mv.out_of_surface_findings_dropped ?? 0) + dropped.droppedCount;
+    writeMicroverseState(sessionDir, mv);
+
+    const persisted = readMicroverseState(sessionDir);
+    assert.equal(
+      persisted.out_of_surface_findings_dropped,
+      1,
+      'the count must reach the phase artifact on disk, not merely an in-memory field',
+    );
+  } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });

@@ -51,6 +51,8 @@ import {
     deriveJudgeReviewSurface,
     preflightAutoCommit,
     autoRescueDirtyTree,
+    dropOutOfSurfaceViolations,
+    parseChangedLineNumbersFromDiff,
     _deps,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
@@ -2254,3 +2256,230 @@ test('51d7d765/AC-J1-7: a scoped-but-code-free run skips szechuan-sauce via isCo
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
+
+// ---------------------------------------------------------------------------
+// da44ff00 (AC-J3-1..4) — drop out-of-surface findings before they are scored
+// and before they reach violation_ledger, decided PER LINE via db605b05's own
+// derived surface (`deriveJudgeReviewSurface`), never per path. `parseChangedLineNumbersFromDiff`
+// is the pure text half (mirrors convergence-gate.ts's parseChangedExportedSymbolsFromDiff);
+// `dropOutOfSurfaceViolations` is the filter both call sites apply before `updateViolationLedger`.
+// ---------------------------------------------------------------------------
+
+test('parseChangedLineNumbersFromDiff: a single hunk records only the added/changed new-file lines', () => {
+    const diff = [
+        'diff --git a/src/foo.ts b/src/foo.ts',
+        'index abc..def 100644',
+        '--- a/src/foo.ts',
+        '+++ b/src/foo.ts',
+        '@@ -1,4 +1,4 @@',
+        ' line1',
+        '-line2',
+        '+line2 changed',
+        ' line3',
+        '-line4',
+        '+line4 changed',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.deepEqual(result.get('src/foo.ts'), new Set([2, 4]),
+        'context lines advance the cursor but are never recorded; only +-prefixed lines are touched');
+});
+
+test('parseChangedLineNumbersFromDiff: multiple hunks in one file reset the cursor per hunk header', () => {
+    const diff = [
+        'diff --git a/src/bar.ts b/src/bar.ts',
+        '--- a/src/bar.ts',
+        '+++ b/src/bar.ts',
+        '@@ -1,2 +1,3 @@',
+        ' one',
+        '+two',
+        ' three',
+        '@@ -20,2 +21,3 @@',
+        ' twenty',
+        '+twentyone',
+        ' twentytwo',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.deepEqual(result.get('src/bar.ts'), new Set([2, 22]));
+});
+
+test('parseChangedLineNumbersFromDiff: a pure delete records nothing for the deleted path', () => {
+    const diff = [
+        'diff --git a/src/gone.ts b/src/gone.ts',
+        '--- a/src/gone.ts',
+        '+++ /dev/null',
+        '@@ -1,2 +0,0 @@',
+        '-one',
+        '-two',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.equal(result.has('src/gone.ts'), false,
+        'a file with no +++ b/ header never enters the map — nothing in it can be a touched line');
+});
+
+test('dropOutOfSurfaceViolations: an unscoped surface passes every violation through unfiltered', () => {
+    const originalSpawn = _deps.spawnSync;
+    let spawnCalled = false;
+    try {
+        _deps.spawnSync = () => { spawnCalled = true; return { status: 0, stdout: '' }; };
+        const violations = [{ id: 'a', path: 'src/foo.ts', line: 999, severity: 'low', description: 'x' }];
+        const result = dropOutOfSurfaceViolations(violations, { kind: 'unscoped' }, '/tmp/whatever');
+        assert.deepEqual(result, { kept: violations, droppedCount: 0 });
+        assert.equal(spawnCalled, false, 'an unscoped surface has no fence to test membership against — no git spawn needed');
+    } finally {
+        _deps.spawnSync = originalSpawn;
+    }
+});
+
+test('dropOutOfSurfaceViolations: an unmeasurable diff fails OPEN (retains everything, drops nothing)', () => {
+    const originalSpawn = _deps.spawnSync;
+    try {
+        // AP-EXT-ITER38-01 family: git failing to run is not evidence the finding is out of scope.
+        _deps.spawnSync = () => ({ status: null, error: new Error('ENOENT') });
+        const violations = [{ id: 'a', path: 'src/foo.ts', line: 3, severity: 'low', description: 'x' }];
+        const result = dropOutOfSurfaceViolations(
+            violations,
+            { kind: 'derived', paths: ['src/foo.ts'], base: 'f'.repeat(40) },
+            '/tmp/whatever',
+        );
+        assert.deepEqual(result, { kept: violations, droppedCount: 0 });
+    } finally {
+        _deps.spawnSync = originalSpawn;
+    }
+});
+
+test('dropOutOfSurfaceViolations: per-line, both directions in one assertion (under- and over-trigger control)', () => {
+    const originalSpawn = _deps.spawnSync;
+    try {
+        // git diff shows only line 5 of src/foo.ts as touched.
+        const diff = [
+            'diff --git a/src/foo.ts b/src/foo.ts',
+            '--- a/src/foo.ts',
+            '+++ b/src/foo.ts',
+            '@@ -5,1 +5,1 @@',
+            '-old',
+            '+new',
+        ].join('\n');
+        _deps.spawnSync = () => ({ status: 0, stdout: diff });
+        const preExisting = { id: 'pre', path: 'src/foo.ts', line: 2, severity: 'low', description: 'pre-existing, untouched' };
+        const touched = { id: 'touched', path: 'src/foo.ts', line: 5, severity: 'low', description: 'on the touched line' };
+        const noLocator = { id: 'no-line', path: 'src/foo.ts', severity: 'low', description: 'no usable locator' };
+        const result = dropOutOfSurfaceViolations(
+            [preExisting, touched, noLocator],
+            { kind: 'derived', paths: ['src/foo.ts'], base: 'f'.repeat(40) },
+            '/tmp/whatever',
+        );
+        // Under-trigger (filter neutered) would keep `preExisting` too; over-trigger (filter
+        // widened to drop everything) would drop `touched` and/or `noLocator`. This single
+        // deepEqual reds under EITHER mutation direction.
+        assert.deepEqual(result, { kept: [touched, noLocator], droppedCount: 1 });
+    } finally {
+        _deps.spawnSync = originalSpawn;
+    }
+});
+
+function perLineTempGitRepo() {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-perline-work-')));
+    execSync('git init', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    const lines = ['export const a = 1;', 'export const b = 2;', 'export const c = 3;', 'export const d = 4;', 'export const e = 5;'];
+    fs.writeFileSync(path.join(dir, 'src', 'inscope.ts'), lines.join('\n') + '\n');
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git commit -m "base"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    const baseSha = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8', timeout: 30000 }).trim();
+
+    // The bundle's own commit touches ONLY line 5 — lines 1-4 stay pre-existing.
+    lines[4] = 'export const e = 500; // touched by this bundle';
+    fs.writeFileSync(path.join(dir, 'src', 'inscope.ts'), lines.join('\n') + '\n');
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git commit -m "bundle change"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+
+    return { dir, baseSha };
+}
+
+async function runPerLineJudgeIteration(violations) {
+    const { dir: workingDir, baseSha } = perLineTempGitRepo();
+    const sessionDir = rootSMakeTmpDir('pickle-mv-perline-session-');
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+        version: 1, mode: 'branch', base_sha: baseSha, allowed_paths: ['src/inscope.ts'],
+    }));
+    const runnerState = rootSMakeRunnerState(sessionDir, workingDir);
+    const mv = createMicroverseState({
+        prdPath: path.join(workingDir, 'prd.md'),
+        metric: {
+            description: 'quality',
+            validation: 'reduce violations',
+            type: 'llm',
+            timeout_seconds: 60,
+            tolerance: 0,
+            direction: 'lower',
+            judge_model: 'claude-sonnet-4-6',
+        },
+        stallLimit: 3,
+    });
+    mv.status = 'iterating';
+    mv.baseline_score = violations.length;
+    mv.convergence_target = 0;
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+    writeMicroverseState(sessionDir, mv);
+
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+    const originalExec = _deps.execFileSync;
+    try {
+        _deps.execFileSync = (_cmd, args) => {
+            if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+            return JSON.stringify({
+                score: violations.length,
+                violations,
+                resolved: [],
+                new: violations.map((v) => v.id),
+                remaining: [],
+            });
+        };
+        const ctx = rootSMakeContext(sessionDir, workingDir, runnerState);
+        await measureAndClassifyIteration(mv, { raw: '0', score: violations.length }, ctx);
+        // Read the persisted artifact BEFORE cleanup, so a caller can assert the on-disk field
+        // round-trips through `writeMicroverseState` rather than only the in-memory `mv` object.
+        const persisted = readMicroverseState(sessionDir);
+        return { mv, persisted };
+    } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+        _deps.execFileSync = originalExec;
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+}
+
+test('AC-J3-1/2/3: a pre-existing in-scope-file finding never reaches violation_ledger, on the real consume path; a touched-line finding and a no-locator finding both survive', async () => {
+    const preExisting = { id: 'v-pre', path: 'src/inscope.ts', line: 2, severity: 'high', description: 'pre-existing line 2 finding' };
+    const touched = { id: 'v-touched', path: 'src/inscope.ts', line: 5, severity: 'high', description: 'touched line finding' };
+    const noLocator = { id: 'v-no-line', path: 'src/inscope.ts', severity: 'high', description: 'no usable locator finding' };
+    const { mv } = await runPerLineJudgeIteration([preExisting, touched, noLocator]);
+
+    const descriptions = (mv.violation_ledger ?? []).map((e) => e.description).sort();
+    assert.deepEqual(
+        descriptions,
+        ['no usable locator finding', 'touched line finding'].sort(),
+        'the pre-existing-line finding must be absent; the touched-line and no-locator findings must both survive',
+    );
+    // Never assert ledger membership by the judge-supplied id — updateViolationLedger mints its
+    // own ids absent a prior match (src/services/CLAUDE.md).
+    assert.ok(
+        !(mv.violation_ledger ?? []).some((e) => e.description === preExisting.description),
+        'the dropped finding must be identifiable as absent by content, not merely by count',
+    );
+});
+
+test('AC-J3-4: the drop count reaches the persisted phase artifact (microverse.json)', async () => {
+    const preExisting = { id: 'v-pre', path: 'src/inscope.ts', line: 2, severity: 'high', description: 'pre-existing line 2 finding' };
+    const touched = { id: 'v-touched', path: 'src/inscope.ts', line: 5, severity: 'high', description: 'touched line finding' };
+    const { mv, persisted } = await runPerLineJudgeIteration([preExisting, touched]);
+    assert.equal(mv.out_of_surface_findings_dropped, 1, 'the in-memory state must carry the drop count');
+    assert.equal(
+        persisted.out_of_surface_findings_dropped,
+        1,
+        'the drop count must round-trip through writeMicroverseState into microverse.json, not just stay in memory',
+    );
+});
+

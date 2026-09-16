@@ -421,6 +421,10 @@ test('AC-CF-17: no new microverse-state field, exit reason, or counter', () => {
     'consecutive_subprocess_errors',
     'violation_ledger',
     'current_subsystem',
+    // da44ff00 (AC-J3-4): the out-of-surface drop count, an additive/optional counter reaching
+    // the persisted phase artifact per the ticket's own Interface Contract — a sanctioned
+    // addition for a new mechanism, not the drift this pin exists to catch.
+    'out_of_surface_findings_dropped',
   ], 'the fix reuses shipped state — a new field here means a new mechanism was added');
 
   const runner = readSrc('bin/microverse-runner.ts');

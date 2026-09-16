@@ -3925,6 +3925,122 @@ export function deriveJudgeReviewSurface(sessionDir: string): JudgeSurfaceDeriva
   return { kind: 'derived', paths, base };
 }
 
+/**
+ * Parse a unified `git diff` into a per-file map of line numbers TOUCHED in the NEW (HEAD-side)
+ * revision — an added line or a changed line, never a pure context line. Pure — operates on diff
+ * text, mirrors `convergence-gate.ts:parseChangedExportedSymbolsFromDiff` (unit-testable without a
+ * git repo). A removed line does not exist in the new revision and does not advance the cursor;
+ * only `+` and context (` `) lines do.
+ */
+export function parseChangedLineNumbersFromDiff(diffText: string): Map<string, Set<number>> {
+  const result = new Map<string, Set<number>>();
+  let currentFile: string | null = null;
+  let newLine = 0;
+  for (const raw of diffText.split('\n')) {
+    if (raw.startsWith('+++ ')) {
+      const m = raw.match(/^\+\+\+ b\/(.+)$/);
+      currentFile = m ? m[1] : null;
+      if (currentFile && !result.has(currentFile)) result.set(currentFile, new Set());
+      continue;
+    }
+    if (raw.startsWith('--- ')) continue;
+    const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      newLine = Number(hunk[1]);
+      continue;
+    }
+    if (currentFile === null) continue;
+    if (raw.startsWith('+')) {
+      result.get(currentFile)!.add(newLine);
+      newLine++;
+    } else if (raw.startsWith('-')) {
+      // Removed line: absent from the new revision, cursor does not advance.
+    } else if (raw.startsWith(' ')) {
+      newLine++;
+    }
+  }
+  return result;
+}
+
+/**
+ * Which line numbers, per path, did `git diff <base>..HEAD -- <paths>` touch (AC-J3, da44ff00) —
+ * the surface's own base (`db605b05`'s producer), never `start_commit` or a whole-file blame date.
+ * `null` means the enumeration did NOT complete (AP-EXT-ITER38-01 shape: an unmeasurable diff is
+ * not an empty one) so the caller must fail OPEN, never treat it as "nothing touched".
+ */
+function computeTouchedLineNumbers(workingDir: string, base: string, paths: string[]): Map<string, Set<number>> | null {
+  if (paths.length === 0) return new Map();
+  const result = _deps.spawnSync(
+    'git',
+    // AP-EXT-ITER103-01/117-01: --no-renames — a pure rename hides its content under a
+    // similarity-index header with no +/- lines, which would silently empty this path's set.
+    ['diff', '--no-renames', `${base}..HEAD`, '--', ...paths],
+    { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER },
+  );
+  if (!enumerationCompleted(result)) return null;
+  return parseChangedLineNumbersFromDiff(result.stdout || '');
+}
+
+/** A violation whose locator can be tested against the derived surface — both `path` and `line`
+ * present and well-formed. A finding lacking either is NOT a member of any per-line judgement and
+ * must be retained by the caller (AC-J3 Errors contract: an unparseable locator is never a free drop). */
+function hasUsableLocator(v: Violation): v is Violation & { path: string; line: number } {
+  return typeof v.path === 'string' && v.path.length > 0 &&
+    typeof v.line === 'number' && Number.isFinite(v.line) && v.line > 0;
+}
+
+/**
+ * Drops a judge-reported violation whose locator lies outside the derived review surface, decided
+ * PER LINE (AC-J3, da44ff00) — never per path, since both offending lines in the session that
+ * motivated this ticket sat in otherwise in-scope files. Runs BEFORE the finding is scored and
+ * before it reaches `violation_ledger` (both call sites filter their `judgeResult.violations`
+ * before calling `updateViolationLedger`, which stays an unmodified pure rebuild).
+ *
+ * Fails OPEN in every case that is not a positive per-line exclusion: an `unscoped`/`failed`
+ * surface (nothing to test membership against), a violation with no usable locator (constraint 4
+ * of the ticket), and an unmeasurable diff (`computeTouchedLineNumbers` returning `null` —
+ * AP-EXT-ITER38-01 family: an unmeasured state is not evidence of absence). No halt path; a
+ * dropped finding is only ever recorded via the returned count, never a reason to stop the run.
+ */
+export function dropOutOfSurfaceViolations(
+  violations: Violation[],
+  surface: JudgeSurfaceDerivation,
+  workingDir: string,
+): { kept: Violation[]; droppedCount: number } {
+  if (surface.kind !== 'derived') return { kept: violations, droppedCount: 0 };
+  const usablePaths = [...new Set(violations.filter(hasUsableLocator).map((v) => v.path))];
+  const touched = computeTouchedLineNumbers(workingDir, surface.base, usablePaths);
+  if (touched === null) return { kept: violations, droppedCount: 0 };
+  const kept: Violation[] = [];
+  let droppedCount = 0;
+  for (const v of violations) {
+    if (!hasUsableLocator(v)) { kept.push(v); continue; }
+    if (touched.get(v.path)?.has(v.line)) { kept.push(v); continue; }
+    droppedCount++;
+  }
+  return { kept, droppedCount };
+}
+
+/** Shared post-parse step both judge-measurement call sites take before scoring (AC-J3,
+ * da44ff00): filter `judgeResult.violations` to the derived surface, accumulate the drop count
+ * onto `state.out_of_surface_findings_dropped`, and log when anything was dropped. Returns the
+ * same `JudgeResult` shape with `violations` narrowed — callers reassign their own binding so any
+ * existing seam pin on that binding's name stays intact. */
+function applyOutOfSurfaceDrop(
+  state: MicroverseState,
+  ctx: RunContext,
+  judgeResult: JudgeResult,
+  surface: JudgeSurfaceDerivation,
+  phase: MetricMeasurementPhase,
+): JudgeResult {
+  const dropped = dropOutOfSurfaceViolations(judgeResult.violations, surface, ctx.workingDir);
+  if (dropped.droppedCount > 0) {
+    state.out_of_surface_findings_dropped = (state.out_of_surface_findings_dropped ?? 0) + dropped.droppedCount;
+    ctx.log(`Judge scope: dropped ${dropped.droppedCount} out-of-surface violation(s) before scoring (phase: ${phase})`);
+  }
+  return { ...judgeResult, violations: dropped.kept };
+}
+
 /** Records a judge-surface derivation failure through the same telemetry every other judge-measurement failure uses (`mapExhaustedExitToActivityEvent`), so this new failure mode cannot drift from the established shape. Returns the error message for the caller's own log/throw. */
 function recordJudgeSurfaceDerivationFailure(
   reason: JudgeMeasurementFailureExitReason,
@@ -4176,9 +4292,12 @@ async function measureLlmBaseline(
     emitJudgeParseDiagnostic(baselineJudgeResult, measured.metric.raw);
     emitJudgeLegacyShapeDiagnostic(baselineJudgeResult);
     if (baselineJudgeResult.shape === 'full') {
-      updateViolationLedger(state, baselineJudgeResult, ctx.iteration);
-      emitJudgeLedgerDiagnostic(baselineJudgeResult, state.violation_ledger);
-      return { ...measured.metric, score: baselineJudgeResult.violations.length };
+      // AC-J3 (da44ff00): drop out-of-surface findings before they are scored and before they
+      // reach violation_ledger, decided per line via db605b05's own derived `surface`.
+      const scoredBaselineResult = applyOutOfSurfaceDrop(state, ctx, baselineJudgeResult, surface, 'baseline');
+      updateViolationLedger(state, scoredBaselineResult, ctx.iteration);
+      emitJudgeLedgerDiagnostic(scoredBaselineResult, state.violation_ledger);
+      return { ...measured.metric, score: scoredBaselineResult.violations.length };
     }
     return measured.metric;
   }
@@ -4808,6 +4927,14 @@ export async function measureAndClassifyIteration(
     emitJudgeParseDiagnostic(judgeResult, metricResult.raw);
     emitJudgeLegacyShapeDiagnostic(judgeResult);
     if (judgeResult.shape === 'full') {
+      // AC-J3 (da44ff00): drop out-of-surface findings before they are scored and before they
+      // reach violation_ledger, decided per line. Mutates `judgeResult.violations` IN PLACE
+      // (never reassigns the `judgeResult` binding) so the AC-JPCM-9/AC-JPCM-10 seam pins — which
+      // anchor on the literal `const judgeResult = parseLlmJudgeOutput(...)` declaration and the
+      // later `updateViolationLedger(state, judgeResult, ctx.iteration)` call — stay byte-identical
+      // while operating on the filtered result.
+      const surface = deriveJudgeReviewSurface(ctx.sessionDir);
+      judgeResult.violations = applyOutOfSurfaceDrop(state, ctx, judgeResult, surface, 'iteration').violations;
       // The score the loop converges on is the count of the violations the ledger was
       // built from — never the judge's self-reported integer. `extractScore` reads that
       // self-report off the same JSON, so the two disagreed silently: a judge emitting
