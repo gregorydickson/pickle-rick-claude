@@ -182,6 +182,12 @@ test('each TEST_FILES file is wired into default test tiers', () => {
 // shape. `deriveStallCause` is the one cross-module production wire
 // (microverse-state.ts -> microverse-runner.ts). None of the five is
 // orphaned: this census fails the moment any of them loses its call site.
+//
+// e562164b: the census counts PRODUCTION calls only. It used to count tests/
+// too, and every one of the five is called directly by a unit test, so
+// deleting the production call sites of `dropOutOfSurfaceViolations` and
+// `deriveStallCause` left it GREEN — a wire census satisfied by its own tests.
+// Spec files under src/ (`__tests__`, `*.spec.ts`) are tests and excluded too.
 // ---------------------------------------------------------------------------
 
 const JUDGE_SCOPE_EXPORTS = [
@@ -224,12 +230,13 @@ function countRealCalls(filePath, names) {
   return counts;
 }
 
-test('WIRE (2c1c30a0): no orphaned export among the judge-scope bundle exports — every one has a real call site', () => {
-  const srcFiles = walkFiles(path.join(EXTENSION_ROOT, 'src'), (name) => name.endsWith('.ts'));
-  const testFiles = walkFiles(path.join(EXTENSION_ROOT, 'tests'), (name) => name.endsWith('.test.js'));
+test('WIRE (2c1c30a0): no orphaned export among the judge-scope bundle exports — every one has a production call site', () => {
+  const productionFiles = walkFiles(path.join(EXTENSION_ROOT, 'src'), (name) => name.endsWith('.ts') && !name.endsWith('.spec.ts'))
+    .filter((file) => !file.split(path.sep).includes('__tests__'));
+  assert.ok(productionFiles.length > 100, `the production walk must not be vacuous; found ${productionFiles.length} file(s)`);
 
   const totals = Object.fromEntries(JUDGE_SCOPE_EXPORTS.map((n) => [n, 0]));
-  for (const file of [...srcFiles, ...testFiles]) {
+  for (const file of productionFiles) {
     const counts = countRealCalls(file, JUDGE_SCOPE_EXPORTS);
     for (const name of JUDGE_SCOPE_EXPORTS) totals[name] += counts[name];
   }
@@ -238,6 +245,6 @@ test('WIRE (2c1c30a0): no orphaned export among the judge-scope bundle exports �
   assert.deepEqual(
     orphaned,
     [],
-    `orphaned export(s) with zero real call sites across src/ and tests/: ${orphaned.join(', ')}`,
+    `orphaned export(s) with zero production call sites under src/ (test callers do not count): ${orphaned.join(', ')}`,
   );
 });
