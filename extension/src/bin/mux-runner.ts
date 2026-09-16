@@ -720,6 +720,23 @@ function buildScriptFailureMessage(lines: string[]): string {
   return tail || 'npm run test:fast failed';
 }
 
+/** `test-runner.ts`'s own stderr line when its spawned child died by signal (ticket 916b6489). */
+const TEST_RUNNER_SIGNAL_RE = /\[test-runner\] child terminated by signal (\S+)/;
+
+/**
+ * A signal-terminated tier measurement is a KILL, not a test failure — say so in the dimension
+ * name rather than leaving `dimensions` indistinguishable from a genuine regression. The message
+ * tail alone is not enough: `dimensions`, not `message`, is what a withheld verdict names.
+ */
+function attributeSignalTermination(name: string, lines: string[]): string {
+  let signal: string | null = null;
+  for (const line of lines) {
+    const match = line.match(TEST_RUNNER_SIGNAL_RE);
+    if (match) signal = match[1];
+  }
+  return signal ? `${name} (signal: ${signal})` : name;
+}
+
 // Both node:test reporters close a run with `ℹ fail N` (spec) or `# fail N` (TAP). A cancelled
 // test is counted under `cancelled`, not `fail`, but still prints a `✖` line — hence the marker.
 const TEST_SUMMARY_FAIL_COUNT_RE = /^(?:ℹ|#)[ \t]+fail[ \t]+(\d+)[ \t]*$/gm;
@@ -784,6 +801,7 @@ export function parseBetweenTicketFastGateFailures(output: string, workingDir: s
   let name = phase ? `script failure: ${phase}` : SCRIPT_FAILURE_FALLBACK_NAME;
   // Defensive assertion (not just a test pin): never emit a name shaped like npm's own banner.
   if (NPM_LIFECYCLE_BANNER_RE.test(name)) name = SCRIPT_FAILURE_FALLBACK_NAME;
+  name = attributeSignalTermination(name, lines);
 
   return [{
     name,

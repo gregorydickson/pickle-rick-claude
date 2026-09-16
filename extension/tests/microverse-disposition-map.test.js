@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, measureAndClassifyIteration, _deps } from '../bin/microverse-runner.js';
+import { classifyPostFinalVerdict, parseBetweenTicketFastGateFailures } from '../bin/mux-runner.js';
 import { writeMicroverseState, readMicroverseState, createMicroverseState, recordIteration, recordStall, deriveStallCause } from '../services/microverse-state.js';
 import { MICROVERSE_EXIT_REASONS, EXIT_REASONS } from '../types/index.js';
 import { loadMicroverseJson } from './helpers/microverse-corpora.js';
@@ -408,4 +409,94 @@ test('replaying both vendored sessions renders DIFFERENT causes', () => {
   // appends unconditionally and so an empty history proves no scored iteration ever ran.
   assert.equal(causeA, 'unknown');
   assert.equal(causeB, 'no-commit');
+});
+
+// ---------------------------------------------------------------------------------------------
+// b0c8b863 (AC-T1-1, AC-T1-6): `916b6489` made test-runner.ts stamp
+// `[test-runner] child terminated by signal <SIG>` on stderr when its spawned child dies by
+// signal. This carries that attribution into `state.post_final_verdict.dimensions` — the field a
+// human or a later run actually reads — without touching `state`/`degraded`/the withhold
+// decision, which stay decided purely by `gate.ok`/`gate.measured`/`reported_zero_failures`.
+// ---------------------------------------------------------------------------------------------
+
+const SIGNAL_KILLED_OUTPUT = [
+  '> pickle-rick-scripts@2.1.0 test:fast',
+  '> npm run test:fast:parallel; p=$?; npm run test:fast:serial; s=$?',
+  '',
+  '> pickle-rick-scripts@2.1.0 test:fast:parallel',
+  '> node bin/test-runner.js --tier fast --manifest tests/.serial-tests.json --manifest-mode exclude --test-concurrency=8',
+  '',
+  '[test-runner] child terminated by signal SIGTERM',
+].join('\n');
+
+const GENUINE_FAILURE_OUTPUT = [
+  '> pickle-rick-scripts@2.1.0 test:fast:parallel',
+  '> node bin/test-runner.js --tier fast',
+  'not ok 1 - widget explodes',
+  '  ---',
+  "  location: '/repo/tests/widget.test.js:3:1'",
+  '  ...',
+  '# tests 1',
+  '# fail 1',
+].join('\n');
+
+test('a signal-terminated tier measurement records the signal in post_final_verdict.dimensions', () => {
+  const failures = parseBetweenTicketFastGateFailures(SIGNAL_KILLED_OUTPUT, '/repo');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].script_failure, true);
+  assert.equal(failures[0].name, 'script failure: test:fast:parallel (signal: SIGTERM)');
+
+  const result = classifyPostFinalVerdict({
+    gate: { ok: false, failures, timed_out: false, timeout_ms: null, measured: false },
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.deepEqual(result.dimensions, ['script failure: test:fast:parallel (signal: SIGTERM)']);
+});
+
+test('a tier that genuinely failed records its dimensions exactly as today (no signal suffix)', () => {
+  const failures = parseBetweenTicketFastGateFailures(GENUINE_FAILURE_OUTPUT, '/repo');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].script_failure, undefined, 'a real TAP failure is never marked script_failure');
+  assert.equal(failures[0].name, 'widget explodes');
+
+  const result = classifyPostFinalVerdict({
+    gate: { ok: false, failures, timed_out: false, timeout_ms: null, measured: true },
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.deepEqual(result.dimensions, ['widget explodes']);
+});
+
+test('the degraded flag and the withhold decision are unchanged by signal attribution in either case', () => {
+  const signalFailures = parseBetweenTicketFastGateFailures(SIGNAL_KILLED_OUTPUT, '/repo');
+  const signalResult = classifyPostFinalVerdict({
+    gate: { ok: false, failures: signalFailures, timed_out: false, timeout_ms: null, measured: false },
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.equal(signalResult.state, 'red');
+  assert.equal(signalResult.degraded, true, 'a withheld verdict is unaffected by the dimension string content');
+
+  const genuineFailures = parseBetweenTicketFastGateFailures(GENUINE_FAILURE_OUTPUT, '/repo');
+  const genuineResult = classifyPostFinalVerdict({
+    gate: { ok: false, failures: genuineFailures, timed_out: false, timeout_ms: null, measured: true },
+    applicable: true,
+    verdictTs: 200,
+    finalCommitTs: 100,
+    baselineFailures: [],
+  });
+  assert.equal(genuineResult.state, 'red');
+  assert.equal(genuineResult.degraded, true);
+
+  // Both cases classify identically to `state:'red', degraded:true` — the signal attribution
+  // changed only the STRING inside `dimensions`, never the verdict this ticket must leave alone.
+  assert.equal(signalResult.state, genuineResult.state);
+  assert.equal(signalResult.degraded, genuineResult.degraded);
 });
