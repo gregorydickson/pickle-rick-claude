@@ -519,6 +519,11 @@ function readCurrentHasTestCase(repoRoot) {
 let replayCleared;
 let replayRemaining;
 let replayOldBrokenCount;
+let replayPairs;
+let replayReadCached;
+let replayNewHasTestCase;
+
+const pairKey = (p) => `${p.canonicalPath}#${p.anchor}`;
 
 before(async () => {
   const pairs = await enumerateAnchoredEnforceRefs(REPO_ROOT);
@@ -530,6 +535,9 @@ before(async () => {
     if (!fileContentCache.has(absPath)) fileContentCache.set(absPath, fs.readFileSync(absPath, 'utf-8'));
     return fileContentCache.get(absPath);
   };
+  replayPairs = pairs;
+  replayReadCached = readCached;
+  replayNewHasTestCase = newHasTestCase;
 
   const oldBroken = [];
   const newBroken = [];
@@ -589,6 +597,38 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
       'the independently re-derived "still genuinely broken" set must equal what runT6TrapDoorCoverage actually reports',
     );
   });
+
+  // d5b5add3 (AC-T2-2, second half): `remaining > 0` above passes a matcher that clears all but ONE
+  // genuinely-absent anchor (measured: accept-everything-but-one left all three tests above GREEN).
+  // The population that MUST survive is derived from the text, not from any matcher: an anchor whose
+  // characters appear nowhere in its file cannot be satisfied by a test title there, so no correct
+  // widening may clear it. At the widening that is the PRD's 26 of 147; no count is hardcoded.
+  test('AC-T2-2: every anchor absent from its file\'s text is still reported — a matcher clearing any of them reds', async () => {
+    assert.ok(replayPairs.length >= 100, `corpus went dark: only ${replayPairs.length} anchored ENFORCE pairs enumerated`);
+    const mustRemain = replayPairs
+      .filter((p) => !replayReadCached(p.absPath).includes(p.anchor))
+      .map(pairKey);
+    assert.ok(mustRemain.length > 0, 'no literally-absent anchor in the corpus — this pin would be vacuous');
+
+    const replayedKeys = new Set(replayRemaining.map(pairKey));
+    assert.deepEqual(
+      mustRemain.filter((k) => !replayedKeys.has(k)),
+      [],
+      'the current hasTestCase cleared anchors whose text does not occur in their file',
+    );
+
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const reported = new Set(
+      runT6TrapDoorCoverage({ projectRoot: REPO_ROOT }).findings
+        .filter((f) => f.id.startsWith('orphan-test-case:'))
+        .map((f) => f.id.replace(/^orphan-test-case:/, '')),
+    );
+    assert.deepEqual(
+      mustRemain.filter((k) => !reported.has(k)),
+      [],
+      'runT6TrapDoorCoverage stopped reporting anchors whose text does not occur in their file',
+    );
+  });
 });
 
 describe('runT6TrapDoorCoverage vs audit-trap-door-enforcement.sh — no silent contradiction (ticket 2203fe28)', () => {
@@ -642,10 +682,25 @@ describe('runT6TrapDoorCoverage vs audit-trap-door-enforcement.sh — no silent 
         `AP-EXT-ITER56-01): ${JSON.stringify(divergent)}`,
     );
 
-    assert.equal(
-      divergent.length + agreeing.length,
-      replayRemaining.length,
-      'every citadel-genuine anchor must be classified as either agreeing with or diverging from the shell audit',
+    // d5b5add3 (AC-T2-5): the partition above cannot fail, so the non-contradiction is asserted here.
+    // The shell audit exits 0 and is authoritative; the contradiction that would matter is citadel
+    // CLEARING an anchor the shell cannot resolve. Over the real corpus alone the shell resolves every
+    // pair, so the implication would hold for any citadel matcher — each pair is therefore also probed
+    // with its anchor lengthened by one character (a derived non-anchor over the same real content).
+    const probes = replayPairs.flatMap((p) => [p, { ...p, anchor: `${p.anchor}9` }]);
+    let shellRejected = 0;
+    const contradictions = [];
+    for (const p of probes) {
+      const content = replayReadCached(p.absPath);
+      if (shellAnchorResolves(content, p.anchor)) continue;
+      shellRejected++;
+      if (replayNewHasTestCase(content, p.anchor)) contradictions.push(pairKey(p));
+    }
+    assert.ok(shellRejected > 0, 'the shell rule rejected no probe — the non-contradiction check would be vacuous');
+    assert.deepEqual(
+      contradictions,
+      [],
+      'citadel clears anchors the authoritative shell audit cannot resolve on the same content',
     );
   });
 });
