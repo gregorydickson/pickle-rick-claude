@@ -46,6 +46,7 @@ import {
     markMicroverseFatalError,
     auditPostIterationScope,
     measureAndClassifyIteration,
+    handleIterationOutcome,
     executeGapAnalysis,
     JUDGE_SYSTEM_PROMPT,
     deriveJudgeReviewSurface,
@@ -2481,5 +2482,120 @@ test('AC-J3-4: the drop count reaches the persisted phase artifact (microverse.j
         1,
         'the drop count must round-trip through writeMicroverseState into microverse.json, not just stay in memory',
     );
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 2c1c30a0 (WIRE): the surface producer (deriveJudgeReviewSurface), the
+// per-line drop filter (dropOutOfSurfaceViolations) and the stall-cause
+// attribution (deriveStallCause, via convergence.last_stall_signal /
+// state.stall_disposition) connected on ONE real call path. Driven through
+// the exported dispatcher `handleIterationOutcome` — never a hand-built
+// classification or a directly-invoked `convergenceExitReason` — over
+// `stallLimit` passes of an identical judge report, so the same real
+// scope.json + real git diff that filters the ledger every pass is also what
+// the stall exit's own disposition reads its cause from.
+// ---------------------------------------------------------------------------
+
+test('WIRE: surface -> per-line drop -> ledger -> stall exit -> stall_disposition, on one real call path', async () => {
+    const { dir: workingDir, baseSha } = perLineTempGitRepo();
+    const sessionDir = rootSMakeTmpDir('pickle-mv-wire-session-');
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+        version: 1, mode: 'branch', base_sha: baseSha, allowed_paths: ['src/inscope.ts'],
+    }));
+    const runnerState = rootSMakeRunnerState(sessionDir, workingDir);
+    const mv = createMicroverseState({
+        prdPath: path.join(workingDir, 'prd.md'),
+        metric: {
+            description: 'quality',
+            validation: 'reduce violations',
+            type: 'llm',
+            timeout_seconds: 60,
+            tolerance: 0,
+            direction: 'lower',
+            judge_model: 'claude-sonnet-4-6',
+        },
+        stallLimit: 3,
+    });
+    mv.status = 'iterating';
+    mv.baseline_score = 1;
+    // Seed the ledger with the touched-line violation ALONE (AP-EXT-ITER22-01:
+    // hasPriorLedgerContext needs a populated previous ledger, not merely a
+    // resolved>0 report, for set_ops classification to be reachable when the
+    // judge reports the same set every pass).
+    mv.violation_ledger = [{
+        id: 'v-touched', path: 'src/inscope.ts', line: 5, severity: 'high',
+        description: 'touched line finding', first_seen_iter: 0, last_seen_iter: 0,
+    }];
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+    writeMicroverseState(sessionDir, mv);
+
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+    const originalExec = _deps.execFileSync;
+    let lastCapturedPrompt = '';
+    try {
+        _deps.execFileSync = (_cmd, args) => {
+            if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+            const idx = args.indexOf('-p');
+            if (idx !== -1) lastCapturedPrompt = args[idx + 1] || '';
+            // A real judge keeps re-reporting BOTH findings every pass; it is the per-line
+            // filter — not the judge — that must keep the pre-existing one out of the ledger.
+            const preExisting = { id: 'v-pre', path: 'src/inscope.ts', line: 2, severity: 'high', description: 'pre-existing line 2 finding' };
+            const touched = { id: 'v-touched', path: 'src/inscope.ts', line: 5, severity: 'high', description: 'touched line finding' };
+            return JSON.stringify({
+                score: 2,
+                violations: [preExisting, touched],
+                resolved: [], new: [], remaining: ['v-pre', 'v-touched'],
+            });
+        };
+        const ctx = rootSMakeContext(sessionDir, workingDir, runnerState);
+        // Fixed and distinct from the repo's real HEAD (the "bundle change" commit) on every
+        // pass — handleIterationOutcome computes postIterSha live via _deps.getHeadSha, so this
+        // simulates "a commit happened" identically each iteration without needing one.
+        ctx.preIterSha = baseSha;
+        let lastResult = null;
+        for (let i = 0; i < 3; i++) {
+            ctx.iteration = i + 1;
+            lastResult = await handleIterationOutcome(mv, { raw: '1', score: 1 }, ctx, {
+                completion: 'task_completed', timedOut: false, exitCode: 0, wallSeconds: 1,
+            });
+        }
+
+        assert.equal(
+            lastResult,
+            'stalled_below_target',
+            'held classification for stallLimit passes must exit stalled_below_target, through the real dispatcher',
+        );
+        assert.ok(
+            lastCapturedPrompt.includes('Count ONLY violations located within these paths'),
+            'the surface producer must still reach the real judge prompt on the stall-driving path',
+        );
+
+        const descriptions = (mv.violation_ledger ?? []).map((e) => e.description);
+        assert.deepEqual(
+            descriptions,
+            ['touched line finding'],
+            'the pre-existing out-of-surface finding must never survive into the ledger the stall exit reads its cause from',
+        );
+
+        assert.ok(mv.stall_disposition, 'the stall exit must persist a stall_disposition');
+        assert.equal(
+            mv.stall_disposition.inputs.last_stall_signal,
+            'held',
+            'the disposition must attribute the SAME held signal the filtered ledger produced',
+        );
+
+        const persisted = readMicroverseState(sessionDir);
+        assert.deepEqual(
+            (persisted.violation_ledger ?? []).map((e) => e.description),
+            ['touched line finding'],
+            'the filtered ledger and the stall disposition must both round-trip to disk, not just stay in memory',
+        );
+        assert.ok(persisted.stall_disposition, 'the persisted state must carry the stall_disposition too');
+    } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+        _deps.execFileSync = originalExec;
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
 });
 

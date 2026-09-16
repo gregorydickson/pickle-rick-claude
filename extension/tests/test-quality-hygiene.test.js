@@ -2,9 +2,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import * as ts from 'typescript';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
@@ -166,4 +167,77 @@ test('each TEST_FILES file is wired into default test tiers', () => {
     }
   }
   assert.deepEqual(failures, [], `Unwired TEST_FILES entries:\n${failures.join('\n')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 2c1c30a0 (WIRE): the five exports the judge-scope bundle added must
+// each have a real CALL somewhere — not merely be imported, and not merely
+// named in a comment (the AST walk below never visits comment trivia, so a
+// prose mention cannot satisfy it). Three of the five
+// (`dropOutOfSurfaceViolations`, `measureLlmIteration`,
+// `parseChangedLineNumbersFromDiff`) are exported deliberately for
+// testability — each already has direct unit coverage elsewhere in this
+// suite, and their production consumer is a same-file internal call, not a
+// second module importing them. `deriveJudgeReviewSurface` is the same
+// shape. `deriveStallCause` is the one cross-module production wire
+// (microverse-state.ts -> microverse-runner.ts). None of the five is
+// orphaned: this census fails the moment any of them loses its call site.
+// ---------------------------------------------------------------------------
+
+const JUDGE_SCOPE_EXPORTS = [
+  'deriveJudgeReviewSurface',
+  'deriveStallCause',
+  'dropOutOfSurfaceViolations',
+  'measureLlmIteration',
+  'parseChangedLineNumbersFromDiff',
+];
+
+function walkFiles(root, predicate, out = []) {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+    const full = path.join(root, entry.name);
+    if (statSync(full).isDirectory()) {
+      walkFiles(full, predicate, out);
+    } else if (predicate(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+function countRealCalls(filePath, names) {
+  const source = readFileSync(filePath, 'utf8');
+  const scriptKind = filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, scriptKind);
+  const counts = Object.fromEntries(names.map((n) => [n, 0]));
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      Object.prototype.hasOwnProperty.call(counts, node.expression.text)
+    ) {
+      counts[node.expression.text] += 1;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return counts;
+}
+
+test('WIRE (2c1c30a0): no orphaned export among the judge-scope bundle exports — every one has a real call site', () => {
+  const srcFiles = walkFiles(path.join(EXTENSION_ROOT, 'src'), (name) => name.endsWith('.ts'));
+  const testFiles = walkFiles(path.join(EXTENSION_ROOT, 'tests'), (name) => name.endsWith('.test.js'));
+
+  const totals = Object.fromEntries(JUDGE_SCOPE_EXPORTS.map((n) => [n, 0]));
+  for (const file of [...srcFiles, ...testFiles]) {
+    const counts = countRealCalls(file, JUDGE_SCOPE_EXPORTS);
+    for (const name of JUDGE_SCOPE_EXPORTS) totals[name] += counts[name];
+  }
+
+  const orphaned = JUDGE_SCOPE_EXPORTS.filter((name) => totals[name] === 0);
+  assert.deepEqual(
+    orphaned,
+    [],
+    `orphaned export(s) with zero real call sites across src/ and tests/: ${orphaned.join(', ')}`,
+  );
 });
