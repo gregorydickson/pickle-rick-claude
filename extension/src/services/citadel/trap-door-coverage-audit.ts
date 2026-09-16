@@ -236,7 +236,12 @@ function resolveEnforceRef(projectRoot: string, filePath: string): { canonicalPa
 
 function hasTestCase(content: string, anchor: string): boolean {
   const escaped = anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:it|test)\\s*\\(\\s*['"\`]${escaped}['"\`]`).test(content);
+  // Accepts the repo convention 'ANCHOR: description' as well as an exact 'ANCHOR' title.
+  // The anchor must still be the first token after the opening quote; the negative lookahead
+  // only widens what may follow it, rejecting a continuation character (word char or hyphen —
+  // the same charset ENFORCE_REF_RE allows in an anchor) so a shorter anchor can never match a
+  // longer identifier sharing its prefix (e.g. anchor 'X-1' must not match title 'X-11: ...').
+  return new RegExp(`(?:it|test)\\s*\\(\\s*['"\`]${escaped}(?![\\w-])`).test(content);
 }
 
 function collectTestFiles(projectRoot: string): string[] {

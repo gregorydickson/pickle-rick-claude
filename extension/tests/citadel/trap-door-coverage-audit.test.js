@@ -119,6 +119,89 @@ describe('runT6TrapDoorCoverage', () => {
     assert.equal(high.length, 0, 'no HIGH findings when anchor exists');
   });
 
+  test('AP-EXT-C27B2673-01: anchor satisfied by repo convention "ANCHOR: description" title', async () => {
+    const projectRoot = path.join(tmpRoot, 'convention-title');
+    mkFixture(projectRoot, {
+      enforceLines: '- ENFORCE: extension/tests/conv.test.js#AP-RMS-9\n',
+      testFiles: {
+        'extension/tests/conv.test.js':
+          "test('AP-RMS-9: EVERY synchronous subprocess spawn carries a finite timeout', () => {});\n",
+      },
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({ projectRoot });
+    const high = result.findings.filter((f) => f.severity === 'High');
+    assert.equal(high.length, 0, 'convention-titled test must satisfy the anchor');
+  });
+
+  test('AP-EXT-C27B2673-02: exact-title anchor (no description) still satisfies', async () => {
+    const projectRoot = path.join(tmpRoot, 'exact-title');
+    mkFixture(projectRoot, {
+      enforceLines: '- ENFORCE: extension/tests/exact.test.js#AP-RMS-9\n',
+      testFiles: {
+        'extension/tests/exact.test.js': "test('AP-RMS-9', () => {});\n",
+      },
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({ projectRoot });
+    const high = result.findings.filter((f) => f.severity === 'High');
+    assert.equal(high.length, 0, 'exact-title anchor must still satisfy');
+  });
+
+  test('AP-EXT-C27B2673-03: prefix safety — short anchor does not match a longer sharing-prefix title', async () => {
+    const projectRoot = path.join(tmpRoot, 'prefix-short-anchor');
+    mkFixture(projectRoot, {
+      enforceLines: '- ENFORCE: extension/tests/prefix1.test.js#4-01\n',
+      testFiles: {
+        'extension/tests/prefix1.test.js': "test('4-011: unrelated longer id', () => {});\n",
+      },
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({ projectRoot });
+    const high = result.findings.filter((f) => f.severity === 'High');
+    assert.equal(high.length, 1, 'anchor 4-01 must NOT match a title starting with 4-011');
+    assert.match(high[0].id, /orphan-test-case/);
+  });
+
+  test('AP-EXT-C27B2673-04: prefix safety — longer anchor does not match a shorter sharing-prefix title', async () => {
+    const projectRoot = path.join(tmpRoot, 'prefix-long-anchor');
+    mkFixture(projectRoot, {
+      enforceLines: '- ENFORCE: extension/tests/prefix2.test.js#4-011\n',
+      testFiles: {
+        'extension/tests/prefix2.test.js': "test('4-01: unrelated shorter id', () => {});\n",
+      },
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({ projectRoot });
+    const high = result.findings.filter((f) => f.severity === 'High');
+    assert.equal(high.length, 1, 'anchor 4-011 must NOT match a title starting with 4-01');
+    assert.match(high[0].id, /orphan-test-case/);
+  });
+
+  test('AP-EXT-C27B2673-05: generic-anchor control — a short generic anchor does not match broadly', async () => {
+    const projectRoot = path.join(tmpRoot, 'generic-anchor');
+    mkFixture(projectRoot, {
+      enforceLines: '- ENFORCE: extension/tests/generic.test.js#X\n',
+      testFiles: {
+        'extension/tests/generic.test.js': [
+          "test('Xavier config loads', () => {});",
+          "test('XML parsing works', () => {});",
+          "test('Xylophone sounds', () => {});",
+          '',
+        ].join('\n'),
+      },
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({ projectRoot });
+    const high = result.findings.filter((f) => f.severity === 'High');
+    assert.equal(
+      high.length,
+      1,
+      'generic anchor X must not be satisfied by titles that merely start with the letter X',
+    );
+    assert.match(high[0].id, /orphan-test-case/);
+  });
+
   test('mixed bare and anchored refs in one CLAUDE.md → exactly 1 LOW warning', async () => {
     const projectRoot = path.join(tmpRoot, 'mixed-refs');
     mkFixture(projectRoot, {
