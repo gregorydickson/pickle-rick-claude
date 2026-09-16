@@ -45,6 +45,9 @@ Measured by the requirements analyst and reproduced: `buildJudgePrompt({goal,cwd
 it straight into `buildJudgePrompt`, so **the derivation lives upstream of the call under test and the
 test is structurally blind to whether it exists.** Deleting the derivation entirely would not red them.
 
+**(Revision 3 note: a later pass counted the inventory at **24** ACs, not 21, and found **8** that cannot
+red on any outcome. The exact denominator is unsettled; the shape of the finding is not.)**
+
 **Census of the first draft: 16 of 21 ACs pinned — and the unpinned ones were all three root
 MECHANISMS.** Every control pinned, not one mechanism. That is the shape of a bundle that goes green
 without doing anything. **Every AC below that asserts a mechanism must exercise the REAL call path.**
@@ -55,6 +58,11 @@ Measured across every on-disk session: **scored iterations with scope populated:
 The single session with `allowed_paths` populated (`2026-09-09-e959390b`, 633 paths) exited
 `baseline_unmeasurable_unrecoverable` with an empty history. **So J1 is a first-ever production
 activation, not the restoration of a working path**, and must be scoped and risked as such.
+
+**⚠ DISPUTED, and left disputed on purpose.** A later refinement pass asserts `n=0` is false. The two
+readings have not been reconciled against a single agreed definition of "scored under a populated
+scope", and **the AC that matters does not depend on which is right** — J1 is high-risk under either.
+Do not carry `n=0` forward as settled; re-derive it with a stated predicate if a ticket needs it.
 
 ---
 
@@ -85,9 +93,16 @@ activation, not the restoration of a working path**, and must be scoped and risk
 
 **An AC whose evidence is deleted reds as a missing directory — indistinguishable from a real
 regression.** A copy has been taken to `~/pickle-rick-evidence/allowed-paths-census-2026-09-16/`
-(352K, outside the repo, beyond `pruneOldSessions`' reach) — **so the deadline is already met and
-AC-V-1 can vendor from that copy rather than racing the prune.** It is a stopgap, not a fixture: nothing
-in the repo reads it and nothing pins its shape.
+outside the repo, beyond `pruneOldSessions`' reach.
+
+**⚠ REVISION 3 CORRECTION — revision 2 claimed "the deadline is already met" and that was FALSE.**
+Refinement measured the backup: **33 `tmux_iteration_*.log` files live, 2 in the copy.** Worst of all,
+AC-J1-6's own citation — `e959390b` iteration 17, **914,673 bytes** — was live and **not** backed up, and
+that session prunes `2026-09-16T10:46:29Z`. **Now fixed and verified: 33/33 backed up** (21 + 6 + 6),
+20M total, `tmux_iteration_17.log` confirmed **byte-identical** via `cmp`, completed `04:16Z` with ~6.5h
+of margin. **AC-V-1 can now genuinely vendor from the copy.**
+
+It is still a stopgap, not a fixture: nothing in the repo reads it and nothing pins its shape.
 
 - **AC-V-1 (blocking, do first):** vendor the minimal artifacts into `extension/tests/fixtures/` —
   `microverse.json` per session plus the two `tmux_iteration_*.log` files J4 replays. Nothing else.
@@ -130,9 +145,25 @@ scores whole-tree slop steers the worker off-scope (baseline 24 on a clean 12-fi
   **continues** (no-stop-gates). It MUST NOT fall back to an empty array — empty currently means
   unrestricted, so reusing it re-creates the bug.
 - **AC-J1-3 (mechanism pin — this is the one that matters):** assert on a prompt produced by the **REAL
-  call path** (the production caller that reaches `buildJudgePrompt`), with the derivation in place and
-  **no hand-constructed `allowedPaths`**. A literal-fed assertion cannot observe the derivation and is
-  green at HEAD today.
+  call path**, with the derivation in place and **no hand-constructed `allowedPaths`**. A literal-fed
+  assertion cannot observe the derivation and is green at HEAD today.
+  **Drive it through one of these two EXPORTED ancestors** — verified at HEAD, both sit ABOVE the
+  derivation and **neither accepts `allowedPaths` as a parameter**, so the derivation runs inside the
+  call under test:
+
+  | seam | line | covers |
+  |---|---|---|
+  | `executeGapAnalysis` | `:4154` | the baseline and current-metric derivation sites (`:4082`, `:3894`) |
+  | `measureAndClassifyIteration` | `:4700` | the iteration derivation site (`:4441`) |
+
+  Capture the judge invocation by stubbing the **exported** `_deps` bag (`:1629`) — already the shipped
+  pattern for judge argv capture in `tests/baseline-attempt-timeout.test.js` and
+  `tests/microverse-codex.test.js`. `measureAndClassifyIteration` is **already imported by seven suites,
+  including both files this PRD's ▶ rows name.**
+  **Do NOT point this AC at `measureLlmBaseline` (`:4081`)** — revision 2 did, and it is **unexported**,
+  so a worker would either export it (violating the no-new-export constraint) or hand-feed paths
+  (vacuous). Nor at `measureLlmMetric` (`:2399`) / `measureLlmMetricWithBackoff` (`:3499`): both take
+  `allowedPaths` as a **parameter**, which is the same vacuity by another route.
 - **AC-J1-4 (over-trigger control):** an in-scope, in-diff violation is still scored. A fix that scopes
   the judge to nothing converges vacuously and is worse than the bug.
 - **AC-J1-5 (mutation, BOTH directions, against AC-J1-3):** delete the derivation ⇒ AC-J1-3 **must**
@@ -147,6 +178,23 @@ scores whole-tree slop steers the worker off-scope (baseline 24 on a clean 12-fi
   `stall_counter` — manufacturing the very stalls this bundle drains.** Pin that an **in-scope-only diff
   auto-commits identically before and after**, and state per-consumer whether the out-of-scope change is
   intended. Not speculative: `e959390b` iteration 17 shows the rescue firing for real.
+- **AC-J1-8 (WHICH surface — NEW in revision 3, and it is the deepest finding in the bundle):** the
+  review surface is **not a static value**, and no other AC says which version of it is authoritative.
+  Three lifetimes coexist in production, all verified at HEAD:
+  1. **Re-resolved per phase.** The one real `scope.json` on disk carries `refresh_history` with **two**
+     entries at **different `head_sha`s** — `anatomy-park` `16a2bdc0`, then `szechuan-sauce` `6fe2ac00`,
+     19.5 hours apart.
+  2. **Mutated mid-run.** `maybeAutoExtendScope` (`pipeline-runner.ts:1974`, exported) assigns
+     `scope.allowed_paths = result.allowedPaths` (`:1996`) and re-persists the file via tmp+rename.
+  3. **Snapshotted once, and only when non-empty.** `microverse-state.ts:334`:
+     `if (allowedPaths != null && allowedPaths.length > 0) state.allowed_paths = allowedPaths;`
+
+  **So after any phase refresh or auto-extend, the worker's commit fence reads the LIVE file while the
+  judge scores a frozen snapshot taken at a head that no longer exists — this bundle's own thesis,
+  reproduced by the refresh mechanism, and untouched by J1 as written.** State explicitly whether the
+  judge's surface is snapshot-once, re-derived per phase, or re-read per iteration, and pin what happens
+  to the judge's view when auto-extend fires. **A worker will otherwise pick one of three, and two of
+  the three silently re-create the bug.**
 - **AC-J1-7 (reachability, NEW):** J1 makes `isCodeFreeScope` (`pipeline-runner.ts:2227`) reachable for the first time. Determine
   whether a scoped-but-code-free run now **skips phases** that previously ran, and pin the answer.
 
@@ -250,6 +298,9 @@ Verified at HEAD `3f6bda2e`.
 
 | symbol | location | signature |
 |---|---|---|
+| `executeGapAnalysis` | `microverse-runner.ts:4154` | **the AC-J1-3 seam** — encloses the baseline/current derivation; no `allowedPaths` param |
+| `measureAndClassifyIteration` | `microverse-runner.ts:4700` | **the AC-J1-3 seam** — encloses the iteration derivation; no `allowedPaths` param |
+| `_deps` | `microverse-runner.ts:1629` | exported stub bag (`execFileSync`, `spawn`, …) for judge argv capture |
 | `buildJudgePrompt` | `microverse-runner.ts:2059` | `(input: JudgePromptInput) => string` |
 | `classifyStall` | `microverse-runner.ts:1812` | `(input: StallClassifierInput) => <classification>` |
 | `classifyNoCommitExit` | `microverse-runner.ts:1869` | `(iterLogFile: string) => NoCommitExitClassification` |
