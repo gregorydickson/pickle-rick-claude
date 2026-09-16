@@ -2,8 +2,10 @@ name: CI
 
 on:
   # 2724f7d0 (AC-4): release/** is listed alongside main because the v2.x beta
-  # line is developed on release/v2.1-beta, which no CI run had ever observed --
-  # every run on record carried headBranch: main. main stays first and unchanged.
+  # line is developed on a release/* branch, which no CI run had ever observed --
+  # every run on record carried headBranch: main. The glob is deliberate: it
+  # already covered release/v2.2-beta the moment that branch was created
+  # (2026-09-16), with no workflow edit. main stays first and unchanged.
   pull_request:
     branches:
       - main

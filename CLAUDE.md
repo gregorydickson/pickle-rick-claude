@@ -249,14 +249,21 @@ Applies to new writing; fix old occurrences only when already touching the file.
 
 ## 🚫 NO PULL REQUESTS (operator-set 2026-09-06, BINDING)
 
-**This repo does not use PRs.** The v2.1 line ships by TAG from `release/v2.1-beta` —
+**This repo does not use PRs.** The **v2.2 line** ships by TAG from `release/v2.2-beta` —
 `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`. Work lands as commits pushed straight to
 the release branch. **Never run `gh pr create`**, and never invoke `services/pr-factory.ts` (no
 production caller; queued for deletion).
 
-**Why this is a hard rule and not a preference:** `gh pr create` with no `--base` targets the repository
-DEFAULT branch. `main` is the stale 2.0 line — 1530 commits behind `release/v2.1-beta` and 57 ahead on
-its own — so such a PR is unmergeable and merging it would be destructive. This is the same defect class
+**`main` IS NO LONGER STALE (2026-09-16).** It was force-moved to the `v2.1.0` GA commit `c20a9562`, so
+`origin/main` and the `v2.1.0` tag are the same sha. The previous main — the v2.0 line, 57 commits ahead
+and 1886 behind — is preserved at the tag **`archive/main-2.0-line`** (`e0c91e17`) and nothing was made
+unreachable. Reverting is one command: `git push --force origin archive/main-2.0-line:main`. Of those 57
+commits, **46 subjects were already carried onto the 2.1 line**; of the 11 unique, 4 were 2.0.0-beta
+version bumps.
+
+**The explicit-target rule survives the fix and is NOT relaxed.** `main` now tracks the last GA release,
+not the branch under development, so a `gh` command that silently defaults to the default branch still
+targets the WRONG commit — just a less obviously wrong one, which is worse. This is the same defect class
 as [[B-RELTAG]] (`gh release create` with no `--target` tagged `main` for four months). **Any `git`/`gh`
 command that can default to the repository default branch MUST name its target explicitly.**
 
