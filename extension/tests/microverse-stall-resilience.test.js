@@ -502,6 +502,9 @@ for (const { label, file } of BYSTANDER_ONLY_DIRT) {
     const sessionDir = tmpDir('pickle-mrs-session-');
     const originalSleep = _deps.sleep;
     _deps.sleep = async () => {};
+    const originalLogActivity = _deps.logActivity;
+    const activity = [];
+    _deps.logActivity = (event) => { activity.push(event); };
     try {
       fs.mkdirSync(path.join(dir, path.dirname(file)), { recursive: true });
       fs.writeFileSync(path.join(dir, file), 'bystander\n');
@@ -524,6 +527,7 @@ for (const { label, file } of BYSTANDER_ONLY_DIRT) {
       );
     } finally {
       _deps.sleep = originalSleep;
+      _deps.logActivity = originalLogActivity;
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(sessionDir, { recursive: true, force: true });
     }
@@ -1307,20 +1311,35 @@ test('measureLlmIteration: an underivable surface never reaches the judge backen
     const state = writeStaleSnapshot(sessionDir, { description: 'quality', validation: 'improve code quality', type: 'llm', timeout_seconds: 60, tolerance: 2, direction: 'higher', judge_model: 'claude-sonnet-4-6' });
     state.status = 'iterating';
 
+    // e562164b: the stubs record and THROW. They used to delegate to the real execFileSync/spawn,
+    // so a regressed short-circuit spawned a real judge (11 s, the real `claude` binary) before
+    // this assertion could red; `_deps.sleep` is stubbed so the judge retry backoff cannot stall it either.
     let judgeInvoked = false;
     const originalExec = _deps.execFileSync;
-    _deps.execFileSync = (...args) => { judgeInvoked = true; return originalExec(...args); };
+    _deps.execFileSync = () => { judgeInvoked = true; throw new Error('judge backend must not be invoked'); };
     const originalSpawn = _deps.spawn;
-    _deps.spawn = (...args) => { judgeInvoked = true; return originalSpawn(...args); };
+    _deps.spawn = () => { judgeInvoked = true; throw new Error('judge backend must not be invoked'); };
+    const originalSleep = _deps.sleep;
+    _deps.sleep = async () => {};
+    const originalLogActivity = _deps.logActivity;
+    const activity = [];
+    _deps.logActivity = (event) => { activity.push(event); };
     try {
       const ctx = { sessionDir, workingDir, iteration: 1, log: () => {} };
       const result = await measureLlmIteration(state, ctx, 'claude');
       assert.equal(result.kind, 'failed', 'the run continues by reporting a typed failure, never a thrown/halting error');
       assert.equal(result.exitReason, 'metric_unmeasurable_unrecoverable');
       assert.equal(judgeInvoked, false, 'no empty fallback reaches the judge — the derivation failure short-circuits before any judge spawn');
+      assert.deepEqual(
+        activity.map((e) => e.gate_payload),
+        [{ phase: 'iteration', derivation: 'judge_review_surface' }],
+        'the typed failure is recorded as exactly one iteration-phase surface-derivation event',
+      );
     } finally {
       _deps.execFileSync = originalExec;
       _deps.spawn = originalSpawn;
+      _deps.sleep = originalSleep;
+      _deps.logActivity = originalLogActivity;
     }
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
