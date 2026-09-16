@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import eslintConfig from '../eslint.config.js';
@@ -834,5 +835,164 @@ test('canonical szechuan hygiene findings reach citadel only through the Overrid
     } finally {
         fs.rmSync(repoRoot, { recursive: true, force: true });
         fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// B-ROUTABLE ROOT R3: preservation replay. Three places this repo is ahead of
+// an external bar (szechuan Part I/II, Migration Hygiene's four scored
+// checks, anatomy-park's subsystem tracing) must not be silently narrowed by
+// later edits to this bundle (R4 adds a sentence, R5 re-tiers three cells
+// outside Migration Hygiene). AC-R3-4: if a replay below cannot be made to
+// pass, that is a silenced finding to report, not a replay to adjust.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT = path.resolve(EXTENSION_ROOT, '..');
+
+// AC-R3-1: this bundle's own start point. Diffing against a fixed historical
+// sha (rather than a hand-copied line snapshot) means every later ticket in
+// this bundle (R4, R5) is checked against the same baseline cumulatively, per
+// AC-R3-1's "across this whole bundle" wording.
+const PRESERVATION_BASELINE_SHA = '8e7a10f6809cac51cbf33dda42235652ea03a75c';
+const PRINCIPLES_REL_PATH = 'extension/szechuan-sauce-principles.md';
+const PART_I_HEADING = '## Part I: Clean Code';
+const PART_III_HEADING = '## Part III: Reliability';
+
+/** 1-based [start, end) line range covering Part I + Part II in the given file content. */
+function partIAndIILineRange(content) {
+    const lines = content.split('\n');
+    const startIdx = lines.findIndex((l) => l.startsWith(PART_I_HEADING));
+    const endIdx = lines.findIndex((l) => l.startsWith(PART_III_HEADING));
+    assert.ok(startIdx >= 0, `${PART_I_HEADING} not found in baseline; the range probe would be vacuous`);
+    assert.ok(endIdx > startIdx, `${PART_III_HEADING} not found after Part I; the range probe would be vacuous`);
+    return { start: startIdx + 1, end: endIdx + 1 };
+}
+
+test('AC-R3-1: Parts I and II of the principles file lose no line since the bundle baseline', () => {
+    let baselineContent;
+    try {
+        baselineContent = execSync(`git show ${PRESERVATION_BASELINE_SHA}:${PRINCIPLES_REL_PATH}`,
+            { cwd: REPO_ROOT, encoding: 'utf-8' });
+    } catch (err) {
+        throw new Error(`baseline ${PRESERVATION_BASELINE_SHA} unreadable for ${PRINCIPLES_REL_PATH}: ${err.message}`);
+    }
+    const { start, end } = partIAndIILineRange(baselineContent);
+
+    const diff = execSync(`git diff --unified=0 ${PRESERVATION_BASELINE_SHA} -- ${PRINCIPLES_REL_PATH}`,
+        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 10 });
+    if (!diff) return; // nothing has changed since baseline yet
+
+    const hunkHeaderRe = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/;
+    let oldLine = null;
+    const removedInScope = [];
+    for (const line of diff.split('\n')) {
+        const hunkMatch = hunkHeaderRe.exec(line);
+        if (hunkMatch) {
+            oldLine = parseInt(hunkMatch[1], 10);
+            continue;
+        }
+        if (oldLine === null || line.startsWith('---') || line.startsWith('+++') || line.startsWith('\\')) continue;
+        if (line.startsWith('-')) {
+            if (oldLine >= start && oldLine < end) removedInScope.push(`line ${oldLine}: ${line.slice(1)}`);
+            oldLine += 1;
+        } else if (line.startsWith('+')) {
+            // additions do not consume an old-file line number
+        } else {
+            oldLine += 1;
+        }
+    }
+    assert.deepEqual(removedInScope, [],
+        `AC-R3-4: Parts I/II lost line(s) since baseline ${PRESERVATION_BASELINE_SHA} — this is a silenced finding, do not adjust the replay:\n${removedInScope.join('\n')}`);
+});
+
+// AC-R3-2: Migration Hygiene lives in Part III (out of the Part I/II diff pin
+// above) and must keep each of its four checks at its EXACT existing
+// severity, not merely "some HIGH and some MEDIUM exist somewhere".
+test('AC-R3-2: Migration Hygiene keeps its four scored checks at their existing severities', () => {
+    const content = fs.readFileSync(PRINCIPLES_PATH, 'utf-8');
+    const hygieneStart = content.indexOf('### Migration Hygiene');
+    const hygieneEnd = content.indexOf('###', hygieneStart + 1);
+    const section = content.slice(hygieneStart, hygieneEnd > -1 ? hygieneEnd : undefined);
+    const checkRe = /\*\*([A-Za-z ]+?)\*\*\s*\((HIGH|MEDIUM|LOW)\)/g;
+    const found = {};
+    let m;
+    while ((m = checkRe.exec(section)) !== null) found[m[1].trim()] = m[2];
+    assert.deepEqual(found, {
+        'CHECK Constraint Drift': 'HIGH',
+        'Redundant Constraint Churn': 'MEDIUM',
+        'Idempotency': 'MEDIUM',
+        'Schema Drift': 'HIGH',
+    }, 'AC-R3-4: a Migration Hygiene check severity drifted from its existing, ahead-of-the-bar tier — this is a silenced finding, do not adjust the replay');
+});
+
+// AC-R3-3/AC-R3-4 (szechuan half): runWorkerGate was a 196-line/171-code-line
+// god function carrying its own max-lines-per-function eslint-disable before
+// szechuan-sauce commit 16a203c5 split it. Replaying the pre-fix blob under
+// the CURRENT enforced ceiling (via noInlineConfig, so the historical
+// eslint-disable cannot hide it) proves the ceiling still catches this class.
+const HISTORICAL_SZECHUAN_FIX_COMMIT = '16a203c5a11e5816d1f881c7002fd0709550b61a';
+const HISTORICAL_SZECHUAN_FILE = 'src/bin/spawn-morty.ts';
+const HISTORICAL_SZECHUAN_FUNCTION = 'runWorkerGate';
+
+test('AC-R3-3 replay: the historical runWorkerGate god-function (16a203c5) still trips the enforced ceiling', () => {
+    const source = execSync(
+        `git show ${HISTORICAL_SZECHUAN_FIX_COMMIT}^:extension/${HISTORICAL_SZECHUAN_FILE}`,
+        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 20 }
+    );
+    assert.match(source, new RegExp(`function ${HISTORICAL_SZECHUAN_FUNCTION}\\b`),
+        'the historical function is gone from the git blob; the replay would be vacuous');
+
+    const { options } = enforcedSizeCeilings();
+    const messages = new Linter({ configType: 'flat', cwd: EXTENSION_ROOT }).verify(source, [{
+        files: ['**/*.ts'],
+        languageOptions: { parser: tseslint.parser },
+        linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: 'off' },
+        rules: { [SIZE_RULE]: ['error', options] },
+    }], HISTORICAL_SZECHUAN_FILE);
+    const fatal = messages.find((m) => m.fatal);
+    if (fatal) throw new Error(`${HISTORICAL_SZECHUAN_FILE}@${HISTORICAL_SZECHUAN_FIX_COMMIT}^ did not parse: ${fatal.message}`);
+    const hit = messages.some((m) => m.ruleId === SIZE_RULE && m.message.includes(`'${HISTORICAL_SZECHUAN_FUNCTION}'`));
+    assert.ok(hit,
+        `AC-R3-4: the enforced ceiling no longer catches the historical ${HISTORICAL_SZECHUAN_FUNCTION} violation (${HISTORICAL_SZECHUAN_FIX_COMMIT}) — this is a silenced finding, do not adjust the replay`);
+});
+
+// AC-R3-3/AC-R3-4 (anatomy-park half): before commit 059ee673, config-protection's
+// R-WSRC-GR git-verb gate approved `git update-ref`/`git symbolic-ref` HEAD
+// mutations — plumbing that reaches the exact ref the porcelain verbs
+// (reset/checkout/switch) were already blocked from touching. Confirm the
+// CURRENT guard still blocks both, and (negative control) that the pre-fix
+// guard genuinely approved them — otherwise this would not be a real replay.
+const HISTORICAL_ANATOMY_FIX_COMMIT = '059ee6730d3924a57d515adce5f51dfbd06d2a9b';
+const HISTORICAL_ANATOMY_BYPASS_COMMANDS = [
+    'git update-ref HEAD HEAD~2',
+    'git symbolic-ref HEAD refs/heads/other',
+];
+
+test('AC-R3-3 replay: the historical R-WSRC-GR ref-mutation bypass (059ee673) is still blocked', async () => {
+    const { detectProhibitedGitVerb } = await import('../hooks/handlers/config-protection.js');
+    for (const command of HISTORICAL_ANATOMY_BYPASS_COMMANDS) {
+        assert.ok(detectProhibitedGitVerb(command),
+            `AC-R3-4: current config-protection no longer blocks "${command}" — this is a silenced finding (${HISTORICAL_ANATOMY_FIX_COMMIT}), do not adjust the replay`);
+    }
+});
+
+test('AC-R3-3 replay (negative control): the pre-fix guard genuinely approved the historical bypass', async () => {
+    const oldSource = execSync(
+        `git show ${HISTORICAL_ANATOMY_FIX_COMMIT}^:extension/hooks/handlers/config-protection.js`,
+        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 20 }
+    );
+    // Written as a real sibling module file (not a data: URL) so the blob's
+    // own relative imports (./resolve-state.js etc.) resolve normally.
+    const handlersDir = path.dirname(fs.realpathSync(path.resolve(EXTENSION_ROOT, 'hooks/handlers/config-protection.js')));
+    const tmpFile = path.join(handlersDir, `__replay_ap_critical_${process.pid}.mjs`);
+    fs.writeFileSync(tmpFile, oldSource);
+    try {
+        const old = await import(pathToFileURL(tmpFile).href);
+        for (const command of HISTORICAL_ANATOMY_BYPASS_COMMANDS) {
+            assert.equal(old.detectProhibitedGitVerb(command), null,
+                `replay setup is wrong: "${command}" was already blocked before ${HISTORICAL_ANATOMY_FIX_COMMIT}, so this is not a real historical violation`);
+        }
+    } finally {
+        fs.rmSync(tmpFile, { force: true });
     }
 });
