@@ -119,6 +119,38 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🗺 THE ANATOMY / SZECHUAN UPGRADE — dispatch order (operator-set 2026-09-16)
+
+**Two bugs, then the enhancement.** The ordering is a dependency, not a preference.
+
+| # | work | why it is where it is |
+|---|---|---|
+| **1** | **[[B-TRUTHEXIT]]** — #33 + #34 (`prds/p1-b-truthexit-two-instruments-that-cannot-tell-two-states-apart.md`) | **#34 is a hard prerequisite of L7.** Wiring citadel into the fixer before the matcher is repaired spends ~121 iterations adding anchors that already exist. #33 rides along: same shape, same day. |
+| **2** | **[[B-LENS]]** — the enhancement, centred on **ROOT L7** | needs #34 landed and the other channels rate-checked first |
+
+**Both bugs are one shape:** an instrument collapses two distinguishable states into one output, and the
+collapsed output is the one that reads as a defect. `status` vs `signal`; "anchor absent" vs "anchor
+present under our own naming convention". Both fixes are subtractions of ambiguity — no new gate leg, no
+new `EXIT_REASONS` member, no halt.
+
+**What B-LENS is, after the operator constraint cut it down:**
+
+| root | shape | status |
+|---|---|---|
+| **L7** the loops fix all issues they find | route an existing channel into the existing loop — **no new criterion, no per-pass cost** | **the centre**; blocked on #34 |
+| L0 preservation replay | a control run once, outside the loop | keep |
+| L3 deleted-or-broken question | **one sentence** | keep |
+| L4 acceptance criteria | a **diagnosis**, no prompt change yet | keep |
+| L5 comment density | **three table cells** — re-tier a smell the file already finds | keep |
+| L6 teams experiment | an opt-in measurement | keep |
+| ~~L1 lens roster~~ | a maintained list printed twice a pass | **CUT** — imports an enumerated set; its value is already in `pass_counts` |
+| ~~L2 provenance schema~~ | a contract with a rejection path | **CUT as scoped** — a new way for a pass to yield nothing |
+
+**Still unmeasured, and blocking L7's other half:** the skeptic's **28** findings and the
+`dropped_findings.md` entries have **no** true-positive rate. AC-L7-1 is per-channel.
+
+---
+
 ## 🎯 AC-L7-1 EXECUTED — the biggest findings channel is 82% FALSE (#34). Do NOT wire it yet.
 
 The operator set [[B-LENS]] ROOT L7: **"the loops should fix all issues they find."** Its blocking
