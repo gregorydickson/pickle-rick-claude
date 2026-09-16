@@ -684,6 +684,9 @@ function readTailUtf8(filePath: string, maxBytes: number): string {
   return firstNewline !== -1 ? raw.slice(firstNewline + 1) : raw;
 }
 
+/** The runner's lifecycle markers sit near the end of its log; a small tail is enough. */
+const RUNNER_LOG_TAIL_BYTES = 8192;
+
 export function readPipelineLifecycle(sessionDir: string): PipelineLifecycleStatus {
   const pipelinePath = path.join(sessionDir, 'pipeline.json');
   if (!fs.existsSync(pipelinePath)) return 'none';
@@ -705,7 +708,7 @@ export function readPipelineLifecycle(sessionDir: string): PipelineLifecycleStat
 
   const runnerLogPath = path.join(sessionDir, 'pipeline-runner.log');
   try {
-    const tail = readTailUtf8(runnerLogPath, 8192);
+    const tail = readTailUtf8(runnerLogPath, RUNNER_LOG_TAIL_BYTES);
     if (tail.includes('Pipeline finished:')) return 'completed';
     if (tail.includes('shutting down pipeline')) return 'cancelled';
     if (tail.includes('pipeline-runner started')) return 'running';
@@ -797,6 +800,10 @@ function buildHeaderFields(state: State, tickets: TicketInfo[], width: number, s
   return fields;
 }
 
+/** Raw non-blank log lines considered, then summaries shown, in the "Recent output" block. */
+const RECENT_OUTPUT_RAW_LINES = 10;
+const RECENT_OUTPUT_SHOWN_LINES = 5;
+
 function buildRecentOutput(sessionDir: string, width: number, sep: string): string[] {
   const recentOut: string[] = [];
   try {
@@ -807,10 +814,10 @@ function buildRecentOutput(sessionDir: string, width: number, sep: string): stri
     const summaryLines = tail
       .split('\n')
       .filter((l) => l.trim())
-      .slice(-10)
+      .slice(-RECENT_OUTPUT_RAW_LINES)
       .map(summarizeLine)
       .filter((l) => l.length > 0)
-      .slice(-5);
+      .slice(-RECENT_OUTPUT_SHOWN_LINES);
     if (summaryLines.length === 0) return recentOut;
     recentOut.push(`\n${sep}\n${MX.DIM}Recent output:${MX.R}\n`);
     for (const logLine of summaryLines) {
@@ -1110,12 +1117,16 @@ async function announceSessionCompleteOrExit(): Promise<void> {
   }
 }
 
+const INACTIVE_CONFIRM_DELAY_MS = 3000;
+/** Refresh cadence of the render loop — unrelated to MONITOR_STDOUT_WATCHDOG_MS despite the same value. */
+const MONITOR_REFRESH_INTERVAL_MS = 2000;
+
 /**
  * One inactive render is not an exit: the session may be between iterations. Confirm with a
- * second render 3s later and only then ask the session whether it is allowed to end.
+ * second render INACTIVE_CONFIRM_DELAY_MS later and only then ask the session whether it is allowed to end.
  */
 async function isSessionFinished(sessionDir: string, mode: MonitorMode): Promise<boolean> {
-  await sleep(3000);
+  await sleep(INACTIVE_CONFIRM_DELAY_MS);
   const stillInactive = !(await renderOrExit(sessionDir, mode));
   return stillInactive && shouldMonitorExit(sessionDir, false);
 }
@@ -1130,7 +1141,7 @@ async function runMonitorLoop(sessionDir: string, initialMode: MonitorMode): Pro
     }
     // R-MDS-3: re-check state.step each tick and hot-swap mode if phase changed.
     mode = checkAndSwapMode(sessionDir, mode);
-    await sleep(2000);
+    await sleep(MONITOR_REFRESH_INTERVAL_MS);
   }
 }
 
