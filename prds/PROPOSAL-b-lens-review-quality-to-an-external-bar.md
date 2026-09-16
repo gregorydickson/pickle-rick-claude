@@ -91,6 +91,64 @@ an investigation, L0 is a control that runs outside the loop.
 
 ---
 
+## 🎯 ROOT L7 (operator-set 2026-09-16) — **THE LOOPS SHOULD FIX ALL ISSUES THEY FIND.** This is now the centre of the bundle.
+
+> *"the loops should fix all issues they find."*
+
+**They do not. Measured on the last run — which reported `converged`, 0 szechuan findings, 4/4 phases:**
+
+| channel | count | routed to a fixer? |
+|---|---:|---|
+| citadel advisory findings | **163** | **NO** — surface-only by design (`.claude/commands/citadel.md:25`) |
+| `skeptic_findings.json` | **28** | **NO** — the record's shape is `{defect,file,line,shape,why}`, with **no disposition field at all** |
+| anatomy `dropped_findings.md` (2 files) | ~6 | **NO** — explicitly dropped |
+| szechuan violations | 0 | yes — converged to zero |
+
+**≈197 identified defects were not fixed in a run that reported success.** `grep -c 'citadel'
+extension/src/bin/microverse-runner.ts` → **0**: there is no wire at all from the largest findings channel
+into the loop that fixes things. A design note filed **2026-06-16** already said so and it is still open.
+
+### Why this is the answer to "how do these phases produce quality", and why it does NOT violate the simplicity constraint
+
+**The fixing loop already does the right thing.** szechuan takes *"the single highest-priority remaining
+violation (P0 > P1 > P2 > P3 > P4)"*, fixes one per iteration, and exits only at zero
+(*"The sauce is obtained"*). Nothing about that needs to change.
+
+**The defect is an unconnected INPUT, not a missing capability.** Routing an existing findings channel
+into the existing loop adds **no criterion, no contract, no list, and no per-pass work** — it does not
+make a single pass heavier, which is the thing the operator constraint forbids. It makes the loop **run
+longer**, which is the term quality actually depends on.
+
+**It is a SUBTRACTION in the sense root `CLAUDE.md` names.** Today a finding has two fates — *fixed* or
+*advisory* — and which one it gets is decided by which phase happened to find it, not by anything about
+the finding. **Collapsing those two states into one removes a distinction, it does not add a case.**
+
+### AC-L7
+- **AC-L7-1 (measure before routing — blocking):** classify a sample of the 163 citadel advisories by
+  true/false positive **before** wiring anything. My own notes already record a known-false class
+  (citadel orphan-test-case Highs, `conf=0`, contradicted by `audit-trap-door-enforcement.sh` exiting 0).
+  **Feeding 163 findings of unknown quality into a fixer that fixes one per iteration is how a run burns
+  its budget achieving nothing.** The true-positive rate decides whether this ships at all.
+- **AC-L7-2:** the wire is a ROUTE, not a rewrite — citadel keeps surfacing exactly as it does; its
+  output becomes an input to the existing fix loop. No change to any review prompt's criteria.
+- **AC-L7-3 (the skeptic's missing half):** `skeptic_findings.json` records no disposition. Either its
+  findings reach the fixer, or each one carries why it did not. **A findings file with no disposition
+  column cannot be audited and silently reads as "handled".**
+- **AC-L7-4 (`dropped_findings.md` must justify itself per entry):** a drop is a decision. Each entry
+  states the reason — out of scope, false positive, superseded — and a drop with no reason is a defect.
+- **AC-L7-5 (budget honesty):** 163 findings at one fix per iteration is 163 iterations.
+  `szechuan_max_iterations` is 500 and the stall limit is 5, so the capacity exists but the **wall clock
+  does not come free**. Report the projected iteration cost before enabling, and stage it by severity if
+  the number is large.
+- **AC-L7-6 (negative control):** a run with zero advisory findings behaves exactly as today. This root
+  must not change the converged path.
+
+**Relationship to the rest of this bundle:** L3 and L5 raise what the judge *counts*; **L7 raises what
+gets *fixed*.** L7 is the larger lever by an order of magnitude — ≈197 findings versus two sentences and
+three table cells — and it is the only root here that touches no review criterion at all.
+
+---
+
 ## 🔒 ROOT L0 — PRESERVE WHAT ALREADY BEATS THE BAR (gates every other root)
 
 **The risk this bundle carries is not that it fails. It is that "align to the external bar" reads as a
