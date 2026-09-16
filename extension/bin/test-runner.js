@@ -371,6 +371,9 @@ function main() {
     if (result.error) {
         exitWithError(result.error.message, 1);
     }
+    if (result.signal) {
+        process.stderr.write(`[test-runner] child terminated by signal ${result.signal}\n`);
+    }
     process.exit(result.status ?? 1);
 }
 main();

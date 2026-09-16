@@ -435,6 +435,10 @@ function main(): never {
     exitWithError(result.error.message, 1);
   }
 
+  if (result.signal) {
+    process.stderr.write(`[test-runner] child terminated by signal ${result.signal}\n`);
+  }
+
   process.exit(result.status ?? 1);
 }
 

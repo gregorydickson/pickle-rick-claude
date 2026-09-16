@@ -1,7 +1,9 @@
 // @tier: fast
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +16,66 @@ const REPO_ROOT = path.resolve(EXTENSION_ROOT, '..');
 const PIPELINE_SKILL = path.join(REPO_ROOT, '.claude', 'commands', 'pickle-pipeline.md');
 const PICKLE_SETTINGS = path.join(REPO_ROOT, 'pickle_settings.json');
 const EXTENSION_CLAUDE_MD = path.join(EXTENSION_ROOT, 'CLAUDE.md');
+const TYPES_INDEX_TS = path.join(EXTENSION_ROOT, 'src', 'types', 'index.ts');
+
+/**
+ * Finds the pid of test-runner.js's direct spawnSync child (the `node --test <file>`
+ * invocation) by scanning for a live process whose ppid matches the outer runner's pid.
+ * Polled because the inner spawnSync call happens a moment after the outer process starts.
+ */
+function findInnerChildPid(outerPid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const out = execFileSync('ps', ['-o', 'pid,ppid,command', '-ax'], {
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    for (const line of out.split('\n').slice(1)) {
+      const match = /^\s*(\d+)\s+(\d+)\s/.exec(line);
+      if (match && Number(match[2]) === outerPid) return Number(match[1]);
+    }
+  }
+  return null;
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function waitForFile(filePath, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(filePath)) return true;
+    sleepSync(20);
+  }
+  return false;
+}
+
+function spawnRunner(args) {
+  // Scrub NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID: this file runs under `node --test`
+  // itself, and those two vars leaking into the spawned `node --test <fixture>`
+  // child change its exit-code/reporting behavior (it starts acting as a nested
+  // test-runner worker instead of a standalone run).
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  delete env.NODE_TEST_WORKER_ID;
+  const child = spawn(process.execPath, [RUNNER_JS, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 30000,
+    env,
+  });
+  const captured = { stdout: '', stderr: '' };
+  child.stdout.on('data', (chunk) => { captured.stdout += chunk; });
+  child.stderr.on('data', (chunk) => { captured.stderr += chunk; });
+  return { child, captured };
+}
+
+function waitForClose(child) {
+  return new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => resolve(code));
+  });
+}
 
 /** Reads a `→ <NAME> (default: <N>)` cap out of the /pickle-pipeline skill doc. */
 function readSkillCap(source, name) {
@@ -110,4 +172,83 @@ test('DEFAULT_TEST_RUNNER_TIMEOUT_MS stays within MAX_TEST_RUNNER_TIMEOUT_MS', (
 
   const defaultTimeoutMs = readDefaultTimeoutMs();
   assert.ok(defaultTimeoutMs <= maxTimeoutMs, 'default must not exceed the runner clamp ceiling');
+});
+
+// ---------------------------------------------------------------------------
+// AC-T1 (B-TRUTHEXIT ROOT T1) — carry the child signal through exit reporting.
+// A child killed by a signal must be attributed on stderr, distinctly from a
+// genuine test-failure exit, while the exit code stays non-zero either way.
+// ---------------------------------------------------------------------------
+
+test('AC-T1-1/AC-T1-3: a SIGKILLed child is reported as signal-terminated and still exits non-zero', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-test-runner-signal-'));
+  const marker = path.join(dir, 'marker');
+  const fixture = path.join(dir, 'slow.test.js');
+  try {
+    writeFileSync(
+      fixture,
+      [
+        "import { test } from 'node:test';",
+        "import { writeFileSync } from 'node:fs';",
+        `test('slow', async () => {`,
+        `  writeFileSync(${JSON.stringify(marker)}, 'started');`,
+        `  await new Promise((resolve) => setTimeout(resolve, 30000));`,
+        `});`,
+      ].join('\n'),
+    );
+
+    const { child, captured } = spawnRunner([fixture]);
+    const closed = waitForClose(child);
+
+    assert.ok(waitForFile(marker, 10000), 'fixture test must start and write its marker');
+    const innerPid = findInnerChildPid(child.pid, 10000);
+    assert.ok(innerPid, "must resolve the runner's direct spawnSync child pid");
+    process.kill(innerPid, 'SIGKILL');
+
+    const code = await closed;
+
+    assert.notEqual(code, 0, 'a signal-terminated child must exit non-zero');
+    assert.match(
+      captured.stderr,
+      /\[test-runner\] child terminated by signal SIGKILL/,
+      'stderr must name the terminating signal',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AC-T1-2/AC-T1-4: a genuinely failing child exits and outputs exactly as before — no signal attribution', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pickle-test-runner-fail-'));
+  const fixture = path.join(dir, 'fail.test.js');
+  try {
+    writeFileSync(
+      fixture,
+      [
+        "import { test } from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        `test('fails', () => { assert.fail('boom'); });`,
+      ].join('\n'),
+    );
+
+    const { child, captured } = spawnRunner([fixture]);
+    const code = await waitForClose(child);
+
+    assert.equal(code, 1, 'a genuinely failing tier must exit exactly as before (status 1)');
+    assert.doesNotMatch(
+      captured.stderr,
+      /\[test-runner\] child terminated by signal/,
+      'a genuine test failure must carry no signal attribution',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AC-T1-5: EXIT_REASONS.length is unchanged by this fix (this ticket touches no halt path)', () => {
+  const source = readFileSync(TYPES_INDEX_TS, 'utf8');
+  const match = /export const EXIT_REASONS = \[([\s\S]*?)\] as const;/.exec(source);
+  assert.ok(match, 'EXIT_REASONS array literal must be present in src/types/index.ts');
+  const count = match[1].match(/'[^']+'/g)?.length ?? 0;
+  assert.equal(count, 20, 'EXIT_REASONS member count must stay at its pre-fix value (20)');
 });
