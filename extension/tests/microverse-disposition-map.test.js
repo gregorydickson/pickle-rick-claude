@@ -507,8 +507,8 @@ test('the degraded flag and the withhold decision are unchanged by signal attrib
 // and classifyPostFinalVerdict handle a HAND-AUTHORED SIGNAL_KILLED_OUTPUT string correctly — but
 // that fixture could drift from what test-runner.ts actually emits without ever reddening. This
 // drives a REAL bin/test-runner.js child, kills its own spawned test process with a real signal,
-// and feeds the REAL captured stdout+stderr — combined exactly as runBetweenTicketFastTests does
-// at mux-runner.ts:862 (`${stdout}\n${stderr}`) — through the real, unmocked parse and classify
+// and feeds the REAL captured stdout+stderr — combined exactly as runBetweenTicketFastTests
+// builds its `output` (`${stdout}\n${stderr}`) — through the real, unmocked parse and classify
 // functions. No hand-authored signal-line text enters this test.
 // ---------------------------------------------------------------------------------------------
 
@@ -595,7 +595,7 @@ test('wiring: a REAL signal-killed test-runner.js child\'s captured output reach
       'sanity: the real producer (test-runner.ts) must emit its own signal-attribution line',
     );
 
-    // Combine exactly as runBetweenTicketFastTests builds `output` at mux-runner.ts:862.
+    // Combine exactly as runBetweenTicketFastTests builds `output`.
     const output = `${captured.stdout}\n${captured.stderr}`;
 
     const failures = parseBetweenTicketFastGateFailures(output, dir);
