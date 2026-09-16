@@ -600,9 +600,10 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
 
   // d5b5add3 (AC-T2-2, second half): `remaining > 0` above passes a matcher that clears all but ONE
   // genuinely-absent anchor (measured: accept-everything-but-one left all three tests above GREEN).
-  // The population that MUST survive is derived from the text, not from any matcher: an anchor whose
-  // characters appear nowhere in its file cannot be satisfied by a test title there, so no correct
-  // widening may clear it. At the widening that is the PRD's 26 of 147; no count is hardcoded.
+  // The population that MUST survive is derived from the text, not from any matcher: the PRD defines
+  // "genuinely absent" as an anchor whose characters occur nowhere in its file — 26 of 147 when the
+  // widening landed; no count is hardcoded. A matcher adopting the shell's slug semantics would clear
+  // some of these by design; that is a change of definition and must update this pin deliberately.
   test('AC-T2-2: every anchor absent from its file\'s text is still reported — a matcher clearing any of them reds', async () => {
     assert.ok(replayPairs.length >= 100, `corpus went dark: only ${replayPairs.length} anchored ENFORCE pairs enumerated`);
     const mustRemain = replayPairs
@@ -666,13 +667,9 @@ describe('runT6TrapDoorCoverage vs audit-trap-door-enforcement.sh — no silent 
 
     // Reuses the module-level replay (computed once in the shared `before()` above) instead of
     // re-deriving it, so this test spawns no additional `git show`.
-    const divergent = [];
-    const agreeing = [];
-    for (const p of replayRemaining) {
-      const content = fs.readFileSync(p.absPath, 'utf-8');
-      const shellResolves = shellAnchorResolves(content, p.anchor);
-      (shellResolves ? divergent : agreeing).push(`${p.canonicalPath}#${p.anchor}`);
-    }
+    const divergent = replayRemaining
+      .filter((p) => shellAnchorResolves(replayReadCached(p.absPath), p.anchor))
+      .map(pairKey);
 
     // Report, do not swallow: this is the AC-T2-2 "reported rather than tuned away" contract.
     // eslint-disable-next-line no-console -- deliberate CI-visible divergence report.
