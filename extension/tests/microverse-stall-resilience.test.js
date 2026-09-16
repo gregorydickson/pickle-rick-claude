@@ -425,6 +425,10 @@ test('AC-CF-17: no new microverse-state field, exit reason, or counter', () => {
     // the persisted phase artifact per the ticket's own Interface Contract — a sanctioned
     // addition for a new mechanism, not the drift this pin exists to catch.
     'out_of_surface_findings_dropped',
+    // cfc530c6 (AC-J4-4): the stalled_below_target cause + derivation inputs, additive/optional,
+    // written once at the stalled_below_target exit only — a sanctioned addition for a new
+    // mechanism, not the drift this pin exists to catch.
+    'stall_disposition',
   ], 'the fix reuses shipped state — a new field here means a new mechanism was added');
 
   const runner = readSrc('bin/microverse-runner.ts');

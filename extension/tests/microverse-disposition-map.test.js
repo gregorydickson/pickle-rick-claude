@@ -7,8 +7,9 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, _deps } from '../bin/microverse-runner.js';
-import { writeMicroverseState, readMicroverseState, createMicroverseState } from '../services/microverse-state.js';
-import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
+import { writeMicroverseState, readMicroverseState, createMicroverseState, recordIteration, recordStall, deriveStallCause } from '../services/microverse-state.js';
+import { MICROVERSE_EXIT_REASONS, EXIT_REASONS } from '../types/index.js';
+import { loadMicroverseJson } from './helpers/microverse-corpora.js';
 
 const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -256,4 +257,123 @@ test('AC-J3-4: dropOutOfSurfaceViolations.droppedCount round-trips through micro
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// cfc530c6 (AC-J4-1..5): stalled_below_target names the mechanism that exhausted the stall
+// budget, derived from ONE named field (`convergence.last_stall_signal`), never guessed from
+// `history` shape or `iteration_regressions`. See `deriveStallCause` in
+// `../services/microverse-state.js`.
+// ---------------------------------------------------------------------------------------------
+
+function makeCauseState() {
+  return createMicroverseState({
+    prdPath: '/tmp/prd.md',
+    metric: {
+      description: 'test metric',
+      validation: 'cat score.txt',
+      type: 'command',
+      timeout_seconds: 60,
+      tolerance: 0,
+      direction: 'higher',
+    },
+    stallLimit: 5,
+  });
+}
+
+function makeCauseHistoryEntry(overrides = {}) {
+  return {
+    iteration: 1,
+    metric_value: '0',
+    score: 0,
+    action: 'revert',
+    description: 'test entry',
+    pre_iteration_sha: 'abc123',
+    timestamp: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+test('deriveStallCause covers improved via recordIteration', () => {
+  let mv = makeCauseState();
+  mv = recordIteration(mv, makeCauseHistoryEntry({ action: 'accept' }), 'improved');
+  const disposition = deriveStallCause(mv, 7);
+  assert.equal(disposition.cause, 'improved');
+  assert.equal(disposition.inputs.last_stall_signal, 'improved');
+  assert.equal(disposition.inputs.iteration, 7);
+});
+
+test('deriveStallCause covers held via recordIteration', () => {
+  let mv = makeCauseState();
+  mv = recordIteration(mv, makeCauseHistoryEntry({ action: 'accept' }), 'held');
+  const disposition = deriveStallCause(mv, 3);
+  assert.equal(disposition.cause, 'held');
+  assert.equal(disposition.inputs.last_stall_signal, 'held');
+});
+
+test('deriveStallCause covers regressed via recordIteration', () => {
+  let mv = makeCauseState();
+  mv = recordIteration(mv, makeCauseHistoryEntry({ action: 'revert' }), 'regressed');
+  const disposition = deriveStallCause(mv, 5);
+  assert.equal(disposition.cause, 'regressed');
+  assert.equal(disposition.inputs.last_stall_signal, 'regressed');
+});
+
+test('deriveStallCause covers no-commit via recordStall', () => {
+  let mv = makeCauseState();
+  mv = recordStall(mv);
+  const disposition = deriveStallCause(mv, 2);
+  assert.equal(disposition.cause, 'no-commit');
+  assert.equal(disposition.inputs.last_stall_signal, 'no-commit');
+});
+
+test('recordStall overwrites a stale improved signal — the four-improving-then-five-no-commit scenario', () => {
+  let mv = makeCauseState();
+  mv = recordIteration(mv, makeCauseHistoryEntry({ iteration: 1, action: 'accept' }), 'improved');
+  // Five subsequent no-commit stalls must NOT leave the stale 'improved' signal in place.
+  for (let i = 0; i < 5; i++) mv = recordStall(mv);
+  const disposition = deriveStallCause(mv, 6);
+  assert.equal(disposition.cause, 'no-commit');
+});
+
+test('EXIT_REASONS.length is unchanged — assert the count, not string absence', () => {
+  assert.equal(EXIT_REASONS.length, 20);
+});
+
+test('derivation inputs, including the iteration number, are persisted with the cause', () => {
+  let mv = makeCauseState();
+  mv = recordStall(mv);
+  const disposition = deriveStallCause(mv, 42);
+  assert.deepEqual(disposition.inputs, { last_stall_signal: 'no-commit', iteration: 42 });
+});
+
+test('an underivable cause (non-empty legacy history, no last_stall_signal) reports unknown with its inputs, never guessed', () => {
+  const mv = makeCauseState();
+  mv.convergence.history = [makeCauseHistoryEntry({ classification: 'regressed' })];
+  // last_stall_signal deliberately absent (legacy shape).
+  const disposition = deriveStallCause(mv, 9);
+  assert.equal(disposition.cause, 'unknown');
+  assert.equal(disposition.inputs.last_stall_signal, null);
+  assert.equal(disposition.inputs.iteration, 9);
+});
+
+test('replaying both vendored sessions renders DIFFERENT causes', () => {
+  const a4d141e1 = loadMicroverseJson('2026-09-12-a4d141e1');
+  const c5a7eb48 = loadMicroverseJson('2026-09-15-c5a7eb48');
+
+  assert.equal(a4d141e1.exit_reason, 'stalled_below_target');
+  assert.equal(c5a7eb48.exit_reason, 'stalled_below_target');
+  assert.equal(a4d141e1.convergence.history.length, 1);
+  assert.equal(c5a7eb48.convergence.history.length, 0);
+
+  const causeA = deriveStallCause(a4d141e1, 2).cause;
+  const causeB = deriveStallCause(c5a7eb48, 0).cause;
+
+  assert.notEqual(causeA, causeB);
+  // Documented, not incidental: non-empty legacy history with no live signal is unknown
+  // (the ticket's forbidden "history.length > 0 implies regression" discriminator is never
+  // built); empty legacy history is a sound backfill to 'no-commit', since recordIteration
+  // appends unconditionally and so an empty history proves no scored iteration ever ran.
+  assert.equal(causeA, 'unknown');
+  assert.equal(causeB, 'no-commit');
 });

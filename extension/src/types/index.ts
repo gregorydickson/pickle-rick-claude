@@ -1795,6 +1795,28 @@ export interface Violation {
   measured?: ViolationMeasured;
 }
 
+/**
+ * AC-J4: the mechanism that exhausted a stall budget. `'unknown'` is the Errors-clause escape hatch
+ * for a session whose derivation inputs cannot support one of the other four values — never guessed.
+ */
+export type StallCause = 'improved' | 'held' | 'regressed' | 'no-commit' | 'unknown';
+
+/**
+ * AC-J4-4: the derivation inputs `deriveStallCause` (microverse-state.ts) used, persisted alongside
+ * the cause. `last_stall_signal` is null when the session predates that field and no sound backfill
+ * applied (see `StallDisposition`).
+ */
+export interface StallCauseInputs {
+  last_stall_signal: 'improved' | 'held' | 'regressed' | 'no-commit' | null;
+  iteration: number;
+}
+
+/** AC-J4: `stalled_below_target`'s named cause plus the inputs it was derived from. */
+export interface StallDisposition {
+  cause: StallCause;
+  inputs: StallCauseInputs;
+}
+
 /** Return type of parseLlmJudgeOutput — discriminated by shape. */
 export interface JudgeResult {
   score: number | null;
@@ -1826,6 +1848,13 @@ export interface MicroverseSessionState {
     stall_limit: number;
     stall_counter: number;
     history: MicroverseHistoryEntry[];
+    /**
+     * AC-J4-1: the ONE field a `stalled_below_target` cause is derived from. Set by
+     * `recordIteration` (to its classification) and `recordStall` (to `'no-commit'`) on every call,
+     * so it always reflects whichever of the two most recently ran. Additive/optional — absent on
+     * sessions predating this field (see `deriveStallCause`'s legacy backfill).
+     */
+    last_stall_signal?: 'improved' | 'held' | 'regressed' | 'no-commit';
   };
   gap_analysis_path: string;
   judge_context_path?: string;
@@ -1850,6 +1879,12 @@ export interface MicroverseSessionState {
    * before they reached `violation_ledger`. Additive/optional — absent on sessions predating this
    * field. */
   out_of_surface_findings_dropped?: number;
+  /**
+   * AC-J4: set once, at the `stalled_below_target` exit only (`convergenceExitReason`'s two
+   * callers), by `deriveStallCause`. Additive/optional — absent on every other exit and on sessions
+   * predating this field.
+   */
+  stall_disposition?: StallDisposition;
 }
 
 // ---------------------------------------------------------------------------

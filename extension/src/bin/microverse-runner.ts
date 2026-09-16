@@ -32,6 +32,7 @@ import {
   classifyFailure,
   findLastAcceptedEntry,
   updateViolationLedger,
+  deriveStallCause,
 } from '../services/microverse-state.js';
 import type { MetricComparisonFigures } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
@@ -5136,6 +5137,22 @@ export function convergenceExitReason(
 }
 
 /**
+ * AC-J4: persists `state.stall_disposition` at the ONE point both `convergenceExitReason` callers
+ * learn the exit is `stalled_below_target`, then writes it — `convergenceExitReason` itself stays a
+ * pure mapping (its own docstring), so the write lives at the two call sites instead of inside it.
+ * No-op for every other exit reason.
+ */
+function recordStallDisposition(
+  exitReason: ExitReason,
+  state: MicroverseState,
+  ctx: Pick<RunContext, 'iteration' | 'sessionDir'>,
+): void {
+  if (exitReason !== 'stalled_below_target') return;
+  state.stall_disposition = deriveStallCause(state, ctx.iteration);
+  writeMicroverseState(ctx.sessionDir, state);
+}
+
+/**
  * Ledger entries present for the entire stall window. Any resolve or measurable shrink inside the window
  * would have reset `stall_counter`, so an entry first seen at or before the window start is one the loop
  * repeatedly failed to move.
@@ -5236,6 +5253,7 @@ export async function handleNoCommitStall(
   const convergedBranch = isConverged(state);
   if (convergedBranch) {
     const exitReason = convergenceExitReason(convergedBranch, state, ctx);
+    recordStallDisposition(exitReason, state, ctx);
     ctx.log(`${exitReason} (stall limit reached with no new commits)`);
     return exitReason;
   }
@@ -5938,6 +5956,7 @@ async function handleMetricMode(
   const convergedBranch = isConverged(state);
   if (!convergedBranch) return null;
   const exitReason = convergenceExitReason(convergedBranch, state, ctx);
+  recordStallDisposition(exitReason, state, ctx);
   ctx.log(`${exitReason} after ${ctx.iteration} iterations (${convergedBranch === 'target' ? `target=${state.convergence_target} reached` : `stall_counter=${state.convergence.stall_counter}`})`);
   return exitReason;
 }

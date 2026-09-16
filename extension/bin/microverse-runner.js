@@ -8,7 +8,7 @@ import { Defaults, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, normalizeMic
 import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, buildWorkerInvocation, backendEnvOverrides, } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
-import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetricWithBasis, classifyFailure, findLastAcceptedEntry, updateViolationLedger, } from '../services/microverse-state.js';
+import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetricWithBasis, classifyFailure, findLastAcceptedEntry, updateViolationLedger, deriveStallCause, } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
@@ -3989,6 +3989,18 @@ export function convergenceExitReason(branch, state, ctx) {
     return 'stalled_below_target';
 }
 /**
+ * AC-J4: persists `state.stall_disposition` at the ONE point both `convergenceExitReason` callers
+ * learn the exit is `stalled_below_target`, then writes it — `convergenceExitReason` itself stays a
+ * pure mapping (its own docstring), so the write lives at the two call sites instead of inside it.
+ * No-op for every other exit reason.
+ */
+function recordStallDisposition(exitReason, state, ctx) {
+    if (exitReason !== 'stalled_below_target')
+        return;
+    state.stall_disposition = deriveStallCause(state, ctx.iteration);
+    writeMicroverseState(ctx.sessionDir, state);
+}
+/**
  * Ledger entries present for the entire stall window. Any resolve or measurable shrink inside the window
  * would have reset `stall_counter`, so an entry first seen at or before the window start is one the loop
  * repeatedly failed to move.
@@ -4085,6 +4097,7 @@ export async function handleNoCommitStall(state, ctx, iterLogFile) {
     const convergedBranch = isConverged(state);
     if (convergedBranch) {
         const exitReason = convergenceExitReason(convergedBranch, state, ctx);
+        recordStallDisposition(exitReason, state, ctx);
         ctx.log(`${exitReason} (stall limit reached with no new commits)`);
         return exitReason;
     }
@@ -4738,6 +4751,7 @@ async function handleMetricMode(state, baseline, ctx, iterLogFile) {
     if (!convergedBranch)
         return null;
     const exitReason = convergenceExitReason(convergedBranch, state, ctx);
+    recordStallDisposition(exitReason, state, ctx);
     ctx.log(`${exitReason} after ${ctx.iteration} iterations (${convergedBranch === 'target' ? `target=${state.convergence_target} reached` : `stall_counter=${state.convergence.stall_counter}`})`);
     return exitReason;
 }
