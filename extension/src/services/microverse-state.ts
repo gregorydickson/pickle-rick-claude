@@ -555,14 +555,7 @@ export function deriveStallCause(
   iteration: number,
 ): StallDisposition {
   const signal = state.convergence.last_stall_signal ?? null;
-  let cause: StallCause;
-  if (signal) {
-    cause = signal;
-  } else if ((state.convergence?.history ?? []).length === 0) {
-    cause = 'no-commit';
-  } else {
-    cause = 'unknown';
-  }
+  const cause: StallCause = signal ?? ((state.convergence?.history ?? []).length === 0 ? 'no-commit' : 'unknown');
   return { cause, inputs: { last_stall_signal: signal, iteration } };
 }
 

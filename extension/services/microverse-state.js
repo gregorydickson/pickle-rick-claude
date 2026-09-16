@@ -474,16 +474,7 @@ export function classifyFailure(mvState, metricResult, preIterSha, postIterSha, 
  */
 export function deriveStallCause(state, iteration) {
     const signal = state.convergence.last_stall_signal ?? null;
-    let cause;
-    if (signal) {
-        cause = signal;
-    }
-    else if ((state.convergence?.history ?? []).length === 0) {
-        cause = 'no-commit';
-    }
-    else {
-        cause = 'unknown';
-    }
+    const cause = signal ?? ((state.convergence?.history ?? []).length === 0 ? 'no-commit' : 'unknown');
     return { cause, inputs: { last_stall_signal: signal, iteration } };
 }
 export function isConverged(state) {

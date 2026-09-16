@@ -2972,6 +2972,10 @@ export function deriveJudgeReviewSurface(sessionDir) {
     }
     return { kind: 'derived', paths, base };
 }
+/** The `allowedPaths` a judge call receives: the derived surface, or `[]` (whole tree) when unscoped. */
+function judgeSurfacePaths(surface) {
+    return surface.kind === 'derived' ? surface.paths : [];
+}
 /**
  * Parse a unified `git diff` into a per-file map of line numbers TOUCHED in the NEW (HEAD-side)
  * revision — an added line or a changed line, never a pure context line. Pure — operates on diff
@@ -3130,7 +3134,7 @@ async function measureCurrentMetric(state, ctx, backend) {
         const surface = deriveJudgeReviewSurface(ctx.sessionDir);
         if (surface.kind === 'failed')
             return null;
-        return measureLlmMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, state.violation_ledger ?? [], surface.kind === 'derived' ? surface.paths : []);
+        return measureLlmMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, state.violation_ledger ?? [], judgeSurfacePaths(surface));
     }
     return null;
 }
@@ -3302,7 +3306,7 @@ async function measureLlmBaseline(state, ctx, backend) {
         session: path.basename(ctx.sessionDir),
         iteration: ctx.iteration,
         spawnContext: 'baseline',
-    }, surface.kind === 'derived' ? surface.paths : []);
+    }, judgeSurfacePaths(surface));
     if (measured.metric) {
         // M2: score and seed the ledger on the SAME wire the iteration arm uses
         // (`measureAndClassifyIteration`) — never the judge's self-reported baseline integer for a
@@ -3604,7 +3608,7 @@ export async function measureLlmIteration(state, ctx, backend) {
         spawnContext: 'iteration',
         statePath: ctx.statePath,
         runnerState: ctx.currentRunnerState,
-    }, surface.kind === 'derived' ? surface.paths : []);
+    }, judgeSurfacePaths(surface));
     if (measured.metric)
         return { kind: 'ok', metric: measured.metric };
     const exitReason = mapJudgeMeasurementFailure(measured);

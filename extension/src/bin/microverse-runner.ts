@@ -3926,6 +3926,11 @@ export function deriveJudgeReviewSurface(sessionDir: string): JudgeSurfaceDeriva
   return { kind: 'derived', paths, base };
 }
 
+/** The `allowedPaths` a judge call receives: the derived surface, or `[]` (whole tree) when unscoped. */
+function judgeSurfacePaths(surface: JudgeSurfaceDerivation): string[] {
+  return surface.kind === 'derived' ? surface.paths : [];
+}
+
 /**
  * Parse a unified `git diff` into a per-file map of line numbers TOUCHED in the NEW (HEAD-side)
  * revision — an added line or a changed line, never a pure context line. Pure — operates on diff
@@ -4104,7 +4109,7 @@ async function measureCurrentMetric(
       state.judge_context_path,
       backend,
       state.violation_ledger ?? [],
-      surface.kind === 'derived' ? surface.paths : [],
+      judgeSurfacePaths(surface),
     );
   }
   return null;
@@ -4300,7 +4305,7 @@ async function measureLlmBaseline(
       iteration: ctx.iteration,
       spawnContext: 'baseline',
     },
-    surface.kind === 'derived' ? surface.paths : [],
+    judgeSurfacePaths(surface),
   );
   if (measured.metric) {
     // M2: score and seed the ledger on the SAME wire the iteration arm uses
@@ -4667,7 +4672,7 @@ export async function measureLlmIteration(
       statePath: ctx.statePath,
       runnerState: ctx.currentRunnerState,
     },
-    surface.kind === 'derived' ? surface.paths : [],
+    judgeSurfacePaths(surface),
   );
   if (measured.metric) return { kind: 'ok', metric: measured.metric };
   const exitReason = mapJudgeMeasurementFailure(measured);
