@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn, execFileSync } from 'node:child_process';
 
 import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, measureAndClassifyIteration, _deps } from '../bin/microverse-runner.js';
 import { classifyPostFinalVerdict, parseBetweenTicketFastGateFailures } from '../bin/mux-runner.js';
@@ -499,4 +500,121 @@ test('the degraded flag and the withhold decision are unchanged by signal attrib
   // changed only the STRING inside `dimensions`, never the verdict this ticket must leave alone.
   assert.equal(signalResult.state, genuineResult.state);
   assert.equal(signalResult.degraded, genuineResult.degraded);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Wiring (ticket 69d099f1, B-TRUTHEXIT): the tests above prove parseBetweenTicketFastGateFailures
+// and classifyPostFinalVerdict handle a HAND-AUTHORED SIGNAL_KILLED_OUTPUT string correctly — but
+// that fixture could drift from what test-runner.ts actually emits without ever reddening. This
+// drives a REAL bin/test-runner.js child, kills its own spawned test process with a real signal,
+// and feeds the REAL captured stdout+stderr — combined exactly as runBetweenTicketFastTests does
+// at mux-runner.ts:862 (`${stdout}\n${stderr}`) — through the real, unmocked parse and classify
+// functions. No hand-authored signal-line text enters this test.
+// ---------------------------------------------------------------------------------------------
+
+const WIRING_TEST_RUNNER_JS = path.join(EXTENSION_ROOT, 'bin', 'test-runner.js');
+
+function wiringSleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function wiringWaitForFile(filePath, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(filePath)) return true;
+    wiringSleepSync(20);
+  }
+  return false;
+}
+
+/** Mirrors test-runner-timeout.test.js's findInnerChildPid: locates test-runner.js's direct spawnSync child. */
+function wiringFindInnerChildPid(outerPid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const out = execFileSync('ps', ['-o', 'pid,ppid,command', '-ax'], { encoding: 'utf8', timeout: 5000 });
+    for (const line of out.split('\n').slice(1)) {
+      const match = /^\s*(\d+)\s+(\d+)\s/.exec(line);
+      if (match && Number(match[2]) === outerPid) return Number(match[1]);
+    }
+  }
+  return null;
+}
+
+test('wiring: a REAL signal-killed test-runner.js child\'s captured output reaches post_final_verdict.dimensions through the real parse and classify path', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wiring-signal-'));
+  const marker = path.join(dir, 'marker');
+  const fixture = path.join(dir, 'slow.test.js');
+  try {
+    fs.writeFileSync(
+      fixture,
+      [
+        "import { test } from 'node:test';",
+        "import { writeFileSync } from 'node:fs';",
+        "test('slow', async () => {",
+        `  writeFileSync(${JSON.stringify(marker)}, 'started');`,
+        '  await new Promise((resolve) => setTimeout(resolve, 30000));',
+        '});',
+      ].join('\n'),
+    );
+
+    // Scrub NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID: this file runs under `node --test` itself,
+    // and those two vars leaking into the spawned child change its reporting behavior (mirrors
+    // test-runner-timeout.test.js's spawnRunner()).
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    delete env.NODE_TEST_WORKER_ID;
+    const child = spawn(process.execPath, [WIRING_TEST_RUNNER_JS, fixture], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30000,
+      env,
+    });
+    const captured = { stdout: '', stderr: '' };
+    child.stdout.on('data', (chunk) => { captured.stdout += chunk; });
+    child.stderr.on('data', (chunk) => { captured.stderr += chunk; });
+    const closed = new Promise((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', (code) => resolve(code));
+    });
+
+    assert.ok(wiringWaitForFile(marker, 10000), 'fixture test must start and write its marker');
+    const innerPid = wiringFindInnerChildPid(child.pid, 10000);
+    assert.ok(innerPid, "must resolve the runner's direct spawnSync child pid");
+    process.kill(innerPid, 'SIGKILL');
+
+    const code = await closed;
+    assert.notEqual(code, 0, 'a signal-terminated child must exit non-zero');
+    assert.match(
+      captured.stderr,
+      /\[test-runner\] child terminated by signal SIGKILL/,
+      'sanity: the real producer (test-runner.ts) must emit its own signal-attribution line',
+    );
+
+    // Combine exactly as runBetweenTicketFastTests builds `output` at mux-runner.ts:862.
+    const output = `${captured.stdout}\n${captured.stderr}`;
+
+    const failures = parseBetweenTicketFastGateFailures(output, dir);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].script_failure, true);
+    assert.match(
+      failures[0].name,
+      /\(signal: SIGKILL\)$/,
+      'the real parser must attribute the REAL captured signal line — not a hand-authored one',
+    );
+
+    const result = classifyPostFinalVerdict({
+      gate: { ok: false, failures, timed_out: false, timeout_ms: null, measured: false },
+      applicable: true,
+      verdictTs: 200,
+      finalCommitTs: 100,
+      baselineFailures: [],
+    });
+    assert.equal(result.dimensions.length, 1);
+    assert.match(
+      result.dimensions[0],
+      /\(signal: SIGKILL\)$/,
+      'a real killed tier must reach post_final_verdict.dimensions naming the real signal, end to end',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
