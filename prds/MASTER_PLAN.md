@@ -119,77 +119,98 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-16. Context cleared here. **READ THIS FIRST.**
+## 🚢 SESSION HANDOFF — 2026-09-16. **2.1.0 IS SHIPPED.** READ THIS FIRST.
 
-**Deployed: `2.1.0-beta.32`.** Seven releases shipped 09-09 → 09-15 (beta.26 → beta.32).
+**`v2.1.0` GA tagged 2026-09-16 at `c20a9562`** and mechanically verified
+(`verify-release-tag.sh` exit 0, expected == actual). Deployed and confirmed BY CONTENT: 183 JS files
+byte-identical, exactly one intentional difference (`bin/tmux-runner.js`, the symlink), deployed version
+reads `2.1.0`.
 
 ### ▶ IMMEDIATE STATE
 
 | | |
 |---|---|
-| last run | [[B-BEHAVE]] `2026-09-15-38bf786d` — 4/4, `completed`, **no dispositions** (4th straight success verdict) |
-| open issues | **#5 only** (architecture enhancement). #27/#28/#29/#30 all closed |
-| tree | clean; **unreleased commits on `release/v2.1-beta`** |
-| **GA** | **OPERATOR SAID GO for 2.1.0.** Not yet tagged — see below |
+| released | **`v2.1.0`** — beta dropped. Gate17 **22/22 green at the tagged commit** |
+| last run | [[B-BEHAVE]] `2026-09-15-38bf786d` — 4/4, `completed`, no dispositions (4th straight success) |
+| open issues | **#5** (architecture enhancement) · **#31** (NEW — client identity in a public repo) |
+| tree | clean at `c20a9562`, branch pushed |
+| pipeline | none running — verified by reading `state.json` + `pipeline-status.json` |
 
-### ⚠ THE GA TAG IS BLOCKED ONLY ON A FRESH GATE
+### ⚠ THE BUMP COMMIT IS WHY THE HANDOFF'S PLAN NEEDED ONE CHANGE
 
-Gate15 ran green (21/22 legs, 0 red) at `7872c6d8`, but **doc commits have landed since**, and
-**six audits glob `prds/*.md`** (`audit-bundle-thesis`, `audit-fix-commits`, `audit-ledger-probes`,
-`audit-quarantine`, `audit-trap-door-enforcement`, `audit-closer-template-compliance`), so an earlier
-gate does NOT transfer across a docs commit. **Run the full gate at HEAD, then tag `2.1.0`.**
+The previous handoff said *gate at HEAD, then tag*. That could not have worked: `release.yml`'s
+**"Verify tag matches package version"** step derives `EXPECTED` from the tag name and compares it to
+`extension/package.json`'s version, so a green at `ff894a53` (still `2.1.0-beta.32`) could never have
+carried a `v2.1.0` tag. The gate was stopped 5 minutes in, the bump committed (`c20a9562`, 3 lines
+across `package.json` + `package-lock.json`), and the **full 22-leg gate re-run at the commit that was
+actually tagged.** Generalise it: **a version bump invalidates a gate exactly as a docs commit does.**
 
-**GA release note must name these known limits** (GA criterion 6 — do not ship silently):
-- 3 gaps vs `deep-pr-review-lean`: the *deleted-or-broken* test question, comment-density measurement,
-  and the claim/provenance discipline. (Security + packaging excluded on operator evidence.)
-- A 3rd szechuan `stalled_below_target` whose cause is **unmeasured**.
-- Contention can still produce a red that does not reproduce (named in beta.32, not removed).
-- `teams_mode` has **never been exercised** — 0 sessions in history.
-- `runMuxRunnerMain` at 217 code lines / complexity 38 against ceilings of 120/15 — carve-out
-  recorded and ratcheting, not deleted. Blocked below 120 by out-of-fence pins in `szechuan-sauce.test.js`.
+### 📐 WHAT THE GA GREEN DOES AND DOES NOT COVER
 
-### 📋 B-LENS PROPOSAL — authored, NOT dispatched, awaiting review
+- **Authoring-OS axis: GREEN.** macOS / Node 24.19.0. Types, lint, emit with **0** JS/TS drift, 13/13
+  audits, `flake-budget failures=0 runs_completed=5/5 tests=9974`, integration, contract, expensive.
+- **The soak really ran.** Reported **1,803,819 ms** against `SOAK_SECONDS=1800`, `SOAK_UNRUN` 0, zero
+  `# SKIP`. The duration is the evidence; the exit code is not.
+- **OS axis: UNRUN — and this is new.** `ci-repro.sh` exits **2** (`docker not found on PATH`):
+  `/usr/local/bin/docker` is a **broken symlink** to a removed Docker Desktop. **Docker is gone from
+  this box.** A prior note that the Linux repro "works here" is now false — re-test before relying on
+  it. Recorded UNRUN, supplied by CI on the tag; never report it as green.
 
-`prds/PROPOSAL-b-lens-review-quality-to-an-external-bar.md`. Roots L0, L0b, L1–L5.
-**L0** preserves what already beats the bar (szechuan Part I is a superset of lens 8; Drizzle hygiene is
-ahead of lens 4; anatomy-park tracing has no lens equivalent) — additions only, with a replay control.
-**L0b** gates the content roots on a real finding inventory.
+### 📋 B-LENS — REVISED on the inventory. Still NOT dispatched.
 
-**L0b already falsified one of my own roots.** L4 (performance) was proposed off `grep -ic 'N+1'`
-returning 0 in our principles file. In 4 months of real reviews performance was **1 of 342 findings**.
-**L4 is cut.** Confirmed instead: acceptance criteria **45 (13%)**, inert guards **23 (6%)**, and a NEW
-gap the data surfaced — **comment bloat/density 19 (5%)**, which szechuan does not measure at all.
+`prds/PROPOSAL-b-lens-review-quality-to-an-external-bar.md`. The judgement call the last session left
+open is **made**, and L0b is marked EXECUTED:
 
-**Two corrections I had to make, keep them:** lens-distribution claims from that corpus are unfounded
-(only 7 of 308 structured reviews name a lens; output is organised by SEVERITY), and counting lens
-*mentions* is not counting *findings* — a lens that runs clean still prints.
+| root | change | basis |
+|---|---|---|
+| **L4 performance** | **CUT** | **1 of 342** findings. Re-derived independently: 342 findings from 713 blocking bullets; a deliberately looser re-grep still returns **3**. |
+| **L4 acceptance criteria** | **PROMOTED** (replaces it) | **45 of 342 (13%)** — largest category, 3x the next |
+| **L5 comment density** | **NEW ROOT** | **19 of 342 (6%)** — in no lens and in none of the original roots |
+| L3 inert guards | confirmed | **23 of 342 (6%)** |
+| L6 teams experiment | renumbered from L5 | unchanged |
 
-### 🔐 CLIENT DATA — new BINDING rule in root CLAUDE.md
+**L4's first AC is a diagnosis, not a prompt edit**, because citadel already audits conformance and
+`audit-acceptance-assertion-coverage` is already a gate leg: the open question is **why a surface we
+already audit is the largest blocking category in someone else's review**, and the three branches
+(never checked / checked and passed wrongly / criterion absent or unfalsifiable) have three different
+fixes. **L4-5 can cut the root entirely** if the 45 turn out to be domain criteria with no analogue here.
 
-This repo is **open source**. No loanlight content ever, including derived artifacts. The review corpus
-lives at **`~/loanlight-review-inventory/`** (7MB, 649 PRs, re-runnable `fetch.sh`, provenance README
-listing what it does and does NOT support). Cite conclusions by number here; keep evidence there.
+### 🔐 #31 — CLIENT IDENTITY IN A PUBLIC REPO (filed this session, NOT fixed)
+
+The no-client-data rule landed in `ff894a53` and reads **forward**. The existing corpus was never
+audited against it. Measured at `c20a9562`: **134 files** name the former client's org — 77 in
+`prds/archive/**`, 25 in live `prds/*.md`, **32 under `extension/**` (source and tests)** — plus 2
+personal `@<org>.com` addresses, client ticket/branch identifiers, and one verbatim quoted client
+`AGENTS.md` block. Repo visibility confirmed `PUBLIC`.
+
+**Not fixed in-session on purpose:** scrubbing 32 shipped source/test files is behaviour-affecting on a
+tagged release, whether to rewrite history is an operator call with no reversible half, and a partial
+scrub reads clean while the rest stays exposed. The one file fixed is the B-LENS proposal, because the
+rule says fix old occurrences when already touching the file. **#31 deliberately does not name the
+client.**
 
 ### 🧰 OPERATING NOTES
 
 - Gate runner: `<scratchpad>/gate2.sh <log>` — **derives** its audit list from root `CLAUDE.md`; never
-  hardcode one. 22 legs, ~68 min. Wait for the `GATE_END` marker.
-- **#27 is fixed** (prd_path recorded at launch + preflight), so the manual pre-set workaround is no
-  longer needed.
+  hardcode one. 22 legs. **Measured this session: 70 min wall clock** (00:11:28Z → 01:21:07Z), of which
+  the soak is 30 min and `test:fast:budget` is 38 min. Wait for `GATE_END`.
+- **A version bump invalidates a gate.** So does a docs commit — six audits glob `prds/*.md`.
 - **Never launch a pipeline while a gate runs** — contention is the measured cause of both #28 reds.
-- `ps aux | grep -c pipeline-runner` matches the prompt's own text; use
-  `ps -eo pid,command | grep -E '[m]ux-runner\.js|[p]ipeline-runner\.js'`.
+- `ps -eo pid,command | grep …` prints full argv; a `node --test` line is ~8k chars and one such call
+  cost ~14k tokens this session. Pipe through `cut -c1-80`, or count with `grep -c`.
+- A bare `grep -rn` over `prds/` returns ~200 matching lines. Use `-l` and `wc -l` first.
 - `find -newermt` is not BSD syntax and returns a FALSE EMPTY; use `-mmin -N`. `stat -f '%Sm'` is LOCAL
-  time — prefix `TZ=UTC`.
-- Keep Bash output small; it reached 30% of the context window this session.
+  time — prefix `TZ=UTC`. `timeout` does not exist on this box.
 
 ### Open, in priority order
 
-1. **Gate at HEAD → tag `2.1.0` GA** with the limits above named.
-2. **B-LENS review** — cut L4, promote acceptance-criteria to a root, add comment-density.
+1. **#31** — client identity in a public repo. Operator decision, not an autonomous fix.
+2. **B-LENS review** — the revision is in; it needs the operator's read before dispatch.
 3. **#5** — the architecture enhancement (context cache, trap-door commit, worktree-as-proposal).
-4. szechuan `stalled_below_target` 3rd occurrence, cause unmeasured.
-
+4. szechuan `stalled_below_target` 3rd occurrence, cause unmeasured. Falsifier: compare the
+   per-iteration metric traces of the two runs — same shape = one cause, different = the disposition is
+   hiding two.
+5. Restore docker if the Linux OS axis is wanted locally again.
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
 
