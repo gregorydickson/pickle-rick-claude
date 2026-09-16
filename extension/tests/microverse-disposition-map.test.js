@@ -29,6 +29,15 @@ function readUnionMembersFromMirror() {
   return new Set(MICROVERSE_EXIT_REASONS);
 }
 
+// AC-J1 (B-JUDGESCOPE db605b05): the judge review-surface derivation reuses the existing
+// 'metric_unmeasurable_unrecoverable' member for a fail-closed reason — it must add NO member.
+// tsc stays green when a const array is widened, so this invariant is pinned by the test alone;
+// an explicit count assertion (not merely "the string is absent") is what AC-J4-2 requires.
+test('MICROVERSE_EXIT_REASONS gains no member for the judge review-surface fail-closed path', () => {
+  assert.equal(MICROVERSE_EXIT_REASONS.length, 17, 'member count must stay unchanged — a widened array still type-checks');
+  assert.ok(MICROVERSE_EXIT_REASONS.includes('metric_unmeasurable_unrecoverable'), 'the fail-closed path reuses this existing member');
+});
+
 /** The same membership, read from the TS source of truth rather than the compiled array. */
 function readUnionMembersFromSource(srcTypesPath) {
   const source = fs.readFileSync(srcTypesPath, 'utf-8');

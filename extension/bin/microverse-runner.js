@@ -2934,12 +2934,65 @@ function clearRateLimitWaitFile(sessionDir) {
     }
     catch { /* ok */ }
 }
+/**
+ * The ONE producer of the judge's review surface (AC-J1-1) — every `measureLlm*` call site uses
+ * this instead of repeating `state.allowed_paths ?? []`. NOT `computeReviewBase`
+ * (`scope-resolver.ts:612`): its degenerate floor returns HEAD indistinguishably from "no base
+ * resolves" (`src/bin/CLAUDE.md` INVARIANT), which is exactly the "unrestricted" shape this
+ * producer must never emit on failure.
+ *
+ * `state.allowed_paths` alone cannot distinguish "never opted into scoping" from "opted in but
+ * resolved to nothing" — `microverse-state.ts` only ever sets the field when the resolved array
+ * is non-empty, leaving both cases looking like an absent field. Session-root `scope.json` — the
+ * artifact `resolveScope`/`persistSeededBranchScope` already write, written only when `--scope`
+ * was passed for this session — supplies the missing discriminator: its presence means scoping
+ * was requested.
+ */
+export function deriveJudgeReviewSurface(sessionDir, state) {
+    const scopeJsonPath = path.join(sessionDir, 'scope.json');
+    const scope = readRecoverableJsonObject(scopeJsonPath);
+    // AP-EXT-ITER7-01 idiom (:6201): a bare fs.existsSync pre-gate misses a crash mid tmp-rename;
+    // readRecoverableJsonObject already recovers that window, existsSync only covers a present-
+    // but-unparseable file.
+    const scopeRequested = scope !== null || fs.existsSync(scopeJsonPath);
+    if (!scopeRequested)
+        return { kind: 'unscoped' };
+    const paths = Array.isArray(state.allowed_paths)
+        ? state.allowed_paths.filter((p) => typeof p === 'string' && p.length > 0)
+        : [];
+    const base = typeof scope?.base_sha === 'string' && scope.base_sha.length > 0 ? scope.base_sha : null;
+    if (paths.length === 0 || base === null) {
+        return { kind: 'failed', reason: 'metric_unmeasurable_unrecoverable' };
+    }
+    return { kind: 'derived', paths, base };
+}
+/** Records a judge-surface derivation failure through the same telemetry every other judge-measurement failure uses (`mapExhaustedExitToActivityEvent`), so this new failure mode cannot drift from the established shape. Returns the error message for the caller's own log/throw. */
+function recordJudgeSurfaceDerivationFailure(reason, ctx, phase) {
+    const error = `judge review surface could not be derived (phase: ${phase})`;
+    ctx.log(`ERROR: ${error}`);
+    _deps.logActivity({
+        event: mapExhaustedExitToActivityEvent(reason),
+        source: 'pickle',
+        session: path.basename(ctx.sessionDir),
+        iteration: ctx.iteration,
+        error,
+        gate_payload: { phase, derivation: 'judge_review_surface' },
+    });
+    return error;
+}
 async function measureCurrentMetric(state, ctx, backend) {
     if (state.key_metric.type === 'command') {
         return measureMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir);
     }
     if (state.key_metric.type === 'llm') {
-        return measureLlmMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, state.violation_ledger ?? [], state.allowed_paths ?? []);
+        // AC-J1-1: unreachable today (both callers of measureCurrentMetric intercept 'llm' before
+        // reaching this branch), wired through the same producer anyway per AC-J1-1's "decide
+        // deliberately for all three call sites, do not silently fix one and leave two" — a
+        // derivation failure collapses to null, this function's only existing failure channel.
+        const surface = deriveJudgeReviewSurface(ctx.sessionDir, state);
+        if (surface.kind === 'failed')
+            return null;
+        return measureLlmMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, state.violation_ledger ?? [], surface.kind === 'derived' ? surface.paths : []);
     }
     return null;
 }
@@ -3099,11 +3152,19 @@ export function ensureRunnerStateActive(statePath) {
 async function measureLlmBaseline(state, ctx, backend) {
     if (state.key_metric.type !== 'llm')
         return null;
+    const surface = deriveJudgeReviewSurface(ctx.sessionDir, state);
+    if (surface.kind === 'failed') {
+        const error = recordJudgeSurfaceDerivationFailure(surface.reason, ctx, 'baseline');
+        state.status = 'stopped';
+        state.exit_reason = surface.reason;
+        writeMicroverseState(ctx.sessionDir, state);
+        throw new MicroverseExitError(surface.reason, error);
+    }
     const measured = await measureLlmMetricWithBackoff(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, [], {
         session: path.basename(ctx.sessionDir),
         iteration: ctx.iteration,
         spawnContext: 'baseline',
-    }, state.allowed_paths ?? []);
+    }, surface.kind === 'derived' ? surface.paths : []);
     if (measured.metric) {
         // M2: score and seed the ledger on the SAME wire the iteration arm uses
         // (`measureAndClassifyIteration`) — never the judge's self-reported baseline integer for a
@@ -3387,9 +3448,14 @@ function maybeAppendGapAnalysisFixed(state, entry, ctx) {
         ctx.log(`WARNING: Could not append gap analysis fixed block: ${safeErrorMessage(err)}`);
     }
 }
-async function measureLlmIteration(state, ctx, backend) {
+export async function measureLlmIteration(state, ctx, backend) {
     if (state.key_metric.type !== 'llm') {
         throw new Error('measureLlmIteration requires llm metric');
+    }
+    const surface = deriveJudgeReviewSurface(ctx.sessionDir, state);
+    if (surface.kind === 'failed') {
+        recordJudgeSurfaceDerivationFailure(surface.reason, ctx, 'iteration');
+        return { kind: 'failed', exitReason: surface.reason };
     }
     const measured = await measureLlmMetricWithBackoff(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, state.violation_ledger ?? [], {
         session: path.basename(ctx.sessionDir),
@@ -3397,7 +3463,7 @@ async function measureLlmIteration(state, ctx, backend) {
         spawnContext: 'iteration',
         statePath: ctx.statePath,
         runnerState: ctx.currentRunnerState,
-    }, state.allowed_paths ?? []);
+    }, surface.kind === 'derived' ? surface.paths : []);
     if (measured.metric)
         return { kind: 'ok', metric: measured.metric };
     const exitReason = mapJudgeMeasurementFailure(measured);

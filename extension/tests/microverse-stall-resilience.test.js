@@ -25,6 +25,8 @@ import {
   findUnmovableLedgerEntries,
   convergenceExitReason,
   writeFinalReport,
+  deriveJudgeReviewSurface,
+  measureLlmIteration,
 } from '../bin/microverse-runner.js';
 import {
   createMicroverseState,
@@ -1091,4 +1093,99 @@ test('R4-3 control: a stall over entries first seen inside the stall window is n
   const { ctx, logs } = r4StallCtx(8);
   assert.equal(convergenceExitReason('stall', state, ctx), 'stalled_below_target');
   assert.equal(logs.length, 0);
+});
+
+// AC-J1-2 (B-JUDGESCOPE db605b05): a scope.json-opted-in session whose surface cannot be
+// recovered must record a typed reason, never a silent empty array standing in for
+// "unrestricted". `deriveJudgeReviewSurface` is the single named producer (AC-J1-1) every
+// measureLlm* call site now uses instead of `state.allowed_paths ?? []`.
+test('deriveJudgeReviewSurface: no scope.json means never opted in — unscoped, not a failure', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    assert.deepEqual(deriveJudgeReviewSurface(sessionDir, state), { kind: 'unscoped' });
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('deriveJudgeReviewSurface: scope.json present but allowed_paths empty is a typed derivation failure', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'a'.repeat(40), allowed_paths: [],
+    }));
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    const result = deriveJudgeReviewSurface(sessionDir, state);
+    assert.equal(result.kind, 'failed');
+    assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
+    assert.ok(!('paths' in result), 'a failed derivation structurally carries no paths field — never an empty array standing in for "unrestricted"');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('deriveJudgeReviewSurface: scope.json present but unparseable is also a typed derivation failure', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), 'not json');
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    const result = deriveJudgeReviewSurface(sessionDir, state);
+    assert.equal(result.kind, 'failed');
+    assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('deriveJudgeReviewSurface: scope.json + populated allowed_paths derives successfully', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'b'.repeat(40), allowed_paths: ['src/foo.ts'],
+    }));
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    state.allowed_paths = ['src/foo.ts'];
+    assert.deepEqual(
+      deriveJudgeReviewSurface(sessionDir, state),
+      { kind: 'derived', paths: ['src/foo.ts'], base: 'b'.repeat(40) },
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('measureLlmIteration: an underivable surface never reaches the judge backend — typed failure, run continues', async () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  const workingDir = tmpDir('pickle-mrs-surface-work-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'c'.repeat(40), allowed_paths: [],
+    }));
+    const state = createMicroverseState({
+      prdPath: '/tmp/prd.md',
+      metric: { description: 'quality', validation: 'improve code quality', type: 'llm', timeout_seconds: 60, tolerance: 2, direction: 'higher', judge_model: 'claude-sonnet-4-6' },
+      stallLimit: 3,
+    });
+    state.status = 'iterating';
+
+    let judgeInvoked = false;
+    const originalExec = _deps.execFileSync;
+    _deps.execFileSync = (...args) => { judgeInvoked = true; return originalExec(...args); };
+    const originalSpawn = _deps.spawn;
+    _deps.spawn = (...args) => { judgeInvoked = true; return originalSpawn(...args); };
+    try {
+      const ctx = { sessionDir, workingDir, iteration: 1, log: () => {} };
+      const result = await measureLlmIteration(state, ctx, 'claude');
+      assert.equal(result.kind, 'failed', 'the run continues by reporting a typed failure, never a thrown/halting error');
+      assert.equal(result.exitReason, 'metric_unmeasurable_unrecoverable');
+      assert.equal(judgeInvoked, false, 'no empty fallback reaches the judge — the derivation failure short-circuits before any judge spawn');
+    } finally {
+      _deps.execFileSync = originalExec;
+      _deps.spawn = originalSpawn;
+    }
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
 });
