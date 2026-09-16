@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
 import {
   AMNESIAC_TURN_THRESHOLD,
   _deps,
@@ -1345,4 +1346,60 @@ test('measureLlmIteration: an underivable surface never reaches the judge backen
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
   }
+});
+
+// e562164b (AC-J5-4): "do NOT add an arm" had no pin. The arms are the classifier verdicts
+// `handleNoCommitStall` branches on — every comparison of `noCommitClass` against a string literal,
+// and any `case` of a switch over it — read from the parsed source, so a comment naming a verdict
+// cannot answer it and a switch or nested rewrite cannot slip past it.
+function noCommitClassArms(source) {
+  const sf = ts.createSourceFile('microverse-runner.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let fn = null;
+  const find = (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'handleNoCommitStall') fn = node;
+    else ts.forEachChild(node, find);
+  };
+  find(sf);
+  if (!fn?.body) return null;
+  const isSubject = (n) => ts.isIdentifier(n) && n.text === 'noCommitClass';
+  const arms = [];
+  const visit = (node) => {
+    if (ts.isBinaryExpression(node)
+      && [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(node.operatorToken.kind)) {
+      if (isSubject(node.left) && ts.isStringLiteral(node.right)) arms.push(node.right.text);
+      if (isSubject(node.right) && ts.isStringLiteral(node.left)) arms.push(node.left.text);
+    }
+    if (ts.isSwitchStatement(node) && isSubject(node.expression)) {
+      for (const clause of node.caseBlock.clauses) {
+        if (ts.isCaseClause(clause) && ts.isStringLiteral(clause.expression)) arms.push(clause.expression.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(fn.body);
+  return arms.sort();
+}
+
+test('AC-J5-4: handleNoCommitStall keeps exactly its two classifier arms — no third arm', () => {
+  assert.deepEqual(
+    noCommitClassArms(readSrc('bin/microverse-runner.ts')),
+    ['amnesiac', 'clean_pass'],
+    'a new noCommitClass arm (or a removed one) changes the no-commit disposition set AC-J5-4 froze — stop and report instead',
+  );
+});
+
+test('AC-J5-4 control: the arm census reads code, not prose, and sees a switch-shaped third arm', () => {
+  const shipped = readSrc('bin/microverse-runner.ts');
+  const anchor = "  if (noCommitClass === 'amnesiac') {";
+  assert.ok(shipped.includes(anchor), 'precondition: the amnesiac arm anchor is present in the shipped source');
+  assert.deepEqual(
+    noCommitClassArms(shipped.replace(anchor, `  // if (noCommitClass === 'stall') is prose only\n${anchor}`)),
+    ['amnesiac', 'clean_pass'],
+    'a comment naming a verdict is not an arm',
+  );
+  assert.deepEqual(
+    noCommitClassArms(shipped.replace(anchor, `  switch (noCommitClass) { case 'stall': break; }\n${anchor}`)),
+    ['amnesiac', 'clean_pass', 'stall'],
+    'a third arm spelled as a switch must be counted',
+  );
 });
