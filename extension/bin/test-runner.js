@@ -318,12 +318,14 @@ function buildTestSpawnOptions(disposableTmpRoot) {
     };
 }
 /**
- * ETIMEDOUT-only orphan reap: reap the process GROUP `detached` created, falling back to the
- * bare pid on the platforms (and races) where the group kill reports nothing killed.
+ * Orphan reap for a child that did not exit on its own — timed out, or killed by a signal:
+ * reap the process GROUP `detached` created, falling back to the bare pid on the platforms
+ * (and races) where the group kill reports nothing killed. `node --test` runs each file in a
+ * grandchild, so a signal that kills only the direct child otherwise leaves those running.
  */
-function reapTimedOutChild(result) {
+function reapAbandonedChildGroup(result) {
     const timedOut = result.error?.code === 'ETIMEDOUT';
-    if (!timedOut || typeof result.pid !== 'number')
+    if (!(timedOut || result.signal) || typeof result.pid !== 'number')
         return;
     if (killProcessGroup(result.pid, 'SIGKILL'))
         return;
@@ -366,7 +368,7 @@ function main() {
     const nodeArgs = ['--test', ...clampTestConcurrency(runnerArgs), ...selectedFiles];
     const disposableTmpRoot = createDisposableTmpRoot();
     const result = spawnSync(process.execPath, nodeArgs, buildTestSpawnOptions(disposableTmpRoot));
-    reapTimedOutChild(result);
+    reapAbandonedChildGroup(result);
     removeDisposableTmpRoot(disposableTmpRoot);
     if (result.error) {
         exitWithError(result.error.message, 1);

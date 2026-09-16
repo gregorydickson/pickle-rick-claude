@@ -51,6 +51,35 @@ function waitForFile(filePath, timeoutMs) {
   return false;
 }
 
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+function waitForProcessExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return true;
+    sleepSync(50);
+  }
+  return !isProcessAlive(pid);
+}
+
+/** The marker is created before its pid is written, so poll until it parses. */
+function waitForMarkerPid(filePath, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pid = Number(readFileSync(filePath, 'utf8'));
+    if (Number.isInteger(pid) && pid > 0) return pid;
+    sleepSync(20);
+  }
+  return null;
+}
+
 function spawnRunner(args) {
   // Scrub NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID: this file runs under `node --test`
   // itself, and those two vars leaking into the spawned `node --test <fixture>`
@@ -184,6 +213,7 @@ test('AC-T1-1/AC-T1-3: a SIGKILLed child is reported as signal-terminated and st
   const dir = mkdtempSync(path.join(tmpdir(), 'pickle-test-runner-signal-'));
   const marker = path.join(dir, 'marker');
   const fixture = path.join(dir, 'slow.test.js');
+  let grandchildPid = null;
   try {
     writeFileSync(
       fixture,
@@ -191,7 +221,9 @@ test('AC-T1-1/AC-T1-3: a SIGKILLed child is reported as signal-terminated and st
         "import { test } from 'node:test';",
         "import { writeFileSync } from 'node:fs';",
         `test('slow', async () => {`,
-        `  writeFileSync(${JSON.stringify(marker)}, 'started');`,
+        // The marker carries the pid of the process running the test body: under node --test's
+        // per-file process isolation that is a GRANDCHILD of the runner, not the pid we kill.
+        `  writeFileSync(${JSON.stringify(marker)}, String(process.pid));`,
         `  await new Promise((resolve) => setTimeout(resolve, 30000));`,
         `});`,
       ].join('\n'),
@@ -201,6 +233,7 @@ test('AC-T1-1/AC-T1-3: a SIGKILLed child is reported as signal-terminated and st
     const closed = waitForClose(child);
 
     assert.ok(waitForFile(marker, 10000), 'fixture test must start and write its marker');
+    grandchildPid = waitForMarkerPid(marker, 5000);
     const innerPid = findInnerChildPid(child.pid, 10000);
     assert.ok(innerPid, "must resolve the runner's direct spawnSync child pid");
     process.kill(innerPid, 'SIGKILL');
@@ -213,7 +246,15 @@ test('AC-T1-1/AC-T1-3: a SIGKILLed child is reported as signal-terminated and st
       /\[test-runner\] child terminated by signal SIGKILL/,
       'stderr must name the terminating signal',
     );
+    assert.ok(grandchildPid, 'marker must carry the test-body pid');
+    assert.ok(
+      waitForProcessExit(grandchildPid, 5000),
+      `the runner must reap its test group when the child dies by signal; test-body pid ${grandchildPid} survived as an orphan`,
+    );
   } finally {
+    if (grandchildPid && isProcessAlive(grandchildPid)) {
+      try { process.kill(grandchildPid, 'SIGKILL'); } catch { /* already gone */ }
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });

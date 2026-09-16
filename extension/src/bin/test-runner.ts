@@ -371,12 +371,14 @@ function buildTestSpawnOptions(disposableTmpRoot: string | null): SpawnSyncOptio
 }
 
 /**
- * ETIMEDOUT-only orphan reap: reap the process GROUP `detached` created, falling back to the
- * bare pid on the platforms (and races) where the group kill reports nothing killed.
+ * Orphan reap for a child that did not exit on its own — timed out, or killed by a signal:
+ * reap the process GROUP `detached` created, falling back to the bare pid on the platforms
+ * (and races) where the group kill reports nothing killed. `node --test` runs each file in a
+ * grandchild, so a signal that kills only the direct child otherwise leaves those running.
  */
-function reapTimedOutChild(result: Pick<SpawnSyncReturns<unknown>, 'error' | 'pid'>): void {
+function reapAbandonedChildGroup(result: Pick<SpawnSyncReturns<unknown>, 'error' | 'pid' | 'signal'>): void {
   const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
-  if (!timedOut || typeof result.pid !== 'number') return;
+  if (!(timedOut || result.signal) || typeof result.pid !== 'number') return;
   if (killProcessGroup(result.pid, 'SIGKILL')) return;
   try {
     process.kill(result.pid, 'SIGKILL');
@@ -428,7 +430,7 @@ function main(): never {
   const disposableTmpRoot = createDisposableTmpRoot();
   const result = spawnSync(process.execPath, nodeArgs, buildTestSpawnOptions(disposableTmpRoot));
 
-  reapTimedOutChild(result);
+  reapAbandonedChildGroup(result);
   removeDisposableTmpRoot(disposableTmpRoot);
 
   if (result.error) {
