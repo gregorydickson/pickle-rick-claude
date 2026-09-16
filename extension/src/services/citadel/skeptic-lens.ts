@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import type { ChangedFileSummary } from './diff-walker.js';
 
@@ -74,6 +74,56 @@ function readLines(repoRoot: string, filePath: string): string[] | null {
   }
 }
 
+// Compiled-twin exclusion: derives the generated-output mapping from the governing
+// tsconfig.json's own rootDir/outDir rather than a hand-maintained directory list.
+interface TsconfigMapping {
+  dir: string;
+  rootDir: string;
+  outDir: string;
+}
+
+function findTsconfigDir(repoRoot: string, fileRelPath: string): string | null {
+  const rootAbs = path.resolve(repoRoot);
+  let dir = path.dirname(path.join(repoRoot, fileRelPath));
+  for (;;) {
+    if (existsSync(path.join(dir, 'tsconfig.json'))) return dir;
+    if (path.resolve(dir) === rootAbs) return null;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function loadTsconfigMapping(tsconfigDir: string): TsconfigMapping | null {
+  try {
+    const raw = readFileSync(path.join(tsconfigDir, 'tsconfig.json'), 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    const opts = (parsed as { compilerOptions?: { rootDir?: unknown; outDir?: unknown } })?.compilerOptions;
+    if (typeof opts?.rootDir === 'string' && typeof opts?.outDir === 'string') {
+      return { dir: tsconfigDir, rootDir: opts.rootDir, outDir: opts.outDir };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isGeneratedCompiledTwin(repoRoot: string, filePath: string): boolean {
+  if (!filePath.endsWith('.js')) return false;
+  const tsconfigDir = findTsconfigDir(repoRoot, filePath);
+  if (!tsconfigDir) return false;
+  const mapping = loadTsconfigMapping(tsconfigDir);
+  if (!mapping) return false;
+
+  const outDirAbs = path.resolve(mapping.dir, mapping.outDir);
+  const rootDirAbs = path.resolve(mapping.dir, mapping.rootDir);
+  const relFromOut = path.relative(outDirAbs, path.join(repoRoot, filePath));
+  if (relFromOut.startsWith('..')) return false;
+
+  const candidateTs = path.join(rootDirAbs, relFromOut).replace(/\.js$/, '.ts');
+  return existsSync(candidateTs);
+}
+
 export function runSkepticLens(
   changedFiles: ChangedFileSummary[],
   repoRoot: string,
@@ -82,6 +132,8 @@ export function runSkepticLens(
   const fnsByName = new Map<string, string[]>();
 
   for (const file of changedFiles) {
+    if (isGeneratedCompiledTwin(repoRoot, file.path)) continue;
+
     const lines = readLines(repoRoot, file.path);
     if (!lines) continue;
 

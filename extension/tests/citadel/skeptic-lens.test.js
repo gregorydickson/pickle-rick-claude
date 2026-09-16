@@ -168,6 +168,156 @@ describe('skeptic-lens: AC-5b safety proof', () => {
   });
 });
 
+describe('skeptic-lens: generated-twin exclusion (AC-R1)', () => {
+  let tmpDir;
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skeptic-gen-'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { rootDir: 'src', outDir: '.' } }),
+    );
+    fs.mkdirSync(path.join(tmpDir, 'src', 'services'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'src', 'other'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'services'), { recursive: true });
+
+    // Twin pair: same function name in a src/.ts source and its compiled .js output.
+    fs.writeFileSync(
+      path.join(tmpDir, 'src', 'services', 'foo.ts'),
+      'function validateInput(x) { return x; }\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'services', 'foo.js'),
+      'function validateInput(x) { return x; }\n',
+    );
+
+    // Genuine duplication: the same function name across two SOURCE files, no twin relationship.
+    fs.writeFileSync(
+      path.join(tmpDir, 'src', 'services', 'bar.ts'),
+      'function processOrder(y) { return y; }\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'src', 'other', 'baz.ts'),
+      'function processOrder(z) { return z; }\n',
+    );
+  });
+
+  after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('a .ts source and its compiled .js twin produce no cross-file finding', () => {
+    const report = runSkepticLens(
+      [makeChangedFile('src/services/foo.ts'), makeChangedFile('services/foo.js')],
+      tmpDir,
+    );
+    assert.ok(
+      !report.findings.some((f) => f.defect === 'cross-file-repetition-exhaustiveness'),
+      'compiled twin must not trigger cross-file-repetition-exhaustiveness',
+    );
+  });
+
+  test('the same function name duplicated across two SOURCE files still reports', () => {
+    const report = runSkepticLens(
+      [makeChangedFile('src/services/bar.ts'), makeChangedFile('src/other/baz.ts')],
+      tmpDir,
+    );
+    assert.ok(
+      report.findings.some((f) => f.defect === 'cross-file-repetition-exhaustiveness'),
+      'genuine cross-source duplication must still be reported',
+    );
+  });
+
+  test('mutation surrogate: without a discoverable tsconfig mapping, the same twin pair fires', () => {
+    // Proves the silence in the first case is caused by the tsconfig-derived filter, not by
+    // fluke path shapes: identical file content, no tsconfig.json present anywhere.
+    const bareDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skeptic-gen-bare-'));
+    try {
+      fs.mkdirSync(path.join(bareDir, 'src', 'services'), { recursive: true });
+      fs.mkdirSync(path.join(bareDir, 'services'), { recursive: true });
+      fs.writeFileSync(
+        path.join(bareDir, 'src', 'services', 'foo.ts'),
+        'function validateInput(x) { return x; }\n',
+      );
+      fs.writeFileSync(
+        path.join(bareDir, 'services', 'foo.js'),
+        'function validateInput(x) { return x; }\n',
+      );
+      const report = runSkepticLens(
+        [makeChangedFile('src/services/foo.ts'), makeChangedFile('services/foo.js')],
+        bareDir,
+      );
+      assert.ok(
+        report.findings.some((f) => f.defect === 'cross-file-repetition-exhaustiveness'),
+        'without a discoverable tsconfig mapping, the twin pair looks like ordinary duplication',
+      );
+    } finally {
+      fs.rmSync(bareDir, { recursive: true, force: true });
+    }
+  });
+
+  test('mutation guard: genuine source duplication survives alongside an excluded twin pair', () => {
+    // Guards against an over-wide filter (e.g. excluding all of src/ wholesale).
+    const report = runSkepticLens(
+      [
+        makeChangedFile('src/services/foo.ts'),
+        makeChangedFile('services/foo.js'),
+        makeChangedFile('src/services/bar.ts'),
+        makeChangedFile('src/other/baz.ts'),
+      ],
+      tmpDir,
+    );
+    assert.ok(
+      report.findings.some((f) => f.defect === 'cross-file-repetition-exhaustiveness'),
+      'genuine duplication must survive when mixed with an excluded twin pair',
+    );
+  });
+
+  test('every surviving finding names a source path, never the generated twin', () => {
+    const report = runSkepticLens(
+      [
+        makeChangedFile('src/services/foo.ts'),
+        makeChangedFile('services/foo.js'),
+        makeChangedFile('src/services/bar.ts'),
+        makeChangedFile('src/other/baz.ts'),
+      ],
+      tmpDir,
+    );
+    for (const f of report.findings) {
+      assert.ok(f.file.startsWith('src/'), `finding names a non-source path: ${f.file}`);
+    }
+  });
+
+  test('a malformed tsconfig.json does not throw and degrades to unfiltered', () => {
+    const badDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skeptic-gen-bad-'));
+    try {
+      fs.writeFileSync(path.join(badDir, 'tsconfig.json'), '{not json');
+      fs.mkdirSync(path.join(badDir, 'src', 'services'), { recursive: true });
+      fs.mkdirSync(path.join(badDir, 'services'), { recursive: true });
+      fs.writeFileSync(
+        path.join(badDir, 'src', 'services', 'foo.ts'),
+        'function validateInput(x) { return x; }\n',
+      );
+      fs.writeFileSync(
+        path.join(badDir, 'services', 'foo.js'),
+        'function validateInput(x) { return x; }\n',
+      );
+      assert.doesNotThrow(() => {
+        const report = runSkepticLens(
+          [makeChangedFile('src/services/foo.ts'), makeChangedFile('services/foo.js')],
+          badDir,
+        );
+        assert.ok(
+          report.findings.some((f) => f.defect === 'cross-file-repetition-exhaustiveness'),
+          'a malformed tsconfig.json must degrade to no mapping, not filter silently',
+        );
+      });
+    } finally {
+      fs.rmSync(badDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('skeptic-lens: AC-5 sink test', () => {
   let tmpSessionDir;
 

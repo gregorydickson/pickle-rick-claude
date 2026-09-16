@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 // Identity comparison with object/array literal: e.g. `x === {}` always false
 const SEMANTIC_IDENTITY_RE = /===\s*[[{]|[[{]\s*===/;
@@ -53,10 +53,57 @@ function readLines(repoRoot, filePath) {
         return null;
     }
 }
+function findTsconfigDir(repoRoot, fileRelPath) {
+    const rootAbs = path.resolve(repoRoot);
+    let dir = path.dirname(path.join(repoRoot, fileRelPath));
+    for (;;) {
+        if (existsSync(path.join(dir, 'tsconfig.json')))
+            return dir;
+        if (path.resolve(dir) === rootAbs)
+            return null;
+        const parent = path.dirname(dir);
+        if (parent === dir)
+            return null;
+        dir = parent;
+    }
+}
+function loadTsconfigMapping(tsconfigDir) {
+    try {
+        const raw = readFileSync(path.join(tsconfigDir, 'tsconfig.json'), 'utf-8');
+        const parsed = JSON.parse(raw);
+        const opts = parsed?.compilerOptions;
+        if (typeof opts?.rootDir === 'string' && typeof opts?.outDir === 'string') {
+            return { dir: tsconfigDir, rootDir: opts.rootDir, outDir: opts.outDir };
+        }
+        return null;
+    }
+    catch {
+        return null;
+    }
+}
+function isGeneratedCompiledTwin(repoRoot, filePath) {
+    if (!filePath.endsWith('.js'))
+        return false;
+    const tsconfigDir = findTsconfigDir(repoRoot, filePath);
+    if (!tsconfigDir)
+        return false;
+    const mapping = loadTsconfigMapping(tsconfigDir);
+    if (!mapping)
+        return false;
+    const outDirAbs = path.resolve(mapping.dir, mapping.outDir);
+    const rootDirAbs = path.resolve(mapping.dir, mapping.rootDir);
+    const relFromOut = path.relative(outDirAbs, path.join(repoRoot, filePath));
+    if (relFromOut.startsWith('..'))
+        return false;
+    const candidateTs = path.join(rootDirAbs, relFromOut).replace(/\.js$/, '.ts');
+    return existsSync(candidateTs);
+}
 export function runSkepticLens(changedFiles, repoRoot) {
     const findings = [];
     const fnsByName = new Map();
     for (const file of changedFiles) {
+        if (isGeneratedCompiledTwin(repoRoot, file.path))
+            continue;
         const lines = readLines(repoRoot, file.path);
         if (!lines)
             continue;
