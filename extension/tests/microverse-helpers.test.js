@@ -919,17 +919,6 @@ test('AC-J1-8: an empty CURRENT scope.json is honored even when state.allowed_pa
   }
 });
 
-test('AC-J1-8 write-side: createMicroverseState with an explicitly-empty allowedPaths sets allowed_paths to [], never omits the field', () => {
-  const mv = createMicroverseState({
-    prdPath: '/tmp/prd.md',
-    metric: { description: 'quality', validation: 'q', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'higher' },
-    stallLimit: 3,
-    allowedPaths: [],
-  });
-  assert.ok(Object.prototype.hasOwnProperty.call(mv, 'allowed_paths'), 'an explicitly-provided (even empty) allowedPaths must be written, not silently skipped');
-  assert.deepEqual(mv.allowed_paths, []);
-});
-
 // ---------------------------------------------------------------------------
 // M2 (GitHub #20) — the baseline seeds `state.violation_ledger` (see
 // `measureLlmBaseline` in microverse-runner.ts). These two cases model what

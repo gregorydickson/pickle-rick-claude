@@ -1790,12 +1790,12 @@ test('ROOT S negative control: a normal-sized allowed_paths scope still reaches 
 
 function createGapAnalysisTempGitRepo() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-judgescope-gap-repo-'));
-    execSync('git init', { cwd: dir, stdio: 'pipe' });
-    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe' });
-    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe' });
+    execSync('git init', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
     fs.writeFileSync(path.join(dir, 'README.md'), 'init');
-    execSync('git add .', { cwd: dir, stdio: 'pipe' });
-    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' });
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
     return dir;
 }
 

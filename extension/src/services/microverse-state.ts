@@ -331,13 +331,14 @@ function withOptionalMicroverseStateFields(
   if (convergenceTarget != null) state.convergence_target = convergenceTarget;
   if (convergenceMode != null) state.convergence_mode = convergenceMode;
   if (convergenceFile != null) state.convergence_file = convergenceFile;
-  // ac655b46 (AC-J1-8): write whenever an allowedPaths array was explicitly provided (even
-  // empty), never silently no-op. `undefined` is the only "not provided" value
-  // (`CreateMicroverseOpts.allowedPaths?: string[]`, no `| null`) — an explicit empty-array
-  // derivation must land on `state` exactly as given rather than risk preserving whatever the
-  // object already held, so an empty derived surface can never be shadowed by a stale non-empty
-  // value on a reused object.
-  if (allowedPaths !== undefined) state.allowed_paths = allowedPaths;
+  // ac655b46 (AC-J1-8): `deriveJudgeReviewSurface` reads scope.json live and never falls back
+  // to this snapshot, so the "stale non-empty snapshot survives an empty derivation" hole is
+  // closed at the read site, not here. An absent `state.allowed_paths` means "unscoped / whole
+  // tree" in every other consumer (szechuan scope injection, the convergence-gate workspace
+  // filter, preflightAutoCommit's dirt exclusion) — writing `[]` would invent a third state
+  // (present-but-empty) none of them define, which is exactly the "empty array means
+  // unrestricted" ambiguity this bundle exists to close.
+  if (allowedPaths != null && allowedPaths.length > 0) state.allowed_paths = allowedPaths;
   return state;
 }
 
