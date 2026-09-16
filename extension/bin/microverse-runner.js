@@ -2966,10 +2966,11 @@ export function deriveJudgeReviewSurface(sessionDir) {
     const paths = Array.isArray(scope?.allowed_paths)
         ? scope.allowed_paths.filter((p) => typeof p === 'string' && p.length > 0)
         : [];
-    const base = typeof scope?.base_sha === 'string' && scope.base_sha.length > 0 ? scope.base_sha : null;
-    if (paths.length === 0 || base === null) {
+    // b419a06f: the surface is underivable iff it has no paths. A missing base only removes the
+    // per-line refinement — requiring one failed EVERY real paths-mode session at baseline.
+    if (paths.length === 0)
         return { kind: 'failed', reason: 'metric_unmeasurable_unrecoverable' };
-    }
+    const base = typeof scope?.base_sha === 'string' && scope.base_sha.length > 0 ? scope.base_sha : null;
     return { kind: 'derived', paths, base };
 }
 /** The `allowedPaths` a judge call receives: the derived surface, or `[]` (whole tree) when unscoped. */
@@ -3068,13 +3069,13 @@ function hasUsableLocator(v) {
  * before calling `updateViolationLedger`, which stays an unmodified pure rebuild).
  *
  * Fails OPEN in every case that is not a positive per-line exclusion: an `unscoped`/`failed`
- * surface (nothing to test membership against), a violation with no usable locator (constraint 4
+ * surface or a base-less whole-file one (nothing to test membership against), a violation with no usable locator (constraint 4
  * of the ticket), and an unmeasurable diff (`computeTouchedLineNumbers` returning `null` —
  * AP-EXT-ITER38-01 family: an unmeasured state is not evidence of absence). No halt path; a
  * dropped finding is only ever recorded via the returned count, never a reason to stop the run.
  */
 export function dropOutOfSurfaceViolations(violations, surface, workingDir) {
-    if (surface.kind !== 'derived')
+    if (surface.kind !== 'derived' || surface.base === null)
         return { kept: violations, droppedCount: 0 };
     const usablePaths = [...new Set(violations.filter(hasUsableLocator).map((v) => v.path))];
     const touched = computeTouchedLineNumbers(workingDir, surface.base, usablePaths);

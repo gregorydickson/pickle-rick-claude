@@ -57,6 +57,7 @@ import {
     _deps,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
+import { resolveScope } from '../services/scope-resolver.js';
 import { loadMicroverseScope } from './helpers/microverse-corpora.js';
 import { setupSzechuanSauce, writePipelineStatus } from '../bin/pipeline-runner.js';
 
@@ -1877,11 +1878,12 @@ function makeGapAnalysisContext(sessionDir, runnerState, workingDir) {
     };
 }
 
-async function runGapAnalysisScopedJudge(allowedPaths, judgeOutput) {
+async function runGapAnalysisScopedJudge(allowedPaths, judgeOutput, writeScope) {
     process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     const original = { execFileSync: _deps.execFileSync, runIteration: _deps.runIteration };
     const workingDir = createGapAnalysisTempGitRepo();
     const session = createGapAnalysisScopedSession(workingDir, allowedPaths);
+    if (writeScope) writeScope(workingDir, session.dir);
     const ctx = makeGapAnalysisContext(session.dir, session.runnerState, workingDir);
     let capturedPrompt = '';
     _deps.runIteration = async () => ({ completion: 'success', exitCode: 0, timedOut: false, wallSeconds: 1 });
@@ -1940,6 +1942,34 @@ test('AC-J1-3 over-trigger control: executeGapAnalysis still scores an in-scope,
     assert.equal(mv.violation_ledger[0].path, 'src/inscope.ts');
 });
 
+// b419a06f (audit, CRITICAL): `--scope paths:<globs>` has no base by construction —
+// resolveScope writes `base_sha: null` — so a surface producer that also required a base
+// derived EVERY real paths-mode session as `failed`, and the baseline threw before the first
+// iteration. The scope.json here comes from the real resolveScope, never a hand-built object.
+test('b419a06f: a real --scope paths: scope.json (base_sha null) still derives a surface and the baseline scores through it', async () => {
+    let producedScope = null;
+    const { mv, capturedPrompt } = await runGapAnalysisScopedJudge(
+        ['src/inscope.ts'],
+        {
+            score: 1,
+            violations: [{ id: 'paths-mode-1', path: 'src/inscope.ts', line: 2, severity: 'high', description: 'paths-mode baseline violation' }],
+            resolved: [], new: ['paths-mode-1'], remaining: [],
+        },
+        (workingDir, sessionDir) => {
+            fs.mkdirSync(path.join(workingDir, 'src'), { recursive: true });
+            fs.writeFileSync(path.join(workingDir, 'src', 'inscope.ts'), 'export const a = 1;\nexport const b = 2;\n');
+            producedScope = resolveScope({ scopeFlag: 'paths:src/**', repoRoot: workingDir, sessionRoot: sessionDir });
+        },
+    );
+    assert.equal(producedScope.mode, 'paths');
+    assert.equal(producedScope.base_sha, null, 'precondition: resolveScope writes no base for paths mode');
+    assert.deepEqual(producedScope.allowed_paths, ['src/inscope.ts']);
+    assert.ok(capturedPrompt.includes('- src/inscope.ts'), 'the judge prompt must be scoped to the paths-mode surface');
+    assert.equal(mv.exit_reason, undefined, 'a paths-mode surface must not be a derivation failure');
+    assert.equal(mv.baseline_score, 1, 'a whole-file surface keeps the in-path violation (no per-line base to drop against)');
+    assert.equal(mv.violation_ledger?.length, 1);
+});
+
 // ---------------------------------------------------------------------------
 // ac655b46 (AC-J1-8) — decides WHICH version of the review surface the judge scores.
 // CHOSEN LIFETIME: per-iteration (live) — `deriveJudgeReviewSurface` reads `scope.json` fresh
@@ -1966,8 +1996,10 @@ test('AC-J1-8 auto-extend: the judge surface follows a scope.json widened after 
 
         // Simulates the ON-DISK effect of maybeAutoExtendScope: scope.json re-persisted with the
         // detector-named caller added (pipeline-runner.ts:1995-2005).
+        // `base_sha: null` is the shape resolveScope writes for paths mode (b419a06f) — a fake
+        // 40-hex base here hid that every real paths-mode surface derived as `failed`.
         fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
-            version: 1, mode: 'paths', base_sha: 'd'.repeat(40),
+            version: 1, mode: 'paths', base_sha: null,
             allowed_paths: ['src/original.ts', 'src/extended.ts'],
         }));
 

@@ -3881,10 +3881,12 @@ function clearRateLimitWaitFile(sessionDir: string): void {
  * is the bug this producer exists to close: `scope.json` exists (scoping was requested for this
  * session) but the surface could not be recovered — the caller must record the reason and
  * continue, never silently hand the judge an empty (== "unrestricted") array.
+ * `base` is `null` for a whole-file surface: `--scope paths:<globs>` has no base by construction
+ * (`scope-resolver.ts` writes `base_sha: null`), so there is no diff to decide per-line membership.
  */
 type JudgeSurfaceDerivation =
   | { kind: 'unscoped' }
-  | { kind: 'derived'; paths: string[]; base: string }
+  | { kind: 'derived'; paths: string[]; base: string | null }
   | { kind: 'failed'; reason: JudgeMeasurementFailureExitReason };
 
 /**
@@ -3919,10 +3921,10 @@ export function deriveJudgeReviewSurface(sessionDir: string): JudgeSurfaceDeriva
   const paths = Array.isArray(scope?.allowed_paths)
     ? scope.allowed_paths.filter((p): p is string => typeof p === 'string' && p.length > 0)
     : [];
+  // b419a06f: the surface is underivable iff it has no paths. A missing base only removes the
+  // per-line refinement — requiring one failed EVERY real paths-mode session at baseline.
+  if (paths.length === 0) return { kind: 'failed', reason: 'metric_unmeasurable_unrecoverable' };
   const base = typeof scope?.base_sha === 'string' && scope.base_sha.length > 0 ? scope.base_sha : null;
-  if (paths.length === 0 || base === null) {
-    return { kind: 'failed', reason: 'metric_unmeasurable_unrecoverable' };
-  }
   return { kind: 'derived', paths, base };
 }
 
@@ -4021,7 +4023,7 @@ function hasUsableLocator(v: Violation): v is Violation & { path: string; line: 
  * before calling `updateViolationLedger`, which stays an unmodified pure rebuild).
  *
  * Fails OPEN in every case that is not a positive per-line exclusion: an `unscoped`/`failed`
- * surface (nothing to test membership against), a violation with no usable locator (constraint 4
+ * surface or a base-less whole-file one (nothing to test membership against), a violation with no usable locator (constraint 4
  * of the ticket), and an unmeasurable diff (`computeTouchedLineNumbers` returning `null` —
  * AP-EXT-ITER38-01 family: an unmeasured state is not evidence of absence). No halt path; a
  * dropped finding is only ever recorded via the returned count, never a reason to stop the run.
@@ -4031,7 +4033,7 @@ export function dropOutOfSurfaceViolations(
   surface: JudgeSurfaceDerivation,
   workingDir: string,
 ): { kept: Violation[]; droppedCount: number } {
-  if (surface.kind !== 'derived') return { kept: violations, droppedCount: 0 };
+  if (surface.kind !== 'derived' || surface.base === null) return { kept: violations, droppedCount: 0 };
   const usablePaths = [...new Set(violations.filter(hasUsableLocator).map((v) => v.path))];
   const touched = computeTouchedLineNumbers(workingDir, surface.base, usablePaths);
   if (touched === null) return { kept: violations, droppedCount: 0 };
