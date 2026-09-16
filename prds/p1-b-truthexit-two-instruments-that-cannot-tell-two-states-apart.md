@@ -115,7 +115,7 @@ delete the check.**
 |---|---|---|
 | `hasTestCase` | `services/citadel/trap-door-coverage-audit.ts:237` | unexported module-local — pin through the audit's own entry point, or export only if the ticket justifies it |
 | the anchor finding | same file, `:176` | message shape `ENFORCE anchor #X not found in <path>` |
-| `process.exit(result.status ?? 1)` | `bin/test-runner.ts:438` | the collapse site |
+| `process.exit(result.status ?? 1)` | `bin/test-runner.ts:444` | the collapse site |
 
 **T1 output:** the exit path additionally reports the signal when one is present. A killed child stays
 non-zero.
