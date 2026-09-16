@@ -207,10 +207,14 @@ client.**
 1. **#31** — client identity in a public repo. Operator decision, not an autonomous fix.
 2. **B-LENS review** — the revision is in; it needs the operator's read before dispatch.
 3. **#5** — the architecture enhancement (context cache, trap-door commit, worktree-as-proposal).
-4. **#32** — `stalled_below_target` is MEASURED and was hiding two causes (see ROOT S below).
-   Cause A (judge invents a 50-line ceiling; 4 of 6 findings false; an unnecessary revert) is
-   actionable by subtraction. Cause B (worker commits nothing, five iterations, ~30s each) is still
-   uncaused and is the more serious of the two.
+4. **▶ NEXT DISPATCH — [[B-JUDGESCOPE]]** (`prds/p1-b-judgescope-the-judge-scores-what-the-worker-cannot-fix.md`,
+   composed 2026-09-16). **Both #32 causes are now MEASURED and they are ONE root:** the judge's
+   ADMISSION criteria are not the worker's ACTION criteria, so it scores findings the worker is correct
+   to refuse and the target becomes unreachable. Cause B is no longer open — the worker declined on a
+   verified basis (`git diff --stat` empty, blame 2026-04-29) recorded in `tmux_iteration_{2..6}.log`,
+   and `allowed_paths` is **ABSENT in 9 of 10** on-disk sessions, so the scoping clause gated on
+   `allowedPaths.length > 0` (`microverse-runner.ts:2079`) is inert in 90% of runs. Five roots, one
+   surface, four of them subtractions. Every mechanism re-grepped at HEAD.
 5. Restore docker if the Linux OS axis is wanted locally again.
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
