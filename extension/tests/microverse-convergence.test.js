@@ -59,7 +59,7 @@ import {
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
 import { resolveScope } from '../services/scope-resolver.js';
 import { loadMicroverseScope } from './helpers/microverse-corpora.js';
-import { setupSzechuanSauce, writePipelineStatus } from '../bin/pipeline-runner.js';
+import { setupSzechuanSauce, main, __setSpawnRunnerForTests } from '../bin/pipeline-runner.js';
 
 function makeTmpDir() {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-conv-')));
@@ -2261,7 +2261,7 @@ test('446b99dd: scope-based out-of-scope-only dirt is salvage-anchored by the re
 // specific skip reason through to the phase artifact (pipeline-status.json's
 // phase_skips — the generic wiring is R-PSSS-3, already tested for other
 // reasons, but never for this one). Both gaps are closed below by driving
-// the REAL `setupSzechuanSauce` and REAL `writePipelineStatus`; no behavior
+// the REAL `setupSzechuanSauce` and the REAL phase loop (`main`); no behavior
 // change was needed in pipeline-runner.ts.
 // ---------------------------------------------------------------------------
 
@@ -2293,7 +2293,7 @@ function withPickleDataRoot51d7d765(dataRoot, fn) {
     }
 }
 
-test('51d7d765/AC-J1-7: a scoped-but-code-free run skips szechuan-sauce via isCodeFreeScope, and the skip reaches the event log and the phase artifact', () => {
+test('51d7d765/AC-J1-7: a scoped-but-code-free run skips szechuan-sauce via isCodeFreeScope, and the skip reaches the event log', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-51d7d765-'));
     const dataRoot = path.join(dir, 'data');
     try {
@@ -2323,23 +2323,81 @@ test('51d7d765/AC-J1-7: a scoped-but-code-free run skips szechuan-sauce via isCo
         assert.deepStrictEqual(events[0].gate_payload.in_scope_paths, codeFreePaths,
             'the event must carry the code-free path set that made the scope reachable');
 
-        // AC3: the skip reaches the phase artifact. `runPhaseIteration`'s
-        // wiring from a PhaseSetupResult's skipReason into
-        // counters.phaseSkips -> pipeline-status.json:phase_skips is generic
-        // and already covered (R-PSSS-3); this proves it for the REAL
-        // skipReason THIS path produces, not a hand-authored stand-in.
-        writePipelineStatus(dir, 'running', {
-            current_phase: 'szechuan-sauce',
-            completed_phases: 0,
-            skipped_phases: 1,
-            total_phases: 1,
-            phase_skips: { 'szechuan-sauce': result.skipReason },
-        });
-        const status = JSON.parse(fs.readFileSync(path.join(dir, 'pipeline-status.json'), 'utf-8'));
-        assert.deepStrictEqual(status.phase_skips, { 'szechuan-sauce': 'empty_scope' },
-            'the code-free-scope skip reason must reach pipeline-status.json phase_skips');
+        // AC3 (the skip reaches the phase artifact) is pinned by the next case,
+        // through the real phase loop.
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+// e562164b: AC3 used to call `writePipelineStatus` with a hand-written
+// `phase_skips` map, which proves only that the writer serializes what it is
+// handed — deleting `runPhaseIteration`'s skipReason -> counters.phaseSkips
+// wiring left it GREEN (measured). This drives the exported `main()` over a real
+// repo and a real `resolveScope` code-free scope, so the refresh, the
+// isCodeFreeScope skip and the status write all run as shipped.
+function initCodeFreeScopeRepo51d7d765(repo) {
+    const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf-8', stdio: 'pipe', timeout: 30000 }).trim();
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 't@t.local');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    fs.writeFileSync(path.join(repo, 'seed.ts'), 'export const x = 1;\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'seed');
+    const baseSha = git('rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(repo, 'CHANGELOG.md'), 'docs only\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'docs');
+    return baseSha;
+}
+
+test('51d7d765/AC-J1-7: the code-free-scope skip reaches pipeline-status.json phase_skips through the real phase loop', async () => {
+    // realpath: `refreshScope` compares the pipeline target against git's resolved root, and
+    // macOS tmpdir is a /var -> /private/var symlink; unresolved, the refresh drops every path.
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-51d7d765-repo-')));
+    const sessionDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-51d7d765-session-')));
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    const originalDataRoot = process.env.PICKLE_DATA_ROOT;
+    let spawned = 0;
+    try {
+        const baseSha = initCodeFreeScopeRepo51d7d765(repo);
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+            active: false, working_dir: repo, step: 'implement', iteration: 0, max_iterations: 100,
+            max_time_minutes: 720, worker_timeout_seconds: 1200, start_time_epoch: 1000,
+            completion_promise: null, original_prompt: '51d7d765', current_ticket: null, history: [],
+            started_at: new Date().toISOString(), session_dir: sessionDir, schema_version: 3,
+            tmux_mode: false, chain_meeseeks: false, backend: 'claude',
+        }, null, 2));
+        fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+            phases: ['szechuan-sauce'], target: repo, anatomy_stall_limit: 3, szechuan_stall_limit: 5,
+            anatomy_max_iterations: 100, szechuan_max_iterations: 50, dirty_exempt_segments: ['prds', 'docs'],
+        }, null, 2));
+        const produced = resolveScope({ scopeFlag: `diff:${baseSha}`, repoRoot: repo, sessionRoot: sessionDir });
+        assert.deepEqual(produced.allowed_paths, ['CHANGELOG.md'], 'precondition: the real scope is non-empty and code-free');
+
+        __setSpawnRunnerForTests(async () => { spawned++; return 0; });
+        delete process.env.TMUX;
+        process.env.PICKLE_DATA_ROOT = path.join(sessionDir, 'data');
+        let exitCode = null;
+        process.exit = (code) => { exitCode = code ?? 0; throw new Error(`process.exit(${exitCode})`); };
+        await main(sessionDir).catch((err) => { if (exitCode === null) throw err; });
+
+        assert.equal(spawned, 0, 'a skipped phase never spawns its runner');
+        const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+        assert.deepStrictEqual(status.phase_skips, { 'szechuan-sauce': 'empty_scope' },
+            'the code-free-scope skip reason must reach pipeline-status.json phase_skips');
+        assert.equal(status.skipped_phases, 1);
+    } finally {
+        process.exit = originalExit;
+        if (originalTmux === undefined) delete process.env.TMUX;
+        else process.env.TMUX = originalTmux;
+        if (originalDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = originalDataRoot;
+        __setSpawnRunnerForTests(null);
+        fs.rmSync(repo, { recursive: true, force: true });
+        fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 });
 
