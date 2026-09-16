@@ -119,77 +119,76 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-15 14:00Z. Context cleared here. **READ THIS FIRST.**
+## 🚢 SESSION HANDOFF — 2026-09-16. Context cleared here. **READ THIS FIRST.**
 
-**Shipped this week: beta.26 → beta.32, seven releases in seven days.** Deployed version is
-`2.1.0-beta.32` (`bf031258`), tag verified. **HEAD is `29dafbf7` with 5 commits UNPUSHED and UNRELEASED.**
+**Deployed: `2.1.0-beta.32`.** Seven releases shipped 09-09 → 09-15 (beta.26 → beta.32).
 
 ### ▶ IMMEDIATE STATE
 
 | | |
 |---|---|
-| last run | [[B-ZERO]] session `2026-09-15-c5a7eb48` — **FINISHED**, 3/4 phases, `szechuan-sauce: stalled_below_target` |
-| tree | clean · **5 unpushed commits** |
-| open issues | **#27** (prd_path), **#28** (post-final `fail 0`), **#5** (enhancement) |
-| next action | **run the full gate at HEAD; if green, ship beta.33** (rule 3) |
+| last run | [[B-BEHAVE]] `2026-09-15-38bf786d` — 4/4, `completed`, **no dispositions** (4th straight success verdict) |
+| open issues | **#5 only** (architecture enhancement). #27/#28/#29/#30 all closed |
+| tree | clean; **unreleased commits on `release/v2.1-beta`** |
+| **GA** | **OPERATOR SAID GO for 2.1.0.** Not yet tagged — see below |
 
-### ⚠ B-ZERO'S OUTCOME NEEDS READING BEFORE IT IS TRUSTED
+### ⚠ THE GA TAG IS BLOCKED ONLY ON A FRESH GATE
 
-All 3 tickets are Done, but **Q3 did NOT reach its target.** It asked for ≤120 code lines / ≤15
-complexity and the DELETION of the last carve-out. Measured after the run:
+Gate15 ran green (21/22 legs, 0 red) at `7872c6d8`, but **doc commits have landed since**, and
+**six audits glob `prds/*.md`** (`audit-bundle-thesis`, `audit-fix-commits`, `audit-ledger-probes`,
+`audit-quarantine`, `audit-trap-door-enforcement`, `audit-closer-template-compliance`), so an earlier
+gate does NOT transfer across a docs commit. **Run the full gate at HEAD, then tag `2.1.0`.**
 
-```
-runMuxRunnerMain: 217 code lines, complexity 38   (ceilings 120 / 15)
-carve-outs still carrying figures: 1
-```
+**GA release note must name these known limits** (GA criterion 6 — do not ship silently):
+- 3 gaps vs `deep-pr-review-lean`: the *deleted-or-broken* test question, comment-density measurement,
+  and the claim/provenance discipline. (Security + packaging excluded on operator evidence.)
+- A 3rd szechuan `stalled_below_target` whose cause is **unmeasured**.
+- Contention can still produce a red that does not reproduce (named in beta.32, not removed).
+- `teams_mode` has **never been exercised** — 0 sessions in history.
+- `runMuxRunnerMain` at 217 code lines / complexity 38 against ceilings of 120/15 — carve-out
+  recorded and ratcheting, not deleted. Blocked below 120 by out-of-fence pins in `szechuan-sauce.test.js`.
 
-It moved 224→217 and 42→38, where the previous four steps roughly HALVED each time
-(1690→892→449→224, 366→173→84→42).
+### 📋 B-LENS PROPOSAL — authored, NOT dispatched, awaiting review
 
-**The PRD explicitly permitted this outcome** — "if ≤120/≤15 proves unreachable without changing
-behaviour, STOP and say so with the measured floor; lowering the figures and keeping the carve-out is
-acceptable, a behavioural change to hit a number is NOT." **UNVERIFIED: whether the worker actually hit
-that wall and said so, or simply stopped short.** Both readings fit the evidence. **Read the Q3 ticket's
-stated floor and reasoning (`742e1985`) before accepting or re-dispatching it.**
+`prds/PROPOSAL-b-lens-review-quality-to-an-external-bar.md`. Roots L0, L0b, L1–L5.
+**L0** preserves what already beats the bar (szechuan Part I is a superset of lens 8; Drizzle hygiene is
+ahead of lens 4; anatomy-park tracing has no lens equivalent) — additions only, with a replay control.
+**L0b** gates the content roots on a real finding inventory.
 
-Q1 (`a3a60a1a`) and Q2 (`9caa2556`) are Done and unverified in the field.
+**L0b already falsified one of my own roots.** L4 (performance) was proposed off `grep -ic 'N+1'`
+returning 0 in our principles file. In 4 months of real reviews performance was **1 of 342 findings**.
+**L4 is cut.** Confirmed instead: acceptance criteria **45 (13%)**, inert guards **23 (6%)**, and a NEW
+gap the data surfaced — **comment bloat/density 19 (5%)**, which szechuan does not measure at all.
 
-### 🧰 OPERATING NOTES THAT COST TIME TO LEARN
+**Two corrections I had to make, keep them:** lens-distribution claims from that corpus are unfounded
+(only 7 of 308 structured reviews name a lens; output is organised by SEVERITY), and counting lens
+*mentions* is not counting *findings* — a lens that runs clean still prints.
 
-- **Gate runner:** `/private/tmp/claude-501/-Users-gregorydickson-pickle-rick-claude/60cf32ed-5a3a-4ec2-bf8c-55973dc5d96a/scratchpad/gate2.sh <logfile>`.
-  It **derives** its audit list from root `CLAUDE.md` — do NOT hardcode one. That fix has absorbed three
-  new audits across three releases that a hardcoded list would have silently skipped. Gate is now **22
-  legs**, ~68 min. Wait for the `GATE_END` marker; a leg count alone is not completion.
-- **#27 workaround, apply at EVERY launch until fixed:** copy the PRD to `<session>/prd.md` AND pre-set
-  `state.prd_path` via `StateManager.update`. Otherwise citadel may hard-fail at 1/4 after the whole
-  pickle phase completes. Measured rate: 1 in 8.
-- **NEVER launch a pipeline while a gate is running.** Contention fabricates reds; that is the measured
-  cause of both #28 occurrences.
-- `ps aux | grep -c 'pipeline-runner'` **matches the prompt text in your own shell invocation.** Use
-  `ps -eo pid,command | grep -E '[m]ux-runner\.js|[p]ipeline-runner\.js'`. I was fooled by this once.
-- `find -newermt '-50 minutes'` is not BSD syntax and returns a FALSE EMPTY. Use `-mmin -N`.
-- `stat -f '%Sm'` prints LOCAL time; prefix `TZ=UTC` before comparing against `date -u`.
-- Keep Bash output SMALL — it reached 25% of the context window this session.
+### 🔐 CLIENT DATA — new BINDING rule in root CLAUDE.md
 
-### 🎯 THE OPERATOR'S OPEN DECISION — 2.1.0 GA
+This repo is **open source**. No loanlight content ever, including derived artifacts. The review corpus
+lives at **`~/loanlight-review-inventory/`** (7MB, 649 PRs, re-runnable `fetch.sh`, provenance README
+listing what it does and does NOT support). Cite conclusions by number here; keep evidence there.
 
-Asked and still unanswered. **My earlier objection was partly wrong and is withdrawn:** I framed
-"2 of 7 runs succeeded" as instability, but the criterion is *all-tier autonomy soaked* and the right
-measure is phases completed unattended — which is strong. I also invented a "must run on a foreign repo"
-rule the written criteria do not contain.
+### 🧰 OPERATING NOTES
 
-**What legitimately remains: the bug queue is not zero** (#27, #28). GA criterion 6 is the repo's own
-path — a release note naming the remaining known limits. Shipping GA with them NAMED is defensible;
-shipping silently is not.
+- Gate runner: `<scratchpad>/gate2.sh <log>` — **derives** its audit list from root `CLAUDE.md`; never
+  hardcode one. 22 legs, ~68 min. Wait for the `GATE_END` marker.
+- **#27 is fixed** (prd_path recorded at launch + preflight), so the manual pre-set workaround is no
+  longer needed.
+- **Never launch a pipeline while a gate runs** — contention is the measured cause of both #28 reds.
+- `ps aux | grep -c pipeline-runner` matches the prompt's own text; use
+  `ps -eo pid,command | grep -E '[m]ux-runner\.js|[p]ipeline-runner\.js'`.
+- `find -newermt` is not BSD syntax and returns a FALSE EMPTY; use `-mmin -N`. `stat -f '%Sm'` is LOCAL
+  time — prefix `TZ=UTC`.
+- Keep Bash output small; it reached 30% of the context window this session.
 
 ### Open, in priority order
 
-1. **Gate at HEAD → ship beta.33** (5 unpushed commits).
-2. **Read Q3's stated floor** (`742e1985`); re-dispatch only if it stopped short rather than hit a wall.
-3. **#27 / #28** — the last two bugs. Both filed with falsifying observations and suggested directions.
-4. **2.1.0 GA** — operator decision, evidence above.
-5. **szechuan `stalled_below_target`** returned this run. Two prior causes were measured and fixed
-   (#20 unit mismatch, #22 span counting); this is a THIRD occurrence and its cause is **unmeasured**.
+1. **Gate at HEAD → tag `2.1.0` GA** with the limits above named.
+2. **B-LENS review** — cut L4, promote acceptance-criteria to a root, add comment-density.
+3. **#5** — the architecture enhancement (context cache, trap-door commit, worktree-as-proposal).
+4. szechuan `stalled_below_target` 3rd occurrence, cause unmeasured.
 
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first

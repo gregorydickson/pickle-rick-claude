@@ -14,6 +14,25 @@ PRD → Breakdown → Research → Plan → Implement → Verify → Review → 
 
 Everything below elaborates this. Nothing below overrides it.
 
+## 🔐 THIS REPO IS PUBLIC — NO CLIENT DATA, EVER (operator-set 2026-09-15, BINDING)
+
+**`pickle-rick-claude` is open source.** Nothing from a client or private repo may enter it: no
+loanlight PR text, review bodies, findings, ticket content, file paths, schema names, or borrower data,
+in code, tests, fixtures, PRDs, commit messages or release notes.
+
+**This applies to derived artifacts too.** An inventory, a census, a quoted finding or a "representative
+example" carries the source's content just as surely as a paste does.
+
+**Where that work lives instead:** outside the repo — e.g. `~/loanlight-review-inventory/`, which holds
+the 2026-05-15 → 09-15 review corpus and its provenance README. Reference conclusions by number here;
+keep the evidence there.
+
+**Permitted:** counts, rates, and methodology lessons stated without client specifics — "acceptance
+criteria was the largest blocking category at 13%" is fine; the finding text is not.
+
+Before committing anything sourced from another repo, ask what a stranger reading this repo would learn
+about a client from it. If the answer is anything, it does not belong here.
+
 ## 🧱 COMPLEXITY IS THE SOURCE OF BRITTLENESS (operator-set, BINDING, elaborates the PRIME DIRECTIVE)
 
 Every halt, fake-green and silent bypass this codebase has shipped traces back to a structure with
