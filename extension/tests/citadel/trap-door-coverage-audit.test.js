@@ -550,8 +550,8 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
     const cleared = replayCleared;
     const remaining = replayRemaining;
     const oldBrokenCount = replayOldBrokenCount;
-    // Measured 2026-09-16: 145 anchored refs, 116 cleared, 29 remaining. Floor is set well below
-    // the measured value so ordinary future trap-door additions don't make this flaky; it exists
+    // The failure message prints the live counts. Floor is set well below the value measured when
+    // the widening landed so ordinary future trap-door additions don't make this flaky; it exists
     // to catch a REGRESSION of the widening (cleared collapsing back toward oldBrokenCount).
     assert.ok(
       cleared.length >= 80,

@@ -536,6 +536,7 @@ function wiringFindInnerChildPid(outerPid, timeoutMs) {
       const match = /^\s*(\d+)\s+(\d+)\s/.exec(line);
       if (match && Number(match[2]) === outerPid) return Number(match[1]);
     }
+    wiringSleepSync(50);
   }
   return null;
 }
