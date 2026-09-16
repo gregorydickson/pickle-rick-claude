@@ -41,6 +41,12 @@ precisely when its input is missing, and **an absent `allowed_paths` is indistin
 restriction needed."** That is the enumerated-set failure mode in its purest form: a missing member looks
 exactly like a member that does not apply.
 
+**State it honestly: this is not an oversight, it is a DEFAULT.** The field's own docblock
+(`microverse-runner.ts:2052`) reads *"When empty/absent (unscoped run), existing whole-tree behavior is
+preserved."* Scoping was shipped as **opt-in**, and in 9 of 10 live sessions nothing opted in. So the
+defect is not a missing guard — it is that **the safe behaviour is the one behind the flag**. Inverting
+the default is the subtraction; adding a check that the flag was set would be the addition.
+
 ### AC-J1
 - **AC-J1-1:** the szechuan microverse **derives** its review surface rather than reading an optional
   field. Name the existing derivation used (the phase already computes a review base — see the
@@ -192,3 +198,100 @@ un-blocks a real reverted iteration. It is the right first ticket.
 
 **J5 is the only root that may end in zero diff.** That is a success, not a gap: record
 `zero_diff_intent: already-satisfied` if J1+J3 make `clean_pass` reachable for its real purpose.
+
+---
+
+## 🔌 Interface Contracts
+
+All five seams are **already exported**, so every AC below is pinnable by direct unit test with no new
+export and no test-only seam. Verified at HEAD `0f253158`.
+
+| symbol | location | signature |
+|---|---|---|
+| `buildJudgePrompt` | `microverse-runner.ts:2059` | `(input: JudgePromptInput) => string` |
+| `classifyStall` | `microverse-runner.ts:1812` | `(input: StallClassifierInput) => <classification>` |
+| `classifyNoCommitExit` | `microverse-runner.ts:1869` | `(iterLogFile: string) => NoCommitExitClassification` |
+| `recordIteration` | `microverse-state.ts:371` | `(state, entry, classification?) => MicroverseSessionState` |
+| `recordStall` | `microverse-state.ts:402` | `(state) => MicroverseSessionState` |
+
+**J1/J3 — the review surface.**
+- **Input:** `{ repoRoot: string, base: string }` — `base` from the SAME derivation the phase already
+  uses (`computeReviewBase`, `scope-resolver.ts:612`), never a second source.
+- **Output:** `{ paths: string[], base: string }` with `paths` non-empty on success.
+- **Errors:** derivation failure returns a typed reason, NEVER an empty array — an empty array is the
+  input that currently means "unrestricted" and reusing it re-creates the bug. Name the reason in the
+  phase artifact and **continue** (no-stop-gates).
+- **Invariant:** `buildJudgePrompt({...,allowedPaths})` contains the literal
+  `Count ONLY violations located within these paths` **iff** `allowedPaths.length > 0`. The fix must make
+  the left side true on a normal run, not weaken the right side.
+
+**J2 — the function-size ceiling.**
+- **Input:** the parsed `max-lines-per-function` config from `extension/eslint.config.js`.
+- **Output:** `{ default: number, overrides: Array<{ files: string[], max: number }> }` — measured today
+  `{ default: 120, overrides: [{max: 200}, {max: 200}] }`.
+- **Errors:** unparseable config is a typed reason, not a fallback constant. A hardcoded default is the
+  rot this root exists to remove.
+- **Invariant:** no integer literal for a function-size ceiling appears in any prompt template, docstring
+  or comment introduced by this bundle.
+
+**J4 — the stall cause.**
+- **Output:** `stalled_below_target` carries a cause discriminating **scored-regression** from
+  **no-commit**, plus the existing `classifyStall` verdict for the no-commit case.
+- **Invariant:** `EXIT_REASONS` membership is **unchanged**. Assert the count, not just the absence of
+  the new string.
+
+---
+
+## 🧪 Verification Strategy
+
+Every command below is runnable from `extension/` and was chosen because it already exists.
+
+| what | command |
+|---|---|
+| types | `./node_modules/.bin/tsc --noEmit` |
+| lint | `./node_modules/.bin/eslint src/ --max-warnings=0` |
+| compile before running tests (tests import compiled JS) | `./node_modules/.bin/tsc` |
+| the suites this bundle touches | `node bin/test-runner.js tests/microverse-convergence.test.js tests/microverse-stall-resilience.test.js tests/microverse-disposition-map.test.js tests/microverse-helpers.test.js --test-concurrency=1` |
+| full non-expensive gate | the `&&` chain in root `CLAUDE.md` |
+
+**Executable-form criteria** (these unlock automatic Done-flip verification):
+
+- `grep -c 'Count ONLY violations located within these paths' src/bin/microverse-runner.ts` returns 1
+- `./node_modules/.bin/tsc --noEmit` exits 0
+
+**AC-J2-5 stays PROSE, deliberately.** The obvious executable form —
+`grep -c 'max-lines-per-function' src/bin/microverse-runner.ts` returns 0 — is **false at birth and
+wrong**: it already returns **2**, and both occurrences are legitimate
+(`COMPLEXITY_RULE_IDS = new Set(['complexity', 'max-lines-per-function'])` at `:5409`, which recognises
+complexity findings by rule id). A pin written that way would demand deleting correct code. Grepping the
+integer `120` instead is noise. **Do not invent a command to satisfy the executable form** — the skill
+says so explicitly, and this is what the trap looks like from the inside.
+
+**Replay corpora, on disk and named** — these are the falsifiers, not fixtures:
+- `~/.local/share/pickle-rick/sessions/2026-09-12-a4d141e1/microverse.json` — the 6-violation scored
+  regression (AC-J2-4 expects exactly **2** survivors).
+- `~/.local/share/pickle-rick/sessions/2026-09-15-c5a7eb48/` — `microverse.json` (empty history,
+  `stall_counter` 5/5) plus `tmux_iteration_{2..6}.log` (AC-J4-3).
+- The 10-session `allowed_paths` census (**9 ABSENT / 1 populated**) is re-derivable by reading
+  `allowed_paths` from every `~/.local/share/pickle-rick/sessions/*/microverse.json`.
+
+---
+
+## 📋 Test Expectations
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-J1-3 | `tests/microverse-helpers.test.js` | populated surface ⇒ scoping clause present | `buildJudgePrompt({...,allowedPaths:['a.ts']})` contains `Count ONLY violations located within these paths` |
+| AC-J1-4 | `tests/microverse-helpers.test.js` | over-trigger control | a path INSIDE the surface still appears in the prompt's path list |
+| AC-J1-5 | `tests/microverse-helpers.test.js` | mutation, both directions | removing the derivation reds AC-J1-3; widening to the whole tree reds AC-J1-4 |
+| AC-J1-2 | `tests/microverse-stall-resilience.test.js` | underivable surface parks, never halts | a typed reason is recorded AND the run continues; no `EXIT_REASONS` member added |
+| AC-J2-3 | `tests/microverse-helpers.test.js` | ceiling boundary, both sides | 119 code lines NOT flagged; 121 flagged |
+| AC-J2-2 | `tests/microverse-helpers.test.js` | overrides survive | a file matching an override is judged at 200, not 120 |
+| AC-J2-4 | `tests/microverse-convergence.test.js` | replay the live regression | of the 6 recorded violations exactly 2 survive |
+| AC-J3-2 | `tests/microverse-convergence.test.js` | per-LINE, not per-file | a pre-existing line in an IN-SCOPE file is dropped |
+| AC-J3-3 | `tests/microverse-convergence.test.js` | over-trigger control | a violation on a touched line is kept |
+| AC-J3-4 | `tests/microverse-disposition-map.test.js` | the drop count is reported | phase artifact carries the count |
+| AC-J4-1 | `tests/microverse-disposition-map.test.js` | cause is recorded | `recordStall`-only ⇒ no-commit; `recordIteration` ⇒ scored-regression |
+| AC-J4-2 | `tests/microverse-disposition-map.test.js` | no new exit reason | `EXIT_REASONS.length` is unchanged — assert the COUNT |
+| AC-J4-3 | `tests/microverse-disposition-map.test.js` | both live runs render differently | the two sessions do not produce the same cause |
+| AC-J5-1/2/3 | `tests/microverse-stall-resilience.test.js` | `clean_pass` reachability | either a named reaching state is pinned, or the arm is deleted and the blocked-worker fake-green stays closed |
