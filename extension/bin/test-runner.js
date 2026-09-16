@@ -282,7 +282,7 @@ function handleEmptySelection(tier, grepPattern, selectedFiles) {
  * direct child pid, not the group, so a wedged per-file process (or anything it spawned)
  * survives as a PID-1 orphan the moment `--test`'s own signal handling fails to cascade.
  * `detached` makes this child LEAD its own process group so there is a group to reap, and
- * `reapTimedOutChild` reuses the SAME shared negative-PID primitive `runCheckSubtree`
+ * `reapAbandonedChildGroup` reuses the SAME shared negative-PID primitive `runCheckSubtree`
  * delegates to — one discipline, no platform branch beyond the win32 check `detached`
  * itself already requires.
  *
