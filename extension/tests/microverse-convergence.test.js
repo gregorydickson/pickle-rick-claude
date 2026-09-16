@@ -48,6 +48,8 @@ import {
     executeGapAnalysis,
     JUDGE_SYSTEM_PROMPT,
     deriveJudgeReviewSurface,
+    preflightAutoCommit,
+    autoRescueDirtyTree,
     _deps,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
@@ -2009,6 +2011,141 @@ test('AC-J1-8 phase refresh: the judge surface follows scope.json after a phase 
         );
         assert.equal(result.paths.length, refreshedScope.allowed_paths.length);
     } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// 446b99dd (AC-J1-6) — scoping does not change commit behaviour for an
+// in-scope-only diff, and the out-of-scope disposition is pinned explicitly.
+//
+// Three call sites carry this question: `preflightAutoCommit` (:4074),
+// `listOwnedDirtyPaths` (:5033, unexported — reached here only through the
+// exported `autoRescueDirtyTree` and `handleNoCommitStall`), and the
+// auto-commit staging site inside `autoRescueDirtyTree` (:5155-5156). All
+// three already implement the invariant; these tests PIN it rather than
+// change it (per the ticket: "touch microverse-runner.ts ONLY if the
+// invariant actually fails").
+// ---------------------------------------------------------------------------
+
+function makeScopeTestGitRepo() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-scope446-'));
+    execSync('git init', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'existing.ts'), 'export const a = 1;\n');
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git commit -m "baseline"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    return dir;
+}
+
+function writeScopeResultLog(dir, name, result) {
+    const logPath = path.join(dir, name);
+    fs.writeFileSync(logPath, `${JSON.stringify({ type: 'assistant', message: 'working' })}\n${JSON.stringify({
+        type: 'result',
+        ...result,
+    })}\n`);
+    return logPath;
+}
+
+test('446b99dd: an in-scope-only dirty tree auto-commits the identical file set with scope absent and with scope populated', () => {
+    // Two separate repos, IDENTICAL baseline + IDENTICAL dirty state — one
+    // dirtied file under src/ (modified) and one new file under src/ (added),
+    // nothing dirty anywhere else. Repo A runs preflightAutoCommit unscoped;
+    // repo B runs it with a scope that covers exactly the dirty set.
+    const dirA = makeScopeTestGitRepo();
+    const dirB = makeScopeTestGitRepo();
+    try {
+        for (const dir of [dirA, dirB]) {
+            fs.writeFileSync(path.join(dir, 'src', 'existing.ts'), 'export const a = 2; // modified\n');
+            fs.writeFileSync(path.join(dir, 'src', 'new-file.ts'), 'export const b = 1;\n');
+        }
+
+        preflightAutoCommit(dirA, () => {});
+        preflightAutoCommit(dirB, () => {}, ['src/**']);
+
+        const headMsgA = execSync('git log -1 --format=%s', { cwd: dirA, encoding: 'utf-8', timeout: 30000 }).trim();
+        const headMsgB = execSync('git log -1 --format=%s', { cwd: dirB, encoding: 'utf-8', timeout: 30000 }).trim();
+        assert.equal(headMsgA, 'microverse: auto-commit dirty tree before start', 'unscoped run must auto-commit');
+        assert.equal(headMsgB, 'microverse: auto-commit dirty tree before start', 'scoped run must auto-commit the identical in-scope-only set');
+
+        const filesA = execSync('git show --name-only --format= HEAD', { cwd: dirA, encoding: 'utf-8', timeout: 30000 })
+            .trim().split('\n').filter(Boolean).sort();
+        const filesB = execSync('git show --name-only --format= HEAD', { cwd: dirB, encoding: 'utf-8', timeout: 30000 })
+            .trim().split('\n').filter(Boolean).sort();
+        assert.deepEqual(filesA, filesB, 'scope absent vs scope populated must commit the identical file set for an in-scope-only diff');
+        assert.deepEqual(filesA, ['src/existing.ts', 'src/new-file.ts'], 'both dirty files must be in the single commit');
+
+        // Both trees are clean after their respective auto-commit — no
+        // divergence hiding in leftover dirt.
+        assert.equal(execSync('git status --porcelain', { cwd: dirA, encoding: 'utf-8', timeout: 30000 }).trim(), '');
+        assert.equal(execSync('git status --porcelain', { cwd: dirB, encoding: 'utf-8', timeout: 30000 }).trim(), '');
+    } finally {
+        fs.rmSync(dirA, { recursive: true, force: true });
+        fs.rmSync(dirB, { recursive: true, force: true });
+    }
+});
+
+test('446b99dd: scope-based out-of-scope-only dirt is salvage-anchored by the rescue, never committed, and cannot manufacture a false convergence', async () => {
+    // Extends the exclude-based AP-EXT-ITER119-01 pattern
+    // (microverse-stall-resilience.test.js) to the SCOPE axis: the only
+    // dirty file is outside allowed_paths (not under an AUTO_COMMIT_DIRT_EXCLUDES
+    // prefix), so listOwnedDirtyPaths disowns it via scope, not excludes.
+    const workingDir = makeScopeTestGitRepo();
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-scope446-session-'));
+    const originalSleep = _deps.sleep;
+    _deps.sleep = async () => {};
+    try {
+        fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ allowed_paths: ['src/**'] }));
+        fs.mkdirSync(path.join(workingDir, 'lib'), { recursive: true });
+        fs.writeFileSync(path.join(workingDir, 'lib', 'outside.ts'), 'export const c = 1;\n');
+
+        const preSha = execSync('git rev-parse HEAD', { cwd: workingDir, encoding: 'utf-8', timeout: 30000 }).trim();
+        const ctx = {
+            sessionDir,
+            workingDir,
+            preIterSha: preSha,
+            postIterSha: preSha,
+            iteration: 1,
+            log: () => {},
+        };
+
+        autoRescueDirtyTree(ctx);
+
+        // (a) disposition: NOT committed, salvage-anchored (recoverable).
+        const headSha = execSync('git rev-parse HEAD', { cwd: workingDir, encoding: 'utf-8', timeout: 30000 }).trim();
+        assert.equal(headSha, preSha, 'an out-of-scope-only dirty tree must produce NO rescue commit');
+        const porcelain = execSync('git status --porcelain -uall', { cwd: workingDir, encoding: 'utf-8', timeout: 30000 });
+        assert.match(porcelain, /\?\? lib\/outside\.ts/, 'out-of-scope file must remain dirty/untracked in the working tree');
+        const refTree = execSync(`git ls-tree -r --name-only refs/pickle/salvage/${path.basename(sessionDir)}`, {
+            cwd: workingDir, encoding: 'utf-8', timeout: 30000,
+        });
+        assert.match(refTree, /lib\/outside\.ts/, 'the out-of-scope file must be recoverable from the salvage ref');
+
+        // (b) the scope-driven disowning cannot manufacture a false
+        // convergence: even a worker log claiming a clean pass must not
+        // read as 'converged' when the only dirt is out-of-scope.
+        ctx.postIterSha = preSha;
+        const logPath = writeScopeResultLog(sessionDir, 'tmux_iteration_1.log', {
+            subtype: 'success',
+            num_turns: 60,
+            result: 'Clean pass — no violations found. Nothing to fix here.',
+        });
+        const state = createMicroverseState({
+            prdPath: '/tmp/prd.md',
+            metric: { description: 'quality', validation: 'q', type: 'command', timeout_seconds: 5, tolerance: 0 },
+            stallLimit: 3,
+        });
+        state.status = 'iterating';
+
+        const result = await handleNoCommitStall(state, ctx, logPath);
+        assert.notEqual(result, 'converged', 'scope-driven out-of-scope-only dirt must never manufacture a false convergence verdict');
+        assert.equal(result, null, 'below stall_limit the loop keeps going, it does not halt');
+        assert.equal(state.convergence.stall_counter, 1, 'the iteration correctly registers as a stall — the risk the ticket names, handled as designed');
+    } finally {
+        _deps.sleep = originalSleep;
+        fs.rmSync(workingDir, { recursive: true, force: true });
         fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 });
