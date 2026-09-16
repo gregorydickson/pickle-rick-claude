@@ -2126,7 +2126,8 @@ test('446b99dd: scope-based out-of-scope-only dirt is salvage-anchored by the re
         // (b) the scope-driven disowning cannot manufacture a false
         // convergence: even a worker log claiming a clean pass must not
         // read as 'converged' when the only dirt is out-of-scope.
-        ctx.postIterSha = preSha;
+        // ctx.postIterSha is still preSha here — autoRescueDirtyTree only
+        // advances it on a successful commit, and none was made above.
         const logPath = writeScopeResultLog(sessionDir, 'tmux_iteration_1.log', {
             subtype: 'success',
             num_turns: 60,
