@@ -216,8 +216,22 @@ client.**
    to refuse and the target becomes unreachable. Cause B is no longer open — the worker declined on a
    verified basis (`git diff --stat` empty, blame 2026-04-29) recorded in `tmux_iteration_{2..6}.log`,
    and `allowed_paths` is **ABSENT in 9 of 10** on-disk sessions, so the scoping clause gated on
-   `allowedPaths.length > 0` (`microverse-runner.ts:2079`) is inert in 90% of runs. Five roots, one
-   surface, four of them subtractions. Every mechanism re-grepped at HEAD.
+   `allowedPaths.length > 0` (`microverse-runner.ts:2079`) is inert in 90% of runs.
+
+   **⚠ REVISION 2 after refinement — the first draft would have shipped a ZERO-DIFF GREEN.**
+   **J2 is CUT:** "the judge invents a 50-line ceiling" was **GitHub #22, CLOSED**, fixed by `7c1085ad`
+   at `2026-09-13T12:32:15Z` — **8h25m AFTER** the session I read it from judged (`04:07:10Z`).
+   `szechuan-sauce.test.js` is 61 pass / 0 fail at HEAD. **The method failure, recorded because it will
+   recur: re-grepping a mechanism INSIDE a session artifact is not re-grounding — the artifact is a
+   snapshot and the repo moves under it.** Date the artifact, `git log -S` the blamed surface, and
+   search closed issues by MECHANISM, not title.
+   **And 16 of 21 ACs were pinned by controls that could not observe their mechanism** — the J1 control
+   passes on unmodified HEAD because it hand-constructs `allowedPaths` and never calls the derivation.
+   Three more findings, symbols verified at HEAD: the scoped judge path has **never scored in
+   production (n=0)**, so J1 is a first-ever activation; scoping changes **commit** behaviour and can
+   manufacture the very no-commit stalls the bundle drains; and the corpora expire — `e959390b` at
+   `2026-09-16T10:46:29Z`, copied to `~/pickle-rick-evidence/` ahead of the prune.
+   **Not dispatched: revise-then-dispatch, and it is a SMALL bundle now — do not pad it back.**
 5. Restore docker if the Linux OS axis is wanted locally again.
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
