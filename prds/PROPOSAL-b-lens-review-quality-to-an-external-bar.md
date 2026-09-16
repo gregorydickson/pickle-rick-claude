@@ -254,18 +254,36 @@ I wrote that *"szechuan does not measure it at all."* Grepped at HEAD, that is f
 **Third time this session I asserted an absence without grepping the file** (after the cut B-JUDGESCOPE
 J2 and the false backup claim). The check exists and is well-stated.
 
-### ✅ The REAL root, which is sharper and cheaper than the one I proposed
+### ✅ The REAL root (operator-sharpened 2026-09-16): density is a SMELL, and the file mis-tiers it as STYLE
 
-It is not missing — it is **deprioritised, and partly excluded**:
+**Comment density is an anti-pattern because it usually means the code should be rewritten so the
+comments are not needed.** The remedy is to change the CODE, not the comment. The principles file
+**already knows this** — and then files it under Style anyway. Measured:
 
-- `:62` tiers *"comment cleanup"* at **P4: Optional / Style / Boy Scout Rule** — the bottom rung, below
-  "Magic numbers, naming, minor duplication".
-- `:94` puts *"comment wording"* in **Out of Scope** outright, alongside "naming taste, spacing, bracket
-  religion".
+| smell | principle | remedy | tier |
+|---|---|---|---|
+| Deep nesting (3+ levels) | Guard Clauses, Cognitive Load | Early returns | **P2 Maintainability** (`:60`) |
+| Copy-pasted code (3+ times) | DRY | Extract shared function | **P2 Maintainability** (`:60`) |
+| Comments explaining "what" (`:25`) | Self-Documenting Code | **Rename to be obvious** | **P4 Optional / Style** (`:62`) |
+| Comment-heavy code (`:243`) | Self-Documenting | **Rename, restructure** | **P4 Optional / Style** (`:62`) |
 
-**So a reviewer following the file correctly finds comment bloat and correctly declines to act on it.**
-That is a severity-and-scope question, not a coverage question — and 19 of 342 real findings say the
-external bar rates it above P4.
+**Identical remedy SHAPE — restructure the code — and a two-tier severity gap.** The smell table carries
+no severity column of its own, so severity comes entirely from `:57-62`, and there the entry reads
+*"comment cleanup"*. Compounding it, `:94` puts *"comment wording"* **Out of Scope** outright, next to
+"naming taste, spacing, bracket religion".
+
+**The miscategorisation is in the WORDING, and that is why it is cheap to fix.** *"Comment cleanup"* and
+*"comment wording"* both describe **editing the comment** — which really is a P4 style nit and really is
+out of scope. The actual finding is **editing the code**, which is P2 and squarely in scope. The file
+tiers the wrong remedy.
+
+**Consequence today:** a reviewer following the file correctly finds comment-heavy code, correctly reads
+the remedy as "rename, restructure", then correctly declines to act because the severity table calls it
+optional style and the scope section excludes it. **19 of 342 findings from the external bar say that is
+the wrong call.**
+
+**And it compounds for us specifically:** an LLM writing code narrates it, so we generate the smell at a
+rate a human-authored codebase does not.
 
 **Why this matters more for us than for a human-authored codebase:** an LLM writing code narrates it. We
 generate comments at a rate a human reviewer does not, so a P4 tier that is never reached compounds.
@@ -273,8 +291,14 @@ generate comments at a rate a human reviewer does not, so a P4 tier that is neve
 ### AC-L5 (rewritten against the real root)
 - **AC-L5-1:** the change is a **severity/scope edit to existing rules**, not a new dimension. Do NOT add
   a Part IV and do NOT add a scored dimension — the check is already there.
-- **AC-L5-2:** decide and state whether comment bloat leaves P4, and whether `:94`'s "comment wording"
-  exclusion is narrowed (it currently reads broadly enough to cover density, not just taste).
+- **AC-L5-2 (the actual change):** separate the two remedies that are currently conflated.
+  **Editing the comment** stays P4 Style and stays out of scope. **Restructuring code that needed the
+  comment** moves to **P2 Maintainability**, alongside deep nesting and DRY, whose remedies are the same
+  shape. Concretely: `:62` stops saying "comment cleanup", `:60` gains the restructure case, and `:94`'s
+  exclusion is narrowed to comment *wording* so it no longer swallows density.
+- **AC-L5-2b (the finding must name the CODE):** a raised finding says which function to restructure and
+  why the comment is evidence for it. A finding whose remedy is "delete this comment" has not been
+  promoted — it has just been re-tiered, and it will produce exactly the P4 noise this root must avoid.
 - **AC-L5-3 (negative control, load-bearing):** a docblock recording a non-obvious WHY — a measured
   limit, a trap-door invariant, a `pattern_shape` — is NOT flagged. `:130`'s existing Comment Balance
   wording already protects these; **any edit that breaks that protection is a regression, and L0-4's
