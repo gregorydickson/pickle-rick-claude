@@ -1794,7 +1794,26 @@ test('ROOT S negative control: a normal-sized allowed_paths scope still reaches 
 // `scope.json` on disk, no hand-built `allowedPaths` object handed to
 // `buildJudgePrompt`, and the judge argv captured via the shipped
 // `_deps.execFileSync` + `PICKLE_JUDGE_LEGACY_SPAWN=1` seam.
+//
+// e562164b: microverse.json's `allowed_paths` is a DIVERGENT stale path. Seeded identical to
+// scope.json, these pins stayed green with every call site reverted to the pre-fix
+// `state.allowed_paths ?? []` input — true at the baseline they claim to pin.
 // ---------------------------------------------------------------------------
+
+const GAP_STALE_SNAPSHOT_PATH = 'src/stale-snapshot.ts';
+
+/** The `- <path>` lines of the prompt's `Review ONLY these paths:` block, scoped to that construct. */
+function judgePromptReviewPaths(prompt) {
+    const lines = prompt.split('\n');
+    const start = lines.indexOf('Review ONLY these paths:');
+    if (start === -1) return null;
+    const paths = [];
+    for (const line of lines.slice(start + 1)) {
+        if (!line.startsWith('- ')) break;
+        paths.push(line.slice(2));
+    }
+    return paths;
+}
 
 function createGapAnalysisTempGitRepo() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-judgescope-gap-repo-'));
@@ -1847,7 +1866,7 @@ function createGapAnalysisScopedSession(workingDir, allowedPaths) {
         gap_analysis_path: '',
         failed_approaches: [],
         baseline_score: 0,
-        allowed_paths: allowedPaths,
+        allowed_paths: [GAP_STALE_SNAPSHOT_PATH],
     };
     fs.writeFileSync(path.join(dir, 'microverse.json'), JSON.stringify(mvState, null, 2));
     return { dir, runnerState };
@@ -1914,13 +1933,15 @@ test('AC-J1-3: executeGapAnalysis reaches the real judge prompt through the deri
             resolved: [], new: ['gap-in-scope-1'], remaining: [],
         },
     );
-    assert.ok(
-        capturedPrompt.includes('Count ONLY violations located within these paths'),
-        'the REAL baseline judge prompt, reached via executeGapAnalysis -> measureLlmBaseline -> deriveJudgeReviewSurface, must carry the scoping literal',
+    assert.equal(
+        capturedPrompt.split('Count ONLY violations located within these paths').length - 1,
+        1,
+        'the REAL baseline judge prompt, reached via executeGapAnalysis -> measureLlmBaseline -> deriveJudgeReviewSurface, must carry the scoping literal exactly once',
     );
-    assert.ok(
-        capturedPrompt.includes('- src/inscope.ts'),
-        'the derived surface must enumerate the scoped path reached through scope.json + state.allowed_paths',
+    assert.deepEqual(
+        judgePromptReviewPaths(capturedPrompt),
+        ['src/inscope.ts'],
+        'the review-paths block must enumerate exactly the scope.json path — never the stale microverse.json snapshot',
     );
 });
 
@@ -1933,9 +1954,10 @@ test('AC-J1-3 over-trigger control: executeGapAnalysis still scores an in-scope,
             resolved: [], new: ['gap-over-trigger-1'], remaining: [],
         },
     );
-    assert.ok(
-        capturedPrompt.includes('- src/inscope.ts'),
-        'the derived surface must enumerate exactly the scoped path, never a whole-tree marker',
+    assert.deepEqual(
+        judgePromptReviewPaths(capturedPrompt),
+        ['src/inscope.ts'],
+        'the derived surface must enumerate exactly the scoped path, never a whole-tree or widened surface',
     );
     assert.equal(mv.baseline_score, 1, 'the baseline score must reflect the in-scope violation the judge reported');
     assert.equal(mv.violation_ledger?.length, 1, 'the in-scope baseline violation must be seeded into the ledger');
@@ -1964,7 +1986,7 @@ test('b419a06f: a real --scope paths: scope.json (base_sha null) still derives a
     assert.equal(producedScope.mode, 'paths');
     assert.equal(producedScope.base_sha, null, 'precondition: resolveScope writes no base for paths mode');
     assert.deepEqual(producedScope.allowed_paths, ['src/inscope.ts']);
-    assert.ok(capturedPrompt.includes('- src/inscope.ts'), 'the judge prompt must be scoped to the paths-mode surface');
+    assert.deepEqual(judgePromptReviewPaths(capturedPrompt), ['src/inscope.ts'], 'the judge prompt must be scoped to the paths-mode surface');
     assert.equal(mv.exit_reason, undefined, 'a paths-mode surface must not be a derivation failure');
     assert.equal(mv.baseline_score, 1, 'a whole-file surface keeps the in-path violation (no per-line base to drop against)');
     assert.equal(mv.violation_ledger?.length, 1);

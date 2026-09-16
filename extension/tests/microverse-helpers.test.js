@@ -783,7 +783,32 @@ test('AP-EXT-ITER220-01 control: an over-reported judge score still converges wh
 // the derived surface to the whole tree would red the over-trigger control's
 // enumerated-path assertion. Neither test hand-builds an `allowedPaths` object
 // for `buildJudgePrompt`.
+//
+// e562164b: `microverse.json.allowed_paths` is seeded with a DIVERGENT stale path. The pre-fix
+// prompt input was `state.allowed_paths ?? []`; seeding it identical to scope.json made both
+// pins green at that baseline (measured: passing `state.allowed_paths` at every call site left
+// them GREEN). Only the scope.json derivation can now put `src/inscope.ts` in the prompt.
 // ---------------------------------------------------------------------------
+
+const STALE_SNAPSHOT_PATH = 'src/stale-snapshot.ts';
+
+/** The `- <path>` lines of the prompt's `Review ONLY these paths:` block — scoped to that
+ * construct, since other prompt sections (prior violations, history) also emit `- ` lines. */
+function judgePromptReviewPaths(prompt) {
+  const lines = prompt.split('\n');
+  const start = lines.indexOf('Review ONLY these paths:');
+  if (start === -1) return null;
+  const paths = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!line.startsWith('- ')) break;
+    paths.push(line.slice(2));
+  }
+  return paths;
+}
+
+function countOccurrences(haystack, needle) {
+  return haystack.split(needle).length - 1;
+}
 
 function makeScopedJudgeSession(judgeOutput, allowedPaths) {
   const sessionDir = makeTempDir('pickle-mv-judgescope-session-');
@@ -804,7 +829,7 @@ function makeScopedJudgeSession(judgeOutput, allowedPaths) {
       judge_model: 'claude-sonnet-4-6',
     },
     stallLimit: 3,
-    allowedPaths,
+    allowedPaths: [STALE_SNAPSHOT_PATH],
   });
   mv.status = 'iterating';
   mv.baseline_score = 0;
@@ -849,13 +874,15 @@ test('AC-J1-3: measureAndClassifyIteration reaches the real judge prompt through
     cleanup();
   }
   const capturedPrompt = getCapturedPrompt();
-  assert.ok(
-    capturedPrompt.includes('Count ONLY violations located within these paths'),
-    'the REAL judge prompt, reached via measureAndClassifyIteration -> measureLlmIteration -> deriveJudgeReviewSurface, must carry the scoping literal',
+  assert.equal(
+    countOccurrences(capturedPrompt, 'Count ONLY violations located within these paths'),
+    1,
+    'the REAL judge prompt, reached via measureAndClassifyIteration -> measureLlmIteration -> deriveJudgeReviewSurface, must carry the scoping literal exactly once',
   );
-  assert.ok(
-    capturedPrompt.includes('- src/inscope.ts'),
-    'the derived surface must enumerate the scoped path reached through scope.json + state.allowed_paths',
+  assert.deepEqual(
+    judgePromptReviewPaths(capturedPrompt),
+    ['src/inscope.ts'],
+    'the review-paths block must enumerate exactly the scope.json path — never the stale microverse.json snapshot',
   );
 });
 
@@ -874,9 +901,11 @@ test('AC-J1-3 over-trigger control: an in-scope, in-diff violation is still scor
     cleanup();
   }
   const capturedPrompt = getCapturedPrompt();
-  assert.ok(
-    capturedPrompt.includes('- src/inscope.ts'),
-    'the derived surface must enumerate exactly the scoped path, never a whole-tree marker',
+  // AC-J1-5 widening direction: a whole-tree surface drops the block (null); a widened one adds members.
+  assert.deepEqual(
+    judgePromptReviewPaths(capturedPrompt),
+    ['src/inscope.ts'],
+    'the derived surface must enumerate exactly the scoped path, never a whole-tree or widened surface',
   );
   assert.equal(mv.violation_ledger?.length, 1, 'the in-scope violation the judge reported must still be tracked in the ledger');
   assert.equal(mv.violation_ledger[0].path, 'src/inscope.ts');
