@@ -2015,6 +2015,8 @@ test('AC-J1-8 auto-extend: the judge surface follows a scope.json widened after 
             allowedPaths: ['src/original.ts'],
         });
         assert.deepEqual(mv.allowed_paths, ['src/original.ts'], 'precondition: the pre-extend snapshot holds only the original path');
+        // e562164b: on disk, where a sessionDir-reading producer could substitute it for scope.json.
+        writeMicroverseState(sessionDir, mv);
 
         // Simulates the ON-DISK effect of maybeAutoExtendScope: scope.json re-persisted with the
         // detector-named caller added (pipeline-runner.ts:1995-2005).
@@ -2056,6 +2058,8 @@ test('AC-J1-8 phase refresh: the judge surface follows scope.json after a phase 
             allowedPaths: ['src/pre-refresh-stale.ts'],
         });
         assert.deepEqual(mv.allowed_paths, ['src/pre-refresh-stale.ts'], 'precondition: the stale snapshot predates the refresh');
+        // e562164b: on disk — held only in memory, a producer unioning in microverse.json stayed GREEN.
+        writeMicroverseState(sessionDir, mv);
 
         const result = deriveJudgeReviewSurface(sessionDir);
         assert.equal(result.kind, 'derived');

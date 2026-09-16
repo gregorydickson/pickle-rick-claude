@@ -938,6 +938,9 @@ test('AC-J1-8: an empty CURRENT scope.json is honored even when state.allowed_pa
       allowedPaths: ['src/stale-non-empty.ts'],
     });
     assert.deepEqual(mv.allowed_paths, ['src/stale-non-empty.ts'], 'precondition: the stale snapshot is really present on the state object');
+    // e562164b: on disk, where a sessionDir-reading producer could fall back to it. In memory
+    // only, a microverse.json fallback mutation left this case GREEN.
+    writeMicroverseState(sessionDir, mv);
 
     const result = deriveJudgeReviewSurface(sessionDir);
     assert.equal(result.kind, 'failed', 'the CURRENT (empty) scope.json must decide — never fall back to the stale non-empty state.allowed_paths');

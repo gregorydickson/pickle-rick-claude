@@ -35,6 +35,7 @@ import {
   compareMetricWithBasis,
   recordIteration,
   isConverged,
+  writeMicroverseState,
 } from '../services/microverse-state.js';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
@@ -1209,6 +1210,19 @@ test('R4-3 control: a stall over entries first seen inside the stall window is n
 // recovered must record a typed reason, never a silent empty array standing in for
 // "unrestricted". `deriveJudgeReviewSurface` is the single named producer (AC-J1-1) every
 // measureLlm* call site now uses instead of `state.allowed_paths ?? []`.
+//
+// e562164b: the stale snapshot must sit ON DISK in microverse.json — the only place a producer
+// taking `sessionDir` could read it. Held only in memory, a producer that fell back to (or
+// unioned in) `microverse.json.allowed_paths` left every case below GREEN (measured).
+const STALE_SNAPSHOT_PATH = 'src/stale-snapshot.ts';
+
+function writeStaleSnapshot(sessionDir, metric = TEST_METRIC) {
+  const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric, stallLimit: 3 });
+  state.allowed_paths = [STALE_SNAPSHOT_PATH];
+  writeMicroverseState(sessionDir, state);
+  return state;
+}
+
 test('deriveJudgeReviewSurface: no scope.json means never opted in — unscoped, not a failure', () => {
   const sessionDir = tmpDir('pickle-mrs-surface-');
   try {
@@ -1224,6 +1238,7 @@ test('deriveJudgeReviewSurface: scope.json present but allowed_paths empty is a 
     fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
       version: 1, mode: 'branch', base_sha: 'a'.repeat(40), allowed_paths: [],
     }));
+    writeStaleSnapshot(sessionDir);
     const result = deriveJudgeReviewSurface(sessionDir);
     assert.equal(result.kind, 'failed');
     assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
@@ -1251,6 +1266,7 @@ test('deriveJudgeReviewSurface: scope.json + populated allowed_paths derives suc
     fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
       version: 1, mode: 'branch', base_sha: 'b'.repeat(40), allowed_paths: ['src/foo.ts'],
     }));
+    writeStaleSnapshot(sessionDir);
     assert.deepEqual(
       deriveJudgeReviewSurface(sessionDir),
       { kind: 'derived', paths: ['src/foo.ts'], base: 'b'.repeat(40) },
@@ -1270,8 +1286,7 @@ test('deriveJudgeReviewSurface: a stale state.allowed_paths snapshot is never co
     fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
       version: 1, mode: 'branch', base_sha: 'c'.repeat(40), allowed_paths: ['src/live.ts'],
     }));
-    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
-    state.allowed_paths = ['src/stale-snapshot.ts'];
+    writeStaleSnapshot(sessionDir);
     assert.deepEqual(
       deriveJudgeReviewSurface(sessionDir),
       { kind: 'derived', paths: ['src/live.ts'], base: 'c'.repeat(40) },
@@ -1289,11 +1304,7 @@ test('measureLlmIteration: an underivable surface never reaches the judge backen
     fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
       version: 1, mode: 'branch', base_sha: 'c'.repeat(40), allowed_paths: [],
     }));
-    const state = createMicroverseState({
-      prdPath: '/tmp/prd.md',
-      metric: { description: 'quality', validation: 'improve code quality', type: 'llm', timeout_seconds: 60, tolerance: 2, direction: 'higher', judge_model: 'claude-sonnet-4-6' },
-      stallLimit: 3,
-    });
+    const state = writeStaleSnapshot(sessionDir, { description: 'quality', validation: 'improve code quality', type: 'llm', timeout_seconds: 60, tolerance: 2, direction: 'higher', judge_model: 'claude-sonnet-4-6' });
     state.status = 'iterating';
 
     let judgeInvoked = false;
