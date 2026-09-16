@@ -119,6 +119,34 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🎯 AC-L7-1 EXECUTED — the biggest findings channel is 82% FALSE (#34). Do NOT wire it yet.
+
+The operator set [[B-LENS]] ROOT L7: **"the loops should fix all issues they find."** Its blocking
+pre-measurement ran, and it earned its place: of the last run's **163** citadel findings, **162 come from
+one `source_section`** (`trap_door_coverage`) and **147 are one message shape**. Checked against the
+files themselves:
+
+| | |
+|---|---:|
+| anchor IS present in the file it is reported missing from — **FALSE** | **121** |
+| anchor genuinely absent — real | **26** |
+
+**Cause is one regex.** `hasTestCase` (`services/citadel/trap-door-coverage-audit.ts`) requires the
+closing quote **immediately** after the anchor, so it only accepts a test titled *exactly* the anchor —
+while the repo convention is `'<anchor>: <description>'`, used by **2040** tests.
+`audit-trap-door-enforcement.sh` audits the same invariant and exits **0**.
+
+**#34 is a hard prerequisite of L7.** Wiring the channel as-is would have spent ~121 iterations "fixing"
+anchors that already exist, and a fixer told to add a present anchor churns the file rather than
+no-oping. **The channel is 18% signal, not 0%** — the 26 are real and unfixed today — so the fix is to
+repair the matcher, not to discard the channel.
+
+**Generalise it:** AC-L7-1 is per-channel, not one-off. The skeptic's **28** findings and the
+`dropped_findings.md` entries have **not** been rate-checked. *"Fix all issues they find"* is only sound
+where the issues are real — **measure a channel's true-positive rate before routing it.**
+
+---
+
 ## ⛔ OPERATOR CONSTRAINT 2026-09-16 (BINDING) — THE REVIEW PHASES STAY SIMPLE
 
 > *"I don't want to do to anatomy-park and szechuan-sauce what we did to the rest of pickle rick, make

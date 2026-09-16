@@ -124,11 +124,30 @@ longer**, which is the term quality actually depends on.
 the finding. **Collapsing those two states into one removes a distinction, it does not add a case.**
 
 ### AC-L7
-- **AC-L7-1 (measure before routing — blocking):** classify a sample of the 163 citadel advisories by
-  true/false positive **before** wiring anything. My own notes already record a known-false class
-  (citadel orphan-test-case Highs, `conf=0`, contradicted by `audit-trap-door-enforcement.sh` exiting 0).
-  **Feeding 163 findings of unknown quality into a fixer that fixes one per iteration is how a run burns
-  its budget achieving nothing.** The true-positive rate decides whether this ships at all.
+- **AC-L7-1 (measure before routing — blocking) ✅ EXECUTED 2026-09-16. The answer is DO NOT WIRE YET.**
+  Measured on the last run's own `citadel_report.json`: **162 of 163 findings come from one
+  `source_section` (`trap_door_coverage`) and 147 are one message shape.** Checked mechanically against
+  the files themselves:
+
+  | | |
+  |---|---:|
+  | anchor IS present in the file it is reported missing from — **FALSE** | **121** |
+  | anchor genuinely absent — real | 26 |
+
+  **82% false-positive rate**, filed as **GitHub #34**. Cause is one regex: `hasTestCase` requires the
+  closing quote **immediately** after the anchor, so it only accepts a test titled *exactly* the anchor,
+  while the repo's convention is `'<anchor>: <description>'` — used by **2040** tests.
+  `audit-trap-door-enforcement.sh`, auditing the same invariant, exits **0**.
+
+  **Consequence for L7:** wiring this channel as-is would have spent ~121 iterations "fixing" anchors
+  that already exist, and a fixer told to add a present anchor churns the file rather than no-oping.
+  **#34 is a hard prerequisite of L7.** The channel is **18% signal, not 0%** — the 26 are real and
+  unfixed today — so the fix is to repair the matcher, not to discard the channel.
+
+  **Generalised, and this is the part that outlives #34:** AC-L7-1 must be re-run per channel. The
+  skeptic's 28 and the dropped-findings entries have **not** been rate-checked, and *"the loops should
+  fix all issues they find"* is only sound where the issues are real. **Route a channel only after its
+  true-positive rate is measured.**
 - **AC-L7-2:** the wire is a ROUTE, not a rewrite — citadel keeps surfacing exactly as it does; its
   output becomes an input to the existing fix loop. No change to any review prompt's criteria.
 - **AC-L7-3 (the skeptic's missing half):** `skeptic_findings.json` records no disposition. Either its
