@@ -119,6 +119,67 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🏁 B-TRUTHEXIT RAN — 4/4, 9/9 tickets, gate 22/22 GREEN. Not released (cadence).
+
+Session `2026-09-16-383e1249`. `completed_phases: 4/4`, **9/9 tickets Done, none Failed**. Gate
+**22/22 green at `408571c2`**, same-run `GATE_END`, 70 min; soak **1,803,801 ms** vs `SOAK_SECONDS=1800`
+with `SOAK_UNRUN` 0; `flake-budget failures=0 runs 5/5 tests=10049` (was 10028).
+
+**Run verdict `status: failed`** on `szechuan-sauce: metric_unmeasurable_unrecoverable` — *"judge output
+did not contain a numeric score"* after 4 attempts. **Filed as #35, and it is a third instance of this
+bundle's own subject:** `judgeAttemptFromOutput` (`microverse-runner.ts:2859`) returns
+`{ raw: output, score }` on success and drops `output` on failure, with the value in scope on both
+branches. `emitJudgeParseDiagnostic` (`:2249`) does capture a truncated raw but its guard only fires on a
+JSON parse error, so this path never reaches it. Three causes — empty output, prose without a number, a
+shape `extractScore` rejects — share one message, and which one fired is **unknowable from the
+artifacts**.
+
+**#33/#34 are BUILT but not verified in the field.** `c27b2673` widened the matcher; `2203fe28` proved it
+by extracting the **retired pre-widening `hasTestCase` body via `git show` of the compiled mirror** and
+replaying it against the live corpus, asserting the false findings clear **and** the genuine ones remain
+— then reported the residual citadel-vs-shell divergence (`AP-EXT-ITER56-01`) rather than forcing
+agreement. **The next run is the first that exercises either fix.**
+
+---
+
+## 🔬 WHERE THE BRITTLENESS COMES FROM — measured 2026-09-16 (evidence for root `CLAUDE.md` clauses 6-7)
+
+**Classified the last 14 GitHub issues by defect shape.** The conclusion overturned the working
+hypothesis that per-incident features are the cause.
+
+| | |
+|---|---:|
+| defects in MEASUREMENT code (guard, matcher, extractor, classifier, threshold, default, error ctor) | **11 of 14** |
+| …of which are **guards** specifically | **3 of 14** |
+| shape = *information loss at a decision point* (reports a state it never observed, or collapses two it could separate) | **8 of 14** |
+| not instrument defects at all (#31 policy, #30 convention, #29 coverage) | 3 of 14 |
+
+**The scar tissue is real: 852 distinct incident IDs cited 3,539 times across 94,718 source lines.**
+It pools in `mux-runner.ts` (483 commits / 475 citations), `pipeline-runner.ts` (233/145),
+`microverse-runner.ts` (277/124), `ticket-completion-evidence.ts` (**29/76** — the highest density).
+
+**But the defects are NOT in the scar tissue, and that is the finding.** Traced to origin:
+
+| broken predicate | commits that ever touched it | its file |
+|---|---:|---|
+| `hasTestCase` (#34) | **1** — the `feat(citadel)` that created it | 9 commits, 13 incident citations |
+| `result.status ?? 1` (#33) | **1** — "Add tier discovery to test runner" | 13 commits, 9 incident citations |
+
+Both were written once in ordinary feature work and never revisited. Every incident since landed
+**around** them. So: a feature ships with a casually-written core predicate → incidents accumulate at the
+edges → the file looks thoroughly maintained → the centre becomes both unreachable and unsuspected.
+**Complexity causes the INATTENTION, not the defect. The defect was there on day one.**
+
+**Consequence for effort allocation:** subtraction discipline prevents the NEXT defect and finds none of
+the existing eleven — they all predate the scar tissue. Those are found by clause 7's search.
+
+**Honest limits, because this is n=14 and self-classified:** the shape classification is my judgement,
+not a machine's; the origin trace covered 3 instruments, 2 supporting "born in feature work" and 1 born
+in a hardening fix; the one-commit heuristic is **2-for-2 — suggestive, not established.** All three are
+cheap to widen, and the next two applications of clause 7 should confirm or kill it.
+
+---
+
 ## 🗺 THE ANATOMY / SZECHUAN UPGRADE — dispatch order (operator-set 2026-09-16)
 
 **Two bugs, then the enhancement.** The ordering is a dependency, not a preference.
