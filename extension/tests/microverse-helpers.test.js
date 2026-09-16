@@ -806,10 +806,6 @@ function judgePromptReviewPaths(prompt) {
   return paths;
 }
 
-function countOccurrences(haystack, needle) {
-  return haystack.split(needle).length - 1;
-}
-
 function makeScopedJudgeSession(judgeOutput, allowedPaths) {
   const sessionDir = makeTempDir('pickle-mv-judgescope-session-');
   const workingDir = makeTempDir('pickle-mv-judgescope-work-');
@@ -875,7 +871,7 @@ test('AC-J1-3: measureAndClassifyIteration reaches the real judge prompt through
   }
   const capturedPrompt = getCapturedPrompt();
   assert.equal(
-    countOccurrences(capturedPrompt, 'Count ONLY violations located within these paths'),
+    capturedPrompt.split('Count ONLY violations located within these paths').length - 1,
     1,
     'the REAL judge prompt, reached via measureAndClassifyIteration -> measureLlmIteration -> deriveJudgeReviewSurface, must carry the scoping literal exactly once',
   );
