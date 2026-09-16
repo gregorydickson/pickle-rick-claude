@@ -35,6 +35,62 @@ because it must be measured before anything depends on it.
 
 ---
 
+## ⛔ OPERATOR CONSTRAINT 2026-09-16 (BINDING, supersedes on conflict) — DO NOT MAKE THESE PHASES BRITTLE
+
+> *"I don't want to do to anatomy-park and szechuan-sauce what we did to the rest of pickle rick, make
+> them brittle and overly complex. We must always remember that they work because they are 'simple' and
+> they iterate."*
+
+**This is the PRIME DIRECTIVE aimed at this proposal, and it cuts two of its roots.** The review phases
+converge because **iteration count** does the work, not per-pass precision — measured on this branch:
+anatomy-park has converged at 2, 11, 17 and 37 passes per subsystem, and szechuan converged from a
+baseline of 2 in two recorded iterations. **Anything that makes a single pass heavier, or gives a pass a
+new way to fail, is paid on EVERY iteration and works against the mechanism that makes these phases
+correct.**
+
+The two phases are **583 + 498 prompt lines and a 260-line principles file**. That is the asset.
+
+### The honest scorecard of this proposal against that constraint
+
+| root | what it adds to a pass | verdict |
+|---|---|---|
+| **L0** preservation replay | a control, run once, outside the loop | ✅ keep |
+| **L3** deleted-or-broken question | **one sentence** in an existing section | ✅ keep |
+| **L4** acceptance criteria | a **diagnosis**, no prompt change yet | ✅ keep |
+| **L5** comment density | **re-tiers three lines** of an existing table | ✅ keep |
+| **L1** lens roster | **a maintained LIST of lenses**, printed twice per pass, with a defect report when short | ❌ **CUT** |
+| **L2** per-finding provenance schema | **a schema every finding must satisfy**, plus a rejection path | ❌ **CUT as scoped** |
+| **L6** teams experiment | a measurement, opt-in, sequential stays default | ✅ keep as experiment |
+
+**L1 is cut because it imports an enumerated set into a system that does not have one.** Our phases have
+no lenses — that is the lean skill's architecture, not ours. A roster requires a hand-maintained list of
+lenses, which root `CLAUDE.md` names as *"a liability with a maintenance schedule"* that *"fails
+silently, because a missing member looks exactly like a member that does not apply."* **Adding the 8th
+member schedules the 9th bypass.** I argued L1 was subtraction because it removes the
+looked-vs-did-not-look ambiguity. That value is real — but it is **already delivered**: `anatomy-park.json`
+reports `pass_counts` and `consecutive_clean` **per subsystem**, so what ran and how often is on disk
+today without a roster. **Use what is already reported. Do not add a second coverage channel.**
+
+**L2 is cut as scoped for the same reason, one level down.** A required locator + failure scenario +
+evidence-read + separately-listed provenance per finding is a schema, and a schema has a rejection path.
+In a loop whose correctness comes from iteration count, a new way for a pass to produce a malformed
+finding is a new way for a pass to yield nothing — and its own AC-L2-4 already concedes the risk
+(*"this must not become a tax that suppresses real findings"*). **An AC that has to warn you it might
+suppress findings is the warning.**
+
+**What survives of L2, if anything, is ONE line in the existing prompt** — absence claims ("no caller",
+"unused") must carry the search that established them — because that is a sentence, not a contract, and
+it costs a pass nothing. Scope it that way or drop it.
+
+### The rule this bundle now follows
+
+**A change to these two phases must be an EDIT to an existing sentence, tier or table — never a new
+artifact, contract, list or required output.** If a root cannot be expressed that way, it does not belong
+in these phases. The remaining roots all pass that test: L3 is a sentence, L5 is three table cells, L4 is
+an investigation, L0 is a control that runs outside the loop.
+
+---
+
 ## 🔒 ROOT L0 — PRESERVE WHAT ALREADY BEATS THE BAR (gates every other root)
 
 **The risk this bundle carries is not that it fails. It is that "align to the external bar" reads as a

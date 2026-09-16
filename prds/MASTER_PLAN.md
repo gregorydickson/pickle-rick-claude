@@ -119,6 +119,31 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## ⛔ OPERATOR CONSTRAINT 2026-09-16 (BINDING) — THE REVIEW PHASES STAY SIMPLE
+
+> *"I don't want to do to anatomy-park and szechuan-sauce what we did to the rest of pickle rick, make
+> them brittle and overly complex. We must always remember that they work because they are 'simple' and
+> they iterate."*
+
+**They converge because ITERATION COUNT does the work, not per-pass precision** — measured on this
+branch: anatomy-park at 2, 11, 17 and 37 passes per subsystem; szechuan from baseline 2 in two recorded
+iterations. **Anything that makes a single pass heavier, or gives a pass a new way to FAIL, is paid on
+every iteration and works against the mechanism that makes these phases correct.**
+
+**The operating rule, now binding on [[B-LENS]] and anything after it:** a change to these two phases
+must be an **EDIT to an existing sentence, tier or table** — never a new artifact, contract, list or
+required output. If a root cannot be expressed that way, it does not belong in these phases.
+
+**It already cut two roots of my own proposal.** L1 (a lens roster) imported a hand-maintained
+enumerated set into phases that have none — and its value was already on disk, since
+`anatomy-park.json` reports `pass_counts` and `consecutive_clean` per subsystem. L2 (a per-finding
+provenance schema) added a rejection path to a loop whose correctness comes from iteration count; its
+own AC conceded it *"must not become a tax that suppresses real findings"* — **an AC that has to warn
+you it might suppress findings is the warning.** Surviving: L0 (a control outside the loop), L3 (one
+sentence), L4 (a diagnosis), L5 (three table cells), L6 (an opt-in measurement).
+
+---
+
 ## 🌿 BRANCH TOPOLOGY CHANGED 2026-09-16 (operator-directed) — read before any `git`/`gh` command
 
 | ref | is now |
