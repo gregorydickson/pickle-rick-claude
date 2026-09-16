@@ -79,6 +79,17 @@ describe('skeptic-lens: defect pattern detection', () => {
     );
   });
 
+  test('cross-file-repetition-exhaustiveness finding carries a resolvable line', () => {
+    const report = runSkepticLens([makeChangedFile('e1.ts'), makeChangedFile('e2.ts')], tmpDir);
+    const finding = report.findings.find((f) => f.defect === 'cross-file-repetition-exhaustiveness');
+    assert.ok(finding, 'expected cross-file-repetition finding');
+    assert.equal(typeof finding.line, 'number', 'line must be a resolvable number, not undefined');
+    assert.ok(finding.line > 0, 'line must be a positive line number');
+    assert.equal(finding.file, 'e1.ts', 'file locates the first occurrence, not an arbitrary pick');
+    assert.match(finding.why, /e1\.ts/, 'why must name every participating file, not just the count');
+    assert.match(finding.why, /e2\.ts/, 'why must name every participating file, not just the count');
+  });
+
   test('all 5 defect classes detected together', () => {
     const changedFiles = [
       makeChangedFile('a.ts'),
@@ -99,6 +110,18 @@ describe('skeptic-lens: defect pattern detection', () => {
     ]) {
       assert.ok(defects.has(expected), `expected defect class '${expected}' to be detected`);
     }
+  });
+
+  test('per-line finding shape is unchanged: exact object for a semantic-identity defect', () => {
+    const report = runSkepticLens([makeChangedFile('a.ts')], tmpDir);
+    const finding = report.findings.find((f) => f.defect === 'semantic-identity');
+    assert.deepEqual(finding, {
+      defect: 'semantic-identity',
+      file: 'a.ts',
+      line: 1,
+      why: 'Identity comparison with object/array literal always evaluates to false',
+      shape: 'if (obj === {}) return;',
+    });
   });
 
   test('findings have required fields: defect, file, why, shape', () => {

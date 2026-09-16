@@ -100,6 +100,8 @@ function isGeneratedCompiledTwin(repoRoot, filePath) {
 }
 export function runSkepticLens(changedFiles, repoRoot) {
     const findings = [];
+    // Locator per occurrence (not just the file), so a cross-file finding below
+    // can point at a real declaration line instead of dropping to file-only.
     const fnsByName = new Map();
     for (const file of changedFiles) {
         if (isGeneratedCompiledTwin(repoRoot, file.path))
@@ -114,21 +116,23 @@ export function runSkepticLens(changedFiles, repoRoot) {
                 const fnMatch = FN_DECL_RE.exec(line);
                 if (fnMatch) {
                     const name = fnMatch[1];
-                    const files = fnsByName.get(name) ?? [];
-                    if (!files.includes(file.path)) {
-                        files.push(file.path);
-                        fnsByName.set(name, files);
+                    const occurrences = fnsByName.get(name) ?? [];
+                    if (!occurrences.some((o) => o.file === file.path)) {
+                        occurrences.push({ file: file.path, line: ln });
+                        fnsByName.set(name, occurrences);
                     }
                 }
             }
         }
     }
-    for (const [name, files] of fnsByName) {
-        if (files.length >= 2) {
+    for (const [name, occurrences] of fnsByName) {
+        if (occurrences.length >= 2) {
+            const fileList = occurrences.map((o) => o.file).join(', ');
             findings.push({
                 defect: 'cross-file-repetition-exhaustiveness',
-                file: files[0],
-                why: `Function '${name}' defined in ${files.length} changed files — potential duplication or missing exhaustiveness`,
+                file: occurrences[0].file,
+                line: occurrences[0].line,
+                why: `Function '${name}' defined in ${occurrences.length} changed files (${fileList}) — potential duplication or missing exhaustiveness`,
                 shape: `function ${name}(`,
             });
         }
