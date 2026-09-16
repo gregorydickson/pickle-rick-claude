@@ -1897,14 +1897,15 @@ function makeGapAnalysisContext(sessionDir, runnerState, workingDir) {
     };
 }
 
-async function runGapAnalysisScopedJudge(allowedPaths, judgeOutput, writeScope) {
+async function runGapAnalysisScopedJudge(allowedPaths, judgeOutput, writeScope, { expectError = false } = {}) {
     process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
-    const original = { execFileSync: _deps.execFileSync, runIteration: _deps.runIteration };
+    const original = { execFileSync: _deps.execFileSync, runIteration: _deps.runIteration, logActivity: _deps.logActivity };
     const workingDir = createGapAnalysisTempGitRepo();
     const session = createGapAnalysisScopedSession(workingDir, allowedPaths);
     if (writeScope) writeScope(workingDir, session.dir);
     const ctx = makeGapAnalysisContext(session.dir, session.runnerState, workingDir);
     let capturedPrompt = '';
+    const activity = [];
     _deps.runIteration = async () => ({ completion: 'success', exitCode: 0, timedOut: false, wallSeconds: 1 });
     _deps.execFileSync = (_cmd, args) => {
         if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
@@ -1912,10 +1913,16 @@ async function runGapAnalysisScopedJudge(allowedPaths, judgeOutput, writeScope) 
         if (idx !== -1) capturedPrompt = args[idx + 1] || '';
         return JSON.stringify(judgeOutput);
     };
+    if (expectError) _deps.logActivity = (event) => { activity.push(event); };
     try {
         const mv = readMicroverseState(session.dir);
-        await executeGapAnalysis(mv, ctx);
-        return { mv, capturedPrompt };
+        if (!expectError) {
+            await executeGapAnalysis(mv, ctx);
+            return { mv, capturedPrompt };
+        }
+        const error = await executeGapAnalysis(mv, ctx).then(() => null, (err) => err);
+        // Read the artifact BEFORE cleanup so the caller asserts what reached disk.
+        return { mv, capturedPrompt, error, activity, persisted: readMicroverseState(session.dir) };
     } finally {
         delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
         Object.assign(_deps, original);
@@ -1990,6 +1997,26 @@ test('b419a06f: a real --scope paths: scope.json (base_sha null) still derives a
     assert.equal(mv.exit_reason, undefined, 'a paths-mode surface must not be a derivation failure');
     assert.equal(mv.baseline_score, 1, 'a whole-file surface keeps the in-path violation (no per-line base to drop against)');
     assert.equal(mv.violation_ledger?.length, 1);
+});
+
+// e562164b (AC-J1-2, baseline call site): `measureLlmIteration`'s short-circuit is pinned in
+// microverse-stall-resilience.test.js; the BASELINE's was pinned by nothing — deleting it left
+// every suite GREEN while an underivable surface fell through to an unscoped (whole-tree) judge.
+// The stale microverse.json snapshot is what a fallback would reach for.
+test('AC-J1-2 baseline: an underivable surface records a typed exit reason and never reaches the judge', async () => {
+    const { capturedPrompt, error, activity, persisted } = await runGapAnalysisScopedJudge(
+        [],
+        { score: 9, violations: [], resolved: [], new: [], remaining: [] },
+        undefined,
+        { expectError: true },
+    );
+    assert.equal(capturedPrompt, '', 'no judge prompt may be built for an underivable surface — not even an unscoped one');
+    assert.equal(error?.name, 'MicroverseExitError', 'the baseline reports the failure through the typed exit error');
+    assert.equal(persisted.exit_reason, 'metric_unmeasurable_unrecoverable', 'the typed reason must reach microverse.json');
+    assert.equal(persisted.baseline_score, 0, 'no baseline may be scored from a surface that could not be derived');
+    const surfaceEvents = activity.filter((e) => e.gate_payload?.derivation === 'judge_review_surface');
+    assert.equal(surfaceEvents.length, 1, 'exactly one surface-derivation failure event is recorded');
+    assert.equal(surfaceEvents[0].gate_payload.phase, 'baseline');
 });
 
 // ---------------------------------------------------------------------------
