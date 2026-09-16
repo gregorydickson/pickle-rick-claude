@@ -151,10 +151,13 @@ actually tagged.** Generalise it: **a version bump invalidates a gate exactly as
   audits, `flake-budget failures=0 runs_completed=5/5 tests=9974`, integration, contract, expensive.
 - **The soak really ran.** Reported **1,803,819 ms** against `SOAK_SECONDS=1800`, `SOAK_UNRUN` 0, zero
   `# SKIP`. The duration is the evidence; the exit code is not.
-- **OS axis: UNRUN — and this is new.** `ci-repro.sh` exits **2** (`docker not found on PATH`):
-  `/usr/local/bin/docker` is a **broken symlink** to a removed Docker Desktop. **Docker is gone from
-  this box.** A prior note that the Linux repro "works here" is now false — re-test before relying on
-  it. Recorded UNRUN, supplied by CI on the tag; never report it as green.
+- **OS axis: GREEN, supplied by CI.** The `Release` workflow on `v2.1.0` completed success on both
+  jobs; its `gate` job ran **74 min on `ubuntu-latest`** (01:22:35Z → 02:36:53Z), so it is a real run
+  rather than a fast skip. **It could not be run locally — and that is new:** `ci-repro.sh` exits **2**
+  (`docker not found on PATH`), because `/usr/local/bin/docker` is a **broken symlink** to a removed
+  Docker Desktop. **Docker is gone from this box.** Any prior note that the Linux repro "works here" is
+  false; re-test with `docker info` before relying on it. Exit 2 is a refusal — record UNRUN and wait
+  for CI; never report it as green.
 
 ### 📋 B-LENS — REVISED on the inventory. Still NOT dispatched.
 
