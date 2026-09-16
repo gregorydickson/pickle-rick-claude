@@ -11,6 +11,7 @@ import {
   measureAndClassifyIteration,
   parseLlmJudgeOutput,
   buildMicroverseHandoff,
+  deriveJudgeReviewSurface,
   _deps,
 } from '../bin/microverse-runner.js';
 import {
@@ -21,6 +22,13 @@ import {
   updateViolationLedger,
   isConverged,
 } from '../services/microverse-state.js';
+import {
+  MICROVERSE_CORPUS_IDS,
+  loadMicroverseJson,
+  loadMicroverseScope,
+  loadMicroverseIterationLog,
+  microverseIterationLogPath,
+} from './helpers/microverse-corpora.js';
 
 function makeTempDir(prefix = 'pickle-mv-helper-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -764,6 +772,182 @@ test('AP-EXT-ITER220-01 control: an over-reported judge score still converges wh
 });
 
 // ---------------------------------------------------------------------------
+// c1adb389 (AC-J1-3/4/5) — a test that hand-constructs `allowedPaths` and calls
+// `buildJudgePrompt` directly ALREADY PASSES on unmodified HEAD (see
+// `microverse-convergence.test.js:509`), because the scope derivation lives
+// UPSTREAM of that call. These two cases instead drive the REAL
+// `measureAndClassifyIteration` -> `measureLlmIteration` ->
+// `deriveJudgeReviewSurface` -> `buildJudgeAttemptInvocation` ->
+// `buildJudgePrompt` chain against a real `scope.json`, so deleting the
+// derivation's body would red the mechanism-pin assertion below, and widening
+// the derived surface to the whole tree would red the over-trigger control's
+// enumerated-path assertion. Neither test hand-builds an `allowedPaths` object
+// for `buildJudgePrompt`.
+//
+// e562164b: `microverse.json.allowed_paths` is seeded with a DIVERGENT stale path. The pre-fix
+// prompt input was `state.allowed_paths ?? []`; seeding it identical to scope.json made both
+// pins green at that baseline (measured: passing `state.allowed_paths` at every call site left
+// them GREEN). Only the scope.json derivation can now put `src/inscope.ts` in the prompt.
+// ---------------------------------------------------------------------------
+
+const STALE_SNAPSHOT_PATH = 'src/stale-snapshot.ts';
+
+/** The `- <path>` lines of the prompt's `Review ONLY these paths:` block — scoped to that
+ * construct, since other prompt sections (prior violations, history) also emit `- ` lines. */
+function judgePromptReviewPaths(prompt) {
+  const lines = prompt.split('\n');
+  const start = lines.indexOf('Review ONLY these paths:');
+  if (start === -1) return null;
+  const paths = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!line.startsWith('- ')) break;
+    paths.push(line.slice(2));
+  }
+  return paths;
+}
+
+function makeScopedJudgeSession(judgeOutput, allowedPaths) {
+  const sessionDir = makeTempDir('pickle-mv-judgescope-session-');
+  const workingDir = makeTempDir('pickle-mv-judgescope-work-');
+  const runnerState = makeRunnerState(sessionDir, workingDir, { backend: 'claude' });
+  fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+    version: 1, mode: 'branch', base_sha: 'e'.repeat(40), allowed_paths: allowedPaths,
+  }));
+  const mv = createMicroverseState({
+    prdPath: path.join(workingDir, 'prd.md'),
+    metric: {
+      description: 'quality',
+      validation: 'improve code quality',
+      type: 'llm',
+      timeout_seconds: 60,
+      tolerance: 2,
+      direction: 'higher',
+      judge_model: 'claude-sonnet-4-6',
+    },
+    stallLimit: 3,
+    allowedPaths: [STALE_SNAPSHOT_PATH],
+  });
+  mv.status = 'iterating';
+  mv.baseline_score = 0;
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+  writeMicroverseState(sessionDir, mv);
+
+  process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+  const originalExec = _deps.execFileSync;
+  let capturedPrompt = '';
+  _deps.execFileSync = (_cmd, args) => {
+    if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+    const idx = args.indexOf('-p');
+    if (idx !== -1) capturedPrompt = args[idx + 1] || '';
+    return JSON.stringify(judgeOutput);
+  };
+  const ctx = makeContext(sessionDir, workingDir, runnerState, {
+    iteration: 2,
+    preIterSha: 'a'.repeat(40),
+    postIterSha: 'b'.repeat(40),
+  });
+  const cleanup = () => {
+    delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    _deps.execFileSync = originalExec;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  };
+  return { mv, ctx, cleanup, getCapturedPrompt: () => capturedPrompt };
+}
+
+test('AC-J1-3: measureAndClassifyIteration reaches the real judge prompt through the derived surface (mechanism pin)', async () => {
+  const { mv, ctx, cleanup, getCapturedPrompt } = makeScopedJudgeSession(
+    {
+      score: 1,
+      violations: [{ id: 'in-scope-1', path: 'src/inscope.ts', line: 3, severity: 'high', description: 'still scored' }],
+      resolved: [], new: ['in-scope-1'], remaining: [],
+    },
+    ['src/inscope.ts'],
+  );
+  try {
+    await measureAndClassifyIteration(mv, { raw: '0', score: 0 }, ctx);
+  } finally {
+    cleanup();
+  }
+  const capturedPrompt = getCapturedPrompt();
+  assert.equal(
+    capturedPrompt.split('Count ONLY violations located within these paths').length - 1,
+    1,
+    'the REAL judge prompt, reached via measureAndClassifyIteration -> measureLlmIteration -> deriveJudgeReviewSurface, must carry the scoping literal exactly once',
+  );
+  assert.deepEqual(
+    judgePromptReviewPaths(capturedPrompt),
+    ['src/inscope.ts'],
+    'the review-paths block must enumerate exactly the scope.json path — never the stale microverse.json snapshot',
+  );
+});
+
+test('AC-J1-3 over-trigger control: an in-scope, in-diff violation is still scored under the derived surface', async () => {
+  const { mv, ctx, cleanup, getCapturedPrompt } = makeScopedJudgeSession(
+    {
+      score: 1,
+      violations: [{ id: 'over-trigger-1', path: 'src/inscope.ts', line: 7, severity: 'high', description: 'in-scope violation' }],
+      resolved: [], new: ['over-trigger-1'], remaining: [],
+    },
+    ['src/inscope.ts'],
+  );
+  try {
+    await measureAndClassifyIteration(mv, { raw: '0', score: 0 }, ctx);
+  } finally {
+    cleanup();
+  }
+  const capturedPrompt = getCapturedPrompt();
+  // AC-J1-5 widening direction: a whole-tree surface drops the block (null); a widened one adds members.
+  assert.deepEqual(
+    judgePromptReviewPaths(capturedPrompt),
+    ['src/inscope.ts'],
+    'the derived surface must enumerate exactly the scoped path, never a whole-tree or widened surface',
+  );
+  assert.equal(mv.violation_ledger?.length, 1, 'the in-scope violation the judge reported must still be tracked in the ledger');
+  assert.equal(mv.violation_ledger[0].path, 'src/inscope.ts');
+  assert.equal(mv.violation_ledger[0].description, 'in-scope violation');
+});
+
+// ---------------------------------------------------------------------------
+// ac655b46 (AC-J1-8) — decides WHICH version of the review surface the judge scores.
+// CHOSEN LIFETIME: per-iteration (live) — `deriveJudgeReviewSurface` reads `scope.json` fresh on
+// every call, never `MicroverseState.allowed_paths` (a phase-setup snapshot other consumers keep
+// using for their own purposes). This case pins the AC-J1-8(3) hazard directly: a stale
+// non-empty `state.allowed_paths` snapshot must never be silently substituted when the CURRENT
+// scope.json derives to empty.
+// ---------------------------------------------------------------------------
+
+test('AC-J1-8: an empty CURRENT scope.json is honored even when state.allowed_paths holds a stale non-empty snapshot', () => {
+  const sessionDir = makeTempDir('pickle-mv-judgescope-stale-');
+  try {
+    // A scoped session whose surface has just derived to nothing (e.g. a phase refresh that
+    // resolved zero paths) — the genuine AC-4 "empty derived surface" case.
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'f'.repeat(40), allowed_paths: [],
+    }));
+    // A stale, non-empty snapshot — what an earlier phase's own state.allowed_paths might still
+    // carry if it were (wrongly) consulted instead of the live file.
+    const mv = createMicroverseState({
+      prdPath: path.join(sessionDir, 'prd.md'),
+      metric: { description: 'quality', validation: 'q', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'higher' },
+      stallLimit: 3,
+      allowedPaths: ['src/stale-non-empty.ts'],
+    });
+    assert.deepEqual(mv.allowed_paths, ['src/stale-non-empty.ts'], 'precondition: the stale snapshot is really present on the state object');
+    // e562164b: on disk, where a sessionDir-reading producer could fall back to it. In memory
+    // only, a microverse.json fallback mutation left this case GREEN.
+    writeMicroverseState(sessionDir, mv);
+
+    const result = deriveJudgeReviewSurface(sessionDir);
+    assert.equal(result.kind, 'failed', 'the CURRENT (empty) scope.json must decide — never fall back to the stale non-empty state.allowed_paths');
+    assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
+    assert.ok(!('paths' in result), 'a failed derivation carries no paths field — the stale snapshot must not leak through as "paths"');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // M2 (GitHub #20) — the baseline seeds `state.violation_ledger` (see
 // `measureLlmBaseline` in microverse-runner.ts). These two cases model what
 // that seeded ledger looks like going into iteration 2 and pin the two ways
@@ -1037,4 +1221,108 @@ test('R4-2 seam (negative control): the same entry at the same size still stalls
   const result = await runTwoSizedJudgePasses(1690, 1690);
   assert.equal(result.stallCounter, 2, 'no change is still counted toward the stall');
   assert.equal(result.converged, 'stall', 'stalling stays reachable');
+});
+
+// ── B-JUDGESCOPE AC-V-1..V-4: vendored microverse corpora loader ──────────────────────────
+
+test('microverse corpora loader: throws naming the corpus id for an unknown id', () => {
+  assert.throws(
+    () => loadMicroverseJson('not-a-real-corpus'),
+    /Unknown microverse corpus id: "not-a-real-corpus"/,
+  );
+  assert.throws(
+    () => loadMicroverseScope('not-a-real-corpus'),
+    /Unknown microverse corpus id: "not-a-real-corpus"/,
+  );
+  assert.throws(
+    () => microverseIterationLogPath('not-a-real-corpus', 6),
+    /Unknown microverse corpus id: "not-a-real-corpus"/,
+  );
+});
+
+test('microverse corpora loader: throws on a present-but-empty fixture (anti-vacuity)', () => {
+  const tmpRoot = makeTempDir('pickle-mv-corpora-empty-');
+  const corpusId = '2026-09-12-a4d141e1';
+  fs.mkdirSync(path.join(tmpRoot, corpusId), { recursive: true });
+  fs.writeFileSync(path.join(tmpRoot, corpusId, 'microverse.json'), '');
+  fs.writeFileSync(path.join(tmpRoot, corpusId, 'tmux_iteration_6.log'), '   \n');
+  assert.throws(
+    () => loadMicroverseJson(corpusId, { fixturesRoot: tmpRoot }),
+    /Empty microverse\.json fixture for corpus "2026-09-12-a4d141e1"/,
+    'an empty fixture must throw, never return an empty object',
+  );
+  assert.throws(
+    () => microverseIterationLogPath(corpusId, 6, { fixturesRoot: tmpRoot }),
+    /Empty tmux_iteration_6\.log fixture for corpus "2026-09-12-a4d141e1"/,
+  );
+  assert.throws(
+    () => loadMicroverseJson(corpusId, { fixturesRoot: path.join(tmpRoot, 'does-not-exist') }),
+    /Missing microverse\.json fixture/,
+    'a missing fixture must throw, never return an empty object',
+  );
+});
+
+test('microverse corpora loader: loads and shape-checks each vendored microverse.json', () => {
+  for (const corpusId of MICROVERSE_CORPUS_IDS) {
+    const parsed = loadMicroverseJson(corpusId);
+    assert.equal(typeof parsed.exit_reason, 'string');
+    assert.ok(parsed.exit_reason.length > 0);
+    assert.equal(typeof parsed.convergence.stall_limit, 'number');
+    assert.equal(typeof parsed.convergence.stall_counter, 'number');
+    assert.ok(Array.isArray(parsed.convergence.history));
+  }
+  // The three vendored shapes this bundle's replay ACs depend on:
+  assert.equal(
+    loadMicroverseJson('2026-09-12-a4d141e1').exit_reason,
+    'stalled_below_target',
+    'a4d141e1 is the scored-regression shape',
+  );
+  assert.equal(
+    loadMicroverseJson('2026-09-12-a4d141e1').convergence.history.length,
+    1,
+    'a4d141e1 has one history entry (the regression at iteration 2)',
+  );
+  assert.equal(
+    loadMicroverseJson('2026-09-15-c5a7eb48').exit_reason,
+    'stalled_below_target',
+    'c5a7eb48 is the no-commit shape',
+  );
+  assert.equal(
+    loadMicroverseJson('2026-09-15-c5a7eb48').convergence.history.length,
+    0,
+    'c5a7eb48 has empty history despite 6 iterations — every iteration was a no-commit stall',
+  );
+  assert.equal(
+    loadMicroverseJson('2026-09-09-e959390b').exit_reason,
+    'baseline_unmeasurable_unrecoverable',
+    'e959390b is the only populated-scope sample and exited before scoring',
+  );
+});
+
+test('microverse corpora loader: scope.json is vendored only for the populated-scope corpus', () => {
+  const scope = loadMicroverseScope('2026-09-09-e959390b');
+  assert.ok(Array.isArray(scope.allowed_paths) && scope.allowed_paths.length > 0);
+  assert.equal(typeof scope.base_sha, 'string');
+  assert.equal(typeof scope.head_sha, 'string');
+
+  for (const corpusId of ['2026-09-12-a4d141e1', '2026-09-15-c5a7eb48']) {
+    assert.throws(
+      () => loadMicroverseScope(corpusId),
+      /No scope\.json fixture vendored for corpus/,
+    );
+  }
+});
+
+test('microverse corpora loader: resolves the vendored final-iteration logs for both no-commit-shaped corpora', () => {
+  for (const corpusId of ['2026-09-12-a4d141e1', '2026-09-15-c5a7eb48']) {
+    const logPath = microverseIterationLogPath(corpusId, 6);
+    assert.ok(fs.existsSync(logPath));
+    const content = loadMicroverseIterationLog(corpusId, 6);
+    assert.ok(content.length > 0);
+    assert.match(content, /"type":"result"/, 'the log must carry a parseable result line');
+  }
+  assert.throws(
+    () => microverseIterationLogPath('2026-09-12-a4d141e1', 999),
+    /Missing tmux_iteration_999\.log fixture/,
+  );
 });

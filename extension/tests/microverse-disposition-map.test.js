@@ -6,8 +6,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, _deps } from '../bin/microverse-runner.js';
-import { MICROVERSE_EXIT_REASONS } from '../types/index.js';
+import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, measureAndClassifyIteration, _deps } from '../bin/microverse-runner.js';
+import { writeMicroverseState, readMicroverseState, createMicroverseState, recordIteration, recordStall, deriveStallCause } from '../services/microverse-state.js';
+import { MICROVERSE_EXIT_REASONS, EXIT_REASONS } from '../types/index.js';
+import { loadMicroverseJson } from './helpers/microverse-corpora.js';
 
 const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -28,6 +30,15 @@ function readUnionMembersFromMirror() {
   assert.ok(MICROVERSE_EXIT_REASONS.length > 0, 'MICROVERSE_EXIT_REASONS must enumerate at least one member');
   return new Set(MICROVERSE_EXIT_REASONS);
 }
+
+// AC-J1 (B-JUDGESCOPE db605b05): the judge review-surface derivation reuses the existing
+// 'metric_unmeasurable_unrecoverable' member for a fail-closed reason — it must add NO member.
+// tsc stays green when a const array is widened, so this invariant is pinned by the test alone;
+// an explicit count assertion (not merely "the string is absent") is what AC-J4-2 requires.
+test('MICROVERSE_EXIT_REASONS gains no member for the judge review-surface fail-closed path', () => {
+  assert.equal(MICROVERSE_EXIT_REASONS.length, 17, 'member count must stay unchanged — a widened array still type-checks');
+  assert.ok(MICROVERSE_EXIT_REASONS.includes('metric_unmeasurable_unrecoverable'), 'the fail-closed path reuses this existing member');
+});
 
 /** The same membership, read from the TS source of truth rather than the compiled array. */
 function readUnionMembersFromSource(srcTypesPath) {
@@ -192,4 +203,209 @@ test('finalize fallback stamps the disposition into state.json when finalizeTerm
     _deps.finalizeTerminalState = realFinalize;
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
+});
+
+// da44ff00 (AC-J3-4): the drop count `dropOutOfSurfaceViolations` returns must reach the
+// persisted phase artifact (microverse.json), not merely an in-memory return value — the same
+// carries-into-the-artifact discipline every other WS-5 disposition test in this file already
+// pins for `exit_reason`.
+//
+// e562164b: this case used to perform the accumulation itself (`mv.out_of_surface_findings_dropped
+// += droppedCount` in the test body), so removing the runtime accumulation left it GREEN. It now
+// drives the real consume path — `measureAndClassifyIteration` over a scoped llm session — and
+// reads the count back from disk, seeded non-zero so an overwrite is told apart from an add.
+const AC_J3_4_DIFF = [
+  'diff --git a/src/foo.ts b/src/foo.ts',
+  '--- a/src/foo.ts',
+  '+++ b/src/foo.ts',
+  '@@ -9,1 +9,1 @@',
+  '-old',
+  '+new',
+].join('\n');
+
+test('AC-J3-4: dropOutOfSurfaceViolations.droppedCount round-trips through microverse.json', async () => {
+  const sessionDir = tmpDir();
+  const workingDir = tmpDir('pickle-mv-disposition-work-');
+  const violations = [
+    { id: 'pre', path: 'src/foo.ts', line: 3, severity: 'low', description: 'pre-existing, dropped' },
+    { id: 'touched', path: 'src/foo.ts', line: 9, severity: 'low', description: 'touched, kept' },
+  ];
+  const surface = { kind: 'derived', paths: ['src/foo.ts'], base: 'f'.repeat(40) };
+  const originalSpawn = _deps.spawnSync;
+  const originalExec = _deps.execFileSync;
+  // git diff shows only line 9 of src/foo.ts as touched; every other spawn is the real one.
+  _deps.spawnSync = (cmd, args, opts) => (cmd === 'git' && Array.isArray(args) && args.includes('diff')
+    ? { status: 0, stdout: AC_J3_4_DIFF }
+    : originalSpawn(cmd, args, opts));
+  process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+  _deps.execFileSync = (_cmd, args) => (Array.isArray(args) && args[0] === '--version'
+    ? 'Claude Code 2.1.126'
+    : JSON.stringify({ score: 2, violations, resolved: [], new: ['pre', 'touched'], remaining: [] }));
+  try {
+    assert.equal(
+      dropOutOfSurfaceViolations(violations, surface, workingDir).droppedCount,
+      1,
+      'the return value itself must carry the count',
+    );
+
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: surface.base, allowed_paths: surface.paths,
+    }));
+    const runnerState = {
+      active: true, working_dir: workingDir, step: 'implement', iteration: 0, max_iterations: 10,
+      max_time_minutes: 60, worker_timeout_seconds: 0, start_time_epoch: Math.floor(Date.now() / 1000),
+      completion_promise: null, original_prompt: 'test', current_ticket: null, history: [],
+      started_at: new Date().toISOString(), session_dir: sessionDir, tmux_mode: true,
+      command_template: 'microverse.md', backend: 'claude',
+    };
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+    const mv = createMicroverseState({
+      prdPath: path.join(workingDir, 'prd.md'),
+      metric: { description: 'x', validation: 'x', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'lower', judge_model: 'claude-sonnet-4-6' },
+      stallLimit: 3,
+    });
+    mv.status = 'iterating';
+    mv.baseline_score = 2;
+    mv.out_of_surface_findings_dropped = 2;
+    writeMicroverseState(sessionDir, mv);
+
+    await measureAndClassifyIteration(mv, { raw: '2', score: 2 }, {
+      sessionDir, workingDir, extensionRoot: EXTENSION_ROOT, statePath: path.join(sessionDir, 'state.json'),
+      startTime: Date.now(), initialIteration: 0, enableFailureClassification: false,
+      cgSettings: { enabled_convergence_files: [], regression_warning_threshold: 5, remediator_timeout_s: 600, baseline_max_age_iterations: 30, baseline_max_age_seconds: 14_400 },
+      rateLimitWaitMinutes: 0, maxRateLimitRetries: 0, log: () => {}, currentRunnerState: runnerState,
+      iteration: 1, consecutiveRateLimits: 0, preIterSha: 'a'.repeat(40), postIterSha: 'b'.repeat(40),
+    });
+
+    assert.equal(
+      readMicroverseState(sessionDir).out_of_surface_findings_dropped,
+      3,
+      'the runtime must ADD this pass\'s drop to the persisted count and write it to the phase artifact on disk',
+    );
+  } finally {
+    _deps.spawnSync = originalSpawn;
+    _deps.execFileSync = originalExec;
+    delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// cfc530c6 (AC-J4-1..5): stalled_below_target names the mechanism that exhausted the stall
+// budget, derived from ONE named field (`convergence.last_stall_signal`), never guessed from
+// `history` shape or `iteration_regressions`. See `deriveStallCause` in
+// `../services/microverse-state.js`.
+// ---------------------------------------------------------------------------------------------
+
+function makeCauseState() {
+  return createMicroverseState({
+    prdPath: '/tmp/prd.md',
+    metric: {
+      description: 'test metric',
+      validation: 'cat score.txt',
+      type: 'command',
+      timeout_seconds: 60,
+      tolerance: 0,
+      direction: 'higher',
+    },
+    stallLimit: 5,
+  });
+}
+
+function makeCauseHistoryEntry(overrides = {}) {
+  return {
+    iteration: 1,
+    metric_value: '0',
+    score: 0,
+    action: 'revert',
+    description: 'test entry',
+    pre_iteration_sha: 'abc123',
+    timestamp: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+test('deriveStallCause covers improved via recordIteration', () => {
+  let mv = makeCauseState();
+  mv = recordIteration(mv, makeCauseHistoryEntry({ action: 'accept' }), 'improved');
+  const disposition = deriveStallCause(mv, 7);
+  assert.equal(disposition.cause, 'improved');
+  assert.equal(disposition.inputs.last_stall_signal, 'improved');
+  assert.equal(disposition.inputs.iteration, 7);
+});
+
+test('deriveStallCause covers held via recordIteration', () => {
+  let mv = makeCauseState();
+  mv = recordIteration(mv, makeCauseHistoryEntry({ action: 'accept' }), 'held');
+  const disposition = deriveStallCause(mv, 3);
+  assert.equal(disposition.cause, 'held');
+  assert.equal(disposition.inputs.last_stall_signal, 'held');
+});
+
+test('deriveStallCause covers regressed via recordIteration', () => {
+  let mv = makeCauseState();
+  mv = recordIteration(mv, makeCauseHistoryEntry({ action: 'revert' }), 'regressed');
+  const disposition = deriveStallCause(mv, 5);
+  assert.equal(disposition.cause, 'regressed');
+  assert.equal(disposition.inputs.last_stall_signal, 'regressed');
+});
+
+test('deriveStallCause covers no-commit via recordStall', () => {
+  let mv = makeCauseState();
+  mv = recordStall(mv);
+  const disposition = deriveStallCause(mv, 2);
+  assert.equal(disposition.cause, 'no-commit');
+  assert.equal(disposition.inputs.last_stall_signal, 'no-commit');
+});
+
+test('recordStall overwrites a stale improved signal — the four-improving-then-five-no-commit scenario', () => {
+  let mv = makeCauseState();
+  mv = recordIteration(mv, makeCauseHistoryEntry({ iteration: 1, action: 'accept' }), 'improved');
+  // Five subsequent no-commit stalls must NOT leave the stale 'improved' signal in place.
+  for (let i = 0; i < 5; i++) mv = recordStall(mv);
+  const disposition = deriveStallCause(mv, 6);
+  assert.equal(disposition.cause, 'no-commit');
+});
+
+test('EXIT_REASONS.length is unchanged — assert the count, not string absence', () => {
+  assert.equal(EXIT_REASONS.length, 20);
+});
+
+test('derivation inputs, including the iteration number, are persisted with the cause', () => {
+  let mv = makeCauseState();
+  mv = recordStall(mv);
+  const disposition = deriveStallCause(mv, 42);
+  assert.deepEqual(disposition.inputs, { last_stall_signal: 'no-commit', iteration: 42 });
+});
+
+test('an underivable cause (non-empty legacy history, no last_stall_signal) reports unknown with its inputs, never guessed', () => {
+  const mv = makeCauseState();
+  mv.convergence.history = [makeCauseHistoryEntry({ classification: 'regressed' })];
+  // last_stall_signal deliberately absent (legacy shape).
+  const disposition = deriveStallCause(mv, 9);
+  assert.equal(disposition.cause, 'unknown');
+  assert.equal(disposition.inputs.last_stall_signal, null);
+  assert.equal(disposition.inputs.iteration, 9);
+});
+
+test('replaying both vendored sessions renders DIFFERENT causes', () => {
+  const a4d141e1 = loadMicroverseJson('2026-09-12-a4d141e1');
+  const c5a7eb48 = loadMicroverseJson('2026-09-15-c5a7eb48');
+
+  assert.equal(a4d141e1.exit_reason, 'stalled_below_target');
+  assert.equal(c5a7eb48.exit_reason, 'stalled_below_target');
+  assert.equal(a4d141e1.convergence.history.length, 1);
+  assert.equal(c5a7eb48.convergence.history.length, 0);
+
+  const causeA = deriveStallCause(a4d141e1, 2).cause;
+  const causeB = deriveStallCause(c5a7eb48, 0).cause;
+
+  assert.notEqual(causeA, causeB);
+  // Documented, not incidental: non-empty legacy history with no live signal is unknown
+  // (the ticket's forbidden "history.length > 0 implies regression" discriminator is never
+  // built); empty legacy history is a sound backfill to 'no-commit', since recordIteration
+  // appends unconditionally and so an empty history proves no scored iteration ever ran.
+  assert.equal(causeA, 'unknown');
+  assert.equal(causeB, 'no-commit');
 });

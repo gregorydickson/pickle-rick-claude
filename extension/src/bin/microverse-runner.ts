@@ -32,6 +32,7 @@ import {
   classifyFailure,
   findLastAcceptedEntry,
   updateViolationLedger,
+  deriveStallCause,
 } from '../services/microverse-state.js';
 import type { MetricComparisonFigures } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
@@ -3872,6 +3873,219 @@ function clearRateLimitWaitFile(sessionDir: string): void {
   try { fs.unlinkSync(path.join(sessionDir, RATE_LIMIT_WAIT_FILENAME)); } catch { /* ok */ }
 }
 
+/**
+ * Judge review-surface derivation result (AC-J1-1: single named producer; AC-J1-2: fail-closed,
+ * never a silent empty array). `unscoped` is today's legitimate whole-tree mode — no `--scope`
+ * was ever passed for this session (session-root `scope.json` absent), so existing whole-tree
+ * judge behaviour is preserved unchanged. `derived` is a successfully recovered surface. `failed`
+ * is the bug this producer exists to close: `scope.json` exists (scoping was requested for this
+ * session) but the surface could not be recovered — the caller must record the reason and
+ * continue, never silently hand the judge an empty (== "unrestricted") array.
+ * `base` is `null` for a whole-file surface: `--scope paths:<globs>` has no base by construction
+ * (`scope-resolver.ts` writes `base_sha: null`), so there is no diff to decide per-line membership.
+ */
+type JudgeSurfaceDerivation =
+  | { kind: 'unscoped' }
+  | { kind: 'derived'; paths: string[]; base: string | null }
+  | { kind: 'failed'; reason: JudgeMeasurementFailureExitReason };
+
+/**
+ * The ONE producer of the judge's review surface (AC-J1-1) — every `measureLlm*` call site uses
+ * this instead of repeating `state.allowed_paths ?? []`. NOT `computeReviewBase`
+ * (`scope-resolver.ts:612`): its degenerate floor returns HEAD indistinguishably from "no base
+ * resolves" (`src/bin/CLAUDE.md` INVARIANT), which is exactly the "unrestricted" shape this
+ * producer must never emit on failure.
+ *
+ * ac655b46 (AC-J1-8): CHOSEN LIFETIME — PER-ITERATION (live). `paths` and `base` are both read
+ * from `scope.json` fresh, on every call — never cached. `MicroverseState.allowed_paths` is a
+ * snapshot `init-microverse.js` takes once per phase setup (`pipeline-runner.ts:setupAnatomyPark`/
+ * `setupSzechuanSauce`, immediately after that phase's own `refreshScope`), and is deliberately
+ * NOT read here: a phase refresh (`scope-resolver.ts:refreshScope`, run at every anatomy-park/
+ * szechuan-sauce phase boundary) or an auto-extend
+ * (`pipeline-runner.ts:maybeAutoExtendScope`, run at the pickle/build phase) rewrites `scope.json`
+ * in place, and any snapshot whose lifetime outlives a single read can go stale relative to that
+ * rewrite. The worker's own pre-commit fence (`check-scope-diff.ts:resolveAllowedPaths`) already
+ * reads `scope.json` live on every commit; deriving the judge's surface the same way is what
+ * keeps the two from silently diverging — the exact failure this bundle exists to close. Re-
+ * reading costs one extra JSON parse of a small file already opened here for `base_sha`.
+ */
+export function deriveJudgeReviewSurface(sessionDir: string): JudgeSurfaceDerivation {
+  const scopeJsonPath = path.join(sessionDir, 'scope.json');
+  const scope = readRecoverableJsonObject(scopeJsonPath) as { base_sha?: unknown; allowed_paths?: unknown } | null;
+  // AP-EXT-ITER7-01 idiom (:6201): a bare fs.existsSync pre-gate misses a crash mid tmp-rename;
+  // readRecoverableJsonObject already recovers that window, existsSync only covers a present-
+  // but-unparseable file.
+  const scopeRequested = scope !== null || fs.existsSync(scopeJsonPath);
+  if (!scopeRequested) return { kind: 'unscoped' };
+
+  const paths = Array.isArray(scope?.allowed_paths)
+    ? scope.allowed_paths.filter((p): p is string => typeof p === 'string' && p.length > 0)
+    : [];
+  // b419a06f: the surface is underivable iff it has no paths. A missing base only removes the
+  // per-line refinement — requiring one failed EVERY real paths-mode session at baseline.
+  if (paths.length === 0) return { kind: 'failed', reason: 'metric_unmeasurable_unrecoverable' };
+  const base = typeof scope?.base_sha === 'string' && scope.base_sha.length > 0 ? scope.base_sha : null;
+  return { kind: 'derived', paths, base };
+}
+
+/** The `allowedPaths` a judge call receives: the derived surface, or `[]` (whole tree) when unscoped. */
+function judgeSurfacePaths(surface: JudgeSurfaceDerivation): string[] {
+  return surface.kind === 'derived' ? surface.paths : [];
+}
+
+/**
+ * Parse a unified `git diff` into a per-file map of line numbers TOUCHED in the NEW (HEAD-side)
+ * revision — an added line or a changed line, never a pure context line. Pure — operates on diff
+ * text, mirrors `convergence-gate.ts:parseChangedExportedSymbolsFromDiff` (unit-testable without a
+ * git repo). A removed line does not exist in the new revision and does not advance the cursor;
+ * only `+` and context (` `) lines do.
+ *
+ * `---`/`+++` are file headers ONLY between a `diff --git` line and that file's first `@@` hunk —
+ * inside a hunk an added line whose text starts `++ ` renders as `+++ ...` and is content. git
+ * appends a TAB to a header whose name holds a space, and C-quotes a name holding a quote,
+ * backslash or control byte; a header this parser cannot key returns `null` (unmeasurable), so
+ * the caller fails OPEN instead of silently dropping every finding in that file.
+ */
+export function parseChangedLineNumbersFromDiff(diffText: string): Map<string, Set<number>> | null {
+  const result = new Map<string, Set<number>>();
+  let currentFile: string | null = null;
+  let inHeader = false;
+  let newLine = 0;
+  for (const raw of diffText.split('\n')) {
+    if (raw.startsWith('diff --git ')) {
+      inHeader = true;
+      currentFile = null;
+      continue;
+    }
+    if (inHeader && !raw.startsWith('@@ ')) {
+      if (!raw.startsWith('+++ ')) continue;
+      const name = raw.slice(4).replace(/\t$/, '');
+      if (name === '/dev/null') continue;
+      if (!name.startsWith('b/')) return null;
+      currentFile = name.slice(2);
+      if (!result.has(currentFile)) result.set(currentFile, new Set());
+      continue;
+    }
+    inHeader = false;
+    const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      newLine = Number(hunk[1]);
+      continue;
+    }
+    if (currentFile === null) continue;
+    if (raw.startsWith('+')) {
+      result.get(currentFile)!.add(newLine);
+      newLine++;
+    } else if (raw.startsWith(' ')) {
+      newLine++;
+    }
+    // A removed ('-') line is absent from the new revision: the cursor does not advance.
+  }
+  return result;
+}
+
+/**
+ * Which line numbers, per path, did `git diff <base>..HEAD -- <paths>` touch (AC-J3, da44ff00) —
+ * the surface's own base (`db605b05`'s producer), never `start_commit` or a whole-file blame date.
+ * `null` means the enumeration did NOT complete (AP-EXT-ITER38-01 shape: an unmeasurable diff is
+ * not an empty one) so the caller must fail OPEN, never treat it as "nothing touched".
+ */
+function computeTouchedLineNumbers(workingDir: string, base: string, paths: string[]): Map<string, Set<number>> | null {
+  if (paths.length === 0) return new Map();
+  const result = _deps.spawnSync(
+    'git',
+    // AP-EXT-ITER103-01/117-01: --no-renames — a pure rename hides its content under a
+    // similarity-index header with no +/- lines, which would silently empty this path's set.
+    // The rest pin the header shape the parser keys on against ambient config: quotePath off
+    // (a non-ASCII name stays unquoted), explicit a/ b/ prefixes (diff.noprefix,
+    // diff.mnemonicPrefix), no colour escapes, no external diff driver.
+    ['-c', 'core.quotePath=false', 'diff', '--no-renames', '--no-color', '--no-ext-diff',
+      '--src-prefix=a/', '--dst-prefix=b/', `${base}..HEAD`, '--', ...paths],
+    { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER },
+  );
+  if (!enumerationCompleted(result)) return null;
+  return parseChangedLineNumbersFromDiff(result.stdout || '');
+}
+
+/** A violation whose locator can be tested against the derived surface — both `path` and `line`
+ * present and well-formed. A finding lacking either is NOT a member of any per-line judgement and
+ * must be retained by the caller (AC-J3 Errors contract: an unparseable locator is never a free drop). */
+function hasUsableLocator(v: Violation): v is Violation & { path: string; line: number } {
+  return typeof v.path === 'string' && v.path.length > 0 &&
+    typeof v.line === 'number' && Number.isFinite(v.line) && v.line > 0;
+}
+
+/**
+ * Drops a judge-reported violation whose locator lies outside the derived review surface, decided
+ * PER LINE (AC-J3, da44ff00) — never per path, since both offending lines in the session that
+ * motivated this ticket sat in otherwise in-scope files. Runs BEFORE the finding is scored and
+ * before it reaches `violation_ledger` (both call sites filter their `judgeResult.violations`
+ * before calling `updateViolationLedger`, which stays an unmodified pure rebuild).
+ *
+ * Fails OPEN in every case that is not a positive per-line exclusion: an `unscoped`/`failed`
+ * surface or a base-less whole-file one (nothing to test membership against), a violation with no usable locator (constraint 4
+ * of the ticket), and an unmeasurable diff (`computeTouchedLineNumbers` returning `null` —
+ * AP-EXT-ITER38-01 family: an unmeasured state is not evidence of absence). No halt path; a
+ * dropped finding is only ever recorded via the returned count, never a reason to stop the run.
+ */
+export function dropOutOfSurfaceViolations(
+  violations: Violation[],
+  surface: JudgeSurfaceDerivation,
+  workingDir: string,
+): { kept: Violation[]; droppedCount: number } {
+  if (surface.kind !== 'derived' || surface.base === null) return { kept: violations, droppedCount: 0 };
+  const usablePaths = [...new Set(violations.filter(hasUsableLocator).map((v) => v.path))];
+  const touched = computeTouchedLineNumbers(workingDir, surface.base, usablePaths);
+  if (touched === null) return { kept: violations, droppedCount: 0 };
+  const kept: Violation[] = [];
+  let droppedCount = 0;
+  for (const v of violations) {
+    if (!hasUsableLocator(v)) { kept.push(v); continue; }
+    if (touched.get(v.path)?.has(v.line)) { kept.push(v); continue; }
+    droppedCount++;
+  }
+  return { kept, droppedCount };
+}
+
+/** Shared post-parse step both judge-measurement call sites take before scoring (AC-J3,
+ * da44ff00): filter `judgeResult.violations` to the derived surface, accumulate the drop count
+ * onto `state.out_of_surface_findings_dropped`, and log when anything was dropped. Returns the
+ * same `JudgeResult` shape with `violations` narrowed — callers reassign their own binding so any
+ * existing seam pin on that binding's name stays intact. */
+function applyOutOfSurfaceDrop(
+  state: MicroverseState,
+  ctx: RunContext,
+  judgeResult: JudgeResult,
+  surface: JudgeSurfaceDerivation,
+  phase: MetricMeasurementPhase,
+): JudgeResult {
+  const dropped = dropOutOfSurfaceViolations(judgeResult.violations, surface, ctx.workingDir);
+  if (dropped.droppedCount > 0) {
+    state.out_of_surface_findings_dropped = (state.out_of_surface_findings_dropped ?? 0) + dropped.droppedCount;
+    ctx.log(`Judge scope: dropped ${dropped.droppedCount} out-of-surface violation(s) before scoring (phase: ${phase})`);
+  }
+  return { ...judgeResult, violations: dropped.kept };
+}
+
+/** Records a judge-surface derivation failure through the same telemetry every other judge-measurement failure uses (`mapExhaustedExitToActivityEvent`), so this new failure mode cannot drift from the established shape. Returns the error message for the caller's own log/throw. */
+function recordJudgeSurfaceDerivationFailure(
+  reason: JudgeMeasurementFailureExitReason,
+  ctx: RunContext,
+  phase: MetricMeasurementPhase,
+): string {
+  const error = `judge review surface could not be derived (phase: ${phase})`;
+  ctx.log(`ERROR: ${error}`);
+  _deps.logActivity({
+    event: mapExhaustedExitToActivityEvent(reason),
+    source: 'pickle',
+    session: path.basename(ctx.sessionDir),
+    iteration: ctx.iteration,
+    error,
+    gate_payload: { phase, derivation: 'judge_review_surface' },
+  });
+  return error;
+}
+
 async function measureCurrentMetric(
   state: MicroverseState,
   ctx: RunContext,
@@ -3881,6 +4095,12 @@ async function measureCurrentMetric(
     return measureMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir);
   }
   if (state.key_metric.type === 'llm') {
+    // AC-J1-1: unreachable today (both callers of measureCurrentMetric intercept 'llm' before
+    // reaching this branch), wired through the same producer anyway per AC-J1-1's "decide
+    // deliberately for all three call sites, do not silently fix one and leave two" — a
+    // derivation failure collapses to null, this function's only existing failure channel.
+    const surface = deriveJudgeReviewSurface(ctx.sessionDir);
+    if (surface.kind === 'failed') return null;
     return measureLlmMetric(
       state.key_metric.validation,
       state.key_metric.timeout_seconds,
@@ -3891,7 +4111,7 @@ async function measureCurrentMetric(
       state.judge_context_path,
       backend,
       state.violation_ledger ?? [],
-      state.allowed_paths ?? [],
+      judgeSurfacePaths(surface),
     );
   }
   return null;
@@ -4064,6 +4284,14 @@ async function measureLlmBaseline(
   backend: Backend,
 ): Promise<MetricSnapshot | null> {
   if (state.key_metric.type !== 'llm') return null;
+  const surface = deriveJudgeReviewSurface(ctx.sessionDir);
+  if (surface.kind === 'failed') {
+    const error = recordJudgeSurfaceDerivationFailure(surface.reason, ctx, 'baseline');
+    state.status = 'stopped';
+    state.exit_reason = surface.reason;
+    writeMicroverseState(ctx.sessionDir, state);
+    throw new MicroverseExitError(surface.reason, error);
+  }
   const measured = await measureLlmMetricWithBackoff(
     state.key_metric.validation,
     state.key_metric.timeout_seconds,
@@ -4079,7 +4307,7 @@ async function measureLlmBaseline(
       iteration: ctx.iteration,
       spawnContext: 'baseline',
     },
-    state.allowed_paths ?? [],
+    judgeSurfacePaths(surface),
   );
   if (measured.metric) {
     // M2: score and seed the ledger on the SAME wire the iteration arm uses
@@ -4090,9 +4318,12 @@ async function measureLlmBaseline(
     emitJudgeParseDiagnostic(baselineJudgeResult, measured.metric.raw);
     emitJudgeLegacyShapeDiagnostic(baselineJudgeResult);
     if (baselineJudgeResult.shape === 'full') {
-      updateViolationLedger(state, baselineJudgeResult, ctx.iteration);
-      emitJudgeLedgerDiagnostic(baselineJudgeResult, state.violation_ledger);
-      return { ...measured.metric, score: baselineJudgeResult.violations.length };
+      // AC-J3 (da44ff00): drop out-of-surface findings before they are scored and before they
+      // reach violation_ledger, decided per line via db605b05's own derived `surface`.
+      const scoredBaselineResult = applyOutOfSurfaceDrop(state, ctx, baselineJudgeResult, surface, 'baseline');
+      updateViolationLedger(state, scoredBaselineResult, ctx.iteration);
+      emitJudgeLedgerDiagnostic(scoredBaselineResult, state.violation_ledger);
+      return { ...measured.metric, score: scoredBaselineResult.violations.length };
     }
     return measured.metric;
   }
@@ -4413,13 +4644,18 @@ function maybeAppendGapAnalysisFixed(
   }
 }
 
-async function measureLlmIteration(
+export async function measureLlmIteration(
   state: MicroverseState,
   ctx: RunContext,
   backend: Backend,
 ): Promise<{ kind: 'ok'; metric: MetricSnapshot } | { kind: 'failed'; exitReason: JudgeMeasurementFailureExitReason }> {
   if (state.key_metric.type !== 'llm') {
     throw new Error('measureLlmIteration requires llm metric');
+  }
+  const surface = deriveJudgeReviewSurface(ctx.sessionDir);
+  if (surface.kind === 'failed') {
+    recordJudgeSurfaceDerivationFailure(surface.reason, ctx, 'iteration');
+    return { kind: 'failed', exitReason: surface.reason };
   }
   const measured = await measureLlmMetricWithBackoff(
     state.key_metric.validation,
@@ -4438,7 +4674,7 @@ async function measureLlmIteration(
       statePath: ctx.statePath,
       runnerState: ctx.currentRunnerState,
     },
-    state.allowed_paths ?? [],
+    judgeSurfacePaths(surface),
   );
   if (measured.metric) return { kind: 'ok', metric: measured.metric };
   const exitReason = mapJudgeMeasurementFailure(measured);
@@ -4717,6 +4953,14 @@ export async function measureAndClassifyIteration(
     emitJudgeParseDiagnostic(judgeResult, metricResult.raw);
     emitJudgeLegacyShapeDiagnostic(judgeResult);
     if (judgeResult.shape === 'full') {
+      // AC-J3 (da44ff00): drop out-of-surface findings before they are scored and before they
+      // reach violation_ledger, decided per line. Mutates `judgeResult.violations` IN PLACE
+      // (never reassigns the `judgeResult` binding) so the AC-JPCM-9/AC-JPCM-10 seam pins — which
+      // anchor on the literal `const judgeResult = parseLlmJudgeOutput(...)` declaration and the
+      // later `updateViolationLedger(state, judgeResult, ctx.iteration)` call — stay byte-identical
+      // while operating on the filtered result.
+      const surface = deriveJudgeReviewSurface(ctx.sessionDir);
+      judgeResult.violations = applyOutOfSurfaceDrop(state, ctx, judgeResult, surface, 'iteration').violations;
       // The score the loop converges on is the count of the violations the ledger was
       // built from — never the judge's self-reported integer. `extractScore` reads that
       // self-report off the same JSON, so the two disagreed silently: a judge emitting
@@ -4918,6 +5162,22 @@ export function convergenceExitReason(
 }
 
 /**
+ * AC-J4: persists `state.stall_disposition` at the ONE point both `convergenceExitReason` callers
+ * learn the exit is `stalled_below_target`, then writes it — `convergenceExitReason` itself stays a
+ * pure mapping (its own docstring), so the write lives at the two call sites instead of inside it.
+ * No-op for every other exit reason.
+ */
+function recordStallDisposition(
+  exitReason: ExitReason,
+  state: MicroverseState,
+  ctx: Pick<RunContext, 'iteration' | 'sessionDir'>,
+): void {
+  if (exitReason !== 'stalled_below_target') return;
+  state.stall_disposition = deriveStallCause(state, ctx.iteration);
+  writeMicroverseState(ctx.sessionDir, state);
+}
+
+/**
  * Ledger entries present for the entire stall window. Any resolve or measurable shrink inside the window
  * would have reset `stall_counter`, so an entry first seen at or before the window start is one the loop
  * repeatedly failed to move.
@@ -5018,6 +5278,7 @@ export async function handleNoCommitStall(
   const convergedBranch = isConverged(state);
   if (convergedBranch) {
     const exitReason = convergenceExitReason(convergedBranch, state, ctx);
+    recordStallDisposition(exitReason, state, ctx);
     ctx.log(`${exitReason} (stall limit reached with no new commits)`);
     return exitReason;
   }
@@ -5720,6 +5981,7 @@ async function handleMetricMode(
   const convergedBranch = isConverged(state);
   if (!convergedBranch) return null;
   const exitReason = convergenceExitReason(convergedBranch, state, ctx);
+  recordStallDisposition(exitReason, state, ctx);
   ctx.log(`${exitReason} after ${ctx.iteration} iterations (${convergedBranch === 'target' ? `target=${state.convergence_target} reached` : `stall_counter=${state.convergence.stall_counter}`})`);
   return exitReason;
 }

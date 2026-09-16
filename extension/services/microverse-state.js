@@ -281,6 +281,13 @@ function withOptionalMicroverseStateFields(state, opts) {
         state.convergence_mode = convergenceMode;
     if (convergenceFile != null)
         state.convergence_file = convergenceFile;
+    // ac655b46 (AC-J1-8): `deriveJudgeReviewSurface` reads scope.json live and never falls back
+    // to this snapshot, so the "stale non-empty snapshot survives an empty derivation" hole is
+    // closed at the read site, not here. An absent `state.allowed_paths` means "unscoped / whole
+    // tree" in every other consumer (szechuan scope injection, the convergence-gate workspace
+    // filter, preflightAutoCommit's dirt exclusion) — writing `[]` would invent a third state
+    // (present-but-empty) none of them define, which is exactly the "empty array means
+    // unrestricted" ambiguity this bundle exists to close.
     if (allowedPaths != null && allowedPaths.length > 0)
         state.allowed_paths = allowedPaths;
     return state;
@@ -334,6 +341,7 @@ export function recordIteration(state, entry, classification) {
             ...state.convergence,
             history,
             stall_counter: stallCounter,
+            last_stall_signal: classification,
         },
     };
 }
@@ -349,6 +357,7 @@ export function recordStall(state) {
         convergence: {
             ...state.convergence,
             stall_counter: state.convergence.stall_counter + 1,
+            last_stall_signal: 'no-commit',
         },
     };
 }
@@ -436,6 +445,37 @@ export function classifyFailure(mvState, metricResult, preIterSha, postIterSha, 
     if (hasHeldStreak(history))
         return 'no_progress';
     return null;
+}
+/**
+ * AC-J4-1/-2/-3/-4/-5: names the mechanism that exhausted a stall budget, derived from ONE field —
+ * `convergence.last_stall_signal` — set live by `recordIteration`/`recordStall` on every call, never
+ * re-derived from `history` shape or `iteration_regressions`.
+ *
+ * Those are the two disagreeing candidates this ticket rejects. `history[history.length -
+ * 1]?.classification` goes stale the moment a scored iteration is followed by one or more no-commit
+ * stalls: `recordStall` never appends to `history`, so the last entry can name a mechanism that
+ * contributed nothing to the CURRENT stall streak (four improving iterations, then five no-commit
+ * stalls, would report 'improved' while naming a mechanism that contributed zero). `iteration_regressions`
+ * counts gate regressions in WORKER-managed convergence — a different mechanism entirely — and stays 0
+ * in metric-mode sessions regardless of `classification`, which is exactly why it disagreed with
+ * `history[0].classification` on the vendored `2026-09-12-a4d141e1` corpus (`classification:
+ * 'regressed'`, `iteration_regressions: 0`).
+ *
+ * A session captured before `last_stall_signal` existed carries no such field. Backfilling one for
+ * that legacy shape is sound in exactly one case: `recordIteration` appends to `history`
+ * UNCONDITIONALLY, so an EMPTY `history` is a proof — not a guess — that no scored iteration ever ran
+ * in that session, meaning every `stall_counter` increment came from `recordStall`; the cause
+ * backfills to `'no-commit'`. This is not the ticket's forbidden discriminator: that discriminator's
+ * failure mode is the POSITIVE claim ("history has entries, so a scored regression caused THIS
+ * stall"); the claim here is the NEGATIVE one ("history has zero entries, so no scored iteration ever
+ * ran"), which the unconditional-append invariant makes airtight. A non-empty legacy `history` carries
+ * the same staleness risk as the rejected candidate above and is never guessed — it reports
+ * `'unknown'` with its inputs, per the Errors clause.
+ */
+export function deriveStallCause(state, iteration) {
+    const signal = state.convergence.last_stall_signal ?? null;
+    const cause = signal ?? ((state.convergence?.history ?? []).length === 0 ? 'no-commit' : 'unknown');
+    return { cause, inputs: { last_stall_signal: signal, iteration } };
 }
 export function isConverged(state) {
     if (state.convergence.stall_counter >= state.convergence.stall_limit)

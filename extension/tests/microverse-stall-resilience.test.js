@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
 import {
   AMNESIAC_TURN_THRESHOLD,
   _deps,
@@ -25,6 +26,8 @@ import {
   findUnmovableLedgerEntries,
   convergenceExitReason,
   writeFinalReport,
+  deriveJudgeReviewSurface,
+  measureLlmIteration,
 } from '../bin/microverse-runner.js';
 import {
   createMicroverseState,
@@ -33,6 +36,7 @@ import {
   compareMetricWithBasis,
   recordIteration,
   isConverged,
+  writeMicroverseState,
 } from '../services/microverse-state.js';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 
@@ -419,6 +423,14 @@ test('AC-CF-17: no new microverse-state field, exit reason, or counter', () => {
     'consecutive_subprocess_errors',
     'violation_ledger',
     'current_subsystem',
+    // da44ff00 (AC-J3-4): the out-of-surface drop count, an additive/optional counter reaching
+    // the persisted phase artifact per the ticket's own Interface Contract — a sanctioned
+    // addition for a new mechanism, not the drift this pin exists to catch.
+    'out_of_surface_findings_dropped',
+    // cfc530c6 (AC-J4-4): the stalled_below_target cause + derivation inputs, additive/optional,
+    // written once at the stalled_below_target exit only — a sanctioned addition for a new
+    // mechanism, not the drift this pin exists to catch.
+    'stall_disposition',
   ], 'the fix reuses shipped state — a new field here means a new mechanism was added');
 
   const runner = readSrc('bin/microverse-runner.ts');
@@ -491,6 +503,9 @@ for (const { label, file } of BYSTANDER_ONLY_DIRT) {
     const sessionDir = tmpDir('pickle-mrs-session-');
     const originalSleep = _deps.sleep;
     _deps.sleep = async () => {};
+    const originalLogActivity = _deps.logActivity;
+    const activity = [];
+    _deps.logActivity = (event) => { activity.push(event); };
     try {
       fs.mkdirSync(path.join(dir, path.dirname(file)), { recursive: true });
       fs.writeFileSync(path.join(dir, file), 'bystander\n');
@@ -513,6 +528,7 @@ for (const { label, file } of BYSTANDER_ONLY_DIRT) {
       );
     } finally {
       _deps.sleep = originalSleep;
+      _deps.logActivity = originalLogActivity;
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(sessionDir, { recursive: true, force: true });
     }
@@ -545,6 +561,108 @@ test('AP-EXT-ITER119-01 control: ownable dirt leaves the classifier verdict stan
 
     assert.equal(result, 'converged', 'ownable dirt is worker output — the no-op proof must NOT fire');
     assert.equal(state.convergence.stall_counter, 0, 'the stall arm must not have run');
+  } finally {
+    _deps.sleep = originalSleep;
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// Ticket 79686819: is `clean_pass` reachable through the REAL `autoRescueDirtyTree` ->
+// `handleNoCommitStall` sequence after db605b05 + da44ff00 (in-scope dirt is auto-committed)?
+// The control test above proves the PREDICATE tolerates owned dirt, but calls
+// `handleNoCommitStall` directly and its own comment says auto-rescue would have committed
+// that dirt in production — so it does not prove the state survives the real caller sequence.
+//
+// It does: `autoRescueDirtyTree` stages owned dirt and runs `git commit`, but a git failure
+// (index lock contention, a rejecting pre-commit hook, disk full, GPG failure ...) leaves the
+// dirt UNSTAGED-but-PRESENT (`git reset` only unstages) and `ctx.postIterSha` untouched.
+// `handleMetricMode` still sees `postIterSha === preIterSha` and calls `handleNoCommitStall`,
+// which re-evaluates `isProvablyNoOpIteration` — the same owned dirt is still there, so it
+// returns false and the classifier's independent `clean_pass` verdict is NOT overridden.
+//
+// Index-lock contention (not a pre-commit hook) is used to force the failure deterministically:
+// a rejecting `.git/hooks/pre-commit` is defeated by the pickle worker session's own ambient
+// `GIT_CONFIG_KEY_*=core.hooksPath` override (its trailer-hooks redirect), which every `git`
+// spawn in this process inherits via `process.env`. Precedent for the index-lock technique:
+// `tests/concurrent-git-access-probe-launch.test.js`, `tests/cancel-index-lock-preserved.test.js`.
+function jamGitIndexLock(dir) {
+  fs.writeFileSync(path.join(dir, '.git', 'index.lock'), '');
+}
+
+test('clean_pass is reachable: a failed auto-commit leaves owned dirt behind and the classifier still converges', async () => {
+  const { dir } = initRepo();
+  const sessionDir = tmpDir('pickle-mrs-session-');
+  try {
+    fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'real uncommitted work\n');
+    jamGitIndexLock(dir);
+    const sha = git(dir, ['rev-parse', 'HEAD']);
+    const ctx = {
+      sessionDir, workingDir: dir, preIterSha: sha, postIterSha: sha, iteration: 1, log: () => {},
+    };
+
+    // Real caller sequence: autoRescueDirtyTree runs first, exactly as handleIterationOutcome
+    // does when preIterSha === postIterSha.
+    autoRescueDirtyTree(ctx);
+
+    assert.equal(git(dir, ['rev-parse', 'HEAD']), sha, 'the rejected commit must not move HEAD');
+    assert.notEqual(
+      git(dir, ['status', '--porcelain']).trim(), '',
+      'the owned dirt must SURVIVE the failed commit — this is the state that makes clean_pass reachable',
+    );
+
+    const logPath = writeResultLog(sessionDir, 'tmux_iteration_1.log', {
+      subtype: 'success', num_turns: 60, result: 'Clean pass — no violations found.',
+    });
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    state.status = 'iterating';
+    ctx.postIterSha = sha;
+
+    const result = await handleNoCommitStall(state, ctx, logPath);
+
+    assert.equal(
+      result, 'converged',
+      'a failed auto-commit leaves real owned dirt on disk, and the surviving classifier verdict still converges',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('a failed auto-commit does not converge when the worker\'s own log is not clean_pass-shaped', async () => {
+  const { dir } = initRepo();
+  const sessionDir = tmpDir('pickle-mrs-session-');
+  const originalSleep = _deps.sleep;
+  _deps.sleep = async () => {};
+  try {
+    fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'real uncommitted work\n');
+    jamGitIndexLock(dir);
+    const sha = git(dir, ['rev-parse', 'HEAD']);
+    const ctx = {
+      sessionDir, workingDir: dir, preIterSha: sha, postIterSha: sha, iteration: 1, log: () => {},
+    };
+
+    autoRescueDirtyTree(ctx);
+    assert.notEqual(
+      git(dir, ['status', '--porcelain']).trim(), '',
+      'precondition: the owned dirt must survive the failed commit, same as the positive case',
+    );
+
+    const logPath = writeResultLog(sessionDir, 'tmux_iteration_1.log', {
+      subtype: 'success', num_turns: 60, result: 'Blocked — could not complete the task.',
+    });
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    state.status = 'iterating';
+    ctx.postIterSha = sha;
+
+    const result = await handleNoCommitStall(state, ctx, logPath);
+
+    assert.notEqual(
+      result, 'converged',
+      'the same failed-auto-commit state must NOT converge on its own — only the classifier\'s independent clean_pass verdict may',
+    );
+    assert.equal(state.convergence.stall_counter, 1, 'the stall arm ran');
   } finally {
     _deps.sleep = originalSleep;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -1091,4 +1209,197 @@ test('R4-3 control: a stall over entries first seen inside the stall window is n
   const { ctx, logs } = r4StallCtx(8);
   assert.equal(convergenceExitReason('stall', state, ctx), 'stalled_below_target');
   assert.equal(logs.length, 0);
+});
+
+// AC-J1-2 (B-JUDGESCOPE db605b05): a scope.json-opted-in session whose surface cannot be
+// recovered must record a typed reason, never a silent empty array standing in for
+// "unrestricted". `deriveJudgeReviewSurface` is the single named producer (AC-J1-1) every
+// measureLlm* call site now uses instead of `state.allowed_paths ?? []`.
+//
+// e562164b: the stale snapshot must sit ON DISK in microverse.json — the only place a producer
+// taking `sessionDir` could read it. Held only in memory, a producer that fell back to (or
+// unioned in) `microverse.json.allowed_paths` left every case below GREEN (measured).
+const STALE_SNAPSHOT_PATH = 'src/stale-snapshot.ts';
+
+function writeStaleSnapshot(sessionDir, metric = TEST_METRIC) {
+  const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric, stallLimit: 3 });
+  state.allowed_paths = [STALE_SNAPSHOT_PATH];
+  writeMicroverseState(sessionDir, state);
+  return state;
+}
+
+test('deriveJudgeReviewSurface: no scope.json means never opted in — unscoped, not a failure', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    assert.deepEqual(deriveJudgeReviewSurface(sessionDir), { kind: 'unscoped' });
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('deriveJudgeReviewSurface: scope.json present but allowed_paths empty is a typed derivation failure', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'a'.repeat(40), allowed_paths: [],
+    }));
+    writeStaleSnapshot(sessionDir);
+    const result = deriveJudgeReviewSurface(sessionDir);
+    assert.equal(result.kind, 'failed');
+    assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
+    assert.ok(!('paths' in result), 'a failed derivation structurally carries no paths field — never an empty array standing in for "unrestricted"');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('deriveJudgeReviewSurface: scope.json present but unparseable is also a typed derivation failure', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), 'not json');
+    const result = deriveJudgeReviewSurface(sessionDir);
+    assert.equal(result.kind, 'failed');
+    assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('deriveJudgeReviewSurface: scope.json + populated allowed_paths derives successfully', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'b'.repeat(40), allowed_paths: ['src/foo.ts'],
+    }));
+    writeStaleSnapshot(sessionDir);
+    assert.deepEqual(
+      deriveJudgeReviewSurface(sessionDir),
+      { kind: 'derived', paths: ['src/foo.ts'], base: 'b'.repeat(40) },
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ac655b46 (AC-J1-8): CHOSEN LIFETIME is per-iteration/live — the derivation reads scope.json
+// fresh, never a MicroverseState.allowed_paths snapshot. A stale state.allowed_paths (as a
+// phase-setup snapshot would carry after scope.json was refreshed again) must never leak into
+// the derived surface; scope.json's OWN current content is authoritative.
+test('deriveJudgeReviewSurface: a stale state.allowed_paths snapshot is never consulted — scope.json alone decides', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'c'.repeat(40), allowed_paths: ['src/live.ts'],
+    }));
+    writeStaleSnapshot(sessionDir);
+    assert.deepEqual(
+      deriveJudgeReviewSurface(sessionDir),
+      { kind: 'derived', paths: ['src/live.ts'], base: 'c'.repeat(40) },
+      'the derived surface must come from the live scope.json, never from state.allowed_paths',
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('measureLlmIteration: an underivable surface never reaches the judge backend — typed failure, run continues', async () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  const workingDir = tmpDir('pickle-mrs-surface-work-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'c'.repeat(40), allowed_paths: [],
+    }));
+    const state = writeStaleSnapshot(sessionDir, { description: 'quality', validation: 'improve code quality', type: 'llm', timeout_seconds: 60, tolerance: 2, direction: 'higher', judge_model: 'claude-sonnet-4-6' });
+    state.status = 'iterating';
+
+    // e562164b: the stubs record and THROW. They used to delegate to the real execFileSync/spawn,
+    // so a regressed short-circuit spawned a real judge (11 s, the real `claude` binary) before
+    // this assertion could red; `_deps.sleep` is stubbed so the judge retry backoff cannot stall it either.
+    let judgeInvoked = false;
+    const originalExec = _deps.execFileSync;
+    _deps.execFileSync = () => { judgeInvoked = true; throw new Error('judge backend must not be invoked'); };
+    const originalSpawn = _deps.spawn;
+    _deps.spawn = () => { judgeInvoked = true; throw new Error('judge backend must not be invoked'); };
+    const originalSleep = _deps.sleep;
+    _deps.sleep = async () => {};
+    const originalLogActivity = _deps.logActivity;
+    const activity = [];
+    _deps.logActivity = (event) => { activity.push(event); };
+    try {
+      const ctx = { sessionDir, workingDir, iteration: 1, log: () => {} };
+      const result = await measureLlmIteration(state, ctx, 'claude');
+      assert.equal(result.kind, 'failed', 'the run continues by reporting a typed failure, never a thrown/halting error');
+      assert.equal(result.exitReason, 'metric_unmeasurable_unrecoverable');
+      assert.equal(judgeInvoked, false, 'no empty fallback reaches the judge — the derivation failure short-circuits before any judge spawn');
+      assert.deepEqual(
+        activity.map((e) => e.gate_payload),
+        [{ phase: 'iteration', derivation: 'judge_review_surface' }],
+        'the typed failure is recorded as exactly one iteration-phase surface-derivation event',
+      );
+    } finally {
+      _deps.execFileSync = originalExec;
+      _deps.spawn = originalSpawn;
+      _deps.sleep = originalSleep;
+      _deps.logActivity = originalLogActivity;
+    }
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+// e562164b (AC-J5-4): "do NOT add an arm" had no pin. The arms are the classifier verdicts
+// `handleNoCommitStall` branches on — every comparison of `noCommitClass` against a string literal,
+// and any `case` of a switch over it — read from the parsed source, so a comment naming a verdict
+// cannot answer it and a switch or nested rewrite cannot slip past it.
+function noCommitClassArms(source) {
+  const sf = ts.createSourceFile('microverse-runner.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let fn = null;
+  const find = (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'handleNoCommitStall') fn = node;
+    else ts.forEachChild(node, find);
+  };
+  find(sf);
+  if (!fn?.body) return null;
+  const isSubject = (n) => ts.isIdentifier(n) && n.text === 'noCommitClass';
+  const arms = [];
+  const visit = (node) => {
+    if (ts.isBinaryExpression(node)
+      && [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(node.operatorToken.kind)) {
+      if (isSubject(node.left) && ts.isStringLiteral(node.right)) arms.push(node.right.text);
+      if (isSubject(node.right) && ts.isStringLiteral(node.left)) arms.push(node.left.text);
+    }
+    if (ts.isSwitchStatement(node) && isSubject(node.expression)) {
+      for (const clause of node.caseBlock.clauses) {
+        if (ts.isCaseClause(clause) && ts.isStringLiteral(clause.expression)) arms.push(clause.expression.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(fn.body);
+  return arms.sort();
+}
+
+test('AC-J5-4: handleNoCommitStall keeps exactly its two classifier arms — no third arm', () => {
+  assert.deepEqual(
+    noCommitClassArms(readSrc('bin/microverse-runner.ts')),
+    ['amnesiac', 'clean_pass'],
+    'a new noCommitClass arm (or a removed one) changes the no-commit disposition set AC-J5-4 froze — stop and report instead',
+  );
+});
+
+test('AC-J5-4 control: the arm census reads code, not prose, and sees a switch-shaped third arm', () => {
+  const shipped = readSrc('bin/microverse-runner.ts');
+  const anchor = "  if (noCommitClass === 'amnesiac') {";
+  assert.ok(shipped.includes(anchor), 'precondition: the amnesiac arm anchor is present in the shipped source');
+  assert.deepEqual(
+    noCommitClassArms(shipped.replace(anchor, `  // if (noCommitClass === 'stall') is prose only\n${anchor}`)),
+    ['amnesiac', 'clean_pass'],
+    'a comment naming a verdict is not an arm',
+  );
+  assert.deepEqual(
+    noCommitClassArms(shipped.replace(anchor, `  switch (noCommitClass) { case 'stall': break; }\n${anchor}`)),
+    ['amnesiac', 'clean_pass', 'stall'],
+    'a third arm spelled as a switch must be counted',
+  );
 });

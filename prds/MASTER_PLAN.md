@@ -119,77 +119,190 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-16. Context cleared here. **READ THIS FIRST.**
+## 🚢 SESSION HANDOFF — 2026-09-16. **2.1.0 IS SHIPPED.** READ THIS FIRST.
 
-**Deployed: `2.1.0-beta.32`.** Seven releases shipped 09-09 → 09-15 (beta.26 → beta.32).
+**`v2.1.0` GA tagged 2026-09-16 at `c20a9562`** and mechanically verified
+(`verify-release-tag.sh` exit 0, expected == actual). Deployed and confirmed BY CONTENT: 183 JS files
+byte-identical, exactly one intentional difference (`bin/tmux-runner.js`, the symlink), deployed version
+reads `2.1.0`.
+
+### 🏁 B-JUDGESCOPE RAN — 4/4, 14/14 tickets, gate 22/22 green, **NOT released** (cadence)
+
+Session `2026-09-15-6d247e1b`, `status: completed`, `completed_phases: 4/4`, **14/14 tickets Done**,
+none Failed. Branch pushed (**40 commits ahead of the `v2.1.0` tag**), deployed, **no tag** — per the
+RELEASE CADENCE rule, not releasing after a green bundle is the NORMAL state and is not a blocker.
+
+| | |
+|---|---|
+| gate | **22/22 green at `fac71de3`**, same-run `GATE_END`, 69 min |
+| soak | **1,803,652 ms** vs `SOAK_SECONDS=1800`, `SOAK_UNRUN` 0 |
+| flake budget | `failures=0 runs_completed=5/5 tests=10028` (was 9974) |
+| deploy | verified BY CONTENT — 184 compared, **0 differing**, 1 intentional (`bin/tmux-runner.js` symlink) |
+| disposition | `pickle: done_over_unmeasured_worker_gate_tests:c1adb389` — **NOT a withhold** |
+
+**The disposition is a flag, not a withhold.** `pipeline-runner.log`: *"worker_gate_tests_verdict (no
+corroborating failure evidence) — NOT withholding"*; the worker's `tmux_iteration_11.log` carries
+`worker_gate_tests_verdict: "green"`; and the verdict agrees — `status: completed`, `unsuccessful` and
+`nonConvergent` both unset, unlike B-MEGADRAIN's `status: failed`. **Continue-and-flag working as
+designed.**
+
+### ⛔ THE RUN'S TWO FIRSTS ARE NOT ATTRIBUTABLE TO THE FIX — do not credit them to it
+
+`microverse.json` **`converged`** (baseline 2 → target 0, history 2) — the **first szechuan convergence
+on this branch**; `anatomy-park.json` converged at **2 passes per subsystem** against 11/17/37
+historically; `szechuan-sauce.json` 0 findings.
+
+**Every phase executed the PRE-FIX runtime.** Source and the deployed runtime are isolated and a diff
+goes live only at `install.sh`; the deployed tree's last write before the run was `01:22:43Z` (the GA
+deploy) and the run was `05:53Z → 11:21Z`. `install.sh` landed the bundle only afterwards.
+
+**What the convergence DOES establish:** the deadlock is **not deterministic**. The same pre-fix runtime
+that stalled five times converged here — consistent with the census that `allowed_paths` absence is a
+NECESSARY, not sufficient, condition. **#32 stays OPEN**; the next pipeline run is the first that
+exercises the fix, and closing it requires that run to show `allowed_paths` populated, the scoping clause
+in the prompt, and no pre-bundle ledger entry.
+
+**Deploy note:** before `install.sh`, 4 deployed JS files were stale (`microverse-runner`,
+`microverse-state`, `ac-phase-gate`, `citadel/diff-hygiene`) **and `bin/tmux-runner.js` was absent**.
+`install.sh` restored it (`install.sh:563` creates it as a symlink to `mux-runner.js`; it has no source
+counterpart). The deployed `version` read `2.1.0` throughout — **deploy drift is invisible to the version
+check, diff by CONTENT.**
+
+### 🔎 `post_final_tier_degraded` MEASURED — the input was suspect, and the root is one layer down (#33)
+
+It was the last unexamined verdict term. It fires in exactly **three** sessions, all ending
+`status: failed`: `2026-09-12-a4d141e1` and `2026-09-13-d2e834e1` (`script failure: test:fast:serial`,
+**no diagnostics**) and `2026-09-14-ae80e917` (`script failure: test:fast:parallel`, **with** a tail).
+The empty two predate `0e1c1bfa` (2026-09-13T12:54:06Z), which carries the tail into the verdict.
+
+**The third one's tail is the finding:** `tests 9538 · pass 9534 · fail 0 · skipped 3`. **Zero failures,
+non-zero exit, classified `red`, `nonConvergent` raised, success verdict withheld.**
+
+**Root, one layer below the verdict:** `test-runner.ts:438` ends on
+`process.exit(result.status ?? 1)`, and **`result.signal` is never read in that file** (`grep -c
+'result\.signal'` → **0**; the only signal-adjacent code keys on `ETIMEDOUT`, an error, not a signal).
+A killed child yields `status: null` and collapses to **exit 1 — byte-identical to a real failure exit**.
+A signal death is a SUFFICIENT explanation for "non-zero exit, zero failures"; **it is not claimed as THE
+explanation, because the instrument discards the one field that would decide it.** That is the defect.
+
+**Already fixed — the LABEL.** `36028190` (2026-09-15T12:17:34Z, AC-Q2) reclassifies a non-zero tier exit
+reporting zero failures as **`inconclusive`**, not `red` (`mux-runner.ts:1137`). All three firings
+predate it. *Dating the artifacts against the log before filing is what kept this from being re-filed as
+a closed bug — the [[session-artifact-is-a-snapshot]] lesson, applied.*
+
+**NOT fixed — the attribution and the outcome.** `inconclusive` is still `degraded: true`
+(`mux-runner.ts:1086`) and the withhold reads `degraded`, not `state`
+(`pipeline-runner.ts:5398`), so a `fail 0` tier still costs the run its success verdict — under an
+honester name. The rename changed the label, not the disposition. And nothing records WHY the exit was
+non-zero.
 
 ### ▶ IMMEDIATE STATE
 
 | | |
 |---|---|
-| last run | [[B-BEHAVE]] `2026-09-15-38bf786d` — 4/4, `completed`, **no dispositions** (4th straight success verdict) |
-| open issues | **#5 only** (architecture enhancement). #27/#28/#29/#30 all closed |
-| tree | clean; **unreleased commits on `release/v2.1-beta`** |
-| **GA** | **OPERATOR SAID GO for 2.1.0.** Not yet tagged — see below |
+| released | **`v2.1.0`** — beta dropped. Gate17 **22/22 green at the tagged commit** |
+| last run | [[B-BEHAVE]] `2026-09-15-38bf786d` — 4/4, `completed`, no dispositions (4th straight success) |
+| open issues | **#5** (architecture) · **#31** (NEW — client identity in a public repo) · **#32** (NEW — `stalled_below_target` was two causes) |
+| tree | clean at `c20a9562`, branch pushed |
+| pipeline | none running — verified by reading `state.json` + `pipeline-status.json` |
 
-### ⚠ THE GA TAG IS BLOCKED ONLY ON A FRESH GATE
+### ⚠ THE BUMP COMMIT IS WHY THE HANDOFF'S PLAN NEEDED ONE CHANGE
 
-Gate15 ran green (21/22 legs, 0 red) at `7872c6d8`, but **doc commits have landed since**, and
-**six audits glob `prds/*.md`** (`audit-bundle-thesis`, `audit-fix-commits`, `audit-ledger-probes`,
-`audit-quarantine`, `audit-trap-door-enforcement`, `audit-closer-template-compliance`), so an earlier
-gate does NOT transfer across a docs commit. **Run the full gate at HEAD, then tag `2.1.0`.**
+The previous handoff said *gate at HEAD, then tag*. That could not have worked: `release.yml`'s
+**"Verify tag matches package version"** step derives `EXPECTED` from the tag name and compares it to
+`extension/package.json`'s version, so a green at `ff894a53` (still `2.1.0-beta.32`) could never have
+carried a `v2.1.0` tag. The gate was stopped 5 minutes in, the bump committed (`c20a9562`, 3 lines
+across `package.json` + `package-lock.json`), and the **full 22-leg gate re-run at the commit that was
+actually tagged.** Generalise it: **a version bump invalidates a gate exactly as a docs commit does.**
 
-**GA release note must name these known limits** (GA criterion 6 — do not ship silently):
-- 3 gaps vs `deep-pr-review-lean`: the *deleted-or-broken* test question, comment-density measurement,
-  and the claim/provenance discipline. (Security + packaging excluded on operator evidence.)
-- A 3rd szechuan `stalled_below_target` whose cause is **unmeasured**.
-- Contention can still produce a red that does not reproduce (named in beta.32, not removed).
-- `teams_mode` has **never been exercised** — 0 sessions in history.
-- `runMuxRunnerMain` at 217 code lines / complexity 38 against ceilings of 120/15 — carve-out
-  recorded and ratcheting, not deleted. Blocked below 120 by out-of-fence pins in `szechuan-sauce.test.js`.
+### 📐 WHAT THE GA GREEN DOES AND DOES NOT COVER
 
-### 📋 B-LENS PROPOSAL — authored, NOT dispatched, awaiting review
+- **Authoring-OS axis: GREEN.** macOS / Node 24.19.0. Types, lint, emit with **0** JS/TS drift, 13/13
+  audits, `flake-budget failures=0 runs_completed=5/5 tests=9974`, integration, contract, expensive.
+- **The soak really ran.** Reported **1,803,819 ms** against `SOAK_SECONDS=1800`, `SOAK_UNRUN` 0, zero
+  `# SKIP`. The duration is the evidence; the exit code is not.
+- **OS axis: GREEN, supplied by CI.** The `Release` workflow on `v2.1.0` completed success on both
+  jobs; its `gate` job ran **74 min on `ubuntu-latest`** (01:22:35Z → 02:36:53Z), so it is a real run
+  rather than a fast skip. **It could not be run locally — and that is new:** `ci-repro.sh` exits **2**
+  (`docker not found on PATH`), because `/usr/local/bin/docker` is a **broken symlink** to a removed
+  Docker Desktop. **Docker is gone from this box.** Any prior note that the Linux repro "works here" is
+  false; re-test with `docker info` before relying on it. Exit 2 is a refusal — record UNRUN and wait
+  for CI; never report it as green.
 
-`prds/PROPOSAL-b-lens-review-quality-to-an-external-bar.md`. Roots L0, L0b, L1–L5.
-**L0** preserves what already beats the bar (szechuan Part I is a superset of lens 8; Drizzle hygiene is
-ahead of lens 4; anatomy-park tracing has no lens equivalent) — additions only, with a replay control.
-**L0b** gates the content roots on a real finding inventory.
+### 📋 B-LENS — REVISED on the inventory. Still NOT dispatched.
 
-**L0b already falsified one of my own roots.** L4 (performance) was proposed off `grep -ic 'N+1'`
-returning 0 in our principles file. In 4 months of real reviews performance was **1 of 342 findings**.
-**L4 is cut.** Confirmed instead: acceptance criteria **45 (13%)**, inert guards **23 (6%)**, and a NEW
-gap the data surfaced — **comment bloat/density 19 (5%)**, which szechuan does not measure at all.
+`prds/PROPOSAL-b-lens-review-quality-to-an-external-bar.md`. The judgement call the last session left
+open is **made**, and L0b is marked EXECUTED:
 
-**Two corrections I had to make, keep them:** lens-distribution claims from that corpus are unfounded
-(only 7 of 308 structured reviews name a lens; output is organised by SEVERITY), and counting lens
-*mentions* is not counting *findings* — a lens that runs clean still prints.
+| root | change | basis |
+|---|---|---|
+| **L4 performance** | **CUT** | **1 of 342** findings. Re-derived independently: 342 findings from 713 blocking bullets; a deliberately looser re-grep still returns **3**. |
+| **L4 acceptance criteria** | **PROMOTED** (replaces it) | **45 of 342 (13%)** — largest category, 3x the next |
+| **L5 comment density** | **NEW ROOT** | **19 of 342 (6%)** — in no lens and in none of the original roots |
+| L3 inert guards | confirmed | **23 of 342 (6%)** |
+| L6 teams experiment | renumbered from L5 | unchanged |
 
-### 🔐 CLIENT DATA — new BINDING rule in root CLAUDE.md
+**L4's first AC is a diagnosis, not a prompt edit**, because citadel already audits conformance and
+`audit-acceptance-assertion-coverage` is already a gate leg: the open question is **why a surface we
+already audit is the largest blocking category in someone else's review**, and the three branches
+(never checked / checked and passed wrongly / criterion absent or unfalsifiable) have three different
+fixes. **L4-5 can cut the root entirely** if the 45 turn out to be domain criteria with no analogue here.
 
-This repo is **open source**. No loanlight content ever, including derived artifacts. The review corpus
-lives at **`~/loanlight-review-inventory/`** (7MB, 649 PRs, re-runnable `fetch.sh`, provenance README
-listing what it does and does NOT support). Cite conclusions by number here; keep evidence there.
+### 🔐 #31 — CLIENT IDENTITY IN A PUBLIC REPO (filed this session, NOT fixed)
+
+The no-client-data rule landed in `ff894a53` and reads **forward**. The existing corpus was never
+audited against it. Measured at `c20a9562`: **134 files** name the former client's org — 77 in
+`prds/archive/**`, 25 in live `prds/*.md`, **32 under `extension/**` (source and tests)** — plus 2
+personal `@<org>.com` addresses, client ticket/branch identifiers, and one verbatim quoted client
+`AGENTS.md` block. Repo visibility confirmed `PUBLIC`.
+
+**Not fixed in-session on purpose:** scrubbing 32 shipped source/test files is behaviour-affecting on a
+tagged release, whether to rewrite history is an operator call with no reversible half, and a partial
+scrub reads clean while the rest stays exposed. The one file fixed is the B-LENS proposal, because the
+rule says fix old occurrences when already touching the file. **#31 deliberately does not name the
+client.**
 
 ### 🧰 OPERATING NOTES
 
 - Gate runner: `<scratchpad>/gate2.sh <log>` — **derives** its audit list from root `CLAUDE.md`; never
-  hardcode one. 22 legs, ~68 min. Wait for the `GATE_END` marker.
-- **#27 is fixed** (prd_path recorded at launch + preflight), so the manual pre-set workaround is no
-  longer needed.
+  hardcode one. 22 legs. **Measured this session: 70 min wall clock** (00:11:28Z → 01:21:07Z), of which
+  the soak is 30 min and `test:fast:budget` is 38 min. Wait for `GATE_END`.
+- **A version bump invalidates a gate.** So does a docs commit — six audits glob `prds/*.md`.
 - **Never launch a pipeline while a gate runs** — contention is the measured cause of both #28 reds.
-- `ps aux | grep -c pipeline-runner` matches the prompt's own text; use
-  `ps -eo pid,command | grep -E '[m]ux-runner\.js|[p]ipeline-runner\.js'`.
+- `ps -eo pid,command | grep …` prints full argv; a `node --test` line is ~8k chars and one such call
+  cost ~14k tokens this session. Pipe through `cut -c1-80`, or count with `grep -c`.
+- A bare `grep -rn` over `prds/` returns ~200 matching lines. Use `-l` and `wc -l` first.
 - `find -newermt` is not BSD syntax and returns a FALSE EMPTY; use `-mmin -N`. `stat -f '%Sm'` is LOCAL
-  time — prefix `TZ=UTC`.
-- Keep Bash output small; it reached 30% of the context window this session.
+  time — prefix `TZ=UTC`. `timeout` does not exist on this box.
 
 ### Open, in priority order
 
-1. **Gate at HEAD → tag `2.1.0` GA** with the limits above named.
-2. **B-LENS review** — cut L4, promote acceptance-criteria to a root, add comment-density.
+1. **#31** — client identity in a public repo. Operator decision, not an autonomous fix.
+2. **B-LENS review** — the revision is in; it needs the operator's read before dispatch.
 3. **#5** — the architecture enhancement (context cache, trap-door commit, worktree-as-proposal).
-4. szechuan `stalled_below_target` 3rd occurrence, cause unmeasured.
+4. **▶ NEXT DISPATCH — [[B-JUDGESCOPE]]** (`prds/p1-b-judgescope-the-judge-scores-what-the-worker-cannot-fix.md`,
+   composed 2026-09-16). **Both #32 causes are now MEASURED and they are ONE root:** the judge's
+   ADMISSION criteria are not the worker's ACTION criteria, so it scores findings the worker is correct
+   to refuse and the target becomes unreachable. Cause B is no longer open — the worker declined on a
+   verified basis (`git diff --stat` empty, blame 2026-04-29) recorded in `tmux_iteration_{2..6}.log`,
+   and `allowed_paths` is **ABSENT in 9 of 10** on-disk sessions, so the scoping clause gated on
+   `allowedPaths.length > 0` (`microverse-runner.ts:2079`) is inert in 90% of runs.
 
+   **⚠ REVISION 2 after refinement — the first draft would have shipped a ZERO-DIFF GREEN.**
+   **J2 is CUT:** "the judge invents a 50-line ceiling" was **GitHub #22, CLOSED**, fixed by `7c1085ad`
+   at `2026-09-13T12:32:15Z` — **8h25m AFTER** the session I read it from judged (`04:07:10Z`).
+   `szechuan-sauce.test.js` is 61 pass / 0 fail at HEAD. **The method failure, recorded because it will
+   recur: re-grepping a mechanism INSIDE a session artifact is not re-grounding — the artifact is a
+   snapshot and the repo moves under it.** Date the artifact, `git log -S` the blamed surface, and
+   search closed issues by MECHANISM, not title.
+   **And 16 of 21 ACs were pinned by controls that could not observe their mechanism** — the J1 control
+   passes on unmodified HEAD because it hand-constructs `allowedPaths` and never calls the derivation.
+   Three more findings, symbols verified at HEAD: the scoped judge path has **never scored in
+   production (n=0)**, so J1 is a first-ever activation; scoping changes **commit** behaviour and can
+   manufacture the very no-commit stalls the bundle drains; and the corpora expire — `e959390b` at
+   `2026-09-16T10:46:29Z`, copied to `~/pickle-rick-evidence/` ahead of the prune.
+   **Not dispatched: revise-then-dispatch, and it is a SMALL bundle now — do not pad it back.**
+5. Restore docker if the Linux OS axis is wanted locally again.
 
 ## 🚩 `done_over_red_worker_gate_tests` HAS NOW WITHHELD TWO CONSECUTIVE BUNDLES — and the branch measured GREEN after the first
 
@@ -303,9 +416,38 @@ unique.
 
 **Do NOT assume the two `stalled_below_target` runs share a cause** — the disposition is a threshold
 (metric never reached target within the stall budget), and two runs can hit the same threshold for
-different reasons. The falsifying observation: compare the per-iteration metric traces of
-`2026-09-06-f625727a` and `2026-09-08-f365390b`. Same trajectory shape = one cause; different = the
-disposition is again hiding two.
+different reasons. The falsifying observation: compare the per-iteration metric traces. Same trajectory
+shape = one cause; different = the disposition is again hiding two.
+
+### ✅ ANSWERED 2026-09-16 — the shapes DIFFER. Two causes, filed as **#32**.
+
+`2026-09-06-f625727a` and `2026-09-08-f365390b` are **pruned from disk**, so that exact comparison is no
+longer takeable — **stop citing it as pending.** Two NEWER `stalled_below_target` runs were on disk and
+were compared instead:
+
+| | `2026-09-12-a4d141e1` | `2026-09-15-c5a7eb48` |
+|---|---|---|
+| `convergence.history` | **1** entry (iter 2) | **0** entries |
+| `stall_counter` | 5/5 | 5/5 |
+| incrementer | `recordIteration` | **`recordStall`** (`microverse-state.ts:401`) |
+| mechanism | `score 6` vs `baseline 2` → `action: revert` | **five "No commits made"**, 28-61s apart |
+
+Those are the only two writers of `stall_counter`, and `recordIteration` moves history and counter
+together — so a full counter over an empty history is `recordStall` five times, not corruption.
+
+**Cause A is a threshold the judge INVENTED.** Its six violations cite *"the 50-line hard limit"* four
+times. `szechuan-sauce-principles.md:113` defers to the enforced `max-lines-per-function`, which
+`eslint.config.js:20` sets to **120** code lines. Measured by AST at the judged sha `a89b28b9`:
+`buildCitadelAuditReport` **119**, `reapOrphanedManagersAtIterationStart` **49**,
+`bootstrapSessionResources` **47**, `checkPartialLifecycleExit` **46** — **4 of 6 are non-violations**
+under our own ceiling. Strip them and the score is **2 = baseline**, `tolerance: 0` ⇒ `held`, **no
+regression and no revert.** The judge's *measurements* were exact (`runMuxRunnerMain` span **2202** at
+line **12911**, as reported); only the threshold was fabricated. **The fix direction is subtraction —
+read the ceiling from the config that enforces it, one fewer number to keep in sync.**
+
+**Cause B is a worker that committed nothing five times** in 12m09s over 6 iterations, with a
+`violation_ledger` entry at `first_seen_iter: 1` proving iterations ran. Why it produced nothing is
+**open** — a worker-productivity failure sharing only a disposition string with Cause A.
 
 **No release, and szechuan is not why.** `nonConvergent` was already 1 from the pickle-boundary withhold
 before szechuan ran. Second consecutive bundle where the release was foreclosed at phase 1.

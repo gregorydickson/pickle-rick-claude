@@ -1,0 +1,113 @@
+{
+  "status": "stopped",
+  "prd_path": "/Users/gregorydickson/pickle-rick-claude",
+  "key_metric": {
+    "description": "Number of coding principle violations (lower is better)",
+    "validation": "Review the code at the target path for violations of established coding principles (KISS, YAGNI, DRY, SOLID, Small Functions, Guard Clauses, Cognitive Load, Self-Documenting Code, Encapsulation, Fail-Fast, etc). Count only REAL, actionable violations — not style nitpicks. A violation must be fixable and must clearly hurt readability, maintainability, or correctness. Score = number of violations found.",
+    "type": "llm",
+    "timeout_seconds": 600,
+    "tolerance": 0,
+    "direction": "lower"
+  },
+  "convergence": {
+    "stall_limit": 5,
+    "stall_counter": 5,
+    "history": [
+      {
+        "iteration": 2,
+        "metric_value": "{\"score\": 6, \"violations\": [{\"id\": \"god-fn-mux-runner-main\", \"path\": \"extension/src/bin/mux-runner.ts\", \"line\": 12911, \"severity\": \"high\", \"description\": \"runMuxRunnerMain is ~2202 lines — the entire iteration loop in one function, violating the 50-line hard limit and causing unclear ownership\"}, {\"id\": \"god-fn-citadel-audit-report\", \"path\": \"extension/src/services/citadel/audit-runner.ts\", \"line\": 117, \"severity\": \"med\", \"description\": \"buildCitadelAuditReport is ~122 lines — orchestrates 20+ analyzers inline, well over the 50-line hard limit\"}, {\"id\": \"god-module-pickle-utils\", \"path\": \"extension/src/services/pickle-utils.ts\", \"line\": 1, \"severity\": \"med\", \"description\": \"3232-line catch-all module bundles unrelated concerns: terminal formatting, ticket management, tier classification, settings loading, and environment utilities — violates SRP\"}, {\"id\": \"oversized-fn-check-partial-lifecycle\", \"path\": \"extension/src/bin/mux-runner.ts\", \"line\": 11038, \"severity\": \"low\", \"description\": \"checkPartialLifecycleExit is ~68 lines — reads files, parses tier, checks artifacts, classifies logs, and writes activity entries, over the 50-line hard limit\"}, {\"id\": \"oversized-fn-reap-orphaned-managers\", \"path\": \"extension/src/bin/mux-runner.ts\", \"line\": 625, \"severity\": \"low\", \"description\": \"reapOrphanedManagersAtIterationStart is ~64 lines — collects ps suspects, reads pidfile, kills and records, over the 50-line hard limit\"}, {\"id\": \"oversized-fn-bootstrap-session-resources\", \"path\": \"extension/src/bin/mux-runner.ts\", \"line\": 12777, \"severity\": \"low\", \"description\": \"bootstrapSessionResources is ~61 lines — initialises monitor window, version drift, phantom-Done watchers, codegraph session, and signal handlers inline\"}], \"resolved\": [], \"new\": [\"god-fn-mux-runner-main\", \"god-fn-citadel-audit-report\", \"god-module-pickle-utils\", \"oversized-fn-check-partial-lifecycle\", \"oversized-fn-reap-orphaned-managers\", \"oversized-fn-bootstrap-session-resources\"], \"remaining\": []}",
+        "score": 6,
+        "action": "revert",
+        "description": "regressed: 6 vs 2",
+        "pre_iteration_sha": "a89b28b9137f1f6bb15fa48c0dd8d0a4f1b67c88",
+        "timestamp": "2026-09-13T04:07:10.143Z",
+        "judge_backend_used": "claude",
+        "classification": "regressed"
+      }
+    ]
+  },
+  "gap_analysis_path": "/Users/gregorydickson/.local/share/pickle-rick/sessions/2026-09-12-a4d141e1/gap_analysis.md",
+  "failed_approaches": [
+    "Iteration 2: score dropped from 2 to 6"
+  ],
+  "baseline_score": 2,
+  "failure_history": [
+    {
+      "iteration": 2,
+      "failure_class": "regression",
+      "description": "regressed: 6 vs 2",
+      "timestamp": "2026-09-13T04:07:10.166Z"
+    }
+  ],
+  "approach_exhaustion_fired": false,
+  "iteration_regressions": 0,
+  "gate_regression_threshold_warning_emitted": false,
+  "consecutive_subprocess_errors": 0,
+  "violation_ledger": [
+    {
+      "id": "72a199a7",
+      "path": "extension/src/bin/mux-runner.ts",
+      "line": 12911,
+      "rule": "",
+      "first_seen_iter": 2,
+      "last_seen_iter": 2,
+      "severity": "high",
+      "description": "runMuxRunnerMain is ~2202 lines — the entire iteration loop in one function, violating the 50-line hard limit and causing unclear ownership"
+    },
+    {
+      "id": "dbba02da",
+      "path": "extension/src/services/citadel/audit-runner.ts",
+      "line": 117,
+      "rule": "",
+      "first_seen_iter": 2,
+      "last_seen_iter": 2,
+      "severity": "med",
+      "description": "buildCitadelAuditReport is ~122 lines — orchestrates 20+ analyzers inline, well over the 50-line hard limit"
+    },
+    {
+      "id": "69313da5",
+      "path": "extension/src/services/pickle-utils.ts",
+      "line": 1,
+      "rule": "",
+      "first_seen_iter": 2,
+      "last_seen_iter": 2,
+      "severity": "med",
+      "description": "3232-line catch-all module bundles unrelated concerns: terminal formatting, ticket management, tier classification, settings loading, and environment utilities — violates SRP"
+    },
+    {
+      "id": "2487e069",
+      "path": "extension/src/bin/mux-runner.ts",
+      "line": 11038,
+      "rule": "",
+      "first_seen_iter": 2,
+      "last_seen_iter": 2,
+      "severity": "low",
+      "description": "checkPartialLifecycleExit is ~68 lines — reads files, parses tier, checks artifacts, classifies logs, and writes activity entries, over the 50-line hard limit"
+    },
+    {
+      "id": "0677e6ca",
+      "path": "extension/src/bin/mux-runner.ts",
+      "line": 625,
+      "rule": "",
+      "first_seen_iter": 2,
+      "last_seen_iter": 2,
+      "severity": "low",
+      "description": "reapOrphanedManagersAtIterationStart is ~64 lines — collects ps suspects, reads pidfile, kills and records, over the 50-line hard limit"
+    },
+    {
+      "id": "a7af07d3",
+      "path": "extension/src/bin/mux-runner.ts",
+      "line": 12777,
+      "rule": "",
+      "first_seen_iter": 2,
+      "last_seen_iter": 2,
+      "severity": "low",
+      "description": "bootstrapSessionResources is ~61 lines — initialises monitor window, version drift, phantom-Done watchers, codegraph session, and signal handlers inline"
+    }
+  ],
+  "convergence_target": 0,
+  "judge_context_path": "/Users/gregorydickson/.claude/pickle-rick/szechuan-sauce-principles.md",
+  "design_safe": false,
+  "consecutive_amnesiac_exits": 0,
+  "exit_reason": "stalled_below_target"
+}

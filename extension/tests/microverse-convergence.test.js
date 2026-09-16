@@ -20,6 +20,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { execSync, execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
     compareMetric,
     createMicroverseState,
@@ -44,10 +46,20 @@ import {
     markMicroverseFatalError,
     auditPostIterationScope,
     measureAndClassifyIteration,
+    handleIterationOutcome,
+    executeGapAnalysis,
     JUDGE_SYSTEM_PROMPT,
+    deriveJudgeReviewSurface,
+    preflightAutoCommit,
+    autoRescueDirtyTree,
+    dropOutOfSurfaceViolations,
+    parseChangedLineNumbersFromDiff,
     _deps,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
+import { resolveScope } from '../services/scope-resolver.js';
+import { loadMicroverseScope } from './helpers/microverse-corpora.js';
+import { setupSzechuanSauce, main, __setSpawnRunnerForTests } from '../bin/pipeline-runner.js';
 
 function makeTmpDir() {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-conv-')));
@@ -1773,3 +1785,1034 @@ test('ROOT S negative control: a normal-sized allowed_paths scope still reaches 
         'a normal-sized scope must not be reported as truncated',
     );
 });
+
+// ---------------------------------------------------------------------------
+// c1adb389 (AC-J1-3/4/5) — the baseline call site. `executeGapAnalysis` is the
+// exported ancestor covering `measureLlmBaseline`'s `deriveJudgeReviewSurface`
+// call (microverse-runner.ts:4139), the site `measureAndClassifyIteration`
+// (helpers.test.js) does not reach. Same discipline as there: a real
+// `scope.json` on disk, no hand-built `allowedPaths` object handed to
+// `buildJudgePrompt`, and the judge argv captured via the shipped
+// `_deps.execFileSync` + `PICKLE_JUDGE_LEGACY_SPAWN=1` seam.
+//
+// e562164b: microverse.json's `allowed_paths` is a DIVERGENT stale path. Seeded identical to
+// scope.json, these pins stayed green with every call site reverted to the pre-fix
+// `state.allowed_paths ?? []` input — true at the baseline they claim to pin.
+// ---------------------------------------------------------------------------
+
+const GAP_STALE_SNAPSHOT_PATH = 'src/stale-snapshot.ts';
+
+/** The `- <path>` lines of the prompt's `Review ONLY these paths:` block, scoped to that construct. */
+function judgePromptReviewPaths(prompt) {
+    const lines = prompt.split('\n');
+    const start = lines.indexOf('Review ONLY these paths:');
+    if (start === -1) return null;
+    const paths = [];
+    for (const line of lines.slice(start + 1)) {
+        if (!line.startsWith('- ')) break;
+        paths.push(line.slice(2));
+    }
+    return paths;
+}
+
+function createGapAnalysisTempGitRepo() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-judgescope-gap-repo-'));
+    execSync('git init', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    fs.writeFileSync(path.join(dir, 'README.md'), 'init');
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    return dir;
+}
+
+function createGapAnalysisScopedSession(workingDir, allowedPaths) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-judgescope-gap-session-'));
+    fs.writeFileSync(path.join(dir, 'scope.json'), JSON.stringify({
+        version: 1, mode: 'branch', base_sha: 'f'.repeat(40), allowed_paths: allowedPaths,
+    }));
+    const runnerState = {
+        active: true,
+        working_dir: workingDir,
+        step: 'implement',
+        iteration: 0,
+        max_iterations: 10,
+        max_time_minutes: 60,
+        worker_timeout_seconds: 120,
+        start_time_epoch: Math.floor(Date.now() / 1000),
+        completion_promise: null,
+        original_prompt: 'test',
+        current_ticket: null,
+        history: [],
+        started_at: new Date().toISOString(),
+        session_dir: dir,
+        tmux_mode: true,
+        command_template: 'microverse.md',
+        backend: 'claude',
+    };
+    fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(runnerState, null, 2));
+    const mvState = {
+        status: 'gap_analysis',
+        prd_path: path.join(workingDir, 'prd.md'),
+        key_metric: {
+            description: 'judge quality gate',
+            validation: 'improve code quality',
+            type: 'llm',
+            timeout_seconds: 60,
+            tolerance: 0,
+            judge_model: 'claude-sonnet-4-6',
+        },
+        convergence: { stall_limit: 3, stall_counter: 0, history: [] },
+        gap_analysis_path: '',
+        failed_approaches: [],
+        baseline_score: 0,
+        allowed_paths: [GAP_STALE_SNAPSHOT_PATH],
+    };
+    fs.writeFileSync(path.join(dir, 'microverse.json'), JSON.stringify(mvState, null, 2));
+    return { dir, runnerState };
+}
+
+function makeGapAnalysisContext(sessionDir, runnerState, workingDir) {
+    return {
+        sessionDir,
+        extensionRoot: path.resolve('.'),
+        statePath: path.join(sessionDir, 'state.json'),
+        workingDir,
+        startTime: Date.now(),
+        initialIteration: 0,
+        enableFailureClassification: false,
+        cgSettings: {
+            enabled_convergence_files: [],
+            regression_warning_threshold: 5,
+            remediator_timeout_s: 600,
+            baseline_max_age_iterations: 30,
+            baseline_max_age_seconds: 14_400,
+        },
+        rateLimitWaitMinutes: 0,
+        maxRateLimitRetries: 0,
+        log: () => {},
+        currentRunnerState: runnerState,
+        iteration: 0,
+        consecutiveRateLimits: 0,
+    };
+}
+
+async function runGapAnalysisScopedJudge(allowedPaths, judgeOutput, writeScope, { expectError = false } = {}) {
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+    const original = { execFileSync: _deps.execFileSync, runIteration: _deps.runIteration, logActivity: _deps.logActivity };
+    const workingDir = createGapAnalysisTempGitRepo();
+    const session = createGapAnalysisScopedSession(workingDir, allowedPaths);
+    if (writeScope) writeScope(workingDir, session.dir);
+    const ctx = makeGapAnalysisContext(session.dir, session.runnerState, workingDir);
+    let capturedPrompt = '';
+    const activity = [];
+    _deps.runIteration = async () => ({ completion: 'success', exitCode: 0, timedOut: false, wallSeconds: 1 });
+    _deps.execFileSync = (_cmd, args) => {
+        if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+        const idx = args.indexOf('-p');
+        if (idx !== -1) capturedPrompt = args[idx + 1] || '';
+        return JSON.stringify(judgeOutput);
+    };
+    if (expectError) _deps.logActivity = (event) => { activity.push(event); };
+    try {
+        const mv = readMicroverseState(session.dir);
+        if (!expectError) {
+            await executeGapAnalysis(mv, ctx);
+            return { mv, capturedPrompt };
+        }
+        const error = await executeGapAnalysis(mv, ctx).then(() => null, (err) => err);
+        // Read the artifact BEFORE cleanup so the caller asserts what reached disk.
+        return { mv, capturedPrompt, error, activity, persisted: readMicroverseState(session.dir) };
+    } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+        Object.assign(_deps, original);
+        fs.rmSync(session.dir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+}
+
+test('AC-J1-3: executeGapAnalysis reaches the real judge prompt through the derived surface (mechanism pin, baseline call site)', async () => {
+    const { capturedPrompt } = await runGapAnalysisScopedJudge(
+        ['src/inscope.ts'],
+        {
+            score: 1,
+            violations: [{ id: 'gap-in-scope-1', path: 'src/inscope.ts', line: 4, severity: 'high', description: 'baseline still scored' }],
+            resolved: [], new: ['gap-in-scope-1'], remaining: [],
+        },
+    );
+    assert.equal(
+        capturedPrompt.split('Count ONLY violations located within these paths').length - 1,
+        1,
+        'the REAL baseline judge prompt, reached via executeGapAnalysis -> measureLlmBaseline -> deriveJudgeReviewSurface, must carry the scoping literal exactly once',
+    );
+    assert.deepEqual(
+        judgePromptReviewPaths(capturedPrompt),
+        ['src/inscope.ts'],
+        'the review-paths block must enumerate exactly the scope.json path — never the stale microverse.json snapshot',
+    );
+});
+
+test('AC-J1-3 over-trigger control: executeGapAnalysis still scores an in-scope, in-diff baseline violation', async () => {
+    const { mv, capturedPrompt } = await runGapAnalysisScopedJudge(
+        ['src/inscope.ts'],
+        {
+            score: 1,
+            violations: [{ id: 'gap-over-trigger-1', path: 'src/inscope.ts', line: 8, severity: 'high', description: 'baseline in-scope violation' }],
+            resolved: [], new: ['gap-over-trigger-1'], remaining: [],
+        },
+    );
+    assert.deepEqual(
+        judgePromptReviewPaths(capturedPrompt),
+        ['src/inscope.ts'],
+        'the derived surface must enumerate exactly the scoped path, never a whole-tree or widened surface',
+    );
+    assert.equal(mv.baseline_score, 1, 'the baseline score must reflect the in-scope violation the judge reported');
+    assert.equal(mv.violation_ledger?.length, 1, 'the in-scope baseline violation must be seeded into the ledger');
+    assert.equal(mv.violation_ledger[0].path, 'src/inscope.ts');
+});
+
+// b419a06f (audit, CRITICAL): `--scope paths:<globs>` has no base by construction —
+// resolveScope writes `base_sha: null` — so a surface producer that also required a base
+// derived EVERY real paths-mode session as `failed`, and the baseline threw before the first
+// iteration. The scope.json here comes from the real resolveScope, never a hand-built object.
+test('b419a06f: a real --scope paths: scope.json (base_sha null) still derives a surface and the baseline scores through it', async () => {
+    let producedScope = null;
+    const { mv, capturedPrompt } = await runGapAnalysisScopedJudge(
+        ['src/inscope.ts'],
+        {
+            score: 1,
+            violations: [{ id: 'paths-mode-1', path: 'src/inscope.ts', line: 2, severity: 'high', description: 'paths-mode baseline violation' }],
+            resolved: [], new: ['paths-mode-1'], remaining: [],
+        },
+        (workingDir, sessionDir) => {
+            fs.mkdirSync(path.join(workingDir, 'src'), { recursive: true });
+            fs.writeFileSync(path.join(workingDir, 'src', 'inscope.ts'), 'export const a = 1;\nexport const b = 2;\n');
+            producedScope = resolveScope({ scopeFlag: 'paths:src/**', repoRoot: workingDir, sessionRoot: sessionDir });
+        },
+    );
+    assert.equal(producedScope.mode, 'paths');
+    assert.equal(producedScope.base_sha, null, 'precondition: resolveScope writes no base for paths mode');
+    assert.deepEqual(producedScope.allowed_paths, ['src/inscope.ts']);
+    assert.deepEqual(judgePromptReviewPaths(capturedPrompt), ['src/inscope.ts'], 'the judge prompt must be scoped to the paths-mode surface');
+    assert.equal(mv.exit_reason, undefined, 'a paths-mode surface must not be a derivation failure');
+    assert.equal(mv.baseline_score, 1, 'a whole-file surface keeps the in-path violation (no per-line base to drop against)');
+    assert.equal(mv.violation_ledger?.length, 1);
+});
+
+// e562164b (AC-J1-2, baseline call site): `measureLlmIteration`'s short-circuit is pinned in
+// microverse-stall-resilience.test.js; the BASELINE's was pinned by nothing — deleting it left
+// every suite GREEN while an underivable surface fell through to an unscoped (whole-tree) judge.
+// The stale microverse.json snapshot is what a fallback would reach for.
+test('AC-J1-2 baseline: an underivable surface records a typed exit reason and never reaches the judge', async () => {
+    const { capturedPrompt, error, activity, persisted } = await runGapAnalysisScopedJudge(
+        [],
+        { score: 9, violations: [], resolved: [], new: [], remaining: [] },
+        undefined,
+        { expectError: true },
+    );
+    assert.equal(capturedPrompt, '', 'no judge prompt may be built for an underivable surface — not even an unscoped one');
+    assert.equal(error?.name, 'MicroverseExitError', 'the baseline reports the failure through the typed exit error');
+    assert.equal(persisted.exit_reason, 'metric_unmeasurable_unrecoverable', 'the typed reason must reach microverse.json');
+    assert.equal(persisted.baseline_score, 0, 'no baseline may be scored from a surface that could not be derived');
+    const surfaceEvents = activity.filter((e) => e.gate_payload?.derivation === 'judge_review_surface');
+    assert.equal(surfaceEvents.length, 1, 'exactly one surface-derivation failure event is recorded');
+    assert.equal(surfaceEvents[0].gate_payload.phase, 'baseline');
+});
+
+// ---------------------------------------------------------------------------
+// ac655b46 (AC-J1-8) — decides WHICH version of the review surface the judge scores.
+// CHOSEN LIFETIME: per-iteration (live) — `deriveJudgeReviewSurface` reads `scope.json` fresh
+// on every call, never `MicroverseState.allowed_paths` (a phase-setup snapshot). These two cases
+// construct sessions where state.allowed_paths and the CURRENT scope.json deliberately diverge
+// — exactly what `maybeAutoExtendScope` (pipeline-runner.ts:1974) and a phase-boundary
+// `refreshScope` (scope-resolver.ts, run at every anatomy-park/szechuan-sauce entry) each
+// produce — and assert the judge surface follows the live file, matching the worker's own
+// pre-commit fence (check-scope-diff.ts), never the stale snapshot.
+// ---------------------------------------------------------------------------
+
+test('AC-J1-8 auto-extend: the judge surface follows a scope.json widened after the state snapshot was taken', () => {
+    const sessionDir = makeTmpDir();
+    try {
+        // Simulates the phase-setup snapshot taken BEFORE a later maybeAutoExtendScope widened
+        // scope.json in place.
+        const mv = createMicroverseState({
+            prdPath: '/tmp/prd.md',
+            metric: { description: 'quality', validation: 'q', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'higher' },
+            stallLimit: 3,
+            allowedPaths: ['src/original.ts'],
+        });
+        assert.deepEqual(mv.allowed_paths, ['src/original.ts'], 'precondition: the pre-extend snapshot holds only the original path');
+        // e562164b: on disk, where a sessionDir-reading producer could substitute it for scope.json.
+        writeMicroverseState(sessionDir, mv);
+
+        // Simulates the ON-DISK effect of maybeAutoExtendScope: scope.json re-persisted with the
+        // detector-named caller added (pipeline-runner.ts:1995-2005).
+        // `base_sha: null` is the shape resolveScope writes for paths mode (b419a06f) — a fake
+        // 40-hex base here hid that every real paths-mode surface derived as `failed`.
+        fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+            version: 1, mode: 'paths', base_sha: null,
+            allowed_paths: ['src/original.ts', 'src/extended.ts'],
+        }));
+
+        const result = deriveJudgeReviewSurface(sessionDir);
+        assert.equal(result.kind, 'derived');
+        assert.ok(
+            result.paths.includes('src/extended.ts'),
+            'the derived surface must include the auto-extended path, which state.allowed_paths never carried',
+        );
+        assert.deepEqual(result.paths, ['src/original.ts', 'src/extended.ts']);
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('AC-J1-8 phase refresh: the judge surface follows scope.json after a phase boundary refresh, not an earlier phase\'s snapshot', () => {
+    const sessionDir = makeTmpDir();
+    try {
+        // A real vendored scope.json whose top-level fields reflect the LATEST of two recorded
+        // refresh_history entries (anatomy-park, then szechuan-sauce, ~19.5h apart, different
+        // head_shas) — the exact phase-refresh shape this AC names.
+        const refreshedScope = loadMicroverseScope('2026-09-09-e959390b');
+        assert.equal(refreshedScope.refresh_history.length, 2, 'precondition: the fixture carries two phase refreshes');
+        fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify(refreshedScope));
+
+        // Simulates a state.allowed_paths snapshot taken at an EARLIER phase's setup, before this
+        // refresh — a single, different, stale path.
+        const mv = createMicroverseState({
+            prdPath: '/tmp/prd.md',
+            metric: { description: 'quality', validation: 'q', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'higher' },
+            stallLimit: 3,
+            allowedPaths: ['src/pre-refresh-stale.ts'],
+        });
+        assert.deepEqual(mv.allowed_paths, ['src/pre-refresh-stale.ts'], 'precondition: the stale snapshot predates the refresh');
+        // e562164b: on disk — held only in memory, a producer unioning in microverse.json stayed GREEN.
+        writeMicroverseState(sessionDir, mv);
+
+        const result = deriveJudgeReviewSurface(sessionDir);
+        assert.equal(result.kind, 'derived');
+        assert.equal(result.base, refreshedScope.base_sha, 'the derived base must be the REFRESHED scope.json base_sha, never a stale snapshot value');
+        assert.ok(
+            !result.paths.includes('src/pre-refresh-stale.ts'),
+            'the stale pre-refresh snapshot path must not appear — it was never part of the refreshed scope.json',
+        );
+        assert.ok(
+            result.paths.includes('.claude/agents/morty-debater-architect.md'),
+            'the derived surface must enumerate real paths from the refreshed scope.json, not the stale single-path snapshot',
+        );
+        assert.equal(result.paths.length, refreshedScope.allowed_paths.length);
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// 446b99dd (AC-J1-6) — scoping does not change commit behaviour for an
+// in-scope-only diff, and the out-of-scope disposition is pinned explicitly.
+//
+// Three call sites carry this question: `preflightAutoCommit` (:4074),
+// `listOwnedDirtyPaths` (:5033, unexported — reached here only through the
+// exported `autoRescueDirtyTree` and `handleNoCommitStall`), and the
+// auto-commit staging site inside `autoRescueDirtyTree` (:5155-5156). All
+// three already implement the invariant; these tests PIN it rather than
+// change it (per the ticket: "touch microverse-runner.ts ONLY if the
+// invariant actually fails").
+// ---------------------------------------------------------------------------
+
+function makeScopeTestGitRepo() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-scope446-'));
+    execSync('git init', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'existing.ts'), 'export const a = 1;\n');
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git commit -m "baseline"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    return dir;
+}
+
+function writeScopeResultLog(dir, name, result) {
+    const logPath = path.join(dir, name);
+    fs.writeFileSync(logPath, `${JSON.stringify({ type: 'assistant', message: 'working' })}\n${JSON.stringify({
+        type: 'result',
+        ...result,
+    })}\n`);
+    return logPath;
+}
+
+test('446b99dd: an in-scope-only dirty tree auto-commits the identical file set with scope absent and with scope populated', () => {
+    // Two separate repos, IDENTICAL baseline + IDENTICAL dirty state — one
+    // dirtied file under src/ (modified) and one new file under src/ (added),
+    // nothing dirty anywhere else. Repo A runs preflightAutoCommit unscoped;
+    // repo B runs it with a scope that covers exactly the dirty set.
+    const dirA = makeScopeTestGitRepo();
+    const dirB = makeScopeTestGitRepo();
+    try {
+        for (const dir of [dirA, dirB]) {
+            fs.writeFileSync(path.join(dir, 'src', 'existing.ts'), 'export const a = 2; // modified\n');
+            fs.writeFileSync(path.join(dir, 'src', 'new-file.ts'), 'export const b = 1;\n');
+        }
+
+        preflightAutoCommit(dirA, () => {});
+        preflightAutoCommit(dirB, () => {}, ['src/**']);
+
+        const headMsgA = execSync('git log -1 --format=%s', { cwd: dirA, encoding: 'utf-8', timeout: 30000 }).trim();
+        const headMsgB = execSync('git log -1 --format=%s', { cwd: dirB, encoding: 'utf-8', timeout: 30000 }).trim();
+        assert.equal(headMsgA, 'microverse: auto-commit dirty tree before start', 'unscoped run must auto-commit');
+        assert.equal(headMsgB, 'microverse: auto-commit dirty tree before start', 'scoped run must auto-commit the identical in-scope-only set');
+
+        const filesA = execSync('git show --name-only --format= HEAD', { cwd: dirA, encoding: 'utf-8', timeout: 30000 })
+            .trim().split('\n').filter(Boolean).sort();
+        const filesB = execSync('git show --name-only --format= HEAD', { cwd: dirB, encoding: 'utf-8', timeout: 30000 })
+            .trim().split('\n').filter(Boolean).sort();
+        assert.deepEqual(filesA, filesB, 'scope absent vs scope populated must commit the identical file set for an in-scope-only diff');
+        assert.deepEqual(filesA, ['src/existing.ts', 'src/new-file.ts'], 'both dirty files must be in the single commit');
+
+        // Both trees are clean after their respective auto-commit — no
+        // divergence hiding in leftover dirt.
+        assert.equal(execSync('git status --porcelain', { cwd: dirA, encoding: 'utf-8', timeout: 30000 }).trim(), '');
+        assert.equal(execSync('git status --porcelain', { cwd: dirB, encoding: 'utf-8', timeout: 30000 }).trim(), '');
+    } finally {
+        fs.rmSync(dirA, { recursive: true, force: true });
+        fs.rmSync(dirB, { recursive: true, force: true });
+    }
+});
+
+test('446b99dd: scope-based out-of-scope-only dirt is salvage-anchored by the rescue, never committed, and cannot manufacture a false convergence', async () => {
+    // Extends the exclude-based AP-EXT-ITER119-01 pattern
+    // (microverse-stall-resilience.test.js) to the SCOPE axis: the only
+    // dirty file is outside allowed_paths (not under an AUTO_COMMIT_DIRT_EXCLUDES
+    // prefix), so listOwnedDirtyPaths disowns it via scope, not excludes.
+    const workingDir = makeScopeTestGitRepo();
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-scope446-session-'));
+    const originalSleep = _deps.sleep;
+    _deps.sleep = async () => {};
+    try {
+        fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ allowed_paths: ['src/**'] }));
+        fs.mkdirSync(path.join(workingDir, 'lib'), { recursive: true });
+        fs.writeFileSync(path.join(workingDir, 'lib', 'outside.ts'), 'export const c = 1;\n');
+
+        const preSha = execSync('git rev-parse HEAD', { cwd: workingDir, encoding: 'utf-8', timeout: 30000 }).trim();
+        const ctx = {
+            sessionDir,
+            workingDir,
+            preIterSha: preSha,
+            postIterSha: preSha,
+            iteration: 1,
+            log: () => {},
+        };
+
+        autoRescueDirtyTree(ctx);
+
+        // (a) disposition: NOT committed, salvage-anchored (recoverable).
+        const headSha = execSync('git rev-parse HEAD', { cwd: workingDir, encoding: 'utf-8', timeout: 30000 }).trim();
+        assert.equal(headSha, preSha, 'an out-of-scope-only dirty tree must produce NO rescue commit');
+        const porcelain = execSync('git status --porcelain -uall', { cwd: workingDir, encoding: 'utf-8', timeout: 30000 });
+        assert.match(porcelain, /\?\? lib\/outside\.ts/, 'out-of-scope file must remain dirty/untracked in the working tree');
+        const refTree = execSync(`git ls-tree -r --name-only refs/pickle/salvage/${path.basename(sessionDir)}`, {
+            cwd: workingDir, encoding: 'utf-8', timeout: 30000,
+        });
+        assert.match(refTree, /lib\/outside\.ts/, 'the out-of-scope file must be recoverable from the salvage ref');
+
+        // (b) the scope-driven disowning cannot manufacture a false
+        // convergence: even a worker log claiming a clean pass must not
+        // read as 'converged' when the only dirt is out-of-scope.
+        // ctx.postIterSha is still preSha here — autoRescueDirtyTree only
+        // advances it on a successful commit, and none was made above.
+        const logPath = writeScopeResultLog(sessionDir, 'tmux_iteration_1.log', {
+            subtype: 'success',
+            num_turns: 60,
+            result: 'Clean pass — no violations found. Nothing to fix here.',
+        });
+        const state = createMicroverseState({
+            prdPath: '/tmp/prd.md',
+            metric: { description: 'quality', validation: 'q', type: 'command', timeout_seconds: 5, tolerance: 0 },
+            stallLimit: 3,
+        });
+        state.status = 'iterating';
+
+        const result = await handleNoCommitStall(state, ctx, logPath);
+        assert.notEqual(result, 'converged', 'scope-driven out-of-scope-only dirt must never manufacture a false convergence verdict');
+        assert.equal(result, null, 'below stall_limit the loop keeps going, it does not halt');
+        assert.equal(state.convergence.stall_counter, 1, 'the iteration correctly registers as a stall — the risk the ticket names, handled as designed');
+    } finally {
+        _deps.sleep = originalSleep;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 51d7d765 (AC-J1-7): isCodeFreeScope reachability — a scoped-but-
+// code-free microverse run DOES skip szechuan-sauce, the skip is intentional
+// and reported, and it reaches the phase artifact.
+//
+// Measurement: `isCodeFreeScope` (src/bin/pipeline-runner.ts:2227) has exactly
+// one call site, inside `shouldSkipSzechuanForEmptyScope`, consumed by
+// `setupSzechuanSauce`. src/bin/CLAUDE.md's R-PSSS trap door already declares
+// this skip MUST emit a WARN + `szechuan_sauce_empty_scope_skip` activity
+// event before the `init-microverse.js` spawn, and
+// extension/tests/szechuan-scope.test.js ("R-PSSS-2: szechuan-sauce skips a
+// code-free (doc-only) scope with a WARN") already pins the WARN and the
+// returned `{skipReason:'empty_scope'}` for this exact case — the skip is
+// intended, not an accident of the new surface. What was missing: no test
+// asserted the activity event itself fires for the CODE-FREE-scope cause
+// (only the sibling empty-branch-diff cause, AC-B1 in
+// szechuan-scope.test.js, checks event emission), and nothing tied this
+// specific skip reason through to the phase artifact (pipeline-status.json's
+// phase_skips — the generic wiring is R-PSSS-3, already tested for other
+// reasons, but never for this one). Both gaps are closed below by driving
+// the REAL `setupSzechuanSauce` and the REAL phase loop (`main`); no behavior
+// change was needed in pipeline-runner.ts.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT_51D7D765 = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+function readActivityEvents51d7d765(dataRoot, eventName) {
+    const activityDir = path.join(dataRoot, 'activity');
+    if (!fs.existsSync(activityDir)) return [];
+    const events = [];
+    for (const f of fs.readdirSync(activityDir).filter((n) => n.endsWith('.jsonl'))) {
+        for (const line of fs.readFileSync(path.join(activityDir, f), 'utf-8').split('\n').filter(Boolean)) {
+            try {
+                const parsed = JSON.parse(line);
+                if (parsed.event === eventName) events.push(parsed);
+            } catch { /* skip malformed */ }
+        }
+    }
+    return events;
+}
+
+function withPickleDataRoot51d7d765(dataRoot, fn) {
+    const prior = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    try {
+        return fn();
+    } finally {
+        if (prior === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = prior;
+    }
+}
+
+test('51d7d765/AC-J1-7: a scoped-but-code-free run skips szechuan-sauce via isCodeFreeScope, and the skip reaches the event log', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-51d7d765-'));
+    const dataRoot = path.join(dir, 'data');
+    try {
+        const codeFreePaths = ['docs/guide.md', 'CHANGELOG.md'];
+        fs.writeFileSync(
+            path.join(dir, 'scope.json'),
+            JSON.stringify({ allowed_paths: codeFreePaths, mode: 'diff', strategy: 'strict', head_sha: 'abc' }),
+        );
+
+        const logs = [];
+        const result = withPickleDataRoot51d7d765(dataRoot, () =>
+            setupSzechuanSauce(dir, '/some/target', 5, REPO_ROOT_51D7D765, undefined, undefined, (m) => logs.push(m)));
+
+        // AC1/AC2: the skip DOES occur, via the isCodeFreeScope path, and is
+        // reported — never a silent no-op.
+        assert.deepStrictEqual(result, { skipReason: 'empty_scope' },
+            'a scoped, code-free run must skip szechuan-sauce with the empty_scope reason');
+        assert.match(logs.join('\n'), /no code files/, 'the WARN must name the code-free cause');
+        assert.equal(fs.existsSync(path.join(dir, 'microverse.json')), false,
+            'init-microverse.js must never be spawned on a code-free-scope skip');
+
+        // The genuinely missing pin: the activity event ITSELF, for this
+        // specific (code-free scope) cause — not merely the WARN + return
+        // value the pre-existing R-PSSS-2 test already covers.
+        const events = readActivityEvents51d7d765(dataRoot, 'szechuan_sauce_empty_scope_skip');
+        assert.equal(events.length, 1, `expected exactly 1 szechuan_sauce_empty_scope_skip event; got ${events.length}`);
+        assert.deepStrictEqual(events[0].gate_payload.in_scope_paths, codeFreePaths,
+            'the event must carry the code-free path set that made the scope reachable');
+
+        // AC3 (the skip reaches the phase artifact) is pinned by the next case,
+        // through the real phase loop.
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+// e562164b: AC3 used to call `writePipelineStatus` with a hand-written
+// `phase_skips` map, which proves only that the writer serializes what it is
+// handed — deleting `runPhaseIteration`'s skipReason -> counters.phaseSkips
+// wiring left it GREEN (measured). This drives the exported `main()` over a real
+// repo and a real `resolveScope` code-free scope, so the refresh, the
+// isCodeFreeScope skip and the status write all run as shipped.
+function initCodeFreeScopeRepo51d7d765(repo) {
+    const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf-8', stdio: 'pipe', timeout: 30000 }).trim();
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 't@t.local');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    fs.writeFileSync(path.join(repo, 'seed.ts'), 'export const x = 1;\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'seed');
+    const baseSha = git('rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(repo, 'CHANGELOG.md'), 'docs only\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'docs');
+    return baseSha;
+}
+
+test('51d7d765/AC-J1-7: the code-free-scope skip reaches pipeline-status.json phase_skips through the real phase loop', async () => {
+    // realpath: `refreshScope` compares the pipeline target against git's resolved root, and
+    // macOS tmpdir is a /var -> /private/var symlink; unresolved, the refresh drops every path.
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-51d7d765-repo-')));
+    const sessionDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-51d7d765-session-')));
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    const originalDataRoot = process.env.PICKLE_DATA_ROOT;
+    let spawned = 0;
+    try {
+        const baseSha = initCodeFreeScopeRepo51d7d765(repo);
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+            active: false, working_dir: repo, step: 'implement', iteration: 0, max_iterations: 100,
+            max_time_minutes: 720, worker_timeout_seconds: 1200, start_time_epoch: 1000,
+            completion_promise: null, original_prompt: '51d7d765', current_ticket: null, history: [],
+            started_at: new Date().toISOString(), session_dir: sessionDir, schema_version: 3,
+            tmux_mode: false, chain_meeseeks: false, backend: 'claude',
+        }, null, 2));
+        fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+            phases: ['szechuan-sauce'], target: repo, anatomy_stall_limit: 3, szechuan_stall_limit: 5,
+            anatomy_max_iterations: 100, szechuan_max_iterations: 50, dirty_exempt_segments: ['prds', 'docs'],
+        }, null, 2));
+        const produced = resolveScope({ scopeFlag: `diff:${baseSha}`, repoRoot: repo, sessionRoot: sessionDir });
+        assert.deepEqual(produced.allowed_paths, ['CHANGELOG.md'], 'precondition: the real scope is non-empty and code-free');
+
+        __setSpawnRunnerForTests(async () => { spawned++; return 0; });
+        delete process.env.TMUX;
+        process.env.PICKLE_DATA_ROOT = path.join(sessionDir, 'data');
+        let exitCode = null;
+        process.exit = (code) => { exitCode = code ?? 0; throw new Error(`process.exit(${exitCode})`); };
+        await main(sessionDir).catch((err) => { if (exitCode === null) throw err; });
+
+        assert.equal(spawned, 0, 'a skipped phase never spawns its runner');
+        const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+        assert.deepStrictEqual(status.phase_skips, { 'szechuan-sauce': 'empty_scope' },
+            'the code-free-scope skip reason must reach pipeline-status.json phase_skips');
+        assert.equal(status.skipped_phases, 1);
+    } finally {
+        process.exit = originalExit;
+        if (originalTmux === undefined) delete process.env.TMUX;
+        else process.env.TMUX = originalTmux;
+        if (originalDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = originalDataRoot;
+        __setSpawnRunnerForTests(null);
+        fs.rmSync(repo, { recursive: true, force: true });
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// da44ff00 (AC-J3-1..4) — drop out-of-surface findings before they are scored
+// and before they reach violation_ledger, decided PER LINE via db605b05's own
+// derived surface (`deriveJudgeReviewSurface`), never per path. `parseChangedLineNumbersFromDiff`
+// is the pure text half (mirrors convergence-gate.ts's parseChangedExportedSymbolsFromDiff);
+// `dropOutOfSurfaceViolations` is the filter both call sites apply before `updateViolationLedger`.
+// ---------------------------------------------------------------------------
+
+test('parseChangedLineNumbersFromDiff: a single hunk records only the added/changed new-file lines', () => {
+    const diff = [
+        'diff --git a/src/foo.ts b/src/foo.ts',
+        'index abc..def 100644',
+        '--- a/src/foo.ts',
+        '+++ b/src/foo.ts',
+        '@@ -1,4 +1,4 @@',
+        ' line1',
+        '-line2',
+        '+line2 changed',
+        ' line3',
+        '-line4',
+        '+line4 changed',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.deepEqual(result.get('src/foo.ts'), new Set([2, 4]),
+        'context lines advance the cursor but are never recorded; only +-prefixed lines are touched');
+});
+
+test('parseChangedLineNumbersFromDiff: multiple hunks in one file reset the cursor per hunk header', () => {
+    const diff = [
+        'diff --git a/src/bar.ts b/src/bar.ts',
+        '--- a/src/bar.ts',
+        '+++ b/src/bar.ts',
+        '@@ -1,2 +1,3 @@',
+        ' one',
+        '+two',
+        ' three',
+        '@@ -20,2 +21,3 @@',
+        ' twenty',
+        '+twentyone',
+        ' twentytwo',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.deepEqual(result.get('src/bar.ts'), new Set([2, 22]));
+});
+
+test('parseChangedLineNumbersFromDiff: a pure delete records nothing for the deleted path', () => {
+    const diff = [
+        'diff --git a/src/gone.ts b/src/gone.ts',
+        '--- a/src/gone.ts',
+        '+++ /dev/null',
+        '@@ -1,2 +0,0 @@',
+        '-one',
+        '-two',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.equal(result.has('src/gone.ts'), false,
+        'a file with no +++ b/ header never enters the map — nothing in it can be a touched line');
+});
+
+test('parseChangedLineNumbersFromDiff: a name containing a space keys without git\'s trailing TAB', () => {
+    // git appends a TAB to ---/+++ lines whose name contains a space (GNU patch compat).
+    const diff = [
+        'diff --git a/src/foo bar.ts b/src/foo bar.ts',
+        '--- a/src/foo bar.ts\t',
+        '+++ b/src/foo bar.ts\t',
+        '@@ -1,1 +1,1 @@',
+        '-old',
+        '+new',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.deepEqual([...result.keys()], ['src/foo bar.ts']);
+    assert.deepEqual(result.get('src/foo bar.ts'), new Set([1]));
+});
+
+test('parseChangedLineNumbersFromDiff: an added line whose text starts "++ " is content, not a file header', () => {
+    const diff = [
+        'diff --git a/src/foo.ts b/src/foo.ts',
+        '--- a/src/foo.ts',
+        '+++ b/src/foo.ts',
+        '@@ -1,1 +1,3 @@',
+        '+++ looks like a header',
+        '--- removed line that looks like a header',
+        ' ctx',
+        '+after',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.deepEqual([...result.keys()], ['src/foo.ts']);
+    assert.deepEqual(result.get('src/foo.ts'), new Set([1, 3]));
+});
+
+test('parseChangedLineNumbersFromDiff: a C-quoted header is unmeasurable (null), never a silently empty file', () => {
+    const diff = [
+        'diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"',
+        '--- "a/caf\\303\\251.ts"',
+        '+++ "b/caf\\303\\251.ts"',
+        '@@ -1,1 +1,1 @@',
+        '-old',
+        '+new',
+    ].join('\n');
+    assert.equal(parseChangedLineNumbersFromDiff(diff), null);
+});
+
+test('dropOutOfSurfaceViolations: real git — touched lines in space and non-ASCII named files are kept', () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-oddname-')));
+    try {
+        const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+            { cwd: dir, encoding: 'utf-8', stdio: 'pipe', timeout: 30000 });
+        git('init', '-q');
+        const names = ['foo bar.ts', 'café.ts'];
+        for (const n of names) fs.writeFileSync(path.join(dir, n), 'a\nb\n');
+        git('add', '.');
+        git('commit', '-q', '-m', 'base');
+        const base = git('rev-parse', 'HEAD').trim();
+        for (const n of names) fs.writeFileSync(path.join(dir, n), 'a\nB\n');
+        git('commit', '-q', '-am', 'bundle');
+        const violations = names.flatMap((n) => [
+            { id: `${n}-touched`, path: n, line: 2, severity: 'low', description: 'touched' },
+            { id: `${n}-pre`, path: n, line: 1, severity: 'low', description: 'pre-existing' },
+        ]);
+        const result = dropOutOfSurfaceViolations(violations, { kind: 'derived', paths: names, base }, dir);
+        assert.deepEqual(result.kept.map((v) => v.id), names.map((n) => `${n}-touched`));
+        assert.equal(result.droppedCount, 2);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('dropOutOfSurfaceViolations: an unscoped surface passes every violation through unfiltered', () => {
+    const originalSpawn = _deps.spawnSync;
+    let spawnCalled = false;
+    try {
+        _deps.spawnSync = () => { spawnCalled = true; return { status: 0, stdout: '' }; };
+        const violations = [{ id: 'a', path: 'src/foo.ts', line: 999, severity: 'low', description: 'x' }];
+        const result = dropOutOfSurfaceViolations(violations, { kind: 'unscoped' }, '/tmp/whatever');
+        assert.deepEqual(result, { kept: violations, droppedCount: 0 });
+        assert.equal(spawnCalled, false, 'an unscoped surface has no fence to test membership against — no git spawn needed');
+    } finally {
+        _deps.spawnSync = originalSpawn;
+    }
+});
+
+test('dropOutOfSurfaceViolations: an unmeasurable diff fails OPEN (retains everything, drops nothing)', () => {
+    const originalSpawn = _deps.spawnSync;
+    try {
+        // AP-EXT-ITER38-01 family: git failing to run is not evidence the finding is out of scope.
+        _deps.spawnSync = () => ({ status: null, error: new Error('ENOENT') });
+        const violations = [{ id: 'a', path: 'src/foo.ts', line: 3, severity: 'low', description: 'x' }];
+        const result = dropOutOfSurfaceViolations(
+            violations,
+            { kind: 'derived', paths: ['src/foo.ts'], base: 'f'.repeat(40) },
+            '/tmp/whatever',
+        );
+        assert.deepEqual(result, { kept: violations, droppedCount: 0 });
+    } finally {
+        _deps.spawnSync = originalSpawn;
+    }
+});
+
+test('dropOutOfSurfaceViolations: per-line, both directions in one assertion (under- and over-trigger control)', () => {
+    const originalSpawn = _deps.spawnSync;
+    try {
+        // git diff shows only line 5 of src/foo.ts as touched.
+        const diff = [
+            'diff --git a/src/foo.ts b/src/foo.ts',
+            '--- a/src/foo.ts',
+            '+++ b/src/foo.ts',
+            '@@ -5,1 +5,1 @@',
+            '-old',
+            '+new',
+        ].join('\n');
+        _deps.spawnSync = () => ({ status: 0, stdout: diff });
+        const preExisting = { id: 'pre', path: 'src/foo.ts', line: 2, severity: 'low', description: 'pre-existing, untouched' };
+        const touched = { id: 'touched', path: 'src/foo.ts', line: 5, severity: 'low', description: 'on the touched line' };
+        const noLocator = { id: 'no-line', path: 'src/foo.ts', severity: 'low', description: 'no usable locator' };
+        const result = dropOutOfSurfaceViolations(
+            [preExisting, touched, noLocator],
+            { kind: 'derived', paths: ['src/foo.ts'], base: 'f'.repeat(40) },
+            '/tmp/whatever',
+        );
+        // Under-trigger (filter neutered) would keep `preExisting` too; over-trigger (filter
+        // widened to drop everything) would drop `touched` and/or `noLocator`. This single
+        // deepEqual reds under EITHER mutation direction.
+        assert.deepEqual(result, { kept: [touched, noLocator], droppedCount: 1 });
+    } finally {
+        _deps.spawnSync = originalSpawn;
+    }
+});
+
+function perLineTempGitRepo() {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-perline-work-')));
+    execSync('git init', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    const lines = ['export const a = 1;', 'export const b = 2;', 'export const c = 3;', 'export const d = 4;', 'export const e = 5;'];
+    fs.writeFileSync(path.join(dir, 'src', 'inscope.ts'), lines.join('\n') + '\n');
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git commit -m "base"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    const baseSha = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8', timeout: 30000 }).trim();
+
+    // The bundle's own commit touches ONLY line 5 — lines 1-4 stay pre-existing.
+    lines[4] = 'export const e = 500; // touched by this bundle';
+    fs.writeFileSync(path.join(dir, 'src', 'inscope.ts'), lines.join('\n') + '\n');
+    execSync('git add .', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+    execSync('git commit -m "bundle change"', { cwd: dir, stdio: 'pipe', timeout: 30000 });
+
+    return { dir, baseSha };
+}
+
+async function runPerLineJudgeIteration(violations) {
+    const { dir: workingDir, baseSha } = perLineTempGitRepo();
+    const sessionDir = rootSMakeTmpDir('pickle-mv-perline-session-');
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+        version: 1, mode: 'branch', base_sha: baseSha, allowed_paths: ['src/inscope.ts'],
+    }));
+    const runnerState = rootSMakeRunnerState(sessionDir, workingDir);
+    const mv = createMicroverseState({
+        prdPath: path.join(workingDir, 'prd.md'),
+        metric: {
+            description: 'quality',
+            validation: 'reduce violations',
+            type: 'llm',
+            timeout_seconds: 60,
+            tolerance: 0,
+            direction: 'lower',
+            judge_model: 'claude-sonnet-4-6',
+        },
+        stallLimit: 3,
+    });
+    mv.status = 'iterating';
+    mv.baseline_score = violations.length;
+    mv.convergence_target = 0;
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+    writeMicroverseState(sessionDir, mv);
+
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+    const originalExec = _deps.execFileSync;
+    try {
+        _deps.execFileSync = (_cmd, args) => {
+            if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+            return JSON.stringify({
+                score: violations.length,
+                violations,
+                resolved: [],
+                new: violations.map((v) => v.id),
+                remaining: [],
+            });
+        };
+        const ctx = rootSMakeContext(sessionDir, workingDir, runnerState);
+        await measureAndClassifyIteration(mv, { raw: '0', score: violations.length }, ctx);
+        // Read the persisted artifact BEFORE cleanup, so a caller can assert the on-disk field
+        // round-trips through `writeMicroverseState` rather than only the in-memory `mv` object.
+        const persisted = readMicroverseState(sessionDir);
+        return { mv, persisted };
+    } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+        _deps.execFileSync = originalExec;
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+}
+
+test('AC-J3-1/2/3: a pre-existing in-scope-file finding never reaches violation_ledger, on the real consume path; a touched-line finding and a no-locator finding both survive', async () => {
+    const preExisting = { id: 'v-pre', path: 'src/inscope.ts', line: 2, severity: 'high', description: 'pre-existing line 2 finding' };
+    const touched = { id: 'v-touched', path: 'src/inscope.ts', line: 5, severity: 'high', description: 'touched line finding' };
+    const noLocator = { id: 'v-no-line', path: 'src/inscope.ts', severity: 'high', description: 'no usable locator finding' };
+    const { mv } = await runPerLineJudgeIteration([preExisting, touched, noLocator]);
+
+    const descriptions = (mv.violation_ledger ?? []).map((e) => e.description).sort();
+    assert.deepEqual(
+        descriptions,
+        ['no usable locator finding', 'touched line finding'].sort(),
+        'the pre-existing-line finding must be absent; the touched-line and no-locator findings must both survive',
+    );
+    // Never assert ledger membership by the judge-supplied id — updateViolationLedger mints its
+    // own ids absent a prior match (src/services/CLAUDE.md).
+    assert.ok(
+        !(mv.violation_ledger ?? []).some((e) => e.description === preExisting.description),
+        'the dropped finding must be identifiable as absent by content, not merely by count',
+    );
+});
+
+test('AC-J3-4: the drop count reaches the persisted phase artifact (microverse.json)', async () => {
+    const preExisting = { id: 'v-pre', path: 'src/inscope.ts', line: 2, severity: 'high', description: 'pre-existing line 2 finding' };
+    const touched = { id: 'v-touched', path: 'src/inscope.ts', line: 5, severity: 'high', description: 'touched line finding' };
+    const { mv, persisted } = await runPerLineJudgeIteration([preExisting, touched]);
+    assert.equal(mv.out_of_surface_findings_dropped, 1, 'the in-memory state must carry the drop count');
+    assert.equal(
+        persisted.out_of_surface_findings_dropped,
+        1,
+        'the drop count must round-trip through writeMicroverseState into microverse.json, not just stay in memory',
+    );
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 2c1c30a0 (WIRE): the surface producer (deriveJudgeReviewSurface), the
+// per-line drop filter (dropOutOfSurfaceViolations) and the stall-cause
+// attribution (deriveStallCause, via convergence.last_stall_signal /
+// state.stall_disposition) connected on ONE real call path. Driven through
+// the exported dispatcher `handleIterationOutcome` — never a hand-built
+// classification or a directly-invoked `convergenceExitReason` — over
+// `stallLimit` passes of an identical judge report, so the same real
+// scope.json + real git diff that filters the ledger every pass is also what
+// the stall exit's own disposition reads its cause from.
+// ---------------------------------------------------------------------------
+
+test('WIRE: surface -> per-line drop -> ledger -> stall exit -> stall_disposition, on one real call path', async () => {
+    const { dir: workingDir, baseSha } = perLineTempGitRepo();
+    const sessionDir = rootSMakeTmpDir('pickle-mv-wire-session-');
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+        version: 1, mode: 'branch', base_sha: baseSha, allowed_paths: ['src/inscope.ts'],
+    }));
+    const runnerState = rootSMakeRunnerState(sessionDir, workingDir);
+    const mv = createMicroverseState({
+        prdPath: path.join(workingDir, 'prd.md'),
+        metric: {
+            description: 'quality',
+            validation: 'reduce violations',
+            type: 'llm',
+            timeout_seconds: 60,
+            tolerance: 0,
+            direction: 'lower',
+            judge_model: 'claude-sonnet-4-6',
+        },
+        stallLimit: 3,
+    });
+    mv.status = 'iterating';
+    mv.baseline_score = 1;
+    // Seed the ledger with the touched-line violation ALONE (AP-EXT-ITER22-01:
+    // hasPriorLedgerContext needs a populated previous ledger, not merely a
+    // resolved>0 report, for set_ops classification to be reachable when the
+    // judge reports the same set every pass).
+    mv.violation_ledger = [{
+        id: 'v-touched', path: 'src/inscope.ts', line: 5, severity: 'high',
+        description: 'touched line finding', first_seen_iter: 0, last_seen_iter: 0,
+    }];
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+    writeMicroverseState(sessionDir, mv);
+
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+    const originalExec = _deps.execFileSync;
+    let lastCapturedPrompt = '';
+    try {
+        _deps.execFileSync = (_cmd, args) => {
+            if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+            const idx = args.indexOf('-p');
+            if (idx !== -1) lastCapturedPrompt = args[idx + 1] || '';
+            // A real judge keeps re-reporting BOTH findings every pass; it is the per-line
+            // filter — not the judge — that must keep the pre-existing one out of the ledger.
+            const preExisting = { id: 'v-pre', path: 'src/inscope.ts', line: 2, severity: 'high', description: 'pre-existing line 2 finding' };
+            const touched = { id: 'v-touched', path: 'src/inscope.ts', line: 5, severity: 'high', description: 'touched line finding' };
+            return JSON.stringify({
+                score: 2,
+                violations: [preExisting, touched],
+                resolved: [], new: [], remaining: ['v-pre', 'v-touched'],
+            });
+        };
+        const ctx = rootSMakeContext(sessionDir, workingDir, runnerState);
+        // Fixed and distinct from the repo's real HEAD (the "bundle change" commit) on every
+        // pass — handleIterationOutcome computes postIterSha live via _deps.getHeadSha, so this
+        // simulates "a commit happened" identically each iteration without needing one.
+        ctx.preIterSha = baseSha;
+        let lastResult = null;
+        for (let i = 0; i < 3; i++) {
+            ctx.iteration = i + 1;
+            lastResult = await handleIterationOutcome(mv, { raw: '1', score: 1 }, ctx, {
+                completion: 'task_completed', timedOut: false, exitCode: 0, wallSeconds: 1,
+            });
+        }
+
+        assert.equal(
+            lastResult,
+            'stalled_below_target',
+            'held classification for stallLimit passes must exit stalled_below_target, through the real dispatcher',
+        );
+        assert.ok(
+            lastCapturedPrompt.includes('Count ONLY violations located within these paths'),
+            'the surface producer must still reach the real judge prompt on the stall-driving path',
+        );
+
+        const descriptions = (mv.violation_ledger ?? []).map((e) => e.description);
+        assert.deepEqual(
+            descriptions,
+            ['touched line finding'],
+            'the pre-existing out-of-surface finding must never survive into the ledger the stall exit reads its cause from',
+        );
+
+        assert.ok(mv.stall_disposition, 'the stall exit must persist a stall_disposition');
+        assert.equal(
+            mv.stall_disposition.inputs.last_stall_signal,
+            'held',
+            'the disposition must attribute the SAME held signal the filtered ledger produced',
+        );
+
+        const persisted = readMicroverseState(sessionDir);
+        assert.deepEqual(
+            (persisted.violation_ledger ?? []).map((e) => e.description),
+            ['touched line finding'],
+            'the filtered ledger and the stall disposition must both round-trip to disk, not just stay in memory',
+        );
+        // e562164b (AC-J4-3): the persisted DERIVATION INPUTS, iteration included — the field the
+        // artifact otherwise lacks. `assert.ok` alone stayed GREEN with the runtime passing 0.
+        assert.deepEqual(
+            persisted.stall_disposition,
+            { cause: 'held', inputs: { last_stall_signal: 'held', iteration: 3 } },
+            'the persisted stall_disposition must carry the cause AND the inputs it was derived from, including the final iteration',
+        );
+    } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+        _deps.execFileSync = originalExec;
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+

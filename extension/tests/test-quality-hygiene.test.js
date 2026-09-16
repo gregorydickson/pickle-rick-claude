@@ -2,9 +2,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import * as ts from 'typescript';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
@@ -118,6 +119,35 @@ test('backend/version identity assertions do not use broad .includes()', () => {
   assert.deepEqual(violations, [], `Weak backend/version assertions found:\n${violations.join('\n')}`);
 });
 
+// B-JUDGESCOPE AC-V-2: the three microverse corpora this bundle replays are vendored under
+// tests/fixtures/microverse-corpora/ (see tests/helpers/microverse-corpora.js) precisely because
+// ~/.local/share/pickle-rick/sessions/ is subject to pruneOldSessions and cannot be relied on to
+// still hold a given session by the time this suite runs. A CODE line (not a comment, not fixture
+// data) reading that live root has a deletion date.
+//
+// Scoped to the files this bundle actually controls, not a repo-wide grep: a blunt substring scan
+// over all of extension/tests/ also matches benign pre-existing prose comments and fabricated
+// example paths (e.g. '/home/user/.local/share/pickle-rick/sessions/...' test fixtures) in files
+// unrelated to this bundle and out of its scope fence — none of which perform an actual read.
+const REPLAY_FILES_UNDER_TEST = ['helpers/microverse-corpora.js', 'microverse-helpers.test.js'];
+const LIVE_SESSIONS_ROOT_RE = /local\/share\/pickle-rick\/sessions/;
+
+test('microverse corpora loader and its tests do not read the live sessions root (B-JUDGESCOPE AC-V-2)', () => {
+  const violations = [];
+  for (const relFile of REPLAY_FILES_UNDER_TEST) {
+    const filePath = path.join(__dirname, relFile);
+    const codeLines = readFileSync(filePath, 'utf8')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//'));
+    for (const line of codeLines) {
+      if (LIVE_SESSIONS_ROOT_RE.test(line)) {
+        violations.push(`${relFile}: ${line.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(violations, [], `Live-session-root reads found:\n${violations.join('\n')}`);
+});
+
 test('each TEST_FILES file is wired into default test tiers', () => {
   const failures = [];
   const defaultTierFiles = new Set(discoverDefaultTestFiles());
@@ -137,4 +167,84 @@ test('each TEST_FILES file is wired into default test tiers', () => {
     }
   }
   assert.deepEqual(failures, [], `Unwired TEST_FILES entries:\n${failures.join('\n')}`);
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 2c1c30a0 (WIRE): the five exports the judge-scope bundle added must
+// each have a real CALL somewhere — not merely be imported, and not merely
+// named in a comment (the AST walk below never visits comment trivia, so a
+// prose mention cannot satisfy it). Three of the five
+// (`dropOutOfSurfaceViolations`, `measureLlmIteration`,
+// `parseChangedLineNumbersFromDiff`) are exported deliberately for
+// testability — each already has direct unit coverage elsewhere in this
+// suite, and their production consumer is a same-file internal call, not a
+// second module importing them. `deriveJudgeReviewSurface` is the same
+// shape. `deriveStallCause` is the one cross-module production wire
+// (microverse-state.ts -> microverse-runner.ts). None of the five is
+// orphaned: this census fails the moment any of them loses its call site.
+//
+// e562164b: the census counts PRODUCTION calls only. It used to count tests/
+// too, and every one of the five is called directly by a unit test, so
+// deleting the production call sites of `dropOutOfSurfaceViolations` and
+// `deriveStallCause` left it GREEN — a wire census satisfied by its own tests.
+// Spec files under src/ (`__tests__`, `*.spec.ts`) are tests and excluded too.
+// ---------------------------------------------------------------------------
+
+const JUDGE_SCOPE_EXPORTS = [
+  'deriveJudgeReviewSurface',
+  'deriveStallCause',
+  'dropOutOfSurfaceViolations',
+  'measureLlmIteration',
+  'parseChangedLineNumbersFromDiff',
+];
+
+function walkFiles(root, predicate, out = []) {
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+    const full = path.join(root, entry.name);
+    if (statSync(full).isDirectory()) {
+      walkFiles(full, predicate, out);
+    } else if (predicate(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+function countRealCalls(filePath, names) {
+  const source = readFileSync(filePath, 'utf8');
+  const scriptKind = filePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, scriptKind);
+  const counts = Object.fromEntries(names.map((n) => [n, 0]));
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      Object.prototype.hasOwnProperty.call(counts, node.expression.text)
+    ) {
+      counts[node.expression.text] += 1;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return counts;
+}
+
+test('WIRE (2c1c30a0): no orphaned export among the judge-scope bundle exports — every one has a production call site', () => {
+  const productionFiles = walkFiles(path.join(EXTENSION_ROOT, 'src'), (name) => name.endsWith('.ts') && !name.endsWith('.spec.ts'))
+    .filter((file) => !file.split(path.sep).includes('__tests__'));
+  assert.ok(productionFiles.length > 100, `the production walk must not be vacuous; found ${productionFiles.length} file(s)`);
+
+  const totals = Object.fromEntries(JUDGE_SCOPE_EXPORTS.map((n) => [n, 0]));
+  for (const file of productionFiles) {
+    const counts = countRealCalls(file, JUDGE_SCOPE_EXPORTS);
+    for (const name of JUDGE_SCOPE_EXPORTS) totals[name] += counts[name];
+  }
+
+  const orphaned = JUDGE_SCOPE_EXPORTS.filter((name) => totals[name] === 0);
+  assert.deepEqual(
+    orphaned,
+    [],
+    `orphaned export(s) with zero production call sites under src/ (test callers do not count): ${orphaned.join(', ')}`,
+  );
 });
