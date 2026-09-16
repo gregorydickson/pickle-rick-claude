@@ -163,18 +163,11 @@ interface RuleMatch {
 }
 
 function findingsForAddedFile(repoRoot: string, file: ChangedFileSummary): DiffHygieneFinding[] {
-  return ruleMatchesForAddedFile(repoRoot, file)
-    .map((match) => makeFinding(match.file, match.rule, citadelSeverityForRule(match.rule), match.sizeBytes));
+  return ruleMatchesForAddedFile(repoRoot, file).map(makeFinding);
 }
 
 function szechuanFindingsForAddedFile(repoRoot: string, file: ChangedFileSummary): SzechuanDiffHygieneFinding[] {
-  return ruleMatchesForAddedFile(repoRoot, file)
-    .map((match) => makeSzechuanFinding(
-      match.file,
-      match.rule,
-      szechuanPriorityForRule(match.rule),
-      match.sizeBytes,
-    ));
+  return ruleMatchesForAddedFile(repoRoot, file).map(makeSzechuanFinding);
 }
 
 function ruleMatchesForAddedFile(repoRoot: string, file: ChangedFileSummary): RuleMatch[] {
@@ -243,16 +236,52 @@ function isPlaceholderValue(value: string): boolean {
   return false;
 }
 
-function makeFinding(
-  file: string,
-  rule: DiffHygieneRule,
-  severity: DiffHygieneSeverity,
-  sizeBytes?: number,
-): DiffHygieneFinding {
+interface RuleSpec {
+  citadelSeverity: DiffHygieneSeverity;
+  szechuanPriority: SzechuanDiffHygienePriority;
+  citadelMessage: (file: string, sizeBytes: number) => string;
+  szechuanMessage: (file: string, sizeBytes: number) => string;
+}
+
+const RULE_SPECS: Record<DiffHygieneRule, RuleSpec> = {
+  'root-markdown-orphan': {
+    citadelSeverity: 'Medium',
+    szechuanPriority: 'P1',
+    citadelMessage: (file) => `Top-level markdown file ${file} is not in the documented root allowlist.`,
+    szechuanMessage: (file) => `orphan planning doc ${file} was added at repo root; move it to docs/ or prds/ or delete it.`,
+  },
+  'root-scratch-artifact': {
+    citadelSeverity: 'Medium',
+    szechuanPriority: 'P1',
+    citadelMessage: (file) => `Top-level scratch artifact ${file} is not part of the documented change shape.`,
+    szechuanMessage: (file) => `Top-level scratch artifact ${file} was added; move it under an owned docs/prds path or delete it.`,
+  },
+  'env-file': {
+    citadelSeverity: 'Critical',
+    szechuanPriority: 'P0',
+    citadelMessage: (file) => `Environment file ${file} must not be committed unless it is .env.example.`,
+    szechuanMessage: (file) => `Secret leak risk: ${file} must not be committed unless it is .env.example.`,
+  },
+  'large-unignored-file': {
+    citadelSeverity: 'High',
+    szechuanPriority: 'P2',
+    citadelMessage: (file, sizeBytes) => `Large added file ${file} is ${sizeBytes} bytes and is not gitignored.`,
+    szechuanMessage: (file, sizeBytes) => `Binary leak risk: ${file} is ${sizeBytes} bytes and is not gitignored.`,
+  },
+  'pii-in-fixture': {
+    citadelSeverity: 'Critical',
+    szechuanPriority: 'P0',
+    citadelMessage: (file) => `Fixture ${file} contains a non-placeholder value for an enumerated PII key; replace it with a placeholder.`,
+    szechuanMessage: (file) => `PII leak risk: ${file} commits a non-placeholder value for an enumerated PII key.`,
+  },
+};
+
+function makeFinding({ file, rule, sizeBytes }: RuleMatch): DiffHygieneFinding {
+  const spec = RULE_SPECS[rule];
   return {
     id: `citadel-diff-hygiene-${slug(rule)}-${slug(file)}`,
-    severity,
-    message: messageForRule(rule, file, sizeBytes),
+    severity: spec.citadelSeverity,
+    message: spec.citadelMessage(file, sizeBytes ?? 0),
     rule,
     file,
     size_bytes: sizeBytes,
@@ -260,79 +289,19 @@ function makeFinding(
   };
 }
 
-function makeSzechuanFinding(
-  file: string,
-  rule: DiffHygieneRule,
-  priority: SzechuanDiffHygienePriority,
-  sizeBytes?: number,
-): SzechuanDiffHygieneFinding {
+function makeSzechuanFinding({ file, rule, sizeBytes }: RuleMatch): SzechuanDiffHygieneFinding {
+  const spec = RULE_SPECS[rule];
   return {
     id: `szechuan-diff-hygiene-${slug(rule)}-${slug(file)}`,
-    priority,
-    severity: priority,
-    message: szechuanMessageForRule(rule, file, sizeBytes),
+    priority: spec.szechuanPriority,
+    severity: spec.szechuanPriority,
+    message: spec.szechuanMessage(file, sizeBytes ?? 0),
     rule,
     file,
     size_bytes: sizeBytes,
     category: 'hygiene',
     principle: 'Diff Hygiene',
   };
-}
-
-function messageForRule(rule: DiffHygieneRule, file: string, sizeBytes: number | undefined): string {
-  switch (rule) {
-    case 'root-markdown-orphan':
-      return `Top-level markdown file ${file} is not in the documented root allowlist.`;
-    case 'root-scratch-artifact':
-      return `Top-level scratch artifact ${file} is not part of the documented change shape.`;
-    case 'env-file':
-      return `Environment file ${file} must not be committed unless it is .env.example.`;
-    case 'large-unignored-file':
-      return `Large added file ${file} is ${sizeBytes ?? 0} bytes and is not gitignored.`;
-    case 'pii-in-fixture':
-      return `Fixture ${file} contains a non-placeholder value for an enumerated PII key; replace it with a placeholder.`;
-  }
-}
-
-function szechuanMessageForRule(rule: DiffHygieneRule, file: string, sizeBytes: number | undefined): string {
-  switch (rule) {
-    case 'root-markdown-orphan':
-      return `orphan planning doc ${file} was added at repo root; move it to docs/ or prds/ or delete it.`;
-    case 'root-scratch-artifact':
-      return `Top-level scratch artifact ${file} was added; move it under an owned docs/prds path or delete it.`;
-    case 'env-file':
-      return `Secret leak risk: ${file} must not be committed unless it is .env.example.`;
-    case 'large-unignored-file':
-      return `Binary leak risk: ${file} is ${sizeBytes ?? 0} bytes and is not gitignored.`;
-    case 'pii-in-fixture':
-      return `PII leak risk: ${file} commits a non-placeholder value for an enumerated PII key.`;
-  }
-}
-
-function citadelSeverityForRule(rule: DiffHygieneRule): DiffHygieneSeverity {
-  switch (rule) {
-    case 'env-file':
-    case 'pii-in-fixture':
-      return 'Critical';
-    case 'large-unignored-file':
-      return 'High';
-    case 'root-markdown-orphan':
-    case 'root-scratch-artifact':
-      return 'Medium';
-  }
-}
-
-function szechuanPriorityForRule(rule: DiffHygieneRule): SzechuanDiffHygienePriority {
-  switch (rule) {
-    case 'env-file':
-    case 'pii-in-fixture':
-      return 'P0';
-    case 'root-markdown-orphan':
-    case 'root-scratch-artifact':
-      return 'P1';
-    case 'large-unignored-file':
-      return 'P2';
-  }
 }
 
 function isTopLevel(filePath: string): boolean {
