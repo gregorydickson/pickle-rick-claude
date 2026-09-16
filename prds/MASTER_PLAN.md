@@ -119,6 +119,35 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🌿 BRANCH TOPOLOGY CHANGED 2026-09-16 (operator-directed) — read before any `git`/`gh` command
+
+| ref | is now |
+|---|---|
+| `main` | **the `v2.1.0` GA commit `c20a9562`** — same sha as the tag. No longer the stale 2.0 line. |
+| `release/v2.2-beta` | **development, at `2.2.0-beta.1`.** All new work lands here. |
+| `release/v2.1-beta` | frozen at the 2.1 work; nothing new lands on it |
+| `archive/main-2.0-line` | the PREVIOUS main (`e0c91e17`), tagged so nothing is unreachable |
+
+**Revert is one command:** `git push --force origin archive/main-2.0-line:main`.
+
+**Measured before moving it**, because "57 commits ahead" sounds like 57 lost fixes and is not:
+**46 of the 57 subjects were already carried onto the 2.1 line.** Of the 11 unique, 4 are 2.0.0-beta
+version bumps, one is a mirror recompile, and two are explicitly v2.0-line-only.
+
+**⛔ THE EXPLICIT-TARGET RULE IS NOT RELAXED BY THIS.** `main` now tracks the last GA release, not the
+branch under development — so a `gh`/`git` command that silently defaults to the default branch still
+targets the WRONG commit, just a less obviously wrong one. **That is worse, not better.** Same class as
+[[B-RELTAG]]. Always `--target "$(git rev-parse HEAD)"`.
+
+`ci.yml` needed no edit — its `release/**` glob covered the new branch the moment it existed.
+
+### ▶ NEXT BUNDLE (operator-set 2026-09-16): **#33 rides with the quality bundle**
+
+`#33` (test-runner collapses a killed child into exit 1) is folded into the next capability bundle
+rather than dispatched alone. Compose it alongside [[B-LENS]].
+
+---
+
 ## 🚢 SESSION HANDOFF — 2026-09-16. **2.1.0 IS SHIPPED.** READ THIS FIRST.
 
 **`v2.1.0` GA tagged 2026-09-16 at `c20a9562`** and mechanically verified

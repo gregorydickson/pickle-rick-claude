@@ -236,11 +236,54 @@ blocking category in someone else's review of our work.** Answer that before wri
 
 ## 💬 ROOT L5 — COMMENT DENSITY, the gap neither of us proposed
 
-**The inventory surfaced a category that is in no lens and in none of my roots: comment bloat / density,
-19 of 342 (6%).** szechuan does not measure it at all — Part I scores KISS, YAGNI, Small Functions,
-Guard Clauses, Cognitive Load, Self-Documenting and Elegance, and "Self-Documenting" is the closest, but
-it argues for names carrying meaning, not against comments carrying noise. The two are not the same
-check and one does not imply the other.
+**The inventory surfaced a category the lens list does not carry: comment bloat / density, 19 of 342
+(6%).**
+
+### ⛔ CORRECTION 2026-09-16 — my premise was WRONG. szechuan already checks this.
+
+I wrote that *"szechuan does not measure it at all."* Grepped at HEAD, that is false —
+`szechuan-sauce-principles.md` carries it in **four** places:
+
+| line | text |
+|---|---|
+| `:25` | `Comments explaining "what"` → Self-Documenting Code → *Rename to be obvious* |
+| `:26` | `Stale/wrong comments` → Documentation Discipline → *Delete or fix* |
+| `:130` | **Comment Balance**: *"Delete comments that restate code. Keep comments that explain WHY, warn of consequences, or mark TODOs with context"* |
+| `:243` | `Comment-heavy code` → Self-Documenting → *Rename, restructure* |
+
+**Third time this session I asserted an absence without grepping the file** (after the cut B-JUDGESCOPE
+J2 and the false backup claim). The check exists and is well-stated.
+
+### ✅ The REAL root, which is sharper and cheaper than the one I proposed
+
+It is not missing — it is **deprioritised, and partly excluded**:
+
+- `:62` tiers *"comment cleanup"* at **P4: Optional / Style / Boy Scout Rule** — the bottom rung, below
+  "Magic numbers, naming, minor duplication".
+- `:94` puts *"comment wording"* in **Out of Scope** outright, alongside "naming taste, spacing, bracket
+  religion".
+
+**So a reviewer following the file correctly finds comment bloat and correctly declines to act on it.**
+That is a severity-and-scope question, not a coverage question — and 19 of 342 real findings say the
+external bar rates it above P4.
+
+**Why this matters more for us than for a human-authored codebase:** an LLM writing code narrates it. We
+generate comments at a rate a human reviewer does not, so a P4 tier that is never reached compounds.
+
+### AC-L5 (rewritten against the real root)
+- **AC-L5-1:** the change is a **severity/scope edit to existing rules**, not a new dimension. Do NOT add
+  a Part IV and do NOT add a scored dimension — the check is already there.
+- **AC-L5-2:** decide and state whether comment bloat leaves P4, and whether `:94`'s "comment wording"
+  exclusion is narrowed (it currently reads broadly enough to cover density, not just taste).
+- **AC-L5-3 (negative control, load-bearing):** a docblock recording a non-obvious WHY — a measured
+  limit, a trap-door invariant, a `pattern_shape` — is NOT flagged. `:130`'s existing Comment Balance
+  wording already protects these; **any edit that breaks that protection is a regression, and L0-4's
+  replay must catch it.**
+- **AC-L5-4 (mutation, both directions):** a comment restating its own line is flagged; one recording a
+  measured limit is not. Under-trigger alone passes a carry-anything rule.
+- **AC-L5-5:** replay over the szechuan corpus and report how many EXISTING comments a raised severity
+  would flag. If the number is large this is a one-time cleanup plus a standing check, and that must be
+  said before it lands, not discovered mid-bundle.
 
 **Why it belongs and the performance root did not:** it is 19x the observed rate of the root it displaces,
 it fires on every diff we produce, and we generate comments at a rate a human reviewer does not — an LLM
