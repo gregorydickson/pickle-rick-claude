@@ -6,6 +6,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXIT_REASONS } from '../types/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '..');
@@ -293,4 +294,7 @@ test('AC-T1-5: EXIT_REASONS.length is unchanged by this fix (this ticket touches
   assert.ok(match, 'EXIT_REASONS array literal must be present in src/types/index.ts');
   const count = match[1].match(/'[^']+'/g)?.length ?? 0;
   assert.equal(count, 20, 'EXIT_REASONS member count must stay at its pre-fix value (20)');
+  // d5b5add3: the source text is not the set the runtime classifies against — a member added to the
+  // compiled mirror left the text count above GREEN. Pin the imported array as well.
+  assert.equal(EXIT_REASONS.length, 20, 'the runtime EXIT_REASONS set must stay at its pre-fix size (20)');
 });
