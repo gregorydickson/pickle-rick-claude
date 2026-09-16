@@ -21,6 +21,13 @@ import {
   updateViolationLedger,
   isConverged,
 } from '../services/microverse-state.js';
+import {
+  MICROVERSE_CORPUS_IDS,
+  loadMicroverseJson,
+  loadMicroverseScope,
+  loadMicroverseIterationLog,
+  microverseIterationLogPath,
+} from './helpers/microverse-corpora.js';
 
 function makeTempDir(prefix = 'pickle-mv-helper-') {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -1037,4 +1044,108 @@ test('R4-2 seam (negative control): the same entry at the same size still stalls
   const result = await runTwoSizedJudgePasses(1690, 1690);
   assert.equal(result.stallCounter, 2, 'no change is still counted toward the stall');
   assert.equal(result.converged, 'stall', 'stalling stays reachable');
+});
+
+// ── B-JUDGESCOPE AC-V-1..V-4: vendored microverse corpora loader ──────────────────────────
+
+test('microverse corpora loader: throws naming the corpus id for an unknown id', () => {
+  assert.throws(
+    () => loadMicroverseJson('not-a-real-corpus'),
+    /Unknown microverse corpus id: "not-a-real-corpus"/,
+  );
+  assert.throws(
+    () => loadMicroverseScope('not-a-real-corpus'),
+    /Unknown microverse corpus id: "not-a-real-corpus"/,
+  );
+  assert.throws(
+    () => microverseIterationLogPath('not-a-real-corpus', 6),
+    /Unknown microverse corpus id: "not-a-real-corpus"/,
+  );
+});
+
+test('microverse corpora loader: throws on a present-but-empty fixture (anti-vacuity)', () => {
+  const tmpRoot = makeTempDir('pickle-mv-corpora-empty-');
+  const corpusId = '2026-09-12-a4d141e1';
+  fs.mkdirSync(path.join(tmpRoot, corpusId), { recursive: true });
+  fs.writeFileSync(path.join(tmpRoot, corpusId, 'microverse.json'), '');
+  fs.writeFileSync(path.join(tmpRoot, corpusId, 'tmux_iteration_6.log'), '   \n');
+  assert.throws(
+    () => loadMicroverseJson(corpusId, { fixturesRoot: tmpRoot }),
+    /Empty microverse\.json fixture for corpus "2026-09-12-a4d141e1"/,
+    'an empty fixture must throw, never return an empty object',
+  );
+  assert.throws(
+    () => microverseIterationLogPath(corpusId, 6, { fixturesRoot: tmpRoot }),
+    /Empty tmux_iteration_6\.log fixture for corpus "2026-09-12-a4d141e1"/,
+  );
+  assert.throws(
+    () => loadMicroverseJson(corpusId, { fixturesRoot: path.join(tmpRoot, 'does-not-exist') }),
+    /Missing microverse\.json fixture/,
+    'a missing fixture must throw, never return an empty object',
+  );
+});
+
+test('microverse corpora loader: loads and shape-checks each vendored microverse.json', () => {
+  for (const corpusId of MICROVERSE_CORPUS_IDS) {
+    const parsed = loadMicroverseJson(corpusId);
+    assert.equal(typeof parsed.exit_reason, 'string');
+    assert.ok(parsed.exit_reason.length > 0);
+    assert.equal(typeof parsed.convergence.stall_limit, 'number');
+    assert.equal(typeof parsed.convergence.stall_counter, 'number');
+    assert.ok(Array.isArray(parsed.convergence.history));
+  }
+  // The three vendored shapes this bundle's replay ACs depend on:
+  assert.equal(
+    loadMicroverseJson('2026-09-12-a4d141e1').exit_reason,
+    'stalled_below_target',
+    'a4d141e1 is the scored-regression shape',
+  );
+  assert.equal(
+    loadMicroverseJson('2026-09-12-a4d141e1').convergence.history.length,
+    1,
+    'a4d141e1 has one history entry (the regression at iteration 2)',
+  );
+  assert.equal(
+    loadMicroverseJson('2026-09-15-c5a7eb48').exit_reason,
+    'stalled_below_target',
+    'c5a7eb48 is the no-commit shape',
+  );
+  assert.equal(
+    loadMicroverseJson('2026-09-15-c5a7eb48').convergence.history.length,
+    0,
+    'c5a7eb48 has empty history despite 6 iterations — every iteration was a no-commit stall',
+  );
+  assert.equal(
+    loadMicroverseJson('2026-09-09-e959390b').exit_reason,
+    'baseline_unmeasurable_unrecoverable',
+    'e959390b is the only populated-scope sample and exited before scoring',
+  );
+});
+
+test('microverse corpora loader: scope.json is vendored only for the populated-scope corpus', () => {
+  const scope = loadMicroverseScope('2026-09-09-e959390b');
+  assert.ok(Array.isArray(scope.allowed_paths) && scope.allowed_paths.length > 0);
+  assert.equal(typeof scope.base_sha, 'string');
+  assert.equal(typeof scope.head_sha, 'string');
+
+  for (const corpusId of ['2026-09-12-a4d141e1', '2026-09-15-c5a7eb48']) {
+    assert.throws(
+      () => loadMicroverseScope(corpusId),
+      /No scope\.json fixture vendored for corpus/,
+    );
+  }
+});
+
+test('microverse corpora loader: resolves the vendored final-iteration logs for both no-commit-shaped corpora', () => {
+  for (const corpusId of ['2026-09-12-a4d141e1', '2026-09-15-c5a7eb48']) {
+    const logPath = microverseIterationLogPath(corpusId, 6);
+    assert.ok(fs.existsSync(logPath));
+    const content = loadMicroverseIterationLog(corpusId, 6);
+    assert.ok(content.length > 0);
+    assert.match(content, /"type":"result"/, 'the log must carry a parseable result line');
+  }
+  assert.throws(
+    () => microverseIterationLogPath('2026-09-12-a4d141e1', 999),
+    /Missing tmux_iteration_999\.log fixture/,
+  );
 });

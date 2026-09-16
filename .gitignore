@@ -1,6 +1,7 @@
 node_modules/
 *.log
 !extension/tests/fixtures/iteration-logs/*.log
+!extension/tests/fixtures/microverse-corpora/**/*.log
 *.dot
 !extension/tests/__fixtures__/*.dot
 !extension/tests/__fixtures__/**/*.dot

@@ -1,0 +1,60 @@
+{
+  "status": "stopped",
+  "prd_path": "/Users/gregorydickson/pickle-rick-claude",
+  "key_metric": {
+    "description": "Number of coding principle violations (lower is better)",
+    "validation": "Review the code at the target path for violations of established coding principles (KISS, YAGNI, DRY, SOLID, Small Functions, Guard Clauses, Cognitive Load, Self-Documenting Code, Encapsulation, Fail-Fast, etc). Count only REAL, actionable violations — not style nitpicks. A violation must be fixable and must clearly hurt readability, maintainability, or correctness. Score = number of violations found.",
+    "type": "llm",
+    "timeout_seconds": 600,
+    "tolerance": 0,
+    "direction": "lower"
+  },
+  "convergence": {
+    "stall_limit": 5,
+    "stall_counter": 5,
+    "history": []
+  },
+  "gap_analysis_path": "/Users/gregorydickson/.local/share/pickle-rick/sessions/2026-09-15-c5a7eb48/gap_analysis.md",
+  "failed_approaches": [],
+  "baseline_score": 2,
+  "failure_history": [],
+  "approach_exhaustion_fired": false,
+  "iteration_regressions": 0,
+  "gate_regression_threshold_warning_emitted": false,
+  "consecutive_subprocess_errors": 0,
+  "violation_ledger": [
+    {
+      "id": "bee3f97d",
+      "path": "extension/src/services/citadel/ac-coverage-scorecard.ts",
+      "line": 70,
+      "rule": "",
+      "first_seen_iter": 1,
+      "last_seen_iter": 1,
+      "severity": "low",
+      "description": "DEFAULT_MAX_EVIDENCE = 3 is defined identically in ac-coverage-scorecard.ts, state-transition-audit.ts, and rule-set-invariant-audit.ts — same constant, three copies",
+      "measured": {
+        "lines": 1,
+        "complexity": 1
+      }
+    },
+    {
+      "id": "6a9170fd",
+      "path": "extension/src/services/citadel/trap-door-coverage-audit.ts",
+      "line": 206,
+      "rule": "",
+      "first_seen_iter": 1,
+      "last_seen_iter": 1,
+      "severity": "low",
+      "description": "readTextFile / tryReadFile / readFileOrNull are three identically-implemented try-readFileSync-return-null helpers defined independently in three different files",
+      "measured": {
+        "lines": 4,
+        "complexity": 1
+      }
+    }
+  ],
+  "convergence_target": 0,
+  "judge_context_path": "/Users/gregorydickson/.claude/pickle-rick/szechuan-sauce-principles.md",
+  "design_safe": false,
+  "consecutive_amnesiac_exits": 0,
+  "exit_reason": "stalled_below_target"
+}

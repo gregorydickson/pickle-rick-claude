@@ -118,6 +118,35 @@ test('backend/version identity assertions do not use broad .includes()', () => {
   assert.deepEqual(violations, [], `Weak backend/version assertions found:\n${violations.join('\n')}`);
 });
 
+// B-JUDGESCOPE AC-V-2: the three microverse corpora this bundle replays are vendored under
+// tests/fixtures/microverse-corpora/ (see tests/helpers/microverse-corpora.js) precisely because
+// ~/.local/share/pickle-rick/sessions/ is subject to pruneOldSessions and cannot be relied on to
+// still hold a given session by the time this suite runs. A CODE line (not a comment, not fixture
+// data) reading that live root has a deletion date.
+//
+// Scoped to the files this bundle actually controls, not a repo-wide grep: a blunt substring scan
+// over all of extension/tests/ also matches benign pre-existing prose comments and fabricated
+// example paths (e.g. '/home/user/.local/share/pickle-rick/sessions/...' test fixtures) in files
+// unrelated to this bundle and out of its scope fence — none of which perform an actual read.
+const REPLAY_FILES_UNDER_TEST = ['helpers/microverse-corpora.js', 'microverse-helpers.test.js'];
+const LIVE_SESSIONS_ROOT_RE = /local\/share\/pickle-rick\/sessions/;
+
+test('microverse corpora loader and its tests do not read the live sessions root (B-JUDGESCOPE AC-V-2)', () => {
+  const violations = [];
+  for (const relFile of REPLAY_FILES_UNDER_TEST) {
+    const filePath = path.join(__dirname, relFile);
+    const codeLines = readFileSync(filePath, 'utf8')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//'));
+    for (const line of codeLines) {
+      if (LIVE_SESSIONS_ROOT_RE.test(line)) {
+        violations.push(`${relFile}: ${line.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(violations, [], `Live-session-root reads found:\n${violations.join('\n')}`);
+});
+
 test('each TEST_FILES file is wired into default test tiers', () => {
   const failures = [];
   const defaultTierFiles = new Set(discoverDefaultTestFiles());
