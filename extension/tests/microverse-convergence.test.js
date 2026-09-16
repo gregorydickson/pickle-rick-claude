@@ -20,6 +20,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { execSync } from 'node:child_process';
 import {
     compareMetric,
     createMicroverseState,
@@ -44,6 +45,7 @@ import {
     markMicroverseFatalError,
     auditPostIterationScope,
     measureAndClassifyIteration,
+    executeGapAnalysis,
     JUDGE_SYSTEM_PROMPT,
     _deps,
 } from '../bin/microverse-runner.js';
@@ -1772,4 +1774,159 @@ test('ROOT S negative control: a normal-sized allowed_paths scope still reaches 
         !capturedPrompt.includes('more path(s) in scope but not listed'),
         'a normal-sized scope must not be reported as truncated',
     );
+});
+
+// ---------------------------------------------------------------------------
+// c1adb389 (AC-J1-3/4/5) — the baseline call site. `executeGapAnalysis` is the
+// exported ancestor covering `measureLlmBaseline`'s `deriveJudgeReviewSurface`
+// call (microverse-runner.ts:4139), the site `measureAndClassifyIteration`
+// (helpers.test.js) does not reach. Same discipline as there: a real
+// `scope.json` on disk, no hand-built `allowedPaths` object handed to
+// `buildJudgePrompt`, and the judge argv captured via the shipped
+// `_deps.execFileSync` + `PICKLE_JUDGE_LEGACY_SPAWN=1` seam.
+// ---------------------------------------------------------------------------
+
+function createGapAnalysisTempGitRepo() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-judgescope-gap-repo-'));
+    execSync('git init', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe' });
+    fs.writeFileSync(path.join(dir, 'README.md'), 'init');
+    execSync('git add .', { cwd: dir, stdio: 'pipe' });
+    execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' });
+    return dir;
+}
+
+function createGapAnalysisScopedSession(workingDir, allowedPaths) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-judgescope-gap-session-'));
+    fs.writeFileSync(path.join(dir, 'scope.json'), JSON.stringify({
+        version: 1, mode: 'branch', base_sha: 'f'.repeat(40), allowed_paths: allowedPaths,
+    }));
+    const runnerState = {
+        active: true,
+        working_dir: workingDir,
+        step: 'implement',
+        iteration: 0,
+        max_iterations: 10,
+        max_time_minutes: 60,
+        worker_timeout_seconds: 120,
+        start_time_epoch: Math.floor(Date.now() / 1000),
+        completion_promise: null,
+        original_prompt: 'test',
+        current_ticket: null,
+        history: [],
+        started_at: new Date().toISOString(),
+        session_dir: dir,
+        tmux_mode: true,
+        command_template: 'microverse.md',
+        backend: 'claude',
+    };
+    fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(runnerState, null, 2));
+    const mvState = {
+        status: 'gap_analysis',
+        prd_path: path.join(workingDir, 'prd.md'),
+        key_metric: {
+            description: 'judge quality gate',
+            validation: 'improve code quality',
+            type: 'llm',
+            timeout_seconds: 60,
+            tolerance: 0,
+            judge_model: 'claude-sonnet-4-6',
+        },
+        convergence: { stall_limit: 3, stall_counter: 0, history: [] },
+        gap_analysis_path: '',
+        failed_approaches: [],
+        baseline_score: 0,
+        allowed_paths: allowedPaths,
+    };
+    fs.writeFileSync(path.join(dir, 'microverse.json'), JSON.stringify(mvState, null, 2));
+    return { dir, runnerState };
+}
+
+function makeGapAnalysisContext(sessionDir, runnerState, workingDir) {
+    return {
+        sessionDir,
+        extensionRoot: path.resolve('.'),
+        statePath: path.join(sessionDir, 'state.json'),
+        workingDir,
+        startTime: Date.now(),
+        initialIteration: 0,
+        enableFailureClassification: false,
+        cgSettings: {
+            enabled_convergence_files: [],
+            regression_warning_threshold: 5,
+            remediator_timeout_s: 600,
+            baseline_max_age_iterations: 30,
+            baseline_max_age_seconds: 14_400,
+        },
+        rateLimitWaitMinutes: 0,
+        maxRateLimitRetries: 0,
+        log: () => {},
+        currentRunnerState: runnerState,
+        iteration: 0,
+        consecutiveRateLimits: 0,
+    };
+}
+
+async function runGapAnalysisScopedJudge(allowedPaths, judgeOutput) {
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+    const original = { execFileSync: _deps.execFileSync, runIteration: _deps.runIteration };
+    const workingDir = createGapAnalysisTempGitRepo();
+    const session = createGapAnalysisScopedSession(workingDir, allowedPaths);
+    const ctx = makeGapAnalysisContext(session.dir, session.runnerState, workingDir);
+    let capturedPrompt = '';
+    _deps.runIteration = async () => ({ completion: 'success', exitCode: 0, timedOut: false, wallSeconds: 1 });
+    _deps.execFileSync = (_cmd, args) => {
+        if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+        const idx = args.indexOf('-p');
+        if (idx !== -1) capturedPrompt = args[idx + 1] || '';
+        return JSON.stringify(judgeOutput);
+    };
+    try {
+        const mv = readMicroverseState(session.dir);
+        await executeGapAnalysis(mv, ctx);
+        return { mv, capturedPrompt };
+    } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+        Object.assign(_deps, original);
+        fs.rmSync(session.dir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+}
+
+test('AC-J1-3: executeGapAnalysis reaches the real judge prompt through the derived surface (mechanism pin, baseline call site)', async () => {
+    const { capturedPrompt } = await runGapAnalysisScopedJudge(
+        ['src/inscope.ts'],
+        {
+            score: 1,
+            violations: [{ id: 'gap-in-scope-1', path: 'src/inscope.ts', line: 4, severity: 'high', description: 'baseline still scored' }],
+            resolved: [], new: ['gap-in-scope-1'], remaining: [],
+        },
+    );
+    assert.ok(
+        capturedPrompt.includes('Count ONLY violations located within these paths'),
+        'the REAL baseline judge prompt, reached via executeGapAnalysis -> measureLlmBaseline -> deriveJudgeReviewSurface, must carry the scoping literal',
+    );
+    assert.ok(
+        capturedPrompt.includes('- src/inscope.ts'),
+        'the derived surface must enumerate the scoped path reached through scope.json + state.allowed_paths',
+    );
+});
+
+test('AC-J1-3 over-trigger control: executeGapAnalysis still scores an in-scope, in-diff baseline violation', async () => {
+    const { mv, capturedPrompt } = await runGapAnalysisScopedJudge(
+        ['src/inscope.ts'],
+        {
+            score: 1,
+            violations: [{ id: 'gap-over-trigger-1', path: 'src/inscope.ts', line: 8, severity: 'high', description: 'baseline in-scope violation' }],
+            resolved: [], new: ['gap-over-trigger-1'], remaining: [],
+        },
+    );
+    assert.ok(
+        capturedPrompt.includes('- src/inscope.ts'),
+        'the derived surface must enumerate exactly the scoped path, never a whole-tree marker',
+    );
+    assert.equal(mv.baseline_score, 1, 'the baseline score must reflect the in-scope violation the judge reported');
+    assert.equal(mv.violation_ledger?.length, 1, 'the in-scope baseline violation must be seeded into the ledger');
+    assert.equal(mv.violation_ledger[0].path, 'src/inscope.ts');
 });

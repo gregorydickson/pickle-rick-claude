@@ -771,6 +771,118 @@ test('AP-EXT-ITER220-01 control: an over-reported judge score still converges wh
 });
 
 // ---------------------------------------------------------------------------
+// c1adb389 (AC-J1-3/4/5) — a test that hand-constructs `allowedPaths` and calls
+// `buildJudgePrompt` directly ALREADY PASSES on unmodified HEAD (see
+// `microverse-convergence.test.js:509`), because the scope derivation lives
+// UPSTREAM of that call. These two cases instead drive the REAL
+// `measureAndClassifyIteration` -> `measureLlmIteration` ->
+// `deriveJudgeReviewSurface` -> `buildJudgeAttemptInvocation` ->
+// `buildJudgePrompt` chain against a real `scope.json`, so deleting the
+// derivation's body would red the mechanism-pin assertion below, and widening
+// the derived surface to the whole tree would red the over-trigger control's
+// enumerated-path assertion. Neither test hand-builds an `allowedPaths` object
+// for `buildJudgePrompt`.
+// ---------------------------------------------------------------------------
+
+function makeScopedJudgeSession(judgeOutput, allowedPaths) {
+  const sessionDir = makeTempDir('pickle-mv-judgescope-session-');
+  const workingDir = makeTempDir('pickle-mv-judgescope-work-');
+  const runnerState = makeRunnerState(sessionDir, workingDir, { backend: 'claude' });
+  fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+    version: 1, mode: 'branch', base_sha: 'e'.repeat(40), allowed_paths: allowedPaths,
+  }));
+  const mv = createMicroverseState({
+    prdPath: path.join(workingDir, 'prd.md'),
+    metric: {
+      description: 'quality',
+      validation: 'improve code quality',
+      type: 'llm',
+      timeout_seconds: 60,
+      tolerance: 2,
+      direction: 'higher',
+      judge_model: 'claude-sonnet-4-6',
+    },
+    stallLimit: 3,
+    allowedPaths,
+  });
+  mv.status = 'iterating';
+  mv.baseline_score = 0;
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
+  writeMicroverseState(sessionDir, mv);
+
+  process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+  const originalExec = _deps.execFileSync;
+  let capturedPrompt = '';
+  _deps.execFileSync = (_cmd, args) => {
+    if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
+    const idx = args.indexOf('-p');
+    if (idx !== -1) capturedPrompt = args[idx + 1] || '';
+    return JSON.stringify(judgeOutput);
+  };
+  const ctx = makeContext(sessionDir, workingDir, runnerState, {
+    iteration: 2,
+    preIterSha: 'a'.repeat(40),
+    postIterSha: 'b'.repeat(40),
+  });
+  const cleanup = () => {
+    delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    _deps.execFileSync = originalExec;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  };
+  return { mv, ctx, cleanup, getCapturedPrompt: () => capturedPrompt };
+}
+
+test('AC-J1-3: measureAndClassifyIteration reaches the real judge prompt through the derived surface (mechanism pin)', async () => {
+  const { mv, ctx, cleanup, getCapturedPrompt } = makeScopedJudgeSession(
+    {
+      score: 1,
+      violations: [{ id: 'in-scope-1', path: 'src/inscope.ts', line: 3, severity: 'high', description: 'still scored' }],
+      resolved: [], new: ['in-scope-1'], remaining: [],
+    },
+    ['src/inscope.ts'],
+  );
+  try {
+    await measureAndClassifyIteration(mv, { raw: '0', score: 0 }, ctx);
+  } finally {
+    cleanup();
+  }
+  const capturedPrompt = getCapturedPrompt();
+  assert.ok(
+    capturedPrompt.includes('Count ONLY violations located within these paths'),
+    'the REAL judge prompt, reached via measureAndClassifyIteration -> measureLlmIteration -> deriveJudgeReviewSurface, must carry the scoping literal',
+  );
+  assert.ok(
+    capturedPrompt.includes('- src/inscope.ts'),
+    'the derived surface must enumerate the scoped path reached through scope.json + state.allowed_paths',
+  );
+});
+
+test('AC-J1-3 over-trigger control: an in-scope, in-diff violation is still scored under the derived surface', async () => {
+  const { mv, ctx, cleanup, getCapturedPrompt } = makeScopedJudgeSession(
+    {
+      score: 1,
+      violations: [{ id: 'over-trigger-1', path: 'src/inscope.ts', line: 7, severity: 'high', description: 'in-scope violation' }],
+      resolved: [], new: ['over-trigger-1'], remaining: [],
+    },
+    ['src/inscope.ts'],
+  );
+  try {
+    await measureAndClassifyIteration(mv, { raw: '0', score: 0 }, ctx);
+  } finally {
+    cleanup();
+  }
+  const capturedPrompt = getCapturedPrompt();
+  assert.ok(
+    capturedPrompt.includes('- src/inscope.ts'),
+    'the derived surface must enumerate exactly the scoped path, never a whole-tree marker',
+  );
+  assert.equal(mv.violation_ledger?.length, 1, 'the in-scope violation the judge reported must still be tracked in the ledger');
+  assert.equal(mv.violation_ledger[0].path, 'src/inscope.ts');
+  assert.equal(mv.violation_ledger[0].description, 'in-scope violation');
+});
+
+// ---------------------------------------------------------------------------
 // M2 (GitHub #20) — the baseline seeds `state.violation_ledger` (see
 // `measureLlmBaseline` in microverse-runner.ts). These two cases model what
 // that seeded ledger looks like going into iteration 2 and pin the two ways
