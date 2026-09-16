@@ -576,11 +576,10 @@ test('AP-EXT-ITER119-01 control: ownable dirt leaves the classifier verdict stan
 // returns false and the classifier's independent `clean_pass` verdict is NOT overridden.
 //
 // Index-lock contention (not a pre-commit hook) is used to force the failure deterministically:
-// a rejecting `.git/hooks/pre-commit` is defeated by this repo's own ambient
-// `GIT_CONFIG_KEY_*=core.hooksPath` override (the pickle worker session's trailer-hooks
-// redirect), which every `git` spawn in this process inherits via `process.env`. Precedent for
-// the index-lock technique: `tests/concurrent-git-access-probe-launch.test.js`,
-// `tests/cancel-index-lock-preserved.test.js`.
+// a rejecting `.git/hooks/pre-commit` is defeated by the pickle worker session's own ambient
+// `GIT_CONFIG_KEY_*=core.hooksPath` override (its trailer-hooks redirect), which every `git`
+// spawn in this process inherits via `process.env`. Precedent for the index-lock technique:
+// `tests/concurrent-git-access-probe-launch.test.js`, `tests/cancel-index-lock-preserved.test.js`.
 function jamGitIndexLock(dir) {
   fs.writeFileSync(path.join(dir, '.git', 'index.lock'), '');
 }
