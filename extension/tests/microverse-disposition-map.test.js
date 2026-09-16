@@ -541,6 +541,28 @@ function wiringFindInnerChildPid(outerPid, timeoutMs) {
   return null;
 }
 
+function spawnRealTestRunner(fixture) {
+  // Scrub NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID: this file runs under `node --test` itself,
+  // and those two vars leaking into the spawned child change its reporting behavior (mirrors
+  // test-runner-timeout.test.js's spawnRunner()).
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  delete env.NODE_TEST_WORKER_ID;
+  const child = spawn(process.execPath, [WIRING_TEST_RUNNER_JS, fixture], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 30000,
+    env,
+  });
+  const captured = { stdout: '', stderr: '' };
+  child.stdout.on('data', (chunk) => { captured.stdout += chunk; });
+  child.stderr.on('data', (chunk) => { captured.stderr += chunk; });
+  const closed = new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => resolve(code));
+  });
+  return { child, captured, closed };
+}
+
 test('wiring: a REAL signal-killed test-runner.js child\'s captured output reaches post_final_verdict.dimensions through the real parse and classify path', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wiring-signal-'));
   const marker = path.join(dir, 'marker');
@@ -558,24 +580,7 @@ test('wiring: a REAL signal-killed test-runner.js child\'s captured output reach
       ].join('\n'),
     );
 
-    // Scrub NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID: this file runs under `node --test` itself,
-    // and those two vars leaking into the spawned child change its reporting behavior (mirrors
-    // test-runner-timeout.test.js's spawnRunner()).
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    delete env.NODE_TEST_WORKER_ID;
-    const child = spawn(process.execPath, [WIRING_TEST_RUNNER_JS, fixture], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 30000,
-      env,
-    });
-    const captured = { stdout: '', stderr: '' };
-    child.stdout.on('data', (chunk) => { captured.stdout += chunk; });
-    child.stderr.on('data', (chunk) => { captured.stderr += chunk; });
-    const closed = new Promise((resolve, reject) => {
-      child.on('error', reject);
-      child.on('close', (code) => resolve(code));
-    });
+    const { child, captured, closed } = spawnRealTestRunner(fixture);
 
     assert.ok(wiringWaitForFile(marker, 10000), 'fixture test must start and write its marker');
     const innerPid = wiringFindInnerChildPid(child.pid, 10000);
@@ -615,6 +620,45 @@ test('wiring: a REAL signal-killed test-runner.js child\'s captured output reach
       /\(signal: SIGKILL\)$/,
       'a real killed tier must reach post_final_verdict.dimensions naming the real signal, end to end',
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// d5b5add3 (AC-T1-3, the fail direction end to end): the hand-authored GENUINE_FAILURE_OUTPUT above
+// parses to a TAP name and never reaches the attribution, so it stays GREEN under an always-attribute
+// producer or parser. A REAL failing test-runner child parses as a script failure — the attribution IS
+// reached — so this control reds if either side invents a signal the child never died by.
+test('wiring (control): a REAL genuinely-failing test-runner.js child reaches post_final_verdict.dimensions with no signal attribution', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wiring-fail-'));
+  const fixture = path.join(dir, 'fail.test.js');
+  try {
+    fs.writeFileSync(
+      fixture,
+      [
+        "import { test } from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "test('fails', () => { assert.fail('boom'); });",
+      ].join('\n'),
+    );
+
+    const { captured, closed } = spawnRealTestRunner(fixture);
+    const code = await closed;
+    assert.equal(code, 1, 'a genuinely failing tier exits 1');
+
+    const failures = parseBetweenTicketFastGateFailures(`${captured.stdout}\n${captured.stderr}`, dir);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].script_failure, true, 'the real output must reach the attribution, or this control is vacuous');
+
+    const result = classifyPostFinalVerdict({
+      gate: { ok: false, failures, timed_out: false, timeout_ms: null, measured: true },
+      applicable: true,
+      verdictTs: 200,
+      finalCommitTs: 100,
+      baselineFailures: [],
+    });
+    assert.equal(result.dimensions.length, 1);
+    assert.doesNotMatch(result.dimensions[0], /\(signal:/, 'a genuine failure must not be attributed to a signal');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
