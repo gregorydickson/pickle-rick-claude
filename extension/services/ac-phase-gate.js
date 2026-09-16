@@ -25,11 +25,16 @@ function readManifestArray(manifestPath) {
     }
     return criteria;
 }
-function normalizeOptionalIntegerField(raw, key, id, reason, allowZero) {
+const OPTIONAL_INTEGER_RULES = {
+    expected_exit_code: { positive: false, reason: 'expected_exit_code must be an integer' },
+    timeout_ms: { positive: true, reason: 'timeout_ms must be a positive integer' },
+};
+function normalizeOptionalIntegerField(raw, key, id) {
     const value = raw[key];
     if (value === undefined)
         return undefined;
-    if (typeof value !== 'number' || !Number.isInteger(value) || (!allowZero && value <= 0)) {
+    const { positive, reason } = OPTIONAL_INTEGER_RULES[key];
+    if (typeof value !== 'number' || !Number.isInteger(value) || (positive && value <= 0)) {
         return { id, reason };
     }
     return value;
@@ -46,10 +51,10 @@ function normalizeCriterion(raw, index) {
     if (command !== undefined && typeof command !== 'string' && (!Array.isArray(command) || command.length === 0 || !command.every((part) => typeof part === 'string'))) {
         return { id, reason: 'command must be a string or string array' };
     }
-    const expectedExitCode = normalizeOptionalIntegerField(raw, 'expected_exit_code', id, 'expected_exit_code must be an integer', true);
+    const expectedExitCode = normalizeOptionalIntegerField(raw, 'expected_exit_code', id);
     if (isFailure(expectedExitCode))
         return expectedExitCode;
-    const timeoutMs = normalizeOptionalIntegerField(raw, 'timeout_ms', id, 'timeout_ms must be a positive integer', false);
+    const timeoutMs = normalizeOptionalIntegerField(raw, 'timeout_ms', id);
     if (isFailure(timeoutMs))
         return timeoutMs;
     return {
