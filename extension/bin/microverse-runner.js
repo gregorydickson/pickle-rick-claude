@@ -2978,21 +2978,38 @@ export function deriveJudgeReviewSurface(sessionDir) {
  * text, mirrors `convergence-gate.ts:parseChangedExportedSymbolsFromDiff` (unit-testable without a
  * git repo). A removed line does not exist in the new revision and does not advance the cursor;
  * only `+` and context (` `) lines do.
+ *
+ * `---`/`+++` are file headers ONLY between a `diff --git` line and that file's first `@@` hunk —
+ * inside a hunk an added line whose text starts `++ ` renders as `+++ ...` and is content. git
+ * appends a TAB to a header whose name holds a space, and C-quotes a name holding a quote,
+ * backslash or control byte; a header this parser cannot key returns `null` (unmeasurable), so
+ * the caller fails OPEN instead of silently dropping every finding in that file.
  */
 export function parseChangedLineNumbersFromDiff(diffText) {
     const result = new Map();
     let currentFile = null;
+    let inHeader = false;
     let newLine = 0;
     for (const raw of diffText.split('\n')) {
-        if (raw.startsWith('+++ ')) {
-            const m = raw.match(/^\+\+\+ b\/(.+)$/);
-            currentFile = m ? m[1] : null;
-            if (currentFile && !result.has(currentFile))
+        if (raw.startsWith('diff --git ')) {
+            inHeader = true;
+            currentFile = null;
+            continue;
+        }
+        if (inHeader && !raw.startsWith('@@ ')) {
+            if (!raw.startsWith('+++ '))
+                continue;
+            const name = raw.slice(4).replace(/\t$/, '');
+            if (name === '/dev/null')
+                continue;
+            if (!name.startsWith('b/'))
+                return null;
+            currentFile = name.slice(2);
+            if (!result.has(currentFile))
                 result.set(currentFile, new Set());
             continue;
         }
-        if (raw.startsWith('--- '))
-            continue;
+        inHeader = false;
         const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
         if (hunk) {
             newLine = Number(hunk[1]);
@@ -3004,12 +3021,10 @@ export function parseChangedLineNumbersFromDiff(diffText) {
             result.get(currentFile).add(newLine);
             newLine++;
         }
-        else if (raw.startsWith('-')) {
-            // Removed line: absent from the new revision, cursor does not advance.
-        }
         else if (raw.startsWith(' ')) {
             newLine++;
         }
+        // A removed ('-') line is absent from the new revision: the cursor does not advance.
     }
     return result;
 }
@@ -3025,7 +3040,11 @@ function computeTouchedLineNumbers(workingDir, base, paths) {
     const result = _deps.spawnSync('git', 
     // AP-EXT-ITER103-01/117-01: --no-renames — a pure rename hides its content under a
     // similarity-index header with no +/- lines, which would silently empty this path's set.
-    ['diff', '--no-renames', `${base}..HEAD`, '--', ...paths], { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
+    // The rest pin the header shape the parser keys on against ambient config: quotePath off
+    // (a non-ASCII name stays unquoted), explicit a/ b/ prefixes (diff.noprefix,
+    // diff.mnemonicPrefix), no colour escapes, no external diff driver.
+    ['-c', 'core.quotePath=false', 'diff', '--no-renames', '--no-color', '--no-ext-diff',
+        '--src-prefix=a/', '--dst-prefix=b/', `${base}..HEAD`, '--', ...paths], { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
     if (!enumerationCompleted(result))
         return null;
     return parseChangedLineNumbersFromDiff(result.stdout || '');

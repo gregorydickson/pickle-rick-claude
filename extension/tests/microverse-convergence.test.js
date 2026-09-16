@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
     compareMetric,
@@ -2315,6 +2315,74 @@ test('parseChangedLineNumbersFromDiff: a pure delete records nothing for the del
     const result = parseChangedLineNumbersFromDiff(diff);
     assert.equal(result.has('src/gone.ts'), false,
         'a file with no +++ b/ header never enters the map — nothing in it can be a touched line');
+});
+
+test('parseChangedLineNumbersFromDiff: a name containing a space keys without git\'s trailing TAB', () => {
+    // git appends a TAB to ---/+++ lines whose name contains a space (GNU patch compat).
+    const diff = [
+        'diff --git a/src/foo bar.ts b/src/foo bar.ts',
+        '--- a/src/foo bar.ts\t',
+        '+++ b/src/foo bar.ts\t',
+        '@@ -1,1 +1,1 @@',
+        '-old',
+        '+new',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.deepEqual([...result.keys()], ['src/foo bar.ts']);
+    assert.deepEqual(result.get('src/foo bar.ts'), new Set([1]));
+});
+
+test('parseChangedLineNumbersFromDiff: an added line whose text starts "++ " is content, not a file header', () => {
+    const diff = [
+        'diff --git a/src/foo.ts b/src/foo.ts',
+        '--- a/src/foo.ts',
+        '+++ b/src/foo.ts',
+        '@@ -1,1 +1,3 @@',
+        '+++ looks like a header',
+        '--- removed line that looks like a header',
+        ' ctx',
+        '+after',
+    ].join('\n');
+    const result = parseChangedLineNumbersFromDiff(diff);
+    assert.deepEqual([...result.keys()], ['src/foo.ts']);
+    assert.deepEqual(result.get('src/foo.ts'), new Set([1, 3]));
+});
+
+test('parseChangedLineNumbersFromDiff: a C-quoted header is unmeasurable (null), never a silently empty file', () => {
+    const diff = [
+        'diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"',
+        '--- "a/caf\\303\\251.ts"',
+        '+++ "b/caf\\303\\251.ts"',
+        '@@ -1,1 +1,1 @@',
+        '-old',
+        '+new',
+    ].join('\n');
+    assert.equal(parseChangedLineNumbersFromDiff(diff), null);
+});
+
+test('dropOutOfSurfaceViolations: real git — touched lines in space and non-ASCII named files are kept', () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-oddname-')));
+    try {
+        const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+            { cwd: dir, encoding: 'utf-8', stdio: 'pipe', timeout: 30000 });
+        git('init', '-q');
+        const names = ['foo bar.ts', 'café.ts'];
+        for (const n of names) fs.writeFileSync(path.join(dir, n), 'a\nb\n');
+        git('add', '.');
+        git('commit', '-q', '-m', 'base');
+        const base = git('rev-parse', 'HEAD').trim();
+        for (const n of names) fs.writeFileSync(path.join(dir, n), 'a\nB\n');
+        git('commit', '-q', '-am', 'bundle');
+        const violations = names.flatMap((n) => [
+            { id: `${n}-touched`, path: n, line: 2, severity: 'low', description: 'touched' },
+            { id: `${n}-pre`, path: n, line: 1, severity: 'low', description: 'pre-existing' },
+        ]);
+        const result = dropOutOfSurfaceViolations(violations, { kind: 'derived', paths: names, base }, dir);
+        assert.deepEqual(result.kept.map((v) => v.id), names.map((n) => `${n}-touched`));
+        assert.equal(result.droppedCount, 2);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });
 
 test('dropOutOfSurfaceViolations: an unscoped surface passes every violation through unfiltered', () => {
