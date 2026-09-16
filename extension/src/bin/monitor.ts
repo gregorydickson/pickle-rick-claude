@@ -378,6 +378,10 @@ export function sparkline(values: number[]): string {
 }
 
 const MV_WIDTH = 80;
+/** Metric-trend sparkline covers this many most-recent history entries. */
+const MV_TREND_WINDOW = 10;
+/** Convergence line lists this many most-recent failure classes. */
+const MV_RECENT_FAILURES_SHOWN = 5;
 
 function mvTruncate(s: string): string {
   const bare = s.replace(/\x1b\[[0-9;]*[mJH]/g, '');
@@ -474,9 +478,9 @@ function mvStall(conv: MvConv): string {
 function mvTrend(conv: MvConv): string {
   const sep = `${matrixSeparator(MV_WIDTH)}\n`;
   const hist: MicroverseHistoryEntry[] = Array.isArray(conv?.history) ? conv!.history as MicroverseHistoryEntry[] : [];
-  const last10 = hist.slice(-10);
-  if (last10.length === 0) return `${sep}  ${MX.BRIGHT}Metric Trend:${MX.R} ${MX.DIM}--${MX.R}\n`;
-  const scores = last10.map(h => h.score);
+  const trendWindow = hist.slice(-MV_TREND_WINDOW);
+  if (trendWindow.length === 0) return `${sep}  ${MX.BRIGHT}Metric Trend:${MX.R} ${MX.DIM}--${MX.R}\n`;
+  const scores = trendWindow.map(h => h.score);
   const spark = sparkline(scores);
   const minVal = Math.min(...scores);
   const maxVal = Math.max(...scores);
@@ -498,9 +502,9 @@ export function renderMicroverseDashboard(
   const cap = state.max_iterations ?? '--';
   const fh: ClassifiedFailure[] = Array.isArray(microverseJson?.failure_history)
     ? microverseJson!.failure_history as ClassifiedFailure[] : [];
-  const last5 = fh.slice(-5).map(f => f.failure_class || '--').join(', ') || '--';
+  const recentFailures = fh.slice(-MV_RECENT_FAILURES_SHOWN).map(f => f.failure_class || '--').join(', ') || '--';
   out.push(`${matrixSeparator(MV_WIDTH)}\n`);
-  out.push(`${mvTruncate(`  ${MX.BRIGHT}Convergence:${MX.R} iter ${iter}/${cap} | last 5: ${last5}`)}\n`);
+  out.push(`${mvTruncate(`  ${MX.BRIGHT}Convergence:${MX.R} iter ${iter}/${cap} | last ${MV_RECENT_FAILURES_SHOWN}: ${recentFailures}`)}\n`);
 
   out.push(mvStall(microverseJson?.convergence));
   out.push(mvTrend(microverseJson?.convergence));
