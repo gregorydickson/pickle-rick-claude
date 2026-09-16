@@ -331,7 +331,13 @@ function withOptionalMicroverseStateFields(
   if (convergenceTarget != null) state.convergence_target = convergenceTarget;
   if (convergenceMode != null) state.convergence_mode = convergenceMode;
   if (convergenceFile != null) state.convergence_file = convergenceFile;
-  if (allowedPaths != null && allowedPaths.length > 0) state.allowed_paths = allowedPaths;
+  // ac655b46 (AC-J1-8): write whenever an allowedPaths array was explicitly provided (even
+  // empty), never silently no-op. `undefined` is the only "not provided" value
+  // (`CreateMicroverseOpts.allowedPaths?: string[]`, no `| null`) — an explicit empty-array
+  // derivation must land on `state` exactly as given rather than risk preserving whatever the
+  // object already held, so an empty derived surface can never be shadowed by a stale non-empty
+  // value on a reused object.
+  if (allowedPaths !== undefined) state.allowed_paths = allowedPaths;
   return state;
 }
 

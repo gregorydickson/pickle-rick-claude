@@ -47,9 +47,11 @@ import {
     measureAndClassifyIteration,
     executeGapAnalysis,
     JUDGE_SYSTEM_PROMPT,
+    deriveJudgeReviewSurface,
     _deps,
 } from '../bin/microverse-runner.js';
 import { VALID_ACTIVITY_EVENTS } from '../types/index.js';
+import { loadMicroverseScope } from './helpers/microverse-corpora.js';
 
 function makeTmpDir() {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-conv-')));
@@ -1929,4 +1931,84 @@ test('AC-J1-3 over-trigger control: executeGapAnalysis still scores an in-scope,
     assert.equal(mv.baseline_score, 1, 'the baseline score must reflect the in-scope violation the judge reported');
     assert.equal(mv.violation_ledger?.length, 1, 'the in-scope baseline violation must be seeded into the ledger');
     assert.equal(mv.violation_ledger[0].path, 'src/inscope.ts');
+});
+
+// ---------------------------------------------------------------------------
+// ac655b46 (AC-J1-8) — decides WHICH version of the review surface the judge scores.
+// CHOSEN LIFETIME: per-iteration (live) — `deriveJudgeReviewSurface` reads `scope.json` fresh
+// on every call, never `MicroverseState.allowed_paths` (a phase-setup snapshot). These two cases
+// construct sessions where state.allowed_paths and the CURRENT scope.json deliberately diverge
+// — exactly what `maybeAutoExtendScope` (pipeline-runner.ts:1974) and a phase-boundary
+// `refreshScope` (scope-resolver.ts, run at every anatomy-park/szechuan-sauce entry) each
+// produce — and assert the judge surface follows the live file, matching the worker's own
+// pre-commit fence (check-scope-diff.ts), never the stale snapshot.
+// ---------------------------------------------------------------------------
+
+test('AC-J1-8 auto-extend: the judge surface follows a scope.json widened after the state snapshot was taken', () => {
+    const sessionDir = makeTmpDir();
+    try {
+        // Simulates the phase-setup snapshot taken BEFORE a later maybeAutoExtendScope widened
+        // scope.json in place.
+        const mv = createMicroverseState({
+            prdPath: '/tmp/prd.md',
+            metric: { description: 'quality', validation: 'q', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'higher' },
+            stallLimit: 3,
+            allowedPaths: ['src/original.ts'],
+        });
+        assert.deepEqual(mv.allowed_paths, ['src/original.ts'], 'precondition: the pre-extend snapshot holds only the original path');
+
+        // Simulates the ON-DISK effect of maybeAutoExtendScope: scope.json re-persisted with the
+        // detector-named caller added (pipeline-runner.ts:1995-2005).
+        fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+            version: 1, mode: 'paths', base_sha: 'd'.repeat(40),
+            allowed_paths: ['src/original.ts', 'src/extended.ts'],
+        }));
+
+        const result = deriveJudgeReviewSurface(sessionDir);
+        assert.equal(result.kind, 'derived');
+        assert.ok(
+            result.paths.includes('src/extended.ts'),
+            'the derived surface must include the auto-extended path, which state.allowed_paths never carried',
+        );
+        assert.deepEqual(result.paths, ['src/original.ts', 'src/extended.ts']);
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('AC-J1-8 phase refresh: the judge surface follows scope.json after a phase boundary refresh, not an earlier phase\'s snapshot', () => {
+    const sessionDir = makeTmpDir();
+    try {
+        // A real vendored scope.json whose top-level fields reflect the LATEST of two recorded
+        // refresh_history entries (anatomy-park, then szechuan-sauce, ~19.5h apart, different
+        // head_shas) — the exact phase-refresh shape this AC names.
+        const refreshedScope = loadMicroverseScope('2026-09-09-e959390b');
+        assert.equal(refreshedScope.refresh_history.length, 2, 'precondition: the fixture carries two phase refreshes');
+        fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify(refreshedScope));
+
+        // Simulates a state.allowed_paths snapshot taken at an EARLIER phase's setup, before this
+        // refresh — a single, different, stale path.
+        const mv = createMicroverseState({
+            prdPath: '/tmp/prd.md',
+            metric: { description: 'quality', validation: 'q', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'higher' },
+            stallLimit: 3,
+            allowedPaths: ['src/pre-refresh-stale.ts'],
+        });
+        assert.deepEqual(mv.allowed_paths, ['src/pre-refresh-stale.ts'], 'precondition: the stale snapshot predates the refresh');
+
+        const result = deriveJudgeReviewSurface(sessionDir);
+        assert.equal(result.kind, 'derived');
+        assert.equal(result.base, refreshedScope.base_sha, 'the derived base must be the REFRESHED scope.json base_sha, never a stale snapshot value');
+        assert.ok(
+            !result.paths.includes('src/pre-refresh-stale.ts'),
+            'the stale pre-refresh snapshot path must not appear — it was never part of the refreshed scope.json',
+        );
+        assert.ok(
+            result.paths.includes('.claude/agents/morty-debater-architect.md'),
+            'the derived surface must enumerate real paths from the refreshed scope.json, not the stale single-path snapshot',
+        );
+        assert.equal(result.paths.length, refreshedScope.allowed_paths.length);
+    } finally {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
 });

@@ -11,6 +11,7 @@ import {
   measureAndClassifyIteration,
   parseLlmJudgeOutput,
   buildMicroverseHandoff,
+  deriveJudgeReviewSurface,
   _deps,
 } from '../bin/microverse-runner.js';
 import {
@@ -880,6 +881,53 @@ test('AC-J1-3 over-trigger control: an in-scope, in-diff violation is still scor
   assert.equal(mv.violation_ledger?.length, 1, 'the in-scope violation the judge reported must still be tracked in the ledger');
   assert.equal(mv.violation_ledger[0].path, 'src/inscope.ts');
   assert.equal(mv.violation_ledger[0].description, 'in-scope violation');
+});
+
+// ---------------------------------------------------------------------------
+// ac655b46 (AC-J1-8) — decides WHICH version of the review surface the judge scores.
+// CHOSEN LIFETIME: per-iteration (live) — `deriveJudgeReviewSurface` reads `scope.json` fresh on
+// every call, never `MicroverseState.allowed_paths` (a phase-setup snapshot other consumers keep
+// using for their own purposes). This case pins the AC-J1-8(3) hazard directly: a stale
+// non-empty `state.allowed_paths` snapshot must never be silently substituted when the CURRENT
+// scope.json derives to empty.
+// ---------------------------------------------------------------------------
+
+test('AC-J1-8: an empty CURRENT scope.json is honored even when state.allowed_paths holds a stale non-empty snapshot', () => {
+  const sessionDir = makeTempDir('pickle-mv-judgescope-stale-');
+  try {
+    // A scoped session whose surface has just derived to nothing (e.g. a phase refresh that
+    // resolved zero paths) — the genuine AC-4 "empty derived surface" case.
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'f'.repeat(40), allowed_paths: [],
+    }));
+    // A stale, non-empty snapshot — what an earlier phase's own state.allowed_paths might still
+    // carry if it were (wrongly) consulted instead of the live file.
+    const mv = createMicroverseState({
+      prdPath: path.join(sessionDir, 'prd.md'),
+      metric: { description: 'quality', validation: 'q', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'higher' },
+      stallLimit: 3,
+      allowedPaths: ['src/stale-non-empty.ts'],
+    });
+    assert.deepEqual(mv.allowed_paths, ['src/stale-non-empty.ts'], 'precondition: the stale snapshot is really present on the state object');
+
+    const result = deriveJudgeReviewSurface(sessionDir);
+    assert.equal(result.kind, 'failed', 'the CURRENT (empty) scope.json must decide — never fall back to the stale non-empty state.allowed_paths');
+    assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
+    assert.ok(!('paths' in result), 'a failed derivation carries no paths field — the stale snapshot must not leak through as "paths"');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AC-J1-8 write-side: createMicroverseState with an explicitly-empty allowedPaths sets allowed_paths to [], never omits the field', () => {
+  const mv = createMicroverseState({
+    prdPath: '/tmp/prd.md',
+    metric: { description: 'quality', validation: 'q', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'higher' },
+    stallLimit: 3,
+    allowedPaths: [],
+  });
+  assert.ok(Object.prototype.hasOwnProperty.call(mv, 'allowed_paths'), 'an explicitly-provided (even empty) allowedPaths must be written, not silently skipped');
+  assert.deepEqual(mv.allowed_paths, []);
 });
 
 // ---------------------------------------------------------------------------

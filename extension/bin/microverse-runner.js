@@ -2941,14 +2941,20 @@ function clearRateLimitWaitFile(sessionDir) {
  * resolves" (`src/bin/CLAUDE.md` INVARIANT), which is exactly the "unrestricted" shape this
  * producer must never emit on failure.
  *
- * `state.allowed_paths` alone cannot distinguish "never opted into scoping" from "opted in but
- * resolved to nothing" — `microverse-state.ts` only ever sets the field when the resolved array
- * is non-empty, leaving both cases looking like an absent field. Session-root `scope.json` — the
- * artifact `resolveScope`/`persistSeededBranchScope` already write, written only when `--scope`
- * was passed for this session — supplies the missing discriminator: its presence means scoping
- * was requested.
+ * ac655b46 (AC-J1-8): CHOSEN LIFETIME — PER-ITERATION (live). `paths` and `base` are both read
+ * from `scope.json` fresh, on every call — never cached. `MicroverseState.allowed_paths` is a
+ * snapshot `init-microverse.js` takes once per phase setup (`pipeline-runner.ts:setupAnatomyPark`/
+ * `setupSzechuanSauce`, immediately after that phase's own `refreshScope`), and is deliberately
+ * NOT read here: a phase refresh (`scope-resolver.ts:refreshScope`, run at every anatomy-park/
+ * szechuan-sauce phase boundary) or an auto-extend
+ * (`pipeline-runner.ts:maybeAutoExtendScope`, run at the pickle/build phase) rewrites `scope.json`
+ * in place, and any snapshot whose lifetime outlives a single read can go stale relative to that
+ * rewrite. The worker's own pre-commit fence (`check-scope-diff.ts:resolveAllowedPaths`) already
+ * reads `scope.json` live on every commit; deriving the judge's surface the same way is what
+ * keeps the two from silently diverging — the exact failure this bundle exists to close. Re-
+ * reading costs one extra JSON parse of a small file already opened here for `base_sha`.
  */
-export function deriveJudgeReviewSurface(sessionDir, state) {
+export function deriveJudgeReviewSurface(sessionDir) {
     const scopeJsonPath = path.join(sessionDir, 'scope.json');
     const scope = readRecoverableJsonObject(scopeJsonPath);
     // AP-EXT-ITER7-01 idiom (:6201): a bare fs.existsSync pre-gate misses a crash mid tmp-rename;
@@ -2957,8 +2963,8 @@ export function deriveJudgeReviewSurface(sessionDir, state) {
     const scopeRequested = scope !== null || fs.existsSync(scopeJsonPath);
     if (!scopeRequested)
         return { kind: 'unscoped' };
-    const paths = Array.isArray(state.allowed_paths)
-        ? state.allowed_paths.filter((p) => typeof p === 'string' && p.length > 0)
+    const paths = Array.isArray(scope?.allowed_paths)
+        ? scope.allowed_paths.filter((p) => typeof p === 'string' && p.length > 0)
         : [];
     const base = typeof scope?.base_sha === 'string' && scope.base_sha.length > 0 ? scope.base_sha : null;
     if (paths.length === 0 || base === null) {
@@ -2989,7 +2995,7 @@ async function measureCurrentMetric(state, ctx, backend) {
         // reaching this branch), wired through the same producer anyway per AC-J1-1's "decide
         // deliberately for all three call sites, do not silently fix one and leave two" — a
         // derivation failure collapses to null, this function's only existing failure channel.
-        const surface = deriveJudgeReviewSurface(ctx.sessionDir, state);
+        const surface = deriveJudgeReviewSurface(ctx.sessionDir);
         if (surface.kind === 'failed')
             return null;
         return measureLlmMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, state.violation_ledger ?? [], surface.kind === 'derived' ? surface.paths : []);
@@ -3152,7 +3158,7 @@ export function ensureRunnerStateActive(statePath) {
 async function measureLlmBaseline(state, ctx, backend) {
     if (state.key_metric.type !== 'llm')
         return null;
-    const surface = deriveJudgeReviewSurface(ctx.sessionDir, state);
+    const surface = deriveJudgeReviewSurface(ctx.sessionDir);
     if (surface.kind === 'failed') {
         const error = recordJudgeSurfaceDerivationFailure(surface.reason, ctx, 'baseline');
         state.status = 'stopped';
@@ -3452,7 +3458,7 @@ export async function measureLlmIteration(state, ctx, backend) {
     if (state.key_metric.type !== 'llm') {
         throw new Error('measureLlmIteration requires llm metric');
     }
-    const surface = deriveJudgeReviewSurface(ctx.sessionDir, state);
+    const surface = deriveJudgeReviewSurface(ctx.sessionDir);
     if (surface.kind === 'failed') {
         recordJudgeSurfaceDerivationFailure(surface.reason, ctx, 'iteration');
         return { kind: 'failed', exitReason: surface.reason };

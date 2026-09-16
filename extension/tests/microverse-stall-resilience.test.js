@@ -1102,8 +1102,7 @@ test('R4-3 control: a stall over entries first seen inside the stall window is n
 test('deriveJudgeReviewSurface: no scope.json means never opted in — unscoped, not a failure', () => {
   const sessionDir = tmpDir('pickle-mrs-surface-');
   try {
-    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
-    assert.deepEqual(deriveJudgeReviewSurface(sessionDir, state), { kind: 'unscoped' });
+    assert.deepEqual(deriveJudgeReviewSurface(sessionDir), { kind: 'unscoped' });
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
@@ -1115,8 +1114,7 @@ test('deriveJudgeReviewSurface: scope.json present but allowed_paths empty is a 
     fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
       version: 1, mode: 'branch', base_sha: 'a'.repeat(40), allowed_paths: [],
     }));
-    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
-    const result = deriveJudgeReviewSurface(sessionDir, state);
+    const result = deriveJudgeReviewSurface(sessionDir);
     assert.equal(result.kind, 'failed');
     assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
     assert.ok(!('paths' in result), 'a failed derivation structurally carries no paths field — never an empty array standing in for "unrestricted"');
@@ -1129,8 +1127,7 @@ test('deriveJudgeReviewSurface: scope.json present but unparseable is also a typ
   const sessionDir = tmpDir('pickle-mrs-surface-');
   try {
     fs.writeFileSync(path.join(sessionDir, 'scope.json'), 'not json');
-    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
-    const result = deriveJudgeReviewSurface(sessionDir, state);
+    const result = deriveJudgeReviewSurface(sessionDir);
     assert.equal(result.kind, 'failed');
     assert.equal(result.reason, 'metric_unmeasurable_unrecoverable');
   } finally {
@@ -1144,11 +1141,31 @@ test('deriveJudgeReviewSurface: scope.json + populated allowed_paths derives suc
     fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
       version: 1, mode: 'branch', base_sha: 'b'.repeat(40), allowed_paths: ['src/foo.ts'],
     }));
-    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
-    state.allowed_paths = ['src/foo.ts'];
     assert.deepEqual(
-      deriveJudgeReviewSurface(sessionDir, state),
+      deriveJudgeReviewSurface(sessionDir),
       { kind: 'derived', paths: ['src/foo.ts'], base: 'b'.repeat(40) },
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ac655b46 (AC-J1-8): CHOSEN LIFETIME is per-iteration/live — the derivation reads scope.json
+// fresh, never a MicroverseState.allowed_paths snapshot. A stale state.allowed_paths (as a
+// phase-setup snapshot would carry after scope.json was refreshed again) must never leak into
+// the derived surface; scope.json's OWN current content is authoritative.
+test('deriveJudgeReviewSurface: a stale state.allowed_paths snapshot is never consulted — scope.json alone decides', () => {
+  const sessionDir = tmpDir('pickle-mrs-surface-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: 'c'.repeat(40), allowed_paths: ['src/live.ts'],
+    }));
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+    state.allowed_paths = ['src/stale-snapshot.ts'];
+    assert.deepEqual(
+      deriveJudgeReviewSurface(sessionDir),
+      { kind: 'derived', paths: ['src/live.ts'], base: 'c'.repeat(40) },
+      'the derived surface must come from the live scope.json, never from state.allowed_paths',
     );
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
