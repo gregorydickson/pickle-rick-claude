@@ -142,6 +142,37 @@ agreement. **The next run is the first that exercises either fix.**
 
 ---
 
+## 🎯 AC-L7-1, CHANNEL 2 — the skeptic is ~85% UN-ROUTABLE (#36). Same verdict: fix targeting, then wire.
+
+**Deployed `2.2.0-beta.1` first** (`install.sh`, verified BY CONTENT: 184 compared, **0 differing**, one
+intentional difference). Before it, **8 files were stale including both bundle fixes** —
+`bin/test-runner.js` (#33) and `services/citadel/trap-door-coverage-audit.js` (#34) — so neither was live.
+**The next pipeline run is the first that exercises either.**
+
+Then ran AC-L7-1 on the second channel. **Both axes are staleness-independent** — my first pass measured
+283 findings against current HEAD and was confounded by moved line numbers; that number was discarded.
+
+| | count | share |
+|---|---:|---:|
+| names **COMPILED output** (`extension/bin/*.js`, `extension/services/*.js`) | **222** | **78%** |
+| names editable source (`extension/src/**`) | 43 | 15% |
+| names tests | 14 | 5% |
+| **has NO line number** (`line: None`) | **208** | **73%** |
+
+`extension/tsconfig.json` is `rootDir: src`, `outDir: .` — so those paths are **generated**, and root
+`CLAUDE.md` says never edit them. **A fixer sent at a compiled file produces a change the next `tsc`
+erases, and the loop records it as done** — worse than no fix.
+
+**Fourth instance of the same shape** (#33/#34/#35): an instrument reporting a location its consumer
+cannot act on, dropping the line while doing it. The compiled→source mapping is mechanical
+(`bin/x.js` → `src/bin/x.ts`), so this is repairable, not a reason to discard the channel.
+
+**Running tally for L7 — two channels measured, two blocked:** citadel 82% false (#34, fix built,
+unverified in field); skeptic ~85% un-routable (#36, unfixed). `dropped_findings.md` remains unmeasured.
+**"Fix all issues they find" is sound only where the issues are real AND the locator is actionable.**
+
+---
+
 ## 🔬 WHERE THE BRITTLENESS COMES FROM — measured 2026-09-16 (evidence for root `CLAUDE.md` clauses 6-7)
 
 **Classified the last 14 GitHub issues by defect shape.** The conclusion overturned the working
