@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, _deps } from '../bin/microverse-runner.js';
+import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, measureAndClassifyIteration, _deps } from '../bin/microverse-runner.js';
 import { writeMicroverseState, readMicroverseState, createMicroverseState, recordIteration, recordStall, deriveStallCause } from '../services/microverse-state.js';
 import { MICROVERSE_EXIT_REASONS, EXIT_REASONS } from '../types/index.js';
 import { loadMicroverseJson } from './helpers/microverse-corpora.js';
@@ -209,53 +209,85 @@ test('finalize fallback stamps the disposition into state.json when finalizeTerm
 // persisted phase artifact (microverse.json), not merely an in-memory return value — the same
 // carries-into-the-artifact discipline every other WS-5 disposition test in this file already
 // pins for `exit_reason`.
-test('AC-J3-4: dropOutOfSurfaceViolations.droppedCount round-trips through microverse.json', () => {
-  const sessionDir = tmpDir();
-  try {
-    const originalSpawn = _deps.spawnSync;
-    _deps.spawnSync = () => ({
-      status: 0,
-      // git diff shows only line 9 of src/foo.ts as touched.
-      stdout: [
-        'diff --git a/src/foo.ts b/src/foo.ts',
-        '--- a/src/foo.ts',
-        '+++ b/src/foo.ts',
-        '@@ -9,1 +9,1 @@',
-        '-old',
-        '+new',
-      ].join('\n'),
-    });
-    let dropped;
-    try {
-      dropped = dropOutOfSurfaceViolations(
-        [
-          { id: 'pre', path: 'src/foo.ts', line: 3, severity: 'low', description: 'pre-existing, dropped' },
-          { id: 'touched', path: 'src/foo.ts', line: 9, severity: 'low', description: 'touched, kept' },
-        ],
-        { kind: 'derived', paths: ['src/foo.ts'], base: 'f'.repeat(40) },
-        sessionDir,
-      );
-    } finally {
-      _deps.spawnSync = originalSpawn;
-    }
-    assert.equal(dropped.droppedCount, 1, 'the return value itself must carry the count');
+//
+// e562164b: this case used to perform the accumulation itself (`mv.out_of_surface_findings_dropped
+// += droppedCount` in the test body), so removing the runtime accumulation left it GREEN. It now
+// drives the real consume path — `measureAndClassifyIteration` over a scoped llm session — and
+// reads the count back from disk, seeded non-zero so an overwrite is told apart from an add.
+const AC_J3_4_DIFF = [
+  'diff --git a/src/foo.ts b/src/foo.ts',
+  '--- a/src/foo.ts',
+  '+++ b/src/foo.ts',
+  '@@ -9,1 +9,1 @@',
+  '-old',
+  '+new',
+].join('\n');
 
+test('AC-J3-4: dropOutOfSurfaceViolations.droppedCount round-trips through microverse.json', async () => {
+  const sessionDir = tmpDir();
+  const workingDir = tmpDir('pickle-mv-disposition-work-');
+  const violations = [
+    { id: 'pre', path: 'src/foo.ts', line: 3, severity: 'low', description: 'pre-existing, dropped' },
+    { id: 'touched', path: 'src/foo.ts', line: 9, severity: 'low', description: 'touched, kept' },
+  ];
+  const surface = { kind: 'derived', paths: ['src/foo.ts'], base: 'f'.repeat(40) };
+  const originalSpawn = _deps.spawnSync;
+  const originalExec = _deps.execFileSync;
+  // git diff shows only line 9 of src/foo.ts as touched; every other spawn is the real one.
+  _deps.spawnSync = (cmd, args, opts) => (cmd === 'git' && Array.isArray(args) && args.includes('diff')
+    ? { status: 0, stdout: AC_J3_4_DIFF }
+    : originalSpawn(cmd, args, opts));
+  process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+  _deps.execFileSync = (_cmd, args) => (Array.isArray(args) && args[0] === '--version'
+    ? 'Claude Code 2.1.126'
+    : JSON.stringify({ score: 2, violations, resolved: [], new: ['pre', 'touched'], remaining: [] }));
+  try {
+    assert.equal(
+      dropOutOfSurfaceViolations(violations, surface, workingDir).droppedCount,
+      1,
+      'the return value itself must carry the count',
+    );
+
+    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+      version: 1, mode: 'branch', base_sha: surface.base, allowed_paths: surface.paths,
+    }));
+    const runnerState = {
+      active: true, working_dir: workingDir, step: 'implement', iteration: 0, max_iterations: 10,
+      max_time_minutes: 60, worker_timeout_seconds: 0, start_time_epoch: Math.floor(Date.now() / 1000),
+      completion_promise: null, original_prompt: 'test', current_ticket: null, history: [],
+      started_at: new Date().toISOString(), session_dir: sessionDir, tmux_mode: true,
+      command_template: 'microverse.md', backend: 'claude',
+    };
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(runnerState, null, 2));
     const mv = createMicroverseState({
-      prdPath: '/tmp/prd.md',
-      metric: { description: 'x', validation: 'x', type: 'llm', timeout_seconds: 60, tolerance: 0 },
+      prdPath: path.join(workingDir, 'prd.md'),
+      metric: { description: 'x', validation: 'x', type: 'llm', timeout_seconds: 60, tolerance: 0, direction: 'lower', judge_model: 'claude-sonnet-4-6' },
       stallLimit: 3,
     });
-    mv.out_of_surface_findings_dropped = (mv.out_of_surface_findings_dropped ?? 0) + dropped.droppedCount;
+    mv.status = 'iterating';
+    mv.baseline_score = 2;
+    mv.out_of_surface_findings_dropped = 2;
     writeMicroverseState(sessionDir, mv);
 
-    const persisted = readMicroverseState(sessionDir);
+    await measureAndClassifyIteration(mv, { raw: '2', score: 2 }, {
+      sessionDir, workingDir, extensionRoot: EXTENSION_ROOT, statePath: path.join(sessionDir, 'state.json'),
+      startTime: Date.now(), initialIteration: 0, enableFailureClassification: false,
+      cgSettings: { enabled_convergence_files: [], regression_warning_threshold: 5, remediator_timeout_s: 600, baseline_max_age_iterations: 30, baseline_max_age_seconds: 14_400 },
+      rateLimitWaitMinutes: 0, maxRateLimitRetries: 0, log: () => {}, currentRunnerState: runnerState,
+      iteration: 1, consecutiveRateLimits: 0, preIterSha: 'a'.repeat(40), postIterSha: 'b'.repeat(40),
+    });
+
     assert.equal(
-      persisted.out_of_surface_findings_dropped,
-      1,
-      'the count must reach the phase artifact on disk, not merely an in-memory field',
+      readMicroverseState(sessionDir).out_of_surface_findings_dropped,
+      3,
+      'the runtime must ADD this pass\'s drop to the persisted count and write it to the phase artifact on disk',
     );
   } finally {
+    _deps.spawnSync = originalSpawn;
+    _deps.execFileSync = originalExec;
+    delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
     fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
   }
 });
 
