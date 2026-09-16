@@ -168,6 +168,34 @@ in the prompt, and no pre-bundle ledger entry.
 counterpart). The deployed `version` read `2.1.0` throughout — **deploy drift is invisible to the version
 check, diff by CONTENT.**
 
+### 🔎 `post_final_tier_degraded` MEASURED — the input was suspect, and the root is one layer down (#33)
+
+It was the last unexamined verdict term. It fires in exactly **three** sessions, all ending
+`status: failed`: `2026-09-12-a4d141e1` and `2026-09-13-d2e834e1` (`script failure: test:fast:serial`,
+**no diagnostics**) and `2026-09-14-ae80e917` (`script failure: test:fast:parallel`, **with** a tail).
+The empty two predate `0e1c1bfa` (2026-09-13T12:54:06Z), which carries the tail into the verdict.
+
+**The third one's tail is the finding:** `tests 9538 · pass 9534 · fail 0 · skipped 3`. **Zero failures,
+non-zero exit, classified `red`, `nonConvergent` raised, success verdict withheld.**
+
+**Root, one layer below the verdict:** `test-runner.ts:438` ends on
+`process.exit(result.status ?? 1)`, and **`result.signal` is never read in that file** (`grep -c
+'result\.signal'` → **0**; the only signal-adjacent code keys on `ETIMEDOUT`, an error, not a signal).
+A killed child yields `status: null` and collapses to **exit 1 — byte-identical to a real failure exit**.
+A signal death is a SUFFICIENT explanation for "non-zero exit, zero failures"; **it is not claimed as THE
+explanation, because the instrument discards the one field that would decide it.** That is the defect.
+
+**Already fixed — the LABEL.** `36028190` (2026-09-15T12:17:34Z, AC-Q2) reclassifies a non-zero tier exit
+reporting zero failures as **`inconclusive`**, not `red` (`mux-runner.ts:1137`). All three firings
+predate it. *Dating the artifacts against the log before filing is what kept this from being re-filed as
+a closed bug — the [[session-artifact-is-a-snapshot]] lesson, applied.*
+
+**NOT fixed — the attribution and the outcome.** `inconclusive` is still `degraded: true`
+(`mux-runner.ts:1086`) and the withhold reads `degraded`, not `state`
+(`pipeline-runner.ts:5398`), so a `fail 0` tier still costs the run its success verdict — under an
+honester name. The rename changed the label, not the disposition. And nothing records WHY the exit was
+non-zero.
+
 ### ▶ IMMEDIATE STATE
 
 | | |
