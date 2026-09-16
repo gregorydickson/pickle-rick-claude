@@ -727,13 +727,16 @@ const TEST_RUNNER_SIGNAL_RE = /\[test-runner\] child terminated by signal (\S+)/
  * A signal-terminated tier measurement is a KILL, not a test failure — say so in the dimension
  * name rather than leaving `dimensions` indistinguishable from a genuine regression. The message
  * tail alone is not enough: `dimensions`, not `message`, is what a withheld verdict names.
+ * `gateSignal` is the gate spawn's OWN `SpawnSyncReturns.signal`: when the killed process is the
+ * package manager rather than test-runner's child, no stderr line exists to carry it (audit 4ee9ef19).
  */
-function attributeSignalTermination(name: string, lines: string[]): string {
+function attributeSignalTermination(name: string, lines: string[], gateSignal: string | null): string {
   let signal: string | null = null;
   for (const line of lines) {
     const match = line.match(TEST_RUNNER_SIGNAL_RE);
     if (match) signal = match[1];
   }
+  signal ??= gateSignal;
   return signal ? `${name} (signal: ${signal})` : name;
 }
 
@@ -759,7 +762,11 @@ function normalizeBetweenTicketFailureFile(rawFile: string, workingDir: string):
   return relative.startsWith('..') ? normalized : relative;
 }
 
-export function parseBetweenTicketFastGateFailures(output: string, workingDir: string): BetweenTicketGateFailure[] {
+export function parseBetweenTicketFastGateFailures(
+  output: string,
+  workingDir: string,
+  gateSignal: NodeJS.Signals | null = null,
+): BetweenTicketGateFailure[] {
   const failures: BetweenTicketGateFailure[] = [];
   const lines = output.split(/\r?\n/);
   let activeFailure: BetweenTicketGateFailure | null = null;
@@ -801,7 +808,7 @@ export function parseBetweenTicketFastGateFailures(output: string, workingDir: s
   let name = phase ? `script failure: ${phase}` : SCRIPT_FAILURE_FALLBACK_NAME;
   // Defensive assertion (not just a test pin): never emit a name shaped like npm's own banner.
   if (NPM_LIFECYCLE_BANNER_RE.test(name)) name = SCRIPT_FAILURE_FALLBACK_NAME;
-  name = attributeSignalTermination(name, lines);
+  name = attributeSignalTermination(name, lines, gateSignal);
 
   return [{
     name,
@@ -864,7 +871,7 @@ export function runBetweenTicketFastTests(
     ok: result.status === 0,
     failures: result.status === 0
       ? []
-      : parseBetweenTicketFastGateFailures(output, path.dirname(extensionDir)),
+      : parseBetweenTicketFastGateFailures(output, path.dirname(extensionDir), result.signal),
     timed_out: false,
     timeout_ms: timeoutMs,
     // AP-EXT-ITER157-02: `status === 0` alone is not a measurement. `bin/test-runner.js --tier

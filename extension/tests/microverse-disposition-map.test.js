@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 
 import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, measureAndClassifyIteration, _deps } from '../bin/microverse-runner.js';
-import { classifyPostFinalVerdict, parseBetweenTicketFastGateFailures } from '../bin/mux-runner.js';
+import { classifyPostFinalVerdict, parseBetweenTicketFastGateFailures, runBetweenTicketFastTests } from '../bin/mux-runner.js';
 import { writeMicroverseState, readMicroverseState, createMicroverseState, recordIteration, recordStall, deriveStallCause } from '../services/microverse-state.js';
 import { MICROVERSE_EXIT_REASONS, EXIT_REASONS } from '../types/index.js';
 import { loadMicroverseJson } from './helpers/microverse-corpora.js';
@@ -618,4 +618,57 @@ test('wiring: a REAL signal-killed test-runner.js child\'s captured output reach
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Audit 4ee9ef19 (B-TRUTHEXIT data-flow): the hop AFTER test-runner. When the gate's OWN child —
+// `npm run test:fast` — dies by signal, no test-runner stderr line exists to attribute it, so
+// `runBetweenTicketFastTests` must carry its own `SpawnSyncReturns.signal` into the dimension.
+// Driven through the REAL gate with a PATH `npm` shim; the exit-1 control proves the suffix is
+// keyed on the signal, not on the failure.
+// ---------------------------------------------------------------------------------------------
+
+function runGateWithNpmShim(shimBody) {
+  const root = tmpDir('pickle-gate-signal-');
+  const extensionDir = path.join(root, 'extension');
+  const shimDir = path.join(root, 'bin');
+  fs.mkdirSync(extensionDir, { recursive: true });
+  fs.mkdirSync(shimDir, { recursive: true });
+  const shim = path.join(shimDir, 'npm');
+  fs.writeFileSync(shim, `#!/bin/sh\necho "ℹ tests 5"\necho "ℹ pass 5"\necho "ℹ fail 0"\n${shimBody}\n`);
+  fs.chmodSync(shim, 0o755);
+  const originalPath = process.env.PATH;
+  const originalTimeout = process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+  process.env.PATH = `${shimDir}${path.delimiter}${originalPath ?? ''}`;
+  delete process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+  try {
+    const gate = runBetweenTicketFastTests(extensionDir, root, 30000);
+    const verdict = classifyPostFinalVerdict({
+      gate, applicable: true, verdictTs: 200, finalCommitTs: 100, baselineFailures: [],
+    });
+    return { gate, verdict };
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalTimeout === undefined) delete process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+    else process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS = originalTimeout;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('audit 4ee9ef19: a gate whose own npm child is SIGKILLed names the signal in post_final_verdict.dimensions', { skip: process.platform === 'win32' }, () => {
+  const { gate, verdict } = runGateWithNpmShim('kill -KILL $$');
+  assert.equal(gate.ok, false, 'a killed tier is still not green (AC-T1-4)');
+  assert.equal(gate.failures.length, 1);
+  assert.match(gate.failures[0].name, /\(signal: SIGKILL\)$/, 'the gate spawn\'s own signal must reach the failure name');
+  assert.equal(verdict.state, 'inconclusive', 'attribution must not move the disposition (AC-T1-6)');
+  assert.equal(verdict.degraded, true);
+  assert.deepEqual(verdict.dimensions, [gate.failures[0].name]);
+});
+
+test('audit 4ee9ef19: a gate whose npm child exits 1 carries no signal attribution (control)', { skip: process.platform === 'win32' }, () => {
+  const { gate, verdict } = runGateWithNpmShim('exit 1');
+  assert.equal(gate.ok, false);
+  assert.equal(gate.failures.length, 1);
+  assert.doesNotMatch(gate.failures[0].name, /\(signal:/, 'no signal ⇒ no attribution; absent must stay distinguishable');
+  assert.equal(verdict.state, 'inconclusive');
 });
