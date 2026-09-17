@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { ChangedFileSummary, DiffSummary } from './diff-walker.js';
-import { slugify } from './reporter.js';
+import { slugifyOrRoot } from './reporter.js';
 
 export type DivergenceDecisionKind = 'test-locks-prd-divergence' | 'trap-door-prd-contradiction';
 
@@ -61,7 +61,7 @@ function decisionsForChangedTest(repoRoot: string, file: ChangedFileSummary): Di
     .filter((evidence) => CONTRADICTION_PATTERN.test(evidence.text))
     .filter((evidence) => INTENT_MARKER_PATTERN.test(evidence.text) || ASSERTION_PATTERN.test(evidence.text))
     .map((evidence) => ({
-      id: `citadel-divergence-test-${slug(file.path)}-${evidence.line}`,
+      id: `citadel-divergence-test-${slugifyOrRoot(file.path)}-${evidence.line}`,
       severity: 'Medium',
       kind: 'test-locks-prd-divergence',
       message: `${file.path}:${evidence.line} appears to lock implemented behavior against a referenced PRD acceptance criterion.`,
@@ -75,7 +75,7 @@ function decisionsForTrapDoorFile(repoRoot: string, file: ChangedFileSummary): D
     .filter((evidence) => TRAP_DOOR_PATTERN.test(evidence.text))
     .filter((evidence) => CONTRADICTION_PATTERN.test(evidence.text))
     .map((evidence) => ({
-      id: `citadel-divergence-trap-door-${slug(file.path)}-${evidence.line}`,
+      id: `citadel-divergence-trap-door-${slugifyOrRoot(file.path)}-${evidence.line}`,
       severity: 'Medium',
       kind: 'trap-door-prd-contradiction',
       message: `${file.path}:${evidence.line} describes a trap door that contradicts the PRD.`,
@@ -111,8 +111,4 @@ function compareDecisions(a: DivergenceDecisionRequired, b: DivergenceDecisionRe
   const first = a.evidence[0];
   const second = b.evidence[0];
   return first.file.localeCompare(second.file) || first.line - second.line || a.id.localeCompare(b.id);
-}
-
-function slug(value: string): string {
-  return slugify(value, 'root');
 }

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import ts from 'typescript';
 import { ChangedFileSummary, DiffSummary } from './diff-walker.js';
-import { slugify } from './reporter.js';
+import { slugifyOrRoot } from './reporter.js';
 
 export type FrontendPropDriftSeverity = 'High';
 
@@ -316,7 +316,7 @@ function toFinding(
 ): FrontendPropDriftFinding {
   const line = lineNumber(file.sourceFile, node);
   return {
-    id: `citadel-frontend-prop-drift-${slug(file.path)}-${slug(component.name)}-${line}`,
+    id: `citadel-frontend-prop-drift-${slugifyOrRoot(file.path)}-${slugifyOrRoot(component.name)}-${line}`,
     severity: 'High',
     message: `${component.name} receives undeclared prop(s): ${undeclaredProps.join(', ')}.`,
     component: component.name,
@@ -357,8 +357,4 @@ function compareBlindSpots(a: FrontendSpreadBlindSpot, b: FrontendSpreadBlindSpo
 
 function sortedStrings(values: string[]): string[] {
   return values.sort((a, b) => a.localeCompare(b));
-}
-
-function slug(value: string): string {
-  return slugify(value, 'root');
 }

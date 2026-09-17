@@ -2,7 +2,7 @@ import { readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DiffSummary, ChangedFileSummary } from './diff-walker.js';
-import { slugify, toPosixPath } from './reporter.js';
+import { slugifyOrRoot, toPosixPath } from './reporter.js';
 
 export type DiffHygieneSeverity = 'Critical' | 'High' | 'Medium';
 export type SzechuanDiffHygienePriority = 'P0' | 'P1' | 'P2';
@@ -279,7 +279,7 @@ const RULE_SPECS: Record<DiffHygieneRule, RuleSpec> = {
 function makeFinding({ file, rule, sizeBytes }: RuleMatch): DiffHygieneFinding {
   const spec = RULE_SPECS[rule];
   return {
-    id: `citadel-diff-hygiene-${slug(rule)}-${slug(file)}`,
+    id: `citadel-diff-hygiene-${slugifyOrRoot(rule)}-${slugifyOrRoot(file)}`,
     severity: spec.citadelSeverity,
     message: spec.citadelMessage(file, sizeBytes ?? 0),
     rule,
@@ -292,7 +292,7 @@ function makeFinding({ file, rule, sizeBytes }: RuleMatch): DiffHygieneFinding {
 function makeSzechuanFinding({ file, rule, sizeBytes }: RuleMatch): SzechuanDiffHygieneFinding {
   const spec = RULE_SPECS[rule];
   return {
-    id: `szechuan-diff-hygiene-${slug(rule)}-${slug(file)}`,
+    id: `szechuan-diff-hygiene-${slugifyOrRoot(rule)}-${slugifyOrRoot(file)}`,
     priority: spec.szechuanPriority,
     severity: spec.szechuanPriority,
     message: spec.szechuanMessage(file, sizeBytes ?? 0),
@@ -381,8 +381,4 @@ function extractFindingPath(finding: SzechuanFindingLike): string | undefined {
     if (match) return toPosixPath(match[1]);
   }
   return undefined;
-}
-
-function slug(value: string): string {
-  return slugify(value, 'root');
 }

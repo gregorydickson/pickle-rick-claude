@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { escapeTableCell, slugify } from './reporter.js';
+import { escapeTableCell, slugifyCapped } from './reporter.js';
 const DEFAULT_MAX_EVIDENCE = 3;
 const CODE_FILE_PATTERN = /\.[cm]?[jt]sx?$/i;
 export function auditStateTransitions(transitionRows, diff, options = {}) {
@@ -61,7 +61,7 @@ function findEmitEvidence(auditAction, productionFiles, maxEvidence) {
 }
 function toFinding(row) {
     return {
-        id: `citadel-transition-audit-${slug(row.transition)}-${slug(row.auditAction)}`,
+        id: `citadel-transition-audit-${slugifyCapped(row.transition)}-${slugifyCapped(row.auditAction)}`,
         severity: 'High',
         message: `Missing audit emit for transition "${row.transition}" and action "${row.auditAction}".`,
         transition: row.transition,
@@ -122,7 +122,4 @@ function formatEvidence(row) {
         return row.expectedCallSite ? `missing; expected ${row.expectedCallSite}` : 'missing';
     }
     return row.emitEvidence.map((evidence) => `${evidence.file}:${evidence.line}`).join(', ');
-}
-function slug(value) {
-    return slugify(value, 'unknown', 80);
 }

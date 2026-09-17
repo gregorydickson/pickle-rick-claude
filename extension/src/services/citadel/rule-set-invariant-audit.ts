@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { ChangedFileSummary, DiffSummary } from './diff-walker.js';
-import { CitadelFinding, escapeTableCell, slugify, uniqueSortedStrings } from './reporter.js';
+import { CitadelFinding, escapeTableCell, slugifyCapped, uniqueSortedStrings } from './reporter.js';
 import { extractTrapDoorsSection } from './trap-doors-section.js';
 
 export type RuleSetInvariantSeverity = 'High' | 'Medium';
@@ -154,7 +154,7 @@ function buildInventoryRow(
 function toFinding(row: RuleSetInventoryRow): RuleSetInvariantFinding {
   const severity = row.severity ?? 'Medium';
   return {
-    id: `citadel-rule-set-invariant-${slug(row.file)}-${slug(row.declarationName)}`,
+    id: `citadel-rule-set-invariant-${slugifyCapped(row.file)}-${slugifyCapped(row.declarationName)}`,
     severity,
     message: `Rule-set "${row.declarationName}" lacks an interaction invariant test.`,
     declaration: {
@@ -319,10 +319,6 @@ function formatEvidence(row: RuleSetInventoryRow): string {
     return row.invariantEvidence.map((evidence) => `${evidence.file}:${evidence.line}`).join(', ');
   }
   return row.explicitInvariant ? `missing; PRD:${row.explicitInvariant.line}` : 'missing';
-}
-
-function slug(value: string): string {
-  return slugify(value, 'unknown', 80);
 }
 
 // ---- Trap-door triple audit ----

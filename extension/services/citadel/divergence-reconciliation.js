@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { slugify } from './reporter.js';
+import { slugifyOrRoot } from './reporter.js';
 const AC_ID_PATTERN = /\bAC-[A-Z0-9]+(?:-[A-Z0-9]+)*(?:-\d+)?\b/;
 const CONTRADICTION_PATTERN = /\b(?:contradicts?|conflicts?\s+with|diverges?\s+from|differs?\s+from|against)\s+(?:the\s+)?PRD\b|\bPRD\s+(?:contradicts?|conflicts?\s+with|diverges?\s+from|differs?\s+from)\b/i;
 const INTENT_MARKER_PATTERN = /\b(?:product|ux|business)\s+decision\b|\b(?:chosen|intentional|intentionally|deliberately|shipped)\s+(?:behavior|deviation|divergence|different|differs?)\b/i;
@@ -29,7 +29,7 @@ function decisionsForChangedTest(repoRoot, file) {
         .filter((evidence) => CONTRADICTION_PATTERN.test(evidence.text))
         .filter((evidence) => INTENT_MARKER_PATTERN.test(evidence.text) || ASSERTION_PATTERN.test(evidence.text))
         .map((evidence) => ({
-        id: `citadel-divergence-test-${slug(file.path)}-${evidence.line}`,
+        id: `citadel-divergence-test-${slugifyOrRoot(file.path)}-${evidence.line}`,
         severity: 'Medium',
         kind: 'test-locks-prd-divergence',
         message: `${file.path}:${evidence.line} appears to lock implemented behavior against a referenced PRD acceptance criterion.`,
@@ -42,7 +42,7 @@ function decisionsForTrapDoorFile(repoRoot, file) {
         .filter((evidence) => TRAP_DOOR_PATTERN.test(evidence.text))
         .filter((evidence) => CONTRADICTION_PATTERN.test(evidence.text))
         .map((evidence) => ({
-        id: `citadel-divergence-trap-door-${slug(file.path)}-${evidence.line}`,
+        id: `citadel-divergence-trap-door-${slugifyOrRoot(file.path)}-${evidence.line}`,
         severity: 'Medium',
         kind: 'trap-door-prd-contradiction',
         message: `${file.path}:${evidence.line} describes a trap door that contradicts the PRD.`,
@@ -78,7 +78,4 @@ function compareDecisions(a, b) {
     const first = a.evidence[0];
     const second = b.evidence[0];
     return first.file.localeCompare(second.file) || first.line - second.line || a.id.localeCompare(b.id);
-}
-function slug(value) {
-    return slugify(value, 'root');
 }

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { DiffSummary, ChangedFileSummary } from './diff-walker.js';
 import { TransitionAuditRow } from './prd-parser.js';
-import { escapeTableCell, slugify } from './reporter.js';
+import { escapeTableCell, slugifyCapped } from './reporter.js';
 
 export type TransitionAuditSeverity = 'High';
 
@@ -134,7 +134,7 @@ function findEmitEvidence(
 
 function toFinding(row: TransitionAuditCoverageRow): TransitionAuditFinding {
   return {
-    id: `citadel-transition-audit-${slug(row.transition)}-${slug(row.auditAction)}`,
+    id: `citadel-transition-audit-${slugifyCapped(row.transition)}-${slugifyCapped(row.auditAction)}`,
     severity: 'High',
     message: `Missing audit emit for transition "${row.transition}" and action "${row.auditAction}".`,
     transition: row.transition,
@@ -195,8 +195,4 @@ function formatEvidence(row: TransitionAuditCoverageRow): string {
     return row.expectedCallSite ? `missing; expected ${row.expectedCallSite}` : 'missing';
   }
   return row.emitEvidence.map((evidence) => `${evidence.file}:${evidence.line}`).join(', ');
-}
-
-function slug(value: string): string {
-  return slugify(value, 'unknown', 80);
 }

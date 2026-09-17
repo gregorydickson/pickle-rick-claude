@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { slugify, toPosixPath } from './reporter.js';
+import { slugifyOrRoot, toPosixPath } from './reporter.js';
 export const ROOT_MARKDOWN_ALLOWLIST = new Set([
     'AGENTS.md',
     'CHANGELOG.md',
@@ -181,7 +181,7 @@ const RULE_SPECS = {
 function makeFinding({ file, rule, sizeBytes }) {
     const spec = RULE_SPECS[rule];
     return {
-        id: `citadel-diff-hygiene-${slug(rule)}-${slug(file)}`,
+        id: `citadel-diff-hygiene-${slugifyOrRoot(rule)}-${slugifyOrRoot(file)}`,
         severity: spec.citadelSeverity,
         message: spec.citadelMessage(file, sizeBytes ?? 0),
         rule,
@@ -193,7 +193,7 @@ function makeFinding({ file, rule, sizeBytes }) {
 function makeSzechuanFinding({ file, rule, sizeBytes }) {
     const spec = RULE_SPECS[rule];
     return {
-        id: `szechuan-diff-hygiene-${slug(rule)}-${slug(file)}`,
+        id: `szechuan-diff-hygiene-${slugifyOrRoot(rule)}-${slugifyOrRoot(file)}`,
         priority: spec.szechuanPriority,
         severity: spec.szechuanPriority,
         message: spec.szechuanMessage(file, sizeBytes ?? 0),
@@ -275,7 +275,4 @@ function extractFindingPath(finding) {
             return toPosixPath(match[1]);
     }
     return undefined;
-}
-function slug(value) {
-    return slugify(value, 'root');
 }

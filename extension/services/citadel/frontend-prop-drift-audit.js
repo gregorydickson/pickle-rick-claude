@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import ts from 'typescript';
-import { slugify } from './reporter.js';
+import { slugifyOrRoot } from './reporter.js';
 const TSX_FILE_PATTERN = /\.tsx$/i;
 const SPREAD_BLIND_SPOT_HEADER = 'Spread props are not analyzed: any sibling invocation using JSX spread attributes is reported as a blind spot and skipped for drift matching.';
 const SPECIAL_JSX_ATTRIBUTES = new Set(['key', 'ref']);
@@ -238,7 +238,7 @@ function toSpreadBlindSpot(file, node, component) {
 function toFinding(file, node, component, passedProps, undeclaredProps) {
     const line = lineNumber(file.sourceFile, node);
     return {
-        id: `citadel-frontend-prop-drift-${slug(file.path)}-${slug(component.name)}-${line}`,
+        id: `citadel-frontend-prop-drift-${slugifyOrRoot(file.path)}-${slugifyOrRoot(component.name)}-${line}`,
         severity: 'High',
         message: `${component.name} receives undeclared prop(s): ${undeclaredProps.join(', ')}.`,
         component: component.name,
@@ -275,7 +275,4 @@ function compareBlindSpots(a, b) {
 }
 function sortedStrings(values) {
     return values.sort((a, b) => a.localeCompare(b));
-}
-function slug(value) {
-    return slugify(value, 'root');
 }

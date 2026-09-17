@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { ChangedFileSummary, DiffSummary } from './diff-walker.js';
 import { ProjectShape } from './project-shape.js';
-import { CitadelSeverity, escapeTableCell, slugify, uniqueSortedStrings } from './reporter.js';
+import { CitadelSeverity, escapeTableCell, slugifyCapped, uniqueSortedStrings } from './reporter.js';
 
 export type SiblingAuthSeverity = 'Critical' | 'High' | 'Medium';
 
@@ -409,7 +409,7 @@ function findGuardParityFindings(routes: ControllerRoute[]): GuardParityFinding[
     const missingGuards = uniqueSortedStrings(group.flatMap((route) => expected.filter((token) => !route.guardPrefix.includes(token))));
     const first = group[0];
     return [{
-      id: `citadel-sibling-guard-parity-${slug(first.file)}-${slug(first.resourcePrefix)}`,
+      id: `citadel-sibling-guard-parity-${slugifyCapped(first.file)}-${slugifyCapped(first.resourcePrefix)}`,
       severity: PARITY_SEVERITY,
       message: `Sibling guard/precondition drift under ${first.resourcePrefix}.`,
       controller: first.file,
@@ -452,7 +452,7 @@ function findWeakerDestructiveRoleFindings(
       const stricter = group.find((sibling) => sibling !== route && isStrictSubset(sibling.roles, route.roles));
       if (!stricter) continue;
       findings.push({
-        id: `citadel-destructive-role-weaker-${slug(route.file)}-${slug(route.methodName)}`,
+        id: `citadel-destructive-role-weaker-${slugifyCapped(route.file)}-${slugifyCapped(route.methodName)}`,
         severity: 'High',
         message:
           `Destructive route ${route.methodName} allows a weaker @Roles allowlist `
@@ -478,7 +478,7 @@ function isStrictSubset(subset: string[], superset: string[]): boolean {
 
 function missingRoleFinding(route: ControllerRoute): DestructiveRoleFinding {
   return {
-    id: `citadel-destructive-role-missing-${slug(route.file)}-${slug(route.methodName)}`,
+    id: `citadel-destructive-role-missing-${slugifyCapped(route.file)}-${slugifyCapped(route.methodName)}`,
     severity: 'Critical',
     message: `Destructive route ${route.methodName} has no effective @Roles allowlist.`,
     controller: route.file,
@@ -492,7 +492,7 @@ function destructiveRoleDriftFinding(routes: ControllerRoute[]): DestructiveRole
   const first = routes[0];
   const methods = routes.map(formatRouteMethod).sort((a, b) => a.localeCompare(b));
   return {
-    id: `citadel-destructive-role-drift-${slug(first.file)}`,
+    id: `citadel-destructive-role-drift-${slugifyCapped(first.file)}`,
     severity: 'High',
     message: `destructive-role drift in ${first.file}.`,
     controller: first.file,
@@ -598,8 +598,4 @@ function severityRank(severity: string): number {
   if (severity === 'Critical') return 0;
   if (severity === 'High') return 1;
   return 2;
-}
-
-function slug(value: string): string {
-  return slugify(value, 'unknown', 80);
 }

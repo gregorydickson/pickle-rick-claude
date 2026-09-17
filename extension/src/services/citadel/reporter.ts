@@ -227,7 +227,8 @@ function oneSentence(value: string): string {
  * Slugify an arbitrary string into a finding-ID component: lowercase, collapse
  * runs of non-alphanumerics to single dashes, then trim edge dashes. `fallback`
  * is returned when the input slugs to empty; `maxLength` caps the result.
- * Shared by the citadel analyzers (previously duplicated 9×; DRY Rule of Three).
+ * Shared by the citadel analyzers (previously duplicated 9×; DRY Rule of Three). The two fixed-policy
+ * wrappers below were each duplicated 3×.
  * Note: after the non-alphanumeric collapse no consecutive dashes remain, so
  * trimming a single edge dash is equivalent to trimming a run.
  */
@@ -238,6 +239,16 @@ export function slugify(value: string, fallback = '', maxLength?: number): strin
     .replace(/^-|-$/g, '');
   const capped = maxLength === undefined ? slug : slug.slice(0, maxLength);
   return capped || fallback;
+}
+
+/** Finding-ID slug that falls back to `root` (path-keyed analyzers). */
+export function slugifyOrRoot(value: string): string {
+  return slugify(value, 'root');
+}
+
+/** Finding-ID slug capped at 80 chars that falls back to `unknown` (name-keyed analyzers). */
+export function slugifyCapped(value: string): string {
+  return slugify(value, 'unknown', 80);
 }
 
 /**

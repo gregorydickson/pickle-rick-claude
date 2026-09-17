@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { escapeTableCell, slugify, uniqueSortedStrings } from './reporter.js';
+import { escapeTableCell, slugifyCapped, uniqueSortedStrings } from './reporter.js';
 import { extractTrapDoorsSection } from './trap-doors-section.js';
 const DEFAULT_MAX_EVIDENCE = 3;
 const CODE_FILE_PATTERN = /\.[cm]?[jt]sx?$/i;
@@ -56,7 +56,7 @@ function buildInventoryRow(declaration, testFiles, prdMarkdown, maxEvidence) {
 function toFinding(row) {
     const severity = row.severity ?? 'Medium';
     return {
-        id: `citadel-rule-set-invariant-${slug(row.file)}-${slug(row.declarationName)}`,
+        id: `citadel-rule-set-invariant-${slugifyCapped(row.file)}-${slugifyCapped(row.declarationName)}`,
         severity,
         message: `Rule-set "${row.declarationName}" lacks an interaction invariant test.`,
         declaration: {
@@ -205,9 +205,6 @@ function formatEvidence(row) {
         return row.invariantEvidence.map((evidence) => `${evidence.file}:${evidence.line}`).join(', ');
     }
     return row.explicitInvariant ? `missing; PRD:${row.explicitInvariant.line}` : 'missing';
-}
-function slug(value) {
-    return slugify(value, 'unknown', 80);
 }
 const ENFORCE_HAS_REF_RE = /[\w./*-]+\.(?:test\.js|spec\.js|sh)\b/;
 export function parseTrapDoorDeclarations(content) {
