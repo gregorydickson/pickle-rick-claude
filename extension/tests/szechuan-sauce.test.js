@@ -282,7 +282,7 @@ test('init-microverse sets gap_analysis_path when run via CLI', () => {
         const targetPath = '/tmp/fake-target';
         execSync(
             `node ${initScript} ${dir} ${targetPath} --stall-limit 3 --convergence-target 0`,
-            { stdio: 'pipe' }
+            { stdio: 'pipe', timeout: 30000 }
         );
         const state = readMicroverseState(dir);
         assert.ok(state, 'microverse.json should exist');
@@ -299,7 +299,7 @@ test('init-microverse sets convergence_target when provided', () => {
         const initScript = path.resolve(import.meta.dirname, '../bin/init-microverse.js');
         execSync(
             `node ${initScript} ${dir} /tmp/target --convergence-target 0`,
-            { stdio: 'pipe' }
+            { stdio: 'pipe', timeout: 30000 }
         );
         const state = readMicroverseState(dir);
         assert.ok(state, 'microverse.json should exist');
@@ -315,7 +315,7 @@ test('init-microverse uses LLM type and lower direction by default', () => {
         const initScript = path.resolve(import.meta.dirname, '../bin/init-microverse.js');
         execSync(
             `node ${initScript} ${dir} /tmp/target`,
-            { stdio: 'pipe' }
+            { stdio: 'pipe', timeout: 30000 }
         );
         const state = readMicroverseState(dir);
         assert.ok(state, 'microverse.json should exist');
@@ -337,7 +337,7 @@ test('init-microverse sets judge_context_path when --judge-context provided', ()
         const initScript = path.resolve(import.meta.dirname, '../bin/init-microverse.js');
         execSync(
             `node ${initScript} ${dir} /tmp/target --judge-context /tmp/principles.md`,
-            { stdio: 'pipe' }
+            { stdio: 'pipe', timeout: 30000 }
         );
         const state = readMicroverseState(dir);
         assert.ok(state, 'microverse.json should exist');
@@ -354,7 +354,7 @@ test('init-microverse omits judge_context_path when --judge-context not provided
         const initScript = path.resolve(import.meta.dirname, '../bin/init-microverse.js');
         execSync(
             `node ${initScript} ${dir} /tmp/target`,
-            { stdio: 'pipe' }
+            { stdio: 'pipe', timeout: 30000 }
         );
         const state = readMicroverseState(dir);
         assert.ok(state, 'microverse.json should exist');
@@ -801,7 +801,7 @@ test('init-microverse accepts --metric-json for custom metrics', () => {
         });
         execSync(
             `node ${initScript} ${dir} /tmp/target --stall-limit 3 --metric-json '${customMetric}'`,
-            { stdio: 'pipe' }
+            { stdio: 'pipe', timeout: 30000 }
         );
         const state = readMicroverseState(dir);
         assert.ok(state, 'microverse.json should exist');
@@ -950,14 +950,14 @@ test('AC-R3-1: Parts I and II of the principles file lose no line since the bund
     let baselineContent;
     try {
         baselineContent = execSync(`git show ${PRESERVATION_BASELINE_SHA}:${PRINCIPLES_REL_PATH}`,
-            { cwd: REPO_ROOT, encoding: 'utf-8' });
+            { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 30000 });
     } catch (err) {
         throw new Error(`baseline ${PRESERVATION_BASELINE_SHA} unreadable for ${PRINCIPLES_REL_PATH}: ${err.message}`);
     }
     const { start, end } = partIAndIILineRange(baselineContent);
 
     const diff = execSync(`git diff --unified=0 ${PRESERVATION_BASELINE_SHA} -- ${PRINCIPLES_REL_PATH}`,
-        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 10 });
+        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 10, timeout: 30000 });
     if (!diff) return; // nothing has changed since baseline yet
 
     const hunkHeaderRe = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/;
@@ -1015,7 +1015,7 @@ const HISTORICAL_SZECHUAN_FUNCTION = 'runWorkerGate';
 test('AC-R3-3 replay: the historical runWorkerGate god-function (16a203c5) still trips the enforced ceiling', () => {
     const source = execSync(
         `git show ${HISTORICAL_SZECHUAN_FIX_COMMIT}^:extension/${HISTORICAL_SZECHUAN_FILE}`,
-        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 20 }
+        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 20, timeout: 30000 }
     );
     assert.match(source, new RegExp(`function ${HISTORICAL_SZECHUAN_FUNCTION}\\b`),
         'the historical function is gone from the git blob; the replay would be vacuous');
@@ -1057,7 +1057,7 @@ test('AC-R3-3 replay: the historical R-WSRC-GR ref-mutation bypass (059ee673) is
 test('AC-R3-3 replay (negative control): the pre-fix guard genuinely approved the historical bypass', async () => {
     const oldSource = execSync(
         `git show ${HISTORICAL_ANATOMY_FIX_COMMIT}^:extension/hooks/handlers/config-protection.js`,
-        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 20 }
+        { cwd: REPO_ROOT, encoding: 'utf-8', maxBuffer: 1024 * 1024 * 20, timeout: 30000 }
     );
     // Written as a real sibling module file (not a data: URL) so the blob's
     // own relative imports (./resolve-state.js etc.) resolve normally.
