@@ -275,21 +275,129 @@ describe('runT6TrapDoorCoverage', () => {
     assert.deepEqual(mediumIds, []);
   });
 
-  test('ENFORCE refs outside ## Trap Doors section are ignored', async () => {
+  // Ticket 9748856d (AC-V3): audit-trap-door-enforcement.sh scans the WHOLE catalog file for
+  // ENFORCE: lines with no section restriction, and trap-door bullets in this repo routinely land
+  // after an intervening heading (e.g. `## Module Export Catalog`), not just inside `## Trap
+  // Doors`. Citadel must scan the same corpus the shell audit does, so a ref outside the Trap
+  // Doors heading is audited exactly like one inside it — never silently dropped.
+  test('ENFORCE refs outside the ## Trap Doors heading are still audited (matches the shell contract)', async () => {
     const projectRoot = path.join(tmpRoot, 'outside-section');
     const claudeMd = [
       '## Trap Doors',
       '',
       '## Other Section',
       '',
-      '- ENFORCE: extension/tests/outside.test.js',
+      '- ENFORCE: extension/tests/outside-missing.test.js',
       '',
     ].join('\n');
     mkFixture(projectRoot, { claudeMdContent: claudeMd });
     const { runT6TrapDoorCoverage } = await importAnalyzer();
     const result = runT6TrapDoorCoverage({ projectRoot });
     const high = result.findings.filter((f) => f.severity === 'High');
-    assert.equal(high.length, 0, 'refs outside Trap Doors section do not produce orphan_enforce');
+    assert.equal(high.length, 1, 'a ref outside the Trap Doors heading must still produce orphan-enforce');
+    assert.match(high[0].id, /orphan-enforce/);
+    assert.match(high[0].message, /outside-missing\.test\.js/);
+  });
+
+  // AC-V3-2 / AC-V3-3 (ticket 9748856d): reproduces the ticket's own probe shape -- a subsystem
+  // CLAUDE.md whose ENFORCE bullet sits AFTER an intervening heading, exactly as extension/CLAUDE.md
+  // and extension/src/services/CLAUDE.md are shaped in production (## Trap Doors, then
+  // ## Module Export Catalog / ## Build & Test, then MORE trap-door bullets). Never the rejected
+  // synthetic-throwaway-root shape named in the ticket as inadmissible.
+  describe('AC-V3-2/AC-V3-3: absent anchor after an intervening heading, plus a clean-tree control', () => {
+    function subsystemFixture(root, { withAbsentAnchor }) {
+      const testsDir = path.join(root, 'extension', 'tests');
+      fs.mkdirSync(testsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(testsDir, 'stop-hook.test.js'),
+        "test('an unrelated real test case', () => {});\n",
+        'utf-8',
+      );
+
+      const subsystemDir = path.join(root, 'extension', 'src', 'services');
+      fs.mkdirSync(subsystemDir, { recursive: true });
+      const probeLine = withAbsentAnchor
+        ? '- `pickle-utils.ts` (PROBE) — INVARIANT: probe. BREAKS: probe. ' +
+          'ENFORCE: tests/stop-hook.test.js#zzz-nonexistent-anchor-probe. PATTERN_SHAPE: probe.'
+        : '';
+      fs.writeFileSync(
+        path.join(subsystemDir, 'CLAUDE.md'),
+        [
+          '## Trap Doors',
+          '',
+          '- `pickle-utils.ts` — INVARIANT: real. BREAKS: real. ' +
+            'ENFORCE: tests/stop-hook.test.js#an-unrelated-real-test-case.',
+          '',
+          '## Module Export Catalog',
+          '',
+          '- `pickle-utils.ts` -> `something`',
+          '',
+          probeLine,
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+    }
+
+    test('AC-V3-2: one absent anchor injected after an intervening heading is reported (>= 1 anchor finding)', async () => {
+      const projectRoot = path.join(tmpRoot, 'ac-v3-2-injected');
+      subsystemFixture(projectRoot, { withAbsentAnchor: true });
+      const { runT6TrapDoorCoverage } = await importAnalyzer();
+      const result = runT6TrapDoorCoverage({ projectRoot });
+      const anchorFindings = result.findings.filter((f) => f.id.startsWith('orphan-test-case:'));
+      assert.ok(
+        anchorFindings.length >= 1,
+        `expected >= 1 orphan-test-case finding for the injected probe; got ${anchorFindings.length}`,
+      );
+      assert.ok(
+        anchorFindings.some((f) => f.message.includes('zzz-nonexistent-anchor-probe')),
+        'expected the injected anchor to be named in a finding',
+      );
+    });
+
+    test('AC-V3-3: the same tree with the probe removed (clean) reports zero anchor findings', async () => {
+      const projectRoot = path.join(tmpRoot, 'ac-v3-3-clean');
+      subsystemFixture(projectRoot, { withAbsentAnchor: false });
+      const { runT6TrapDoorCoverage } = await importAnalyzer();
+      const result = runT6TrapDoorCoverage({ projectRoot });
+      const anchorFindings = result.findings.filter(
+        (f) => f.id.startsWith('orphan-test-case:') || f.id.startsWith('orphan-enforce:'),
+      );
+      assert.deepEqual(anchorFindings, [], 'a clean tree must report zero anchor findings');
+    });
+
+    // Completes AC-V3-2's "shell non-zero AND citadel >= 1" pairing. audit-trap-door-enforcement.sh
+    // supports CLAUDE_PATH_OVERRIDE precisely so a probe catalog can be exercised without touching
+    // the live tree; the referenced test file resolves against the REAL extensionRoot (unaffected
+    // by the override), so no synthetic test file is needed either -- this is the ticket's own
+    // probe, run for real, end to end.
+    test('AC-V3-2 shell side: the shell audit exits non-zero over the same injected absent anchor', () => {
+      const tmpCatalogDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tdca-shell-probe-'));
+      const catalogPath = path.join(tmpCatalogDir, 'CLAUDE.md');
+      try {
+        fs.writeFileSync(
+          catalogPath,
+          [
+            '## Trap Doors',
+            '',
+            '- `pickle-utils.ts` (PROBE) — INVARIANT: probe. BREAKS: probe. ' +
+              'ENFORCE: tests/stop-hook.test.js#zzz-nonexistent-anchor-probe. PATTERN_SHAPE: probe.',
+            '',
+          ].join('\n'),
+          'utf-8',
+        );
+        const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+          cwd: path.join(REPO_ROOT, 'extension'),
+          encoding: 'utf-8',
+          timeout: 60_000,
+          env: { ...process.env, CLAUDE_PATH_OVERRIDE: catalogPath },
+        });
+        assert.notEqual(result.status, 0, 'shell audit must exit non-zero over the injected absent anchor');
+        assert.match(result.stderr, /zzz-nonexistent-anchor-probe/);
+      } finally {
+        fs.rmSync(tmpCatalogDir, { recursive: true, force: true });
+      }
+    });
   });
 
   test('diff-scoped audit only emits orphan-test-file for changed tests but still honors unchanged ENFORCE refs', async () => {
@@ -478,17 +586,17 @@ function parseEnforceRefsForTest(raw) {
 }
 
 // Every anchored ENFORCE ref, across the real catalog corpus, whose target file exists on disk --
-// the exact population runT6TrapDoorCoverage evaluates for orphan-test-case findings.
+// the exact population runT6TrapDoorCoverage evaluates for orphan-test-case findings. Ticket
+// 9748856d: production scans the WHOLE catalog file (no ## Trap Doors section restriction), so
+// this independent re-derivation must scan the same corpus or it silently under-counts against
+// production once a catalog carries ENFORCE refs after an intervening heading.
 async function enumerateAnchoredEnforceRefs(repoRoot) {
   const { ENFORCE_REF_RE } = await importAnalyzer();
-  const { extractTrapDoorsSection } = await import('../../services/citadel/trap-doors-section.js');
 
   const pairs = [];
   for (const claudeFile of collectClaudeMdFilesForTest(repoRoot)) {
     const content = fs.readFileSync(claudeFile, 'utf-8');
-    const section = extractTrapDoorsSection(content);
-    if (!section) continue;
-    for (const match of section.matchAll(new RegExp(ENFORCE_REF_RE.source, ENFORCE_REF_RE.flags))) {
+    for (const match of content.matchAll(new RegExp(ENFORCE_REF_RE.source, ENFORCE_REF_RE.flags))) {
       for (const ref of parseEnforceRefsForTest(match[1])) {
         const { canonicalPath, absPath } = resolveEnforceRefForTest(repoRoot, ref.filePath);
         if (!fs.existsSync(absPath)) continue;

@@ -2,7 +2,6 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { CitadelFinding } from './reporter.js';
 import { DiffSummary } from './diff-walker.js';
-import { extractTrapDoorsSection } from './trap-doors-section.js';
 
 export interface CitadelContext {
   projectRoot: string;
@@ -102,15 +101,21 @@ function auditClaudeTrapDoorRefs(
 ): CitadelFinding[] {
   const content = readTextFile(claudeFile);
   if (content === null) return [];
-  const section = extractTrapDoorsSection(content);
-  if (!section) return [];
 
+  // Scan the WHOLE file, never a heading-delimited slice: audit-trap-door-enforcement.sh's
+  // collectEnforceRefs() reads every `ENFORCE:` line in the catalog with no section restriction,
+  // and trap-door-shaped bullets in this repo routinely land after an intervening heading (e.g.
+  // `## Module Export Catalog`) rather than staying inside `## Trap Doors`. Restricting the scan
+  // to extractTrapDoorsSection() made citadel blind to those refs — both a false negative (an
+  // injected absent-anchor probe placed after the heading went unreported) and a false positive
+  // (test files legitimately referenced by an out-of-section ENFORCE ref were reported as
+  // orphaned). Ticket 9748856d.
   const findings: CitadelFinding[] = [];
   const relClaude = normalizeRelativePath(path.relative(projectRoot, claudeFile));
   const claudeInScope = !scope.hasScope || scope.scopedClaudeFiles.has(relClaude);
   let barePathWarned = false;
 
-  for (const match of section.matchAll(new RegExp(ENFORCE_REF_RE.source, ENFORCE_REF_RE.flags))) {
+  for (const match of content.matchAll(new RegExp(ENFORCE_REF_RE.source, ENFORCE_REF_RE.flags))) {
     const refs = parseEnforceRefs(match[1]);
 
     for (const ref of refs) {
