@@ -2,6 +2,8 @@
 
 Test-quality review of the citadel review-efficacy test suite added/extended by the R-RGED #105 bundle. Baseline: **191/191 `tests/citadel/*.test.js` pass**.
 
+> **Known discrepancy (Issue #37):** citadel's advisory reporting channel (`runT6TrapDoorCoverage`) does not currently surface genuinely-absent `ENFORCE: <file>#<anchor>` anchors that the shell audit gate (`scripts/audit-trap-door-enforcement.sh`) does report. The shell audit is the authoritative gate leg and detects the injected absent anchor (exit 1); citadel reports 0 anchor findings for the same injection. Enforcement remains intact either way, but citadel's detection floor must be established before its findings are routed into the fixing loop (B-LENS ROOT L7).
+
 ## AC → test mapping (every refined-PRD AC maps to ≥1 test)
 
 | AC | Mechanism | Covering test file(s) |

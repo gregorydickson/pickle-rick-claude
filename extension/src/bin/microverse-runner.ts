@@ -2858,11 +2858,13 @@ function judgeAttemptFromSpawnError(err: unknown, backend: Backend, model: strin
 function judgeAttemptFromOutput(output: string): JudgeMeasurementAttempt {
   const score = extractScore(output);
   if (score === null) {
-    return {
+    const failure = {
       metric: null,
-      failureKind: 'failed',
+      failureKind: 'failed' as const,
       message: 'judge output did not contain a numeric score',
+      raw_output_truncated_512: output.slice(0, 512),
     };
+    return failure;
   }
   return { metric: { raw: output, score } };
 }
