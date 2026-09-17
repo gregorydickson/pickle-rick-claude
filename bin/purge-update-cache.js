@@ -46,6 +46,29 @@ function collectPrefixMatches(dir, prefix) {
   }
 }
 
+// `check-update.ts` writes this cache through `<path>.tmp.<pid>` + rename (`writeCache`) and
+// reads it back through `readRecoverableJsonObject` (`readCache`), which PROMOTES a dead orphan
+// tmp whenever the base is gone — `baseMtimeMs` is 0 once it is, so the `mtimeMs < baseMtimeMs`
+// discard can never fire and EVERY parseable orphan qualifies. Removing the base NAME alone
+// therefore purges nothing: measured, the next read renameSyncs the orphan into place and returns
+// its `latest_version`, while this script has already printed `Removed` and logged a CACHE_PURGE
+// row naming the path — a false-clean purge, the same class the `pickle-extract-` sibling above
+// exists to close for interrupted upgrades. The target is the whole PROMOTABLE SET, not one name.
+//
+// `isFile()` for the same reason `collectPrefixMatches` takes `isDirectory()`: purge only the
+// shape the producer creates (`fs.writeFileSync`), never a same-prefix entry of another shape.
+function collectPromotableTmpSiblings(targetPath) {
+  const dir = path.dirname(targetPath);
+  const prefix = `${path.basename(targetPath)}.tmp.`;
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
+      .map((entry) => path.join(dir, entry.name));
+  } catch {
+    return [];
+  }
+}
+
 function collectTmpRootMatches(dir) {
   return [
     ...collectPrefixMatches(dir, 'pickle-update-'),
@@ -93,6 +116,11 @@ function appendAudit() {
   }
 }
 
+// Siblings FIRST: `removePath` deletes, and a purge that dies partway must not leave the base
+// gone with a promotable orphan still beside it — that is precisely the defective state.
+for (const targetPath of collectPromotableTmpSiblings(cachePath)) {
+  removePath(targetPath);
+}
 removePath(cachePath);
 
 const tmpRoot = process.env.TMPDIR || os.tmpdir();

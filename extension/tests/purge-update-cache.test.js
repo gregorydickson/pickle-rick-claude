@@ -2,10 +2,13 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+
+// The EXACT wire `check-update.ts:readCache` reads the purged cache back through.
+import { readRecoverableJsonObject } from '../services/microverse-state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -76,6 +79,14 @@ function runPurge(fixture, args = []) {
     PICKLE_PURGE_VAR_FOLDERS_ROOT: fixture.varFoldersRoot,
   };
   return spawnSync('node', [PURGE_SCRIPT, ...args], { encoding: 'utf8', env });
+}
+
+// A pid that is provably not alive, so `shouldSkipLiveTmp` does not defer the orphan tmp.
+function deadPidForOrphanTmp() {
+  for (const candidate of [999_999, 888_888, 777_777]) {
+    try { process.kill(candidate, 0); } catch { return candidate; }
+  }
+  throw new Error('no dead pid available for fixture');
 }
 
 describe('purge-update-cache.js', () => {
@@ -254,6 +265,54 @@ describe('purge-update-cache.js', () => {
       assert.equal(existsSync(codexCache), true, '.codex cache must NOT be touched (regression guard for commit 5fc4ecee root drift)');
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER76-01. `check-update.ts` writes this cache through `<path>.tmp.<pid>` + rename
+  // (`writeCache`) and reads it back through `readRecoverableJsonObject` (`readCache`), which
+  // PROMOTES a dead orphan tmp whenever the base is gone — `baseMtimeMs` is 0 once it is, so the
+  // `mtimeMs < baseMtimeMs` discard can never fire. Purging the base NAME alone therefore purged
+  // nothing: measured on the real CLI, the next read renameSyncs the orphan into place and returns
+  // its `latest_version`, after this script has already printed `Removed` and logged a CACHE_PURGE
+  // row naming the path — a false-clean purge of the very state it exists to remove.
+  //
+  // A/B on ONE fixture shape with the REAL reader as the oracle. The UNPURGED half is the control:
+  // it proves the orphan is genuinely promotable, so the purged half's `null` cannot pass for an
+  // unrelated reason (a fixture the reader would have rejected anyway reads `null` either way).
+  test('AP-BIN-ITER76-01 purges the orphan .tmp.<pid> the cache reader would otherwise promote back', () => {
+    const purged = makeFixture();
+    const control = makeFixture();
+    const poisoned = { last_check_epoch: 1, latest_version: '6.6.6-poison', current_version: '1.0.0' };
+    try {
+      for (const fixture of [purged, control]) {
+        // Written AFTER the base, the shape a killed `writeCache` leaves behind.
+        writeFileSync(`${fixture.cachePath}.tmp.${deadPidForOrphanTmp()}`, JSON.stringify(poisoned));
+      }
+
+      assert.equal(
+        readRecoverableJsonObject(control.cachePath)?.latest_version,
+        poisoned.latest_version,
+        'control: the orphan must be promotable, or the purged half proves nothing',
+      );
+
+      const result = runPurge(purged);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.deepEqual(
+        readdirSync(path.dirname(purged.cachePath)).filter((name) => name.startsWith('update-check.json')),
+        [],
+        'no update-check.json path may survive the purge, base or promotable orphan',
+      );
+      assert.equal(readRecoverableJsonObject(purged.cachePath), null, 'the purged cache must not be resurrectable');
+      assert.equal(existsSync(purged.cachePath), false, 'the read must not have recreated the cache');
+
+      const audit = JSON.parse(readFileSync(purged.auditPath, 'utf8').trim().split('\n')[0]);
+      assert.ok(
+        audit.removed_paths.some((removed) => removed.startsWith(`${purged.cachePath}.tmp.`)),
+        'the audit must name the orphan it removed, not only the base',
+      );
+    } finally {
+      rmSync(purged.dir, { recursive: true, force: true });
+      rmSync(control.dir, { recursive: true, force: true });
     }
   });
 });
