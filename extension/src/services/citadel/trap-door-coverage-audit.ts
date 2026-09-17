@@ -235,13 +235,19 @@ function resolveEnforceRef(projectRoot: string, filePath: string): { canonicalPa
 }
 
 function hasTestCase(content: string, anchor: string): boolean {
-  const escaped = anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Accepts the repo convention 'ANCHOR: description' as well as an exact 'ANCHOR' title.
-  // The anchor must still be the first token after the opening quote; the negative lookahead
-  // only widens what may follow it, rejecting a continuation character (word char or hyphen —
-  // the same charset ENFORCE_REF_RE allows in an anchor) so a shorter anchor can never match a
-  // longer identifier sharing its prefix (e.g. anchor 'X-1' must not match title 'X-11: ...').
-  return new RegExp(`(?:it|test)\\s*\\(\\s*['"\`]${escaped}(?![\\w-])`).test(content);
+  // The SAME rule as audit-trap-door-enforcement.sh `anchorMatchCount` — one definition of the
+  // `ENFORCE: <file>#<anchor>` contract, not two: slug both the anchor and every quoted
+  // it()/test() title, then require segment-boundary containment. A kebab slug of a whole
+  // multi-word title resolves to exactly that test (a literal-prefix rule could only resolve its
+  // first word, which pushed catalogs onto anchors like `#a` matching many tests), while
+  // 'X-1' still cannot match 'X-11: ...'. Self-contained: tests evaluate this body verbatim.
+  const slugify = (value: string): string =>
+    value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const needle = `-${slugify(anchor)}-`;
+  for (const m of content.matchAll(/\b(?:it|test)\s*\(\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1/g)) {
+    if (`-${slugify(m[2])}-`.includes(needle)) return true;
+  }
+  return false;
 }
 
 function collectTestFiles(projectRoot: string): string[] {

@@ -206,6 +206,27 @@ describe('runT6TrapDoorCoverage', () => {
     assert.match(high[0].id, /orphan-test-case/);
   });
 
+  // A literal-title-PREFIX matcher could resolve only a title's first word, so catalogs "fixed" its
+  // orphan findings by degrading precise whole-title slugs to `#a` / `#install`, which resolve many
+  // tests — a deleted guard then reads green. Citadel must resolve the precise slug, and must refuse
+  // it once the named test is gone even while its first-word siblings remain.
+  test('AP-EXT-ITER267-01: a whole-title slug anchor resolves in citadel exactly as in the shell audit', async () => {
+    const anchor = 'a-microverse-phase-with-no-usable-exit-reason-continues-the-second-fail-open-arm';
+    const named = "test('a microverse phase with no usable exit_reason continues — the second fail-open arm', () => {});\n";
+    const siblings = "test('a failed AC gate continues the phase loop', () => {});\ntest('a passing AC gate is inert', () => {});\n";
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const orphansFor = (name, body) => {
+      const projectRoot = path.join(tmpRoot, name);
+      mkFixture(projectRoot, {
+        enforceLines: `- ENFORCE: extension/tests/slug.test.js#${anchor}\n`,
+        testFiles: { 'extension/tests/slug.test.js': body },
+      });
+      return runT6TrapDoorCoverage({ projectRoot }).findings.filter((f) => f.id.startsWith('orphan-test-case:'));
+    };
+    assert.deepEqual(orphansFor('slug-present', named + siblings), [], 'the whole-title slug must resolve its test');
+    assert.equal(orphansFor('slug-deleted', siblings).length, 1, 'deleting the named test must report the anchor');
+  });
+
   test('mixed bare and anchored refs in one CLAUDE.md → exactly 1 LOW warning', async () => {
     const projectRoot = path.join(tmpRoot, 'mixed-refs');
     mkFixture(projectRoot, {
@@ -702,39 +723,25 @@ describe('runT6TrapDoorCoverage vs audit-trap-door-enforcement.sh — no silent 
       `${slugifyMatch[0]}\n${testNameReMatch[0]}\n${matchCountMatch[0]}\nreturn anchorMatchCount(fileContent, anchor) > 0;`,
     );
 
-    // Reuses the module-level replay (computed once in the shared `before()` above) instead of
-    // re-deriving it, so this test spawns no additional `git show`.
-    const divergent = replayRemaining
-      .filter((p) => shellAnchorResolves(replayReadCached(p.absPath), p.anchor))
-      .map(pairKey);
-
-    // Report, do not swallow: this is the AC-T2-2 "reported rather than tuned away" contract.
-    // eslint-disable-next-line no-console -- deliberate CI-visible divergence report.
-    console.log(
-      `[citadel-vs-shell] ${divergent.length} of ${replayRemaining.length} citadel-genuine anchor(s) ` +
-        `are resolved by the shell's more permissive slug matcher (documented divergence, ` +
-        `AP-EXT-ITER56-01): ${JSON.stringify(divergent)}`,
-    );
-
-    // d5b5add3 (AC-T2-5): the partition above cannot fail, so the non-contradiction is asserted here.
-    // The shell audit exits 0 and is authoritative; the contradiction that would matter is citadel
-    // CLEARING an anchor the shell cannot resolve. Over the real corpus alone the shell resolves every
-    // pair, so the implication would hold for any citadel matcher — each pair is therefore also probed
-    // with its anchor lengthened by one character (a derived non-anchor over the same real content).
+    // AP-EXT-ITER267-01: citadel and the shell apply ONE rule, so they must agree in BOTH directions.
+    // A citadel-only rejection is not a harmless divergence: it is what pushed catalogs onto first-word
+    // anchors that resolve many tests. Over the real corpus alone the shell resolves every pair, so each
+    // pair is also probed with its anchor lengthened by one character (a derived non-anchor over the
+    // same real content) — otherwise the rejecting direction would never be exercised.
     const probes = replayPairs.flatMap((p) => [p, { ...p, anchor: `${p.anchor}9` }]);
     let shellRejected = 0;
     const contradictions = [];
     for (const p of probes) {
       const content = replayReadCached(p.absPath);
-      if (shellAnchorResolves(content, p.anchor)) continue;
-      shellRejected++;
-      if (replayNewHasTestCase(content, p.anchor)) contradictions.push(pairKey(p));
+      const shell = shellAnchorResolves(content, p.anchor);
+      if (!shell) shellRejected++;
+      if (replayNewHasTestCase(content, p.anchor) !== shell) contradictions.push(`${pairKey(p)} shell=${shell}`);
     }
-    assert.ok(shellRejected > 0, 'the shell rule rejected no probe — the non-contradiction check would be vacuous');
+    assert.ok(shellRejected > 0, 'the shell rule rejected no probe — the agreement check would be vacuous');
     assert.deepEqual(
       contradictions,
       [],
-      'citadel clears anchors the authoritative shell audit cannot resolve on the same content',
+      'citadel and the authoritative shell audit disagree on the same anchor over the same content',
     );
   });
 });

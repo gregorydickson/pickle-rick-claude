@@ -74,3 +74,10 @@ session directory.
 | 27 | extension/tests/verify-recapture-fired.test.js | `AP-EXT-ITER224-01` | STALE | line 823 | `verify-recapture.orphan-tmp candidacy is a projection of the REQUIRED half of State (AP-EXT-ITER224-01)` |
 | 28 | extension/tests/pipeline-runner.test.js | `backend-derives-from-backends-rather-than-being-a-parallel-hand-maintained-union` | STALE | slug-exact match | `Backend derives from BACKENDS rather than being a parallel hand-maintained union` |
 | 29 | extension/tests/activity-event-payload.test.js | `activity-event-payload-schema-backendenum-equals-the-backends-const-it-mirrors` | STALE | slug-exact match | `activity-event-payload: schema backendEnum equals the BACKENDS const it mirrors` |
+
+## Correction (anatomy-park AP-EXT-ITER267-01)
+
+"STALE" was the wrong verdict for all 29: each original anchor resolved to **exactly one** test under the
+shell audit's slug rule (`anchorMatchCount`), and was reported only because citadel's `hasTestCase` used a
+narrower literal-prefix rule. The repointed first-word anchors resolved 2–38 tests each. The defect was the
+instrument divergence: `hasTestCase` now applies the shell's rule and the original anchors are restored.
