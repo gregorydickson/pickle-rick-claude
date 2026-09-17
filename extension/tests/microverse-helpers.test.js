@@ -1399,32 +1399,35 @@ test('judgeAttemptFromOutput: the success path carries no raw_output_truncated_5
   assert.deepEqual(passing, { metric: { raw: '7', score: 7 } });
 });
 
-// Drives the judge backoff round through _deps.spawn: a step with `errorCode` errors the way a failed
-// spawn does (ETIMEDOUT classifies as a timeout); otherwise it closes 0 with `stdout`. The first step
-// answers the availability probe.
+// One scripted judge child, shared by both drivers below so the two cannot drift apart.
+// A step with `errorCode` errors the way a failed spawn does (ETIMEDOUT classifies as a timeout);
+// otherwise it emits `stdout`/`stderr` and closes with `exitCode` (0 unless the step says otherwise).
+function scriptedJudgeChild(step) {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stdout.setEncoding = () => {};
+  child.stderr = new EventEmitter();
+  child.stderr.setEncoding = () => {};
+  child.kill = () => {};
+  setImmediate(() => {
+    if (step.errorCode) {
+      child.emit('error', Object.assign(new Error(`spawn ${step.errorCode}`), { code: step.errorCode }));
+      return;
+    }
+    if (step.stdout !== undefined) child.stdout.emit('data', step.stdout);
+    if (step.stderr !== undefined) child.stderr.emit('data', step.stderr);
+    child.emit('close', step.exitCode ?? 0);
+  });
+  return child;
+}
+
+// Drives the judge backoff round through _deps.spawn. The first step answers the availability probe.
 async function measureJudgeRound(steps) {
   const orig = { spawn: _deps.spawn, sleep: _deps.sleep, logActivity: _deps.logActivity };
   const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
   delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
   let i = 0;
-  _deps.spawn = () => {
-    const step = steps[i++];
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.stdout.setEncoding = () => {};
-    child.stderr = new EventEmitter();
-    child.stderr.setEncoding = () => {};
-    child.kill = () => {};
-    setImmediate(() => {
-      if (step.errorCode) {
-        child.emit('error', Object.assign(new Error(`spawn ${step.errorCode}`), { code: step.errorCode }));
-        return;
-      }
-      if (step.stdout !== undefined) child.stdout.emit('data', step.stdout);
-      child.emit('close', 0);
-    });
-    return child;
-  };
+  _deps.spawn = () => scriptedJudgeChild(steps[i++]);
   _deps.sleep = async () => {};
   _deps.logActivity = () => {};
   try {
@@ -1445,24 +1448,7 @@ async function measureJudgeRoundCapturingActivity(steps) {
   const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
   delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
   let i = 0;
-  _deps.spawn = () => {
-    const step = steps[i++];
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.stdout.setEncoding = () => {};
-    child.stderr = new EventEmitter();
-    child.stderr.setEncoding = () => {};
-    child.kill = () => {};
-    setImmediate(() => {
-      if (step.errorCode) {
-        child.emit('error', Object.assign(new Error(`spawn ${step.errorCode}`), { code: step.errorCode }));
-        return;
-      }
-      if (step.stdout !== undefined) child.stdout.emit('data', step.stdout);
-      child.emit('close', 0);
-    });
-    return child;
-  };
+  _deps.spawn = () => scriptedJudgeChild(steps[i++]);
   _deps.sleep = async () => {};
   const captured = [];
   _deps.logActivity = (event) => captured.push(event);
