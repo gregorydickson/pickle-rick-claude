@@ -134,29 +134,23 @@ test('principles file has diagnostic guide', () => {
 // `content.includes`, so a stray match elsewhere in the doc cannot satisfy them.
 // ---------------------------------------------------------------------------
 
-function priorityMatrixSection(content) {
-    const start = content.indexOf('## Priority Matrix');
+function principlesSection(heading) {
+    const content = fs.readFileSync(PRINCIPLES_PATH, 'utf-8');
+    const start = content.indexOf(`## ${heading}`);
     const end = content.indexOf('## ', start + 1);
-    assert.ok(start >= 0, 'Priority Matrix section not found; the section probe would be vacuous');
-    return content.slice(start, end > -1 ? end : undefined);
-}
-
-function falsePositivesSection(content) {
-    const start = content.indexOf('## False Positives');
-    const end = content.indexOf('## ', start + 1);
-    assert.ok(start >= 0, 'False Positives section not found; the section probe would be vacuous');
+    assert.ok(start >= 0, `${heading} section not found; the section probe would be vacuous`);
     return content.slice(start, end > -1 ? end : undefined);
 }
 
 test('f254feaa: P4 (Style) no longer says "comment cleanup"', () => {
-    const section = priorityMatrixSection(fs.readFileSync(PRINCIPLES_PATH, 'utf-8'));
+    const section = principlesSection('Priority Matrix');
     const p4Row = section.split('\n').find((line) => line.includes('P4: Optional'));
     assert.ok(p4Row, 'P4: Optional row not found in the Priority Matrix');
     assert.ok(!p4Row.includes('comment cleanup'), 'P4 row still says "comment cleanup"');
 });
 
 test('f254feaa: P2 (Maintainability) covers the comment-heavy-code restructure case', () => {
-    const section = priorityMatrixSection(fs.readFileSync(PRINCIPLES_PATH, 'utf-8'));
+    const section = principlesSection('Priority Matrix');
     const p2Row = section.split('\n').find((line) => line.includes('P2: Medium'));
     assert.ok(p2Row, 'P2: Medium row not found in the Priority Matrix');
     assert.match(p2Row, /comment-heavy code/, 'P2 row should name comment-heavy code');
@@ -164,7 +158,7 @@ test('f254feaa: P2 (Maintainability) covers the comment-heavy-code restructure c
 });
 
 test('f254feaa: P2 comment-heavy-code entry names the WHY/measured-limit/trap-door exemption', () => {
-    const section = priorityMatrixSection(fs.readFileSync(PRINCIPLES_PATH, 'utf-8'));
+    const section = principlesSection('Priority Matrix');
     const p2Row = section.split('\n').find((line) => line.includes('P2: Medium'));
     assert.match(p2Row, /WHY comment/, 'P2 row should exempt WHY comments (Comment Balance)');
     assert.match(p2Row, /measured limit/, 'P2 row should exempt a measured limit');
@@ -172,7 +166,7 @@ test('f254feaa: P2 comment-heavy-code entry names the WHY/measured-limit/trap-do
 });
 
 test('f254feaa: False Positives narrows "comment wording" to phrasing, not comment density', () => {
-    const section = falsePositivesSection(fs.readFileSync(PRINCIPLES_PATH, 'utf-8'));
+    const section = principlesSection('False Positives');
     assert.match(section, /comment wording \(the phrasing of an existing comment\)/,
         'False Positives should scope "comment wording" to phrasing');
     assert.match(section, /does NOT cover comment-heavy code/i,
@@ -191,13 +185,6 @@ test('f254feaa: no new Part IV and no new scored dimension were introduced', () 
     const partHeadings = [...content.matchAll(/^## Part [IVX]+:/gm)];
     assert.equal(partHeadings.length, 3, 'expected exactly three Parts (I, II, III)');
 });
-
-// "Zero deleted lines in Part I/II" for this ticket is already covered by the
-// pre-existing AC-R3-1 test below (bundle-wide baseline diff), which names this
-// exact ticket in its own comment ("R5 re-tiers three cells outside Migration
-// Hygiene") — see code_review for the confirmation run. Adding a second,
-// f254feaa-scoped diff pin here would duplicate that stronger, git-history-based
-// check rather than add coverage.
 
 // ---------------------------------------------------------------------------
 // M4 (GitHub #22): the judge is told the ENFORCED function-size ceiling
