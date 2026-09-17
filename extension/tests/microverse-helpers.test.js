@@ -1401,7 +1401,9 @@ test('judgeAttemptFromOutput: the success path carries no raw_output_truncated_5
 
 // One scripted judge child, shared by both drivers below so the two cannot drift apart.
 // A step with `errorCode` errors the way a failed spawn does (ETIMEDOUT classifies as a timeout);
-// otherwise it emits `stdout`/`stderr` and closes with `exitCode` (0 unless the step says otherwise).
+// a step with `hang` emits its output and then neither closes nor errors, so the runner's own
+// timeout branch is the SOLE settle path; otherwise it emits `stdout`/`stderr` and closes with
+// `exitCode` (0 unless the step says otherwise).
 function scriptedJudgeChild(step) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -1416,6 +1418,7 @@ function scriptedJudgeChild(step) {
     }
     if (step.stdout !== undefined) child.stdout.emit('data', step.stdout);
     if (step.stderr !== undefined) child.stderr.emit('data', step.stderr);
+    if (step.hang) return;
     child.emit('close', step.exitCode ?? 0);
   });
   return child;
@@ -1528,6 +1531,43 @@ test('judge_measurement_attempted: a judge that scored then exited non-zero stil
       event.gate_payload.raw_output_truncated_512,
       judgeStdout,
       'the judge DID reply — its output must reach the reader, not be dropped with the exit code',
+    );
+    assert.ok(
+      !event.gate_payload.raw_output_truncated_512.includes(judgeStderr),
+      'the recorded evidence must be the judge\'s stdout, never the stderr the message was built from',
+    );
+  }
+});
+
+// The TIMEOUT twin of the branch above. `spawnWithClosedStdin` has TWO rejection sites -- the
+// `'close'` non-zero-exit branch and the timeout branch -- and the rule they share is ONE rule: a
+// judge spawn rejection carries the judge's stdout. Only the close twin was pinned, so dropping
+// `{ stdout }` from the timeout branch passed all 63 tests in this file and every other suite that
+// names JudgeMeasurementTimeout (they construct the error directly, or hang without emitting
+// output, so none could observe the carry).
+//
+// Repo trap: `{ stdout }` occurs at BOTH rejection sites, so a pin that merely reaches the field is
+// satisfied by the close twin. This drives the HANG path specifically -- a step that neither closes
+// nor errors -- and selects the attempt by `outcome === 'timeout'`, which the close branch cannot
+// produce. One hang attempt, then a success to end the round: the attempt timeout floors at one
+// second, so a four-attempt shape would cost four.
+test('judge_measurement_attempted: a judge that scored then HUNG still surfaces its output', async () => {
+  const judgeStdout = '{"score": 7, "violations": []}';
+  const judgeStderr = 'warning: telemetry endpoint unreachable';
+  const { captured } = await measureJudgeRoundCapturingActivity([
+    {},
+    { stdout: judgeStdout, stderr: judgeStderr, hang: true },
+    { stdout: '7' },
+  ]);
+  const timedOut = captured.filter(
+    (e) => e.event === 'judge_measurement_attempted' && e.gate_payload.outcome === 'timeout',
+  );
+  assert.ok(timedOut.length > 0, 'precondition: the hang must have produced a timeout attempt');
+  for (const event of timedOut) {
+    assert.equal(
+      event.gate_payload.raw_output_truncated_512,
+      judgeStdout,
+      'the judge DID reply before it hung — its output must reach the reader, not be dropped with the timeout',
     );
     assert.ok(
       !event.gate_payload.raw_output_truncated_512.includes(judgeStderr),
