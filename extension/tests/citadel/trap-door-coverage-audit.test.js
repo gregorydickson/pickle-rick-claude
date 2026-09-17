@@ -400,6 +400,105 @@ describe('runT6TrapDoorCoverage', () => {
     });
   });
 
+  // WIRE (ticket 5987c2f8): the citadel detector (9748856d, matcher fixed by c27b2673/2203fe28)
+  // and the shell audit run over the SAME probe catalog content in the SAME two tests, so a
+  // future divergence between the two instruments shows up as one test failing rather than as
+  // two suites that merely happen to agree today.
+  describe('WIRE: citadel and the shell audit agree on the SAME probe catalog', () => {
+    const PROBE_ANCHOR = 'zzz-nonexistent-anchor-probe-5987c2f8';
+
+    function probeCatalogBody() {
+      const probeLine = `- \`pickle-utils.ts\` (PROBE) — INVARIANT: probe. BREAKS: probe. ENFORCE: tests/stop-hook.test.js#${PROBE_ANCHOR}. PATTERN_SHAPE: probe.`;
+      return ['## Trap Doors', '', probeLine, ''].join('\n');
+    }
+
+    function runShellAuditOverCatalog(catalogPath) {
+      return spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+        cwd: path.join(REPO_ROOT, 'extension'),
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: { ...process.env, CLAUDE_PATH_OVERRIDE: catalogPath },
+      });
+    }
+
+    // Citadel resolves ENFORCE refs against `projectRoot`, so it needs its own copy of the
+    // real anchor-bearing file the shell resolves against the real extensionRoot -- the SAME
+    // (file, anchor) pair judged through two different roots, not two different probes.
+    async function runCitadelOverCatalog(catalogBody) {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tdca-agreement-'));
+      try {
+        const extDir = path.join(projectRoot, 'extension');
+        fs.mkdirSync(path.join(extDir, 'tests'), { recursive: true });
+        fs.copyFileSync(
+          path.join(REPO_ROOT, 'extension', 'tests', 'stop-hook.test.js'),
+          path.join(extDir, 'tests', 'stop-hook.test.js'),
+        );
+        fs.writeFileSync(path.join(extDir, 'CLAUDE.md'), catalogBody, 'utf-8');
+        const { runT6TrapDoorCoverage } = await importAnalyzer();
+        return runT6TrapDoorCoverage({ projectRoot });
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    }
+
+    test('an injected absent anchor is reported by BOTH detectors', async () => {
+      const tmpCatalogDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tdca-agreement-catalog-'));
+      try {
+        const catalogBody = probeCatalogBody();
+        const catalogPath = path.join(tmpCatalogDir, 'CLAUDE.md');
+        fs.writeFileSync(catalogPath, catalogBody, 'utf-8');
+
+        const shell = runShellAuditOverCatalog(catalogPath);
+        assert.notEqual(shell.status, 0, 'shell audit must exit non-zero over the injected absent anchor');
+        assert.match(shell.stderr, new RegExp(PROBE_ANCHOR));
+
+        const citadel = await runCitadelOverCatalog(catalogBody);
+        const anchorFindings = citadel.findings.filter((f) => f.id.startsWith('orphan-test-case:'));
+        assert.ok(
+          anchorFindings.length >= 1,
+          `citadel must also report the injected absent anchor; got ${anchorFindings.length} orphan-test-case findings`,
+        );
+        assert.ok(
+          anchorFindings.some((f) => f.message.includes(PROBE_ANCHOR)),
+          'the injected anchor must be named in a citadel finding',
+        );
+      } finally {
+        fs.rmSync(tmpCatalogDir, { recursive: true, force: true });
+      }
+    });
+
+    // A clean tree can only be judged over the REAL catalog: CLAUDE_PATH_OVERRIDE fully
+    // replaces the primary catalog for the shell audit's own cross-reference checks (e.g. named
+    // trap-door entries it expects to find), so a minimal probe-only catalog reads as "clean"
+    // for the ENFORCE-ref check and simultaneously "broken" for unrelated checks the override
+    // strips out. Mirrors the existing real-corpus checks
+    // ('runT6TrapDoorCoverage — integration: real extension/CLAUDE.md' + 'the shell audit still
+    // exits 0 over the same tree') but asserts BOTH in one place.
+    test('the real, unmodified extension/CLAUDE.md is reported clean by BOTH detectors', async () => {
+      const shell = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+        cwd: path.join(REPO_ROOT, 'extension'),
+        encoding: 'utf-8',
+        timeout: 60_000,
+      });
+      assert.equal(
+        shell.status,
+        0,
+        `shell audit must exit 0 over the real, unmodified tree; stderr:\n${shell.stderr}`,
+      );
+
+      const { runT6TrapDoorCoverage } = await importAnalyzer();
+      const citadel = runT6TrapDoorCoverage({ projectRoot: REPO_ROOT });
+      const anchorFindings = citadel.findings.filter(
+        (f) => f.severity === 'High' && f.file === 'extension/CLAUDE.md',
+      );
+      assert.deepEqual(
+        anchorFindings,
+        [],
+        `citadel must also report zero HIGH findings from extension/CLAUDE.md; got:\n${anchorFindings.map((f) => `  ${f.id}: ${f.message}`).join('\n')}`,
+      );
+    });
+  });
+
   test('diff-scoped audit only emits orphan-test-file for changed tests but still honors unchanged ENFORCE refs', async () => {
     const projectRoot = path.join(tmpRoot, 'diff-scoped-orphans');
     mkFixture(projectRoot, {

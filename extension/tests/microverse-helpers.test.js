@@ -1634,6 +1634,68 @@ test('buildJudgePrompt: replay — session 2026-09-17-5f3aa6b4\'s ledger still e
   );
 });
 
+// WIRE (ticket 5987c2f8): the five dependency roots (9f5fe3bc prompt reorder, d4faf191 typed
+// evidence field, 9748856d/891f67b6/32f7684e citadel routing+detector) were each verified in
+// isolation. This drives the REAL end-to-end judge round — buildJudgePrompt assembles the exact
+// prompt handed to the spawned judge, a prose reply drives judgeAttemptFromOutput's failure arm,
+// and emitJudgeAttemptTelemetry publishes the typed field — asserting both halves hold together,
+// not just each root's own unit test.
+test('WIRE: the actual prompt sent to the judge ends with the contract, and its prose reply still records typed evidence', async () => {
+  const orig = { spawn: _deps.spawn, sleep: _deps.sleep, logActivity: _deps.logActivity };
+  const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+  delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+  const prose = 'The code looks fine overall, no blocking issues found.';
+  let capturedPrompt = null;
+  let spawnCount = 0;
+  // `args` is the argv `buildJudgeAttemptInvocation` hands to `_deps.spawn`; its last element is
+  // the assembled prompt (`buildClaudeJudgeInvocation`'s `-p <prompt>`). The FIRST spawn is the
+  // availability probe (`probeJudgeBackendAvailability`), which carries no prompt to capture.
+  _deps.spawn = (cmd, args) => {
+    spawnCount++;
+    const isProbe = spawnCount === 1;
+    if (!isProbe && Array.isArray(args)) capturedPrompt = args[args.length - 1];
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter();
+    child.stderr.setEncoding = () => {};
+    child.kill = () => {};
+    setImmediate(() => {
+      if (!isProbe) child.stdout.emit('data', prose);
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  _deps.sleep = async () => {};
+  const captured = [];
+  _deps.logActivity = (event) => captured.push(event);
+  try {
+    await measureLlmMetricWithBackoff(
+      'fix bugs', 1, os.tmpdir(), undefined, undefined, undefined, undefined, 'claude', [],
+      { session: 'test-session', iteration: 1, spawnContext: 'iteration' },
+    );
+  } finally {
+    _deps.spawn = orig.spawn;
+    _deps.sleep = orig.sleep;
+    _deps.logActivity = orig.logActivity;
+    if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
+  }
+
+  assert.ok(capturedPrompt, 'the argv handed to the judge spawn must have been captured');
+  assert.equal(
+    capturedPrompt.trimEnd().endsWith(JUDGE_PROMPT_CONTRACT_MARKER),
+    true,
+    `expected the ACTUAL judge prompt to end with the contract, got tail: ${JSON.stringify(capturedPrompt.slice(-200))}`,
+  );
+
+  const attempted = captured.filter((e) => e.event === 'judge_measurement_attempted');
+  assert.ok(attempted.length > 0, 'a judge_measurement_attempted event must have been logged');
+  for (const event of attempted) {
+    assert.equal(event.gate_payload.raw_output_truncated_512, prose.slice(0, 512));
+  }
+});
+
 test('extractScore: parser is unchanged by the reorder — JSON-first, line-oriented fallback', () => {
   assert.equal(extractScore('{"score": 7, "violations": []}'), 7);
   assert.equal(extractScore('not json\n5'), 5);
