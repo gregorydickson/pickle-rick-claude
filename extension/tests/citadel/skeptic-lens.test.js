@@ -224,6 +224,10 @@ describe('skeptic-lens: generated-twin exclusion (AC-R1)', () => {
       'function processOrder(z) { return z; }\n',
     );
 
+    // Twin pair carrying a LINE defect on both sides, so an unfiltered twin yields a finding of its own.
+    fs.writeFileSync(path.join(tmpDir, 'src', 'services', 'qux.ts'), 'const label = user?.name;\n');
+    fs.writeFileSync(path.join(tmpDir, 'services', 'qux.js'), 'const label = user?.name;\n');
+
     // Hand-written .js under outDir with NO .ts twin: a live tsconfig mapping must not exclude it.
     fs.mkdirSync(path.join(tmpDir, 'other'), { recursive: true });
     fs.writeFileSync(
@@ -326,8 +330,16 @@ describe('skeptic-lens: generated-twin exclusion (AC-R1)', () => {
         makeChangedFile('services/foo.js'),
         makeChangedFile('src/services/bar.ts'),
         makeChangedFile('src/other/baz.ts'),
+        makeChangedFile('src/services/qux.ts'),
+        makeChangedFile('services/qux.js'),
       ],
       tmpDir,
+    );
+    // Non-empty on the source side first: without this the loop below is green over a filter that
+    // cleared everything. The qux.js twin is what makes the loop red when the filter is removed.
+    assert.ok(
+      report.findings.some((f) => f.defect === 'fallback-null-flow' && f.file === 'src/services/qux.ts'),
+      'the source side of a twin pair must still report its own line defect',
     );
     for (const f of report.findings) {
       assert.ok(f.file.startsWith('src/'), `finding names a non-source path: ${f.file}`);
