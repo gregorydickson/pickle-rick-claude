@@ -127,6 +127,79 @@ test('principles file has diagnostic guide', () => {
 });
 
 // ---------------------------------------------------------------------------
+// f254feaa: re-tier comment density from Style (P4) to Maintainability (P2).
+// Comment-heavy code's remedy is "restructure the code", the same shape as deep
+// nesting's "early returns" — a P2 code change, not a P4 comment edit. These pins
+// scope by SECTION (Priority Matrix / False Positives), never by whole-file
+// `content.includes`, so a stray match elsewhere in the doc cannot satisfy them.
+// ---------------------------------------------------------------------------
+
+function priorityMatrixSection(content) {
+    const start = content.indexOf('## Priority Matrix');
+    const end = content.indexOf('## ', start + 1);
+    assert.ok(start >= 0, 'Priority Matrix section not found; the section probe would be vacuous');
+    return content.slice(start, end > -1 ? end : undefined);
+}
+
+function falsePositivesSection(content) {
+    const start = content.indexOf('## False Positives');
+    const end = content.indexOf('## ', start + 1);
+    assert.ok(start >= 0, 'False Positives section not found; the section probe would be vacuous');
+    return content.slice(start, end > -1 ? end : undefined);
+}
+
+test('f254feaa: P4 (Style) no longer says "comment cleanup"', () => {
+    const section = priorityMatrixSection(fs.readFileSync(PRINCIPLES_PATH, 'utf-8'));
+    const p4Row = section.split('\n').find((line) => line.includes('P4: Optional'));
+    assert.ok(p4Row, 'P4: Optional row not found in the Priority Matrix');
+    assert.ok(!p4Row.includes('comment cleanup'), 'P4 row still says "comment cleanup"');
+});
+
+test('f254feaa: P2 (Maintainability) covers the comment-heavy-code restructure case', () => {
+    const section = priorityMatrixSection(fs.readFileSync(PRINCIPLES_PATH, 'utf-8'));
+    const p2Row = section.split('\n').find((line) => line.includes('P2: Medium'));
+    assert.ok(p2Row, 'P2: Medium row not found in the Priority Matrix');
+    assert.match(p2Row, /comment-heavy code/, 'P2 row should name comment-heavy code');
+    assert.match(p2Row, /restructure/, 'P2 row should point at restructuring the code, not editing the comment');
+});
+
+test('f254feaa: P2 comment-heavy-code entry names the WHY/measured-limit/trap-door exemption', () => {
+    const section = priorityMatrixSection(fs.readFileSync(PRINCIPLES_PATH, 'utf-8'));
+    const p2Row = section.split('\n').find((line) => line.includes('P2: Medium'));
+    assert.match(p2Row, /WHY comment/, 'P2 row should exempt WHY comments (Comment Balance)');
+    assert.match(p2Row, /measured limit/, 'P2 row should exempt a measured limit');
+    assert.match(p2Row, /trap-door invariant/, 'P2 row should exempt a trap-door invariant');
+});
+
+test('f254feaa: False Positives narrows "comment wording" to phrasing, not comment density', () => {
+    const section = falsePositivesSection(fs.readFileSync(PRINCIPLES_PATH, 'utf-8'));
+    assert.match(section, /comment wording \(the phrasing of an existing comment\)/,
+        'False Positives should scope "comment wording" to phrasing');
+    assert.match(section, /does NOT cover comment-heavy code/i,
+        'False Positives should explicitly carve out comment-heavy code as in-scope P2, not a style preference');
+});
+
+test('f254feaa: Comment Balance (Part I, :130) is unchanged by the re-tier', () => {
+    const content = fs.readFileSync(PRINCIPLES_PATH, 'utf-8');
+    assert.match(content, /\*\*Comment Balance\*\*: Delete comments that restate code\. Keep comments that explain WHY, warn of consequences, or mark TODOs with context\./,
+        'Comment Balance text must remain byte-identical — the ticket forbids rewriting :130');
+});
+
+test('f254feaa: no new Part IV and no new scored dimension were introduced', () => {
+    const content = fs.readFileSync(PRINCIPLES_PATH, 'utf-8');
+    assert.ok(!content.includes('## Part IV'), 'a Part IV was added; the ticket forbids this');
+    const partHeadings = [...content.matchAll(/^## Part [IVX]+:/gm)];
+    assert.equal(partHeadings.length, 3, 'expected exactly three Parts (I, II, III)');
+});
+
+// "Zero deleted lines in Part I/II" for this ticket is already covered by the
+// pre-existing AC-R3-1 test below (bundle-wide baseline diff), which names this
+// exact ticket in its own comment ("R5 re-tiers three cells outside Migration
+// Hygiene") — see code_review for the confirmation run. Adding a second,
+// f254feaa-scoped diff pin here would duplicate that stronger, git-history-based
+// check rather than add coverage.
+
+// ---------------------------------------------------------------------------
 // M4 (GitHub #22): the judge is told the ENFORCED function-size ceiling
 // ---------------------------------------------------------------------------
 // The ceiling is read from eslint.config.js, never hand-copied, and the replay measures the real

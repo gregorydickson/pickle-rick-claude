@@ -57,9 +57,9 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 |----------|------|----------|----------|
 | **P0: Critical** | Security, data loss | SQL injection, unvalidated input, race conditions | Immediately |
 | **P1: High** | Bugs waiting to happen | Missing error handling, silent failures, unclear ownership | This iteration |
-| **P2: Medium** | Maintainability | DRY violations (3+), god classes, deep nesting | When touching file |
+| **P2: Medium** | Maintainability | DRY violations (3+), god classes, deep nesting, comment-heavy code (restructure the function so the comments become unnecessary; a WHY comment, a measured limit, or a trap-door invariant per Comment Balance is not this) | When touching file |
 | **P3: Low** | Polish | Magic numbers, naming, minor duplication | If time permits |
-| **P4: Optional** | Style | Formatting, comment cleanup, minor refactors | Boy Scout Rule |
+| **P4: Optional** | Style | Formatting, comment wording, minor refactors | Boy Scout Rule |
 
 ## Confidence Scoring
 
@@ -91,7 +91,7 @@ The following categories are noise. Exclude them regardless of severity or how c
 - Generic "needs more test coverage" hand-wringing, unless CLAUDE.md or a principle in this doc names a specific coverage target
 - Changes that look bug-like but are obviously the stated intent of the change (removing a feature flag the PRD said to remove, deleting a deprecated path)
 - Issues the author explicitly silenced via `// eslint-disable`, `// @ts-expect-error`, `// type: ignore`, or equivalent — flag only if the silencer itself is the wrong call
-- Stylistic preferences not codified in CLAUDE.md or this principles document — naming taste, comment wording, spacing, bracket religion, all out
+- Stylistic preferences not codified in CLAUDE.md or this principles document — naming taste, comment wording (the phrasing of an existing comment), spacing, bracket religion, all out. This does NOT cover comment-heavy code driven by restructurable complexity — that is P2 Maintainability (see Priority Matrix), not a style preference
 - Speculative future-risk findings — "what if someone later adds Y" is not a finding; review the diff in front of you, not the hypothetical one
 - Findings already raised in a previous pass that the fixing agent resolved — diff against the last iteration's findings list before opening your mouth
 
