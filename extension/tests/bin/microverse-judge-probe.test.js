@@ -602,9 +602,14 @@ describe('R-JUNS: an unparseable judge answer never breaks the phase loop', () =
     // Precondition: this really was a PARSE failure. Without the lastError assertion the test would
     // pass just as well on a plain timeout, which lands in the same (exitReason, kind) shape — the
     // message is the only thing that distinguishes them, which is finding (2) above in miniature.
+    // f0deef39 made the parse failure carry its own judge output, so lastError is now a prefix
+    // (PARSE_FAILURE_LAST_ERROR) followed by "(raw_output_truncated_512=...)"; a plain timeout still
+    // fails the prefix check, and the carried-output check pins the locator this bundle added.
     assert.equal(result.metric, null);
-    assert.equal(result.lastError, PARSE_FAILURE_LAST_ERROR,
+    assert.ok(result.lastError.startsWith(PARSE_FAILURE_LAST_ERROR),
       'the failure under test must be an unparseable answer, not a timeout wearing the same shape');
+    assert.ok(result.lastError.includes('no score'),
+      'the parse failure must carry the judge output that decided it, not just the generic message');
     assert.equal(result.exitReason, 'judge_timeout',
       'a parse failure reaches mapJudgeMeasurementFailure via case judge_timeout, NOT via default:');
     assert.equal(result.exhaustedFailureKind, 'failed');
