@@ -733,10 +733,6 @@ test('audit 4ee9ef19: a gate whose npm child exits 1 carries no signal attributi
 // never scored.
 // ---------------------------------------------------------------------------
 
-function v5TempDir(prefix) {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
-}
-
 function v5MicroverseState(workingDir) {
   const mv = createMicroverseState({
     prdPath: path.join(workingDir, 'prd.md'),
@@ -757,8 +753,8 @@ function v5MicroverseState(workingDir) {
 }
 
 test('ROOT V5: citadel output reaches the fix loop input — the route exists (32f7684e)', () => {
-  const sessionDir = v5TempDir('pickle-v5-route-sess-');
-  const workingDir = v5TempDir('pickle-v5-route-work-');
+  const sessionDir = tmpDir('pickle-v5-route-sess-');
+  const workingDir = tmpDir('pickle-v5-route-work-');
   try {
     fs.writeFileSync(path.join(sessionDir, 'citadel_report.json'), JSON.stringify({
       findings: [{ id: 'orphan-enforce:extension/tests/gone.test.js', severity: 'High', message: 'ref points to nonexistent file', file: 'extension/CLAUDE.md', line: 412 }],
@@ -776,8 +772,8 @@ test('ROOT V5: citadel output reaches the fix loop input — the route exists (3
 });
 
 test('ROOT V5: an empty citadel channel behaves exactly as today (32f7684e)', () => {
-  const sessionDir = v5TempDir('pickle-v5-empty-sess-');
-  const workingDir = v5TempDir('pickle-v5-empty-work-');
+  const sessionDir = tmpDir('pickle-v5-empty-sess-');
+  const workingDir = tmpDir('pickle-v5-empty-work-');
   try {
     const mv = v5MicroverseState(workingDir);
     const baseline = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
@@ -795,8 +791,8 @@ test('ROOT V5: an empty citadel channel behaves exactly as today (32f7684e)', ()
 // findings in its brief classifies to exactly the disposition it would without them, and the route
 // writes no ledger entry — so no citadel finding can gate convergence or invent an exit reason.
 test('ROOT V5: routing creates no convergence obligation and no new disposition (32f7684e)', () => {
-  const sessionDir = v5TempDir('pickle-v5-noscore-sess-');
-  const workingDir = v5TempDir('pickle-v5-noscore-work-');
+  const sessionDir = tmpDir('pickle-v5-noscore-sess-');
+  const workingDir = tmpDir('pickle-v5-noscore-work-');
   try {
     const mv = v5MicroverseState(workingDir);
     const ledgerBefore = JSON.stringify(mv.violation_ledger);
