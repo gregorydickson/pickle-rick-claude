@@ -16,6 +16,28 @@ export function classifyArtifact(fileName) {
         return '📐 Planning...';
     return '🔨 Implementing...';
 }
+function lstatOrNull(filePath) {
+    try {
+        return fs.lstatSync(filePath);
+    }
+    catch {
+        return null;
+    }
+}
+function readdirOrEmpty(dirPath) {
+    try {
+        return fs.readdirSync(dirPath);
+    }
+    catch {
+        return [];
+    }
+}
+/** Ticket directories directly under the session dir; unreadable entries are skipped. */
+function listTicketDirs(sessionDir) {
+    return readdirOrEmpty(sessionDir)
+        .map((ticketId) => ({ ticketId, dirPath: path.join(sessionDir, ticketId) }))
+        .filter(({ dirPath }) => lstatOrNull(dirPath)?.isDirectory() === true);
+}
 /**
  * Scans ticket directories for recently created files (within 30s)
  * that aren't state.json or log files. Used as a fallback when
@@ -24,88 +46,36 @@ export function classifyArtifact(fileName) {
 export function discoverArtifacts(sessionDir, seenArtifacts) {
     const now = Date.now();
     const results = [];
-    try {
-        for (const dir of fs.readdirSync(sessionDir)) {
-            const dirPath = path.join(sessionDir, dir);
-            let stat;
-            try {
-                stat = fs.lstatSync(dirPath);
-            }
-            catch {
+    for (const { ticketId, dirPath } of listTicketDirs(sessionDir)) {
+        for (const file of readdirOrEmpty(dirPath)) {
+            if (ARTIFACT_IGNORE.has(file) || file.endsWith('.log'))
                 continue;
-            }
-            if (!stat.isDirectory())
+            const filePath = path.join(dirPath, file);
+            if (seenArtifacts.has(filePath))
                 continue;
-            try {
-                for (const file of fs.readdirSync(dirPath)) {
-                    if (ARTIFACT_IGNORE.has(file) || file.endsWith('.log'))
-                        continue;
-                    const filePath = path.join(dirPath, file);
-                    if (seenArtifacts.has(filePath))
-                        continue;
-                    let fileStat;
-                    try {
-                        fileStat = fs.lstatSync(filePath);
-                    }
-                    catch {
-                        continue;
-                    }
-                    if (!fileStat.isFile())
-                        continue;
-                    if (now - fileStat.mtimeMs > ARTIFACT_RECENCY_MS)
-                        continue;
-                    seenArtifacts.add(filePath);
-                    results.push({ ticketId: dir, filePath, fileName: file });
-                }
-            }
-            catch {
+            const fileStat = lstatOrNull(filePath);
+            if (!fileStat?.isFile() || now - fileStat.mtimeMs > ARTIFACT_RECENCY_MS)
                 continue;
-            }
+            seenArtifacts.add(filePath);
+            results.push({ ticketId, filePath, fileName: file });
         }
     }
-    catch { /* ignore */ }
     return results;
 }
 function discoverWorkerLogs(sessionDir) {
-    try {
-        const entries = [];
-        for (const dir of fs.readdirSync(sessionDir)) {
-            const dirPath = path.join(sessionDir, dir);
-            let stat;
-            try {
-                stat = fs.lstatSync(dirPath);
-            }
-            catch {
+    const entries = [];
+    for (const { ticketId, dirPath } of listTicketDirs(sessionDir)) {
+        for (const file of readdirOrEmpty(dirPath)) {
+            if (!file.startsWith('worker_session_') || !file.endsWith('.log'))
                 continue;
-            }
-            if (!stat.isDirectory())
+            const logPath = path.join(dirPath, file);
+            const logStat = lstatOrNull(logPath);
+            if (!logStat?.isFile())
                 continue;
-            try {
-                for (const file of fs.readdirSync(dirPath)) {
-                    if (file.startsWith('worker_session_') && file.endsWith('.log')) {
-                        const logPath = path.join(dirPath, file);
-                        let logStat;
-                        try {
-                            logStat = fs.lstatSync(logPath);
-                        }
-                        catch {
-                            continue;
-                        }
-                        if (!logStat.isFile())
-                            continue;
-                        entries.push({ ticketId: dir, logPath, mtimeMs: logStat.mtimeMs });
-                    }
-                }
-            }
-            catch {
-                continue;
-            }
+            entries.push({ ticketId, logPath, mtimeMs: logStat.mtimeMs });
         }
-        return entries.sort((a, b) => a.mtimeMs - b.mtimeMs || a.logPath.localeCompare(b.logPath));
     }
-    catch {
-        return [];
-    }
+    return entries.sort((a, b) => a.mtimeMs - b.mtimeMs || a.logPath.localeCompare(b.logPath));
 }
 /**
  * R-MWR-4 + R-MWR-6: shared truncation handler. Resets the watcher's
