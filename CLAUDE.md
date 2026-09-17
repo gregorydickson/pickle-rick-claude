@@ -259,7 +259,9 @@ Applies to new writing; fix old occurrences only when already touching the file.
 
 ## 🚫 NO PULL REQUESTS (operator-set 2026-09-06, BINDING)
 
-**This repo does not use PRs.** The **v2.2 line** ships by TAG from `release/v2.2-beta` —
+**This repo does not use PRs.** The **v2.1 line** ships by TAG from `release/v2.2-beta` —
+**releases are `v2.1.X` patch tags** (operator-set 2026-09-17); the branch name is historical and does
+NOT set the version, `extension/package.json` does. Next tag: `v2.1.1`. —
 `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`. Work lands as commits pushed straight to
 the release branch. **Never run `gh pr create`**, and never invoke `services/pr-factory.ts` (no
 production caller; queued for deletion).
