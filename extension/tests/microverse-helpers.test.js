@@ -1639,3 +1639,203 @@ test('extractScore: parser is unchanged by the reorder — JSON-first, line-orie
   assert.equal(extractScore('not json\n5'), 5);
   assert.equal(extractScore('no number anywhere'), null);
 });
+
+// ---------------------------------------------------------------------------
+// ROOT V5 (ticket 32f7684e): citadel findings are ROUTED into the worker brief.
+//
+// They are BRIEFED, never SCORED: no violation_ledger entry, no convergence obligation, no exit
+// reason. The tests below pin both halves — that the route exists, and that an empty channel leaves
+// the brief BYTE-IDENTICAL to today's.
+// ---------------------------------------------------------------------------
+
+function makeV5MicroverseState(workingDir, mode) {
+  const mv = createMicroverseState({
+    prdPath: path.join(workingDir, 'prd.md'),
+    metric: {
+      description: 'quality',
+      validation: 'improve code quality',
+      type: 'llm',
+      timeout_seconds: 60,
+      tolerance: 2,
+      direction: 'higher',
+      judge_model: 'claude-sonnet-4-6',
+    },
+    stallLimit: 3,
+  });
+  mv.status = 'iterating';
+  mv.baseline_score = 40;
+  if (mode === 'worker') mv.convergence_mode = 'worker';
+  return mv;
+}
+
+function writeCitadelReport(sessionDir, body) {
+  fs.writeFileSync(path.join(sessionDir, 'citadel_report.json'), body, 'utf-8');
+}
+
+function citadelReport(findings) {
+  return JSON.stringify({
+    schema: '1.0',
+    exit_code: 0,
+    summary: { findings: findings.length, critical: 0, high: findings.length, medium: 0, low: 0, decision_required: 0, unguarded_trap_doors: 0 },
+    findings,
+  });
+}
+
+test('ROOT V5: citadel findings reach the worker brief in BOTH convergence arms (32f7684e)', () => {
+  const sessionDir = makeTempDir('pickle-mv-v5-route-session-');
+  const workingDir = makeTempDir('pickle-mv-v5-route-work-');
+  try {
+    writeCitadelReport(sessionDir, citadelReport([
+      { id: 'orphan-enforce:extension/tests/gone.test.js', severity: 'High', message: 'ENFORCE ref points to nonexistent file', file: 'extension/CLAUDE.md', line: 412 },
+      { id: 'trap-door-bare-path:extension/CLAUDE.md', severity: 'Low', message: 'ENFORCE ref without #anchor', file: 'extension/CLAUDE.md', line: 88 },
+    ]));
+
+    for (const mode of ['metric', 'worker']) {
+      const mv = makeV5MicroverseState(workingDir, mode);
+      const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+
+      assert.ok(brief.includes('## Citadel Findings'), `${mode} arm: brief must carry the citadel section`);
+      assert.ok(brief.includes('orphan-enforce:extension/tests/gone.test.js'), `${mode} arm: finding id must reach the brief`);
+      assert.ok(brief.includes('extension/CLAUDE.md:412'), `${mode} arm: the actionable file:line locator must reach the brief`);
+      // Briefed, NOT scored — the section must say so, and must not claim to be the scored set.
+      assert.ok(brief.includes('NOT the scored set'), `${mode} arm: the section must mark itself advisory`);
+      // The route must not enter findings into the ledger.
+      assert.deepEqual(mv.violation_ledger, [], `${mode} arm: routing must not write the scored ledger`);
+    }
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+// THE NEGATIVE CONTROL (AC-V5-4). Not "does not crash" — BYTE-IDENTICAL. Every way the channel can
+// be empty or unreadable must produce exactly the brief the runner produced before this ticket.
+// An unavailable channel PARKS; it never halts and never perturbs the brief.
+test('ROOT V5: an empty or unreadable citadel channel leaves the brief byte-identical (32f7684e)', () => {
+  const sessionDir = makeTempDir('pickle-mv-v5-neg-session-');
+  const workingDir = makeTempDir('pickle-mv-v5-neg-work-');
+  const reportPath = path.join(sessionDir, 'citadel_report.json');
+  try {
+    for (const mode of ['metric', 'worker']) {
+      const mv = makeV5MicroverseState(workingDir, mode);
+
+      // Baseline: no citadel_report.json at all — literally today's brief.
+      assert.equal(fs.existsSync(reportPath), false, 'precondition: no report present');
+      const baseline = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+      assert.ok(!baseline.includes('Citadel'), `${mode} arm: baseline brief must not mention citadel`);
+
+      const emptyChannels = {
+        'zero findings': citadelReport([]),
+        'malformed JSON': '{ this is not json',
+        'wrong shape (no findings key)': JSON.stringify({ schema: '1.0', exit_code: 0 }),
+        'findings is not an array': JSON.stringify({ findings: 'nope' }),
+        'findings is null': JSON.stringify({ findings: null }),
+        'top-level is an array': '[]',
+        'top-level is null': 'null',
+        'empty file': '',
+      };
+
+      for (const [label, body] of Object.entries(emptyChannels)) {
+        writeCitadelReport(sessionDir, body);
+        let brief;
+        assert.doesNotThrow(() => { brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir); },
+          `${mode} arm / ${label}: an unreadable channel must park, never throw`);
+        assert.equal(brief, baseline, `${mode} arm / ${label}: brief must be BYTE-IDENTICAL to the no-report brief`);
+      }
+
+      fs.rmSync(reportPath, { force: true });
+    }
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+// An undefined sessionDir is the other empty-channel shape: the metric arm is called with it in
+// tests and the reader must not construct a path from `undefined`.
+test('ROOT V5: an absent sessionDir parks and does not mention citadel (32f7684e)', () => {
+  const workingDir = makeTempDir('pickle-mv-v5-nosess-work-');
+  try {
+    const mv = makeV5MicroverseState(workingDir, 'metric');
+    let brief;
+    assert.doesNotThrow(() => { brief = buildMicroverseHandoff(mv, 2, workingDir, undefined); });
+    assert.ok(!brief.includes('Citadel'), 'no sessionDir ⇒ no citadel section');
+  } finally {
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+// The cap is the EXISTING MAX_PRIOR_VIOLATIONS_IN_PROMPT (50) — no second number is introduced.
+// This matters because the live corpus measured a historical max of 169 routable findings, 86.6% of
+// them one detector class: a single detector regression re-inflates the population overnight.
+test('ROOT V5: the routed section is capped at the existing prompt cap of 50 (32f7684e)', () => {
+  const sessionDir = makeTempDir('pickle-mv-v5-cap-session-');
+  const workingDir = makeTempDir('pickle-mv-v5-cap-work-');
+  try {
+    const findings = Array.from({ length: 120 }, (_, i) => ({
+      id: `orphan-test-case:extension/tests/f${String(i).padStart(3, '0')}.test.js#a`,
+      severity: 'High',
+      message: 'anchor not found',
+      file: `extension/tests/f${String(i).padStart(3, '0')}.test.js`,
+    }));
+    writeCitadelReport(sessionDir, citadelReport(findings));
+
+    const mv = makeV5MicroverseState(workingDir, 'worker');
+    const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+    const rendered = brief.split('\n').filter((l) => l.startsWith('- [orphan-test-case:'));
+
+    assert.equal(rendered.length, 50, 'exactly the existing cap, not 120 and not a new number');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+// Ordering reuses rankFindings (severity → citation → id) so no second ordering exists. With the cap
+// at 50, ordering is load-bearing: it decides WHICH findings survive truncation.
+test('ROOT V5: routed findings are severity-ordered via the shared rankFindings (32f7684e)', () => {
+  const sessionDir = makeTempDir('pickle-mv-v5-order-session-');
+  const workingDir = makeTempDir('pickle-mv-v5-order-work-');
+  try {
+    writeCitadelReport(sessionDir, citadelReport([
+      { id: 'z-low', severity: 'Low', message: 'low', file: 'a.ts' },
+      { id: 'a-critical', severity: 'Critical', message: 'critical', file: 'z.ts' },
+      { id: 'm-medium', severity: 'Medium', message: 'medium', file: 'm.ts' },
+      { id: 'h-high', severity: 'High', message: 'high', file: 'h.ts' },
+    ]));
+
+    const mv = makeV5MicroverseState(workingDir, 'worker');
+    const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+    const ids = brief.split('\n').filter((l) => l.startsWith('- [')).map((l) => l.slice(3, l.indexOf(']')));
+
+    assert.deepEqual(ids, ['a-critical', 'h-high', 'm-medium', 'z-low'],
+      'severity order must come from rankFindings, not report order');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+// A finding with no citation must still render — the route must not silently drop findings whose
+// `file` is absent (several citadel classes carry none).
+test('ROOT V5: a finding without file/line still reaches the brief (32f7684e)', () => {
+  const sessionDir = makeTempDir('pickle-mv-v5-nocite-session-');
+  const workingDir = makeTempDir('pickle-mv-v5-nocite-work-');
+  try {
+    writeCitadelReport(sessionDir, citadelReport([
+      { id: 'ac_coverage:AC-1', severity: 'High', message: 'acceptance criterion has no asserting test' },
+    ]));
+    const mv = makeV5MicroverseState(workingDir, 'worker');
+    const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+
+    assert.ok(brief.includes('- [ac_coverage:AC-1] High — acceptance criterion has no asserting test'),
+      'an uncited finding must render without a dangling separator');
+    // Scoped to the routed section: the rest of the brief has its own pre-existing placeholders
+    // (e.g. an unset `convergence_file`) that this ticket neither owns nor changes.
+    const section = brief.slice(brief.indexOf('## Citadel Findings'));
+    assert.ok(!section.includes('undefined'), 'no undefined must leak into the routed section');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});

@@ -38,6 +38,8 @@ import type { MetricComparisonFigures } from '../services/microverse-state.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
+import { rankFindings } from '../services/citadel/reporter.js';
+import type { CitadelFinding } from '../services/citadel/reporter.js';
 import {
   writeStateFile,
   getExtensionRoot,
@@ -3581,6 +3583,7 @@ function buildWorkerMicroverseHandoff(
   ];
   appendGapAnalysisHandoff(parts, mvState);
   appendViolationLedgerHandoff(parts, mvState);
+  appendCitadelFindingsHandoff(parts, sessionDir);
   appendFailedApproachesHandoff(parts, mvState);
   appendTargetHandoff(parts, mvState, workingDir, sessionDir);
   parts.push('Make targeted changes and commit.');
@@ -3616,6 +3619,70 @@ function appendViolationLedgerHandoff(parts: string[], mvState: MicroverseSessio
       ? ` ${entry.path}${typeof entry.line === 'number' ? `:${entry.line}` : ''}`
       : '';
     parts.push(`- [${entry.id}] ${entry.severity}${where} — ${entry.description}`);
+  }
+  parts.push('');
+}
+
+/**
+ * ROOT V5: read citadel's surviving findings for the worker brief.
+ *
+ * This is a ROUTE, not a scoring input. Citadel findings are BRIEFED and never entered into
+ * `violation_ledger`: the ledger is the judge's SCORED set, and the judge re-derives violations by
+ * its own criteria, so a citadel id placed there would be reported `resolved` on the next pass
+ * without being fixed — corrupting the resolved/new/remaining accounting and making citadel gate
+ * convergence, which is the new criterion AC-V5-2 forbids.
+ *
+ * The shape check is exactly `Array.isArray(findings)` — what this reader consumes, nothing more.
+ * `isCitadelReport` (pipeline-runner.ts) is unexported and unimportable: pipeline-runner already
+ * imports THIS module, so the reverse import is a cycle. Hand-copying its `summary`/`exit_code`
+ * conditions would duplicate an enumeration this reader never reads, and since every failure path
+ * returns `[]`, a schema change would SILENTLY discard a populated findings list.
+ *
+ * Every failure mode returns `[]`. No throw, no log, no exit reason, no state write — an
+ * unavailable channel PARKS and the run continues, per AC-V5's error contract.
+ */
+function readCitadelFindingsForHandoff(sessionDir?: string): CitadelFinding[] {
+  if (!sessionDir) return [];
+  const reportPath = path.join(sessionDir, 'citadel_report.json');
+  if (!fs.existsSync(reportPath)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(reportPath, 'utf-8')) as unknown;
+    if (!parsed || typeof parsed !== 'object') return [];
+    const findings = (parsed as Record<string, unknown>).findings;
+    return Array.isArray(findings) ? findings as CitadelFinding[] : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * ROOT V5: the worker's brief section for citadel's unfixed findings.
+ *
+ * Ordering reuses `rankFindings` (severity → citation → id) so no second ordering is defined
+ * anywhere. The cap is the EXISTING {@link MAX_PRIOR_VIOLATIONS_IN_PROMPT} — no second number is
+ * introduced. The cap matters: the live corpus measured 1-8 routable findings at current steady
+ * state but 169 at its historical max, and 86.6% of that population was one detector class, so a
+ * single detector regression re-inflates it overnight.
+ *
+ * Selection is prompt-side (the worker's existing P0>P4 rule), so routing requires only that these
+ * findings APPEAR in the brief — no change to the loop or its selection rule.
+ *
+ * The empty early-return is a NEGATIVE CONTROL, not tidiness: a run with zero advisory findings —
+ * or no report at all — must produce a byte-identical brief to today's.
+ */
+function appendCitadelFindingsHandoff(parts: string[], sessionDir?: string): void {
+  const findings = rankFindings(readCitadelFindingsForHandoff(sessionDir))
+    .slice(0, MAX_PRIOR_VIOLATIONS_IN_PROMPT);
+  if (findings.length === 0) return;
+
+  parts.push('## Citadel Findings (advisory — NOT the scored set)');
+  parts.push('Citadel reported these and nothing fixed them. They are NOT scored and fixing one does not move the metric; the Open Violations section above is the scored set. Apply your usual priority rule (P0 > P1 > P2 > P3 > P4) across everything in this brief.');
+  for (const finding of findings) {
+    const where = typeof finding.file === 'string'
+      ? ` ${finding.file}${typeof finding.line === 'number' ? `:${finding.line}` : ''}`
+      : '';
+    const message = typeof finding.message === 'string' ? finding.message : finding.id;
+    parts.push(`- [${finding.id}] ${finding.severity}${where} — ${message}`);
   }
   parts.push('');
 }
@@ -3663,6 +3730,7 @@ function buildMetricMicroverseHandoff(
 
   appendGapAnalysisHandoff(parts, mvState);
   appendViolationLedgerHandoff(parts, mvState);
+  appendCitadelFindingsHandoff(parts, sessionDir);
 
   const history = normalizeHistoryEntries(metricConv.history);
   if (history.length > 0) {

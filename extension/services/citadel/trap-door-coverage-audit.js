@@ -75,7 +75,19 @@ function auditClaudeTrapDoorRefs(projectRoot, claudeFile, scope, referencedFiles
     const relClaude = normalizeRelativePath(path.relative(projectRoot, claudeFile));
     const claudeInScope = !scope.hasScope || scope.scopedClaudeFiles.has(relClaude);
     let barePathWarned = false;
+    // ROOT V5: a routed finding must name the line a fixer edits — `relClaude` alone points at a
+    // multi-thousand-line catalog. `matchAll` yields matches in strictly increasing `index` order, so
+    // counting newlines only across the span since the PREVIOUS match makes this O(content) in total,
+    // not O(content) per match: no second scan and no per-pass cost.
+    let scannedUpTo = 0;
+    let refLine = 1;
     for (const match of content.matchAll(new RegExp(ENFORCE_REF_RE.source, ENFORCE_REF_RE.flags))) {
+        const matchIndex = match.index ?? scannedUpTo;
+        for (let i = scannedUpTo; i < matchIndex; i++) {
+            if (content[i] === '\n')
+                refLine++;
+        }
+        scannedUpTo = matchIndex;
         const refs = parseEnforceRefs(match[1]);
         for (const ref of refs) {
             const refFindings = auditEnforceRef({
@@ -85,6 +97,7 @@ function auditClaudeTrapDoorRefs(projectRoot, claudeFile, scope, referencedFiles
                 claudeInScope,
                 scope,
                 barePathWarned,
+                refLine,
             });
             barePathWarned ||= refFindings.warnedBarePath;
             referencedFiles.add(refFindings.canonicalPath);
@@ -94,7 +107,7 @@ function auditClaudeTrapDoorRefs(projectRoot, claudeFile, scope, referencedFiles
     return findings;
 }
 function auditEnforceRef(input) {
-    const { projectRoot, ref, relClaude, claudeInScope, scope, barePathWarned } = input;
+    const { projectRoot, ref, relClaude, claudeInScope, scope, barePathWarned, refLine } = input;
     const { canonicalPath, absPath } = resolveEnforceRef(projectRoot, ref.filePath);
     const findings = [];
     const refInScope = !scope.hasScope || claudeInScope || scope.scopedTestFiles.has(canonicalPath);
@@ -105,6 +118,7 @@ function auditEnforceRef(input) {
             severity: 'Low',
             message: `ENFORCE ref without #anchor in ${relClaude}; adding #test-case-name improves precision.`,
             file: relClaude,
+            line: refLine,
         });
         warned = true;
     }
@@ -115,6 +129,7 @@ function auditEnforceRef(input) {
                 severity: 'High',
                 message: `ENFORCE ref points to nonexistent file: ${canonicalPath} (in ${relClaude})`,
                 file: relClaude,
+                line: refLine,
             });
         }
         return { canonicalPath, findings, warnedBarePath: warned };
@@ -122,6 +137,9 @@ function auditEnforceRef(input) {
     if (ref.anchor) {
         const testContent = readTextFile(absPath);
         if (testContent !== null && refInScope && !hasTestCase(testContent, ref.anchor)) {
+            // ROOT V5: deliberately NO `line`. This finding's `file` is the TEST file, while `refLine` is
+            // a position in the CLAUDE.md catalog — attaching it would make `file:line` name a location
+            // that does not contain the defect. Pinned by a negative test.
             findings.push({
                 id: `orphan-test-case:${canonicalPath}#${ref.anchor}`,
                 severity: 'High',

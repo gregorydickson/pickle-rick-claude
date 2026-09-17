@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 
-import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, measureAndClassifyIteration, _deps } from '../bin/microverse-runner.js';
+import { classifyMicroverseDisposition, markMicroverseFatalError, finalizeMicroverseRun, dropOutOfSurfaceViolations, measureAndClassifyIteration, buildMicroverseHandoff, _deps } from '../bin/microverse-runner.js';
 import { classifyPostFinalVerdict, parseBetweenTicketFastGateFailures, runBetweenTicketFastTests } from '../bin/mux-runner.js';
 import { writeMicroverseState, readMicroverseState, createMicroverseState, recordIteration, recordStall, deriveStallCause } from '../services/microverse-state.js';
 import { MICROVERSE_EXIT_REASONS, EXIT_REASONS } from '../types/index.js';
@@ -715,4 +715,109 @@ test('audit 4ee9ef19: a gate whose npm child exits 1 carries no signal attributi
   assert.equal(gate.failures.length, 1);
   assert.doesNotMatch(gate.failures[0].name, /\(signal:/, 'no signal ⇒ no attribution; absent must stay distinguishable');
   assert.equal(verdict.state, 'inconclusive');
+});
+
+// ---------------------------------------------------------------------------
+// ROOT V5 (ticket 32f7684e): citadel findings are ROUTED into the fix loop's worker brief.
+//
+// The set-size invariant AC-V5-6 asks for is ALREADY PINNED IN THIS FILE and is deliberately NOT
+// re-asserted here:
+//   - `MICROVERSE_EXIT_REASONS.length === 17` — line 41 of this file
+//   - `EXIT_REASONS.length === 20`            — line 374 of this file
+// Adding a third and fourth copy would leave four sites asserting one fact, each looking
+// authoritative and all needing a coordinated edit when a reason is legitimately added. The route
+// adds no exit reason, and those pre-existing pins are what prove it.
+//
+// What IS new here is the behavioural half the count pins cannot see: that routing findings into
+// the brief changes no DISPOSITION and creates no convergence obligation. Findings are briefed,
+// never scored.
+// ---------------------------------------------------------------------------
+
+function v5TempDir(prefix) {
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
+function v5MicroverseState(workingDir) {
+  const mv = createMicroverseState({
+    prdPath: path.join(workingDir, 'prd.md'),
+    metric: {
+      description: 'quality',
+      validation: 'improve code quality',
+      type: 'llm',
+      timeout_seconds: 60,
+      tolerance: 2,
+      direction: 'higher',
+      judge_model: 'claude-sonnet-4-6',
+    },
+    stallLimit: 3,
+  });
+  mv.status = 'iterating';
+  mv.baseline_score = 40;
+  return mv;
+}
+
+test('ROOT V5: citadel output reaches the fix loop input — the route exists (32f7684e)', () => {
+  const sessionDir = v5TempDir('pickle-v5-route-sess-');
+  const workingDir = v5TempDir('pickle-v5-route-work-');
+  try {
+    fs.writeFileSync(path.join(sessionDir, 'citadel_report.json'), JSON.stringify({
+      findings: [{ id: 'orphan-enforce:extension/tests/gone.test.js', severity: 'High', message: 'ref points to nonexistent file', file: 'extension/CLAUDE.md', line: 412 }],
+    }), 'utf-8');
+
+    const mv = v5MicroverseState(workingDir);
+    const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+
+    assert.ok(brief.includes('## Citadel Findings'), 'citadel output must reach the fix loop input');
+    assert.ok(brief.includes('orphan-enforce:extension/tests/gone.test.js'), 'the finding id must reach the brief');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('ROOT V5: an empty citadel channel behaves exactly as today (32f7684e)', () => {
+  const sessionDir = v5TempDir('pickle-v5-empty-sess-');
+  const workingDir = v5TempDir('pickle-v5-empty-work-');
+  try {
+    const mv = v5MicroverseState(workingDir);
+    const baseline = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+
+    fs.writeFileSync(path.join(sessionDir, 'citadel_report.json'), JSON.stringify({ findings: [] }), 'utf-8');
+    assert.equal(buildMicroverseHandoff(mv, 2, workingDir, sessionDir), baseline,
+      'a zero-findings channel must leave the brief byte-identical to the no-report brief');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+// Briefed, never scored: routing must not create a convergence obligation. A state carrying citadel
+// findings in its brief classifies to exactly the disposition it would without them, and the route
+// writes no ledger entry — so no citadel finding can gate convergence or invent an exit reason.
+test('ROOT V5: routing creates no convergence obligation and no new disposition (32f7684e)', () => {
+  const sessionDir = v5TempDir('pickle-v5-noscore-sess-');
+  const workingDir = v5TempDir('pickle-v5-noscore-work-');
+  try {
+    const mv = v5MicroverseState(workingDir);
+    const ledgerBefore = JSON.stringify(mv.violation_ledger);
+
+    fs.writeFileSync(path.join(sessionDir, 'citadel_report.json'), JSON.stringify({
+      findings: [{ id: 'orphan-test-case:extension/tests/a.test.js#x', severity: 'High', message: 'anchor not found', file: 'extension/tests/a.test.js' }],
+    }), 'utf-8');
+
+    const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
+    assert.ok(brief.includes('## Citadel Findings'), 'precondition: the findings are in the brief');
+
+    assert.equal(JSON.stringify(mv.violation_ledger), ledgerBefore,
+      'routing must not enter citadel findings into the SCORED ledger');
+
+    // Every microverse exit reason still classifies to its existing disposition — the route
+    // introduces no reason of its own and perturbs none of the mapping.
+    for (const reason of MICROVERSE_EXIT_REASONS) {
+      assert.ok(classifyMicroverseDisposition(reason), `${reason} must still classify`);
+    }
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
 });

@@ -835,3 +835,127 @@ describe('runT6TrapDoorCoverage vs audit-trap-door-enforcement.sh — no silent 
     );
   });
 });
+
+/**
+ * ROOT V5 (ticket 32f7684e): findings routed into the microverse fix loop must name the LINE a
+ * fixer edits — `extension/CLAUDE.md` alone is a multi-thousand-line catalog.
+ *
+ * Every assertion here resolves the reported line back to the fixture's OWN text rather than
+ * comparing a hardcoded integer, so a test cannot pass because an off-by-one happens to coincide
+ * with a literal someone updated to match.
+ */
+describe('ENFORCE-ref findings carry an actionable line (ROOT V5, ticket 32f7684e)', () => {
+  let tmpRoot;
+  before(() => { tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tdca-v5-')); });
+  after(() => { fs.rmSync(tmpRoot, { recursive: true, force: true }); });
+
+  /** Resolve a finding's 1-based `line` back to the catalog text it claims to point at. */
+  function lineText(claudeMdPath, line) {
+    assert.equal(typeof line, 'number', 'finding must carry a numeric line');
+    const lines = fs.readFileSync(claudeMdPath, 'utf-8').split('\n');
+    assert.ok(line >= 1 && line <= lines.length, `line ${line} is outside the catalog (${lines.length} lines)`);
+    return lines[line - 1];
+  }
+
+  test('orphan-enforce points at the catalog line holding the ref', async () => {
+    const projectRoot = path.join(tmpRoot, 'orphan-enforce-line');
+    const { claudeMdPath } = mkFixture(projectRoot, {
+      claudeMdContent: [
+        '# Catalog',
+        '',
+        'Prose that must not be counted as a ref.',
+        '',
+        '## Trap Doors',
+        '',
+        '- ENFORCE: extension/tests/absent-one.test.js',
+        '',
+      ].join('\n'),
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const finding = runT6TrapDoorCoverage({ projectRoot }).findings
+      .find((f) => f.id.startsWith('orphan-enforce:'));
+
+    assert.ok(finding, 'expected an orphan-enforce finding');
+    assert.match(lineText(claudeMdPath, finding.line), /absent-one\.test\.js/);
+  });
+
+  test('trap-door-bare-path points at the catalog line holding the bare ref', async () => {
+    const projectRoot = path.join(tmpRoot, 'bare-path-line');
+    const { claudeMdPath } = mkFixture(projectRoot, {
+      claudeMdContent: [
+        '# Catalog',
+        '',
+        '## Trap Doors',
+        '',
+        '- ENFORCE: extension/tests/present.test.js',
+        '',
+      ].join('\n'),
+      testFiles: { 'extension/tests/present.test.js': "test('anything', () => {});\n" },
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const finding = runT6TrapDoorCoverage({ projectRoot }).findings
+      .find((f) => f.id.startsWith('trap-door-bare-path:'));
+
+    assert.ok(finding, 'expected a trap-door-bare-path finding');
+    assert.match(lineText(claudeMdPath, finding.line), /ENFORCE:.*present\.test\.js/);
+  });
+
+  // The NEGATIVE half. `orphan-test-case`'s `file` is the TEST file, while the ref line is a
+  // position in the CLAUDE.md — attaching it would make `file:line` name a location that does not
+  // contain the defect. This pins the deliberate omission so a later "helpful" change reds.
+  test('orphan-test-case carries NO line — its file is the test file, not the catalog', async () => {
+    const projectRoot = path.join(tmpRoot, 'orphan-test-case-noline');
+    mkFixture(projectRoot, {
+      enforceLines: '- ENFORCE: extension/tests/real.test.js#missing-anchor\n',
+      testFiles: { 'extension/tests/real.test.js': "test('other-test', () => {});\n" },
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const finding = runT6TrapDoorCoverage({ projectRoot }).findings
+      .find((f) => f.id.startsWith('orphan-test-case:'));
+
+    assert.ok(finding, 'expected an orphan-test-case finding');
+    assert.equal(finding.file, 'extension/tests/real.test.js');
+    assert.equal(finding.line, undefined, 'a catalog line must NOT be attached to a test-file finding');
+  });
+
+  // MUTATION KILLER for the running-cursor arithmetic: a cursor that never advances, or one that
+  // rescans from 0, gives every ref the first ref's line. Built on `orphan-enforce` deliberately —
+  // `trap-door-bare-path` is latched by `barePathWarned` and emitted ONCE per catalog, so a
+  // second-ref assertion on it would be unreachable and would pass for the wrong reason.
+  test('the SECOND and later refs get their own lines, not the first ref line', async () => {
+    const projectRoot = path.join(tmpRoot, 'multi-ref-lines');
+    const { claudeMdPath } = mkFixture(projectRoot, {
+      claudeMdContent: [
+        '# Catalog',
+        '',
+        '## Trap Doors',
+        '',
+        '- ENFORCE: extension/tests/absent-alpha.test.js',
+        '',
+        'Intervening prose, and a blank line above and below.',
+        '',
+        '- ENFORCE: extension/tests/absent-beta.test.js',
+        '',
+        '## Another Heading',
+        '',
+        '- ENFORCE: extension/tests/absent-gamma.test.js',
+        '',
+      ].join('\n'),
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const findings = runT6TrapDoorCoverage({ projectRoot }).findings
+      .filter((f) => f.id.startsWith('orphan-enforce:'));
+
+    assert.equal(findings.length, 3, 'all three absent refs must be reported');
+
+    // Each finding must resolve to the catalog line naming ITS OWN file.
+    for (const finding of findings) {
+      const name = finding.id.split('/').pop();
+      assert.match(lineText(claudeMdPath, finding.line), new RegExp(name.replace(/\./g, '\\.')));
+    }
+
+    // And the lines must be distinct and increasing — a frozen cursor collapses them to one value.
+    const lines = findings.map((f) => f.line);
+    assert.equal(new Set(lines).size, 3, `expected three distinct lines, got ${JSON.stringify(lines)}`);
+  });
+});
