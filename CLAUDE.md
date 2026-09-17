@@ -58,8 +58,11 @@ like a member that does not apply.
    its output cannot express?** `status ?? 1` drops the signal sitting beside it; a failure branch drops
    the `output` its own success branch keeps.
 7. **A clean git log on a core predicate is a RISK signal.** Incidents pool at a file's EDGES, so the
-   centre looks maintained and goes unsuspected. **Hunt one-commit predicates inside heavily-cited
-   files.** Subtraction prevents the next defect; only this finds the ones already there.
+   centre looks maintained and goes unsuspected. **Hunt with `git log -L :fn:file`** — a predicate whose
+   body changed only at its feature landing, inside a heavily-cited file, is the candidate. **`git log -S`
+   is the WRONG tool here and will mislead you: it counts declaration churn, returning 1 for almost every
+   function however often the body changed.** Subtraction prevents the next defect; only this finds the
+   ones already there.
 
 **The metric is not lines — it is how many distinct states a reader must hold to know the system is
 correct.** Code that ADDS lines while removing ambiguity (an evidence test, a negative control, a typed

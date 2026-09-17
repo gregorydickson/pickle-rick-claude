@@ -173,6 +173,39 @@ unverified in field); skeptic ~85% un-routable (#36, unfixed). `dropped_findings
 
 ---
 
+## ⚠ CLAUSE 7's MEASUREMENT WAS WRONG — the conclusion survives, the tool does not (2026-09-17)
+
+**First application of clause 7 killed its own method.** I had operationalised "a core predicate with ONE
+commit" as `git log -S"function fn(" -- <file>`. Applied to the highest-citation-density file
+(`services/ticket-completion-evidence.ts`, 29 commits / 76 citations) it returned **1 for 18 of 20
+functions** — a heuristic that flags 90% of a file has no discriminating power.
+
+**Cause: `git log -S` counts DECLARATION churn**, i.e. when the string `function fn(` appeared or
+disappeared. A function created once and never renamed scores 1 no matter how heavily its body was
+rewritten. `git log -L :fn:file` follows the body and discriminates:
+
+| predicate | `-S` | `-L` |
+|---|---:|---:|
+| `readEvidence` | 1 | **14** |
+| `scanGitLog` | 1 | 7 |
+| `isBaselineSha`, `probeCatFile` | 1 | 4 |
+| `persistEvidence` | 1 | 3 |
+| `parseTrailerLog` | 1 | **2** |
+
+**The founding evidence was re-checked, and the conclusion HOLDS — narrowly.** `hasTestCase` scores 3
+under `-L`, not 1. But two of the three are `3fb791f2` and `882b4881`, **21 minutes apart on one May
+afternoon** (the feature landing), and the third is the 2026-09-16 fix. **Untouched for four months
+inside a file that absorbed 13 incident citations** — which is what the clause claims. The `-S` result
+was accidentally right here and would have been wrong for `readEvidence`.
+
+**Root `CLAUDE.md` clause 7 now names `git log -L` and warns off `-S` explicitly.** A principle whose
+measurement is unspecified is a principle that will be applied with the first tool that comes to hand.
+
+**Candidates the corrected hunt produced** (unvalidated, for a future bundle): `parseTrailerLog` (2) and
+`persistEvidence` (3) in `ticket-completion-evidence.ts` — 76 incident citations, 29 commits.
+
+---
+
 ## 🔬 WHERE THE BRITTLENESS COMES FROM — measured 2026-09-16 (evidence for root `CLAUDE.md` clauses 6-7)
 
 **Classified the last 14 GitHub issues by defect shape.** The conclusion overturned the working
