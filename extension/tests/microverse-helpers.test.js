@@ -13,6 +13,7 @@ import {
   buildMicroverseHandoff,
   deriveJudgeReviewSurface,
   judgeAttemptFromOutput,
+  measureLlmMetricWithBackoff,
   _deps,
 } from '../bin/microverse-runner.js';
 import {
@@ -1371,4 +1372,84 @@ test('judgeAttemptFromOutput: the raw output is truncated at 512 characters, mat
   const result = judgeAttemptFromOutput(longProse);
   assert.ok(result.message.includes(longProse.slice(0, 512)));
   assert.ok(!result.message.includes('BOUNDARY'), 'text past byte 512 must not appear in the message');
+});
+
+// Drives the judge backoff round through _deps.spawn: a step with `errorCode` errors the way a failed
+// spawn does (ETIMEDOUT classifies as a timeout); otherwise it closes 0 with `stdout`. The first step
+// answers the availability probe.
+async function measureJudgeRound(steps) {
+  const orig = { spawn: _deps.spawn, sleep: _deps.sleep, logActivity: _deps.logActivity };
+  const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+  delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+  let i = 0;
+  _deps.spawn = () => {
+    const step = steps[i++];
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter();
+    child.stderr.setEncoding = () => {};
+    child.kill = () => {};
+    setImmediate(() => {
+      if (step.errorCode) {
+        child.emit('error', Object.assign(new Error(`spawn ${step.errorCode}`), { code: step.errorCode }));
+        return;
+      }
+      if (step.stdout !== undefined) child.stdout.emit('data', step.stdout);
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  _deps.sleep = async () => {};
+  _deps.logActivity = () => {};
+  try {
+    return await measureLlmMetricWithBackoff('fix bugs', 1, os.tmpdir());
+  } finally {
+    _deps.spawn = orig.spawn;
+    _deps.sleep = orig.sleep;
+    _deps.logActivity = orig.logActivity;
+    if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
+  }
+}
+
+test('judge backoff: a later outranked timeout does not erase the parse failure\'s judge output from lastError', async () => {
+  const prose = 'the judge said something with no score';
+  const result = await measureJudgeRound([
+    {},
+    { stdout: prose },
+    { errorCode: 'ETIMEDOUT' },
+    { errorCode: 'ETIMEDOUT' },
+    { errorCode: 'ETIMEDOUT' },
+  ]);
+  // Precondition: the parse failure decided the reported kind, so it is the attempt the record describes.
+  assert.equal(result.exhaustedFailureKind, 'failed');
+  assert.ok(
+    result.lastError?.includes(`raw_output_truncated_512=${JSON.stringify(prose)}`),
+    `the failure record must carry what the judge said, got: ${result.lastError}`,
+  );
+});
+
+test('judge backoff: control — with no outranking attempt the message still follows the reported kind', async () => {
+  const result = await measureJudgeRound([
+    {},
+    { errorCode: 'ETIMEDOUT' },
+    { errorCode: 'ETIMEDOUT' },
+    { errorCode: 'ETIMEDOUT' },
+    { errorCode: 'ETIMEDOUT' },
+  ]);
+  assert.equal(result.exhaustedFailureKind, 'timeout');
+  assert.match(result.lastError ?? '', /ETIMEDOUT/);
+});
+
+test('judge backoff: control — a failed probe seeds the kind with no message, so a timeout attempt still supplies one', async () => {
+  const result = await measureJudgeRound([
+    { errorCode: 'EACCES' },
+    { errorCode: 'ETIMEDOUT' },
+    { errorCode: 'ETIMEDOUT' },
+    { errorCode: 'ETIMEDOUT' },
+    { errorCode: 'ETIMEDOUT' },
+  ]);
+  assert.equal(result.exhaustedFailureKind, 'failed', 'precondition: the probe, not an attempt, set the kind');
+  assert.match(result.lastError ?? '', /ETIMEDOUT/);
 });

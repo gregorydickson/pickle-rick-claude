@@ -2580,21 +2580,28 @@ async function runJudgeBackoffRound(ctx, state, cumulativeParkedMs) {
             }
             return { metric: result.metric, attempts: state.totalAttempts };
         }
-        state.lastError = result.message ?? null;
+        const message = result.message ?? null;
         maybeActivateWorkerFallback(ctx, state, result);
         if (result.failureKind === 'cli_missing') {
-            return judgeCliMissingResult(state.totalAttempts, state.lastError);
+            return judgeCliMissingResult(state.totalAttempts, message);
         }
         // Alongside cli_missing, and for the same reason: retrying an attempt whose CLI rejected its
         // configuration in the first moments re-runs an identical command for an identical refusal.
         // This refuses ONE attempt; the phase still degrades honestly and the pipeline continues.
         if (result.failureKind === 'startup_rejected') {
-            return judgeStartupRejectedResult(state.totalAttempts, state.lastError);
+            return judgeStartupRejectedResult(state.totalAttempts, message);
         }
         if (result.failureKind === 'timeout' && state.exhaustedFailureKind !== 'failed') {
             emitBaselineAttemptTimeout(ctx.attemptActivity, state.totalAttempts, elapsedMs);
         }
-        state.exhaustedFailureKind = resolveExhaustedFailureKind(state.exhaustedFailureKind, result.failureKind);
+        const exhaustedFailureKind = resolveExhaustedFailureKind(state.exhaustedFailureKind, result.failureKind);
+        // The message follows the kind it is reported under: an attempt the ladder outranks may not
+        // overwrite the message of the attempt that set the kind (a later timeout would otherwise erase
+        // the judge output a parse failure carried).
+        if (exhaustedFailureKind === result.failureKind || state.lastError === null) {
+            state.lastError = message;
+        }
+        state.exhaustedFailureKind = exhaustedFailureKind;
         if (attempt < ctx.backoffsMs.length) {
             await _deps.sleep(ctx.backoffsMs[attempt]);
         }
