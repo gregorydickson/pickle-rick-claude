@@ -1498,6 +1498,65 @@ test('judge_measurement_attempted: a successful attempt carries no raw_output_tr
   );
 });
 
+// AP: the failure branch must not discard the output its success branch keeps. `spawnWithClosedStdin`
+// builds its rejection message as `stderr || stdout || ...`, so a judge that printed a perfectly
+// extractable score and then exited non-zero left NO trace of having replied at all — the drop
+// issue #35 removed. Measured before the fix: a judge emitting {"score": 7} and exiting 1 produced
+// `outcome: failed` with `raw_output_truncated_512: undefined` on all 4 attempts, and a `lastError`
+// naming only the unrelated stderr warning.
+//
+// Repo trap: `raw_output_truncated_512` is asserted by three other constructs in this file (the
+// parse-failure attempt, the success-path absence pin, the lastError pin). Assert the DISTINGUISHING
+// content — the judge's own stdout — and assert the stderr warning did NOT become the evidence, so a
+// fix that merely echoed the rejection `message` into the field cannot satisfy this.
+test('judge_measurement_attempted: a judge that scored then exited non-zero still surfaces its output', async () => {
+  const judgeStdout = '{"score": 7, "violations": []}';
+  const judgeStderr = 'warning: telemetry endpoint unreachable';
+  const failing = { stdout: judgeStdout, stderr: judgeStderr, exitCode: 1 };
+  const { captured } = await measureJudgeRoundCapturingActivity([
+    {},
+    failing,
+    failing,
+    failing,
+    failing,
+  ]);
+  const attempted = captured.filter((e) => e.event === 'judge_measurement_attempted');
+  assert.ok(attempted.length > 0, 'a judge_measurement_attempted event must have been logged');
+  for (const event of attempted) {
+    assert.equal(event.gate_payload.outcome, 'failed', 'precondition: the attempt failed');
+    assert.equal(
+      event.gate_payload.raw_output_truncated_512,
+      judgeStdout,
+      'the judge DID reply — its output must reach the reader, not be dropped with the exit code',
+    );
+    assert.ok(
+      !event.gate_payload.raw_output_truncated_512.includes(judgeStderr),
+      'the recorded evidence must be the judge\'s stdout, never the stderr the message was built from',
+    );
+  }
+});
+
+// The negative control for the field's MEANING: it says "the judge produced output", not "a failure
+// happened". A non-zero exit with nothing on stdout must still carry no field at all.
+test('judge_measurement_attempted: a non-zero exit with NO judge output carries no raw_output_truncated_512', async () => {
+  const silent = { stderr: 'command not found', exitCode: 127 };
+  const { captured } = await measureJudgeRoundCapturingActivity([
+    {},
+    silent,
+    silent,
+    silent,
+    silent,
+  ]);
+  const attempted = captured.filter((e) => e.event === 'judge_measurement_attempted');
+  assert.ok(attempted.length > 0);
+  for (const event of attempted) {
+    assert.ok(
+      !('raw_output_truncated_512' in event.gate_payload),
+      'no judge output ⇒ the key must not be added at all',
+    );
+  }
+});
+
 test('judge backoff: a later outranked timeout does not erase the parse failure\'s judge output from lastError', async () => {
   const prose = 'the judge said something with no score';
   const result = await measureJudgeRound([

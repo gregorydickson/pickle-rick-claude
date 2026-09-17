@@ -2855,16 +2855,44 @@ function toAttemptFailureKind(c: ClassifiedJudgeError): JudgeMeasurementAttempt[
   return c.failureKind;
 }
 
-/** Maps a judge spawn throw onto a typed attempt failure. Never rethrows. */
+/**
+ * The judge's stdout as carried on a spawn rejection, trimmed; `''` when it produced none.
+ *
+ * ONE reader for BOTH judge spawn arms, which is why the field is Node's own `stdout` rather than
+ * a name of our invention: `execFileSync` already sets `err.stdout` natively, so the legacy arm is
+ * covered without a second field or a second reader, and `spawnWithClosedStdin` attaches its
+ * accumulated output under the same name.
+ */
+function judgeStdoutFromError(err: unknown): string {
+  if (!err || typeof err !== 'object') return '';
+  const raw = (err as { stdout?: unknown }).stdout;
+  if (typeof raw === 'string') return raw.trim();
+  return Buffer.isBuffer(raw) ? raw.toString('utf-8').trim() : '';
+}
+
+/**
+ * Maps a judge spawn throw onto a typed attempt failure. Never rethrows.
+ *
+ * Carries `raw_output_truncated_512` for the same reason `judgeAttemptFromOutput` does: a failure
+ * branch must not discard the output its success branch keeps. `message` prefers the child's
+ * STDERR, so without this a judge that emitted a valid score and then exited non-zero reported
+ * `outcome: failed` with no evidence it had replied at all — the drop issue #35 removed.
+ *
+ * Spread conditionally: a spawn that produced no stdout (an ENOENT, a startup rejection) leaves
+ * the record byte-identical to today's, so the field keeps meaning "the judge produced output"
+ * rather than degrading into "a failure happened".
+ */
 function judgeAttemptFromSpawnError(err: unknown, backend: Backend, model: string): JudgeMeasurementAttempt {
   const msg = safeErrorMessage(err);
   process.stderr.write(`[microverse] measureLlmMetric failed (judge_backend=claude, session_backend=${backend}, model=${model}): ${msg}\n`);
   const classified = classifyJudgeError(err);
+  const rawOutputTruncated512 = judgeStdoutFromError(err).slice(0, 512);
   return {
     metric: null,
     failureKind: toAttemptFailureKind(classified),
     message: msg,
     typedFailure: classified.failureKind === 'unknown' ? undefined : classified,
+    ...(rawOutputTruncated512 !== '' ? { raw_output_truncated_512: rawOutputTruncated512 } : {}),
   };
 }
 
@@ -3015,7 +3043,11 @@ function spawnWithClosedStdin(
           reject(new JudgeStartupRejected(message, elapsedMs));
           return;
         }
-        reject(new Error(message));
+        // The judge's stdout rides OUT on the rejection under Node's own `err.stdout` name.
+        // Without it this branch discards exactly what its `code === 0` sibling keeps: `message`
+        // prefers `stderr`, so a judge that printed a perfectly extractable score and then exited
+        // non-zero left no trace of having replied at all. See `judgeStdoutFromError`.
+        reject(Object.assign(new Error(message), { stdout }));
       });
     });
 
@@ -3035,7 +3067,11 @@ function spawnWithClosedStdin(
         killSpawnedSubtree(child, 'SIGTERM');
         const killTimer = setTimeout(() => { killSpawnedSubtree(child, 'SIGKILL'); }, 2000);
         if (typeof killTimer.unref === 'function') killTimer.unref();
-        reject(new JudgeMeasurementTimeout(options.timeoutMessage, options.timeoutMs));
+        // Same rule as the non-zero-exit branch below: whatever the judge managed to emit before
+        // it hung is carried out, not dropped. Attaching it here rather than only there keeps ONE
+        // rule — a judge spawn rejection carries the judge's stdout — instead of a second state
+        // in which output is silently discarded.
+        reject(Object.assign(new JudgeMeasurementTimeout(options.timeoutMessage, options.timeoutMs), { stdout }));
       });
     }, options.timeoutMs);
   });
