@@ -102,6 +102,7 @@ function makeBarePayloadTarball(version, archiveName = 'pickle-release.tar.gz', 
     );
     members.push('extension/services/state-manager.js');
   }
+  members.push(...padPastPipeBuffer(payload, ''));
   const tarball = path.join(dir, archiveName);
   run('tar', ['-czf', tarball, '-C', payload, ...members]);
   const listing = run('tar', ['-tzf', tarball]).stdout;
@@ -111,6 +112,12 @@ function makeBarePayloadTarball(version, archiveName = 'pickle-release.tar.gz', 
     /^extension\/services\/state-manager\.js$/m.test(listing),
     carryRuntimeModule,
     `fixture carried the wrong module set:\n${listing}`,
+  );
+  assertListingOutrunsPipeBuffer(
+    tarball,
+    '-tzf',
+    (line) => line === 'extension/package.json',
+    'extension/package.json member',
   );
   return { dir, tarball };
 }
@@ -279,39 +286,61 @@ function makeMultiPayloadRootTarball(archiveName = 'multi-root.tar.gz') {
 // an explicit member list: a directory walk hands tar readdir order, which is not ours to choose,
 // and a link emitted last sits behind the producer's final write where an early exit costs nothing.
 const PIPE_BUFFER_BYTES = 64 * 1024;
-const PAST_PIPE_BUFFER_MEMBERS = 1200;
+
+// AP-BIN-ITER77-02. Pad by the BYTES the padding contributes, not by a member count: the count a
+// listing needs to outrun the buffer is a function of the ROOT PREFIX its caller passes, so the
+// fixed 1200 this replaces cleared 64KB only for a `pickle-rick-claude/`-prefixed payload and fell
+// ~16KB short for the bare root `.github/workflows/release.yml` actually builds — silently, since a
+// short listing is green either way. Measured on the bare-root name listing: the early-exit
+// mutation still returns the member at 49,223 B and SIGPIPEs at 65,623 B, so the boundary is the
+// 65,536 B below and nothing else. Doubling it is margin against member-name drift, not a second
+// theory of the buffer.
+// The padding is deliberately NOT `.js`: `payload_unresolved_import` forks a grep per shipped
+// module, so `.js` padding put 7.6 s of completeness sweep into a fixture that exists to pin a
+// drain (measured over 1200 modules).
+const PAST_PIPE_BUFFER_BYTES = PIPE_BUFFER_BYTES * 2;
 
 function padPastPipeBuffer(dir, relativeRoot) {
-  mkdirSync(path.join(dir, relativeRoot, 'extension', 'services'), { recursive: true });
-  return Array.from({ length: PAST_PIPE_BUFFER_MEMBERS }, (_unused, index) => {
-    const relative = `${relativeRoot}/extension/services/generated_module_${index}.js`;
-    writeFileSync(path.join(dir, relative), `export const generatedModule${index} = ${index};\n`);
-    return relative;
-  });
+  const prefix = relativeRoot ? `${relativeRoot}/` : '';
+  mkdirSync(path.join(dir, prefix, 'extension', 'data'), { recursive: true });
+  const members = [];
+  for (let bytes = 0, index = 0; bytes < PAST_PIPE_BUFFER_BYTES; index += 1) {
+    const relative = `${prefix}extension/data/generated_asset_${index}.json`;
+    writeFileSync(path.join(dir, relative), `{ "generatedAsset": ${index} }\n`);
+    members.push(relative);
+    bytes += relative.length + 1;
+  }
+  return members;
 }
 
 // Self-checking, because a fixture that quietly stopped clearing the buffer would return these
 // tests to exactly the small-listing shape that could not falsify the invariant — green, and no
-// longer measuring anything. Pins all three properties the drain pin depends on: the link member
-// EXISTS with the type under test (a tar that stopped emitting link headers is a fixture failure,
-// not a tautological pass — this subsumes the bare `/^h/m` check it replaces), the listing CLEARS
-// the buffer, and the link line sits BEFORE it.
-function assertLinkListingOutrunsPipeBuffer(tarball, linkType) {
-  const verbose = run('tar', ['-tvzf', tarball]).stdout;
-  const lines = verbose.split('\n');
-  const linkIndex = lines.findIndex((line) => line.startsWith(linkType));
-  assert.notEqual(linkIndex, -1, `fixture tar emitted no '${linkType}' member:\n${verbose.slice(0, 2000)}`);
-  const bytesBeforeLink = lines.slice(0, linkIndex).join('\n').length;
+// longer measuring anything. Pins all three properties a drain pin depends on: the member the scan
+// must SEE exists (a tar that stopped emitting link headers is a fixture failure, not a
+// tautological pass), the listing CLEARS the buffer, and that member's line sits BEFORE it.
+// One check for every drained scan rather than one per arm: the three properties are the same
+// three whether the scan matches a link TYPE in `-tvzf` or a member NAME in `-tzf`, and clause 9's
+// per-arm ENFORCE list is already the ledger of which arms have a pin.
+function assertListingOutrunsPipeBuffer(tarball, listFlag, matchesMember, memberLabel) {
+  const listing = run('tar', [listFlag, tarball]).stdout;
+  const lines = listing.split('\n');
+  const memberIndex = lines.findIndex(matchesMember);
+  assert.notEqual(memberIndex, -1, `fixture tar emitted no ${memberLabel}:\n${listing.slice(0, 2000)}`);
+  const bytesBeforeMember = lines.slice(0, memberIndex).join('\n').length;
   assert.ok(
-    verbose.length > PIPE_BUFFER_BYTES,
-    `fixture listing is ${verbose.length} B, at or under the ${PIPE_BUFFER_BYTES} B pipe buffer — an `
+    listing.length > PIPE_BUFFER_BYTES,
+    `fixture listing is ${listing.length} B, at or under the ${PIPE_BUFFER_BYTES} B pipe buffer — an `
     + 'early-exit scan cannot SIGPIPE its producer here, so this fixture no longer pins the drain',
   );
   assert.ok(
-    bytesBeforeLink < PIPE_BUFFER_BYTES,
-    `fixture emits its '${linkType}' member ${bytesBeforeLink} B in, past the ${PIPE_BUFFER_BYTES} B `
+    bytesBeforeMember < PIPE_BUFFER_BYTES,
+    `fixture emits its ${memberLabel} ${bytesBeforeMember} B in, past the ${PIPE_BUFFER_BYTES} B `
     + 'pipe buffer — the producer has finished writing by then and an early exit costs nothing',
   );
+}
+
+function assertLinkListingOutrunsPipeBuffer(tarball, linkType) {
+  assertListingOutrunsPipeBuffer(tarball, '-tvzf', (line) => line.startsWith(linkType), `'${linkType}' member`);
 }
 
 // A REAL tarball (driven through the REAL tar, no fake-tar shim) carrying a valid payload root PLUS
