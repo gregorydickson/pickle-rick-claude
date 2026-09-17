@@ -1739,6 +1739,16 @@ function citadelRowsOf(brief) {
   return citadelSectionOf(brief).split('\n').filter((l) => l.startsWith('- ['));
 }
 
+/**
+ * The sibling construct must actually be RENDERED, or every row assertion below goes quiet:
+ * a scoped selection that excludes rows nobody emitted proves nothing. This is the negative
+ * control for the fixture itself, so a ledger that silently stopped rendering reds here
+ * instead of returning the pins to an accidental truth.
+ */
+function assertScoredLedgerRendered(brief) {
+  assert.ok(brief.includes('- [scored-ledger-one]'), 'the sibling construct must be rendered');
+}
+
 function makeV5MicroverseState(workingDir, mode) {
   const mv = createMicroverseState({
     prdPath: path.join(workingDir, 'prd.md'),
@@ -1891,10 +1901,10 @@ test('ROOT V5: the routed section is capped at the existing prompt cap of 50 (32
     const rendered = citadelRowsOf(brief);
 
     assert.equal(rendered.length, 50, 'exactly the existing cap, not 120 and not a new number');
-    // The scored ledger renders the same row shape directly above; selecting over the whole
-    // brief would count its rows too. Both halves asserted, so neither can go quiet.
+    // The scored ledger renders the same row shape directly above; a whole-brief selection
+    // would count its rows too.
     assert.ok(rendered.every((l) => l.startsWith('- [orphan-test-case:')), 'only routed rows may be counted');
-    assert.ok(brief.includes('- [scored-ledger-one]'), 'precondition: the sibling construct IS rendered');
+    assertScoredLedgerRendered(brief);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
@@ -1920,9 +1930,9 @@ test('ROOT V5: routed findings are severity-ordered via the shared rankFindings 
 
     assert.deepEqual(ids, ['a-critical', 'h-high', 'm-medium', 'z-low'],
       'severity order must come from rankFindings, not report order');
-    // The scored ledger's rows are rendered above and share this row shape; the order asserted
-    // is the routed section's alone. Pin that the sibling IS present, so the exclusion is real.
-    assert.ok(brief.includes('- [scored-ledger-one]'), 'precondition: the sibling construct IS rendered');
+    // The ledger's rows share this shape and render above; the order asserted is the routed
+    // section's alone.
+    assertScoredLedgerRendered(brief);
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
@@ -1979,10 +1989,9 @@ test('ROOT V5: one malformed finding does not discard its well-formed siblings (
 
     const rendered = citadelRowsOf(brief);
     assert.equal(rendered.length, 2, 'exactly the two renderable findings, no placeholder rows');
-    // The scored ledger renders two rows of the SAME shape directly above. Counting over the
-    // whole brief would take this count over both constructs; pin that the sibling is rendered
-    // and excluded, so the count means the routed section alone.
-    assert.ok(brief.includes('- [scored-ledger-one]'), 'precondition: the sibling construct IS rendered');
+    // The ledger renders two rows of the SAME shape above, so a whole-brief count would take
+    // this over both constructs. Assert the count means the routed section alone.
+    assertScoredLedgerRendered(brief);
     assert.ok(rendered.every((l) => !l.startsWith('- [scored-ledger')), 'ledger rows must not be counted as routed rows');
     assert.ok(!citadelSectionOf(brief).includes('undefined'), 'no undefined row may be rendered for a dropped entry');
   } finally {
