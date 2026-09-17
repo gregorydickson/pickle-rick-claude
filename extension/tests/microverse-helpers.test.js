@@ -1730,6 +1730,18 @@ test('ROOT V5: an empty or unreadable citadel channel leaves the brief byte-iden
         'wrong shape (no findings key)': JSON.stringify({ schema: '1.0', exit_code: 0 }),
         'findings is not an array': JSON.stringify({ findings: 'nope' }),
         'findings is null': JSON.stringify({ findings: null }),
+        // Array.isArray alone does NOT make the park hold: rankFindings dereferences
+        // `a.severity`/`a.id.localeCompare` and the renderer reads `finding.file`, so an array of
+        // malformed ELEMENTS threw out of buildMicroverseHandoff until isRenderableCitadelFinding
+        // filtered them. The loop calls this; an advisory channel must never be able to break it.
+        'findings array of nulls': JSON.stringify({ findings: [null, null] }),
+        'findings array of numbers': JSON.stringify({ findings: [1, 2] }),
+        'findings array of strings': JSON.stringify({ findings: ['a', 'b'] }),
+        'findings array of empty objects': JSON.stringify({ findings: [{}, {}] }),
+        'findings single null element': JSON.stringify({ findings: [null] }),
+        'findings element missing id': JSON.stringify({ findings: [{ severity: 'High', message: 'no id' }] }),
+        'findings element missing severity': JSON.stringify({ findings: [{ id: 'x', message: 'no severity' }] }),
+        'findings element with non-string id': JSON.stringify({ findings: [{ id: 7, severity: 'High' }] }),
         'top-level is an array': '[]',
         'top-level is null': 'null',
         'empty file': '',
@@ -1834,6 +1846,43 @@ test('ROOT V5: a finding without file/line still reaches the brief (32f7684e)', 
     // (e.g. an unset `convergence_file`) that this ticket neither owns nor changes.
     const section = brief.slice(brief.indexOf('## Citadel Findings'));
     assert.ok(!section.includes('undefined'), 'no undefined must leak into the routed section');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+
+// A malformed element must cost THAT ELEMENT ONLY. Rejecting the whole array on one bad entry would
+// silently drop findings a fixer was going to be briefed on — the same silent-discard failure the
+// minimal shape check exists to avoid.
+test('ROOT V5: one malformed finding does not discard its well-formed siblings (32f7684e)', () => {
+  const sessionDir = makeTempDir('pickle-mv-v5-mixed-session-');
+  const workingDir = makeTempDir('pickle-mv-v5-mixed-work-');
+  try {
+    writeCitadelReport(sessionDir, JSON.stringify({
+      findings: [
+        null,
+        { id: 'good-one', severity: 'High', message: 'a real finding', file: 'a.ts', line: 3 },
+        { severity: 'High', message: 'no id — unrenderable' },
+        { id: 'good-two', severity: 'Critical', message: 'another real finding' },
+        42,
+      ],
+    }));
+
+    const mv = makeV5MicroverseState(workingDir, 'worker');
+    let brief;
+    assert.doesNotThrow(() => { brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir); });
+
+    assert.ok(brief.includes('good-one'), 'a well-formed sibling must survive a malformed entry');
+    assert.ok(brief.includes('good-two'), 'a well-formed sibling must survive a malformed entry');
+
+    const rendered = brief.split('\n').filter((l) => l.startsWith('- ['));
+    assert.equal(rendered.length, 2, 'exactly the two renderable findings, no placeholder rows');
+    // Scoped to the routed section — the rest of the brief has pre-existing placeholders this
+    // ticket neither owns nor changes (e.g. an unset `convergence_file`).
+    const section = brief.slice(brief.indexOf('## Citadel Findings'));
+    assert.ok(!section.includes('undefined'), 'no undefined row may be rendered for a dropped entry');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });

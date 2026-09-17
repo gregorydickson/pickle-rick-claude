@@ -2754,11 +2754,29 @@ function readCitadelFindingsForHandoff(sessionDir) {
         if (!parsed || typeof parsed !== 'object')
             return [];
         const findings = parsed.findings;
-        return Array.isArray(findings) ? findings : [];
+        return Array.isArray(findings) ? findings.filter(isRenderableCitadelFinding) : [];
     }
     catch {
         return [];
     }
+}
+/**
+ * `Array.isArray` alone is NOT enough to make the park contract hold: `rankFindings` reads
+ * `a.severity` and calls `a.id.localeCompare`, and the renderer reads `finding.file` — so an array
+ * carrying `null`, a number, or an `id`-less object THROWS out of `buildMicroverseHandoff`, which
+ * the main loop calls. An advisory channel must never be able to break the loop.
+ *
+ * Checked per ELEMENT rather than rejecting the whole array, so one malformed entry costs that
+ * entry and not the other 49 findings a fixer was going to be briefed on.
+ *
+ * `id` and `severity` are exactly the fields the ranker and the renderer dereference unguarded;
+ * `message`/`file`/`line` are already typeof-guarded at their use sites and need no check here.
+ */
+function isRenderableCitadelFinding(value) {
+    if (!value || typeof value !== 'object')
+        return false;
+    const record = value;
+    return typeof record.id === 'string' && typeof record.severity === 'string';
 }
 /**
  * ROOT V5: the worker's brief section for citadel's unfixed findings.
