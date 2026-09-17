@@ -1370,7 +1370,8 @@ test('judgeAttemptFromOutput: the success path is byte-identical to today', () =
 test('judgeAttemptFromOutput: the raw output is truncated at 512 characters, matching the raw_output_truncated_512 convention', () => {
   const longProse = 'a'.repeat(511) + '-BOUNDARY-' + 'b'.repeat(89);
   const result = judgeAttemptFromOutput(longProse);
-  assert.ok(result.message.includes(longProse.slice(0, 512)));
+  // The closing `)` delimits the value, so a limit of 513-519 (still short of the BOUNDARY word) reds too.
+  assert.ok(result.message.includes(`raw_output_truncated_512=${JSON.stringify(longProse.slice(0, 512))})`));
   assert.ok(!result.message.includes('BOUNDARY'), 'text past byte 512 must not appear in the message');
 });
 
