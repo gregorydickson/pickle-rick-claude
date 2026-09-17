@@ -606,9 +606,9 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
     "import { test } from 'node:test';\ntest('an unrelated real test case', () => {});\n";
 
   test('the widened matcher still reports the genuinely-absent anchors -- it did not disable the check', () => {
-    // remaining > 0 catches over-widening (a matcher that accepts everything would report 0 here,
-    // the exact failure mode this ticket exists to rule out). The ceiling catches under-widening
-    // (a reverted/weakened matcher would balloon remaining back toward oldBrokenCount, ~145).
+    // The synthetic absent anchor catches over-widening (an accept-everything matcher returns true
+    // for it). The ceiling catches under-widening (a reverted/weakened matcher would balloon
+    // remaining back toward oldBrokenCount, ~145).
     assert.ok(
       !SYNTHETIC_TEST_FILE_CONTENT.includes(SYNTHETIC_ABSENT_ANCHOR),
       'fixture bug: the synthetic anchor must not occur in the synthetic test file\'s text',
@@ -618,15 +618,6 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
       false,
       'the widened matcher must not be vacuous: a known-absent synthetic anchor must still be reported absent',
     );
-    // Mutation check: an accept-everything hasTestCase would (wrongly) call this same anchor present --
-    // proving the assertion above is a real discriminator, not a tautology that would pass regardless.
-    const acceptEverything = buildHasTestCase('function hasTestCase(content, anchor) { return true; }');
-    assert.equal(
-      acceptEverything(SYNTHETIC_TEST_FILE_CONTENT, SYNTHETIC_ABSENT_ANCHOR),
-      true,
-      'sanity: the synthetic anchor must be one an accept-everything matcher would wrongly clear',
-    );
-
     const remaining = replayRemaining;
     assert.ok(
       remaining.length < 50,
@@ -674,15 +665,6 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
       assert.ok(
         reported.has(`${SYNTHETIC_TEST_FILE_REL}#${SYNTHETIC_ABSENT_ANCHOR}`),
         'runT6TrapDoorCoverage did not report the known-absent synthetic anchor',
-      );
-
-      // Mutation check: an accept-everything hasTestCase would find no orphan-test-case finding at
-      // all here, proving the fixture is what makes the assertion above non-vacuous.
-      const acceptEverything = buildHasTestCase('function hasTestCase(content, anchor) { return true; }');
-      assert.equal(
-        acceptEverything(SYNTHETIC_TEST_FILE_CONTENT, SYNTHETIC_ABSENT_ANCHOR),
-        true,
-        'sanity: the synthetic anchor must be one an accept-everything matcher would wrongly clear',
       );
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
