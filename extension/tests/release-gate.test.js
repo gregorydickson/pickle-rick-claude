@@ -269,6 +269,51 @@ function makeMultiPayloadRootTarball(archiveName = 'multi-root.tar.gz') {
   return { dir, tarball };
 }
 
+// The drain-to-`END` rule (bin/CLAUDE.md, release-gate.sh clauses 7 and 9) is UNOBSERVABLE below
+// the pipe buffer: the producer finishes writing before awk can exit, so a drained scan and an
+// early-exit one both report the link and a small fixture passes either way. Measured on the
+// shipped scan text — at 2,029 B both shapes detect the link; at 117,789 B the early-exit shape
+// SIGPIPEs the still-writing producer, the pipeline returns 141, and the `if`-guard at
+// release-gate.sh:359 reads it as "no link found", so an escaping symlink false-greens the release.
+// Every link fixture below therefore pads PAST the buffer and emits its link member FIRST, through
+// an explicit member list: a directory walk hands tar readdir order, which is not ours to choose,
+// and a link emitted last sits behind the producer's final write where an early exit costs nothing.
+const PIPE_BUFFER_BYTES = 64 * 1024;
+const PAST_PIPE_BUFFER_MEMBERS = 1200;
+
+function padPastPipeBuffer(dir, relativeRoot) {
+  mkdirSync(path.join(dir, relativeRoot, 'extension', 'services'), { recursive: true });
+  return Array.from({ length: PAST_PIPE_BUFFER_MEMBERS }, (_unused, index) => {
+    const relative = `${relativeRoot}/extension/services/generated_module_${index}.js`;
+    writeFileSync(path.join(dir, relative), `export const generatedModule${index} = ${index};\n`);
+    return relative;
+  });
+}
+
+// Self-checking, because a fixture that quietly stopped clearing the buffer would return these
+// tests to exactly the small-listing shape that could not falsify the invariant — green, and no
+// longer measuring anything. Pins all three properties the drain pin depends on: the link member
+// EXISTS with the type under test (a tar that stopped emitting link headers is a fixture failure,
+// not a tautological pass — this subsumes the bare `/^h/m` check it replaces), the listing CLEARS
+// the buffer, and the link line sits BEFORE it.
+function assertLinkListingOutrunsPipeBuffer(tarball, linkType) {
+  const verbose = run('tar', ['-tvzf', tarball]).stdout;
+  const lines = verbose.split('\n');
+  const linkIndex = lines.findIndex((line) => line.startsWith(linkType));
+  assert.notEqual(linkIndex, -1, `fixture tar emitted no '${linkType}' member:\n${verbose.slice(0, 2000)}`);
+  const bytesBeforeLink = lines.slice(0, linkIndex).join('\n').length;
+  assert.ok(
+    verbose.length > PIPE_BUFFER_BYTES,
+    `fixture listing is ${verbose.length} B, at or under the ${PIPE_BUFFER_BYTES} B pipe buffer — an `
+    + 'early-exit scan cannot SIGPIPE its producer here, so this fixture no longer pins the drain',
+  );
+  assert.ok(
+    bytesBeforeLink < PIPE_BUFFER_BYTES,
+    `fixture emits its '${linkType}' member ${bytesBeforeLink} B in, past the ${PIPE_BUFFER_BYTES} B `
+    + 'pipe buffer — the producer has finished writing by then and an early exit costs nothing',
+  );
+}
+
 // A REAL tarball (driven through the REAL tar, no fake-tar shim) carrying a valid payload root PLUS
 // one real symlink member whose target escapes the root. The member NAME is safe, so the name-only
 // `tar -tzf` scan is blind to it — only the `-tvzf` link-type scan catches it.
@@ -279,15 +324,21 @@ function makeSymlinkPayloadTarball(archiveName = 'symlink.tar.gz') {
   writeFileSync(path.join(root, 'install.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
   symlinkSync('../../../../../tmp/PWNED', path.join(root, 'extension', 'evil-link'));
   const tarball = path.join(dir, archiveName);
-  run('tar', ['-czf', tarball, '-C', dir, 'pickle-rick-claude']);
+  run('tar', ['-czf', tarball, '-C', dir,
+    'pickle-rick-claude/extension/evil-link',
+    'pickle-rick-claude/extension/package.json',
+    'pickle-rick-claude/install.sh',
+    ...padPastPipeBuffer(dir, 'pickle-rick-claude'),
+  ]);
+  assertLinkListingOutrunsPipeBuffer(tarball, 'l');
   return { dir, tarball };
 }
 
 // A REAL tarball (REAL tar, no shim) carrying a valid payload root PLUS a real HARDLINK member: tar
-// emits whichever of the two shared-inode paths it walks second as an `h`-type entry. The fake-tar
-// shim cannot stand in here — its `-tvzf` stub hardcodes `-rw-r--r--` for every member, so no shim
-// listing can ever carry a link type. Asserts the fixture really produced an `h` member so a tar
-// that stopped emitting hardlink headers surfaces as a fixture failure, not a silent tautology.
+// emits whichever of the two shared-inode paths it archives second as an `h`-type entry, so the
+// alias is listed explicitly right after its target and lands early. The fake-tar shim cannot stand
+// in here — its `-tvzf` stub hardcodes `-rw-r--r--` for every member, so no shim listing can ever
+// carry a link type.
 function makeHardlinkPayloadTarball(archiveName = 'hardlink.tar.gz') {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-gate-hardlink-'));
   const root = path.join(dir, 'pickle-rick-claude');
@@ -297,9 +348,14 @@ function makeHardlinkPayloadTarball(archiveName = 'hardlink.tar.gz') {
   writeFileSync(target, 'shared inode\n');
   linkSync(target, path.join(root, 'extension', 'linked-alias.txt'));
   const tarball = path.join(dir, archiveName);
-  run('tar', ['-czf', tarball, '-C', dir, 'pickle-rick-claude']);
-  const verbose = run('tar', ['-tvzf', tarball]).stdout;
-  assert.match(verbose, /^h/m, `fixture tar emitted no hardlink member:\n${verbose}`);
+  run('tar', ['-czf', tarball, '-C', dir,
+    'pickle-rick-claude/extension/linked-target.txt',
+    'pickle-rick-claude/extension/linked-alias.txt',
+    'pickle-rick-claude/extension/package.json',
+    'pickle-rick-claude/install.sh',
+    ...padPastPipeBuffer(dir, 'pickle-rick-claude'),
+  ]);
+  assertLinkListingOutrunsPipeBuffer(tarball, 'h');
   return { dir, tarball };
 }
 
