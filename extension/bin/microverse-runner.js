@@ -2078,13 +2078,13 @@ function judgeAttemptFromSpawnError(err, backend, model) {
     };
 }
 /** Maps judge stdout onto an attempt; non-numeric output is a 'failed' attempt. */
-function judgeAttemptFromOutput(output) {
+export function judgeAttemptFromOutput(output) {
     const score = extractScore(output);
     if (score === null) {
         return {
             metric: null,
             failureKind: 'failed',
-            message: 'judge output did not contain a numeric score',
+            message: `judge output did not contain a numeric score (raw_output_truncated_512=${JSON.stringify(output.slice(0, 512))})`,
         };
     }
     return { metric: { raw: output, score } };

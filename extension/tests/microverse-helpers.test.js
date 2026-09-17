@@ -12,6 +12,7 @@ import {
   parseLlmJudgeOutput,
   buildMicroverseHandoff,
   deriveJudgeReviewSurface,
+  judgeAttemptFromOutput,
   _deps,
 } from '../bin/microverse-runner.js';
 import {
@@ -1325,4 +1326,49 @@ test('microverse corpora loader: resolves the vendored final-iteration logs for 
     () => microverseIterationLogPath('2026-09-12-a4d141e1', 999),
     /Missing tmux_iteration_999\.log fixture/,
   );
+});
+
+test('judgeAttemptFromOutput: a parse failure carries a truncated copy of the judge output', () => {
+  const prose = 'The code looks good, no issues found.';
+  const result = judgeAttemptFromOutput(prose);
+  assert.equal(result.metric, null);
+  assert.equal(result.failureKind, 'failed');
+  assert.ok(
+    result.message.includes(prose),
+    `expected the failure message to carry the judge's prose verbatim, got: ${result.message}`,
+  );
+  assert.ok(result.message.includes('raw_output_truncated_512='));
+});
+
+test('judgeAttemptFromOutput: empty output is distinguishable from prose output', () => {
+  const empty = judgeAttemptFromOutput('');
+  const prose = judgeAttemptFromOutput('The code looks good, no issues found.');
+  assert.equal(empty.metric, null);
+  assert.equal(empty.failureKind, 'failed');
+  assert.ok(empty.message.includes('raw_output_truncated_512=""'));
+  assert.notEqual(empty.message, prose.message);
+});
+
+test('judgeAttemptFromOutput: mutation — prose with no number carries that prose, a valid score carries no failure record', () => {
+  const failing = judgeAttemptFromOutput('no number here at all');
+  assert.equal(failing.metric, null);
+  assert.ok(failing.message.includes('no number here at all'));
+
+  const passing = judgeAttemptFromOutput('7');
+  assert.equal(passing.failureKind, undefined);
+  assert.equal(passing.message, undefined);
+  assert.deepEqual(passing.metric, { raw: '7', score: 7 });
+});
+
+test('judgeAttemptFromOutput: the success path is byte-identical to today', () => {
+  const output = '{"score": 3.5}';
+  const result = judgeAttemptFromOutput(output);
+  assert.deepEqual(result, { metric: { raw: output, score: 3.5 } });
+});
+
+test('judgeAttemptFromOutput: the raw output is truncated at 512 characters, matching the raw_output_truncated_512 convention', () => {
+  const longProse = 'a'.repeat(511) + '-BOUNDARY-' + 'b'.repeat(89);
+  const result = judgeAttemptFromOutput(longProse);
+  assert.ok(result.message.includes(longProse.slice(0, 512)));
+  assert.ok(!result.message.includes('BOUNDARY'), 'text past byte 512 must not appear in the message');
 });
