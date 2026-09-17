@@ -119,6 +119,53 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🚢 SESSION HANDOFF — 2026-09-17 (context cleared here). **READ THIS FIRST.**
+
+### ▶ IMMEDIATE STATE
+
+| | |
+|---|---|
+| branch | **`release/v2.2-beta`** — the name is historical; **releases are `v2.1.X`** (operator-set) |
+| version | `extension/package.json` = **`2.1.1`**. Next tag `v2.1.1`. `release.yml` compares tag↔this field |
+| `main` | **= the `v2.1.0` GA commit `c20a9562`**, no longer the stale 2.0 line. Old main preserved at tag `archive/main-2.0-line`; revert = `git push --force origin archive/main-2.0-line:main` |
+| **RUNNING** | **[[B-VERDICT]] session `2026-09-17-3c7489fc`** — 10 tickets, phase 1/4. Do not intervene while advancing |
+| deployed | **`2.2.0-beta.1` — STALE vs source `2.1.1`.** Re-deploy + verify BY CONTENT after the run |
+| open issues | **#39** (judge prose), **#37** (anchor detector disagreement), **#32**, **#29**, **#5** |
+| open PRs | **#38 by `sabahmax-dev`** — external, addresses #35, **unreviewed publicly and unmerged; operator's call** |
+| gate runner | **`prds/gate-runner.sh`** (vendored 2026-09-17 so it survives a context clear). 22 legs, ~70 min, derives its audit list from root `CLAUDE.md`. Wait for `GATE_END` |
+
+### ✅ SHIPPED / CLOSED THIS SESSION
+`v2.1.0` GA tagged and verified. Closed **#30, #31, #33, #34, #35, #36** — each with the mechanism
+grepped, not a ticket title. Root `CLAUDE.md` gained **clauses 6-7** (the defect is in the instrument;
+`git log -L` not `-S`).
+
+### ⛔ TRAPS I WAS PERSONALLY CAUGHT BY — apply these
+
+1. **A session artifact is a SNAPSHOT.** Re-grepping a mechanism *inside* a session log is NOT
+   re-grounding. Date the artifact, `git log -S` the blamed surface, and search **closed** issues by
+   MECHANISM. I re-filed a closed issue (#22) this way.
+2. **`git log -S` on a declaration measures declaration churn** and returns 1 for nearly every function.
+   Use `git log -L :fn:file`. My first clause-7 hunt was degenerate because of this.
+3. **Choose the diff BASE deliberately.** I attributed an anatomy-park change to the wrong bundle by
+   diffing from a gate sha rather than the bundle base.
+4. **A probe must be validated before its null result is believed.** My "citadel can't detect absences"
+   probe returned *"Test file has no inbound ENFORCE ref"*, proving the refs were never read — the probe
+   was inadmissible. See #37.
+5. **`ps -eo pid,command | grep …` prints full argv**; one `node --test` line is ~8k chars. Pipe through
+   `cut -c1-80`. Bash output reached 27% of the window this session.
+6. **Never `git add -A` while a pipeline runs** — it sweeps the worker's in-progress edits. Stage paths.
+7. `find -newermt` is not BSD syntax (false empty) — use `-mmin -N`. `stat -f '%Sm'` is LOCAL time —
+   prefix `TZ=UTC`. `timeout` does not exist on this box. `npx tsc` exits 0 without typechecking — use
+   `./node_modules/.bin/tsc`.
+
+### 📋 AFTER B-VERDICT
+Gate → push (**do not tag**; cadence says bundles accumulate) → **deploy and verify by content**
+(184 files, 0 differing, one intentional difference: the `bin/tmux-runner.js` symlink).
+Then: **#37 gates the L7 wiring**; **#39** is the live cause of lost verdicts; **#29** stays open until
+someone mutates a `runMuxRunnerMain` branch and shows a suite reds.
+
+---
+
 ## 🏁 B-TRUTHEXIT RAN — 4/4, 9/9 tickets, gate 22/22 GREEN. Not released (cadence).
 
 Session `2026-09-16-383e1249`. `completed_phases: 4/4`, **9/9 tickets Done, none Failed**. Gate
