@@ -3067,7 +3067,7 @@ function spawnWithClosedStdin(
         killSpawnedSubtree(child, 'SIGTERM');
         const killTimer = setTimeout(() => { killSpawnedSubtree(child, 'SIGKILL'); }, 2000);
         if (typeof killTimer.unref === 'function') killTimer.unref();
-        // Same rule as the non-zero-exit branch below: whatever the judge managed to emit before
+        // Same rule as the non-zero-exit branch in the `'close'` handler: whatever the judge emitted before
         // it hung is carried out, not dropped. Attaching it here rather than only there keeps ONE
         // rule — a judge spawn rejection carries the judge's stdout — instead of a second state
         // in which output is silently discarded.
