@@ -2088,10 +2088,12 @@ function judgeAttemptFromSpawnError(err, backend, model) {
 export function judgeAttemptFromOutput(output) {
     const score = extractScore(output);
     if (score === null) {
+        const rawOutputTruncated512 = output.slice(0, 512);
         return {
             metric: null,
             failureKind: 'failed',
-            message: `judge output did not contain a numeric score (raw_output_truncated_512=${JSON.stringify(output.slice(0, 512))})`,
+            message: `judge output did not contain a numeric score (raw_output_truncated_512=${JSON.stringify(rawOutputTruncated512)})`,
+            raw_output_truncated_512: rawOutputTruncated512,
         };
     }
     return { metric: { raw: output, score } };
@@ -2486,6 +2488,9 @@ function emitJudgeAttemptTelemetry(ctx, state, result, elapsedMs) {
                 probe_kind: ctx.probeKind,
                 nested_claude_detected: ctx.isNested,
                 pre_spawn_env_key_names: ctx.preSpawnEnvKeyNames,
+                ...(result.raw_output_truncated_512 !== undefined
+                    ? { raw_output_truncated_512: result.raw_output_truncated_512 }
+                    : {}),
             },
         });
     }

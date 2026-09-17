@@ -1377,6 +1377,28 @@ test('judgeAttemptFromOutput: the raw output is truncated at 512 characters, mat
   assert.ok(!result.message.includes('BOUNDARY'), 'text past byte 512 must not appear in the message');
 });
 
+// PR #38 (sabahmax-dev) adoption: the field must be TYPED (present on the object, not smuggled
+// past the compiler via a `const x = {...}; return x;` excess-property bypass) and it must reuse
+// the existing raw_output_truncated_512 convention rather than a second truncation length.
+test('judgeAttemptFromOutput: a parse failure carries a typed raw_output_truncated_512 field', () => {
+  const prose = 'The code looks good, no issues found.';
+  const result = judgeAttemptFromOutput(prose);
+  assert.equal(result.raw_output_truncated_512, prose.slice(0, 512));
+});
+
+test('judgeAttemptFromOutput: the typed field is truncated at 512 characters, matching the message convention', () => {
+  const longProse = 'a'.repeat(600);
+  const result = judgeAttemptFromOutput(longProse);
+  assert.equal(result.raw_output_truncated_512, longProse.slice(0, 512));
+  assert.equal(result.raw_output_truncated_512.length, 512);
+});
+
+test('judgeAttemptFromOutput: the success path carries no raw_output_truncated_512 field', () => {
+  const passing = judgeAttemptFromOutput('7');
+  assert.equal(passing.raw_output_truncated_512, undefined);
+  assert.deepEqual(passing, { metric: { raw: '7', score: 7 } });
+});
+
 // Drives the judge backoff round through _deps.spawn: a step with `errorCode` errors the way a failed
 // spawn does (ETIMEDOUT classifies as a timeout); otherwise it closes 0 with `stdout`. The first step
 // answers the availability probe.
@@ -1415,6 +1437,80 @@ async function measureJudgeRound(steps) {
     else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
   }
 }
+
+// Same driver as measureJudgeRound, but captures every logActivity call instead of discarding
+// them, so a test can inspect the judge_measurement_attempted gate_payload the reader writes to.
+async function measureJudgeRoundCapturingActivity(steps) {
+  const orig = { spawn: _deps.spawn, sleep: _deps.sleep, logActivity: _deps.logActivity };
+  const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+  delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+  let i = 0;
+  _deps.spawn = () => {
+    const step = steps[i++];
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter();
+    child.stderr.setEncoding = () => {};
+    child.kill = () => {};
+    setImmediate(() => {
+      if (step.errorCode) {
+        child.emit('error', Object.assign(new Error(`spawn ${step.errorCode}`), { code: step.errorCode }));
+        return;
+      }
+      if (step.stdout !== undefined) child.stdout.emit('data', step.stdout);
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  _deps.sleep = async () => {};
+  const captured = [];
+  _deps.logActivity = (event) => captured.push(event);
+  try {
+    const result = await measureLlmMetricWithBackoff(
+      'fix bugs', 1, os.tmpdir(), undefined, undefined, undefined, undefined, 'claude', [],
+      { session: 'test-session', iteration: 1, spawnContext: 'iteration' },
+    );
+    return { result, captured };
+  } finally {
+    _deps.spawn = orig.spawn;
+    _deps.sleep = orig.sleep;
+    _deps.logActivity = orig.logActivity;
+    if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
+  }
+}
+
+test('judge_measurement_attempted: a parse-failure attempt surfaces raw_output_truncated_512 in the gate_payload (the reader)', async () => {
+  const prose = 'the judge said something with no score';
+  // Probe, then every backoff attempt returns the same unparseable prose (a 'failed' attempt
+  // does not short-circuit the round, so all backoffsMs.length + 1 attempts must be fed).
+  const { captured } = await measureJudgeRoundCapturingActivity([
+    {},
+    { stdout: prose },
+    { stdout: prose },
+    { stdout: prose },
+    { stdout: prose },
+  ]);
+  const attempted = captured.filter((e) => e.event === 'judge_measurement_attempted');
+  assert.ok(attempted.length > 0);
+  for (const event of attempted) {
+    assert.equal(event.gate_payload.raw_output_truncated_512, prose.slice(0, 512));
+  }
+});
+
+test('judge_measurement_attempted: a successful attempt carries no raw_output_truncated_512 in the gate_payload', async () => {
+  const { captured } = await measureJudgeRoundCapturingActivity([
+    {},
+    { stdout: '7' },
+  ]);
+  const attempted = captured.filter((e) => e.event === 'judge_measurement_attempted');
+  assert.equal(attempted.length, 1);
+  assert.ok(
+    !('raw_output_truncated_512' in attempted[0].gate_payload),
+    'a successful attempt must not add the key at all, to preserve deepStrictEqual pins elsewhere',
+  );
+});
 
 test('judge backoff: a later outranked timeout does not erase the parse failure\'s judge output from lastError', async () => {
   const prose = 'the judge said something with no score';
