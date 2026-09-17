@@ -364,7 +364,8 @@ function mergeUniqueByKey(target, source, keyOf) {
         target.push(entry);
     }
 }
-function walkComposeChain(prdPath, repoRoot, depth, onPath, processed, aggregate, composedRcodes) {
+function walkComposeChain(prdPath, depth, walk) {
+    const { repoRoot, onPath, processed, aggregate, composedRcodes } = walk;
     let content;
     try {
         content = readFileSync(prdPath, 'utf-8');
@@ -411,7 +412,7 @@ function walkComposeChain(prdPath, repoRoot, depth, onPath, processed, aggregate
         mergeParsedPrd(aggregate, parsePrdMarkdown(sourceContent));
         composedRcodes.set(realPath, extractRcodesFromMarkdown(sourceContent));
         onPath.add(realPath);
-        walkComposeChain(realPath, repoRoot, depth + 1, onPath, processed, aggregate, composedRcodes);
+        walkComposeChain(realPath, depth + 1, walk);
         onPath.delete(realPath);
         processed.add(realPath);
     }
@@ -440,6 +441,6 @@ export function parseWithComposes(prdPath, options = {}) {
     }
     const onPath = options.visited ?? new Set([selfReal]);
     const processed = new Set();
-    walkComposeChain(prdPath, repoRoot, 0, onPath, processed, aggregate, composedRcodes);
+    walkComposeChain(prdPath, 0, { repoRoot, onPath, processed, aggregate, composedRcodes });
     return aggregate;
 }

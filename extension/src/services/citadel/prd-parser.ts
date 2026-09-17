@@ -504,15 +504,19 @@ function mergeUniqueByKey<T>(target: T[], source: T[], keyOf: (entry: T) => stri
   }
 }
 
-function walkComposeChain(
-  prdPath: string,
-  repoRoot: string,
-  depth: number,
-  onPath: Set<string>,
-  processed: Set<string>,
-  aggregate: ParsedPrd,
-  composedRcodes: Map<string, RcodeEntry[]>,
-): void {
+/** Traversal state shared by every level of one compose-chain walk. */
+interface ComposeWalk {
+  repoRoot: string;
+  /** DFS recursion path — membership means a true cycle. */
+  onPath: Set<string>;
+  /** Nodes fully merged via some branch — membership means a benign diamond. */
+  processed: Set<string>;
+  aggregate: ParsedPrd;
+  composedRcodes: Map<string, RcodeEntry[]>;
+}
+
+function walkComposeChain(prdPath: string, depth: number, walk: ComposeWalk): void {
+  const { repoRoot, onPath, processed, aggregate, composedRcodes } = walk;
   let content: string;
   try {
     content = readFileSync(prdPath, 'utf-8');
@@ -555,7 +559,7 @@ function walkComposeChain(
     composedRcodes.set(realPath, extractRcodesFromMarkdown(sourceContent));
 
     onPath.add(realPath);
-    walkComposeChain(realPath, repoRoot, depth + 1, onPath, processed, aggregate, composedRcodes);
+    walkComposeChain(realPath, depth + 1, walk);
     onPath.delete(realPath);
     processed.add(realPath);
   }
@@ -592,7 +596,7 @@ export function parseWithComposes(prdPath: string, options: ParseWithComposesOpt
   const onPath = options.visited ?? new Set<string>([selfReal]);
   const processed = new Set<string>();
 
-  walkComposeChain(prdPath, repoRoot, 0, onPath, processed, aggregate, composedRcodes);
+  walkComposeChain(prdPath, 0, { repoRoot, onPath, processed, aggregate, composedRcodes });
 
   return aggregate;
 }
