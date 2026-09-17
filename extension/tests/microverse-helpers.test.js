@@ -1710,6 +1710,35 @@ test('extractScore: parser is unchanged by the reorder — JSON-first, line-orie
 // the brief BYTE-IDENTICAL to today's.
 // ---------------------------------------------------------------------------
 
+// The SCORED ledger the brief renders directly ABOVE the routed citadel section. Its rows are
+// byte-shaped exactly like citadel rows — `appendViolationLedgerHandoff` emits
+// `- [${id}] ${severity}${where} — ${description}`, the same template
+// `appendCitadelFindingsHandoff` uses — so `- [` occurs in TWO constructs of one artifact.
+// Seeding it is the regression fixture: a selection that means the citadel rows but matches the
+// token is measured against the sibling that also emits it, instead of passing because the
+// sibling happened to render nothing.
+const SCORED_LEDGER_FIXTURE = [
+  { id: 'scored-ledger-one', severity: 'high', description: 'a scored violation', path: 'ledger-a.ts', line: 11, first_seen_iter: 1, last_seen_iter: 1 },
+  { id: 'scored-ledger-two', severity: 'high', description: 'another scored violation', path: 'ledger-b.ts', line: 22, first_seen_iter: 1, last_seen_iter: 2 },
+];
+
+/**
+ * The routed citadel section alone, which is what every row assertion below actually means.
+ *
+ * Selecting rows out of the WHOLE brief matches the scored ledger's rows too, so the count and
+ * the id order would be taken over a superset of the construct the assertion names. One reader
+ * answers "which construct" for every caller, rather than each filter deciding separately.
+ */
+function citadelSectionOf(brief) {
+  const start = brief.indexOf('## Citadel Findings');
+  return start === -1 ? '' : brief.slice(start);
+}
+
+/** The routed section's rendered rows — never the ledger's. */
+function citadelRowsOf(brief) {
+  return citadelSectionOf(brief).split('\n').filter((l) => l.startsWith('- ['));
+}
+
 function makeV5MicroverseState(workingDir, mode) {
   const mv = createMicroverseState({
     prdPath: path.join(workingDir, 'prd.md'),
@@ -1726,6 +1755,7 @@ function makeV5MicroverseState(workingDir, mode) {
   });
   mv.status = 'iterating';
   mv.baseline_score = 40;
+  mv.violation_ledger = SCORED_LEDGER_FIXTURE.map((entry) => ({ ...entry }));
   if (mode === 'worker') mv.convergence_mode = 'worker';
   return mv;
 }
@@ -1761,8 +1791,10 @@ test('ROOT V5: citadel findings reach the worker brief in BOTH convergence arms 
       assert.ok(brief.includes('extension/CLAUDE.md:412'), `${mode} arm: the actionable file:line locator must reach the brief`);
       // Briefed, NOT scored — the section must say so, and must not claim to be the scored set.
       assert.ok(brief.includes('NOT the scored set'), `${mode} arm: the section must mark itself advisory`);
-      // The route must not enter findings into the ledger.
-      assert.deepEqual(mv.violation_ledger, [], `${mode} arm: routing must not write the scored ledger`);
+      // The route must not enter findings into the ledger. Asserted as UNCHANGED against the
+      // seeded ledger, not as empty: an emptiness check cannot tell "routing wrote nothing" from
+      // "something cleared the scored set", and the scored set is now populated.
+      assert.deepEqual(mv.violation_ledger, SCORED_LEDGER_FIXTURE, `${mode} arm: routing must not write the scored ledger`);
     }
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -1856,9 +1888,13 @@ test('ROOT V5: the routed section is capped at the existing prompt cap of 50 (32
 
     const mv = makeV5MicroverseState(workingDir, 'worker');
     const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
-    const rendered = brief.split('\n').filter((l) => l.startsWith('- [orphan-test-case:'));
+    const rendered = citadelRowsOf(brief);
 
     assert.equal(rendered.length, 50, 'exactly the existing cap, not 120 and not a new number');
+    // The scored ledger renders the same row shape directly above; selecting over the whole
+    // brief would count its rows too. Both halves asserted, so neither can go quiet.
+    assert.ok(rendered.every((l) => l.startsWith('- [orphan-test-case:')), 'only routed rows may be counted');
+    assert.ok(brief.includes('- [scored-ledger-one]'), 'precondition: the sibling construct IS rendered');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
@@ -1880,10 +1916,13 @@ test('ROOT V5: routed findings are severity-ordered via the shared rankFindings 
 
     const mv = makeV5MicroverseState(workingDir, 'worker');
     const brief = buildMicroverseHandoff(mv, 2, workingDir, sessionDir);
-    const ids = brief.split('\n').filter((l) => l.startsWith('- [')).map((l) => l.slice(3, l.indexOf(']')));
+    const ids = citadelRowsOf(brief).map((l) => l.slice(3, l.indexOf(']')));
 
     assert.deepEqual(ids, ['a-critical', 'h-high', 'm-medium', 'z-low'],
       'severity order must come from rankFindings, not report order');
+    // The scored ledger's rows are rendered above and share this row shape; the order asserted
+    // is the routed section's alone. Pin that the sibling IS present, so the exclusion is real.
+    assert.ok(brief.includes('- [scored-ledger-one]'), 'precondition: the sibling construct IS rendered');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
@@ -1906,8 +1945,7 @@ test('ROOT V5: a finding without file/line still reaches the brief (32f7684e)', 
       'an uncited finding must render without a dangling separator');
     // Scoped to the routed section: the rest of the brief has its own pre-existing placeholders
     // (e.g. an unset `convergence_file`) that this ticket neither owns nor changes.
-    const section = brief.slice(brief.indexOf('## Citadel Findings'));
-    assert.ok(!section.includes('undefined'), 'no undefined must leak into the routed section');
+    assert.ok(!citadelSectionOf(brief).includes('undefined'), 'no undefined must leak into the routed section');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
@@ -1939,12 +1977,14 @@ test('ROOT V5: one malformed finding does not discard its well-formed siblings (
     assert.ok(brief.includes('good-one'), 'a well-formed sibling must survive a malformed entry');
     assert.ok(brief.includes('good-two'), 'a well-formed sibling must survive a malformed entry');
 
-    const rendered = brief.split('\n').filter((l) => l.startsWith('- ['));
+    const rendered = citadelRowsOf(brief);
     assert.equal(rendered.length, 2, 'exactly the two renderable findings, no placeholder rows');
-    // Scoped to the routed section — the rest of the brief has pre-existing placeholders this
-    // ticket neither owns nor changes (e.g. an unset `convergence_file`).
-    const section = brief.slice(brief.indexOf('## Citadel Findings'));
-    assert.ok(!section.includes('undefined'), 'no undefined row may be rendered for a dropped entry');
+    // The scored ledger renders two rows of the SAME shape directly above. Counting over the
+    // whole brief would take this count over both constructs; pin that the sibling is rendered
+    // and excluded, so the count means the routed section alone.
+    assert.ok(brief.includes('- [scored-ledger-one]'), 'precondition: the sibling construct IS rendered');
+    assert.ok(rendered.every((l) => !l.startsWith('- [scored-ledger')), 'ledger rows must not be counted as routed rows');
+    assert.ok(!citadelSectionOf(brief).includes('undefined'), 'no undefined row may be rendered for a dropped entry');
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
