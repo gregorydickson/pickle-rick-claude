@@ -223,6 +223,17 @@ describe('skeptic-lens: generated-twin exclusion (AC-R1)', () => {
       path.join(tmpDir, 'src', 'other', 'baz.ts'),
       'function processOrder(z) { return z; }\n',
     );
+
+    // Hand-written .js under outDir with NO .ts twin: a live tsconfig mapping must not exclude it.
+    fs.mkdirSync(path.join(tmpDir, 'other'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'services', 'handwritten.js'),
+      'function mergeRecords(a) { return a; }\n',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'other', 'handwritten.js'),
+      'function mergeRecords(b) { return b; }\n',
+    );
   });
 
   after(() => {
@@ -237,6 +248,18 @@ describe('skeptic-lens: generated-twin exclusion (AC-R1)', () => {
     assert.ok(
       !report.findings.some((f) => f.defect === 'cross-file-repetition-exhaustiveness'),
       'compiled twin must not trigger cross-file-repetition-exhaustiveness',
+    );
+  });
+
+  test('a .js file under outDir with no .ts twin is not excluded, even with a live tsconfig mapping', () => {
+    // The exclusion is keyed on the twin existing, not on the file being .js under outDir.
+    const report = runSkepticLens(
+      [makeChangedFile('services/handwritten.js'), makeChangedFile('other/handwritten.js')],
+      tmpDir,
+    );
+    assert.ok(
+      report.findings.some((f) => f.defect === 'cross-file-repetition-exhaustiveness'),
+      'hand-written .js with no source twin must still be scanned',
     );
   });
 
