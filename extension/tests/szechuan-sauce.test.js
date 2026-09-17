@@ -160,9 +160,11 @@ test('f254feaa: P2 (Maintainability) covers the comment-heavy-code restructure c
 test('f254feaa: P2 comment-heavy-code entry names the WHY/measured-limit/trap-door exemption', () => {
     const section = principlesSection('Priority Matrix');
     const p2Row = section.split('\n').find((line) => line.includes('P2: Medium'));
-    assert.match(p2Row, /WHY comment/, 'P2 row should exempt WHY comments (Comment Balance)');
-    assert.match(p2Row, /measured limit/, 'P2 row should exempt a measured limit');
-    assert.match(p2Row, /trap-door invariant/, 'P2 row should exempt a trap-door invariant');
+    // AC-R5-4: scoped to the negated clause inside the comment-heavy-code entry. Bare token matches
+    // stayed green when the clause was flipped to FLAG these docblocks ("is also this").
+    assert.match(p2Row,
+        /comment-heavy code \([^)]*a WHY comment, a measured limit, or a trap-door invariant per Comment Balance is not this\)/,
+        'P2 row must EXEMPT WHY comments, measured limits and trap-door invariants from comment-heavy code');
 });
 
 test('f254feaa: False Positives narrows "comment wording" to phrasing, not comment density', () => {
