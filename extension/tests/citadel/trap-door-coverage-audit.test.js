@@ -571,12 +571,42 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
     );
   });
 
+  // Synthetic-fixture negative controls (bundle 481d0e0c, handoff from 7a024cbe). 7a024cbe correctly
+  // drained the live CLAUDE.md corpus's genuinely-absent-anchor population to 0 (29 -> 0) -- exactly
+  // the population these two controls used to derive "must remain" from, so deriving it from live
+  // corpus text is now structurally vacuous, permanently, by design of the very fix these controls
+  // exist to guard. Re-homed onto a synthetic CLAUDE.md + test file carrying one anchor whose
+  // characters occur nowhere in the file, so the controls stay meaningful regardless of live corpus
+  // state while still exercising the real, UNMODIFIED hasTestCase()/runT6TrapDoorCoverage() -- never
+  // a re-implementation. Do not derive this from the live corpus again; see 7a024cbe / AC-D-1.
+  const SYNTHETIC_ABSENT_ANCHOR = 'SYNTHETIC_ANCHOR_NEVER_PRESENT_IN_FIXTURE_TEXT';
+  const SYNTHETIC_TEST_FILE_REL = 'extension/tests/synthetic-fixture-for-trap-door-audit.test.js';
+  const SYNTHETIC_TEST_FILE_CONTENT =
+    "import { test } from 'node:test';\ntest('an unrelated real test case', () => {});\n";
+
   test('the widened matcher still reports the genuinely-absent anchors -- it did not disable the check', () => {
-    const remaining = replayRemaining;
     // remaining > 0 catches over-widening (a matcher that accepts everything would report 0 here,
     // the exact failure mode this ticket exists to rule out). The ceiling catches under-widening
     // (a reverted/weakened matcher would balloon remaining back toward oldBrokenCount, ~145).
-    assert.ok(remaining.length > 0, 'the widened matcher must not be vacuous: at least one genuinely-absent anchor must still be reported');
+    assert.ok(
+      !SYNTHETIC_TEST_FILE_CONTENT.includes(SYNTHETIC_ABSENT_ANCHOR),
+      'fixture bug: the synthetic anchor must not occur in the synthetic test file\'s text',
+    );
+    assert.equal(
+      replayNewHasTestCase(SYNTHETIC_TEST_FILE_CONTENT, SYNTHETIC_ABSENT_ANCHOR),
+      false,
+      'the widened matcher must not be vacuous: a known-absent synthetic anchor must still be reported absent',
+    );
+    // Mutation check: an accept-everything hasTestCase would (wrongly) call this same anchor present --
+    // proving the assertion above is a real discriminator, not a tautology that would pass regardless.
+    const acceptEverything = buildHasTestCase('function hasTestCase(content, anchor) { return true; }');
+    assert.equal(
+      acceptEverything(SYNTHETIC_TEST_FILE_CONTENT, SYNTHETIC_ABSENT_ANCHOR),
+      true,
+      'sanity: the synthetic anchor must be one an accept-everything matcher would wrongly clear',
+    );
+
+    const remaining = replayRemaining;
     assert.ok(
       remaining.length < 50,
       `expected remaining genuinely-broken anchors to stay well below the pre-fix scale (~145); got ${remaining.length}`,
@@ -598,37 +628,44 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
     );
   });
 
-  // d5b5add3 (AC-T2-2, second half): `remaining > 0` above passes a matcher that clears all but ONE
-  // genuinely-absent anchor (measured: accept-everything-but-one left all three tests above GREEN).
-  // The population that MUST survive is derived from the text, not from any matcher: the PRD defines
-  // "genuinely absent" as an anchor whose characters occur nowhere in its file — 26 of 147 when the
-  // widening landed; no count is hardcoded. A matcher adopting the shell's slug semantics would clear
-  // some of these by design; that is a change of definition and must update this pin deliberately.
+  // d5b5add3 (AC-T2-2, second half): "genuinely absent" is defined as an anchor whose characters
+  // occur nowhere in its file's text, independent of any matcher. Re-homed onto the same synthetic
+  // fixture as the control above (see the bundle 481d0e0c comment there) rather than derived from the
+  // live CLAUDE.md corpus, which 7a024cbe correctly drained to 0 members of exactly this population.
   test('AC-T2-2: every anchor absent from its file\'s text is still reported — a matcher clearing any of them reds', async () => {
-    assert.ok(replayPairs.length >= 100, `corpus went dark: only ${replayPairs.length} anchored ENFORCE pairs enumerated`);
-    const mustRemain = replayPairs
-      .filter((p) => !replayReadCached(p.absPath).includes(p.anchor))
-      .map(pairKey);
-    assert.ok(mustRemain.length > 0, 'no literally-absent anchor in the corpus — this pin would be vacuous');
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tdca-ac-t2-2-'));
+    try {
+      mkFixture(projectRoot, {
+        enforceLines: `- ENFORCE: ${SYNTHETIC_TEST_FILE_REL}#${SYNTHETIC_ABSENT_ANCHOR}\n`,
+        testFiles: { [SYNTHETIC_TEST_FILE_REL]: SYNTHETIC_TEST_FILE_CONTENT },
+      });
+      assert.ok(
+        !SYNTHETIC_TEST_FILE_CONTENT.includes(SYNTHETIC_ABSENT_ANCHOR),
+        'fixture bug: the synthetic anchor must not occur in the synthetic test file\'s text',
+      );
 
-    const replayedKeys = new Set(replayRemaining.map(pairKey));
-    assert.deepEqual(
-      mustRemain.filter((k) => !replayedKeys.has(k)),
-      [],
-      'the current hasTestCase cleared anchors whose text does not occur in their file',
-    );
+      const { runT6TrapDoorCoverage } = await importAnalyzer();
+      const reported = new Set(
+        runT6TrapDoorCoverage({ projectRoot }).findings
+          .filter((f) => f.id.startsWith('orphan-test-case:'))
+          .map((f) => f.id.replace(/^orphan-test-case:/, '')),
+      );
+      assert.ok(
+        reported.has(`${SYNTHETIC_TEST_FILE_REL}#${SYNTHETIC_ABSENT_ANCHOR}`),
+        'runT6TrapDoorCoverage did not report the known-absent synthetic anchor',
+      );
 
-    const { runT6TrapDoorCoverage } = await importAnalyzer();
-    const reported = new Set(
-      runT6TrapDoorCoverage({ projectRoot: REPO_ROOT }).findings
-        .filter((f) => f.id.startsWith('orphan-test-case:'))
-        .map((f) => f.id.replace(/^orphan-test-case:/, '')),
-    );
-    assert.deepEqual(
-      mustRemain.filter((k) => !reported.has(k)),
-      [],
-      'runT6TrapDoorCoverage stopped reporting anchors whose text does not occur in their file',
-    );
+      // Mutation check: an accept-everything hasTestCase would find no orphan-test-case finding at
+      // all here, proving the fixture is what makes the assertion above non-vacuous.
+      const acceptEverything = buildHasTestCase('function hasTestCase(content, anchor) { return true; }');
+      assert.equal(
+        acceptEverything(SYNTHETIC_TEST_FILE_CONTENT, SYNTHETIC_ABSENT_ANCHOR),
+        true,
+        'sanity: the synthetic anchor must be one an accept-everything matcher would wrongly clear',
+      );
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });
 
