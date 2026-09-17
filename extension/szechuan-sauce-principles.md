@@ -222,7 +222,7 @@ Project dependencies are attack surface and maintenance burden. Audit regularly:
 **Violations**: Dependencies with known critical CVEs, packages in lockfile but not in manifest (phantom deps), packages in manifest but never imported (dead deps), lockfile out of sync with manifest, importing a large library for a single utility function.
 
 ### Test Quality
-Tests are only valuable if they can fail for the right reasons. Every test must assert on observable behavior, not implementation details. Tests that always pass are worse than no tests — they give false confidence.
+Tests are only valuable if they can fail for the right reasons. Every test must assert on observable behavior, not implementation details. Tests that always pass are worse than no tests — they give false confidence. Ask whether this test would fail if the feature were deleted or broken — hunt for inert guards, phantom or unreachable paths, coverage that gates nothing, and guards narrower than the name they claim to cover.
 
 **Violations**: Tautological assertions (`expect(true).toBe(true)`, asserting on mocked return values), flaky tests (time-dependent, order-dependent, network-dependent without mocking), missing error path coverage (only testing happy path), unrealistic mocks that diverge from production behavior, boundary conditions untested (empty arrays, zero, null, max values), assertions on implementation details (internal state, private methods, call counts on non-critical deps).
 

@@ -562,6 +562,22 @@ test('principles file has Test Quality section', () => {
     assert.ok(content.includes('boundary') || content.includes('Boundary'), 'Test Quality should mention boundary conditions');
 });
 
+test('principles file Test Quality asks the deleted-or-broken question', () => {
+    const content = fs.readFileSync(PRINCIPLES_PATH, 'utf-8');
+    const start = content.indexOf('### Test Quality');
+    const end = content.indexOf('###', start + 1);
+    assert.ok(start >= 0, 'Test Quality section not found; the section probe would be vacuous');
+    const section = content.slice(start, end > -1 ? end : undefined);
+    assert.match(section, /deleted or broken/i,
+        'Test Quality should ask whether the test would fail if the feature were deleted or broken');
+    assert.match(section, /inert guard/i, 'Test Quality should name inert guards as a hunt target');
+    assert.match(section, /phantom.{0,20}unreachable/i,
+        'Test Quality should name phantom/unreachable paths as a hunt target');
+    assert.match(section, /gates nothing/i, 'Test Quality should name coverage that gates nothing as a hunt target');
+    assert.match(section, /narrower than/i,
+        'Test Quality should name guards narrower than their name as a hunt target');
+});
+
 // ---------------------------------------------------------------------------
 // Migration Hygiene dimension
 // ---------------------------------------------------------------------------
