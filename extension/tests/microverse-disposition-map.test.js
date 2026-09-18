@@ -384,14 +384,28 @@ test('deriveStallCause covers strict-mode-red via recordStall', () => {
   assert.equal(disposition.inputs.last_stall_signal, 'strict-mode-red');
 });
 
+// The claim in this test's NAME is about the production callsites, so the causes under test are
+// extracted from those callsites rather than written here. A hand-written literal list asserts only
+// that recordStall/deriveStallCause round-trip a set the test handed itself — measured 2026-09-18:
+// reverting recordMetricMeasurementFailure's cause to the pre-I2 'no-commit' destroys the whole
+// distinction I2 exists to create, and left all 235 bundle tests green.
 test('the three stall callsites are distinguishable from persisted state alone', () => {
-  const seen = new Set();
-  for (const cause of ['strict-mode-red', 'metric-unmeasurable', 'no-commit']) {
-    let mv = makeCauseState();
-    mv = recordStall(mv, cause);
-    seen.add(deriveStallCause(mv, 1).cause);
-  }
-  assert.deepEqual([...seen].sort(), ['metric-unmeasurable', 'no-commit', 'strict-mode-red']);
+  const runnerSource = fs.readFileSync(path.join(EXTENSION_ROOT, 'src/bin/microverse-runner.ts'), 'utf-8');
+  const callsiteCauses = [...runnerSource.matchAll(/recordStall\([A-Za-z0-9_.]+,\s*'([^']+)'\)/g)].map((m) => m[1]);
+  assert.equal(
+    callsiteCauses.length, 3,
+    `expected the 3 production recordStall callsites, found ${callsiteCauses.length} — the wiring or this scan moved`,
+  );
+
+  const derived = callsiteCauses.map((cause) => deriveStallCause(recordStall(makeCauseState(), cause), 1).cause);
+  assert.equal(
+    new Set(derived).size, derived.length,
+    `two stall callsites persist the same cause (${derived.join(', ')}) — the mechanisms are no longer distinguishable from state`,
+  );
+  assert.deepEqual(
+    [...derived].sort(), [...callsiteCauses].sort(),
+    'each callsite cause must survive the write/read round trip verbatim, never remapped',
+  );
 });
 
 test('state written after last_stall_signal existed but before the new cause members still loads and derives without guessing', () => {
