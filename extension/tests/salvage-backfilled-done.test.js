@@ -11,6 +11,15 @@
 //   - clean tree + ALREADY terminal               -> no-op (never re-flip Done).
 //   - clean tree + backfillDone reports done:false -> no-op (best-effort).
 //
+// Part C (AP-EXT-ITER273-01, real git): the DEFAULT reconcile deps decide the
+//   clean-tree short-circuit, so a git probe that could not run must never be
+//   published as a measured clean tree.
+//   - healthy dirty repo      -> dirty:true  -> archive + reset Todo
+//   - unmeasurable (corrupt .git/index, `status` exits 128 while `rev-parse`
+//     exits 0) over the SAME dirty tree -> dirty:true, salvage still acts
+//   - measured clean repo     -> dirty:false -> no-op clean_tree
+//   - provable non-repo       -> dirty:false (an answer, not a fabrication)
+//
 // Part B (regression-lock): the no-progress reap keys on the recordWorkerArtifact
 //   Progress artifact-delta + PICKLE_WMW_SKIP_K, NEVER worker_session log size.
 //   A spawn that produced a NEW artifact (positive delta) does NOT increment the
@@ -24,7 +33,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { execFileSync } from 'child_process';
+
 import { salvageTicket } from '../lib/salvage-ticket.js';
+import { reconcileTicketTruth } from '../lib/reconcile-ticket-truth.js';
 import {
   recordWorkerArtifactProgress,
   countWorkerArtifacts,
@@ -242,5 +254,98 @@ test('Part B3: PICKLE_WMW_SKIP_K env controls the skip threshold (reap keyed on 
   } finally {
     if (prior === undefined) delete process.env[WMW_SKIP_K_ENV];
     else process.env[WMW_SKIP_K_ENV] = prior;
+  }
+});
+
+
+// ── Part C: AP-EXT-ITER273-01 — an ABSENT tree measurement is not a clean tree ──
+
+const GIT_TIMEOUT_MS = 30_000;
+
+/** Real repo with one commit plus an uncommitted deliverable on disk. */
+function makeDirtyRepo() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-ext-iter273-'));
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(repo);
+  const git = (args) => execFileSync('git', args, { cwd: repo, encoding: 'utf-8', timeout: GIT_TIMEOUT_MS });
+  git(['init', '-q', '.']);
+  git(['config', 'user.email', 'anatomy@park.test']);
+  git(['config', 'user.name', 'Anatomy Park']);
+  git(['commit', '-q', '--allow-empty', '-m', 'base']);
+  fs.writeFileSync(path.join(repo, 'deliverable.txt'), 'REAL UNCOMMITTED WORK\n');
+  return { root, repo, git };
+}
+
+/** Corrupt the index so `git status` exits 128 while `git rev-parse HEAD` still exits 0. */
+function makeTreeUnmeasurable(repo) {
+  fs.writeFileSync(path.join(repo, '.git', 'index'), 'GARBAGE-NOT-AN-INDEX');
+}
+
+/** Production-shaped salvage deps that record which branch ran. */
+function recordingDeps(recorder) {
+  return {
+    gate: () => { recorder.push('gate'); return 'failing'; },
+    commitScoped: () => ({ committed: false }),
+    archive: () => { recorder.push('archive'); return null; },
+    resetTodo: () => { recorder.push('reset-todo'); },
+    ffReattach: () => ({ recovered: false }),
+  };
+}
+
+test('AP-EXT-ITER273-01: a dirty tree whose git probe FAILED still reads dirty, so salvage acts on it', () => {
+  const { root, repo } = makeDirtyRepo();
+  try {
+    const healthy = reconcileTicketTruth({ sessionDir: root, workingDir: repo });
+    assert.equal(healthy.dirty, true, 'control: a measurable dirty tree reads dirty');
+
+    makeTreeUnmeasurable(repo);
+    const truth = reconcileTicketTruth({ sessionDir: root, workingDir: repo });
+    assert.equal(truth.dirty, true, 'an unmeasurable tree inside a real repo must NOT be published as clean');
+    assert.ok(truth.headSha, 'rev-parse still resolves, so the back-fill precondition would hold — dirty is the only guard');
+
+    const recorder = [];
+    const outcome = salvageTicket(
+      { sessionDir: root, workingDir: repo, ticketId: 'ap273', log: () => {} },
+      recordingDeps(recorder),
+    );
+    assert.equal(outcome.disposition, 'archived-todo', 'salvage takes the dirty branch, not the clean-tree no-op');
+    assert.ok(recorder.includes('gate'), 'the gate is consulted instead of being short-circuited away');
+    assert.ok(recorder.includes('reset-todo'), 'the ticket is released to Todo — the only automatic Todo writer must run');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER273-01: a MEASURED clean tree still reads clean and short-circuits to no-op', () => {
+  const { root, repo, git } = makeDirtyRepo();
+  try {
+    git(['add', 'deliverable.txt']);
+    git(['commit', '-q', '-m', 'land the deliverable']);
+    const truth = reconcileTicketTruth({ sessionDir: root, workingDir: repo });
+    assert.equal(truth.dirty, false, 'a measured clean tree is still clean — the fix must not fail closed on every repo');
+
+    const recorder = [];
+    const outcome = salvageTicket(
+      { sessionDir: root, workingDir: repo, ticketId: 'ap273', log: () => {} },
+      recordingDeps(recorder),
+    );
+    assert.equal(outcome.disposition, 'no-op');
+    assert.equal(outcome.reason, 'clean_tree');
+    assert.deepEqual(recorder, [], 'no salvage action on a genuinely clean tree');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER273-01: a provable NON-repo reads clean — that is an answer, not a fabrication', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-ext-iter273-nonrepo-'));
+  try {
+    const plain = path.join(root, 'plain');
+    fs.mkdirSync(plain);
+    fs.writeFileSync(path.join(plain, 'loose.txt'), 'not under git\n');
+    const truth = reconcileTicketTruth({ sessionDir: root, workingDir: plain });
+    assert.equal(truth.dirty, false, 'no git repo means no tree that could be dirty');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

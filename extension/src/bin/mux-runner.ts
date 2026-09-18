@@ -24,7 +24,7 @@ import {
   type ManagerRelaunchExitKind,
   type ManagerRelaunchDecision,
 } from '../services/manager-relaunch.js';
-import { runGitSafe, getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
+import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, probeTreeDirty, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible, type PlanPhase, type RecoveryDeps, type RecoveryEvidence, type RecoveryOutcome, type ReExecutionSeam } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds, type ArtifactProgressSnapshot } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, type EvidenceCtx, type RevertDecision, type CompletionDecisionCtx, type CompletionDecisionKind } from '../services/ticket-completion-evidence.js';
@@ -7335,26 +7335,6 @@ export function routeFailedFlipSuppression(
     input.log(`[failed-flip] choke-point routed ${input.ticketId} at ${input.callsite} [backend=${input.backend ?? 'claude'};mode=${input.mode ?? 'worker'}]`);
   }
   return evaluateFailedFlipSuppression(input);
-}
-
-/**
- * Measure the working tree, distinguishing a MEASURED clean tree from an ABSENT
- * measurement. `listWorkingTreeDirtyPaths` THROWS on every git failure on purpose
- * (AP-EXT-ITER8-01), so a bare `catch → false` republishes that failure as a
- * measured-clean verdict — the AP-EXT-ITER47-01/48-01 shape. Returns:
- *   `true`  — measured dirty
- *   `false` — measured clean, OR `workingDir` is provably not a git repository
- *             (no tree that could be dirty — a real answer, not a fabricated one)
- *   `null`  — the probe failed inside a real repo (index.lock contention, timeout,
- *             ENOBUFS): unmeasurable, and never to be read as "clean"
- */
-function probeTreeDirty(workingDir: string): boolean | null {
-  try { return isWorkingTreeDirty(workingDir); } catch { /* fall through to the repo probe */ }
-  // Same predicate the two existing non-repo probes use (setup.ts `isInsideGitRepo`,
-  // scope-resolver.ts `assertIsRepo`): `rev-parse --git-dir` answers repo-or-not even
-  // when `status` cannot run. If it fails too, the answer stays unmeasurable.
-  try { return runGitSafe(['rev-parse', '--git-dir'], workingDir).trim().length > 0 ? null : false; }
-  catch { return null; }
 }
 
 /**

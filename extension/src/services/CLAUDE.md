@@ -147,7 +147,7 @@ surface that this document covers.
 - `fom-blocks.ts` -> `FOM_EVIDENCE_RULES`, `FOM_HONEST_REPORTING_RULES`
 - `forward-ref-annotation.ts` -> `resolveExtensionDir`, `resolveExtensionRelativePath`
 - `git-trailer-hooks.ts` -> `MaterializeTrailerHooksOpts`, `MaterializeTrailerHooksResult`, `materializeTrailerHooks`
-- `git-utils.ts` -> `ARCHIVE_UNTRACKED_BYTE_CAP`, `ArchiveAbortError`, `ArchiveContext`, `ArchiveResult`, `CODEGRAPH_PATHSPEC_EXCLUDES`, `ConcurrentGitHolder`, `DiffEntry`, `DiffStatus`, `TicketFrontmatterPatch`, `archiveBeforeDestructive`, `getBranchName`, `getDiffFiles`, `getGithubUser`, `getHeadBranch`, `getHeadSha`, `getMergeBase`, `gitCommitEpoch`, `isCodegraphArtifact`, `isGitIgnoredPath`, `isWorkingTreeDirty`, `listWorkingTreeDirtyPaths`, `lookupCommandForPid`, `probeConcurrentGitAccess`, `resetToSha`, `runGit`, `updateTicketFrontmatter`, `updateTicketStatus`
+- `git-utils.ts` -> `ARCHIVE_UNTRACKED_BYTE_CAP`, `ArchiveAbortError`, `ArchiveContext`, `ArchiveResult`, `CODEGRAPH_PATHSPEC_EXCLUDES`, `ConcurrentGitHolder`, `DiffEntry`, `DiffStatus`, `TicketFrontmatterPatch`, `archiveBeforeDestructive`, `getBranchName`, `getDiffFiles`, `getGithubUser`, `getHeadBranch`, `getHeadSha`, `getMergeBase`, `gitCommitEpoch`, `isCodegraphArtifact`, `isGitIgnoredPath`, `isWorkingTreeDirty`, `listWorkingTreeDirtyPaths`, `lookupCommandForPid`, `probeConcurrentGitAccess`, `probeTreeDirty`, `resetToSha`, `runGit`, `updateTicketFrontmatter`, `updateTicketStatus`
 - `jar-utils.ts` -> `addToJar`
 - `judge-spawn-env.ts` -> `JudgeBackend`, `buildJudgeEnv`, `cleanupJudgeRuntimeDir`, `getJudgeEnvForAttempt`, `isNestedClaude`
 - `linear-integration.ts` -> `emitBundleLinearComments`, `syncLinearTicketStatus`

@@ -306,6 +306,37 @@ export function isGitIgnoredPath(cwd, filePath) {
 export function isWorkingTreeDirty(cwd, excludePrefixes) {
     return listWorkingTreeDirtyPaths(cwd, excludePrefixes).length > 0;
 }
+/**
+ * Measure the working tree, distinguishing a MEASURED clean tree from an ABSENT
+ * measurement. `listWorkingTreeDirtyPaths` THROWS on every git failure on purpose
+ * (AP-EXT-ITER8-01), so a bare `catch → false` republishes that failure as a
+ * measured-clean verdict — the AP-EXT-ITER47-01/48-01/49-01/49-02 shape. Returns:
+ *   `true`  — measured dirty
+ *   `false` — measured clean, OR `cwd` is provably not a git repository
+ *             (no tree that could be dirty — a real answer, not a fabricated one)
+ *   `null`  — the probe failed inside a real repo (index.lock contention, timeout,
+ *             ENOBUFS, corrupt index): unmeasurable, and never to be read as "clean"
+ *
+ * This is the ONE definition of that three-way answer; every consumer that needs it
+ * imports it rather than re-deriving a catch (AP-EXT-ITER273-01 — two derivations is
+ * how `assessRecoveryEvidence` and `reconcileTicketTruth` came to disagree about the
+ * same tree).
+ */
+export function probeTreeDirty(cwd) {
+    try {
+        return isWorkingTreeDirty(cwd);
+    }
+    catch { /* fall through to the repo probe */ }
+    // Same predicate the two existing non-repo probes use (setup.ts `isInsideGitRepo`,
+    // scope-resolver.ts `assertIsRepo`): `rev-parse --git-dir` answers repo-or-not even
+    // when `status` cannot run. If it fails too, the answer stays unmeasurable.
+    try {
+        return runGitSafe(['rev-parse', '--git-dir'], cwd).trim().length > 0 ? null : false;
+    }
+    catch {
+        return null;
+    }
+}
 // ---------------------------------------------------------------------------
 // Pre-destructive archival (H3 / CUJ-9)
 // ---------------------------------------------------------------------------

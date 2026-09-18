@@ -4,9 +4,13 @@
 // of reconcileTicketTruth in extension/src (AC-W3-RECONCILE: grep count == 1).
 //
 // Pure read, best-effort: every probe is try/catch'd to a conservative default
-// so a non-repo / unreadable session yields a clean-tree truth rather than
-// throwing under a salvage caller.
-import { getHeadSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths, } from '../services/git-utils.js';
+// so a non-repo / unreadable session yields a truth rather than throwing under a
+// salvage caller. "Conservative" is direction-specific for the TREE probe
+// (AP-EXT-ITER273-01): a provable non-repo has no tree that could be dirty and
+// reads CLEAN, but a git failure inside a real repo is UNMEASURABLE and reads
+// DIRTY — never clean. `dirty: false` is a measurement, and the one consumer
+// (`salvage-ticket.ts`'s clean-tree short-circuit) skips every salvage action on it.
+import { getHeadSha, listWorkingTreeDirtyPaths, probeTreeDirty, } from '../services/git-utils.js';
 import { collectTickets, getTicketStatus } from '../services/pickle-utils.js';
 const defaultDeps = {
     headSha: (cwd) => {
@@ -26,14 +30,11 @@ const defaultDeps = {
             return [];
         }
     },
-    isDirty: (cwd) => {
-        try {
-            return isWorkingTreeDirty(cwd);
-        }
-        catch {
-            return false;
-        }
-    },
+    // AP-EXT-ITER273-01: the ONE three-way tree probe (`probeTreeDirty`, shared with
+    // `assessRecoveryEvidence`); an unmeasurable tree (`null`) reads DIRTY, so a git
+    // failure can never be published as a measured clean tree. A provable non-repo
+    // still reads `false` — that is an answer, not a fabrication.
+    isDirty: (cwd) => probeTreeDirty(cwd) ?? true,
     collectTickets: (sessionDir) => {
         try {
             return collectTickets(sessionDir);
