@@ -232,3 +232,19 @@ pin; the risk is only that the wrong host cannot observe it.
 ## Exit State
 Three instruments can each express the state they actually observed, each pinned by a test with an
 over-trigger control, and no root added a second reader of anything.
+
+---
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Entry | Exit | Files |
+|---|---|---|---|---|---|---|
+| 10 | `ac36d450` | Wire the enforced ceiling into the microverse judge prompt | High | clean tree | prompt carries the ceiling, no new config reader | `src/bin/microverse-runner.ts`, `tests/szechuan-sauce.test.js` |
+| 20 | `74e6feef` | Extend the stale-size-limit corpus to the assembled prompt | High | `ac36d450` done | M4-4 scans runtime output, control falsified both ways | `tests/szechuan-sauce.test.js` |
+| 30 | `8255fa22` | Carry the measured stall cause through recordStall and deriveStallCause | High | clean tree | three causes written and reportable | `src/services/microverse-state.ts`, `src/bin/microverse-runner.ts`, 2 suites |
+| 40 | `6955c947` | Make the declined downgrade in install.sh exit non-zero | High | clean tree | exit 0 means a deploy happened | `install.sh`, `tests/install-script-real.test.js` |
+| 50 | `10c37f01` | Wire: verify the three instruments end to end | High | 10-40 done | all four suites green together | all bundle files |
+| 60 | `b098d7f2` | Harden: code quality review | High | 50 done | zero P0-P1 | all bundle files |
+| 70 | `d44a2d45` | Audit: data flow integrity | High | 60 done | zero CRITICAL+HIGH | all bundle files |
+| 80 | `2837d9ba` | Harden: test quality review | High | 70 done | every AC mapped, every control falsified | 4 test files |
+| 90 | `74e6fef0` | Audit: cross-reference consistency | High | 80 done | every cited line number verified | doc files |

@@ -128,9 +128,9 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | branch | **`release/v2.2-beta`** — the name is historical; **releases are `v2.1.X`** (operator-set) |
 | version | `extension/package.json` = **`2.1.1`**. Next tag `v2.1.1`. `release.yml` compares tag↔this field |
 | `main` | **= the `v2.1.0` GA commit `c20a9562`**, no longer the stale 2.0 line. Old main preserved at tag `archive/main-2.0-line`; revert = `git push --force origin archive/main-2.0-line:main` |
-| **RUNNING** | **nothing.** [[B-VERDICT]] session `2026-09-17-3c7489fc` COMPLETED 4/4 — see below |
+| **RUNNING** | **[[B-INVENTED]] session `2026-09-17-df5973be`** — 9 tickets, launched 2026-09-18. Do not intervene while advancing |
 | deployed | **`2.1.1`, in sync with source** (2026-09-18). Verified BY CONTENT: `bin/` 1 intentional difference (the `tmux-runner.js` symlink), `services/` 0 |
-| open issues | **#40** (install.sh declines a downgrade and exits 0), **#37**, **#32**, **#29**, **#5**. #39 built, unverified in field |
+| open issues | **#40**, **#32**, **#5**. Closed 2026-09-17/18: #39, #37 (verified fixed), #29 (already satisfied) |
 | open PRs | **#38 by `sabahmax-dev`** — external, addresses #35, **unreviewed publicly and unmerged; operator's call** |
 | gate runner | **`prds/gate-runner.sh`** (vendored 2026-09-17 so it survives a context clear). 22 legs, ~70 min, derives its audit list from root `CLAUDE.md`. Wait for `GATE_END` |
 
