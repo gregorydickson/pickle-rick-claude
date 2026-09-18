@@ -1,4 +1,49 @@
 /**
+ * A REDIRECTION operator glued to the front of the word it redirects — an
+ * optional fd number, a run of `<`/`>`, and at most one `&`/`|` modifier.
+ *
+ * Bash lexes a redirection operator as a token of its own however it is spaced,
+ * so `bash <install.sh` runs the script exactly as `bash < install.sh` does
+ * (shim-verified). This scanner splits on WHITESPACE, so the unspaced spelling
+ * arrives as one word with the operator still on its head and `execName` folded
+ * it to `<install.sh` — a name nothing matches (AP-EXT-ITER275-01).
+ *
+ * The CHARACTER GRAMMAR is declared, not the operator spellings: `<`, `>`, `>>`,
+ * `<>`, `<&`, `>&` and `>|` are all runs of the same three character classes, so
+ * there is no roster here to be one member short of — the shape this module has
+ * paid for repeatedly. An `&`-led form (`&>file`) needs no entry: `&` is a
+ * SEGMENT SEPARATOR, so `pushWordBoundaryTokens` has already split it off by the
+ * time any word reaches the fold.
+ *
+ * A HEREDOC is excluded, and the exclusion is bash's own distinction rather than
+ * a carve-out: every operator above takes a FILENAME operand, while `<<` takes a
+ * DELIMITER word and `<<<` a STRING — neither names a file, so folding the
+ * operand to a command name manufactures a name the shell never had. Measured,
+ * not predicted: stripping `<<` too made `cat <<TEE <state file>` BLOCK for a
+ * worker (approve at baseline), because the delimiter `TEE` folded onto the
+ * `WRITE_COMMANDS` member standing beside a protected path — a blocked heredoc
+ * artifact write stalls a ticket, the same reliability cost `patternNamesACommand`
+ * and `execNamesIn` already refuse to pay. The lookahead costs nothing the fix
+ * was for: every measured bypass spells a single `<`.
+ *
+ * THE FOLD IS THE HOME, not `SHELL_SEGMENT_SEPARATORS`, because a redirection is
+ * not a new command — bash does not start one at `<`. Declaring it a separator
+ * would sever a redirect from its destination, which is the precise failure
+ * `normalizeRedirectOperators` runs BEFORE `splitShellSegments` to avoid
+ * (AP-EXT-ITER19-02), and it would break Pass 1's `tokens[i + 1]` destination
+ * read in `findWriteTargetInScope`.
+ *
+ * Strictly WIDENING, by construction: the run must begin with `<` or `>`, and no
+ * name any detector holds — `install.sh`, `git`, `node`, the `WRITE_COMMANDS`
+ * members — begins with either character, nor can a glob starting with one
+ * expand onto a name that does not. So a token that folded to a matching name
+ * before still folds to it, and the only fold this changes is one that matched
+ * nothing. Quoting is deliberately not consulted, the AP-EXT-ITER64-01 uniform
+ * reading: the measured bypasses include `bash <"install.sh"` and
+ * `bash <'install.sh'`, where the operator is bare and the NAME is quoted.
+ */
+const REDIRECT_OPERATOR_PREFIX_RE = /^\d*(?:>>?|<(?!<)>?)[&|]?/;
+/**
  * THE shell-executable-token normalizer for the hooks subsystem.
  *
  * Folds a shell executable token to its comparable form: trailing `;` stripped,
@@ -21,11 +66,17 @@
  * Undefined-tolerant: callers index directly into token arrays, and a prelude
  * that consumes every token yields `undefined`. Returns `''` there so a
  * comparison is simply false rather than a hook crash (hooks fail open).
+ *
+ * AP-EXT-ITER275-01 adds the fourth class, at the word's HEAD: a REDIRECTION
+ * operator bash lexes as its own token, which this scanner leaves glued. The
+ * fold already de-glues at the TAIL (a trailing `;`), and this is the same act
+ * at the other end — see `REDIRECT_OPERATOR_PREFIX_RE` for why the fold is the
+ * home rather than the separator set.
  */
 export function execName(token) {
     if (!token)
         return '';
-    const clean = token.replace(/;+$/, '');
+    const clean = token.replace(/;+$/, '').replace(REDIRECT_OPERATOR_PREFIX_RE, '');
     const base = clean.includes('/') ? clean.substring(clean.lastIndexOf('/') + 1) : clean;
     return base.toLowerCase();
 }

@@ -410,6 +410,75 @@ test('AP-EXT-ITER274-01 approves dot-sourcing a DIFFERENT script (suffix is not 
   assert.equal(result.decision, 'approve');
 });
 
+// AP-EXT-ITER275-01: bash lexes a REDIRECTION operator as a token of its own however it
+// is spaced, but this scanner splits on whitespace — so an operator glued to a BARE
+// basename stayed on the word and `execName`, which de-glues a trailing `;` and strips
+// everything before the last `/`, folded `<install.sh` to a name nothing matches. Every
+// spelling below was shim-verified against a real `/bin/bash -c` over a fixture
+// install.sh that appends to a log: all 9 RAN the deploy script while the shipped
+// handler APPROVED. The spaced and path-prefixed twins (`bash < install.sh`,
+// `bash <./install.sh`) blocked throughout — the operator is invisible only when it
+// glues to a basename, which is why the fold, not the separator set, is the home.
+const GLUED_REDIRECT_DEPLOY_INVOCATIONS = [
+  'bash <install.sh',
+  'sh <install.sh',
+  'zsh <install.sh',
+  'bash 0<install.sh',
+  'bash <"install.sh"',
+  "bash <'install.sh'",
+  'bash -s <install.sh',
+  'cd /tmp && bash <install.sh',
+  'PICKLE_ROLE=x bash <install.sh',
+];
+for (const command of GLUED_REDIRECT_DEPLOY_INVOCATIONS) {
+  test(`AP-EXT-ITER275-01 blocks glued-redirect deploy script: ${command}`, () => {
+    const result = runHandler({ toolName: 'Bash', toolInput: { command } });
+    assert.equal(result.decision, 'block', `${command} must block — it really runs install.sh`);
+  });
+}
+
+// The twins that blocked BEFORE the fold learned to de-glue. They pin the widening as a
+// widening: nothing that blocked may stop blocking.
+for (const command of ['bash < install.sh', 'bash <./install.sh', 'bash 0< install.sh']) {
+  test(`AP-EXT-ITER275-01 keeps blocking the un-glued twin: ${command}`, () => {
+    const result = runHandler({ toolName: 'Bash', toolInput: { command } });
+    assert.equal(result.decision, 'block');
+  });
+}
+
+// The over-block direction, and it has a BEHAVIOURAL witness rather than a structural
+// pin. A HEREDOC operand is a DELIMITER and a here-string operand a STRING — neither
+// names a file — so stripping `<<` too manufactures a command name the shell never had.
+// Measured: with `<<` stripped, `cat <<TEE <state file>` flipped approve -> BLOCK,
+// the delimiter folding onto a WRITE_COMMANDS member standing beside a protected path.
+// A blocked heredoc artifact write stalls a ticket, so these red an over-wide strip.
+const HEREDOC_DELIMITER_READS = [
+  'cat <<TEE /session/state.json\nx\nTEE',
+  'cat <<EOF > notes.md\nhello\nEOF',
+  'node <<NODE\nconsole.log(1)\nNODE',
+  'cat <<SED\nbody\nSED',
+];
+for (const command of HEREDOC_DELIMITER_READS) {
+  test(`AP-EXT-ITER275-01 approves heredoc whose DELIMITER spells a command: ${JSON.stringify(command)}`, () => {
+    const result = runHandler({ toolName: 'Bash', toolInput: { command } });
+    assert.equal(result.decision, 'approve', 'a heredoc delimiter names no file and no command');
+  });
+}
+
+// Reading a file through a redirect is not running it, and an fd-dup is not a name.
+const REDIRECT_READS_THAT_RUN_NOTHING = [
+  'cat <install.sh',
+  'grep -n deploy <install.sh',
+  'diff <install.sh /tmp/other.sh',
+  'echo hi 2>&1',
+];
+for (const command of REDIRECT_READS_THAT_RUN_NOTHING) {
+  test(`AP-EXT-ITER275-01 approves redirect that executes nothing: ${command}`, () => {
+    const result = runHandler({ toolName: 'Bash', toolInput: { command } });
+    assert.equal(result.decision, 'approve');
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Approve cases
 // ---------------------------------------------------------------------------
