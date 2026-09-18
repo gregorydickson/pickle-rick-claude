@@ -7213,3 +7213,168 @@ test('AP-EXT-ITER280-01: an INDIRECT chain stays LINEAR in its length', () => {
     `64 links cost ${scopesFor(64)} scopes against a 6-link baseline of ${short}`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER282-01: `alias.` is not the only config value git EXECUTES
+//
+// AP-EXT-ITER279-01 closed the namespace whose value git runs verbatim. Its own
+// replay recorded the residual (AP-EXT-ITER281-02): a predicate naming ONE
+// executing config section is one member short by construction, because the set
+// of executing keys grows with every git release and a missing member fails OPEN
+// and SILENTLY.
+//
+// MEASURED 2026-09-18 against real git 2.39.5 in a scratch repo, staged work
+// destroyed in each while the shipped handler APPROVED for a worker and every
+// literal twin blocked:
+//   git -c diff.external='sh -c "git reset --hard"' commit -m x
+//   git -c core.sshCommand='sh -c "git reset --hard"' fetch <url>
+//   GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0='sh -c "git reset --hard"' git diff …
+//
+// The fix reads the VALUE rather than enumerating namespaces — the value is the
+// thing git actually runs, it is already spelled in the command, and reading it
+// needs no table of config-delivering options because git spells every one of
+// them `<key>=<value>` in a single word. Same inversion GATED_GIT_VERBS records:
+// a table of operand-taking git globals replaced by matching the verb itself.
+// ---------------------------------------------------------------------------
+
+const ITER282_CONFIG_VALUE_BYPASSES = [
+  [`git -c diff.external='sh -c "git reset --hard"' diff HEAD~1 HEAD`, 'diff.external, -c'],
+  [`git -c core.pager='sh -c "git reset --hard"' --paginate log`, 'core.pager, -c'],
+  [`git -c core.editor='sh -c "git push origin main"' commit`, 'core.editor, -c'],
+  [`git -c credential.helper='!sh -c "git reset --hard"' fetch origin`, "credential.helper, git's `!` shell marker"],
+  [`git -c core.sshCommand='sh -c "git reset --hard"' fetch origin`, 'core.sshCommand, -c'],
+  [`git -c uploadpack.packObjectsHook='sh -c "git reset --hard"' upload-pack .`, 'uploadpack.packObjectsHook, -c'],
+  [
+    `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0='sh -c "git reset --hard"' git diff HEAD~1 HEAD`,
+    'GIT_CONFIG_* environment pair, which stands BEFORE the anchor',
+  ],
+  [`cd sub && git -c diff.external='sh -c "git stash"' diff`, 'chained segment'],
+  [`env git -c diff.external='sh -c "git rebase -i HEAD~2"' diff`, 'behind a POSIX command prefix'],
+  // THE ORDER CASE. A segment can BOTH run a benign gated verb AND hand git a
+  // command through config; the scan returns ONE verb, so `commit` decided the
+  // segment, `--amend` was absent, and the handler approved while git really
+  // destroyed staged work. This case alone reds if the value read is moved back
+  // below the verb scan.
+  [`git -c diff.external='sh -c "git reset --hard"' commit -m x`, 'a benign gated verb in the SAME segment'],
+  [`git -c core.sshCommand='sh -c "git reset --hard"' fetch --no-tags origin`, 'benign `fetch` in the same segment'],
+];
+
+for (const [command, shape] of ITER282_CONFIG_VALUE_BYPASSES) {
+  test(`AP-EXT-ITER282-01: worker blocks a git config value naming a prohibited op — ${shape}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', `${command} must not reach git`);
+    assert.match(result.reason, /R-WSRC-GR/);
+  });
+}
+
+// The over-block direction, and it is the half that makes the block half mean
+// something: a config value that names NO command must still approve, or the
+// read has simply banned `-c`. Each carries a witness the command really ran the
+// gate (a `=` token in a git segment) rather than being skipped for some other
+// reason.
+const ITER282_HARMLESS_CONFIG_VALUES = [
+  ['git -c user.email=a@b -c user.name=t commit -q --allow-empty -m base', 'scratch-repo identity, the corpus shape'],
+  ['git -c commit.gpgsign=false commit -m x', 'a boolean value'],
+  [`git -c core.pager='sh -c "git status"' --paginate log`, 'a value naming a command that is NOT prohibited'],
+  ['git -c core.quotePath=false status --porcelain', 'a read command with config'],
+  ['GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.email GIT_CONFIG_VALUE_0=a@b git commit -m x', 'harmless environment pair'],
+  ['git log --grep=reset --oneline', 'an option OPERAND spelling a gated verb, not config'],
+  ['git diff --stat=200 HEAD~1', 'a numeric `=` operand'],
+];
+
+for (const [command, shape] of ITER282_HARMLESS_CONFIG_VALUES) {
+  test(`AP-EXT-ITER282-01: worker still runs a git config value naming no prohibited op — ${shape}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', `${command} must still reach git`);
+  });
+}
+
+// The KEY half keeps the OPPOSITE order, and that asymmetry is the whole design:
+// `alias.zap` can stand verbatim in prose, so it is read only after the verb
+// scan has failed (AP-EXT-ITER279-01). Hoisting it would block this commit.
+test('AP-EXT-ITER282-01: the KEY half stays below the verb scan — a commit message naming the namespace still runs', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'git commit -m "fix alias.zap"' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve');
+});
+
+test('AP-EXT-ITER282-01: the VALUE half is asked BEFORE the verb scan, the KEY half after', () => {
+  const source = readCode(CONFIG_PROTECTION_TS);
+  const body = source.slice(
+    source.indexOf('function findGitVerb('),
+    source.indexOf('export function detectProhibitedGitVerb('),
+  );
+  assert.ok(body.length > 0, 'findGitVerb must remain a single named function');
+  const valueRead = body.indexOf('configValueRunsProhibitedCommand(tokens)');
+  const verbScan = body.indexOf('execNamesIn(rest[i], GATED_GIT_VERBS)');
+  const keyRead = body.indexOf('segmentDefinesGitAlias(tokens)');
+  assert.ok(valueRead > 0 && verbScan > 0 && keyRead > 0, 'all three reads must be present');
+  assert.ok(valueRead < verbScan, 'the VALUE read must precede the verb scan, or a benign gated verb decides the segment first');
+  assert.ok(keyRead > verbScan, 'the KEY read must follow the verb scan, or a commit message naming the namespace blocks');
+  // Over `tokens`, the segment's FULL token list — the `GIT_CONFIG_KEY_*`
+  // spelling is an environment assignment standing BEFORE the git anchor.
+  assert.doesNotMatch(body, /configValueRunsProhibitedCommand\(rest\)/);
+});
+
+test('AP-EXT-ITER282-01: the value read is a bounded ONE-LEVEL re-read, not an open recursion', () => {
+  const source = readCode(CONFIG_PROTECTION_TS);
+  const helper = source.slice(
+    source.indexOf('function gitConfigValueNamesProhibitedOp('),
+    source.indexOf('\n}', source.indexOf('function configValueRunsProhibitedCommand(')),
+  );
+  assert.ok(helper.length > 0, 'the value reader must remain a named function');
+  // The re-read must pass the bound FALSE. Without it a `a=b=c=…` chain re-reads
+  // its own values to any depth, and a RangeError out of the segmenter reaches
+  // main's FATAL catch, which APPROVES (AP-EXT-ITER277-01).
+  assert.match(helper, /detectProhibitedGitVerb\(`git \$\{value\}`, false\)/);
+  // No namespace roster anywhere in the read — that is the shape this fix exists
+  // to avoid, and it would reintroduce the member-short failure.
+  assert.doesNotMatch(helper, /diff\.external|core\.pager|credential\.helper|core\.sshCommand/);
+});
+
+test('AP-EXT-ITER282-01: an unbounded re-read RangeErrors into the FATAL catch, which APPROVES', () => {
+  // The bound is not decoration. `detectProhibitedGitVerb` re-reads a config
+  // value as a command, so an UNBOUNDED re-read recurses once per `=` in a
+  // `k0=k1=…` chain; measured on the shipped handler, 1600 links throw
+  // RangeError out of the segmenter, main's FATAL catch swallows it, and the
+  // command is APPROVED (AP-EXT-ITER277-01, the same wire).
+  //
+  // The chain stands FIRST so the deep re-read happens BEFORE the real bypass
+  // token is reached — asserting the decision on the chain ALONE cannot
+  // discriminate, because a throw and a clean miss both end in `approve`.
+  const chain = Array.from({ length: 2000 }, (_, i) => `k${i}=`).join('');
+  const { tmpDir, stateFile } = bootstrapSession();
+  const armed = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `git -c a.b=${chain}v -c diff.external='sh -c "git reset --hard"' status` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(armed.decision, 'block', 'a deep chain must not let the real bypass beside it through');
+  assert.match(armed.reason, /R-WSRC-GR/);
+  // Non-tautology: the same chain carrying no prohibited op still runs.
+  const harmless = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: `git -c a.b=${chain}v status` },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(harmless.decision, 'approve');
+});

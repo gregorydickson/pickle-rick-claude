@@ -1,0 +1,784 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { spawn } from 'child_process';
+import { PromiseTokens, hasToken } from '../../types/index.js';
+import { PROMISE_TOKENS } from '../../services/promise-tokens.js';
+import { resolveStateFile, approve, sameWorkingDir } from '../resolve-state.js';
+import { getExtensionRoot, getDataRoot, safeErrorMessage } from '../../services/pickle-utils.js';
+import { StateManager, writeActivityEntry } from '../../services/state-manager.js';
+import { logActivity } from '../../services/activity-logger.js';
+import { readRecoverableJsonObject } from '../../services/microverse-state.js';
+import { isProcessAlive } from '../../lib/process-liveness.js';
+const sm = new StateManager();
+export const DEFAULT_MANAGER_IDLE_BACKOFF_FALLBACK_MS = 60_000;
+export const MANAGER_IDLE_BACKOFF_THRESHOLD = 3;
+const IDLE_BACKOFF_STATE_FILE = '.manager-idle-backoff.json';
+export const WAIT_PATTERN_REGEXES = [
+    /waiting for monitor signal\.?$/i,
+    /worker still/i,
+    /continuing to wait/i,
+];
+const RATE_LIMIT_PATTERNS = [
+    /out of (extra )?usage/i,
+    /rate limit/i,
+    /usage.*limit.*reached/i,
+    /limit.*reached.*try.*back/i,
+    /hour.*limit/i,
+];
+const DEGENERATE_MAX_LENGTH = 10;
+const NO_OP_MAX_LENGTH = 100;
+const NO_OP_PATTERNS = [
+    /^acknowledged\.?$/i,
+    /^ok\.?$/i,
+    /^done\.?$/i,
+    /^understood\.?$/i,
+    /^noted\.?$/i,
+    /^continuing\.?$/i,
+    /^ready\.?$/i,
+    /^got it\.?$/i,
+    /^will do\.?$/i,
+    /^roger\.?$/i,
+];
+function finiteNumber(value, fallback = 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+function finiteIntegerOrNull(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && Number.isInteger(parsed) ? parsed : null;
+}
+/**
+ * The ONE definition of "this turn is a completion turn": it carries a token AND this role
+ * may act on it. Both readers of a Stop turn ask through it, so they cannot disagree about
+ * which turns belong to the token classifier — `evaluateManagerIdleBackoff` runs FIRST and
+ * returns a decision, so any turn it claims is one `classifyDecisionInternal` never sees.
+ */
+function isActionableToken(token, role) {
+    return token.kind !== 'none' && roleAllowsToken(token, role);
+}
+function roleAllowsToken(token, role) {
+    if (token.kind === 'worker-done')
+        return role === 'worker';
+    if (token.kind === 'analysis-done')
+        return role === 'refinement-worker';
+    if (token.kind === 'prd-complete' || token.kind === 'ticket-selected')
+        return role !== 'worker';
+    return true;
+}
+function isWhitespaceOnlyResponse(transcript, trimmed) {
+    return transcript.length > 0 && trimmed.length === 0;
+}
+function isNoOpResponse(trimmed) {
+    return trimmed.length > 0 && trimmed.length <= NO_OP_MAX_LENGTH &&
+        NO_OP_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+function isShortResponse(trimmed) {
+    return trimmed.length > 0 && trimmed.length <= DEGENERATE_MAX_LENGTH;
+}
+function isManagerRole(role) {
+    return role !== 'worker' && role !== 'refinement-worker';
+}
+function isWaitPatternResponse(trimmed) {
+    return trimmed.length > 0 && WAIT_PATTERN_REGEXES.some((pattern) => pattern.test(trimmed));
+}
+function getIdleBackoffStatePath(state) {
+    return state.session_dir ? path.join(state.session_dir, IDLE_BACKOFF_STATE_FILE) : null;
+}
+function readIdleBackoffSnapshot(state) {
+    const snapshotPath = getIdleBackoffStatePath(state);
+    if (!snapshotPath || !fs.existsSync(snapshotPath))
+        return null;
+    const parsed = readRecoverableJsonObject(snapshotPath);
+    if (!parsed)
+        return null;
+    const consecutiveWaitTurns = finiteIntegerOrNull(parsed.consecutive_wait_turns);
+    if (consecutiveWaitTurns === null || consecutiveWaitTurns < 0)
+        return null;
+    const engagedAtMs = finiteNumber(parsed.engaged_at_ms, Number.NaN);
+    const stateMtimeMs = finiteNumber(parsed.state_mtime_ms, Number.NaN);
+    const artifactMtimeMs = finiteNumber(parsed.artifact_mtime_ms, Number.NaN);
+    const workerPid = parsed.worker_pid === null ? null : finiteIntegerOrNull(parsed.worker_pid);
+    return {
+        consecutive_wait_turns: consecutiveWaitTurns,
+        engaged_at_ms: Number.isFinite(engagedAtMs) ? engagedAtMs : undefined,
+        state_mtime_ms: Number.isFinite(stateMtimeMs) ? stateMtimeMs : undefined,
+        artifact_mtime_ms: Number.isFinite(artifactMtimeMs) ? artifactMtimeMs : undefined,
+        worker_pid: workerPid,
+        ticket: typeof parsed.ticket === 'string' ? parsed.ticket : null,
+    };
+}
+function writeIdleBackoffSnapshot(state, snapshot) {
+    const snapshotPath = getIdleBackoffStatePath(state);
+    if (!snapshotPath)
+        return;
+    if (!snapshot) {
+        try {
+            fs.unlinkSync(snapshotPath);
+        }
+        catch { /* ignore */ }
+        return;
+    }
+    const tmpPath = `${snapshotPath}.tmp.${process.pid}.${Date.now()}`;
+    try {
+        fs.writeFileSync(tmpPath, JSON.stringify(snapshot, null, 2));
+        fs.renameSync(tmpPath, snapshotPath);
+    }
+    catch {
+        try {
+            fs.unlinkSync(tmpPath);
+        }
+        catch { /* ignore */ }
+    }
+}
+function readFileMtimeMs(filePath) {
+    try {
+        return fs.statSync(filePath).mtimeMs;
+    }
+    catch {
+        return 0;
+    }
+}
+function getTicketDir(state) {
+    if (!state.session_dir || !state.current_ticket)
+        return null;
+    return path.join(state.session_dir, state.current_ticket);
+}
+/**
+ * Newest ticket-dir artifact mtime, feeding the idle backoff's `artifact_landed` release.
+ *
+ * AP-EXT-ITER245-01: selects on the `.md` SUFFIX alone, never on a lifecycle-phase prefix list.
+ * Every `.md` in a ticket dir is written by the worker or by the manager acting on that ticket,
+ * so "a .md changed" and "the turn is progressing" are one fact, while a phase list is one
+ * lifecycle phase from going blind. The four-prefix list this replaces was incomplete at birth
+ * (162c226f, never revised) and named neither `handoff_notes.md` nor `rick_ticket_<hash>.md`:
+ * across 71 live ticket dirs the NEWEST `.md` matched no prefix in 71 of them, median blind
+ * window 6.9 minutes, so real progress released nothing and the 60s fallback timer ended the
+ * window instead — leaving the warm snapshot a progress release would have cleared.
+ *
+ * The suffix is still load-bearing in the other direction: `worker_session_<pid>.log` is
+ * appended to continuously while the worker runs, so dropping the predicate entirely would
+ * release on every turn. Same shape and same resolution as AP-EXT-ITER108-01's
+ * `maybeEmitManagerTurnProgress`; the two stay separate because that one compares SECONDS.
+ */
+function getWorkerArtifactMtimeMs(state) {
+    const ticketDir = getTicketDir(state);
+    if (!ticketDir)
+        return 0;
+    try {
+        const entries = fs.readdirSync(ticketDir);
+        let maxMtime = 0;
+        for (const entry of entries) {
+            if (!entry.endsWith('.md'))
+                continue;
+            const mtime = readFileMtimeMs(path.join(ticketDir, entry));
+            if (mtime > maxMtime)
+                maxMtime = mtime;
+        }
+        return maxMtime;
+    }
+    catch {
+        return 0;
+    }
+}
+function getLatestWorkerPid(state) {
+    const ticketDir = getTicketDir(state);
+    if (!ticketDir)
+        return null;
+    try {
+        const logCandidates = fs.readdirSync(ticketDir)
+            .filter((entry) => /^worker_session_\d+\.log$/.test(entry))
+            .map((entry) => ({ entry, mtimeMs: readFileMtimeMs(path.join(ticketDir, entry)) }))
+            .sort((left, right) => right.mtimeMs - left.mtimeMs);
+        const latest = logCandidates[0];
+        if (!latest)
+            return null;
+        const match = latest.entry.match(/^worker_session_(\d+)\.log$/);
+        if (!match)
+            return null;
+        return finiteIntegerOrNull(match[1]);
+    }
+    catch {
+        return null;
+    }
+}
+const MANAGER_IDLE_BACKOFF_FALLBACK_MIN_MS = 1_000;
+const MANAGER_IDLE_BACKOFF_FALLBACK_MAX_MS = 600_000;
+/** Single source of truth for the accepted `manager_idle_backoff_fallback_ms` range. */
+function isValidManagerIdleBackoffFallbackMs(value) {
+    return typeof value === 'number'
+        && Number.isInteger(value)
+        && value >= MANAGER_IDLE_BACKOFF_FALLBACK_MIN_MS
+        && value <= MANAGER_IDLE_BACKOFF_FALLBACK_MAX_MS;
+}
+export function resolveManagerIdleBackoffFallbackMs(settings, fallback = DEFAULT_MANAGER_IDLE_BACKOFF_FALLBACK_MS) {
+    const value = settings?.manager_idle_backoff_fallback_ms;
+    return isValidManagerIdleBackoffFallbackMs(value) ? value : fallback;
+}
+function readManagerIdleBackoffFallbackMs(log) {
+    try {
+        const settingsPath = path.join(getExtensionRoot(), 'pickle_settings.json');
+        const settings = readRecoverableJsonObject(settingsPath);
+        const raw = settings?.manager_idle_backoff_fallback_ms;
+        if (settings && raw !== undefined && !isValidManagerIdleBackoffFallbackMs(raw)) {
+            log(`WARN: invalid manager_idle_backoff_fallback_ms in settings; using default ${DEFAULT_MANAGER_IDLE_BACKOFF_FALLBACK_MS}ms`);
+        }
+        return resolveManagerIdleBackoffFallbackMs(settings);
+    }
+    catch (err) {
+        log(`WARN: failed to read manager_idle_backoff_fallback_ms; using default ${DEFAULT_MANAGER_IDLE_BACKOFF_FALLBACK_MS}ms (${safeErrorMessage(err)})`);
+        return DEFAULT_MANAGER_IDLE_BACKOFF_FALLBACK_MS;
+    }
+}
+function buildIdleBackoffEventBase(state, stateFile) {
+    return {
+        ts: new Date().toISOString(),
+        session: path.basename(path.dirname(stateFile)),
+        ticket: state.current_ticket,
+    };
+}
+function emitStateActivityEntries(stateFile, entries) {
+    if (!entries || entries.length === 0)
+        return;
+    for (const entry of entries) {
+        try {
+            writeActivityEntry(stateFile, entry);
+        }
+        catch {
+            /* fail open */
+        }
+    }
+}
+function refreshIdleBackoffStateBaseline(state, stateFile, entries) {
+    if (!entries?.some((entry) => entry.event === 'manager_idle_backoff_engaged'))
+        return;
+    const snapshot = readIdleBackoffSnapshot(state);
+    if (!snapshot?.engaged_at_ms)
+        return;
+    snapshot.state_mtime_ms = readFileMtimeMs(stateFile);
+    writeIdleBackoffSnapshot(state, snapshot);
+}
+/**
+ * Is the state.json in front of us the one this backoff engaged against?
+ *
+ * AP-EXT-ITER246-01: ONE clause over the WHOLE baseline. `state.current_ticket` is READ FROM
+ * state.json, so a ticket that differs from the baseline means state.json was rewritten and its
+ * mtime advanced — measured on the shipped hook, the two clauses this replaces returned the
+ * identical `state_mtime` reason and the mtime one DOMINATED: with the ticket clause amputated a
+ * real ticket change still released. Its only separating case was a ticket change whose mtime did
+ * NOT advance (a same-granularity-tick write, a restored file, a clock moving back), and there the
+ * two clauses could disagree about a single question with no arm to break the tie.
+ *
+ * Identity, not recency: an absent baseline, a backward move and an unreadable state file all read
+ * as CHANGED and release. That is the safe direction — a spurious release costs one manager turn,
+ * while a spurious block suppresses a live manager for the whole fallback window.
+ */
+function idleBackoffStateBaselineChanged(snapshot, stateMtimeMs, currentTicket) {
+    return snapshot.state_mtime_ms !== stateMtimeMs || snapshot.ticket !== currentTicket;
+}
+function idleBackoffReleaseReason(state, stateFile, snapshot, nowMs, fallbackMs) {
+    const currentTicket = state.current_ticket ?? null;
+    const stateMtimeMs = readFileMtimeMs(stateFile);
+    const artifactMtimeMs = getWorkerArtifactMtimeMs(state);
+    const workerPid = snapshot.worker_pid ?? getLatestWorkerPid(state);
+    if (idleBackoffStateBaselineChanged(snapshot, stateMtimeMs, currentTicket))
+        return 'state_mtime';
+    if (snapshot.artifact_mtime_ms !== undefined && artifactMtimeMs > snapshot.artifact_mtime_ms)
+        return 'artifact_landed';
+    if (!isProcessAlive(workerPid))
+        return 'worker_exit';
+    if (snapshot.engaged_at_ms !== undefined && nowMs - snapshot.engaged_at_ms >= fallbackMs)
+        return 'fallback_timer';
+    return null;
+}
+function releaseIdleBackoffDecision(state, stateFile, snapshot, releaseReason, nowMs) {
+    writeIdleBackoffSnapshot(state, releaseReason === 'fallback_timer'
+        ? { consecutive_wait_turns: MANAGER_IDLE_BACKOFF_THRESHOLD - 1 }
+        : null);
+    return {
+        decision: 'approve',
+        logMessage: `Decision: APPROVE (Idle backoff released: ${releaseReason})`,
+        token: { kind: 'none' },
+        stateActivityEntries: [{
+                event: 'manager_idle_backoff_released',
+                ...buildIdleBackoffEventBase(state, stateFile),
+                duration_ms: Math.max(0, nowMs - (snapshot.engaged_at_ms ?? nowMs)),
+                release_reason: releaseReason,
+            }],
+    };
+}
+function engageIdleBackoffDecision(state, stateFile, nextCount, nowMs) {
+    const engagedSnapshot = {
+        consecutive_wait_turns: nextCount,
+        engaged_at_ms: nowMs,
+        state_mtime_ms: readFileMtimeMs(stateFile),
+        artifact_mtime_ms: getWorkerArtifactMtimeMs(state),
+        worker_pid: getLatestWorkerPid(state),
+        ticket: state.current_ticket,
+    };
+    writeIdleBackoffSnapshot(state, engagedSnapshot);
+    return {
+        decision: 'block',
+        reason: `🥒 Idle backoff engaged for ${state.current_ticket} — suppressing stop-hook nudges`,
+        logMessage: `Decision: BLOCK (Idle backoff engaged after ${nextCount} wait turns)`,
+        token: { kind: 'none' },
+        stateActivityEntries: [{
+                event: 'manager_idle_backoff_engaged',
+                ...buildIdleBackoffEventBase(state, stateFile),
+                consecutive_wait_turns: nextCount,
+                last_worker_pid: engagedSnapshot.worker_pid ?? null,
+            }],
+    };
+}
+export function evaluateManagerIdleBackoff(state, stateFile, transcript, role, log = () => { }, nowMs = Date.now()) {
+    if (!isManagerRole(role) || !state.current_ticket || !state.session_dir)
+        return null;
+    const trimmed = transcript.trim();
+    const snapshot = readIdleBackoffSnapshot(state);
+    // A turn carrying a token this role may act on is a COMPLETION turn, never an idle one —
+    // it belongs to the token classifier. The wait matchers are unanchored substrings
+    // (`worker still`, `continuing to wait`), so without this a manager that narrates a worker
+    // mid-report and signs off in the same turn is claimed here: the token is never read, no
+    // completion activity is emitted, and the turn is BLOCKED back into the model.
+    if (!isWaitPatternResponse(trimmed) || isActionableToken(detectCompletionTokens(transcript, state), role)) {
+        if (snapshot)
+            writeIdleBackoffSnapshot(state, null);
+        return null;
+    }
+    const fallbackMs = readManagerIdleBackoffFallbackMs(log);
+    if (snapshot?.engaged_at_ms) {
+        const releaseReason = idleBackoffReleaseReason(state, stateFile, snapshot, nowMs, fallbackMs);
+        if (!releaseReason) {
+            return {
+                decision: 'block',
+                reason: `🥒 Idle backoff active for ${state.current_ticket} — waiting for worker signal`,
+                logMessage: `Decision: BLOCK (Idle backoff active for ticket ${state.current_ticket})`,
+                token: { kind: 'none' },
+            };
+        }
+        return releaseIdleBackoffDecision(state, stateFile, snapshot, releaseReason, nowMs);
+    }
+    const nextCount = Math.min((snapshot?.consecutive_wait_turns ?? 0) + 1, MANAGER_IDLE_BACKOFF_THRESHOLD);
+    if (nextCount < MANAGER_IDLE_BACKOFF_THRESHOLD) {
+        writeIdleBackoffSnapshot(state, { consecutive_wait_turns: nextCount });
+        return {
+            decision: 'block',
+            reason: `🥒 Wait-pattern response (${nextCount}/${MANAGER_IDLE_BACKOFF_THRESHOLD}) — continuing`,
+            logMessage: `Decision: BLOCK (Wait-pattern response: "${trimmed}" — ${nextCount}/${MANAGER_IDLE_BACKOFF_THRESHOLD})`,
+            token: { kind: 'none' },
+        };
+    }
+    return engageIdleBackoffDecision(state, stateFile, nextCount, nowMs);
+}
+export function detectCompletionTokens(transcript, state) {
+    if (state.completion_promise && hasToken(transcript, state.completion_promise)) {
+        return { kind: 'completion-promise', promise: state.completion_promise };
+    }
+    if (hasToken(transcript, PromiseTokens.EPIC_COMPLETED))
+        return { kind: 'epic-completed' };
+    if (hasToken(transcript, PromiseTokens.TASK_COMPLETED))
+        return { kind: 'task-completed' };
+    if (hasToken(transcript, PromiseTokens.ANALYSIS_DONE))
+        return { kind: 'analysis-done' };
+    if (hasToken(transcript, PromiseTokens.EXISTENCE_IS_PAIN) ||
+        hasToken(transcript, PromiseTokens.THE_CITADEL_APPROVES))
+        return { kind: 'review-clean' };
+    if (hasToken(transcript, PromiseTokens.WORKER_DONE))
+        return { kind: 'worker-done' };
+    if (hasToken(transcript, PromiseTokens.PRD_COMPLETE))
+        return { kind: 'prd-complete' };
+    if (hasToken(transcript, PromiseTokens.TICKET_SELECTED))
+        return { kind: 'ticket-selected' };
+    return { kind: 'none' };
+}
+export function enforceRateLimitGate(_state, transcript) {
+    if (transcript.length > 0 &&
+        transcript.length < 500 &&
+        RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(transcript))) {
+        return { decision: 'approve' };
+    }
+    return null;
+}
+/** Single source of truth for the time/iteration limit metrics derived from state. */
+function computeLimitMetrics(state) {
+    const now = Math.floor(Date.now() / 1000);
+    const startEpoch = finiteNumber(state.start_time_epoch);
+    const maxTimeMins = finiteNumber(state.max_time_minutes);
+    const maxIter = finiteNumber(state.max_iterations);
+    const curIter = finiteNumber(state.iteration);
+    const elapsedSeconds = startEpoch > 0 ? Math.max(0, now - startEpoch) : 0;
+    return { startEpoch, maxTimeMins, maxIter, curIter, elapsedSeconds };
+}
+export function enforceLimits(state) {
+    const { startEpoch, maxTimeMins, maxIter, curIter, elapsedSeconds } = computeLimitMetrics(state);
+    if (maxIter > 0 && curIter >= maxIter) {
+        return { decision: 'approve' };
+    }
+    if (maxTimeMins > 0 && startEpoch > 0 && elapsedSeconds >= maxTimeMins * 60) {
+        return { decision: 'approve' };
+    }
+    return null;
+}
+/**
+ * B-RSHM WS-1: the consecutive-short-response BLOCK-nudge counter was retired with the
+ * interactive (non-tmux) loop. Degenerate output (whitespace-only, no-op ack, or short
+ * response) now APPROVES unconditionally — under tmux the manager exits and mux-runner
+ * owns the respawn. The old State counter field is retained as optional with no runtime
+ * writer (no schema bump).
+ */
+export function detectDegenerateResponse(_state, transcript, _role = '') {
+    const trimmed = transcript.trim();
+    if (isWhitespaceOnlyResponse(transcript, trimmed) || isNoOpResponse(trimmed) || isShortResponse(trimmed)) {
+        return { decision: 'approve' };
+    }
+    return null;
+}
+export function classifyDecision(state, transcript, role) {
+    return classifyDecisionInternal(state, transcript, role);
+}
+function classifyDecisionInternal(state, transcript, role) {
+    const token = detectCompletionTokens(transcript, state);
+    const isWorkerRole = role === 'worker' || role === 'refinement-worker';
+    if (isActionableToken(token, role)) {
+        const tokenDecision = classifyTokenDecision(state, token, isWorkerRole);
+        if (tokenDecision)
+            return tokenDecision;
+    }
+    // The operator-configured limits are the TERMINAL condition and outrank a transient
+    // rate-limit note: a rate-limited turn that also lands on max-iterations/time-limit must
+    // log the limit it actually hit, not the backoff. Ordered before the degenerate classifier
+    // because a short "rate limit" body really is a rate limit, not a no-op ack.
+    const limitDecision = classifyLimitDecision(state);
+    if (limitDecision)
+        return limitDecision;
+    const rateLimit = enforceRateLimitGate(state, transcript);
+    if (rateLimit) {
+        return { ...rateLimit, logMessage: 'Decision: APPROVE (Rate limit detected — handing off to runner for backoff)', token };
+    }
+    const degenerateDecision = classifyDegenerateDecision(state, transcript, role);
+    if (degenerateDecision)
+        return degenerateDecision;
+    if (state.tmux_mode === true) {
+        return {
+            decision: 'approve',
+            logMessage: 'Decision: APPROVE (tmux owns this loop, launcher may stop)',
+            token,
+        };
+    }
+    // B-RSHM WS-1: interactive /pickle is gone and tmux is the sole launch path, so the
+    // non-tmux default-continuation BLOCK is dead machinery — approve unconditionally.
+    const maxIter = finiteNumber(state.max_iterations);
+    const curIter = finiteNumber(state.iteration);
+    const iterSuffix = maxIter > 0 ? ` of ${maxIter}` : '';
+    return {
+        decision: 'approve',
+        logMessage: `Decision: APPROVE (Interactive loop retired — non-tmux default approve, iteration ${curIter}${iterSuffix})`,
+        token,
+    };
+}
+function classifyTokenDecision(state, token, isWorkerRole) {
+    if (token.kind === 'review-clean') {
+        const minIter = finiteNumber(state.min_iterations);
+        const curIter = finiteNumber(state.iteration);
+        if (minIter > 0 && curIter < minIter) {
+            return {
+                decision: 'approve',
+                logMessage: `Decision: APPROVE (review_clean at ${curIter}/${minIter} — below min, runner continues)`,
+                token,
+            };
+        }
+    }
+    if (token.kind === 'prd-complete' || token.kind === 'ticket-selected') {
+        return { decision: 'approve', logMessage: 'Decision: APPROVE (checkpoint — runner will respawn for next phase)', token };
+    }
+    return {
+        decision: 'approve',
+        logMessage: 'Decision: APPROVE (Task/Worker complete)',
+        token,
+        activity: tokenActivity(token, isWorkerRole),
+    };
+}
+function tokenActivity(token, isWorkerRole) {
+    if (token.kind === 'review-clean')
+        return 'review-clean';
+    if (token.kind === 'epic-completed')
+        return 'epic-completed';
+    if (token.kind === 'task-completed' && !isWorkerRole)
+        return 'ticket-completed';
+    return undefined;
+}
+function classifyLimitDecision(state) {
+    const { maxTimeMins, maxIter, curIter, elapsedSeconds } = computeLimitMetrics(state);
+    const limitResult = enforceLimits(state);
+    if (!limitResult)
+        return null;
+    if (maxIter > 0 && curIter >= maxIter) {
+        return {
+            ...limitResult,
+            logMessage: `Decision: APPROVE (Max iterations reached: ${curIter}/${maxIter})`,
+            token: { kind: 'none' },
+        };
+    }
+    return {
+        ...limitResult,
+        logMessage: `Decision: APPROVE (Time limit reached: ${elapsedSeconds}/${maxTimeMins * 60}s)`,
+        token: { kind: 'none' },
+    };
+}
+function classifyDegenerateDecision(state, transcript, role) {
+    const result = detectDegenerateResponse(state, transcript, role);
+    if (!result)
+        return null;
+    const trimmed = transcript.trim();
+    const whitespaceOnly = isWhitespaceOnlyResponse(transcript, trimmed);
+    if (whitespaceOnly || isNoOpResponse(trimmed)) {
+        const reason = whitespaceOnly
+            ? `Whitespace-only response — ${transcript.length} raw chars`
+            : `No-op response detected: "${trimmed}" — breaking ack loop`;
+        return { ...result, logMessage: `Decision: APPROVE (${reason})`, token: { kind: 'none' } };
+    }
+    return {
+        ...result,
+        logMessage: `Decision: APPROVE (Degenerate short response: "${trimmed}" — ${trimmed.length} chars)`,
+        token: { kind: 'none' },
+    };
+}
+function isCompletionToken(token) {
+    return [
+        'completion-promise',
+        'epic-completed',
+        'task-completed',
+        'analysis-done',
+        'review-clean',
+        'worker-done',
+    ].includes(token.kind);
+}
+function emitActivity(decision, state, stateFile, isWorker) {
+    if (!decision.activity)
+        return;
+    const sessionId = path.basename(path.dirname(stateFile));
+    if (decision.activity === 'review-clean') {
+        logActivity({ event: 'meeseeks_pass', source: 'pickle', session: sessionId, pass: Number(state.iteration) || undefined });
+    }
+    else if (decision.activity === 'epic-completed') {
+        logActivity({ event: 'epic_completed', source: 'pickle', session: sessionId, epic: state.original_prompt || undefined });
+    }
+    else if (decision.activity === 'ticket-completed' && !isWorker) {
+        logActivity({ event: 'ticket_completed', source: 'pickle', session: sessionId, ticket: state.current_ticket || undefined, step: state.step });
+    }
+}
+function promiseSummary(transcript, state, role) {
+    const isWorker = role === 'worker';
+    const isRefinementWorker = role === 'refinement-worker';
+    const hasPromise = !!state.completion_promise && hasToken(transcript, state.completion_promise);
+    const isEpicDone = hasToken(transcript, PromiseTokens.EPIC_COMPLETED);
+    const isTaskFinished = hasToken(transcript, PromiseTokens.TASK_COMPLETED);
+    const isAnalysisDone = isRefinementWorker && hasToken(transcript, PromiseTokens.ANALYSIS_DONE);
+    const isExistenceIsPain = hasToken(transcript, PromiseTokens.EXISTENCE_IS_PAIN) ||
+        hasToken(transcript, PromiseTokens.THE_CITADEL_APPROVES);
+    const isWorkerDone = isWorker && hasToken(transcript, PromiseTokens.WORKER_DONE);
+    const isPrdDone = !isWorker && hasToken(transcript, PromiseTokens.PRD_COMPLETE);
+    const isTicketSelected = !isWorker && hasToken(transcript, PromiseTokens.TICKET_SELECTED);
+    return `Promises(${PROMISE_TOKENS.length}): hasPromise=${hasPromise}, isEpicDone=${isEpicDone}, isTaskFinished=${isTaskFinished}, isWorkerDone=${isWorkerDone}, isAnalysisDone=${isAnalysisDone}, isExistenceIsPain=${isExistenceIsPain}, isPrdDone=${isPrdDone}, isTicketSelected=${isTicketSelected}`;
+}
+function maybeSpawnUpdateCheck(extensionDir, log) {
+    const checkUpdatePath = path.join(extensionDir, 'extension', 'bin', 'check-update.js');
+    if (!fs.existsSync(checkUpdatePath)) {
+        log('check-update.js not found, skipping update check');
+        return;
+    }
+    let settings = null;
+    try {
+        const settingsPath = path.join(extensionDir, 'pickle_settings.json');
+        settings = readRecoverableJsonObject(settingsPath);
+        if (settings?.auto_update_enabled === false) {
+            log('Auto-update disabled in settings, skipping');
+            return;
+        }
+    }
+    catch {
+        // Settings missing/corrupted — default to enabled
+    }
+    const intervalHours = settings?.update_check_interval_hours;
+    const configuredSeconds = typeof intervalHours === 'number' && Number.isFinite(intervalHours) && intervalHours > 0
+        ? intervalHours * 3_600
+        : 60;
+    const spawnIntervalSeconds = Math.max(60, configuredSeconds);
+    const spawnEpochPath = path.join(extensionDir, 'last-check-spawn.epoch');
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    try {
+        const lastSpawnEpoch = Number(fs.readFileSync(spawnEpochPath, 'utf8').trim());
+        if (Number.isFinite(lastSpawnEpoch) && lastSpawnEpoch > 0 && nowEpoch - lastSpawnEpoch < spawnIntervalSeconds) {
+            log('check-update spawn skipped: rate-limited');
+            return;
+        }
+    }
+    catch {
+        // Missing/unreadable spawn marker — allow this spawn.
+    }
+    try {
+        fs.writeFileSync(spawnEpochPath, `${nowEpoch}\n`);
+    }
+    catch { /* ignore marker write failure */ }
+    log('Spawning detached check-update process');
+    const child = spawn('node', [checkUpdatePath], { detached: true, stdio: 'ignore' });
+    child.on('error', (err) => {
+        log(`check-update spawn error: ${safeErrorMessage(err)}`);
+    });
+    child.unref();
+}
+function createHookLogger(extensionDir) {
+    const globalDebugLog = path.join(extensionDir, 'debug.log');
+    let sessionHooksLog = null;
+    const log = (msg) => {
+        const ts = new Date().toISOString();
+        const formatted = `[${ts}] [StopHookJS] ${msg}\n`;
+        try {
+            fs.appendFileSync(globalDebugLog, formatted);
+        }
+        catch { /* ignore */ }
+        if (sessionHooksLog) {
+            try {
+                fs.appendFileSync(sessionHooksLog, formatted);
+            }
+            catch { /* ignore */ }
+        }
+    };
+    return { log, setSessionHooksLog: (file) => { sessionHooksLog = file; } };
+}
+function approveIfDisabled(extensionDir, log) {
+    const disabledMarker = path.join(extensionDir, 'disabled');
+    try {
+        if (fs.existsSync(disabledMarker)) {
+            approve();
+            return true;
+        }
+    }
+    catch {
+        log('Disabled marker check failed; continuing fail-open path');
+    }
+    return false;
+}
+function readHookInput(log) {
+    let inputData;
+    try {
+        inputData = fs.readFileSync(0, 'utf8');
+    }
+    catch {
+        log('Failed to read stdin');
+        approve();
+        return null;
+    }
+    if (!inputData.trim()) {
+        approve();
+        return null;
+    }
+    try {
+        return { input: JSON.parse(inputData), inputData };
+    }
+    catch {
+        const preview = inputData.slice(0, 100);
+        const ellipsis = inputData.length > 100 ? '...' : '';
+        log(`WARN: corrupted hook input, approving fail-open. First 100 chars: "${preview}"${ellipsis}`);
+        approve();
+        return null;
+    }
+}
+function readHookState(log, setSessionHooksLog) {
+    const stateFile = resolveStateFile(getDataRoot());
+    if (!stateFile) {
+        log(`No state file found.`);
+        approve();
+        return null;
+    }
+    setSessionHooksLog(path.join(path.dirname(stateFile), 'hooks.log'));
+    log(`State file found: ${stateFile}`);
+    try {
+        return { stateFile, state: sm.read(stateFile) };
+    }
+    catch {
+        log('Failed to parse state.json');
+        approve();
+        return null;
+    }
+}
+function approveEarlyIfNeeded(state, log) {
+    if (state.working_dir && !sameWorkingDir(state.working_dir, process.cwd())) {
+        log(`CWD Mismatch: ${process.cwd()} !== ${state.working_dir}`);
+        approve();
+        return true;
+    }
+    if (state.active !== true) {
+        log('Decision: APPROVE (Session inactive)');
+        approve();
+        return true;
+    }
+    if (state.tmux_mode === true && !process.env.PICKLE_STATE_FILE) {
+        log('Decision: APPROVE (tmux mode — main window defers to tmux-runner)');
+        approve();
+        return true;
+    }
+    return false;
+}
+function finalizeHookDecision(decision, state, stateFile, extensionDir, isWorker, log) {
+    emitStateActivityEntries(stateFile, decision.stateActivityEntries);
+    refreshIdleBackoffStateBaseline(state, stateFile, decision.stateActivityEntries);
+    if (decision.decision === 'approve') {
+        if (isCompletionToken(decision.token))
+            maybeSpawnUpdateCheck(extensionDir, log);
+        emitActivity(decision, state, stateFile, isWorker);
+        approve();
+        return;
+    }
+    console.log(JSON.stringify({ decision: 'block', reason: decision.reason }));
+}
+async function main() {
+    const extensionDir = getExtensionRoot();
+    const { log, setSessionHooksLog } = createHookLogger(extensionDir);
+    if (approveIfDisabled(extensionDir, log))
+        return;
+    const hookInput = readHookInput(log);
+    if (!hookInput)
+        return;
+    const { input, inputData } = hookInput;
+    log(`Processing Stop hook. Input size: ${inputData.length}`);
+    const hookState = readHookState(log, setSessionHooksLog);
+    if (!hookState)
+        return;
+    const { stateFile, state } = hookState;
+    const role = process.env.PICKLE_ROLE;
+    const isWorker = role === 'worker';
+    log(`State: active=${state.active}, iteration=${state.iteration}/${state.max_iterations}`);
+    log(`Context: role=${role}, isWorker=${isWorker}, cwd=${process.cwd()}`);
+    if (approveEarlyIfNeeded(state, log))
+        return;
+    const responseText = input.last_assistant_message || input.prompt_response || '';
+    log(`Agent response received (${responseText.length} chars)`);
+    const decision = evaluateManagerIdleBackoff(state, stateFile, responseText, role || '', log)
+        ?? classifyDecisionInternal(state, responseText, role || '');
+    log(promiseSummary(responseText, state, role || ''));
+    log(decision.logMessage);
+    finalizeHookDecision(decision, state, stateFile, extensionDir, isWorker, log);
+}
+function handleFatalStopHookError(err) {
+    try {
+        const extensionDir = getExtensionRoot();
+        const debugLog = path.join(extensionDir, 'debug.log');
+        const detail = err instanceof Error ? err.stack || err.message : String(err);
+        fs.appendFileSync(debugLog, `[FATAL] ${detail}\n`);
+    }
+    catch {
+        /* ignore */
+    }
+    approve();
+}
+// Basename compare, NEVER a realpath-exact one (subsystem contract #1): Node
+// realpaths `import.meta.url` but leaves `process.argv[1]` as written, and
+// dispatch.ts builds argv[1] from `EXTENSION_DIR || join(os.homedir(), ...)`
+// without realpathing it. Through a symlinked install root (`install.sh
+// --prefix` + `PICKLE_INSTALL_ROOT` at a tmp/relocated path) the two sides
+// disagree, `main()` never runs, the hook emits no decision, and dispatch's
+// "no valid decision JSON" arm falls back to approve — the Stop hook approves
+// the stop and the pipeline loop ends with no exit_reason and no error.
+if (process.argv[1] && path.basename(process.argv[1]) === 'stop-hook.js') {
+    main().catch(handleFatalStopHookError);
+}

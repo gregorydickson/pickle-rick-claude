@@ -1191,85 +1191,15 @@ const GATED_GIT_VERBS = [
     ...PROHIBITED_GIT_VERBS_SIMPLE, 'checkout', 'commit', 'fetch',
 ];
 /**
- * The verb `findGitVerb` reports when the command hands git a CONFIG assignment
- * that makes git run a command of the author's choosing.
+ * The verb `findGitVerb` reports when the command DEFINES the verb it runs.
  *
  * Not a git subcommand, and a word folding to it must carry a space, so the
- * only spelling that collides is a QUOTED `git 'config command'` — which git
- * does not run either, making the collision inert. That is what lets
+ * only spelling that collides is a QUOTED `git 'config alias'` — which git does
+ * not run either, making the collision inert. That is what lets
  * `detectProhibitedGitVerb` read it beside `PROHIBITED_GIT_VERBS_SIMPLE` rather
  * than growing the verb scan a new arm.
  */
-const GIT_CONFIG_VERB = 'config command';
-/**
- * The VALUE half of git's config surface: a config assignment whose value names
- * an op the Git Boundary Rules forbid.
- *
- * `alias.` is NOT the only config section whose value git executes, and a
- * predicate naming one member is one member short by construction
- * (AP-EXT-ITER281-02). MEASURED 2026-09-18 against real git in a scratch repo,
- * each destroying a worker's staged work while the shipped handler APPROVED it
- * and every literal twin blocked:
- * `git -c diff.external='sh -c "git reset --hard"' commit -m x`,
- * `git -c core.sshCommand='sh -c "git reset --hard"' fetch <url>`, and the
- * environment pair `GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=…`.
- * `credential.helper`, `core.editor` and `uploadpack.packObjectsHook` approve
- * under the same shape.
- *
- * SO DO NOT ENUMERATE THE NAMESPACES — read the VALUE, which is the thing git
- * actually runs. The set of executing config keys grows with every git release
- * and a missing member fails OPEN and SILENTLY, while the value is already
- * spelled in the command, and this module's whole contract is that a prohibited
- * op spelled in the command is blocked wherever it stands. That is the identical
- * inversion `GATED_GIT_VERBS` records one screen up, where a table of
- * operand-taking git globals was replaced by matching the verb itself. Reading
- * the value needs no table of config-delivering options either: git spells every
- * one of them `<key>=<value>` in a single word.
- *
- * ONE reading covers both grammars, `git <value>`: an alias body is an implicit
- * git argument list (`reset --hard` -> `git reset --hard`) and every other
- * executing value is a shell command, which `detectProhibitedGitVerb` already
- * reads through its own wrapper handling (measured: `git sh -c "git reset
- * --hard"` blocks). Harmless values stay harmless because they name no command —
- * `user.email=a@b`, `user.name=t`, `commit.gpgsign=false` and
- * `core.pager=sh -c "git status"` all read null.
- *
- * `readValues` is a RECURSION BOUND, not a feature flag: the value is re-read as
- * a command, so it must not re-read ITS values. One level, because a
- * `RangeError` out of the segmenter reaches `main`'s FATAL catch, which APPROVES
- * (AP-EXT-ITER277-01) — an unbounded re-read would make a deep `a=b=c=…` chain
- * approve every forbidden op in the command. RESIDUAL, measured and left OPEN:
- * config nested INSIDE a config value (`git -c a.b='git -c c.d="reset --hard"' x`)
- * is one level past the bound and approves.
- */
-function gitConfigValueNamesProhibitedOp(value) {
-    return detectProhibitedGitVerb(`git ${value}`, false) !== null;
-}
-function configValueRunsProhibitedCommand(tokens) {
-    return tokens.some(token => {
-        const eq = token.value.indexOf('=');
-        if (eq <= 0)
-            return false;
-        // An OPTION word is not a config assignment, and the distinction is the same
-        // one the verb scan below already draws with `startsWith('-')` rather than a
-        // second notion of it. git's config key is an operand (`diff.external=…`,
-        // `GIT_CONFIG_VALUE_0=…`); `--format=`, `--grep=` and `--stat=` carry option
-        // OPERANDS that routinely spell a gated verb — `git log --format=reset` is a
-        // pinned APPROVE (AP-EXT-ITER53-01) and reading its operand blocks it.
-        if (token.value.startsWith('-'))
-            return false;
-        const value = token.value.slice(eq + 1);
-        if (value.length === 0)
-            return false;
-        // git's OWN grammar marks a value as a shell command with a leading `!`
-        // (`alias.*`, `credential.helper`), and the mark hides the command from the
-        // `git <value>` reading: `git !sh -c "git reset --hard"` reads null where
-        // the unmarked twin blocks. Read BOTH spellings rather than replacing one
-        // with the other, so the mark can only ever widen what is read.
-        return gitConfigValueNamesProhibitedOp(value)
-            || (value.startsWith('!') && gitConfigValueNamesProhibitedOp(value.slice(1)));
-    });
-}
+const GIT_ALIAS_VERB = 'config alias';
 /**
  * Returns true when `git checkout <args>` is targeting a ref (blocked).
  * Allowed: `git checkout -- <path>`, `git checkout .`, `git checkout` with no positional.
@@ -1296,7 +1226,7 @@ function isCheckoutRefOperation(afterVerb) {
  *   git commit (without --amend) (plain commit is allowed)
  *   git fetch (without --prune)  (plain fetch is allowed)
  */
-function findGitVerb(command, readValues) {
+function findGitVerb(command) {
     const tokens = tokenizeShellTokens(command);
     // The git ANCHOR, not the exec-token prelude. A POSIX command PREFIX (`env`,
     // `command`, `nohup`, `nice`, `exec`, `time`, `sudo`, …) stands in exec
@@ -1319,16 +1249,6 @@ function findGitVerb(command, readValues) {
     // a global option we had not enumerated silently shifted the read onto its
     // operand (see GATED_GIT_VERBS). Scanning the whole argument list for the verb
     // itself needs no such knowledge.
-    // THE VALUE HALF IS ASKED BEFORE THE VERB SCAN, and that order is the opposite
-    // of the KEY half's below — measured, not chosen. A segment can BOTH run a
-    // benign gated verb AND hand git a command through config, and the scan
-    // returns one verb: `git -c diff.external='sh -c "git reset --hard"' commit
-    // -m x` read `commit`, approved (no `--amend`), and REALLY destroyed staged
-    // work in a scratch repo. `fetch` behaves the same with `core.sshCommand`.
-    // Asking first costs the KEY half's commit-message sparing nothing, because
-    // this half fires only when a token's VALUE spells a prohibited op.
-    if (readValues && configValueRunsProhibitedCommand(tokens))
-        return { verb: GIT_CONFIG_VERB, afterVerb: [] };
     let firstBare = -1;
     for (let i = 0; i < rest.length; i++) {
         if (rest[i].startsWith('-'))
@@ -1356,7 +1276,7 @@ function findGitVerb(command, readValues) {
     // the value is an incomplete enumeration of git's config surface. The worker
     // has no legitimate need to define a git verb.
     if (segmentDefinesGitAlias(tokens))
-        return { verb: GIT_CONFIG_VERB, afterVerb: [] };
+        return { verb: GIT_ALIAS_VERB, afterVerb: [] };
     // Fall back to the first bare word so the returned verb still names the real
     // subcommand for non-prohibited commands. Nothing in detectProhibitedGitVerb
     // can fire on it, so this arm cannot under-block.
@@ -1364,18 +1284,18 @@ function findGitVerb(command, readValues) {
         return null;
     return { verb: rest[firstBare].toLowerCase(), afterVerb: rest.slice(firstBare + 1) };
 }
-export function detectProhibitedGitVerb(command, readValues = true) {
+export function detectProhibitedGitVerb(command) {
     if (!command)
         return null;
     // Evaluate every chained segment, not just the leading command: a worker
     // running `cd sub && git reset` or `git status && git push` must still be
     // caught (the leading token is `cd` / a benign git verb).
     for (const segment of splitShellSegments(command)) {
-        const parsed = findGitVerb(segment, readValues);
+        const parsed = findGitVerb(segment);
         if (!parsed)
             continue;
         const { verb, afterVerb } = parsed;
-        if (verb === GIT_CONFIG_VERB || PROHIBITED_GIT_VERBS_SIMPLE.has(verb))
+        if (verb === GIT_ALIAS_VERB || PROHIBITED_GIT_VERBS_SIMPLE.has(verb))
             return { verb };
         if (verb === 'checkout' && isCheckoutRefOperation(afterVerb))
             return { verb: 'checkout' };
