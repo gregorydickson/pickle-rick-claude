@@ -1460,13 +1460,48 @@ export const JUDGE_SYSTEM_PROMPT = [
     'Use Read, Glob, and Grep tools to examine files as needed.',
     `Your final output MUST be a single JSON object matching this schema, and NOTHING else: ${JUDGE_OUTPUT_JSON_SCHEMA}`,
 ].join(' ') + '\n\n' + FOM_HONEST_REPORTING_RULES;
+/**
+ * Matches the "Hard ceiling: ..." sentence in szechuan-sauce-principles.md — the maintained
+ * asset M4 (GitHub #22) keeps in sync with the enforced `max-lines-per-function` eslint rule.
+ * Extracting the sentence (never deriving a number) is what keeps this file free of a second
+ * reader of the project's lint config (I1 / AC-I1-2): the ceiling is already derived elsewhere
+ * and merely quoted here.
+ */
+const SIZE_CEILING_SENTENCE_RE = /Hard ceiling:[^\n]*/;
+/**
+ * Resolves the enforced function-size ceiling sentence, reached the same way
+ * `pipeline-runner.ts`'s `buildSzechuanJudgeContext` reaches the asset —
+ * `path.join(extensionRoot, 'szechuan-sauce-principles.md')` — never a second config read.
+ * Returns undefined when `extensionRoot` is absent, the asset is missing/unreadable, or it
+ * states no ceiling sentence; `buildJudgePrompt` degrades that to "no ceiling stated" rather
+ * than inventing a number (I1).
+ */
+export function resolveEnforcedSizeCeilingSentence(extensionRoot) {
+    if (!extensionRoot)
+        return undefined;
+    const principlesPath = path.join(extensionRoot, 'szechuan-sauce-principles.md');
+    let content;
+    try {
+        content = fs.readFileSync(principlesPath, 'utf-8');
+    }
+    catch {
+        return undefined;
+    }
+    const match = content.match(SIZE_CEILING_SENTENCE_RE);
+    return match ? match[0].trim() : undefined;
+}
 /** Build the LLM judge prompt. */
 export function buildJudgePrompt(input) {
-    const { goal, cwd, history, prdPath, judgeContextPath, priorViolations = [], allowedPaths = [], } = input;
+    const { goal, cwd, history, prdPath, judgeContextPath, priorViolations = [], allowedPaths = [], extensionRoot, } = input;
     const parts = [
         `Goal: ${goal}`,
         `Working directory: ${cwd}`,
     ];
+    // I1: state the enforced ceiling (or its explicit absence) unconditionally, rather than
+    // relying on the judge to open judgeContextPath itself — session 2026-09-12-a4d141e1 cited
+    // "the 50-line hard limit" despite being told to read the principles file first.
+    const sizeCeilingSentence = resolveEnforcedSizeCeilingSentence(extensionRoot);
+    parts.push(`Enforced function-size ceiling: ${sizeCeilingSentence ?? 'no ceiling stated'}`);
     if (judgeContextPath) {
         parts.push(`Scoring reference: ${judgeContextPath}`);
         parts.push('Read this file FIRST — it defines the scoring criteria, priority matrix, and violation taxonomy you must use.');
@@ -1744,8 +1779,8 @@ export function parseLlmJudgeOutput(rawOutput) {
         shape: 'full',
     };
 }
-export async function measureLlmMetric(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], allowedPaths = []) {
-    return (await measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend, priorViolations, allowedPaths)).metric;
+export async function measureLlmMetric(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], allowedPaths = [], extensionRoot) {
+    return (await measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend, priorViolations, allowedPaths, extensionRoot)).metric;
 }
 function isMissingCliError(err) {
     if (!err || typeof err !== 'object')
@@ -2054,9 +2089,9 @@ async function measureMetricWithRetry(validation, timeoutSeconds, cwd) {
  * NOT write, edit, or execute — do NOT swap in buildWorkerInvocation here, it
  * grants full FS write access.
  */
-function buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths) {
+function buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot) {
     const model = judgeModel || DEFAULT_JUDGE_MODEL;
-    const userPrompt = buildJudgePrompt({ goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths });
+    const userPrompt = buildJudgePrompt({ goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot });
     const { cmd, args } = buildJudgeInvocation('claude', {
         prompt: userPrompt,
         addDirs: [cwd],
@@ -2128,8 +2163,8 @@ export function judgeAttemptFromOutput(output) {
     }
     return { metric: { raw: output, score } };
 }
-async function measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], allowedPaths = []) {
-    const { cmd, args, model } = buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths);
+async function measureLlmMetricAttempt(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], allowedPaths = [], extensionRoot) {
+    const { cmd, args, model } = buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot);
     let output;
     try {
         if (process.env['PICKLE_JUDGE_LEGACY_SPAWN'] === '1') {
@@ -2621,7 +2656,7 @@ async function runJudgeBackoffRound(ctx, state, cumulativeParkedMs) {
     for (let attempt = 0; attempt <= ctx.backoffsMs.length; attempt++) {
         state.totalAttempts++;
         const startedAt = Date.now();
-        const result = await measureLlmMetricAttempt(ctx.goal, ctx.timeoutSeconds, ctx.cwd, ctx.judgeModel, ctx.history, ctx.prdPath, ctx.judgeContextPath, state.attemptBackend, ctx.priorViolations, ctx.allowedPaths);
+        const result = await measureLlmMetricAttempt(ctx.goal, ctx.timeoutSeconds, ctx.cwd, ctx.judgeModel, ctx.history, ctx.prdPath, ctx.judgeContextPath, state.attemptBackend, ctx.priorViolations, ctx.allowedPaths, ctx.extensionRoot);
         const elapsedMs = Math.max(0, Date.now() - startedAt);
         emitJudgeAttemptTelemetry(ctx, state, result, elapsedMs);
         if (result.metric) {
@@ -2681,7 +2716,7 @@ async function runJudgeBackoffLoop(ctx, state) {
     }
     return judgeExhaustedResult(state);
 }
-export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], attemptActivity, allowedPaths = []) {
+export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, judgeModel, history, prdPath, judgeContextPath, backend = 'claude', priorViolations = [], attemptActivity, allowedPaths = [], extensionRoot) {
     const settings = attemptActivity?.spawnContext === 'iteration'
         ? loadMicroverseSettingsBag()
         : null;
@@ -2710,6 +2745,7 @@ export async function measureLlmMetricWithBackoff(goal, timeoutSeconds, cwd, jud
         isNested,
         preSpawnEnvKeyNames,
         backoffsMs,
+        extensionRoot,
     };
     return runJudgeBackoffLoop(ctx, createJudgeBackoffState(backend, probe.kind));
 }
@@ -3278,7 +3314,7 @@ async function measureCurrentMetric(state, ctx, backend) {
         const surface = deriveJudgeReviewSurface(ctx.sessionDir);
         if (surface.kind === 'failed')
             return null;
-        return measureLlmMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, state.violation_ledger ?? [], judgeSurfacePaths(surface));
+        return measureLlmMetric(state.key_metric.validation, state.key_metric.timeout_seconds, ctx.workingDir, state.key_metric.judge_model, state.convergence?.history ?? [], state.prd_path, state.judge_context_path, backend, state.violation_ledger ?? [], judgeSurfacePaths(surface), ctx.extensionRoot);
     }
     return null;
 }
@@ -3450,7 +3486,7 @@ async function measureLlmBaseline(state, ctx, backend) {
         session: path.basename(ctx.sessionDir),
         iteration: ctx.iteration,
         spawnContext: 'baseline',
-    }, judgeSurfacePaths(surface));
+    }, judgeSurfacePaths(surface), ctx.extensionRoot);
     if (measured.metric) {
         // M2: score and seed the ledger on the SAME wire the iteration arm uses
         // (`measureAndClassifyIteration`) — never the judge's self-reported baseline integer for a
@@ -3752,7 +3788,7 @@ export async function measureLlmIteration(state, ctx, backend) {
         spawnContext: 'iteration',
         statePath: ctx.statePath,
         runnerState: ctx.currentRunnerState,
-    }, judgeSurfacePaths(surface));
+    }, judgeSurfacePaths(surface), ctx.extensionRoot);
     if (measured.metric)
         return { kind: 'ok', metric: measured.metric };
     const exitReason = mapJudgeMeasurementFailure(measured);

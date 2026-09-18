@@ -2056,6 +2056,45 @@ export interface JudgePromptInput {
    * existing whole-tree behavior is preserved.
    */
   allowedPaths?: string[];
+  /**
+   * The extension install root, used ONLY to locate `szechuan-sauce-principles.md` the
+   * same way `pipeline-runner.ts`'s `buildSzechuanJudgeContext` reaches it (I1). Optional
+   * so pre-existing direct callers of this exported function are unaffected; absent or an
+   * unreadable/ceiling-less asset degrades to "no ceiling stated" (see
+   * {@link resolveEnforcedSizeCeilingSentence}) rather than a thrown error or a fabricated
+   * default.
+   */
+  extensionRoot?: string;
+}
+
+/**
+ * Matches the "Hard ceiling: ..." sentence in szechuan-sauce-principles.md — the maintained
+ * asset M4 (GitHub #22) keeps in sync with the enforced `max-lines-per-function` eslint rule.
+ * Extracting the sentence (never deriving a number) is what keeps this file free of a second
+ * reader of the project's lint config (I1 / AC-I1-2): the ceiling is already derived elsewhere
+ * and merely quoted here.
+ */
+const SIZE_CEILING_SENTENCE_RE = /Hard ceiling:[^\n]*/;
+
+/**
+ * Resolves the enforced function-size ceiling sentence, reached the same way
+ * `pipeline-runner.ts`'s `buildSzechuanJudgeContext` reaches the asset —
+ * `path.join(extensionRoot, 'szechuan-sauce-principles.md')` — never a second config read.
+ * Returns undefined when `extensionRoot` is absent, the asset is missing/unreadable, or it
+ * states no ceiling sentence; `buildJudgePrompt` degrades that to "no ceiling stated" rather
+ * than inventing a number (I1).
+ */
+export function resolveEnforcedSizeCeilingSentence(extensionRoot: string | undefined): string | undefined {
+  if (!extensionRoot) return undefined;
+  const principlesPath = path.join(extensionRoot, 'szechuan-sauce-principles.md');
+  let content: string;
+  try {
+    content = fs.readFileSync(principlesPath, 'utf-8');
+  } catch {
+    return undefined;
+  }
+  const match = content.match(SIZE_CEILING_SENTENCE_RE);
+  return match ? match[0].trim() : undefined;
 }
 
 /** Build the LLM judge prompt. */
@@ -2068,11 +2107,18 @@ export function buildJudgePrompt(input: JudgePromptInput): string {
     judgeContextPath,
     priorViolations = [],
     allowedPaths = [],
+    extensionRoot,
   } = input;
   const parts: string[] = [
     `Goal: ${goal}`,
     `Working directory: ${cwd}`,
   ];
+
+  // I1: state the enforced ceiling (or its explicit absence) unconditionally, rather than
+  // relying on the judge to open judgeContextPath itself — session 2026-09-12-a4d141e1 cited
+  // "the 50-line hard limit" despite being told to read the principles file first.
+  const sizeCeilingSentence = resolveEnforcedSizeCeilingSentence(extensionRoot);
+  parts.push(`Enforced function-size ceiling: ${sizeCeilingSentence ?? 'no ceiling stated'}`);
 
   if (judgeContextPath) {
     parts.push(`Scoring reference: ${judgeContextPath}`);
@@ -2417,6 +2463,7 @@ export async function measureLlmMetric(
   backend: Backend = 'claude',
   priorViolations: ViolationLedger[] = [],
   allowedPaths: string[] = [],
+  extensionRoot?: string,
 ): Promise<{ raw: string; score: number } | null> {
   return (await measureLlmMetricAttempt(
     goal,
@@ -2429,6 +2476,7 @@ export async function measureLlmMetric(
     backend,
     priorViolations,
     allowedPaths,
+    extensionRoot,
   )).metric;
 }
 
@@ -2835,9 +2883,10 @@ function buildJudgeAttemptInvocation(
   judgeContextPath: string | undefined,
   priorViolations: ViolationLedger[],
   allowedPaths: string[],
+  extensionRoot: string | undefined,
 ): { cmd: string; args: string[]; model: string } {
   const model = judgeModel || DEFAULT_JUDGE_MODEL;
-  const userPrompt = buildJudgePrompt({ goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths });
+  const userPrompt = buildJudgePrompt({ goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot });
   const { cmd, args } = buildJudgeInvocation('claude', {
     prompt: userPrompt,
     addDirs: [cwd],
@@ -2923,8 +2972,9 @@ async function measureLlmMetricAttempt(
   backend: Backend = 'claude',
   priorViolations: ViolationLedger[] = [],
   allowedPaths: string[] = [],
+  extensionRoot?: string,
 ): Promise<JudgeMeasurementAttempt> {
-  const { cmd, args, model } = buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths);
+  const { cmd, args, model } = buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot);
 
   let output: string;
   try {
@@ -3323,6 +3373,7 @@ type JudgeBackoffContext = {
   isNested: boolean;
   preSpawnEnvKeyNames: string[];
   backoffsMs: number[];
+  extensionRoot?: string;
 };
 
 type JudgeBackoffState = {
@@ -3502,6 +3553,7 @@ async function runJudgeBackoffRound(
       state.attemptBackend,
       ctx.priorViolations,
       ctx.allowedPaths,
+      ctx.extensionRoot,
     );
     const elapsedMs = Math.max(0, Date.now() - startedAt);
     emitJudgeAttemptTelemetry(ctx, state, result, elapsedMs);
@@ -3570,6 +3622,7 @@ export async function measureLlmMetricWithBackoff(
   priorViolations: ViolationLedger[] = [],
   attemptActivity?: JudgeAttemptActivity,
   allowedPaths: string[] = [],
+  extensionRoot?: string,
 ): Promise<JudgeMeasurementResult> {
   const settings = attemptActivity?.spawnContext === 'iteration'
     ? loadMicroverseSettingsBag()
@@ -3599,6 +3652,7 @@ export async function measureLlmMetricWithBackoff(
     isNested,
     preSpawnEnvKeyNames,
     backoffsMs,
+    extensionRoot,
   };
   return runJudgeBackoffLoop(ctx, createJudgeBackoffState(backend, probe.kind));
 }
@@ -4257,6 +4311,7 @@ async function measureCurrentMetric(
       backend,
       state.violation_ledger ?? [],
       judgeSurfacePaths(surface),
+      ctx.extensionRoot,
     );
   }
   return null;
@@ -4453,6 +4508,7 @@ async function measureLlmBaseline(
       spawnContext: 'baseline',
     },
     judgeSurfacePaths(surface),
+    ctx.extensionRoot,
   );
   if (measured.metric) {
     // M2: score and seed the ledger on the SAME wire the iteration arm uses
@@ -4820,6 +4876,7 @@ export async function measureLlmIteration(
       runnerState: ctx.currentRunnerState,
     },
     judgeSurfacePaths(surface),
+    ctx.extensionRoot,
   );
   if (measured.metric) return { kind: 'ok', metric: measured.metric };
   const exitReason = mapJudgeMeasurementFailure(measured);

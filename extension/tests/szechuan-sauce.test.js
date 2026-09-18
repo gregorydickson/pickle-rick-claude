@@ -15,6 +15,7 @@ import {
     readMicroverseState,
     isConverged,
 } from '../services/microverse-state.js';
+import { buildJudgePrompt, resolveEnforcedSizeCeilingSentence } from '../bin/microverse-runner.js';
 
 // ---------------------------------------------------------------------------
 // Szechuan Sauce command prompt validation
@@ -251,14 +252,24 @@ test('M4-1: the principles file states the enforced code-line ceiling and every 
 
 test('M4-4: no judge prompt, principles file or root CLAUDE.md states a 50-line function limit', () => {
     const commandsDir = path.resolve(EXTENSION_ROOT, '../.claude/commands');
-    const prompts = [
+    const files = [
         ...fs.readdirSync(EXTENSION_ROOT).filter((f) => /^szechuan-sauce.*principles\.md$/.test(f)).map((f) => path.join(EXTENSION_ROOT, f)),
         ...fs.readdirSync(commandsDir).filter((f) => f.endsWith('.md')).map((f) => path.join(commandsDir, f)),
         path.resolve(EXTENSION_ROOT, '../CLAUDE.md'),
     ];
-    assert.ok(prompts.length > 3, 'prompt corpus unexpectedly small; the scan would pass vacuously');
-    const hits = prompts.flatMap((file) => fs.readFileSync(file, 'utf-8').split('\n')
-        .map((line, i) => (STALE_SIZE_LIMIT_RE.test(line) ? `${path.basename(file)}:${i + 1}: ${line.trim()}` : null))
+    assert.ok(files.length > 3, 'prompt corpus unexpectedly small; the scan would pass vacuously');
+    // AC-I1-3: the corpus scans the ASSEMBLED microverse judge prompt too — a fix that only
+    // corrects the asset text (7c1085ad) and never wires it into the prompt (I1's own root
+    // cause) would otherwise ship invisible to this scan, exactly the gap I1 closes.
+    const sources = [
+        ...files.map((file) => ({ label: path.basename(file), content: fs.readFileSync(file, 'utf-8') })),
+        {
+            label: 'assembled-microverse-judge-prompt',
+            content: buildJudgePrompt({ goal: 'deslop the codebase', cwd: '/tmp/target', extensionRoot: EXTENSION_ROOT }),
+        },
+    ];
+    const hits = sources.flatMap(({ label, content }) => content.split('\n')
+        .map((line, i) => (STALE_SIZE_LIMIT_RE.test(line) ? `${label}:${i + 1}: ${line.trim()}` : null))
         .filter(Boolean));
     assert.deepEqual(hits, [], 'a prompt still states a function-size limit other than the enforced ceiling');
 });
@@ -269,6 +280,70 @@ test('M4-3 (negative control): runMuxRunnerMain is still over the enforced ceili
 
 test('M4-2: replaying the five ledger functions under code-line counting yields exactly one violation', () => {
     assert.deepEqual(replayUnderEnforcedRule(), ['runMuxRunnerMain']);
+});
+
+// ---------------------------------------------------------------------------
+// I1 (#32 Cause A): the microverse judge prompt carries the enforced ceiling too
+// ---------------------------------------------------------------------------
+// `buildSzechuanJudgeContext` (pipeline-runner.ts:2699) already resolves
+// path.join(extensionRoot, 'szechuan-sauce-principles.md') for the szechuan worker. The microverse
+// LLM judge (buildJudgePrompt) reaches the SAME asset the SAME way and quotes its ceiling sentence
+// verbatim into the assembled prompt, instead of trusting the judge to open the file itself:
+// session 2026-09-12-a4d141e1 cited "the 50-line hard limit" four times despite being told
+// (via judgeContextPath) to read the principles file first.
+
+test('I1-1: the assembled microverse judge prompt carries the enforced ceiling, sourced from the asset', () => {
+    const prompt = buildJudgePrompt({ goal: 'deslop the codebase', cwd: '/tmp/target', extensionRoot: EXTENSION_ROOT });
+    const ceilingSentence = resolveEnforcedSizeCeilingSentence(EXTENSION_ROOT);
+    assert.ok(ceilingSentence, 'the principles asset must state a Hard ceiling sentence for this test to mean anything');
+    assert.ok(
+        ceilingSentence.includes(`${enforcedSizeCeilings().options.max} code lines`),
+        'the extracted sentence must name the eslint-enforced ceiling, or this test is not measuring the enforced number'
+    );
+    assert.ok(prompt.includes(ceilingSentence), 'the assembled prompt must quote the ceiling sentence verbatim');
+    assert.ok(prompt.includes('Enforced function-size ceiling:'), 'the prompt must label the ceiling line');
+});
+
+test('I1-2 (subtraction proof, AC-I1-2): microverse-runner.ts reads no second copy of the eslint config', () => {
+    const content = fs.readFileSync(path.resolve(EXTENSION_ROOT, 'src/bin/microverse-runner.ts'), 'utf-8');
+    assert.equal(
+        (content.match(/eslint\.config/g) || []).length, 0,
+        'the fix must not add a new reader of eslint.config.js — the ceiling is quoted from the principles asset only'
+    );
+});
+
+test('I1-3 (over-trigger control, AC-I1-3): a stale ceiling injected into the assembled prompt is detected', () => {
+    const stalePrompt = buildJudgePrompt({ goal: 'deslop the codebase', cwd: '/tmp/target' })
+        .replace('Enforced function-size ceiling: no ceiling stated', 'Enforced function-size ceiling: a 50-line function is over budget');
+    assert.ok(STALE_SIZE_LIMIT_RE.test('a 50-line function is over budget'), 'fixture setup sanity check — the injected text must match the scan pattern');
+    const hits = stalePrompt.split('\n').filter((line) => STALE_SIZE_LIMIT_RE.test(line));
+    assert.ok(hits.length > 0, 'the M4-4 scan must be able to catch a stale ceiling in the assembled prompt if this wiring ever regresses');
+});
+
+test('I1-4: a missing principles asset degrades to "no ceiling stated", never a fabricated default', () => {
+    const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-i1-missing-asset-'));
+    try {
+        let prompt;
+        assert.doesNotThrow(() => {
+            prompt = buildJudgePrompt({ goal: 'deslop the codebase', cwd: '/tmp/target', extensionRoot: emptyRoot });
+        }, 'a missing asset must not throw into the judge path');
+        assert.ok(
+            prompt.includes('Enforced function-size ceiling: no ceiling stated'),
+            'a missing asset must degrade to an explicit "no ceiling stated" statement'
+        );
+        const ceilingLine = prompt.split('\n').find((l) => l.startsWith('Enforced function-size ceiling:'));
+        assert.ok(!/\d/.test(ceilingLine), 'a missing asset must not substitute a fabricated numeric ceiling');
+    } finally {
+        fs.rmSync(emptyRoot, { recursive: true, force: true });
+    }
+});
+
+test('I1-5: an omitted extensionRoot also degrades honestly (no throw, no fabricated default)', () => {
+    let prompt;
+    assert.doesNotThrow(() => {
+        prompt = buildJudgePrompt({ goal: 'deslop the codebase', cwd: '/tmp/target' });
+    });
+    assert.ok(prompt.includes('Enforced function-size ceiling: no ceiling stated'));
 });
 
 // ---------------------------------------------------------------------------
