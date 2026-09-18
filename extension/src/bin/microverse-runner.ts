@@ -3364,7 +3364,7 @@ function clearMetricParkWait(attemptActivity: JudgeAttemptActivity | undefined):
   if (!attemptActivity) { return; }
   try {
     const sessionDir = path.join(getDataRoot(), 'sessions', attemptActivity.session);
-    fs.unlinkSync(path.join(sessionDir, RATE_LIMIT_WAIT_FILENAME));
+    removeRecoverableJsonObject(path.join(sessionDir, RATE_LIMIT_WAIT_FILENAME));
   } catch {
     // Best-effort; the park file may already be absent.
   }
@@ -4082,8 +4082,12 @@ function writeHandoffFile(sessionDir: string, content: string): void {
   fs.writeFileSync(path.join(sessionDir, 'handoff.txt'), content);
 }
 
+// AP-EXT-ITER82-02: the promotable SET, not the base name. `runRateLimitWaitLoop` can resume
+// EARLY on a cleared probe, so this fires while `wait_until` is still hours in the FUTURE —
+// an orphan left behind here is a LIVE park to `rateLimitParkStillLive` once `monitor.ts`
+// promotes it, which suppresses both hang watchdogs. Same reason for `clearMetricParkWait`.
 function clearRateLimitWaitFile(sessionDir: string): void {
-  try { fs.unlinkSync(path.join(sessionDir, RATE_LIMIT_WAIT_FILENAME)); } catch { /* ok */ }
+  removeRecoverableJsonObject(path.join(sessionDir, RATE_LIMIT_WAIT_FILENAME));
 }
 
 /**

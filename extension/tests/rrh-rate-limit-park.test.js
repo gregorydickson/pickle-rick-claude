@@ -24,7 +24,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
@@ -40,6 +40,7 @@ import {
   rateLimitParkStillLive,
 } from '../bin/mux-runner.js';
 import { resolveRateLimitSettings, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
+import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MUX_SRC = path.resolve(__dirname, '../src/bin/mux-runner.ts');
@@ -412,13 +413,28 @@ test('B4: park is persisted to state.rate_limit_park on entry (carries reset_at)
   assert.equal(parkPersistedReset, reset, 'reset_at persisted into state.rate_limit_park on park entry');
 });
 
-test('B4: on --resume the runner re-arms the park BEFORE the stale-artifact unlink (no spawn-burn)', () => {
+test('B4: on --resume the runner re-arms the park BEFORE the stale-artifact clear (no spawn-burn)', () => {
   // The startup re-arm reads ownerState.rate_limit_park; if reset_at is still future it
-  // RE-WRITES rate_limit_wait.json and SKIPS the unlink — so no worker spawns on relaunch.
-  const rearmIdx = src.indexOf('Re-armed rate-limit park from persisted state');
-  const unlinkIdx = src.indexOf("try { fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json')); } catch { /* not present */ }");
+  // RE-WRITES rate_limit_wait.json and SKIPS the clear — so no worker spawns on relaunch.
+  // AP-EXT-ITER82-02: scoped to the function BODY. The clear now shares its spelling with
+  // `foldRateLimitParkOnWake`, which sits EARLIER in the file, so a whole-file `indexOf`
+  // would measure that unrelated site and read the ordering backwards.
+  const fnStart = src.indexOf('function restorePersistedRateLimitPark');
+  assert.ok(fnStart > 0, 'restorePersistedRateLimitPark present');
+  // Slice to the column-0 closing brace: the first `{` after the name opens the PARAMETER
+  // object type (`opts: {`), not the body, so brace-matching from it measures the wrong span.
+  const fnEnd = src.indexOf('\n}\n', fnStart);
+  assert.ok(fnEnd > fnStart, 'function body slice is bounded');
+  const body = src.slice(fnStart, fnEnd);
+  const rearmIdx = body.indexOf('Re-armed rate-limit park from persisted state');
+  const clearIdx = body.indexOf("removeRecoverableJsonObject(path.join(sessionDir, 'rate_limit_wait.json'))");
+  assert.equal(
+    (body.match(/removeRecoverableJsonObject\(/g) || []).length,
+    1,
+    'exactly one clear in this body, so the ordering below is unambiguous',
+  );
   assert.ok(rearmIdx > 0, 're-arm branch present');
-  assert.ok(unlinkIdx > rearmIdx, 're-arm branch precedes the stale-artifact unlink (else branch)');
+  assert.ok(clearIdx > rearmIdx, 're-arm branch precedes the stale-artifact clear (else branch)');
   assert.match(src, /parkArmStillFuture\s*=\s*typeof persistedReset === 'number' && persistedReset > 0/);
   assert.match(src, /persistedReset \* 1000 > Date\.now\(\)/);
 });
@@ -669,5 +685,152 @@ test('B3 WIRING: both watchdog call sites read the measurement, and no presence 
     (src.match(/rateLimitWaiting: rateLimitParkStillLive\(sessionDir\),/g) || []).length,
     2,
     'both the idle-stall and CPU-liveness watchdogs must take rateLimitWaiting from the measurement',
+  );
+});
+
+// --- AP-EXT-ITER82-02 -------------------------------------------------------------
+// `rate_limit_wait.json` is written by `writeStateFile` (tmp `.tmp.<pid>.<ts>.<seq>`, then
+// rename), so an interrupted write leaves an orphan that IS the park to every recovery
+// reader. Five deleters took the BASE NAME, while `monitor.ts:appendRateLimitField`
+// recovery-READS the path every render tick — so one render renamed the orphan straight
+// back and `rateLimitParkStillLive` flipped to true, re-opening the exact hole the B3 rows
+// above closed: both the idle-stall and CPU-liveness watchdogs short-circuit to
+// `in_wait_state` on that value, so a hung worker is never salvaged.
+//
+// The clear fires while `wait_until` is still in the FUTURE — the park resumes EARLY on a
+// cleared probe (`runRateLimitWaitLoop` returns before `waitEnd`), and `processRateLimitWait`
+// wakes at `max(reset_at + jitter, now + min_wait)`, not at `wait_until`. That is why the
+// resurrected file reads LIVE rather than harmlessly expired.
+//
+// Unlike `makeCtx`, this harness leaves `writeState` and `unlink` at their PRODUCTION
+// defaults and points the cycle at a real directory, so the assertions run against the real
+// `writeStateFile` -> `unlinkLoopPath` -> `removeRecoverableJsonObject` wire. Only the clock
+// and state seams are injected. Assert the RESURRECTION, never a return value: every deleter
+// is best-effort and returns nothing, so a did-it-throw oracle greens over the defect.
+
+/** A pid that is provably dead, so the orphan is never skipped as an in-flight write. */
+function deadPid() {
+  let pid = 999_999;
+  for (;;) {
+    try { process.kill(pid, 0); pid += 1; } catch { return pid; }
+  }
+}
+
+function plantOrphan(waitPath, pid) {
+  writeFileSync(`${waitPath}.tmp.${pid}.${NOW}.1`, JSON.stringify({
+    waiting: true, reason: 'API rate limit', wait_source: 'api',
+    wait_until: new Date(NOW + 3 * 60 * 60 * 1000).toISOString(),
+  }));
+}
+
+/** LoopContext on a REAL session dir: production writeState + unlink, fake clock only. */
+function makeRealFsCtx(sessionDir, onFirstSleep) {
+  let clock = NOW;
+  let fired = false;
+  const state = {
+    active: true, start_time_epoch: NOW_SEC, max_time_minutes: 0,
+    iteration: 7, rate_limit_park: null,
+  };
+  return {
+    getState: () => state,
+    ctx: {
+      sessionDir,
+      statePath: path.join(sessionDir, 'state.json'),
+      extensionRoot: path.join(sessionDir, 'ext'),
+      iteration: 7,
+      log: () => {},
+      exitResult: { type: 'api_limit', rateLimitInfo: { limited: true, resetsAt: NOW_SEC + 3 * 3600 } },
+      consecutiveRateLimits: 0,
+      maxRateLimitRetries: 3,
+      rateLimitWaitMinutes: 5,
+      maxParkMinutes: DEFAULT_MAX_PARK_MINUTES,
+      parkJitterMs: 90_000,
+      now: () => clock,
+      sleep: async () => {
+        if (!fired) { fired = true; onFirstSleep(); }
+        clock += 60 * 60 * 1000; // one step past the wake target — no real waiting
+      },
+      readState: () => state,
+      updateState: (mutator) => { mutator(state); },
+      writeHandoff: () => {},
+      deactivate: () => { state.active = false; },
+      // writeState / unlink deliberately NOT injected — this suite measures the real wire.
+    },
+  };
+}
+
+/** One monitor render tick: exactly what `appendRateLimitField` does with this path. */
+function monitorRenderTick(waitPath) {
+  readRecoverableJsonObject(waitPath);
+}
+
+test('AP-EXT-ITER82-02: an orphan left mid-park is cleared too, so a monitor render cannot resurrect the park', async () => {
+  const dir = mkFixtureTmpDir('pickle-ap82-park-');
+  const waitPath = path.join(dir, 'rate_limit_wait.json');
+  // An interrupted re-write during the park: the base is live, a dead-writer tmp survives.
+  const h = makeRealFsCtx(dir, () => plantOrphan(waitPath, deadPid()));
+  await processRateLimitCycle(h.getState(), h.ctx);
+
+  assert.equal(rateLimitParkStillLive(dir, NOW), false, 'the park must read dead once the cycle resumes');
+  monitorRenderTick(waitPath);
+  assert.equal(existsSync(waitPath), false, 'a monitor render must not rename the orphan back onto the base');
+  assert.equal(
+    rateLimitParkStillLive(dir, NOW),
+    false,
+    'a resurrected park suppresses BOTH hang watchdogs for the whole remaining wait_until',
+  );
+});
+
+test('AP-EXT-ITER82-02: the clear lands even when the base name never existed', async () => {
+  const dir = mkFixtureTmpDir('pickle-ap82-orphan-');
+  const waitPath = path.join(dir, 'rate_limit_wait.json');
+  // The re-write never reached its rename: `existsSync` says absent while every recovery
+  // reader still sees a usable park. A base-name delete is a silent no-op over this state.
+  const h = makeRealFsCtx(dir, () => {
+    rmSync(waitPath, { force: true });
+    plantOrphan(waitPath, deadPid());
+  });
+  await processRateLimitCycle(h.getState(), h.ctx);
+
+  monitorRenderTick(waitPath);
+  assert.equal(existsSync(waitPath), false, 'the orphan must not survive the clear');
+  assert.equal(rateLimitParkStillLive(dir, NOW), false);
+});
+
+test('AP-EXT-ITER82-02: a LIVE writer’s tmp survives the clear — an in-flight write is not an orphan', async () => {
+  // Control in the opposite direction: the clear must not become a blind glob that eats a
+  // concurrent writer's tmp. `process.pid` is alive by construction, so the reader skips it
+  // and the deleter must skip it for the same reason.
+  const dir = mkFixtureTmpDir('pickle-ap82-live-');
+  const waitPath = path.join(dir, 'rate_limit_wait.json');
+  let liveTmp = '';
+  const h = makeRealFsCtx(dir, () => {
+    liveTmp = `${waitPath}.tmp.${process.pid}.${NOW}.1`;
+    plantOrphan(waitPath, process.pid);
+  });
+  await processRateLimitCycle(h.getState(), h.ctx);
+
+  assert.equal(existsSync(waitPath), false, 'the base must still be removed');
+  assert.equal(existsSync(liveTmp), true, 'a live writer’s tmp is an in-flight write, not an orphan');
+});
+
+test('AP-EXT-ITER82-02: no deleter of rate_limit_wait.json takes the base name', async () => {
+  // The rows above drive ONE of the five clears (`unlinkLoopPath`, via the exported cycle).
+  // microverse-runner's two clears are unexported and `foldRateLimitParkOnWake` /
+  // `restorePersistedRateLimitPark` sit inside the unexported main loop, so this pins that
+  // no base-name deleter came back at any of the remaining four sites.
+  const MICROVERSE_SRC = path.resolve(__dirname, '../src/bin/microverse-runner.ts');
+  for (const file of [MUX_SRC, MICROVERSE_SRC]) {
+    const text = readFileSync(file, 'utf8');
+    assert.equal(
+      /unlinkSync\([^;]*(?:rate_limit_wait\.json|RATE_LIMIT_WAIT_FILENAME)/.test(text),
+      false,
+      `${path.basename(file)} must not delete the park file by base name`,
+    );
+  }
+  assert.equal(
+    (src.match(/removeRecoverableJsonObject\(/g) || []).length,
+    3,
+    'mux-runner clears the park through the shared remover at all three of its sites',
   );
 });

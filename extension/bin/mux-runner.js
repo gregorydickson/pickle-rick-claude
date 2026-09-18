@@ -14,6 +14,7 @@ import { getJudgeEnvForAttempt, cleanupJudgeRuntimeDir } from '../services/judge
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
 import { readTicketWorkerGateTestsVerdict } from './setup.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
+import { removeRecoverableJsonObject } from '../services/recoverable-json.js';
 import { emitOrphanReapSummary, reapOrphanedWorkerProcs, killProcessGroup } from '../services/orphan-reaper.js';
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
@@ -7567,15 +7568,14 @@ function writeLoopState(ctx, targetPath, value) {
 function applyTimeoutCounterForLoop(input) {
     return applyTimeoutCounter({ ...input });
 }
+// AP-EXT-ITER82-02: the sole caller clears `rate_limit_wait.json`, which `monitor.ts`
+// recovery-reads — so the base name is not the file. See `removeRecoverableJsonObject`.
 function unlinkLoopPath(ctx, targetPath) {
     if (ctx.unlink) {
         ctx.unlink(targetPath);
         return;
     }
-    try {
-        fs.unlinkSync(targetPath);
-    }
-    catch { /* ok */ }
+    removeRecoverableJsonObject(targetPath);
 }
 /**
  * R-WTZ: a zeroed `worker_timeout_seconds` (microverse's own sentinel value, or
@@ -8211,10 +8211,7 @@ function foldRateLimitParkOnWake(args) {
         });
     }
     catch { /* best-effort */ }
-    try {
-        fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json'));
-    }
-    catch { /* ok */ }
+    removeRecoverableJsonObject(path.join(sessionDir, 'rate_limit_wait.json'));
     const parkedMinutes = Math.ceil(parkedMs / 60_000);
     logActivity({ event: 'rate_limit_resume', source: 'pickle', session, parked_minutes: parkedMinutes });
     return parkedMinutes;
@@ -11069,10 +11066,7 @@ function restorePersistedRateLimitPark(opts) {
         log(`Re-armed rate-limit park from persisted state (reset_at ${new Date(persistedReset * 1000).toISOString()}) — not spawn-burning.`);
         return;
     }
-    try {
-        fs.unlinkSync(path.join(sessionDir, 'rate_limit_wait.json'));
-    }
-    catch { /* not present */ }
+    removeRecoverableJsonObject(path.join(sessionDir, 'rate_limit_wait.json'));
     if (persistedPark) {
         try {
             sm.update(statePath, (s) => { s.rate_limit_park = null; });
