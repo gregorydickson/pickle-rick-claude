@@ -448,25 +448,57 @@ test('an underivable cause (non-empty legacy history, no last_stall_signal) repo
   assert.equal(disposition.inputs.iteration, 9);
 });
 
-test('replaying both vendored sessions renders DIFFERENT causes', () => {
+test('replaying both vendored sessions attributes NO mechanism to either', () => {
   const a4d141e1 = loadMicroverseJson('2026-09-12-a4d141e1');
   const c5a7eb48 = loadMicroverseJson('2026-09-15-c5a7eb48');
 
   assert.equal(a4d141e1.exit_reason, 'stalled_below_target');
   assert.equal(c5a7eb48.exit_reason, 'stalled_below_target');
+  // The two corpora differ in the shape that used to decide their causes — kept so a swapped or
+  // truncated fixture still reds here, even though the derivation no longer reads history length.
   assert.equal(a4d141e1.convergence.history.length, 1);
   assert.equal(c5a7eb48.convergence.history.length, 0);
 
   const causeA = deriveStallCause(a4d141e1, 2).cause;
   const causeB = deriveStallCause(c5a7eb48, 0).cause;
 
-  assert.notEqual(causeA, causeB);
-  // Documented, not incidental: non-empty legacy history with no live signal is unknown
-  // (the ticket's forbidden "history.length > 0 implies regression" discriminator is never
-  // built); empty legacy history is a sound backfill to 'no-commit', since recordIteration
-  // appends unconditionally and so an empty history proves no scored iteration ever ran.
+  // Neither session carries a live last_stall_signal (both predate the field), so neither cause was
+  // measured and neither is named. c5a7eb48 previously read 'no-commit' on a history-length backfill:
+  // sound while recordStall hardcoded that one cause, and false from the moment it could write three.
+  // Its own vendored iteration-6 log does say no commit was made, but the arm could not know that —
+  // it would have answered 'no-commit' just as confidently for a metric that failed to measure.
   assert.equal(causeA, 'unknown');
-  assert.equal(causeB, 'no-commit');
+  assert.equal(causeB, 'unknown');
+  assert.equal(deriveStallCause(a4d141e1, 2).inputs.last_stall_signal, null);
+  assert.equal(deriveStallCause(c5a7eb48, 0).inputs.last_stall_signal, null);
+});
+
+// The legacy arm's failure mode is NAMING a mechanism it never observed, so the causes it must not
+// name are read from the production callsites rather than listed here — a fourth recordStall cause is
+// covered with no list to update. (Same reason as the callsite scan above: a hand-written list asserts
+// only that the test round-trips a set it handed itself.)
+test('the legacy arm never names a recordStall mechanism it never measured', () => {
+  const runnerSource = fs.readFileSync(path.join(EXTENSION_ROOT, 'src/bin/microverse-runner.ts'), 'utf-8');
+  const callsiteCauses = [...runnerSource.matchAll(/recordStall\([A-Za-z0-9_.]+,\s*'([^']+)'\)/g)].map((m) => m[1]);
+  assert.ok(
+    callsiteCauses.length >= 2,
+    `expected the production recordStall callsites, found ${callsiteCauses.length} — the wiring or this scan moved`,
+  );
+
+  // Legacy shape: written before last_stall_signal existed. An empty history proves no SCORED
+  // iteration ran, which narrows the cause to recordStall's members — it does not pick one of them.
+  const mv = makeCauseState();
+  mv.convergence.history = [];
+  delete mv.convergence.last_stall_signal;
+
+  const disposition = deriveStallCause(mv, 4);
+  assert.ok(
+    !callsiteCauses.includes(disposition.cause),
+    `the legacy arm named '${disposition.cause}', one of the ${callsiteCauses.length} mechanisms `
+      + `(${callsiteCauses.join(', ')}) it cannot distinguish without a persisted signal`,
+  );
+  assert.equal(disposition.cause, 'unknown');
+  assert.equal(disposition.inputs.last_stall_signal, null);
 });
 
 // ---------------------------------------------------------------------------------------------

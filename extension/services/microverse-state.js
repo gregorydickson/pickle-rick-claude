@@ -470,20 +470,20 @@ export function classifyFailure(mvState, metricResult, preIterSha, postIterSha, 
  * `history[0].classification` on the vendored `2026-09-12-a4d141e1` corpus (`classification:
  * 'regressed'`, `iteration_regressions: 0`).
  *
- * A session captured before `last_stall_signal` existed carries no such field. Backfilling one for
- * that legacy shape is sound in exactly one case: `recordIteration` appends to `history`
- * UNCONDITIONALLY, so an EMPTY `history` is a proof — not a guess — that no scored iteration ever ran
- * in that session, meaning every `stall_counter` increment came from `recordStall`; the cause
- * backfills to `'no-commit'`. This is not the ticket's forbidden discriminator: that discriminator's
- * failure mode is the POSITIVE claim ("history has entries, so a scored regression caused THIS
- * stall"); the claim here is the NEGATIVE one ("history has zero entries, so no scored iteration ever
- * ran"), which the unconditional-append invariant makes airtight. A non-empty legacy `history` carries
- * the same staleness risk as the rejected candidate above and is never guessed — it reports
- * `'unknown'` with its inputs, per the Errors clause.
+ * A session captured before `last_stall_signal` existed carries no such field, and NOTHING is
+ * backfilled for it: the cause is `'unknown'`, whatever `history` looks like. An empty `history` does
+ * prove — via `recordIteration`'s unconditional append — that no scored iteration ever ran, so every
+ * `stall_counter` increment came from `recordStall`. That narrows the cause to `StallWriteCause`'s
+ * THREE members; it does not pick one. `recordStall` appends to `history` for none of them, so a
+ * strict-mode red and an unmeasurable metric produce exactly the shape a no-commit stall produces.
+ * This arm previously answered `'no-commit'` on that proof — correct while `recordStall` hardcoded
+ * that single cause, and false from the moment it could write three. Reporting the mechanism the
+ * session happens to have used most often is the over-report this module exists to avoid: the honest
+ * answer is `'unknown'`, with `inputs.last_stall_signal: null` recording that nothing was measured.
  */
 export function deriveStallCause(state, iteration) {
     const signal = state.convergence.last_stall_signal ?? null;
-    const cause = signal ?? ((state.convergence?.history ?? []).length === 0 ? 'no-commit' : 'unknown');
+    const cause = signal ?? 'unknown';
     return { cause, inputs: { last_stall_signal: signal, iteration } };
 }
 export function isConverged(state) {
