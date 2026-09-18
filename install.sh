@@ -494,10 +494,24 @@ fi
 
 DEPLOYED_V="$(read_package_version "$EXTENSION_ROOT/extension/package.json")"
 UPDATE_CACHE_FILE="$EXTENSION_ROOT/update-check.json"
-if [ -f "$UPDATE_CACHE_FILE" ]; then
+# The cache is the whole PROMOTABLE SET, not one name: `check-update.ts:readCache` reads this
+# path through `readRecoverableJsonObject`, which promotes a dead orphan `<base>.tmp.<pid>`
+# whenever the base is gone (`baseMtimeMs` is 0 once it is, so its `mtimeMs < baseMtimeMs`
+# discard can never fire). Measured on the real reader: `[ -f base ]` skipped an orphan-only
+# cache entirely, and `rm -f base` left the orphan to be renameSync'd back, so the stale
+# `current_version` this block had just rejected is what the next readCache returned -- while
+# it printed `Removed stale update cache`. Same false-clean purge, same fix as
+# `bin/purge-update-cache.js` (AP-BIN-ITER76-01; this replay half is AP-BIN-ITER78-01). An orphan
+# is discarded without re-deciding promotion here (no caller may hand-roll that scan): an
+# interrupted write was never committed by its producer, so dropping it costs one re-probe.
+UPDATE_CACHE_MEMBERS=()
+for _cache_member in "$UPDATE_CACHE_FILE" "$UPDATE_CACHE_FILE".tmp.*; do
+  if [ -f "$_cache_member" ]; then UPDATE_CACHE_MEMBERS+=("$_cache_member"); fi
+done
+if [ ${#UPDATE_CACHE_MEMBERS[@]} -gt 0 ]; then
   CACHE_CURRENT_VERSION="$(jq -r '.current_version // ""' "$UPDATE_CACHE_FILE" 2>/dev/null || echo "")"
   if [ "$CACHE_CURRENT_VERSION" = "1.0.0" ] || [ "$CACHE_CURRENT_VERSION" != "$DEPLOYED_V" ]; then
-    rm -f "$UPDATE_CACHE_FILE"
+    rm -f "${UPDATE_CACHE_MEMBERS[@]}"
     echo "[install.sh] Removed stale update cache: cached current_version=${CACHE_CURRENT_VERSION:-<missing>} deployed=$DEPLOYED_V" >&2
   fi
 fi

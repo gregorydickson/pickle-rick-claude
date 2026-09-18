@@ -2,11 +2,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync, lstatSync, readlinkSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync, lstatSync, readlinkSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { resolveWorkerTestGateTimeoutMs } from '../services/pickle-utils.js';
+import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -253,6 +254,37 @@ function runWorktreeGuardScript(scriptPath) {
   return spawnSync('bash', [scriptPath], { encoding: 'utf8' });
 }
 
+/**
+ * Extract the real update-cache-hygiene block verbatim from install.sh, for the same reason
+ * `extractCompareSemverSource` above does it: a hand-copied replica goes green over the shape
+ * it was copied FROM, which is exactly how the orphan-`.tmp.<pid>` hole below survived here.
+ * The block runs from its `UPDATE_CACHE_FILE=` assignment to its own column-0 `fi` — every
+ * nested `if`/`for` inside it is indented, so the first `^fi$` is the terminator.
+ */
+function extractUpdateCacheHygieneBlock() {
+  const lines = readFileSync(INSTALL_SH, 'utf8').split('\n');
+  const start = lines.indexOf('UPDATE_CACHE_FILE="$EXTENSION_ROOT/update-check.json"');
+  if (start === -1) {
+    throw new Error('update-cache-hygiene block not found in install.sh');
+  }
+  const end = lines.findIndex((line, index) => index > start && line === 'fi');
+  if (end === -1) {
+    throw new Error('update-cache-hygiene block has no column-0 terminating fi in install.sh');
+  }
+  const block = lines.slice(start, end + 1).join('\n');
+  if (!/rm -f/.test(block)) {
+    throw new Error('extracted update-cache-hygiene block carries no rm -f; the slice is wrong');
+  }
+  return block;
+}
+
+function deadPidForCacheOrphanTmp() {
+  for (const candidate of [999_999, 888_888, 777_777]) {
+    try { process.kill(candidate, 0); } catch { return candidate; }
+  }
+  throw new Error('no dead pid available for fixture');
+}
+
 function buildCacheHygieneFixtureScript(scriptDir) {
   return `#!/bin/bash
 set -euo pipefail
@@ -274,37 +306,42 @@ mkdir -p "$EXTENSION_ROOT/extension"
 rsync -a --delete "$SCRIPT_DIR/extension/" "$EXTENSION_ROOT/extension/"
 
 DEPLOYED_V="$(read_package_version "$EXTENSION_ROOT/extension/package.json")"
-UPDATE_CACHE_FILE="$EXTENSION_ROOT/update-check.json"
-if [ -f "$UPDATE_CACHE_FILE" ]; then
-  CACHE_CURRENT_VERSION="$(jq -r '.current_version // ""' "$UPDATE_CACHE_FILE" 2>/dev/null || echo "")"
-  if [ "$CACHE_CURRENT_VERSION" = "1.0.0" ] || [ "$CACHE_CURRENT_VERSION" != "$DEPLOYED_V" ]; then
-    rm -f "$UPDATE_CACHE_FILE"
-    echo "[install.sh] Removed stale update cache: cached current_version=\${CACHE_CURRENT_VERSION:-<missing>} deployed=$DEPLOYED_V" >&2
-  fi
-fi
+${extractUpdateCacheHygieneBlock()}
 `;
 }
 
-function makeCacheHygieneFixture({ sourceVersion, cacheVersion }) {
+function makeCacheHygieneFixture({ sourceVersion, cacheVersion, orphanCacheVersion = null, omitBase = false }) {
   const dir = mkdtempSync(path.join(tmpdir(), 'install-cache-hygiene-'));
   const homeDir = path.join(dir, 'home');
   const sourceExtension = path.join(dir, 'extension');
   const runtimeRoot = path.join(homeDir, '.claude', 'pickle-rick');
+  const cachePath = path.join(runtimeRoot, 'update-check.json');
   mkdirSync(sourceExtension, { recursive: true });
   mkdirSync(runtimeRoot, { recursive: true });
   writeFileSync(path.join(sourceExtension, 'package.json'), JSON.stringify({ version: sourceVersion }));
-  writeFileSync(path.join(runtimeRoot, 'update-check.json'), JSON.stringify({
-    last_check_epoch: 1,
-    latest_version: cacheVersion,
-    current_version: cacheVersion,
-  }));
+  if (!omitBase) {
+    writeFileSync(cachePath, JSON.stringify({
+      last_check_epoch: 1,
+      latest_version: cacheVersion,
+      current_version: cacheVersion,
+    }));
+  }
+  if (orphanCacheVersion !== null) {
+    // Written AFTER the base, the shape a killed `writeCache` leaves behind.
+    writeFileSync(`${cachePath}.tmp.${deadPidForCacheOrphanTmp()}`, JSON.stringify({
+      last_check_epoch: 2,
+      latest_version: orphanCacheVersion,
+      current_version: orphanCacheVersion,
+    }));
+  }
   const scriptPath = path.join(dir, 'install.sh');
   writeFileSync(scriptPath, buildCacheHygieneFixtureScript(dir), { mode: 0o755 });
   return {
     dir,
     homeDir,
+    runtimeRoot,
     scriptPath,
-    cachePath: path.join(runtimeRoot, 'update-check.json'),
+    cachePath,
   };
 }
 
@@ -957,6 +994,108 @@ describe('install.sh update cache hygiene', () => {
       assert.equal(existsSync(fixture.cachePath), true);
       assert.equal(JSON.parse(readFileSync(fixture.cachePath, 'utf8')).current_version, '1.68.0');
       assert.equal(result.stderr, '');
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER78-01 — the install.sh half of AP-BIN-ITER76, recorded OPEN when the
+  // `bin/purge-update-cache.js` half closed. `check-update.ts:readCache` reads this cache
+  // through `readRecoverableJsonObject`, which promotes a dead orphan `<base>.tmp.<pid>`
+  // whenever the base is gone, so `rm -f base` purged nothing: measured on the real reader,
+  // the next read renameSyncs the orphan into place and returns the stale `current_version`
+  // this block had just rejected — after printing `Removed stale update cache`.
+  //
+  // A/B on ONE fixture shape with the REAL reader as the oracle. The UNPURGED half is the
+  // control: it proves the orphan is genuinely promotable, so the purged half's `null` cannot
+  // pass for an unrelated reason (a fixture the reader would have rejected anyway reads `null`
+  // either way).
+  test('install-script.AP-BIN-ITER78-01 the stale-cache purge takes the promotable orphan tmp with the base', () => {
+    const purged = makeCacheHygieneFixture({
+      sourceVersion: '1.68.0',
+      cacheVersion: '1.65.0',
+      orphanCacheVersion: '6.6.6-poison',
+    });
+    const control = makeCacheHygieneFixture({
+      sourceVersion: '1.68.0',
+      cacheVersion: '1.65.0',
+      orphanCacheVersion: '6.6.6-poison',
+    });
+    try {
+      assert.equal(
+        readRecoverableJsonObject(control.cachePath)?.latest_version,
+        '6.6.6-poison',
+        'control: the orphan must be promotable, or the purged half proves nothing',
+      );
+
+      const result = runCacheHygieneFixture(purged);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.match(result.stderr, /Removed stale update cache/);
+      assert.deepEqual(
+        readdirSync(purged.runtimeRoot).filter((name) => name.startsWith('update-check.json')),
+        [],
+        'no update-check.json path may survive the purge the installer reports, base or promotable orphan',
+      );
+      assert.equal(
+        readRecoverableJsonObject(purged.cachePath),
+        null,
+        'the purged cache must not be resurrectable by the next readCache',
+      );
+    } finally {
+      rmSync(purged.dir, { recursive: true, force: true });
+      rmSync(control.dir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER78-02 — the other arm of the same defect: with the base already gone the
+  // `[ -f "$UPDATE_CACHE_FILE" ]` guard skipped the block entirely, so an orphan-only cache
+  // survived a deploy in SILENCE (no message, nothing removed) and was promoted by the next
+  // read. The promotable set decides presence now, not the base name.
+  test('install-script.AP-BIN-ITER78-02 an orphan-only cache is purged instead of skipped', () => {
+    const fixture = makeCacheHygieneFixture({
+      sourceVersion: '1.68.0',
+      cacheVersion: '1.65.0',
+      orphanCacheVersion: '6.6.6-poison',
+      omitBase: true,
+    });
+    try {
+      assert.equal(existsSync(fixture.cachePath), false, 'precondition: the base must be absent');
+
+      const result = runCacheHygieneFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.match(result.stderr, /Removed stale update cache/);
+      assert.match(
+        result.stderr,
+        /current_version=<missing>/,
+        'an orphan-only cache has no readable base version; the report must say so, not invent one',
+      );
+      assert.deepEqual(
+        readdirSync(fixture.runtimeRoot).filter((name) => name.startsWith('update-check.json')),
+        [],
+        'the orphan must not survive a deploy just because the base name was already gone',
+      );
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  // AP-BIN-ITER78-03 — the honesty arm. With no cache member at all there is nothing to remove,
+  // so the block must stay silent rather than print a removal it did not perform. This is the
+  // case a `rm -f base $base.tmp.*` one-liner gets wrong: it succeeds unconditionally.
+  test('install-script.AP-BIN-ITER78-03 no cache member at all reports no removal', () => {
+    const fixture = makeCacheHygieneFixture({
+      sourceVersion: '1.68.0',
+      cacheVersion: '1.65.0',
+      omitBase: true,
+    });
+    try {
+      const result = runCacheHygieneFixture(fixture);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.equal(result.stderr, '', 'an empty cache set is not a removal');
+      assert.deepEqual(
+        readdirSync(fixture.runtimeRoot).filter((name) => name.startsWith('update-check.json')),
+        [],
+      );
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
