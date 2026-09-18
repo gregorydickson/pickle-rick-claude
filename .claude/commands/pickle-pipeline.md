@@ -58,12 +58,15 @@ Pipeline phases (pickle, citadel, anatomy-park, szechuan-sauce) honor whatever `
 
 ## Step 0.5: Sizing Check (AC-LPB-08)
 
-Only runs when `SESSION_INITIALIZED=true` and `${SESSION_ROOT}/decomposition_manifest.json` exists. Skip otherwise.
+Only runs when `SESSION_INITIALIZED=true`. The roster is the session's ticket DIRECTORIES —
+`${SESSION_ROOT}/<id>/rick_ticket_<id>.md`, the same enumeration `collectTickets` and
+`setup.js`'s own sizing warning read. Skip the rest of Step 0.5 when `TICKET_COUNT` is 0
+(refinement has not written a ticket yet).
 
 **0.5a — Count tickets and compute expected wall.**
 
 ```
-TICKET_COUNT=$(jq '.tickets | length' "${SESSION_ROOT}/decomposition_manifest.json" 2>/dev/null || echo 0)
+TICKET_COUNT=$(find "${SESSION_ROOT}" -mindepth 2 -maxdepth 2 -name 'rick_ticket_*.md' 2>/dev/null | wc -l | tr -d ' ')
 BACKEND="${BACKEND:-claude}"  # whatever was resolved in Step 0
 THROUGHPUT=$(jq -r ".throughput_baselines[\"${BACKEND}\"] // 5.0" "$HOME/.claude/pickle-rick/pickle_settings.json")
 EXPECTED_MIN=$(awk "BEGIN { print int((${TICKET_COUNT} / ${THROUGHPUT}) * 60 + 0.999) }")
@@ -72,6 +75,7 @@ RECOMMENDED_MIN=$(awk "BEGIN { print int(${EXPECTED_MIN} * 1.25 + 0.999) }")
 
 **0.5b — Decide.** Let `MAX_TIME` be the value from `--max-time` if passed. Otherwise treat wall-clock cap as disabled by default and only opt in if you explicitly want a session wall.
 
+- If `TICKET_COUNT == 0` (no ticket roster yet) → skip the rest of Step 0.5.
 - If `MAX_TIME == 0` (unlimited) → skip the rest of Step 0.5.
 - If `MAX_TIME >= EXPECTED_MIN * 0.8` → log `"sizing-check: ok (max_time=${MAX_TIME}m vs expected=${EXPECTED_MIN}m for ${TICKET_COUNT} tickets at ${THROUGHPUT} t/h)"` and continue.
 - If `MAX_TIME < EXPECTED_MIN * 0.5` (gap >2×) AND `$ARGUMENTS` lacks `--acknowledge-undersized` → **block**: print

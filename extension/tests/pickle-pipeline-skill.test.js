@@ -240,3 +240,35 @@ describe('pickle-pipeline flag table — Step 2', () => {
     assert.match(skill, /--no-refine[^\n]*Step 0/);
   });
 });
+
+// AP-EXT-ITER269-01 regression: Step 0.5's sizing gate keyed on
+// `${SESSION_ROOT}/decomposition_manifest.json`, a session artifact no producer in
+// the tree writes — measured absent from 16/16 live sessions — so the
+// severe-undersizing BLOCK could never fire on any real launch. The roster it must
+// count is the one the runtime enumerates: `<id>/rick_ticket_<id>.md` directories.
+describe('pickle-pipeline Step 0.5 — sizing keys on a roster a producer writes', () => {
+  const STEP05_START = skill.indexOf('## Step 0.5: Sizing Check');
+  const step05Body = skill.slice(STEP05_START, skill.indexOf('## Step 0.6'));
+
+  test('Step 0.5 body is locatable', () => {
+    assert.ok(STEP05_START > 0 && step05Body.length > 0, 'Step 0.5 section not found');
+  });
+
+  test('AP-EXT-ITER269-01: no step keys on decomposition_manifest.json — nothing in the tree writes it', () => {
+    assert.doesNotMatch(skill, /decomposition_manifest\.json/);
+  });
+
+  test('AP-EXT-ITER269-01: the ticket count comes from the ticket directories, not a manifest file', () => {
+    assert.match(step05Body, /TICKET_COUNT=\$\(find "\$\{SESSION_ROOT\}"[^\n]*rick_ticket_\*\.md/);
+    assert.match(step05Body, /TICKET_COUNT == 0/, 'an empty roster must skip the sizing verdict');
+  });
+
+  test('AP-EXT-ITER269-01: the counted filename prefix is the one collectTickets enumerates (derived, not hardcoded)', () => {
+    const pickleUtils = fs.readFileSync(path.resolve(__dirname, '..', 'services', 'pickle-utils.js'), 'utf8');
+    assert.match(
+      pickleUtils,
+      /startsWith\('rick_ticket_'\)/,
+      'collectTickets no longer enumerates rick_ticket_ files — Step 0.5 roster expression must move with it',
+    );
+  });
+});
