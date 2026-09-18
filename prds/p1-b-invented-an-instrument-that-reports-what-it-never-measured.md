@@ -11,8 +11,9 @@ cut or rescoped by measurement.** Recorded here because the cuts are the substan
 
 - **The original I1 was an ADDITION.** It routed a worker to build a new reader of `eslint.config.js`
   inside `buildJudgePrompt`. That derivation **already exists twice** — `enforcedSizeCeilings()`
-  (`tests/szechuan-sauce.test.js:206`) and the `audit-recorded-ceilings.sh` gate leg. A third reader is
-  precisely the divergence clauses 1–2 forbid. The real gap is narrower and is a **wiring** gap.
+  (`tests/szechuan-sauce.test.js:214`, was `:206`) and the `audit-recorded-ceilings.sh` gate leg. A third
+  reader is precisely the divergence clauses 1–2 forbid. The real gap is narrower and is a **wiring**
+  gap.
 - **The original I4 (#29) was already satisfied** and is closed. `driveMuxRunnerMain`
   (`src/bin/mux-runner.ts:16431`) is exported and drives the real loop;
   `tests/mux-runner-main-loop-behaviour.test.js:145` calls it. My grep matched the loop's name, not the
@@ -38,19 +39,22 @@ enforced ceiling is `max-lines-per-function` in `extension/eslint.config.js`, 12
 `held` and the revert never happens. **The judge's measurements were accurate; only the threshold was
 invented.**
 
-**The derivation already exists and is already gated — do NOT build another.**
-- `enforcedSizeCeilings()` (`tests/szechuan-sauce.test.js:206`) imports `eslint.config.js` directly and
-  returns `{ options, overrides }`, asserting the base entry exists rather than defaulting.
-- M4-1 (`:239`) asserts `szechuan-sauce-principles.md` states the ceiling **derived from the config**,
-  and loops every per-file override asserting both number and filename appear.
-- M4-4 (`:253`) scans `STALE_SIZE_LIMIT_RE` (`:199`) across every principles asset, every
-  `.claude/commands/*.md` and root `CLAUDE.md`, with a vacuity guard.
+**The derivation already exists and is already gated — do NOT build another.** (Line numbers below are
+as of pre-fix HEAD, cited to help a reader trace the fixed wiring back to its verification host; the
+fix moved `buildJudgePrompt` and added the wiring `grep -n "principles"` now finds.)
+- `enforcedSizeCeilings()` (`tests/szechuan-sauce.test.js:214`, was `:206`) imports `eslint.config.js`
+  directly and returns `{ options, overrides }`, asserting the base entry exists rather than defaulting.
+- M4-1 (`:247`, was `:239`) asserts `szechuan-sauce-principles.md` states the ceiling **derived from the
+  config**, and loops every per-file override asserting both number and filename appear.
+- M4-4 (`:294`, was `:253`) scans `STALE_SIZE_LIMIT_RE` (`:207`, was `:199`) across every principles
+  asset, every `.claude/commands/*.md` and root `CLAUDE.md`, with a vacuity guard.
 - `scripts/audit-recorded-ceilings.sh` reads rule options from the project config and **fails when they
   are absent rather than defaulting**.
 
-**The residual gap is wiring.** `grep -n "principles" src/bin/microverse-runner.ts` returns **nothing**.
-`buildJudgePrompt` (`:2062`) assembles `parts: string[]` and never loads the asset carrying the derived
-ceiling. The consumer that does is `pipeline-runner.ts:2699`
+**The residual gap was wiring, fixed by `ac36d450`.** Pre-fix, `grep -n "principles"
+src/bin/microverse-runner.ts` returned **nothing**; `buildJudgePrompt` (now `:2101`, was `:2062`)
+assembled `parts: string[]` and never loaded the asset carrying the derived ceiling. The consumer that
+does is `pipeline-runner.ts:2700`
 (`buildSzechuanJudgeContext(sessionDir, principlesPath, ...)`). **The szechuan judge gets the ceiling;
 the microverse judge does not.** The asset ships in the deployed runtime.
 
@@ -59,7 +63,7 @@ why a green M4-4 coexists with a judge inventing a limit.
 
 ### Interface Contracts — I1
 - **Input:** the existing maintained asset (`szechuan-sauce-principles.md`) reached the way
-  `pipeline-runner.ts:2699` already reaches it. **No new read of `eslint.config.js`.**
+  `pipeline-runner.ts:2700` (was `:2699`) already reaches it. **No new read of `eslint.config.js`.**
 - **Output:** the assembled microverse judge prompt, carrying the ceiling the asset states.
 - **Errors:** a missing asset degrades to "no ceiling stated" — it must not throw into the judge path
   and must not substitute a default.
@@ -94,30 +98,37 @@ why a green M4-4 coexists with a judge inventing a limit.
 
 Session `2026-09-15-c5a7eb48`: `stall_counter` **5/5**, `convergence.history` **empty**.
 `recordIteration` (`src/services/microverse-state.ts:378`) appends history and increments together, so a
-full counter with empty history means every increment came from `recordStall` (`:410`).
+full counter with empty history means every increment came from `recordStall` (`:416`, was `:410`).
 
-**The precise defect, and it is a collapse rather than an addition.** `recordIteration` writes
-`last_stall_signal: classification` (`:400`) — a **variable**. `recordStall` writes
-`last_stall_signal: 'no-commit'` (`:417`) — a **constant**. The field can already carry a cause; only
-this writer refuses to. And the caller already computed one: `microverse-runner.ts:5421` calls
-`classifyStall(...)` with a `noCommitClass` (`:1815`) and **discards it before persistence**. The
-information loss is at the *write*, with the value in scope — the same shape as #33 and #35.
+**The precise defect, and it is a collapse rather than an addition.** (Pre-fix HEAD; line numbers below
+are as of before `ac47dda3`/`748c0f4a` landed.) `recordIteration` writes `last_stall_signal:
+classification` (`:400`) — a **variable**. `recordStall` wrote `last_stall_signal: 'no-commit'` (`:423`,
+was `:417`) — a **constant**. The field could already carry a cause; only this writer refused to. And
+the caller already computed one: `microverse-runner.ts:5472` (was `:5421`) called `classifyStall(...)`
+with a `noCommitClass` (`:1815`) and **discarded it before persistence**. The information loss was at
+the *write*, with the value in scope — the same shape as #33 and #35.
 
 **The population is THREE causes, not two** (the original PRD said two; measured at the callsites):
 
 | callsite | context | cause |
 |---|---|---|
 | `microverse-runner.ts:892` | `gateMode === 'strict'`, after `iteration_regressions++`, emits `strict_mode_red` | a strict-mode red |
-| `microverse-runner.ts:4668` | `recordMetricMeasurementFailure` — *"Metric measurement failed twice"* | metric unmeasurable |
-| `microverse-runner.ts:5421` | *"No commits made — stall (no rollback)"* | no commits |
+| `microverse-runner.ts:4722` (was `:4668`) | `recordMetricMeasurementFailure` — *"Metric measurement failed twice"* | metric unmeasurable |
+| `microverse-runner.ts:5471` (was `:5421`) | *"No commits made — stall (no rollback)"* | no commits |
 
-**The read side must move with the write side.** `deriveStallCause` (`:553`) returns
-`signal ?? (history.length === 0 ? 'no-commit' : 'unknown')` and its docblock claims the cause is
-*"derived from ONE field … set live by `recordIteration`/`recordStall` on every call"* — but since
-`recordStall` hardcodes `'no-commit'`, it **can never report `metric-unmeasurable`: no producer can
-write it.** The fabricated cause is persisted as `stall_disposition` (`types/index.ts:1887`) and stamped
-at `microverse-runner.ts:5321`, so it is durable, not transient. Widening the producer without the
-consumer ships a writer that can express three causes into a reader that still collapses them.
+**The read side had to move with the write side.** `deriveStallCause` (`:562`-`568`, was `:553`)
+returned `signal ?? (history.length === 0 ? 'no-commit' : 'unknown')` and its docblock claimed the cause
+was *"derived from ONE field … set live by `recordIteration`/`recordStall` on every call"* — but since
+`recordStall` hardcoded `'no-commit'`, it **could never report `metric-unmeasurable`: no producer could
+write it.** The fabricated cause was persisted as `stall_disposition` (`types/index.ts:1895`, was
+`:1887`) and stamped at `microverse-runner.ts:5378` (was `:5321`), so it was durable, not transient.
+Widening the producer without the consumer would have shipped a writer that can express three causes
+into a reader that still collapses them.
+
+**Fixed (`748c0f4a`):** `deriveStallCause` now reads `const signal = state.convergence.last_stall_signal
+?? null; const cause: StallCause = signal ?? 'unknown';` — the `history.length === 0 ? 'no-commit' :
+'unknown'` backfill named above is gone, and the legacy no-field-yet case reports `'unknown'`
+unconditionally. A doc asserting the old backfill still runs would contradict the current source.
 
 **NOT in scope:** why the worker produced no commits in iterations of 61s/33s/31s/28s. That is a
 worker-productivity question. This root only makes the stall path able to say which branch it took.
@@ -137,8 +148,8 @@ worker-productivity question. This root only makes the stall path able to say wh
   persisted state alone**, with no log parsing — Verify:
   `node bin/test-runner.js tests/microverse-disposition-map.test.js --test-concurrency=1` — Type: test
 - [ ] **AC-I2-2 (read-side half, REQUIRED):** `deriveStallCause` reports `metric-unmeasurable` for a
-  state written by the `:4668` callsite. At HEAD this is **unreachable** — assert it is reachable
-  after the fix — Verify:
+  state written by the `:4722` (was `:4668`) callsite. At HEAD this is **unreachable** — assert it is
+  reachable after the fix — Verify:
   `node bin/test-runner.js tests/microverse-disposition-map.test.js --test-concurrency=1` — Type: test
 - [ ] **AC-I2-3 (over-trigger control, REQUIRED):** stall arithmetic is unchanged — a run that stalls N
   times reaches the limit at the same iteration as before — Verify:
@@ -171,10 +182,10 @@ $ grep -m1 '"version"' ~/.claude/pickle-rick/extension/package.json
 ```
 
 `install.sh:207` does `IFS= read -r answer || true`; EOF leaves `answer` empty, the `[y/N]` default
-declines, and `:209` does `exit 0`. **Both sibling refusals in the same chain exit non-zero** — `:225`
-exits 1 (source older than deployed), `:200` exits 2 (active session). Only the decline claims success,
-so a caller cannot separate *deployed* from *declined to deploy*, and the runtime then executes stale JS
-invisibly.
+declines, and `:210` (was `:209`) did `exit 0`. **Both sibling refusals in the same chain exit
+non-zero** — `:226` (was `:225`) exits 1 (source older than deployed), `:200` exits 2 (active session).
+Only the decline claimed success, so a caller could not separate *deployed* from *declined to deploy*,
+and the runtime then executed stale JS invisibly.
 
 **Prefer the subtraction:** make the three refusals agree in sign rather than adding a fourth state.
 
@@ -194,7 +205,7 @@ pin; the risk is only that the wrong host cannot observe it.
 - **Input:** `install.sh` argv (`--allow-downgrade`, `--no-confirm`, `--prefix`) and stdin — a TTY, a
   pipe, or closed.
 - **Output:** exit status, and the deployed tree under the resolved prefix.
-- **Errors:** every refusal in this chain exits non-zero; `:200`, `:225` and the decline at `:209` agree
+- **Errors:** every refusal in this chain exits non-zero; `:200`, `:226` and the decline at `:210` agree
   in sign.
 - **Invariant:** **exit 0 from `install.sh` means a deploy happened.** There is no path where it does not.
 
