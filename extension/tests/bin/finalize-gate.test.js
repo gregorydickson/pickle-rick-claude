@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { finalizeGateMain } from '../../bin/finalize-gate.js';
 import { AC_PHASE_MANIFEST } from '../../services/ac-phase-gate.js';
 
@@ -557,5 +558,115 @@ describe('V3: unmeasured sentinel-only failures', () => {
         assert.equal(calls.remediator, 2);
         assert.ok(calls.briefFailures[0].some(f => f.file === '/tmp/wd/packages/b'), 'the real tests failure reaches the brief');
         fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER272-01: the scope split and the fence must share ONE path space
+// ---------------------------------------------------------------------------
+
+function initScopeRepo() {
+    const root = makeTmpDir();
+    // 30_000 matches `git-utils.ts`'s own git budget and clears the subprocess-heavy WARN band
+    // (<= 15000), so this fixture needs no serial-manifest entry.
+    const git = (args, extra = {}) =>
+        execFileSync('git', args, { cwd: root, timeout: 30_000, ...extra });
+    git(['init'], { stdio: 'ignore' });
+    git(['config', 'user.email', 'test@example.com']);
+    git(['config', 'user.name', 'Test User']);
+    fs.mkdirSync(path.join(root, 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'pkg', 'mod.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(root, 'other.ts'), 'export const b = 2;\n');
+    git(['add', '-A']);
+    git(['commit', '-m', 'fixture', '--no-gpg-sign'], { stdio: 'ignore' });
+    return root;
+}
+
+// Drives the SHIPPED finalize gate over a REAL git repo: `allowed_paths` is spelled
+// repo-root-relative (the `resolve-scope.ts` --show-toplevel contract, R-RSBI-2) while
+// `workingDir` is `state.working_dir` = the operator's launch dir. Returns the exit code
+// and whether the cycle declared every failure out of scope.
+async function runScopeSplit({ repoRoot, workingDir, failureFile, allowedPaths }) {
+    const sessionRoot = makeTmpDir();
+    fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
+    const lines = [];
+    let remediatedFailures = null;
+
+    const code = await finalizeGateMain({
+        argv: [sessionRoot, 'anatomy-park'],
+        env: {},
+        readMicroverseStateFn: () => ({ status: 'iterating', allowed_paths: allowedPaths }),
+        readStateForWorkingDirFn: () => ({ workingDir, backend: 'claude' }),
+        loadSettingsFn: () => ({ szechuan_max_remediation_cycles: 1, anatomy_park_max_remediation_cycles: 1, remediator_timeout_s: 60 }),
+        mkdirSyncFn: (p) => fs.mkdirSync(p, { recursive: true }),
+        writeFileFn: (p, data) => fs.writeFileSync(p, data, 'utf-8'),
+        logActivityFn: () => {},
+        isoFn: () => '2026-01-01T00-00-00Z',
+        runGateFn: async () => makeGateResult('red', [makeFailure(path.join(repoRoot, failureFile))]),
+        spawnGateRemediatorMainFn: async (briefOpts) => {
+            remediatedFailures = briefOpts.gateResult?.failures ?? 'brief-prepared';
+            briefOpts.stdout?.('BRIEF_PATH=/tmp/brief.md');
+            return 0;
+        },
+        spawnRemediatorFn: () => { /* gate never clears */ },
+        stdout: m => lines.push(m),
+        stderr: m => lines.push(m),
+    });
+
+    fs.rmSync(sessionRoot, { recursive: true, force: true });
+    return {
+        code,
+        declaredAllOutOfScope: lines.some(l => l.includes('all failures are out-of-scope')),
+        remediatedFailures,
+    };
+}
+
+describe('AP-EXT-ITER272-01 scope split path space', () => {
+    test('AP-EXT-ITER272-01: a fenced failure is IN scope when working_dir sits BELOW the git root', async () => {
+        const repoRoot = initScopeRepo();
+        const result = await runScopeSplit({
+            repoRoot,
+            workingDir: path.join(repoRoot, 'pkg'),
+            failureFile: 'pkg/mod.ts',
+            allowedPaths: ['pkg/mod.ts'],
+        });
+
+        // Pre-fix this relativized against `pkg/`, yielding `mod.ts`, which matches nothing
+        // in a repo-root-relative fence: exit 0 over a RED gate.
+        assert.equal(
+            result.declaredAllOutOfScope, false,
+            'a failure the fence explicitly allows must not be declared out-of-scope from a nested launch dir'
+        );
+        assert.notEqual(result.code, 0, 'a red gate whose failure is in-scope must not exit 0');
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    });
+
+    test('AP-EXT-ITER272-01 control: an UNFENCED failure stays out of scope from a nested launch dir', async () => {
+        const repoRoot = initScopeRepo();
+        const result = await runScopeSplit({
+            repoRoot,
+            workingDir: path.join(repoRoot, 'pkg'),
+            failureFile: 'other.ts',
+            allowedPaths: ['pkg/mod.ts'],
+        });
+
+        // The fix must not pass by forcing everything in-scope — the fence still narrows.
+        assert.equal(result.declaredAllOutOfScope, true, 'an out-of-fence failure must still be out-of-scope');
+        assert.equal(result.code, 0);
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    });
+
+    test('AP-EXT-ITER272-01 control: the flat-root case is unchanged — fenced failure still in scope', async () => {
+        const repoRoot = initScopeRepo();
+        const result = await runScopeSplit({
+            repoRoot,
+            workingDir: repoRoot,
+            failureFile: 'pkg/mod.ts',
+            allowedPaths: ['pkg/mod.ts'],
+        });
+
+        assert.equal(result.declaredAllOutOfScope, false);
+        assert.notEqual(result.code, 0);
+        fs.rmSync(repoRoot, { recursive: true, force: true });
     });
 });

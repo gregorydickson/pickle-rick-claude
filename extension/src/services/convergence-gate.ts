@@ -738,8 +738,13 @@ export function filterByScope(
  * `Lexical` is in the name on purpose: the two other private `resolveRepoRoot` helpers in this
  * subsystem (`bin/resolve-scope.ts`, `bin/mux-runner.ts`) hand back a REALPATH, which is the one
  * thing this caller cannot use. Do not "unify" the three — that reintroduces AP-EXT-ITER8-02.
+ *
+ * EXPORTED for `bin/finalize-gate.ts:splitByScope` (AP-EXT-ITER272-01), the second reader that
+ * relativizes an absolute path against the space `allowed_paths` is spelled in. Both consumers
+ * MUST share this one definition: a reader that derives the base itself is how the fence and the
+ * failure set drifted into two path spaces in the first place.
  */
-function resolveLexicalRepoRoot(workingDir: string): string {
+export function resolveLexicalRepoRoot(workingDir: string): string {
   const result = spawnSync('git', ['rev-parse', '--show-prefix'], {
     cwd: workingDir, encoding: 'utf-8', timeout: 10_000,
   });

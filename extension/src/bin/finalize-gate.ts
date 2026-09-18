@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { runGate, filterByScope, isCheckUnmeasured, type RunGateOpts } from '../services/convergence-gate.js';
+import { runGate, filterByScope, isCheckUnmeasured, resolveLexicalRepoRoot, type RunGateOpts } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 import { readMicroverseState, readRecoverableJsonObject } from '../services/microverse-state.js';
 import { logActivity } from '../services/activity-logger.js';
@@ -69,6 +69,19 @@ export function resolveFinalizeSettingsRoot(): string {
   return resolvedRoot;
 }
 
+/**
+ * AP-EXT-ITER272-01: `allowed_paths` is REPO-ROOT-relative — `resolve-scope.ts` anchors it at
+ * `--show-toplevel` REGARDLESS of which `working_dir` invoked it (R-RSBI-2), and
+ * `scope-resolver.ts:computeAllowedFromDiff` emits repo-relative paths. `workingDir` here is
+ * `state.working_dir`, i.e. `process.cwd()` at setup — whatever directory the operator launched
+ * from. Relativizing an absolute failure against THAT base put the two in different path spaces
+ * whenever the launch dir sat below the git root: every failure missed the fence, `inScope`
+ * emptied, and the cycle printed `all failures are out-of-scope` and EXITED 0 over a RED gate —
+ * ran-to-completion reported as closed-within-scope. One shared base, via the same
+ * `resolveLexicalRepoRoot` the sibling reader `selectWorkspaceTargetDirs` uses (AP-EXT-ITER34-01),
+ * so reader and fence cannot disagree. Lexical, never `--show-toplevel`: toplevel is
+ * realpath-resolved and would escape a lexical `failure.file` into `../../..`.
+ */
 function splitByScope(
   failures: GateFailure[],
   allowedPaths: string[] | undefined,
@@ -79,6 +92,7 @@ function splitByScope(
   }
   const inScope: GateFailure[] = [];
   const scopeCandidates: { failure: GateFailure; relFile: string }[] = [];
+  const scopeRoot = resolveLexicalRepoRoot(workingDir);
 
   for (const failure of failures) {
     if (/^<[^>]+>$/.test(failure.file) || !path.isAbsolute(failure.file)) {
@@ -87,7 +101,7 @@ function splitByScope(
     }
     scopeCandidates.push({
       failure,
-      relFile: path.relative(workingDir, failure.file),
+      relFile: path.relative(scopeRoot, failure.file),
     });
   }
 
