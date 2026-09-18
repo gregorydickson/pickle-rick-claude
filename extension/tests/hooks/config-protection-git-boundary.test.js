@@ -6903,3 +6903,131 @@ test('AP-EXT-ITER278-01: a GLUED chain stays LINEAR in its length', () => {
     'the glued and spaced chains must cost the same scopes',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER279-01: git's own ALIAS expansion defines the verb the scan reads
+//
+// Every earlier fix to this scan asked what BASH does to a word before git sees
+// it — quoting (AP-EXT-ITER51-02), case and the exec fold (AP-EXT-EXECNAME),
+// position and command prefixes (AP-EXT-ITER63-02 / ITER64-01), option operands
+// (AP-EXT-ITER55-01), pathname expansion (AP-EXT-ITER93-02). git then applies an
+// expansion of its OWN: `alias.<name>` is the one config section whose VALUE git
+// executes as a command, so the verb word becomes a name the WORKER defined and
+// no reading of that word's spelling can recover the verb it runs.
+//
+// Measured in a scratch repo against real git, staged work destroyed in every
+// case: `git -c alias.zap='reset --hard' zap`, the `--config-env` form, the
+// persisted `git config alias.zap` form and the `GIT_CONFIG_KEY_0` environment
+// form all really hard-reset while the shipped handler APPROVED them and every
+// literal twin blocked.
+//
+// The fix reads the NAMESPACE, not the value: git accepts the assignment from a
+// bare argument, an `=`-glued option, a separate operand and an environment
+// pair, and only the first is a command string this file could parse — so any
+// reading of the value is an incomplete enumeration of git's config surface,
+// the shape this module has been bitten by eleven times.
+// ---------------------------------------------------------------------------
+
+const ITER279_ALIAS_BYPASSES = [
+  ["git -c alias.zap='reset --hard' zap", 'one-shot -c alias, hard reset'],
+  ["git -c alias.up='push origin HEAD' up", 'one-shot -c alias, push'],
+  ['git -c alias.s=stash s', 'one-shot -c alias, stash'],
+  ["git -c alias.bang='!git reset --hard' bang", 'shell-escape alias body'],
+  ["V='reset --hard'; git --config-env=alias.zap=V zap", '--config-env pair'],
+  ["git config alias.zap 'reset --hard'", 'persisted alias definition'],
+  ["git config --global alias.zap 'reset --hard'", 'persisted --global definition'],
+  [
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.zap GIT_CONFIG_VALUE_0='reset --hard' git zap",
+    'GIT_CONFIG_* environment pair, which stands BEFORE the anchor',
+  ],
+  ["git -C . -c alias.zap='reset --hard' zap", 'behind an operand-taking global option'],
+  ["cd sub && git -c alias.zap='reset --hard' zap", 'chained segment'],
+  ["env git -c alias.zap='reset --hard' zap", 'behind a POSIX command prefix'],
+];
+
+for (const [command, shape] of ITER279_ALIAS_BYPASSES) {
+  test(`AP-EXT-ITER279-01: worker blocks a git alias definition — ${shape}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', `${command} must not reach git`);
+    assert.match(result.reason, /R-WSRC-GR/);
+  });
+}
+
+// The non-tautology half. A gated verb the scan CAN read decides the segment
+// before the namespace question is ever asked, which is the whole reason the
+// check lives in the fallback arm: `git commit -m "fix alias.zap"` is an
+// ordinary worker commit and `alias.zap` in its MESSAGE must not block it.
+// Without that ordering this guard would block the commit that lands it.
+const ITER279_MUST_APPROVE = [
+  ['git commit -m "fix alias.zap handling in the hook"', 'the namespace inside a commit MESSAGE'],
+  ["git commit -m 'AP-EXT-ITER279-01 block git alias.<name> config'", 'this fix’s own commit'],
+  ['git commit -m "wire the thing"', 'an ordinary commit'],
+  ['git status --porcelain', 'status'],
+  ['git log --oneline -5', 'log'],
+  ['git add -u', 'add'],
+  ['git checkout -- src/foo.ts', 'checkout path-mode'],
+  ['git fetch origin', 'plain fetch'],
+  ['git log --oneline | grep aliases', 'a word that merely CONTAINS alias'],
+];
+
+for (const [command, shape] of ITER279_MUST_APPROVE) {
+  test(`AP-EXT-ITER279-01: worker still runs ${shape}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', `${command} must still run`);
+  });
+}
+
+test('AP-EXT-ITER279-01: the namespace read is over the WHOLE segment, with no option table', () => {
+  const source = readCode(CONFIG_PROTECTION_TS);
+  const body = source.slice(
+    source.indexOf('function findGitVerb('),
+    source.indexOf('export function detectProhibitedGitVerb('),
+  );
+  assert.ok(body.length > 0, 'findGitVerb must remain a single named function');
+  // Over `tokens`, the segment's FULL token list — NOT `rest`. The
+  // `GIT_CONFIG_KEY_0=alias.zap` spelling is an environment assignment standing
+  // BEFORE the git anchor, so a scan of the argument list cannot see it, and
+  // `rest` here would read GREEN against every other spelling in the matrix.
+  assert.match(body, /segmentDefinesGitAlias\(tokens\)/);
+  assert.doesNotMatch(body, /segmentDefinesGitAlias\(rest\)/);
+  // Asked in the FALLBACK arm — after the gated-verb scan, which is what spares
+  // a commit message naming the namespace. Moving it above the scan would block
+  // `git commit -m "fix alias.zap"`.
+  assert.ok(
+    body.indexOf('segmentDefinesGitAlias(tokens)') > body.indexOf('execNamesIn(rest[i], GATED_GIT_VERBS)'),
+    'the namespace question must be asked only after the verb scan has failed',
+  );
+  // The namespace, not the value, and no git-option names anywhere in the read.
+  const helper = source.slice(
+    source.indexOf('const GIT_ALIAS_CONFIG_KEY_RE'),
+    source.indexOf('/**', source.indexOf('function segmentDefinesGitAlias(')),
+  );
+  assert.ok(helper.length > 0, 'the namespace predicate must remain a single named function');
+  assert.doesNotMatch(helper, /'-c'|'--config-env'|'--global'|'--file'|GIT_CONFIG/);
+});
+
+test('AP-EXT-ITER279-01: the namespace boundary excludes a longer identifier', () => {
+  // `myalias.zap` is not git's namespace, and a guard that read it as one would
+  // block on any dotted identifier ending in `alias` — the over-block direction
+  // this module pays for in worker turns.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: 'git log --grep myalias.zap' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve');
+});

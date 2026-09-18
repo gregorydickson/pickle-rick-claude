@@ -17,6 +17,7 @@ import {
   SHELL_PATTERN_CHARS,
   patternNamesACommand,
   shellWordWitness,
+  type ShellToken,
   splitShellSegments,
   tokenizeShellCommand,
   tokenizeShellTokens,
@@ -1248,6 +1249,38 @@ const GATED_GIT_VERBS = [
 ] as const;
 
 /**
+ * The verb `findGitVerb` reports when the command DEFINES the verb it runs.
+ *
+ * Not a git subcommand, and a word folding to it must carry a space, so the
+ * only spelling that collides is a QUOTED `git 'config alias'` — which git does
+ * not run either, making the collision inert. That is what lets
+ * `detectProhibitedGitVerb` read it beside `PROHIBITED_GIT_VERBS_SIMPLE` rather
+ * than growing the verb scan a new arm.
+ */
+const GIT_ALIAS_VERB = 'config alias';
+
+/**
+ * git's `alias.<name>` config namespace: the ONE config section whose VALUE git
+ * executes as a command, wherever that assignment is written.
+ *
+ * Read over the WHOLE segment's tokens, not the argument list after the anchor,
+ * because git accepts the assignment in four places and only one of them is a
+ * bare argument: `-c alias.zap='reset --hard'`, `--config-env=alias.zap=V`,
+ * `git config alias.zap 'reset --hard'`, and `GIT_CONFIG_KEY_0=alias.zap` in the
+ * environment — which stands BEFORE the anchor, so an argument-list scan cannot
+ * see it. Keying on the namespace rather than on where it was written is what
+ * makes that four-way surface one predicate instead of an option table.
+ *
+ * The leading boundary excludes a longer identifier ending in `alias`, so
+ * `myalias.zap` does not match.
+ */
+const GIT_ALIAS_CONFIG_KEY_RE = /(?:^|[^A-Za-z0-9_.])alias\.[A-Za-z0-9_-]+/;
+
+function segmentDefinesGitAlias(tokens: readonly ShellToken[]): boolean {
+  return tokens.some(token => GIT_ALIAS_CONFIG_KEY_RE.test(token.value));
+}
+
+/**
  * Returns true when `git checkout <args>` is targeting a ref (blocked).
  * Allowed: `git checkout -- <path>`, `git checkout .`, `git checkout` with no positional.
  */
@@ -1300,9 +1333,26 @@ function findGitVerb(command: string): { verb: string; afterVerb: string[] } | n
     const named = execNamesIn(rest[i], GATED_GIT_VERBS);
     if (named.length > 0) return { verb: named[0], afterVerb: rest.slice(i + 1) };
   }
-  // No gated verb anywhere: fall back to the first bare word so the returned verb
-  // still names the real subcommand for non-prohibited commands. Nothing in
-  // detectProhibitedGitVerb can fire on it, so this arm cannot under-block.
+  // No gated verb anywhere — which is also the only state in which git's own
+  // ALIAS indirection could be supplying one, so ask that here rather than as a
+  // separate arm (AP-EXT-ITER279-01). Every earlier fix to this scan asked what
+  // BASH does to a word before git sees it (quoting, globbing, case, position,
+  // command prefixes, option operands); git then applies an expansion of its
+  // OWN, and an alias makes the verb word a name the worker defined, so no
+  // reading of that word's spelling can ever recover the verb it runs.
+  // `git -c alias.zap='reset --hard' zap` really hard-resets — measured in a
+  // scratch repo, staged work destroyed — while this scan read `zap`.
+  //
+  // Blocking the namespace outright rather than resolving the value is the
+  // SUBTRACTION: the value reaches git through four different surfaces (a bare
+  // argument, an `=`-glued option, a separate operand, an environment pair) and
+  // only the first is a command string this file could parse, so any reading of
+  // the value is an incomplete enumeration of git's config surface. The worker
+  // has no legitimate need to define a git verb.
+  if (segmentDefinesGitAlias(tokens)) return { verb: GIT_ALIAS_VERB, afterVerb: [] };
+  // Fall back to the first bare word so the returned verb still names the real
+  // subcommand for non-prohibited commands. Nothing in detectProhibitedGitVerb
+  // can fire on it, so this arm cannot under-block.
   if (firstBare === -1) return null;
   return { verb: rest[firstBare].toLowerCase(), afterVerb: rest.slice(firstBare + 1) };
 }
@@ -1316,7 +1366,7 @@ export function detectProhibitedGitVerb(command: string): { verb: string } | nul
     const parsed = findGitVerb(segment);
     if (!parsed) continue;
     const { verb, afterVerb } = parsed;
-    if (PROHIBITED_GIT_VERBS_SIMPLE.has(verb)) return { verb };
+    if (verb === GIT_ALIAS_VERB || PROHIBITED_GIT_VERBS_SIMPLE.has(verb)) return { verb };
     if (verb === 'checkout' && isCheckoutRefOperation(afterVerb)) return { verb: 'checkout' };
     // The gating FLAG is read through the same `execNameIs` the verb and the
     // exec word already read with (AP-EXT-ITER93-05): bash expands an option
