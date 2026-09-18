@@ -326,6 +326,16 @@ function executedExtensionPaths(prompt, root) {
   return [...new Set([...prompt.matchAll(pattern)].map((m) => m[1]))];
 }
 
+// The same read against the RAW template, where the root is still the literal placeholder. This
+// is what makes the vacuity floor DERIVED rather than hand-maintained: a hardcoded count rots
+// silently the first time the template gains or loses a `node ${EXTENSION_ROOT}/...` line, and
+// rots GREEN when the count is a floor the template has grown past. A template that names no
+// executable path at all still reds, via the stale-premise assert below.
+function templateExecutedPaths() {
+  const raw = fs.readFileSync(PICKLE_TEMPLATE_PATH, 'utf-8');
+  return executedExtensionPaths(raw, '${EXTENSION_ROOT}');
+}
+
 for (const backend of ['claude', 'codex']) {
   test(`AC-3 / R-MPVU: every executable path the composed manager prompt (${backend}) names under the bound extension root exists`, () => {
     const root = getExtensionRoot();
@@ -334,10 +344,19 @@ for (const backend of ['claude', 'codex']) {
     });
     const named = executedExtensionPaths(result, root);
 
-    // VACUITY arm: an empty or misdirected substitution yields zero resolved paths and must not pass.
+    // VACUITY arm: an empty or misdirected substitution yields zero resolved paths and must not
+    // pass. The expected count is read off the template itself, so binding must carry EVERY
+    // executable path through — a substitution that resolves only some of them reds here, not
+    // just one that resolves none.
+    const expected = templateExecutedPaths();
     assert.ok(
-      named.length >= 5,
-      `expected >= 5 distinct executable paths under the bound extension root ${root}, found ${named.length}`,
+      expected.length > 0,
+      'stale premise: the raw template names no `node ${EXTENSION_ROOT}/...` path, so this pin measures nothing',
+    );
+    assert.equal(
+      named.length,
+      expected.length,
+      `expected ${expected.length} distinct executable paths under the bound extension root ${root} (one per template occurrence), found ${named.length}`,
     );
 
     // EXISTENCE arm: the bound root is sentinel-validated, so every path it roots must be real.

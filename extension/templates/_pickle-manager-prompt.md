@@ -202,7 +202,7 @@ When `state.teams_mode === true`. Claude backend only (setup.js rejects codex+te
 
 ## All Tickets Done (shared)
 
-Mark parent Done. If on `main`/`master` → skip auto-PR, output `<promise` + `>EPIC_COMPLETED</promise>`. Otherwise → `node ${EXTENSION_ROOT}/extension/services/pr-factory.js ${SESSION_ROOT}`, output `<promise` + `>EPIC_COMPLETED</promise>`.
+Mark parent Done, then output `<promise` + `>EPIC_COMPLETED</promise>`. Never open a pull request — completed work lands as commits on the working branch.
 
 ## CRITICAL: Before emitting `<promise` + `>EPIC_COMPLETED</promise>`
 

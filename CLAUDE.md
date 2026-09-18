@@ -263,8 +263,8 @@ Applies to new writing; fix old occurrences only when already touching the file.
 **releases are `v2.1.X` patch tags** (operator-set 2026-09-17); the branch name is historical and does
 NOT set the version, `extension/package.json` does. Next tag: `v2.1.1`. —
 `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`. Work lands as commits pushed straight to
-the release branch. **Never run `gh pr create`**, and never invoke `services/pr-factory.ts` (no
-production caller; queued for deletion).
+the release branch. **Never run `gh pr create`**; `services/pr-factory.ts` and its manager-prompt caller were deleted
+2026-09-17, so nothing in the tree opens a PR.
 
 **`main` IS NO LONGER STALE (2026-09-16).** It was force-moved to the `v2.1.0` GA commit `c20a9562`, so
 `origin/main` and the `v2.1.0` tag are the same sha. The previous main — the v2.0 line, 57 commits ahead

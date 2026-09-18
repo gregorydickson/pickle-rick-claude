@@ -635,7 +635,6 @@ pickle-rick-claude/
 │   ├── services/
 │   │   ├── pickle-utils.js       # Shared utilities
 │   │   ├── git-utils.js          # Git helpers
-│   │   ├── pr-factory.js         # PR creation
 │   │   ├── jar-utils.js          # Jar queue helper
 │   │   ├── activity-logger.js    # JSONL activity log writer (date-keyed, 0o600)
 │   │   ├── circuit-breaker.js    # Three-state circuit breaker (CLOSED/HALF_OPEN/OPEN)
