@@ -197,7 +197,14 @@ test('f254feaa: no new Part IV and no new scored dimension were introduced', () 
 
 const EXTENSION_ROOT = path.resolve(import.meta.dirname, '..');
 const SIZE_RULE = 'max-lines-per-function';
-const STALE_SIZE_LIMIT_RE = /function.{0,20}(>|limit|hard limit).{0,5}50|50-line function/i;
+// The third alternative carries the phrasing the incident actually produced: session
+// 2026-09-12-a4d141e1 cited "the 50-line hard limit" four times, and the first two alternatives
+// both require the token "function" near the number, so none of them matched it — the scan could
+// not see the exact string AC-I1-3 names as its injection. `hard limit` was also dropped from the
+// first alternation: `limit` already matches any text containing it, so it never discriminated.
+// Measured over the live 37-file corpus: 0 hits, so the widening false-reds nothing, and it is a
+// strict superset — every phrasing the narrower form caught still matches.
+const STALE_SIZE_LIMIT_RE = /function.{0,20}(>|limit).{0,5}50|50-line function|50-line\s+(hard\s+)?limit/i;
 const M4_LEDGER_FUNCTIONS = {
     'src/bin/mux-runner.ts': ['runMuxRunnerMain', 'checkPartialLifecycleExit', 'reapOrphanedManagersAtIterationStart', 'bootstrapSessionResources'],
     'src/services/citadel/audit-runner.ts': ['buildCitadelAuditReport'],
@@ -250,7 +257,17 @@ test('M4-1: the principles file states the enforced code-line ceiling and every 
     }
 });
 
-test('M4-4: no judge prompt, principles file or root CLAUDE.md states a 50-line function limit', () => {
+// AC-I1-3: the corpus scans the ASSEMBLED microverse judge prompt too — a fix that only
+// corrects the asset text (7c1085ad) and never wires it into the prompt (I1's own root
+// cause) would otherwise ship invisible to this scan, exactly the gap I1 closes.
+//
+// M4-4 and its I1-3 over-trigger control share ONE builder and ONE scan. They used to hold
+// separate copies, and the control's copy is what made it vacuous: it rebuilt the prompt and
+// re-filtered it locally, so deleting the assembled-prompt entry below changed nothing it could
+// observe. A shared pair cannot drift — whatever M4-4 scans is what the control falsifies.
+const ASSEMBLED_PROMPT_LABEL = 'assembled-microverse-judge-prompt';
+
+function buildStaleCeilingScanSources() {
     const commandsDir = path.resolve(EXTENSION_ROOT, '../.claude/commands');
     const files = [
         ...fs.readdirSync(EXTENSION_ROOT).filter((f) => /^szechuan-sauce.*principles\.md$/.test(f)).map((f) => path.join(EXTENSION_ROOT, f)),
@@ -258,19 +275,24 @@ test('M4-4: no judge prompt, principles file or root CLAUDE.md states a 50-line 
         path.resolve(EXTENSION_ROOT, '../CLAUDE.md'),
     ];
     assert.ok(files.length > 3, 'prompt corpus unexpectedly small; the scan would pass vacuously');
-    // AC-I1-3: the corpus scans the ASSEMBLED microverse judge prompt too — a fix that only
-    // corrects the asset text (7c1085ad) and never wires it into the prompt (I1's own root
-    // cause) would otherwise ship invisible to this scan, exactly the gap I1 closes.
-    const sources = [
+    return [
         ...files.map((file) => ({ label: path.basename(file), content: fs.readFileSync(file, 'utf-8') })),
         {
-            label: 'assembled-microverse-judge-prompt',
+            label: ASSEMBLED_PROMPT_LABEL,
             content: buildJudgePrompt({ goal: 'deslop the codebase', cwd: '/tmp/target', extensionRoot: EXTENSION_ROOT }),
         },
     ];
-    const hits = sources.flatMap(({ label, content }) => content.split('\n')
+}
+
+/** Hits as `label:line: text`, so a hit can be attributed to the source that produced it. */
+function scanForStaleSizeLimits(sources) {
+    return sources.flatMap(({ label, content }) => content.split('\n')
         .map((line, i) => (STALE_SIZE_LIMIT_RE.test(line) ? `${label}:${i + 1}: ${line.trim()}` : null))
         .filter(Boolean));
+}
+
+test('M4-4: no judge prompt, principles file or root CLAUDE.md states a 50-line function limit', () => {
+    const hits = scanForStaleSizeLimits(buildStaleCeilingScanSources());
     assert.deepEqual(hits, [], 'a prompt still states a function-size limit other than the enforced ceiling');
 });
 
@@ -313,11 +335,34 @@ test('I1-2 (subtraction proof, AC-I1-2): microverse-runner.ts reads no second co
 });
 
 test('I1-3 (over-trigger control, AC-I1-3): a stale ceiling injected into the assembled prompt is detected', () => {
-    const stalePrompt = buildJudgePrompt({ goal: 'deslop the codebase', cwd: '/tmp/target' })
-        .replace('Enforced function-size ceiling: no ceiling stated', 'Enforced function-size ceiling: a 50-line function is over budget');
-    assert.ok(STALE_SIZE_LIMIT_RE.test('a 50-line function is over budget'), 'fixture setup sanity check — the injected text must match the scan pattern');
-    const hits = stalePrompt.split('\n').filter((line) => STALE_SIZE_LIMIT_RE.test(line));
-    assert.ok(hits.length > 0, 'the M4-4 scan must be able to catch a stale ceiling in the assembled prompt if this wiring ever regresses');
+    const sources = buildStaleCeilingScanSources();
+
+    // Arm 1 — the corpus M4-4 actually scans CARRIES the assembled prompt. Deleting the
+    // assembled-prompt entry reds here. Without this arm the control cannot observe the removal
+    // of the very extension AC-I1-3 requires, which is how it previously passed over its absence.
+    const promptSource = sources.find((s) => s.label === ASSEMBLED_PROMPT_LABEL);
+    assert.ok(promptSource, `the M4-4 corpus must include the ${ASSEMBLED_PROMPT_LABEL} source`);
+    const ceilingLine = promptSource.content.split('\n').find((l) => l.startsWith('Enforced function-size ceiling:'));
+    assert.ok(ceilingLine, 'the assembled prompt must carry a labelled ceiling line for this control to have a subject');
+
+    // Arm 2 — that corpus is clean today, through the same scan M4-4 uses.
+    assert.deepEqual(scanForStaleSizeLimits(sources), [], 'precondition: the real corpus states no stale ceiling');
+
+    // Arm 3 — inject a stale ceiling into the PROMPT source only, and require the shared scan to
+    // report a hit ATTRIBUTED to it. Asserting the injection changed the content first: if the
+    // ceiling line is ever reworded, the replace would silently no-op and this arm would pass
+    // over an un-injected corpus — the vacuity this control exists to avoid.
+    const injected = sources.map((s) => (s.label === ASSEMBLED_PROMPT_LABEL
+        ? { ...s, content: s.content.replace(ceilingLine, 'Enforced function-size ceiling: the 50-line hard limit') }
+        : s));
+    const injectedSource = injected.find((s) => s.label === ASSEMBLED_PROMPT_LABEL);
+    assert.notEqual(injectedSource.content, promptSource.content, 'the injection must actually modify the prompt, or this control measures nothing');
+
+    const hits = scanForStaleSizeLimits(injected);
+    assert.ok(
+        hits.some((h) => h.startsWith(`${ASSEMBLED_PROMPT_LABEL}:`)),
+        'the M4-4 scan must catch a stale ceiling in the assembled prompt, attributed to the prompt, if this wiring ever regresses'
+    );
 });
 
 test('I1-4: a missing principles asset degrades to "no ceiling stated", never a fabricated default', () => {
