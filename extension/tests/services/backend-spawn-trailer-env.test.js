@@ -443,20 +443,51 @@ test('AP-EXT-ITER9-01: a tmpdir-rooted --add-dir still builds on the codex arm',
   }
 });
 
-// Phase 2.5 replay: `buildManagerInvocation` carries the same `--add-dir
-// <workingDir>` under the same bypass-permissions flags and is still UNGUARDED.
-// The guard was built and reverted this pass — it reddens a fence-blocked
-// fixture; this case pins the CURRENT (defective) behavior so the gap is visible
-// rather than silent, and flips to a refusal assertion when the fix lands.
-test('AP-EXT-ITER9-01 (replay, OPEN GAP): the manager dispatcher does NOT yet assert', () => {
+// AP-EXT-ITER271-01 (replay, LANDED): `buildManagerInvocation` carries the same
+// `--add-dir` list under the same bypass-permissions flags, so it asserts exactly
+// as the worker dispatcher does. This case pinned the defective argv while the gap
+// was open; it is now the refusal assertion. Assert that NO argv is built — the
+// pre-fix dispatcher returned successfully AND carried the out-of-sandbox path, so
+// a throw-only oracle is not enough to distinguish the two.
+test('AP-EXT-ITER271-01 (replay): the manager dispatcher refuses an out-of-tmpdir --add-dir', () => {
   const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
   withTestMode(() => {
-    const invocation = buildManagerInvocation('claude', { prompt: 'p', addDirs: [repoRoot] });
-    assert.ok(
-      invocation.args.includes(repoRoot),
-      'OPEN GAP: the manager argv still carries an out-of-sandbox --add-dir',
+    let invocation = null;
+    assert.throws(
+      () => { invocation = buildManagerInvocation('claude', { prompt: 'p', addDirs: [repoRoot] }); },
+      AddDirOutsideSandboxError,
     );
+    assert.equal(invocation, null, 'no manager argv may be built for an out-of-sandbox addDir');
   });
+});
+
+// Negative control: the manager dispatcher must refuse by SANDBOX MEMBERSHIP, not by
+// refusing every addDir. A tmpdir-rooted dir still builds and still reaches the argv.
+test('AP-EXT-ITER271-01: a tmpdir-rooted --add-dir still builds on the manager dispatcher', () => {
+  const sandbox = mkTmpDir('ap-iter271-sandbox-');
+  try {
+    withTestMode(() => {
+      const invocation = buildManagerInvocation('claude', { prompt: 'p', addDirs: [sandbox] });
+      assert.ok(invocation.args.includes('--add-dir'));
+      assert.ok(invocation.args.includes(sandbox));
+    });
+  } finally {
+    cleanDir(sandbox);
+  }
+});
+
+// Production passthrough: with PICKLE_TEST_MODE unset the assertion is a no-op, so a
+// real run's manager argv is byte-identical to what it was before the guard existed.
+test('AP-EXT-ITER271-01: PICKLE_TEST_MODE unset is a production passthrough on the manager dispatcher', () => {
+  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+  const prev = process.env.PICKLE_TEST_MODE;
+  delete process.env.PICKLE_TEST_MODE;
+  try {
+    const invocation = buildManagerInvocation('claude', { prompt: 'p', addDirs: [repoRoot] });
+    assert.ok(invocation.args.includes(repoRoot));
+  } finally {
+    if (prev !== undefined) process.env.PICKLE_TEST_MODE = prev;
+  }
 });
 
 test('AP-EXT-ITER9-01: PICKLE_TEST_MODE unset is a production passthrough on the codex arm', () => {

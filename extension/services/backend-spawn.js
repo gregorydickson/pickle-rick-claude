@@ -633,17 +633,14 @@ function selectWorkerInvocation(backend, opts) {
     return buildClaudeWorkerInvocation(opts);
 }
 export function buildManagerInvocation(backend, opts) {
+    // R-WSRC-4: the same one assertion the worker dispatcher carries. The manager argv
+    // carries the identical `--add-dir` list under the identical bypass-permissions
+    // flags, so both dispatchers assert identically and no arm — present or future —
+    // has a per-callsite step to forget.
+    assertAddDirsUnderTmpdirIfTestMode(opts.addDirs);
     return boundInvocationArgs(selectManagerInvocation(backend, opts));
 }
 function selectManagerInvocation(backend, opts) {
-    // AP-EXT-ITER9-01 OPEN GAP: this dispatcher carries the SAME `--add-dir
-    // <workingDir>` under the same bypass-permissions flags and takes NO R-WSRC-4
-    // assertion. Adding it here is correct and was built + reverted this pass: it
-    // reddens `tests/iteration-outcome.test.js` ("fractional mux max-turn settings
-    // fall back before spawning manager"), which runs under PICKLE_TEST_MODE=1 with
-    // an unsandboxed `PICKLE_DATA_ROOT` — a real fixture leak the guard correctly
-    // flags, but that test file is outside this session's scope.json. See the
-    // `backend-spawn.ts` trap door in src/services/CLAUDE.md.
     if (backend === 'codex')
         return buildCodexInvocation(opts.prompt, opts.addDirs, opts.model);
     if (backend === 'hermes')

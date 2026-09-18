@@ -159,7 +159,13 @@ test('IterationOutcome: fractional mux max-turn settings fall back before spawni
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-outcome-turns-')));
     const oldPath = process.env.PATH;
     const oldBackend = process.env.PICKLE_BACKEND;
+    const oldDataRoot = process.env.PICKLE_DATA_ROOT;
     try {
+        // R-WSRC-4: the manager argv is `--add-dir [extensionRoot, getDataRoot(), sessionDir]`.
+        // Unset, `getDataRoot()` resolves to the operator's REAL ~/.local/share/pickle-rick and
+        // this fixture hands it to a `--dangerously-skip-permissions` spawn. Root it in the
+        // per-test tmpdir so the spawn can only reach the sandbox.
+        process.env.PICKLE_DATA_ROOT = dir;
         fs.mkdirSync(path.join(dir, 'templates'), { recursive: true });
         fs.writeFileSync(path.join(dir, 'templates', '_pickle-manager-prompt.md'), '# Pickle\n\n$ARGUMENTS\n');
         fs.writeFileSync(path.join(dir, 'pickle_settings.json'), JSON.stringify({
@@ -201,6 +207,8 @@ console.log('<promise>TASK_COMPLETED</promise>');
         else process.env.PATH = oldPath;
         if (oldBackend === undefined) delete process.env.PICKLE_BACKEND;
         else process.env.PICKLE_BACKEND = oldBackend;
+        if (oldDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = oldDataRoot;
         delete process.env.CLAUDE_ARGS_PATH;
         fs.rmSync(dir, { recursive: true, force: true });
     }
