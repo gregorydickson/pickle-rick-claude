@@ -6624,3 +6624,123 @@ test('AP-EXT-ITER276-01: a value reached only through a second reference is not 
     'the directly-referenced twin still blocks',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER277-01 — the reading's output must be a FIXPOINT, or the INPUT
+// owns the recursion DEPTH.
+//
+// `inlineAssignedValues` (AP-EXT-ITER276-01) rests on idempotence rather than on
+// the "strictly shorter" argument its three siblings share, so idempotence is
+// load-bearing on TERMINATION. Recording a value from the RAW word broke it: in
+// `X=<deploy>; T=$X; bash $T` the word `T=$X` renders to a literal in the output
+// but was skipped by the recorder, so the emitted string still held a resolvable
+// reference, was NOT its own fixpoint, and `splitShellSegments` re-entered the
+// rendering once per link of the chain — with the branching over the other three
+// readings multiplying each level.
+//
+// Measured against the pre-fix shipped mirror: a 16-link chain beside a `${…}`
+// body, a substitution and a backtick cost 89,262 scopes against 204 for the
+// same command with nothing to substitute, and a 20-link one threw a RangeError
+// out of the segmenter — which `main`'s FATAL catch turns into an APPROVE. A
+// literal `git reset --hard` standing in that same command was approved for a
+// worker while it blocked alone, so the defect is an under-block on the LITERAL
+// spelling, reached by a prefix that names no forbidden thing at all.
+//
+// The bound is pinned on the deterministic SCOPE COUNT rather than on the clock
+// or on the throw, for the AP-EXT-ITER264-02 reason: the stack limit is a
+// property of the host, while the scope count is a property of the reading.
+// ---------------------------------------------------------------------------
+
+/** `V0=<value>; V1=$V0; … Vn=$V(n-1); <tail on Vn>` — one link per level. */
+const iter277Chain = (links, tail) => {
+  const words = [`V0=${ITER276_DEPLOY_NAME}`];
+  for (let i = 1; i <= links; i += 1) words.push(`V${i}=${ITER276_DOLLAR}V${i - 1}`);
+  words.push(tail(`V${links}`));
+  return words.join('; ');
+};
+
+/**
+ * A tail carrying the two OTHER renderings as well, because the cost is the
+ * product: the chain sets the depth and the sibling readings branch at each
+ * level. A tail naming only `$Vn` grows too, just polynomially slower.
+ */
+const iter277Branching = (name) => [
+  `${ITER276_WRAPPER} ${ITER276_DOLLAR}{${name}:-x}`,
+  `${ITER276_DOLLAR}(echo ${ITER276_DOLLAR}${name})`,
+  `\`echo ${ITER276_DOLLAR}${name}\``,
+].join(' ');
+
+test('AP-EXT-ITER277-01: an assignment chain costs scopes LINEAR in its length', () => {
+  const scopesFor = (links) => {
+    const command = iter277Chain(links, iter277Branching);
+    try {
+      return splitShellSegments(command).length;
+    } catch (error) {
+      // A THROW out of the segmenter is exactly the failure this pin exists for:
+      // `main` catches it and approves, so the command is never scanned at all.
+      return assert.fail(`segmenting a ${links}-link chain threw ${error.constructor.name}`);
+    }
+  };
+
+  const short = scopesFor(6);
+  assert.ok(short > 0, 'the six-link baseline must segment');
+  // Linear in the links: ~4x the chain may cost ~4x the scopes and no more. On
+  // the raw-word recorder this ratio was 19x at 16 links and unbounded past 20.
+  assert.ok(
+    scopesFor(16) <= 4 * short,
+    `16 links cost ${scopesFor(16)} scopes against a 6-link baseline of ${short}`,
+  );
+  assert.ok(
+    scopesFor(64) <= 11 * short,
+    `64 links cost ${scopesFor(64)} scopes against a 6-link baseline of ${short}`,
+  );
+});
+
+test('AP-EXT-ITER277-01: a literal forbidden verb beside a long chain still blocks', () => {
+  // The fail-open witness, through the real handler subprocess. The forbidden
+  // verb is spelled LITERALLY here — nothing about it is indirected — so this
+  // case asks only whether the command was scanned at all.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const decisionFor = (command) => runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  }).decision;
+
+  const forbidden = 'git reset --hard';
+  assert.equal(decisionFor(forbidden), 'block', 'the control must block on its own');
+  assert.equal(
+    decisionFor(`${iter277Chain(24, iter277Branching)}; ${forbidden}`),
+    'block',
+    'a chain long enough to overflow the segmenter must not carry the command past the gate',
+  );
+});
+
+test('AP-EXT-ITER277-01: a value assigned through an EARLIER reference decides as its literal twin', () => {
+  // The recording rule's own equivalence, in both directions, and both halves
+  // are shim-verified against a real /bin/bash over a fixture deploy script that
+  // appends to a log: the FORWARD order runs the script (bash assigns left to
+  // right, so `T` holds the value), and the REVERSE order does not (`T` is
+  // assigned before `X` exists, so `bash $T` starts an interactive shell). The
+  // reverse half is the over-block bound restated where the recorder lives.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const decisionFor = (command) => runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  }).decision;
+
+  const use = `${ITER276_WRAPPER} ${ITER276_DOLLAR}T`;
+  assert.equal(
+    decisionFor(`X=${ITER276_DEPLOY_NAME}; T=${ITER276_DOLLAR}X; ${use}`),
+    'block',
+    'the forward order runs the deploy script and must block',
+  );
+  assert.equal(
+    decisionFor(`T=${ITER276_DOLLAR}X; X=${ITER276_DEPLOY_NAME}; ${use}`),
+    'approve',
+    'the reverse order runs no script and must keep approving',
+  );
+});

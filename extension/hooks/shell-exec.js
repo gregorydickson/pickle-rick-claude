@@ -1452,11 +1452,26 @@ const PARAMETER_REFERENCE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za
  *
  * TERMINATION — this is the one reading that can GROW the command, so it cannot
  * lean on the "strictly shorter" argument the others share. It is IDEMPOTENT
- * instead: a value carrying a `$` is never recorded, so substitution cannot
- * introduce a reference, and applying this rendering to its own output therefore
- * returns it unchanged — the `taken` dedup below ends the recursion one level
- * in. That bound is also why `S=$T` indirection stays open; it is a bound, not
- * an oversight.
+ * instead, and idempotence is a PROPERTY OF THE EMITTED STRING, not of the
+ * recording rule (AP-EXT-ITER277-01): every reference this pass CAN resolve is
+ * resolved in it, because a value is recorded from the RENDERED word, so the
+ * output holds no reference whose value stands before it. A value carrying a `$`
+ * is never recorded either, so substitution can introduce no new reference.
+ * Applying this rendering to its own output therefore returns it unchanged and
+ * the `taken` dedup below ends the branch ONE level in, whatever the input.
+ *
+ * That the dedup ends it is the whole bound, so a recording rule that leaves a
+ * resolvable reference standing is not a narrower reading — it hands the INPUT
+ * control of the recursion DEPTH, one level per link of an assignment chain,
+ * and the branching over the other three readings multiplies it. Measured on the
+ * raw-word draft: a 20-link chain beside a `${…}` body and a substitution cost a
+ * RangeError out of the segmenter — which `main`'s FATAL catch turns into an
+ * APPROVE — so a literal `git reset --hard` standing in the same command was
+ * approved for a worker while it blocked alone.
+ *
+ * What stays open is the LATER-assigned reference (`T=$X; X=install.sh`), and it
+ * is bash's own semantics rather than a bound: the shell assigns `T` before `X`
+ * exists, so `bash $T` runs an interactive shell and never the named script.
  *
  * BOUNDED in CHARACTERS for the same reason `parameterExpansionWords` is, so a
  * value referenced many times cannot make the emitted string quadratic in the
@@ -1498,20 +1513,31 @@ function inlineAssignedValues(command) {
         const start = match.index ?? 0;
         out.push(command.slice(cursor, start));
         cursor = start + word.length;
-        out.push(word.replace(PARAMETER_REFERENCE_RE, (reference, braced, bare) => {
+        const rendered = word.replace(PARAMETER_REFERENCE_RE, (reference, braced, bare) => {
             const value = values.get(braced ?? bare);
             if (value === undefined)
                 return reference;
             budget -= value.length;
             return value;
-        }));
+        });
+        out.push(rendered);
         if (budget < 0)
             return command;
-        // Recorded from the word's BOUNDARY tokens, so a separator glued to the
-        // value (`S=install.sh;`) is not carried into it, and from the FOLD, so
+        // Recorded from the RENDERED word, not the raw one (AP-EXT-ITER277-01): in
+        // `X=install.sh; T=$X; bash $T` the value of T is written with a reference
+        // this very pass has already resolved, and reading the raw word instead left
+        // T unrecorded, so the substitution arrived only when the recursion below
+        // re-entered this rendering on its own output — which made the emitted
+        // string NOT a fixpoint and handed the input control of the recursion DEPTH.
+        // Left-to-right IS bash's rule: it assigns in the same order, so a word only
+        // ever sees values that already exist, and a reference to a name assigned
+        // LATER resolves to nothing here exactly as it does in the shell.
+        //
+        // From the word's BOUNDARY tokens, so a separator glued to the value
+        // (`S=install.sh;`) is not carried into it, and from the FOLD, so
         // `S="install.sh"` records the name bash will use.
         const boundary = [];
-        pushWordBoundaryTokens(word, boundary);
+        pushWordBoundaryTokens(rendered, boundary);
         for (const token of boundary) {
             const assignment = ASSIGNMENT_WORD_RE.exec(foldShellWord(token).value);
             if (!assignment || assignment[2].length === 0 || assignment[2].includes('$'))
