@@ -53,6 +53,61 @@ count against a flat defect-escape rate is the signal to SUBTRACT, not to keep a
 
 ---
 
+## 🔁 THE LOOP'S OWN DEFECTS ARE IN ITS MEASUREMENT LAYER TOO (measured 2026-09-18)
+
+**The recursion, stated plainly:** this file already records that **11 of 14 product defects live in
+MEASUREMENT code, not logic**. The same is true one level up. The loop's defects are in *its*
+measurement layer — the premises, the greps, the issue bodies — and that is the one layer no phase
+reviews.
+
+**Measured on the B-INVENTED dispatch, not inferred:**
+
+| | |
+|---|---:|
+| roots I scoped that survived first contact with the refinement analysts | **2 of 4** |
+| open issues that were still actionable as filed when re-grepped | **2 of 5** |
+| anatomy-park passes on the converged subsystem (`bin`) vs the unconverged one (`extension`) | 5 vs **23+** |
+
+Two of four roots were wrong in the direction that costs most: **one was an ADDITION** (it routed a
+worker to build a third reader of `eslint.config.js`, which already has two), and **one was ALREADY
+SATISFIED** (#29). Both were caught by a ~15-minute read-only phase — but only *after* a full PRD with
+contracts, acceptance criteria and test-expectation tables had been authored for all four.
+
+**Meanwhile the gate came back 22/22 and the review phases are on their 24th trap door.** Effort is
+allocated where the loop is already strong; the error rate is upstream.
+
+### The counter-evidence, because the loop DOES recurse well when aimed correctly
+
+The test-quality hardening ticket caught `AC-I1-3's over-trigger control could not fail` and
+`AC-I3-1's closed-stdin case could not tell a decline from a deploy` — **vacuous controls in acceptance
+criteria authored four hours earlier in the same bundle.** The capability exists. It is simply not
+pointed at the scoping stage, which is where the measured error rate is.
+
+### Three changes. Each is an EDIT or a SUBTRACTION — none is a new case.
+
+1. **Every issue body ends with a `FALSIFY:` line: one runnable command.** This REPLACES the hand-grep
+   the babysitter redoes every dispatch tick, and it does it better. #29 survived months and consumed a
+   ticket slot because the re-check ran `grep -c "export .*runMuxRunnerMain"`, got `0`, and read a
+   **symbol-liveness** result as a **capability** answer — the export was the *wrapper*,
+   `driveMuxRunnerMain`. A `FALSIFY:` line importing the module and printing
+   `typeof m.driveMuxRunnerMain` would have self-invalidated the row in one second.
+2. **Run the refinement analysts on the PREMISE, before authoring the PRD — not after.** No new step:
+   the existing phase, fed thinner and sooner. One paragraph per root plus its falsifier; only survivors
+   earn contracts and ACs.
+3. **Loop metrics belong in the scorecard that already exists.** Three rows: **premise survival rate**,
+   **rework rate** (commits correcting an earlier phase's output inside one bundle), and **findings per
+   phase-hour**. The third is already interesting — `bin` converged in 5 anatomy passes while
+   `extension` passed 23 with zero consecutive clean. **Whether a converged subsystem stays in the
+   rotation is a measurement nobody has taken.** If it does, the fix is REMOVING a case.
+
+### ⛔ What NOT to do about this
+
+Do not add a premise-verification phase, a backlog-freshness gate leg, or a staleness classifier. That
+is the `10 → 13 audits in seven days` pattern this file already indicts, reproduced one level up. **The
+failure here is not a missing check — it is a check pointed at the wrong population.**
+
+---
+
 ## ⛳ OPERATOR DIRECTIVES 2026-07-25 (BINDING — read FIRST, supersede on conflict)
 
 Set by the operator after the B-GTRUTH + R-WDTF-TO runs each wedged in the pipeline's own
