@@ -35,6 +35,7 @@ import {
   deriveStallCause,
 } from '../services/microverse-state.js';
 import type { MetricComparisonFigures } from '../services/microverse-state.js';
+import { removeRecoverableJsonObject } from '../services/recoverable-json.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
@@ -945,7 +946,15 @@ function classifyExistingBaseline(opts: {
   log: (msg: string) => void;
 }): 'fresh' | 'stale' | 'absent' {
   const { baselinePath, currentIteration, baselineMaxAgeIterations, baselineMaxAgeSeconds, log } = opts;
-  if (!fs.existsSync(baselinePath)) return 'absent';
+  // AP-BIN-ITER79-01: presence is the PROMOTABLE SET, not the base name. `gate/baseline.json`
+  // is written atomically (`persistGateBaseline` -> `writeStateFile`) and read back by every
+  // consumer through `readRecoverableJsonObject`, so an interrupted write leaves a
+  // `.tmp.<pid>` orphan that IS the baseline to all of them. Asking `fs.existsSync` alone
+  // answered 'absent' over a usable baseline, and a fresh-init capture failure then rethrew
+  // past `ensurePerIterationGateBaseline` and killed the run. Same `existsSync || recoverable`
+  // resolution the state readers already use; the recovery read promotes, so the freshness
+  // checks below see a base either way.
+  if (!fs.existsSync(baselinePath) && readRecoverableJsonObject(baselinePath) === null) return 'absent';
   if (
     currentIteration === undefined ||
     baselineMaxAgeIterations === undefined ||
@@ -969,7 +978,12 @@ function classifyExistingBaseline(opts: {
     // `prepareIteration` and into `runMicroversePhases`, ending the run at
     // `exit_reason: 'error'` — a halt over derived data whose MISSING and STALE siblings
     // heal on this very line.
-    fs.rmSync(baselinePath, { force: true });
+    // AP-BIN-ITER79-01: the delete takes the whole promotable set. Removing the base alone
+    // left the orphan behind, and because `baseMtimeMs` is 0 once the base is gone the next
+    // consumer read renamed it straight back onto `baselinePath` — resurrecting the baseline
+    // THIS line rejected and putting `gateMode` (`pathExists`) back into subtraction mode,
+    // against the file `deferStaleBaselineRefresh` reports as missing.
+    removeRecoverableJsonObject(baselinePath);
     log(`[anatomy-park] refreshing per-iteration gate baseline (${safeErrorMessage(err)})`);
     return 'stale';
   }

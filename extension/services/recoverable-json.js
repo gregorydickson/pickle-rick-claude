@@ -102,15 +102,63 @@ function parseDeadTmp(tmpPath, baseMtimeMs) {
     }
     return { parsed: parsedResult.parsed, mtimeMs };
 }
-export function readRecoverableJsonObject(filePath) {
-    const base = parseJsonObjectFile(filePath);
+/**
+ * The PROMOTABLE SET of `filePath`: every `<base>.tmp.<pid>[.…]` sibling this module is
+ * willing to rename ONTO `filePath`. ONE definition, shared by the reader below and
+ * `removeRecoverableJsonObject`, so a deleter can never disagree with the reader about
+ * what "the file" is — the divergence that produced AP-BIN-ITER78-01 and AP-BIN-ITER79-01.
+ * Iteration order is readdir order, which the reader's equal-mtime tie-break relies on.
+ */
+function listPromotableTmpSiblings(filePath) {
     const dir = path.dirname(filePath);
     const baseName = path.basename(filePath);
     const entries = listEntries(dir);
     if (!entries)
-        return base;
+        return [];
     const tmpPrefix = baseName + '.tmp.';
     const tmpPattern = new RegExp(`^${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.tmp\\.(\\d+)(?:\\..+)?$`);
+    const siblings = [];
+    for (const entry of entries.filter(e => e.startsWith(tmpPrefix))) {
+        const match = entry.match(tmpPattern);
+        if (!match)
+            continue;
+        siblings.push({ tmpPath: path.join(dir, entry), tmpPid: Number(match[1]) });
+    }
+    return siblings;
+}
+/**
+ * Remove the whole promotable set of `filePath`, not just the base name. Returns true when
+ * anything was removed.
+ *
+ * Deleting the base ALONE does not delete the file: with the base gone `baseMtimeMs` is 0, so
+ * the `mtimeMs < baseMtimeMs` discard in `parseDeadTmp` can never fire and the very next
+ * `readRecoverableJsonObject` renames a surviving orphan straight back onto `filePath`,
+ * undoing the delete in silence. A live writer's tmp is SKIPPED for the same reason the
+ * reader skips it — it is an in-flight write, not an orphan — so this removes exactly what
+ * the reader would have promoted.
+ */
+export function removeRecoverableJsonObject(filePath) {
+    let removed = false;
+    for (const { tmpPath, tmpPid } of listPromotableTmpSiblings(filePath)) {
+        if (shouldSkipLiveTmp(tmpPid, tmpPath))
+            continue;
+        try {
+            fs.unlinkSync(tmpPath);
+            removed = true;
+        }
+        catch { /* ignore orphan cleanup failure */ }
+    }
+    try {
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            removed = true;
+        }
+    }
+    catch { /* ignore base cleanup failure */ }
+    return removed;
+}
+export function readRecoverableJsonObject(filePath) {
+    const base = parseJsonObjectFile(filePath);
     let baseMtimeMs;
     try {
         baseMtimeMs = fs.existsSync(filePath) ? fs.statSync(filePath).mtimeMs : 0;
@@ -119,12 +167,7 @@ export function readRecoverableJsonObject(filePath) {
         baseMtimeMs = 0;
     }
     let winner = null;
-    for (const entry of entries.filter(e => e.startsWith(tmpPrefix))) {
-        const match = entry.match(tmpPattern);
-        if (!match)
-            continue;
-        const tmpPath = path.join(dir, entry);
-        const tmpPid = Number(match[1]);
+    for (const { tmpPath, tmpPid } of listPromotableTmpSiblings(filePath)) {
         if (shouldSkipLiveTmp(tmpPid, tmpPath))
             continue;
         const candidate = parseDeadTmp(tmpPath, baseMtimeMs);
