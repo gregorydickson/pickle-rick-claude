@@ -7010,12 +7010,27 @@ test('AP-EXT-ITER279-01: the namespace read is over the WHOLE segment, with no o
     'the namespace question must be asked only after the verb scan has failed',
   );
   // The namespace, not the value, and no git-option names anywhere in the read.
-  const helper = source.slice(
-    source.indexOf('const GIT_ALIAS_CONFIG_KEY_RE'),
-    source.indexOf('/**', source.indexOf('function segmentDefinesGitAlias(')),
+  //
+  // The predicate's HOME moved to `shell-exec.ts` (AP-EXT-ITER281-01) so the two
+  // git-anchor readers cannot re-fork on it — this slice follows it there rather
+  // than reading an empty span in the file it left behind, which is how a
+  // source-text pin rots GREEN.
+  const shellExec = readCode(SHELL_EXEC_TS);
+  const helper = shellExec.slice(
+    shellExec.indexOf('const GIT_ALIAS_CONFIG_KEY_RE'),
+    shellExec.indexOf('}', shellExec.indexOf('export function segmentDefinesGitAlias(')),
   );
   assert.ok(helper.length > 0, 'the namespace predicate must remain a single named function');
   assert.doesNotMatch(helper, /'-c'|'--config-env'|'--global'|'--file'|GIT_CONFIG/);
+  // ONE definition, both readers. config-protection must not re-declare a local
+  // copy, and tsc-gate must consume the same export — the fork this move closed
+  // (config-protection read the namespace while tsc-gate read the verb spelling,
+  // so an aliased commit blocked as a git verb and classified NON-commit).
+  assert.doesNotMatch(source, /const GIT_ALIAS_CONFIG_KEY_RE/);
+  assert.match(source, /segmentDefinesGitAlias,?\n/);
+  const tscGate = readCode(path.resolve(__dirname, '../../src/hooks/handlers/tsc-gate.ts'));
+  assert.match(tscGate, /segmentDefinesGitAlias\(tokens\)/);
+  assert.doesNotMatch(tscGate, /const GIT_ALIAS_CONFIG_KEY_RE/);
 });
 
 test('AP-EXT-ITER279-01: the namespace boundary excludes a longer identifier', () => {

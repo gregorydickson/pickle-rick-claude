@@ -6,7 +6,7 @@ import { approve, loadActiveState, resolveStateFile } from '../resolve-state.js'
 import { logActivity } from '../../services/activity-logger.js';
 import { getDataRoot, safeErrorMessage } from '../../services/pickle-utils.js';
 import { StateManager } from '../../services/state-manager.js';
-import { execAnchorIndex, execNamesIn, splitShellSegments, tokenizeShellTokens } from '../shell-exec.js';
+import { execAnchorIndex, execNamesIn, segmentDefinesGitAlias, splitShellSegments, tokenizeShellTokens, } from '../shell-exec.js';
 const TSC_TRIGGER_RE = /\.(?:[cm]?ts|tsx)$/i;
 const TSC_CONFIG_RE = /^tsconfig(?:\..+)?\.json$/i;
 const PACKAGE_JSON_RE = /^package.*\.json$/i;
@@ -139,6 +139,30 @@ function segmentIsGitCommit(segment) {
         if (NEGATIVE_GIT_SUBCOMMANDS.has(token))
             return false;
     }
+    // No decisive subcommand anywhere — which is also the only state in which
+    // git's own ALIAS indirection could be supplying one, so ask that here rather
+    // than as a separate arm (the placement `findGitVerb` already chose). Every
+    // reading above asks what BASH does to the verb word before git sees it
+    // (quoting, globbing, case, position, command prefixes, option operands); git
+    // then applies an expansion of its OWN, and an alias makes the verb a name the
+    // author defined, so no reading of that word's spelling can recover the
+    // subcommand it runs. `git -c alias.c='commit -m x' c` really commits — 6 of 6
+    // alias surfaces measured against real git, each classified NON-commit here
+    // while its literal twin classified commit, so the R-WACT tsc gate was SKIPPED
+    // for a broken-TS commit (AP-EXT-ITER281-01).
+    //
+    // AFTER the loop, not before it, and that order is git's own semantics rather
+    // than a preference: git refuses to let an alias shadow a built-in (measured —
+    // `git -c alias.log='commit -m x' log` runs log and commits nothing), so a
+    // segment whose read-only subcommand was decisive really does run that
+    // read-only command, whatever aliases it also defines.
+    //
+    // TRUE is the fail-CLOSED direction for THIS gate, the same asymmetry the
+    // subcommand scan above is built on: over-reach merely RUNS tsc over a staged
+    // tree, while under-reach ships a commit the gate never type-checked. The
+    // sibling reader blocks the command outright; this one only measures it.
+    if (segmentDefinesGitAlias(tokens))
+        return true;
     return false;
 }
 export function isGitCommitCommand(command) {

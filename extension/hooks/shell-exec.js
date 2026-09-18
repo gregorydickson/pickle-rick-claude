@@ -776,6 +776,46 @@ export function execAnchorIndex(tokens, name) {
     return -1;
 }
 /**
+ * git's `alias.<name>` config namespace: a config section whose VALUE git
+ * executes as a command, wherever that assignment is written.
+ *
+ * NOT the only one, and the correction is measured rather than suspected
+ * (AP-EXT-ITER281-02): `git -c diff.external='sh -c "git reset --hard"'
+ * diff HEAD~1 HEAD` really destroyed a worker's staged and unstaged work in a
+ * scratch repo while this predicate read nothing and the guard APPROVED it. The
+ * executing namespaces are a SET (`diff.external` confirmed; `core.pager`,
+ * `core.editor`, `credential.helper`, `core.sshCommand`,
+ * `uploadpack.packObjectsHook` all approve, execution unconfirmed under the
+ * spellings probed), so a predicate naming ONE member is one member short by
+ * construction — the enumerated-set shape this subsystem has paid for
+ * repeatedly. Recorded OPEN on fix SHAPE: the landable direction is to key on
+ * the `-c`/`--config-env`/`GIT_CONFIG_KEY_*` CONFIG SURFACE rather than on any
+ * namespace roster, which is one predicate instead of a list that rots.
+ *
+ * Read over the WHOLE segment's tokens, not the argument list after the anchor,
+ * because git accepts the assignment in four places and only one of them is a
+ * bare argument: `-c alias.zap='reset --hard'`, `--config-env=alias.zap=V`,
+ * `git config alias.zap 'reset --hard'`, and `GIT_CONFIG_KEY_0=alias.zap` in the
+ * environment — which stands BEFORE the anchor, so an argument-list scan cannot
+ * see it. Keying on the namespace rather than on where it was written is what
+ * makes that four-way surface one predicate instead of an option table.
+ *
+ * The leading boundary excludes a longer identifier ending in `alias`, so
+ * `myalias.zap` does not match.
+ *
+ * HOME IS THIS MODULE, beside `execName`, for that fold's own recorded reason
+ * (AP-EXT-ITER281-01): git's expansion of the verb word is a question BOTH
+ * git-anchor readers must ask, and the two detectors had already re-forked on it
+ * exactly as they once forked on case — config-protection read the namespace
+ * while tsc-gate read the verb's spelling, so an aliased commit blocked as a git
+ * verb and classified NON-commit, skipping the R-WACT tsc gate. ONE home so they
+ * cannot re-fork a second time.
+ */
+const GIT_ALIAS_CONFIG_KEY_RE = /(?:^|[^A-Za-z0-9_.])alias\.[A-Za-z0-9_-]+/;
+export function segmentDefinesGitAlias(tokens) {
+    return tokens.some(token => GIT_ALIAS_CONFIG_KEY_RE.test(token.value));
+}
+/**
  * Every operator at which bash starts a new command.
  *
  * Beyond the control operators (`&&`, `||`, `|`, `&`, `;`, newline) this

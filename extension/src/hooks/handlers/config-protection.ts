@@ -16,8 +16,8 @@ import {
   isShellWrapper,
   SHELL_PATTERN_CHARS,
   patternNamesACommand,
+  segmentDefinesGitAlias,
   shellWordWitness,
-  type ShellToken,
   splitShellSegments,
   tokenizeShellCommand,
   tokenizeShellTokens,
@@ -1258,27 +1258,6 @@ const GATED_GIT_VERBS = [
  * than growing the verb scan a new arm.
  */
 const GIT_ALIAS_VERB = 'config alias';
-
-/**
- * git's `alias.<name>` config namespace: the ONE config section whose VALUE git
- * executes as a command, wherever that assignment is written.
- *
- * Read over the WHOLE segment's tokens, not the argument list after the anchor,
- * because git accepts the assignment in four places and only one of them is a
- * bare argument: `-c alias.zap='reset --hard'`, `--config-env=alias.zap=V`,
- * `git config alias.zap 'reset --hard'`, and `GIT_CONFIG_KEY_0=alias.zap` in the
- * environment — which stands BEFORE the anchor, so an argument-list scan cannot
- * see it. Keying on the namespace rather than on where it was written is what
- * makes that four-way surface one predicate instead of an option table.
- *
- * The leading boundary excludes a longer identifier ending in `alias`, so
- * `myalias.zap` does not match.
- */
-const GIT_ALIAS_CONFIG_KEY_RE = /(?:^|[^A-Za-z0-9_.])alias\.[A-Za-z0-9_-]+/;
-
-function segmentDefinesGitAlias(tokens: readonly ShellToken[]): boolean {
-  return tokens.some(token => GIT_ALIAS_CONFIG_KEY_RE.test(token.value));
-}
 
 /**
  * Returns true when `git checkout <args>` is targeting a ref (blocked).

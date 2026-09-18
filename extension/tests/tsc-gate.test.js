@@ -408,6 +408,68 @@ it('isGitCommitCommand detects commit behind arg-consuming git global options', 
   }
 });
 
+it('AP-EXT-ITER281-01: a git ALIAS supplies the subcommand, so an aliased commit classifies as a commit', async () => {
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  // Every reading in this classifier asks what BASH does to the verb word before
+  // git sees it. Git then applies an expansion of its OWN: an alias makes the
+  // verb a name the author defined, so no reading of that word's spelling can
+  // recover the subcommand it runs. Each of these REALLY COMMITS — verified
+  // against real git in a scratch repo, HEAD advancing by one — while the
+  // pre-fix classifier read `c`/`zz` and returned false, SKIPPING the R-WACT tsc
+  // gate for a broken-TS commit.
+  //
+  // The four surfaces are deliberate: git takes the config assignment as a bare
+  // argument, an `=`-glued option, a separate operand, and an ENVIRONMENT pair —
+  // and the environment pair stands BEFORE the anchor, so an argument-list scan
+  // cannot see it. That is why the predicate keys on the NAMESPACE over the whole
+  // token list rather than on where the assignment was written.
+  const aliasedCommits = [
+    "git -c alias.c='commit -m x' c",
+    "git -c alias.zz='commit -m wip' zz",
+    "git -c alias.c='!git commit -m x' c",
+    'GIT_X=commit git --config-env=alias.c=GIT_X c',
+    "GIT_CONFIG_KEY_0=alias.c GIT_CONFIG_VALUE_0='commit -m x' GIT_CONFIG_COUNT=1 git c",
+    "cd extension && git -c alias.c='commit -m x' c",
+  ];
+  for (const command of aliasedCommits) {
+    assert.equal(isGitCommitCommand(command), true, command);
+  }
+
+  // The DISCRIMINATOR between this fix and a guard that merely fires on the
+  // `alias.` spelling: the arm is asked only when no decisive subcommand was
+  // found, and that ordering is git's own semantics rather than a preference.
+  // Git refuses to let an alias shadow a built-in (measured: these run `log` /
+  // `status` and commit nothing), so a segment whose read-only subcommand was
+  // decisive really does run that read-only command, whatever it also defines.
+  // Without this half, an always-true alias arm would pass every case above.
+  const aliasDefinedButReadOnly = [
+    "git -c alias.log='commit -m x' log --oneline",
+    "git -c alias.diff='commit -m x' diff",
+    "git -c alias.show='commit -m x' show HEAD",
+  ];
+  for (const command of aliasDefinedButReadOnly) {
+    assert.equal(isGitCommitCommand(command), false, command);
+  }
+
+  // A subcommand that is NOT in `NEGATIVE_GIT_SUBCOMMANDS` is not decisive, so a
+  // segment defining an alias beside it reaches the arm and RUNS the gate over a
+  // command that commits nothing. Recorded as the accepted cost, not an
+  // oversight: this is the same over-reach asymmetry the subcommand scan above
+  // is built on — over-reach merely type-checks a staged tree, while under-reach
+  // ships a commit the gate never measured.
+  assert.equal(isGitCommitCommand("git -c alias.status='commit -m y' status"), true);
+
+  // Non-vacuity: the namespace read must not claim a longer identifier ending in
+  // `alias`, and a command defining nothing stays non-commit.
+  const negatives = [
+    'git -c myalias.zap=x status',
+    'git status',
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, command);
+  }
+});
+
 it('isGitCommitCommand detects commit behind non-arg-consuming git global boolean flags', async () => {
   const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
   // A git global BOOLEAN option (`--no-pager`, `-p`, `--paginate`,
