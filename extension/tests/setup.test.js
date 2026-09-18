@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseArguments, initializeNewSession, evaluateLaunchSizing, countManifestTickets } from '../bin/setup.js';
+import { parseArguments, initializeNewSession, evaluateLaunchSizing, countSessionTickets } from '../bin/setup.js';
 import { runRecover } from '../bin/pickle-recover.js';
 import { assertCitadelLaunchPrdResolvable } from '../bin/pipeline-runner.js';
 import { StateManager } from '../services/state-manager.js';
@@ -1550,30 +1550,46 @@ test('C7: the compiled loopLimit fallback equals pickle_settings.json default_ma
 });
 
 // ---------------------------------------------------------------------------
+// A session laid out the way /pickle-refine-prd leaves it: one directory per
+// ticket holding rick_ticket_<hash>.md. There is deliberately no manifest file —
+// no producer in the tree writes one, which is the defect AP-EXT-ITER268-01 fixed.
+function seedTicketRoster(sessionDir, count) {
+    for (let i = 0; i < count; i++) {
+        const id = (i + 1).toString(16).padStart(8, '0');
+        const ticketDir = path.join(sessionDir, id);
+        fs.mkdirSync(ticketDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(ticketDir, `rick_ticket_${id}.md`),
+            `---\nid: ${id}\ntitle: "seeded ticket ${i}"\nstatus: Todo\ncomplexity_tier: medium\norder: ${(i + 1) * 10}\n---\n# ${id}\n`,
+        );
+    }
+    return sessionDir;
+}
+
 // AC-LPB-01: launch-path warning when --max-time is undersized
 // ---------------------------------------------------------------------------
 
-test('AC-LPB-01: countManifestTickets reads ticket count from decomposition_manifest.json', () => {
+test('AC-LPB-01: countSessionTickets counts the session ticket directories', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
     try {
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] }),
-        );
-        assert.equal(countManifestTickets(dir), 3);
+        seedTicketRoster(dir, 3);
+        assert.equal(countSessionTickets(dir), 3);
     } finally {
         fs.rmSync(dir, { recursive: true });
     }
 });
 
-test('AC-LPB-01: countManifestTickets returns 0 for missing or malformed manifest', () => {
+test('AC-LPB-01: countSessionTickets returns 0 for a session with no ticket roster', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
     try {
-        assert.equal(countManifestTickets(dir), 0); // missing
-        fs.writeFileSync(path.join(dir, 'decomposition_manifest.json'), 'not json');
-        assert.equal(countManifestTickets(dir), 0); // malformed
-        fs.writeFileSync(path.join(dir, 'decomposition_manifest.json'), '{"tickets": "not-an-array"}');
-        assert.equal(countManifestTickets(dir), 0); // wrong shape
+        assert.equal(countSessionTickets(dir), 0); // pre-refinement session
+        fs.mkdirSync(path.join(dir, 'refinement'), { recursive: true });
+        fs.writeFileSync(path.join(dir, 'refinement', 'analyst-1.md'), '# not a ticket\n');
+        assert.equal(countSessionTickets(dir), 0); // non-ticket subdirectory
+        const stray = path.join(dir, 'deadbeef');
+        fs.mkdirSync(stray, { recursive: true });
+        fs.writeFileSync(path.join(stray, 'rick_ticket_deadbeef.md'), 'no frontmatter here\n');
+        assert.equal(countSessionTickets(dir), 0); // unparseable ticket file
     } finally {
         fs.rmSync(dir, { recursive: true });
     }
@@ -1584,10 +1600,7 @@ test('AC-LPB-01: evaluateLaunchSizing warns when --max-time undersized for ticke
     try {
         // 50 tickets at 5 t/h (claude default) → 600 minutes expected.
         // --max-time 60 < 600*0.8=480 → warning required.
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(50).fill(0).map((_, i) => ({ id: `t${i}` })) }),
-        );
+        seedTicketRoster(dir, 50);
         const config = parseArguments(['--max-time', '60', '--task', 'sizing-warning-test']);
         const captured = [];
         const result = evaluateLaunchSizing(dir, config, (msg) => captured.push(msg));
@@ -1606,10 +1619,7 @@ test('AC-LPB-01: evaluateLaunchSizing warns when --max-time undersized for ticke
 test('AC-LPB-01: --acknowledge-undersized silences the warning but launch still proceeds', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
     try {
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(50).fill(0).map((_, i) => ({ id: `t${i}` })) }),
-        );
+        seedTicketRoster(dir, 50);
         const config = parseArguments(['--max-time', '60', '--acknowledge-undersized', '--task', 'ack-test']);
         const captured = [];
         const result = evaluateLaunchSizing(dir, config, (msg) => captured.push(msg));
@@ -1624,10 +1634,7 @@ test('AC-LPB-01: --acknowledge-undersized silences the warning but launch still 
 test('AC-LPB-01: max-time=0 (unlimited) skips sizing check', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
     try {
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(100).fill(0).map((_, i) => ({ id: `t${i}` })) }),
-        );
+        seedTicketRoster(dir, 100);
         const config = parseArguments(['--max-time', '0', '--task', 'unlimited-test']);
         const captured = [];
         const result = evaluateLaunchSizing(dir, config, (msg) => captured.push(msg));
@@ -1642,10 +1649,7 @@ test('AC-LPB-01: well-sized --max-time produces no warning', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
     try {
         // 5 tickets at 5 t/h → 60m expected. --max-time 90 ≥ 60*0.8=48 → ok.
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(5).fill(0).map((_, i) => ({ id: `t${i}` })) }),
-        );
+        seedTicketRoster(dir, 5);
         const config = parseArguments(['--max-time', '90', '--task', 'well-sized-test']);
         const captured = [];
         const result = evaluateLaunchSizing(dir, config, (msg) => captured.push(msg));
@@ -1659,10 +1663,7 @@ test('AC-LPB-01: well-sized --max-time produces no warning', () => {
 test('AC-LPB-01: codex backend uses lower throughput baseline', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
     try {
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(7).fill(0).map((_, i) => ({ id: `t${i}` })) }),
-        );
+        seedTicketRoster(dir, 7);
         // 7 tickets / 3.5 t/h = 2h → 120m expected. --max-time 30 < 120*0.8=96 → warn.
         const config = parseArguments(['--max-time', '30', '--backend', 'codex', '--task', 'codex-sizing']);
         const captured = [];
@@ -1678,10 +1679,7 @@ test('AC-LPB-01: codex backend uses lower throughput baseline', () => {
 test('throughput.hermes: settings baseline is used by launch sizing', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
     try {
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(9).fill(0).map((_, i) => ({ id: `t${i}` })) }),
-        );
+        seedTicketRoster(dir, 9);
         const config = parseArguments(['--max-time', '30', '--backend', 'hermes', '--task', 'hermes-sizing']);
         const captured = [];
         const result = evaluateLaunchSizing(dir, config, (msg) => captured.push(msg));
@@ -1697,10 +1695,7 @@ test('throughput.hermes: settings baseline is used by launch sizing', () => {
 test('throughput.hermes: fallback baseline is used when settings omit hermes', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
     try {
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(9).fill(0).map((_, i) => ({ id: `t${i}` })) }),
-        );
+        seedTicketRoster(dir, 9);
         const config = {
             timeLimit: 30,
             throughputBaselines: { claude: 5.0 },
@@ -1711,6 +1706,60 @@ test('throughput.hermes: fallback baseline is used when settings omit hermes', (
         assert.ok(result?.warned);
         assert.equal(result.backend, 'hermes');
         assert.equal(result.throughput, 4.5);
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+// AP-EXT-ITER268-01 regression: the sizing numerator must come from the roster the
+// pipeline actually runs. Pre-fix it read `decomposition_manifest.json`, which no
+// producer in the tree writes — measured 0/16 live sessions carried one, so the
+// undersized-budget warning could never fire on any real launch.
+test('AP-EXT-ITER268-01: sizing warns for a refined session that has ticket dirs and no manifest file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
+    try {
+        // Exactly what /pickle-refine-prd leaves behind before `setup.js --resume`:
+        // ticket directories, prd_refined.md, refinement_manifest.json — no manifest
+        // of ticket counts anywhere.
+        seedTicketRoster(dir, 50);
+        fs.writeFileSync(path.join(dir, 'prd_refined.md'), '# refined\n');
+        fs.writeFileSync(
+            path.join(dir, 'refinement_manifest.json'),
+            JSON.stringify({ tickets: [], workers: [{ role: 'analyst', success: true }] }),
+        );
+        assert.equal(
+            fs.existsSync(path.join(dir, 'decomposition_manifest.json')),
+            false,
+            'production sessions never carry this file — the fixture must not invent one',
+        );
+
+        const config = parseArguments(['--max-time', '60', '--task', 'refined-session-sizing']);
+        const captured = [];
+        const result = evaluateLaunchSizing(dir, config, (msg) => captured.push(msg));
+
+        assert.ok(result, 'sizing check must produce a verdict for a refined session');
+        assert.equal(result.warned, true);
+        assert.equal(result.ticketCount, 50);
+        assert.match(captured.join(''), /--max-time=60m may be undersized for 50 tickets/);
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+test('AP-EXT-ITER268-01: a phantom decomposition_manifest.json is not a ticket roster', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-sizing-'));
+    try {
+        // The pre-fix fixture shape, with no ticket directories behind it. A file
+        // nothing writes must not be able to drive the launch verdict.
+        fs.writeFileSync(
+            path.join(dir, 'decomposition_manifest.json'),
+            JSON.stringify({ tickets: new Array(50).fill(0).map((_, i) => ({ id: `t${i}` })) }),
+        );
+        assert.equal(countSessionTickets(dir), 0);
+        const config = parseArguments(['--max-time', '60', '--task', 'phantom-manifest-sizing']);
+        const captured = [];
+        assert.equal(evaluateLaunchSizing(dir, config, (msg) => captured.push(msg)), null);
+        assert.equal(captured.length, 0);
     } finally {
         fs.rmSync(dir, { recursive: true });
     }

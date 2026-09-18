@@ -388,22 +388,15 @@ function readThroughputBaselines(settings: Record<string, unknown>): Record<stri
 }
 
 /**
- * AC-LPB-01: count tickets in the session's decomposition_manifest.json. Returns
- * 0 when the manifest is missing or malformed — caller treats 0 as "no sizing
+ * AC-LPB-01: count the tickets this launch will actually run. The roster is the
+ * session's ticket DIRECTORIES, read through the same `collectTickets`
+ * enumeration the selector and epic-completion paths use, so the sizing
+ * numerator cannot name an artifact the pipeline does not produce. Returns 0
+ * before refinement has written any ticket — the caller treats 0 as "no sizing
  * data, skip the warning".
  */
-export function countManifestTickets(sessionDir: string): number {
-  const manifestPath = path.join(sessionDir, 'decomposition_manifest.json');
-  if (!fs.existsSync(manifestPath)) return 0;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as unknown;
-    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { tickets?: unknown[] }).tickets)) {
-      return (parsed as { tickets: unknown[] }).tickets.length;
-    }
-  } catch {
-    /* malformed — treat as no data */
-  }
-  return 0;
+export function countSessionTickets(sessionDir: string): number {
+  return collectTickets(sessionDir).filter(ticket => !!ticket.id).length;
 }
 
 interface SizingCheckResult {
@@ -431,7 +424,7 @@ export function evaluateLaunchSizing(
   config: SetupArgs,
   emit: (msg: string) => void = (msg) => process.stderr.write(msg),
 ): SizingCheckResult | null {
-  const ticketCount = countManifestTickets(sessionDir);
+  const ticketCount = countSessionTickets(sessionDir);
   if (ticketCount <= 0) return null;
   if (!config.timeLimit || config.timeLimit <= 0) return null; // 0/unlimited — no sizing concern
 
