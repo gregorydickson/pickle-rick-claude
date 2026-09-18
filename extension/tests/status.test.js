@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { showStatus, computeConsecutiveNoProgress } from '../bin/status.js';
+import { writePipelineStatus } from '../bin/pipeline-runner.js';
 
 const DEAD_TMP_PID = 99_999_999;
 
@@ -202,26 +203,34 @@ test('pickle-status continued to remediation: shows recoverable pickle summary f
     });
 });
 
-test('pickle-status recap: counts actual phase_completed events in output', () => {
-    withExtensionDir((tmpDir) => {
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER148-02: the recap's numerator is a MEASUREMENT, not a literal.
+//
+// It used to count `phase_completed` activity entries. No producer has ever
+// emitted that event -- it is absent from VALID_ACTIVITY_EVENTS and from
+// activity-events.schema.json, and `git log -S` shows the reader landed
+// (ee5019c4) as a pure addition with no writer. Measured over the 16 real
+// sessions on the authoring box: every one printed `0/4`, six of them after
+// completing all four phases. The prior fixture hand-wrote three phantom
+// events AND set the live `completed_phases` to 0, so the pin was green over
+// a channel the runtime never fills.
+//
+// Both cases below drive the REAL producer (`writePipelineStatus`, the sole
+// writer of pipeline-status.json) into the REAL reader (`showStatus`). The
+// activity array deliberately carries NO phase_completed entries -- the number
+// must come from the produced record.
+// ---------------------------------------------------------------------------
+
+function withRecapSession(fn) {
+    return withExtensionDir((tmpDir) => {
         const sessionDir = fs.realpathSync(
             fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-status-session-'))
         );
         const fakeCwd = sessionDir + '-cwd';
-        const ts = new Date().toISOString();
-
         fs.writeFileSync(
             path.join(tmpDir, 'current_sessions.json'),
             JSON.stringify({ [fakeCwd]: sessionDir })
         );
-        fs.writeFileSync(path.join(sessionDir, 'pipeline-status.json'), JSON.stringify({
-            status: 'completed',
-            current_phase: null,
-            completed_phases: 0,
-            skipped_phases: 0,
-            total_phases: 4,
-            updated_at: ts,
-        }));
         fs.writeFileSync(
             path.join(sessionDir, 'state.json'),
             JSON.stringify({
@@ -230,24 +239,70 @@ test('pickle-status recap: counts actual phase_completed events in output', () =
                 max_iterations: 10,
                 current_ticket: 'TICKET-RECAP',
                 original_prompt: 'Summarize completed phases',
-                activity: [
-                    { event: 'phase_completed', ts, phase: 'pickle' },
-                    { event: 'phase_completed', ts, phase: 'citadel' },
-                    { event: 'phase_completed', ts, phase: 'anatomy-park' },
-                ],
+                activity: [{ event: 'session_started', ts: new Date().toISOString() }],
             })
         );
-
         try {
-            const output = captureStdout(() => showStatus(fakeCwd));
-            assert.match(
-                output,
-                /Pipeline recap: 3\/4 phases completed/,
-                `Expected phase recap sourced from phase_completed events, got: ${output}`
-            );
+            return fn(sessionDir, fakeCwd);
         } finally {
             fs.rmSync(sessionDir, { recursive: true, force: true });
         }
+    });
+}
+
+test('pickle-status recap: reports the phase count the pipeline actually produced', () => {
+    withRecapSession((sessionDir, fakeCwd) => {
+        // The real writer, exactly as finalizePipeline calls it.
+        writePipelineStatus(sessionDir, 'completed', {
+            current_phase: null,
+            completed_phases: 4,
+            skipped_phases: 0,
+            total_phases: 4,
+        });
+
+        const produced = JSON.parse(
+            fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8')
+        );
+        assert.equal(produced.completed_phases, 4, 'precondition: the producer recorded 4');
+
+        const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+        assert.equal(
+            state.activity.filter((e) => e?.event === 'phase_completed').length,
+            0,
+            'precondition: no phase_completed events exist -- this is the production shape'
+        );
+
+        const output = captureStdout(() => showStatus(fakeCwd));
+        assert.match(
+            output,
+            /Pipeline recap: 4\/4 phases completed/,
+            `A fully-completed pipeline must not recap as 0/4, got: ${output}`
+        );
+    });
+});
+
+test('pickle-status recap: a partially-completed pipeline reports its own shortfall', () => {
+    // The negative control: the numerator must TRACK the producer, not be a
+    // constant that happens to match the denominator. Same wire, different value.
+    withRecapSession((sessionDir, fakeCwd) => {
+        writePipelineStatus(sessionDir, 'failed', {
+            current_phase: null,
+            completed_phases: 2,
+            skipped_phases: 0,
+            total_phases: 4,
+        });
+
+        const output = captureStdout(() => showStatus(fakeCwd));
+        assert.match(
+            output,
+            /Pipeline recap: 2\/4 phases completed/,
+            `Expected the produced shortfall 2/4, got: ${output}`
+        );
+        assert.doesNotMatch(
+            output,
+            /Pipeline recap: 4\/4 phases completed/,
+            'the numerator must not be the denominator'
+        );
     });
 });
 
@@ -285,7 +340,9 @@ test('pickle-status recap: recovers pipeline-status.json from orphan tmp when ba
                 max_iterations: 10,
                 current_ticket: 'TICKET-ORPHAN',
                 original_prompt: 'Recover pipeline-status from tmp',
-                activity: [{ event: 'phase_completed', ts, phase: 'pickle' }],
+                // AP-EXT-ITER148-02: no phantom `phase_completed` fixture -- the
+                // recovered tmp snapshot supplies BOTH halves of the ratio.
+                activity: [{ event: 'session_started', ts }],
             })
         );
 

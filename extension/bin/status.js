@@ -34,11 +34,6 @@ function readPipelineStatus(sessionPath) {
     const raw = readRecoverableJsonObject(statusPath);
     return raw ? raw : null;
 }
-function countPhaseCompletedEvents(state) {
-    if (!Array.isArray(state.activity))
-        return 0;
-    return state.activity.filter((entry) => entry?.event === 'phase_completed').length;
-}
 function getRecoverablePhaseFailures(state) {
     if (!Array.isArray(state.activity))
         return [];
@@ -60,8 +55,14 @@ function renderPipelineRecap(sessionPath, state) {
     if (!hasPipelineArtifacts(sessionPath, state))
         return;
     const pipelineStatus = readPipelineStatus(sessionPath);
-    const phasesCompleted = countPhaseCompletedEvents(state);
     const recoverableFailures = getRecoverablePhaseFailures(state);
+    // AP-EXT-ITER148-02: both halves of this ratio come from the ONE record the
+    // pipeline writes. The former numerator counted a `phase_completed` activity
+    // event, which no producer has ever emitted -- it is absent from
+    // VALID_ACTIVITY_EVENTS and from activity-events.schema.json, so the typed
+    // writer could not emit it even by mistake, and every real run printed `0/N`
+    // beside a denominator read from `pipeline-status.json` two lines apart.
+    const phasesCompleted = Number(pipelineStatus?.completed_phases) || 0;
     const totalPhases = Number(pipelineStatus?.total_phases) || 0;
     if (recoverableFailures.length > 0) {
         const latestFailure = recoverableFailures[recoverableFailures.length - 1];
