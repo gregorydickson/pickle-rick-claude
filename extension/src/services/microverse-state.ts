@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as crypto from 'node:crypto';
-import type { MicroverseSessionState, MicroverseHistoryEntry, CreateMicroverseOpts, FailureClass, Violation, JudgeResult, StallCause, StallDisposition } from '../types/index.js';
+import type { MicroverseSessionState, MicroverseHistoryEntry, CreateMicroverseOpts, FailureClass, Violation, JudgeResult, StallCause, StallDisposition, StallWriteCause } from '../types/index.js';
 import { isRecord } from '../lib/is-record.js';
 import { StateManager } from './state-manager.js';
 import { safeErrorMessage } from './pickle-utils.js';
@@ -403,18 +403,24 @@ export function recordIteration(
 }
 
 /**
- * Record a stall (no commits or metric unmeasurable). Increments stall_counter
- * without adding a history entry. This is the ONLY place stall_counter is
- * incremented outside of recordIteration — centralizing stall logic.
+ * Record a stall. Increments stall_counter without adding a history entry — the ONLY place
+ * stall_counter is incremented outside of recordIteration, centralizing stall logic.
+ *
+ * I2: `cause` is the caller's own measured reason — the same shape `recordIteration` already
+ * carries via its `classification` parameter, "avoiding a redundant (and potentially
+ * inconsistent) re-classification inside this function". There are exactly three production
+ * callsites (`StallWriteCause`): a strict-mode gate red, a metric that failed to measure twice,
+ * and a worker iteration that made no commits. A hardcoded constant here would make the other two
+ * unreportable at read time, however precisely the caller had already distinguished them.
  */
-export function recordStall(state: MicroverseSessionState): MicroverseSessionState {
+export function recordStall(state: MicroverseSessionState, cause: StallWriteCause): MicroverseSessionState {
   return {
     ...state,
     consecutive_amnesiac_exits: 0,
     convergence: {
       ...state.convergence,
       stall_counter: state.convergence.stall_counter + 1,
-      last_stall_signal: 'no-commit',
+      last_stall_signal: cause,
     },
   };
 }
@@ -525,9 +531,12 @@ export function classifyFailure(
 }
 
 /**
- * AC-J4-1/-2/-3/-4/-5: names the mechanism that exhausted a stall budget, derived from ONE field —
- * `convergence.last_stall_signal` — set live by `recordIteration`/`recordStall` on every call, never
- * re-derived from `history` shape or `iteration_regressions`.
+ * AC-J4-1/-2/-3/-4/-5/I2: names the mechanism that exhausted a stall budget, derived from ONE field —
+ * `convergence.last_stall_signal` — set live by `recordIteration`'s classification or `recordStall`'s
+ * caller-supplied `StallWriteCause` on every call, never re-derived from `history` shape or
+ * `iteration_regressions`. Because `recordStall` reports its caller's own measured cause verbatim
+ * (I2), this function needs no widening of its own to surface `'strict-mode-red'` or
+ * `'metric-unmeasurable'` — it already returns whatever `last_stall_signal` holds.
  *
  * Those are the two disagreeing candidates this ticket rejects. `history[history.length -
  * 1]?.classification` goes stale the moment a scored iteration is followed by one or more no-commit

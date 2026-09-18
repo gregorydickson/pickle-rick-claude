@@ -547,7 +547,7 @@ function recordPerIterationGateRegression(opts, result, gateMode) {
         iteration_regressions: (opts.currentMv.iteration_regressions ?? 0) + 1,
     };
     if (gateMode === 'strict') {
-        nextMv = recordStall(nextMv);
+        nextMv = recordStall(nextMv, 'strict-mode-red');
         opts.deps.logActivityFn({
             event: 'strict_mode_red',
             source: 'pickle',
@@ -3670,7 +3670,7 @@ export async function handleRateLimit(_state, ctx, signal, waitMetadata = {}) {
 }
 function recordMetricMeasurementFailure(state, ctx) {
     ctx.log('WARNING: Metric measurement failed twice — treating as stall (commit preserved)');
-    replaceMicroverseState(state, recordStall(state));
+    replaceMicroverseState(state, recordStall(state, 'metric-unmeasurable'));
     writeMicroverseState(ctx.sessionDir, state);
     return { kind: 'unchanged' };
 }
@@ -4295,7 +4295,7 @@ export async function handleNoCommitStall(state, ctx, iterLogFile) {
         history: state.convergence?.history,
         noCommitClass,
     }));
-    replaceMicroverseState(state, recordStall(state));
+    replaceMicroverseState(state, recordStall(state, 'no-commit'));
     writeMicroverseState(ctx.sessionDir, state);
     const convergedBranch = isConverged(state);
     if (convergedBranch) {

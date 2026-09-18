@@ -238,7 +238,7 @@ test('convergence scenario: 5 events — 4 history entries, 3 accepted, 1 revert
 
     // --- Iter 4: no commits (non-consecutive stall) → recordStall only ---
     // Non-consecutive: two improvements preceded this stall, so it's isolated
-    mv = recordStall(mv);
+    mv = recordStall(mv, 'no-commit');
     assert.equal(mv.convergence.stall_counter, 2, 'stall_counter increments on no-commit stall');
     assert.equal(mv.convergence.history.length, 3, 'recordStall does not add history entry');
     assert.equal(isConverged(mv), null);
@@ -288,10 +288,10 @@ test('convergence: not triggered when stall_counter < stall_limit', () => {
 
     // 4 stalls — should not converge until 5th
     for (let i = 0; i < 4; i++) {
-        mv = recordStall(mv);
+        mv = recordStall(mv, 'no-commit');
         assert.equal(isConverged(mv), null, `should not converge at stall ${i + 1}`);
     }
-    mv = recordStall(mv);
+    mv = recordStall(mv, 'no-commit');
     assert.equal(isConverged(mv), 'stall', 'converges at stall_limit=5');
 });
 
@@ -313,8 +313,8 @@ test('convergence: improvement resets stall_counter to 0', () => {
     mv.status = 'iterating';
 
     // Accumulate 2 stalls
-    mv = recordStall(mv);
-    mv = recordStall(mv);
+    mv = recordStall(mv, 'no-commit');
+    mv = recordStall(mv, 'no-commit');
     assert.equal(mv.convergence.stall_counter, 2);
 
     // Improvement resets counter

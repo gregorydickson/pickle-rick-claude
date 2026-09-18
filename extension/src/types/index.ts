@@ -1796,10 +1796,18 @@ export interface Violation {
 }
 
 /**
- * AC-J4: the mechanism that exhausted a stall budget. `'unknown'` is the Errors-clause escape hatch
- * for a session whose derivation inputs cannot support one of the other four values — never guessed.
+ * I2: the three measured production callsites that call `recordStall` — a strict-mode gate red
+ * (microverse-runner.ts, `gateMode === 'strict'`), a metric that failed to measure twice
+ * (`recordMetricMeasurementFailure`), and a worker iteration that made no commits
+ * (`handleNoCommitStall`). `recordStall` requires one of these; there is no free-string fourth case.
  */
-export type StallCause = 'improved' | 'held' | 'regressed' | 'no-commit' | 'unknown';
+export type StallWriteCause = 'strict-mode-red' | 'metric-unmeasurable' | 'no-commit';
+
+/**
+ * AC-J4: the mechanism that exhausted a stall budget. `'unknown'` is the Errors-clause escape hatch
+ * for a session whose derivation inputs cannot support one of the other values — never guessed.
+ */
+export type StallCause = 'improved' | 'held' | 'regressed' | StallWriteCause | 'unknown';
 
 /**
  * AC-J4-4: the derivation inputs `deriveStallCause` (microverse-state.ts) used, persisted alongside
@@ -1807,7 +1815,7 @@ export type StallCause = 'improved' | 'held' | 'regressed' | 'no-commit' | 'unkn
  * applied (see `StallDisposition`).
  */
 export interface StallCauseInputs {
-  last_stall_signal: 'improved' | 'held' | 'regressed' | 'no-commit' | null;
+  last_stall_signal: 'improved' | 'held' | 'regressed' | StallWriteCause | null;
   iteration: number;
 }
 
@@ -1849,12 +1857,12 @@ export interface MicroverseSessionState {
     stall_counter: number;
     history: MicroverseHistoryEntry[];
     /**
-     * AC-J4-1: the ONE field a `stalled_below_target` cause is derived from. Set by
-     * `recordIteration` (to its classification) and `recordStall` (to `'no-commit'`) on every call,
-     * so it always reflects whichever of the two most recently ran. Additive/optional — absent on
-     * sessions predating this field (see `deriveStallCause`'s legacy backfill).
+     * AC-J4-1/I2: the ONE field a `stalled_below_target` cause is derived from. Set by
+     * `recordIteration` (to its classification) and `recordStall` (to the caller's `StallWriteCause`)
+     * on every call, so it always reflects whichever of the two most recently ran. Additive/optional
+     * — absent on sessions predating this field (see `deriveStallCause`'s legacy backfill).
      */
-    last_stall_signal?: 'improved' | 'held' | 'regressed' | 'no-commit';
+    last_stall_signal?: 'improved' | 'held' | 'regressed' | StallWriteCause;
   };
   gap_analysis_path: string;
   judge_context_path?: string;

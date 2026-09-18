@@ -355,8 +355,51 @@ test('deriveStallCause covers regressed via recordIteration', () => {
 
 test('deriveStallCause covers no-commit via recordStall', () => {
   let mv = makeCauseState();
-  mv = recordStall(mv);
+  mv = recordStall(mv, 'no-commit');
   const disposition = deriveStallCause(mv, 2);
+  assert.equal(disposition.cause, 'no-commit');
+  assert.equal(disposition.inputs.last_stall_signal, 'no-commit');
+});
+
+// I2: the three stall write causes measured at the production callsites in
+// microverse-runner.ts — a strict-mode gate red (:892), a metric that failed to measure twice
+// (recordMetricMeasurementFailure), and a worker iteration with no commits (handleNoCommitStall,
+// pinned above). deriveStallCause needs no widening of its own — recordStall now writes the
+// caller's own measured cause instead of a hardcoded 'no-commit', so deriveStallCause reports it
+// verbatim like it already does for 'no-commit'.
+
+test('deriveStallCause covers metric-unmeasurable via recordStall — unreachable before I2', () => {
+  let mv = makeCauseState();
+  mv = recordStall(mv, 'metric-unmeasurable');
+  const disposition = deriveStallCause(mv, 4);
+  assert.equal(disposition.cause, 'metric-unmeasurable');
+  assert.equal(disposition.inputs.last_stall_signal, 'metric-unmeasurable');
+});
+
+test('deriveStallCause covers strict-mode-red via recordStall', () => {
+  let mv = makeCauseState();
+  mv = recordStall(mv, 'strict-mode-red');
+  const disposition = deriveStallCause(mv, 6);
+  assert.equal(disposition.cause, 'strict-mode-red');
+  assert.equal(disposition.inputs.last_stall_signal, 'strict-mode-red');
+});
+
+test('the three stall callsites are distinguishable from persisted state alone', () => {
+  const seen = new Set();
+  for (const cause of ['strict-mode-red', 'metric-unmeasurable', 'no-commit']) {
+    let mv = makeCauseState();
+    mv = recordStall(mv, cause);
+    seen.add(deriveStallCause(mv, 1).cause);
+  }
+  assert.deepEqual([...seen].sort(), ['metric-unmeasurable', 'no-commit', 'strict-mode-red']);
+});
+
+test('state written after last_stall_signal existed but before the new cause members still loads and derives without guessing', () => {
+  const mv = makeCauseState();
+  // Simulates a session persisted before the I2 widening: last_stall_signal carries only the
+  // pre-existing 'no-commit' member, never one of the two new StallWriteCause members.
+  mv.convergence.last_stall_signal = 'no-commit';
+  const disposition = deriveStallCause(mv, 3);
   assert.equal(disposition.cause, 'no-commit');
   assert.equal(disposition.inputs.last_stall_signal, 'no-commit');
 });
@@ -365,7 +408,7 @@ test('recordStall overwrites a stale improved signal — the four-improving-then
   let mv = makeCauseState();
   mv = recordIteration(mv, makeCauseHistoryEntry({ iteration: 1, action: 'accept' }), 'improved');
   // Five subsequent no-commit stalls must NOT leave the stale 'improved' signal in place.
-  for (let i = 0; i < 5; i++) mv = recordStall(mv);
+  for (let i = 0; i < 5; i++) mv = recordStall(mv, 'no-commit');
   const disposition = deriveStallCause(mv, 6);
   assert.equal(disposition.cause, 'no-commit');
 });
@@ -376,7 +419,7 @@ test('EXIT_REASONS.length is unchanged — assert the count, not string absence'
 
 test('derivation inputs, including the iteration number, are persisted with the cause', () => {
   let mv = makeCauseState();
-  mv = recordStall(mv);
+  mv = recordStall(mv, 'no-commit');
   const disposition = deriveStallCause(mv, 42);
   assert.deepEqual(disposition.inputs, { last_stall_signal: 'no-commit', iteration: 42 });
 });
