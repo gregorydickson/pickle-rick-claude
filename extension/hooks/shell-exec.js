@@ -1091,7 +1091,15 @@ export function expandWord(word) {
     return braced.flatMap((w) => [w, ...parameterExpansionWords(w)]);
 }
 /**
- * Split ONE bash word into boundary tokens, keeping its parts glued.
+ * ONE definition of where bash breaks a whitespace-delimited WORD internally,
+ * read by everything that needs those boundaries (AP-EXT-ITER278-01).
+ *
+ * The pieces PARTITION the word — `pieces.map((p) => p.text).join('') === word`
+ * — so a caller that must rebuild the text it walked can, and a caller that only
+ * wants the tokens can drop the separators. That property is what lets
+ * `inlineAssignedValues` render and record in the same left-to-right walk
+ * `pushWordBoundaryTokens` uses to tokenize, so the two cannot disagree about
+ * where one command in a glued word ends and the next begins.
  *
  * A quoted part is appended verbatim (quotes included, for the tokenizer that
  * reads the segment later) and can never be a boundary — that is how `-m "a &&
@@ -1106,14 +1114,12 @@ export function expandWord(word) {
  * sees a word that starts and ends with `"` and would swallow the boundary,
  * hiding the reset).
  */
-function pushWordBoundaryTokens(word, tokens) {
+function splitWordAtGluedSeparators(word) {
+    const pieces = [];
     let buffer = '';
     const flush = () => {
-        // The buffer is one complete bash WORD — operators already ended it — which
-        // is exactly where bash applies its word expansions, so that is where they
-        // go (`expandWord`: brace expansion, then parameter expansion).
         if (buffer.length > 0)
-            tokens.push(...expandWord(buffer));
+            pieces.push({ text: buffer, separator: false });
         buffer = '';
     };
     for (const part of word.match(WORD_PART_RE) ?? []) {
@@ -1130,13 +1136,32 @@ function pushWordBoundaryTokens(word, tokens) {
                 continue;
             if (SHELL_SEGMENT_SEPARATORS.has(piece)) {
                 flush();
-                tokens.push(piece);
+                pieces.push({ text: piece, separator: true });
                 continue;
             }
             buffer += piece;
         }
     }
     flush();
+    return pieces;
+}
+/**
+ * Split ONE bash word into boundary tokens, keeping its parts glued.
+ *
+ * The boundaries are `splitWordAtGluedSeparators`' — see there for why a quoted
+ * part can never be one. This adds only the EXPANSION every non-operator piece
+ * gets, which is what makes the result tokens rather than text.
+ */
+function pushWordBoundaryTokens(word, tokens) {
+    for (const piece of splitWordAtGluedSeparators(word)) {
+        // A non-separator piece is one complete bash WORD — operators already ended
+        // it — which is exactly where bash applies its word expansions, so that is
+        // where they go (`expandWord`: brace expansion, then parameter expansion).
+        if (piece.separator)
+            tokens.push(piece.text);
+        else
+            tokens.push(...expandWord(piece.text));
+    }
 }
 /**
  * Index just past the balanced `open`/`close` pair beginning at `text[start]`,
@@ -1436,6 +1461,36 @@ const ASSIGNMENT_WORD_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
  */
 const PARAMETER_REFERENCE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
 /**
+ * Record every `NAME=value` this piece assigns, for the substitution ahead of it.
+ *
+ * Read from the RENDERED piece, not the raw one (AP-EXT-ITER277-01): in
+ * `X=install.sh; T=$X; bash $T` the value of T is written with a reference this
+ * very pass has already resolved, and reading the raw text instead left T
+ * unrecorded, so the substitution arrived only when `splitShellSegments`
+ * re-entered the rendering on its own output — which made the emitted string NOT
+ * a fixpoint and handed the input control of the recursion DEPTH. Left-to-right
+ * IS bash's rule: it assigns in the same order, so a piece only ever sees values
+ * that already exist, and a reference to a name assigned LATER resolves to
+ * nothing here exactly as it does in the shell.
+ *
+ * Through the piece's BOUNDARY tokens, so a separator a SUBSTITUTION glued to
+ * the value is not carried into it, and through the FOLD, so `S="install.sh"`
+ * records the name bash will use.
+ *
+ * A value carrying a `$` is never recorded, so substitution can introduce no new
+ * reference — the other half of the idempotence `inlineAssignedValues` rests on.
+ */
+function recordAssignedValues(piece, values) {
+    const boundary = [];
+    pushWordBoundaryTokens(piece, boundary);
+    for (const token of boundary) {
+        const assignment = ASSIGNMENT_WORD_RE.exec(foldShellWord(token).value);
+        if (!assignment || assignment[2].length === 0 || assignment[2].includes('$'))
+            continue;
+        values.set(assignment[1], assignment[2]);
+    }
+}
+/**
  * The rendering in which every `$NAME` / `${NAME}` contributes the LITERAL VALUE
  * assigned to that name earlier in the SAME command.
  *
@@ -1513,36 +1568,26 @@ function inlineAssignedValues(command) {
         const start = match.index ?? 0;
         out.push(command.slice(cursor, start));
         cursor = start + word.length;
-        const rendered = word.replace(PARAMETER_REFERENCE_RE, (reference, braced, bare) => {
-            const value = values.get(braced ?? bare);
-            if (value === undefined)
-                return reference;
-            budget -= value.length;
-            return value;
-        });
-        out.push(rendered);
-        if (budget < 0)
-            return command;
-        // Recorded from the RENDERED word, not the raw one (AP-EXT-ITER277-01): in
-        // `X=install.sh; T=$X; bash $T` the value of T is written with a reference
-        // this very pass has already resolved, and reading the raw word instead left
-        // T unrecorded, so the substitution arrived only when the recursion below
-        // re-entered this rendering on its own output — which made the emitted
-        // string NOT a fixpoint and handed the input control of the recursion DEPTH.
-        // Left-to-right IS bash's rule: it assigns in the same order, so a word only
-        // ever sees values that already exist, and a reference to a name assigned
-        // LATER resolves to nothing here exactly as it does in the shell.
-        //
-        // From the word's BOUNDARY tokens, so a separator glued to the value
-        // (`S=install.sh;`) is not carried into it, and from the FOLD, so
-        // `S="install.sh"` records the name bash will use.
-        const boundary = [];
-        pushWordBoundaryTokens(rendered, boundary);
-        for (const token of boundary) {
-            const assignment = ASSIGNMENT_WORD_RE.exec(foldShellWord(token).value);
-            if (!assignment || assignment[2].length === 0 || assignment[2].includes('$'))
-                continue;
-            values.set(assignment[1], assignment[2]);
+        // Rendered and recorded PIECE BY PIECE, not once per whitespace word
+        // (AP-EXT-ITER278-01): bash starts a new command at a glued separator, so in
+        // `S=install.sh;T=$S; bash $T` the assignment to S stands before `T=$S` in
+        // the shell's own order while both sit in ONE `TOKEN_SCAN_RE` word. Reading
+        // the word whole rendered `T=$S` against a map S had not reached yet, so T
+        // went unrecorded and `$T` reached no detector. The pieces PARTITION the
+        // word, so emitting each in turn rebuilds it exactly.
+        for (const piece of splitWordAtGluedSeparators(word)) {
+            const rendered = piece.text.replace(PARAMETER_REFERENCE_RE, (reference, braced, bare) => {
+                const value = values.get(braced ?? bare);
+                if (value === undefined)
+                    return reference;
+                budget -= value.length;
+                return value;
+            });
+            out.push(rendered);
+            if (budget < 0)
+                return command;
+            if (!piece.separator)
+                recordAssignedValues(rendered, values);
         }
     }
     out.push(command.slice(cursor));

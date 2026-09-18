@@ -4484,8 +4484,10 @@ test('AP-EXT-ITER93-06: braces are declared separators but not GLUED ones', () =
   assert.match(source, /'\(', '\)', '\{', '\}', '`',/);
   // AP-EXT-ITER143-01 renamed the flush seam to `expandWord` (brace expansion,
   // then parameter expansion). Both halves are pinned, so the flush-time brace
-  // expansion cannot be dropped by editing either one alone.
-  assert.match(source, /tokens\.push\(\.\.\.expandWord\(buffer\)\)/);
+  // expansion cannot be dropped by editing either one alone. AP-EXT-ITER278-01
+  // moved the seam from the accumulating buffer onto the PIECE the shared
+  // word-break walk hands back; the expansion it guards is unchanged.
+  assert.match(source, /tokens\.push\(\.\.\.expandWord\(piece\.text\)\)/);
   assert.match(source, /return braced\.flatMap\(\(w\) => \[w, \.\.\.parameterExpansionWords\(w\)\]\);/);
   assert.match(source, /const braced = expandBraceWord\(word\);/);
 });
@@ -6394,10 +6396,31 @@ test('AP-EXT-ITER264-02: every reading reaches the ONE expansion walk as an argu
   assert.ok(assigned, 'inlineAssignedValues must remain a single named function');
   assert.doesNotMatch(assigned, /expansionSpanEnd|balancedSpanEnd|readExpansions/);
   // It reads words through the ONE tokenizer's primitives rather than re-typing
-  // a word grammar, the same one-home rule the renderings above answer to.
+  // a word grammar, the same one-home rule the renderings above answer to. The
+  // reading and its RECORDER are one unit here (AP-EXT-ITER278-01 moved the
+  // recording into `recordAssignedValues`), so the needles are asserted across
+  // both — pinning only the reading would let a re-typed word grammar move one
+  // function over and read GREEN.
   assert.match(assigned, /TOKEN_SCAN_RE/);
-  assert.match(assigned, /pushWordBoundaryTokens\(/);
-  assert.match(assigned, /foldShellWord\(/);
+  assert.match(assigned, /splitWordAtGluedSeparators\(/);
+  assert.match(assigned, /recordAssignedValues\(/);
+
+  const recorder = source.match(
+    /function recordAssignedValues\(piece: string, values: Map<string, string>\): void \{([\s\S]*?)\n\}/,
+  )?.[1];
+  assert.ok(recorder, 'recordAssignedValues must remain a single named function');
+  assert.doesNotMatch(recorder, /expansionSpanEnd|balancedSpanEnd|readExpansions/);
+  assert.match(recorder, /pushWordBoundaryTokens\(/);
+  assert.match(recorder, /foldShellWord\(/);
+
+  // The word-break walk has ONE home, read by the tokenizer and by the reading
+  // alike, so the two cannot disagree about where a glued command ends.
+  const tokenizer = source.match(
+    /function pushWordBoundaryTokens\(word: string, tokens: string\[\]\): void \{([\s\S]*?)\n\}/,
+  )?.[1];
+  assert.ok(tokenizer, 'pushWordBoundaryTokens must remain a single named function');
+  assert.match(tokenizer, /splitWordAtGluedSeparators\(/);
+  assert.doesNotMatch(tokenizer, /GLUED_SEPARATOR_RE|WORD_PART_RE/);
 });
 
 // ---------------------------------------------------------------------------
@@ -6742,5 +6765,141 @@ test('AP-EXT-ITER277-01: a value assigned through an EARLIER reference decides a
     decisionFor(`T=${ITER276_DOLLAR}X; X=${ITER276_DEPLOY_NAME}; ${use}`),
     'approve',
     'the reverse order runs no script and must keep approving',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER278-01 — bash starts a new command at a GLUED separator, so the
+// recorder's left-to-right pass has to run at that granularity too.
+//
+// `inlineAssignedValues` (AP-EXT-ITER276-01) rendered a whole `TOKEN_SCAN_RE`
+// word and only then recorded what it assigned. That is the wrong unit: in
+// `S=<deploy>;T=$S;<wrapper> $T` all three commands sit in ONE whitespace word,
+// so `T=$S` was rendered against a map `S` had not reached yet, `T` went
+// unrecorded, and `$T` reached no detector. Only the SPACED spelling was read.
+//
+// Measured against the pre-fix shipped handler with a live literal control in
+// every run, and shim-verified against a real /bin/bash over a fixture deploy
+// script and a shim `git` that logs its argv: every glued spelling below RAN
+// the forbidden op while the handler approved it, and each byte-identical
+// literal twin blocked. The reading's own catalog entry declared its residuals
+// explicitly and this shape was not among them.
+//
+// The fix is a COLLAPSE, not a new guard: `splitWordAtGluedSeparators` is one
+// definition of where a word breaks internally, read by BOTH the tokenizer
+// (`pushWordBoundaryTokens`) and this rendering, so the two cannot disagree
+// about where one command in a glued word ends and the next begins. Its pieces
+// PARTITION the word, which is what lets the rendering emit them one at a time
+// and still rebuild the word exactly — pinned below, because losing that
+// property would silently corrupt every command the reading touches.
+// ---------------------------------------------------------------------------
+
+/** `V0=<value>;V1=$V0;…;<tail on Vn>` joined by `sep` — `'; '` or the glued `';'`. */
+const iter278Chain = (links, sep, tail) => {
+  const words = [`V0=${ITER276_DEPLOY_NAME}`];
+  for (let i = 1; i <= links; i += 1) words.push(`V${i}=${ITER276_DOLLAR}V${i - 1}`);
+  return `${words.join(sep)}${sep}${tail(`V${links}`)}`;
+};
+
+test('AP-EXT-ITER278-01: a GLUED assignment chain decides exactly as its spaced twin', () => {
+  // The equivalence is the invariant, in BOTH directions: the glued spelling is
+  // the same three commands to bash, so it must decide as the spaced one — and
+  // the approve halves keep a guard that simply blocked any `;`-glued word from
+  // passing this pin.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const decisionFor = (command) => runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  }).decision;
+
+  const use = (name) => `${ITER276_WRAPPER} ${ITER276_DOLLAR}${name}`;
+  for (const [label, sep] of [['spaced', '; '], ['glued', ';']]) {
+    assert.equal(
+      decisionFor(iter278Chain(2, sep, use)),
+      'block',
+      `the ${label} chain runs the deploy script and must block`,
+    );
+  }
+  // The braced reference through the glued separator, and the git domain, both
+  // of which took the same bypass.
+  assert.equal(
+    decisionFor(`S=${ITER276_DEPLOY_NAME};T=${ITER276_DOLLAR}{S};${ITER276_WRAPPER} ${ITER276_DOLLAR}T`),
+    'block',
+    'a braced reference across a glued separator must block',
+  );
+  assert.equal(
+    decisionFor(`V=reset;W=${ITER276_DOLLAR}V;git ${ITER276_DOLLAR}W --hard`),
+    'block',
+    'a glued chain reaching a prohibited git verb must block',
+  );
+  // The over-block bound is unmoved by the finer granularity: bash still
+  // assigns left to right, so a reference to a name assigned LATER resolves to
+  // nothing here exactly as it does in the shell — glued spelling included.
+  assert.equal(
+    decisionFor(`T=${ITER276_DOLLAR}X;X=${ITER276_DEPLOY_NAME};${ITER276_WRAPPER} ${ITER276_DOLLAR}T`),
+    'approve',
+    'the reverse order runs no script and must keep approving when glued too',
+  );
+});
+
+test('AP-EXT-ITER278-01: the word pieces PARTITION the word, so nothing is rewritten', () => {
+  // The rendering now emits its pieces ONE AT A TIME. If they did not partition
+  // the word, every glued command it touches would come back silently rewritten
+  // — and a rewritten word can still segment into something that blocks, so no
+  // decision assertion is guaranteed to catch it. Pinned on the exact segments,
+  // which is the only form that fails when a separator is dropped rather than
+  // when a decision happens to move.
+  //
+  // Three groups, one per reading that differs: the RAW command, the elision,
+  // and this rendering. The third is the witness — `B=x` and `echo x` are
+  // SEPARATE segments, so the `;` between them survived the piece walk.
+  const D = ITER276_DOLLAR;
+  assert.deepEqual(
+    splitShellSegments(`A=x;B=${D}A;echo ${D}B`),
+    ['A=x', `B=${D}A`, `echo ${D}B`, 'A=x', 'B=', 'echo', 'A=x', 'B=x', 'echo x'],
+  );
+  // A quoted separator is data and must not become a boundary, glued or not:
+  // the piece walk decides quoted-ness per PART, exactly as the tokenizer does.
+  assert.deepEqual(
+    splitShellSegments(`X=1;echo "a b";echo ${D}X`),
+    ['X=1', 'echo "a b"', `echo ${D}X`, 'X=1', 'echo "a b"', 'echo', 'X=1', 'echo "a b"', 'echo 1'],
+  );
+  // With nothing assigned, the rendering is a no-op the `taken` dedup drops, so
+  // the command reaches the segmenter byte-identical — separators included.
+  assert.deepEqual(
+    splitShellSegments(`echo ${D}UNSET_NAME;echo a;echo b`),
+    [`echo ${D}UNSET_NAME`, 'echo a', 'echo b', 'echo', 'echo a', 'echo b'],
+  );
+});
+
+test('AP-EXT-ITER278-01: a GLUED chain stays LINEAR in its length', () => {
+  // The AP-EXT-ITER277-01 termination bound, restated at the granularity this
+  // pass moved the recorder to. Reading pieces left to right resolves MORE
+  // references per pass, so the emitted string is still a fixpoint and the
+  // `taken` dedup still ends the branch one level in — the glued chain must not
+  // buy back the input-controlled recursion depth that pin exists to forbid.
+  const scopesFor = (links) => {
+    const command = iter278Chain(links, ';', iter277Branching);
+    try {
+      return splitShellSegments(command).length;
+    } catch (error) {
+      return assert.fail(`segmenting a glued ${links}-link chain threw ${error.constructor.name}`);
+    }
+  };
+
+  const short = scopesFor(6);
+  assert.ok(short > 0, 'the six-link baseline must segment');
+  assert.ok(
+    scopesFor(64) <= 11 * short,
+    `64 glued links cost ${scopesFor(64)} scopes against a 6-link baseline of ${short}`,
+  );
+  // And it costs what the SPACED chain costs: the two spellings are the same
+  // commands, so a divergence here means one of them is being read twice.
+  assert.equal(
+    scopesFor(16),
+    splitShellSegments(iter278Chain(16, '; ', iter277Branching)).length,
+    'the glued and spaced chains must cost the same scopes',
   );
 });
