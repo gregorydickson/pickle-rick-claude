@@ -128,11 +128,52 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | branch | **`release/v2.2-beta`** — the name is historical; **releases are `v2.1.X`** (operator-set) |
 | version | `extension/package.json` = **`2.1.1`**. Next tag `v2.1.1`. `release.yml` compares tag↔this field |
 | `main` | **= the `v2.1.0` GA commit `c20a9562`**, no longer the stale 2.0 line. Old main preserved at tag `archive/main-2.0-line`; revert = `git push --force origin archive/main-2.0-line:main` |
-| **RUNNING** | **[[B-VERDICT]] session `2026-09-17-3c7489fc`** — 10 tickets, phase 1/4. Do not intervene while advancing |
-| deployed | **`2.2.0-beta.1` — STALE vs source `2.1.1`.** Re-deploy + verify BY CONTENT after the run |
-| open issues | **#39** (judge prose), **#37** (anchor detector disagreement), **#32**, **#29**, **#5** |
+| **RUNNING** | **nothing.** [[B-VERDICT]] session `2026-09-17-3c7489fc` COMPLETED 4/4 — see below |
+| deployed | **`2.1.1`, in sync with source** (2026-09-18). Verified BY CONTENT: `bin/` 1 intentional difference (the `tmux-runner.js` symlink), `services/` 0 |
+| open issues | **#40** (install.sh declines a downgrade and exits 0), **#37**, **#32**, **#29**, **#5**. #39 built, unverified in field |
 | open PRs | **#38 by `sabahmax-dev`** — external, addresses #35, **unreviewed publicly and unmerged; operator's call** |
 | gate runner | **`prds/gate-runner.sh`** (vendored 2026-09-17 so it survives a context clear). 22 legs, ~70 min, derives its audit list from root `CLAUDE.md`. Wait for `GATE_END` |
+
+## 🏁 B-VERDICT RAN — 4/4 phases, 10/10 tickets, gate 22/22 GREEN, pushed. Not tagged (cadence).
+
+Session `2026-09-17-3c7489fc`, 21 commits `8cce0e3f..e8aa307d`, pushed to `release/v2.2-beta`.
+`completed_phases: 4/4`, `skipped_phases: 0`, `exit_reason: completed`, no phase dispositions.
+
+**Szechuan converged this time.** The phase that ended `metric_unmeasurable_unrecoverable` on
+B-TRUTHEXIT reported `converged after 3 iterations (target=0 reached)` in 67m 47s, with
+`Classification: improved (basis=set_ops, resolved=1, new=0, remaining=0)`. That is the first
+field exercise of the #39 judge-prose work — **one clean run, not yet a trend.** Anatomy-park took
+6 iterations; citadel stayed advisory (9 findings, `pipeline-status.citadel_advisory_findings`).
+
+**Gate 22/22 at `e8aa307d`**, same-run `GATE_END` (`RUN_ID=20260918T014732Z-24153`), 72 min.
+Soak **1,803,706 ms** against `SOAK_SECONDS=1800`, `SOAK_UNRUN` 0. Flake budget `failures=0
+runs 5/5 tests=10099` (was 10049 on B-TRUTHEXIT). `js_ts_drift` 0 — compiled JS matches TS.
+
+**Citadel's two unremediated channels are NOT one failure**, and the split matters: 5
+`citadel-ac-coverage-AC-V1..V4` findings survived **3** remediation cycles, while 9
+`orphan-test-case:*` findings survived **0** — the zero-cycle channel is the known-false
+orphan-test class whose oracle is `audit-trap-door-enforcement.sh`, so it was correctly not
+remediated and is not filed.
+
+### ⛔ #40 — `install.sh` reports a REFUSAL as success. Found by verify-by-content, not by exit code.
+
+`install.sh --allow-downgrade` with non-TTY stdin **exits 0 and deploys nothing**. `install.sh:207`
+does `IFS= read -r answer || true`, EOF leaves `answer` empty, the `[y/N]` default declines, and
+`:209` does `exit 0`. **Both sibling refusals in the same chain exit non-zero** — `:225` exits 1
+(source older than deployed) and `:200` exits 2 (active session) — so only the decline claims
+success, and the exit code cannot separate *deployed* from *declined to deploy*.
+
+Caught only because the runbook says verify BY CONTENT: the exit code said 0 while
+`~/.claude/pickle-rick/extension/package.json` still read `2.2.0-beta.1` and 3 `bin/` files still
+differed. `--no-confirm` is the working path; the deploy then verified clean (1 intentional `bin/`
+difference, the `tmux-runner.js` symlink; `services/` 0).
+
+**Fourth-plus instance of information loss at a decision point** — the code knows it declined and
+emits a status that cannot express it. Same family as #33 (`result.status ?? 1`) and #35
+(`judgeAttemptFromOutput` dropping `output` on the failure branch). **Fix belongs in a pipeline
+bundle, not hand-built.**
+
+---
 
 ### ✅ SHIPPED / CLOSED THIS SESSION
 `v2.1.0` GA tagged and verified. Closed **#30, #31, #33, #34, #35, #36** — each with the mechanism
