@@ -361,6 +361,55 @@ test('blocks Bash bash /abs/path/install.sh (R-WSRC)', () => {
   assert.equal(result.decision, 'block');
 });
 
+// AP-EXT-ITER274-01: the exec-token prelude's optional-interpreter arm asked for a
+// `*sh` NAME shape, so the POSIX dot-source builtins — which really run the script in
+// the current shell — stood at their own exec token and the R-WSRC deploy-script ban
+// read the builtin as the executable. Every spelling below was shim-verified against a
+// real `/bin/bash -c` over a fixture install.sh that appends to a log: all 10 RAN the
+// script while the shipped handler APPROVED, and the 3 controls above (`bash install.sh`,
+// `./install.sh`, `cat install.sh`) held their verdicts throughout.
+const DOT_SOURCE_DEPLOY_INVOCATIONS = [
+  'source install.sh',
+  'source ./install.sh',
+  'source "install.sh"',
+  "'source' install.sh",
+  'source $PWD/install.sh',
+  '. install.sh',
+  '. ./install.sh',
+  '. install.sh --flag',
+  'PICKLE_ROLE=x source install.sh',
+  'cd /tmp && source install.sh',
+];
+for (const command of DOT_SOURCE_DEPLOY_INVOCATIONS) {
+  test(`AP-EXT-ITER274-01 blocks dot-sourced deploy script: ${command}`, () => {
+    const result = runHandler({ toolName: 'Bash', toolInput: { command } });
+    assert.equal(result.decision, 'block', `${command} must block — it really runs install.sh`);
+  });
+}
+
+// The other half of the collapse, and the reason the widened arm stays POSITIONAL: `.`
+// is also the ordinary current-directory operand. A token-anywhere read of it blocks
+// every one of these read-only commands, so these cases red an over-wide fix exactly as
+// the cases above red an absent one.
+const BARE_DOT_OPERAND_READS = [
+  'find . -name install.sh',
+  'git log . install.sh',
+  'ls . install.sh',
+  'cp install.sh .',
+  'grep -r install.sh .',
+];
+for (const command of BARE_DOT_OPERAND_READS) {
+  test(`AP-EXT-ITER274-01 approves bare-dot operand beside install.sh: ${command}`, () => {
+    const result = runHandler({ toolName: 'Bash', toolInput: { command } });
+    assert.equal(result.decision, 'approve', `${command} reads install.sh — '.' is an operand, not the builtin`);
+  });
+}
+
+test('AP-EXT-ITER274-01 approves dot-sourcing a DIFFERENT script (suffix is not the deploy script)', () => {
+  const result = runHandler({ toolName: 'Bash', toolInput: { command: 'source pre-install.sh' } });
+  assert.equal(result.decision, 'approve');
+});
+
 // ---------------------------------------------------------------------------
 // Approve cases
 // ---------------------------------------------------------------------------

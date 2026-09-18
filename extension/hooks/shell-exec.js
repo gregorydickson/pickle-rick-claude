@@ -408,6 +408,30 @@ export function isShellWrapper(token) {
     return SHELL_INTERPRETER_NAME_RE.test(shellShapeWitness(execName(token)));
 }
 /**
+ * The POSIX special builtins that make the CURRENT shell read and execute a
+ * file named in their arguments — `.` and its bash spelling `source`. Named
+ * rather than shaped because the shell spells them as punctuation and one
+ * reserved word, not as a `*sh` program name, and POSIX CLOSES the set: the
+ * grammar production has exactly these two spellings, so this is not a roster
+ * one member from the next bypass.
+ */
+const DOT_SOURCE_BUILTINS = ['.', 'source'];
+/**
+ * True when the token is a command word that hands the word after it to a shell
+ * to be EXECUTED — a `*sh` interpreter (`isShellWrapper`) or a dot-source
+ * builtin. The prelude's optional-interpreter arm asks THIS, not the interpreter
+ * shape alone: `source install.sh` and `. ./install.sh` really run the script
+ * (shim-verified) while standing at no interpreter name at all.
+ *
+ * POSITIONAL by construction, and that is what keeps it from over-blocking. `.`
+ * is also the ordinary current-directory operand, so a token-anywhere read of it
+ * would block `find . -name install.sh`; the shell only takes `.` as the builtin
+ * when it stands at the command word, which is exactly where this is asked.
+ */
+function execsScriptArgument(token) {
+    return isShellWrapper(token) || DOT_SOURCE_BUILTINS.includes(execName(token));
+}
+/**
  * Index of the first token past a run of `KEY=value` env assignments.
  *
  * The shell writes assignments BEFORE the interpreter, so every exec-token read
@@ -423,8 +447,17 @@ export function skipEnvAssignments(tokens, start = 0) {
 }
 /**
  * THE exec-token prelude for the hooks subsystem: env assignments → optional
- * shell wrapper (`isShellWrapper`) → env assignments. Returns the index of the
- * token the shell will actually exec.
+ * script-running command word (`execsScriptArgument`) → env assignments. Returns
+ * the index of the token the shell will actually exec.
+ *
+ * AP-EXT-ITER274-01: that middle arm asked for an interpreter NAME shape, which
+ * is not the question — the question is whether the command word runs the word
+ * behind it. The dot-source builtins do, and answered no, so every spelling of
+ * `source install.sh` / `. ./install.sh` stood at its own exec token and the
+ * R-WSRC deploy-script ban read the builtin as the executable. Widening this ONE
+ * arm rather than adding a second anchor keeps the prelude's single definition:
+ * a caller that re-asks "is this an interpreter" separately is the drift the
+ * paragraph below already names.
  *
  * ONE home for the same reason `execName` and `splitShellSegments` have one
  * (AP-EXT-EXECFOLD, AP-EXT-ITER12-01): the two handlers re-forked it and DRIFTED
@@ -435,7 +468,7 @@ export function skipEnvAssignments(tokens, start = 0) {
  */
 export function execTokenIndex(tokens) {
     const afterEnv = skipEnvAssignments(tokens);
-    const afterWrapper = isShellWrapper(tokens[afterEnv]) ? afterEnv + 1 : afterEnv;
+    const afterWrapper = execsScriptArgument(tokens[afterEnv]) ? afterEnv + 1 : afterEnv;
     return skipEnvAssignments(tokens, afterWrapper);
 }
 /**
