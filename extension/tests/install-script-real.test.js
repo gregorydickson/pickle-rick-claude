@@ -115,6 +115,12 @@ test('install-script-real.downgrade-declined-closed-stdin: closed stdin exits no
     const result = runDowngradeInstall(fixture, [], '');
 
     assert.notEqual(result.status, 0, `expected non-zero exit, got ${result.status}\nstderr: ${result.stderr}`);
+    // The exit code alone cannot tell a declined downgrade from any other early failure: the
+    // version-unchanged assertion below holds just as well for a run that never reached the
+    // prompt. Measured — injecting an unrelated `exit 2` at the top of handle_allowed_downgrade
+    // reds 4 of the 5 cases in this file and leaves THIS one as the sole survivor. install.sh:209
+    // is the discriminator, and the interactive-decline sibling already asserts it.
+    assert.match(result.stderr, /REFUSE: downgrade declined/);
     assert.equal(
       readDeployedVersion(fixture.prefix),
       NEWER_DEPLOYED_VERSION,
