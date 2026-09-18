@@ -611,6 +611,125 @@ describe('extractAndInstall', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER94-01 — the installer spawn's cap is a RUNAWAY BACKSTOP, not a schedule
+//
+// `runReleaseInstallScript` caps `bash install.sh` with spawnSync's `timeout`. The upgrade
+// payload carries no `.git`, so the installer takes its TARBALL branch, whose mandatory step
+// is a NETWORKED `npm install @colbymchenry/codegraph@0.9.9` at the deploy root — 46 MB
+// fetched, 181 MB unpacked, on EVERY upgrade, because the rsync above it runs
+// `--delete-excluded` and rebuilds `node_modules` each run. At the former 30s that needed
+// >12 Mbps sustained before a single local step ran.
+//
+// The cap firing is not a clean abort. It lands MID-DEPLOY, after the rsync has already
+// published the new JS and the new `extension/package.json`: `getCurrentVersion()` then
+// reports the NEW version, `checkForUpdate` reads up-to-date and never retries, and every
+// step after the npm install — the codegraph self-probe, MANAGED_KEYS, the commands rsync,
+// all three hook registrations — never ran. The half-deploy is permanent and silent.
+//
+// The behavioural case below is the falsifying control: its payload installer sleeps past
+// the former cap. Restore `timeout: 30_000` and it reds with `install.sh failed (exit null)`,
+// spawnSync's signature for a timeout kill, while the two sibling cases stay green.
+// ---------------------------------------------------------------------------
+
+describe('AP-EXT-ITER94-01: install.sh spawn cap', () => {
+    let root;
+
+    beforeEach(() => {
+        root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-install-cap-')));
+    });
+
+    afterEach(() => {
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    /** A real installable payload (`extension/package.json` + `install.sh` sharing one root). */
+    function stageTarball(installScriptBody) {
+        const stage = fs.mkdtempSync(path.join(root, 'stage-'));
+        fs.mkdirSync(path.join(stage, 'extension'), { recursive: true });
+        fs.writeFileSync(
+            path.join(stage, 'extension', 'package.json'),
+            JSON.stringify({ version: '99.0.0' }),
+        );
+        fs.writeFileSync(path.join(stage, 'install.sh'), installScriptBody);
+        const tarball = path.join(fs.mkdtempSync(path.join(root, 'tarball-')), 'release.tar.gz');
+        execFileSync('tar', ['czf', tarball, '-C', stage, 'extension', 'install.sh'], {
+            encoding: 'utf-8',
+            timeout: 30_000,
+        });
+        return tarball;
+    }
+
+    // ~32s by construction: the sleep must outlast the former 30s cap for the case to
+    // discriminate at all. `extractAndInstall` deletes the extract dir in its `finally`, so
+    // the installer's completion marker is written OUTSIDE it — the marker is the evidence
+    // the script ran to its END rather than being killed part-way.
+    test('AP-EXT-ITER94-01: an installer that outlasts the former 30s cap runs to completion', () => {
+        const marker = path.join(root, 'installer-finished');
+        const tarball = stageTarball(
+            `#!/bin/bash\nsleep 31\necho done > ${JSON.stringify(marker)}\nexit 0\n`,
+        );
+
+        const result = extractAndInstall(tarball);
+
+        assert.equal(
+            result.success,
+            true,
+            `the cap must not kill a legitimate install (got: ${JSON.stringify(result)})`,
+        );
+        assert.equal(
+            fs.existsSync(marker),
+            true,
+            'the installer must reach its final line — a mid-flight kill leaves a half-deploy',
+        );
+    });
+
+    // Control: the cap must not have been widened into "ignore the installer's verdict".
+    // A real non-zero exit still fails the upgrade, and reports its EXIT CODE — which is also
+    // what distinguishes a genuine failure from a timeout kill, where spawnSync sets `null`.
+    test('AP-EXT-ITER94-01 control: a failing installer still fails the upgrade, with its real exit code', () => {
+        const tarball = stageTarball('#!/bin/bash\nexit 3\n');
+
+        const result = extractAndInstall(tarball);
+
+        assert.equal(result.success, false);
+        assert.match(result.error, /install\.sh failed \(exit 3\)/);
+    });
+
+    // Lockstep, so the two callers of `bash install.sh` in this repo cannot re-diverge: the
+    // PRODUCTION self-upgrade must not give the installer less time than the repo's own
+    // harness for the same script. That harness cap is the only in-repo record of a measured
+    // install.sh runtime (fde629a7 raised it 120s -> 600s after ~95s was measured on the
+    // operator host and 120s was observed failing twice). Both reads are fail-closed.
+    test('AP-EXT-ITER94-01 lockstep: the shipped cap is not below the harness cap for the same script', () => {
+        const shipped = fs.readFileSync(CHECK_UPDATE, 'utf8');
+        const shippedMatch = /const INSTALL_SCRIPT_TIMEOUT_MS = ([0-9_]+);/.exec(shipped);
+        assert.ok(
+            shippedMatch,
+            'bin/check-update.js must declare INSTALL_SCRIPT_TIMEOUT_MS — the installer spawn '
+                + 'cap may not be an inline literal, or this lockstep cannot see it',
+        );
+        const shippedMs = Number(shippedMatch[1].replace(/_/g, ''));
+
+        const soakPath = path.resolve(__dirname, 'integration', 'deploy-lifecycle-soak.test.js');
+        const soak = fs.readFileSync(soakPath, 'utf8');
+        const soakMatch = /spawnSync\('bash', \[INSTALL_SH[^)]*?timeout: ([0-9_]+)/s.exec(soak);
+        assert.ok(
+            soakMatch,
+            `could not read the harness cap from ${soakPath} — the spawn shape changed, so this `
+                + 'lockstep is unanchored; re-anchor it rather than deleting it',
+        );
+        const soakMs = Number(soakMatch[1].replace(/_/g, ''));
+
+        assert.ok(
+            shippedMs >= soakMs,
+            `the production installer cap (${shippedMs}ms) is below the harness cap for the same `
+                + `script (${soakMs}ms). A cap is a runaway backstop, not a scheduler `
+                + '(prds/MASTER_PLAN.md operating principle 1a); firing it lands mid-deploy.',
+        );
+    });
+});
+
+// ---------------------------------------------------------------------------
 // performUpgrade
 // ---------------------------------------------------------------------------
 

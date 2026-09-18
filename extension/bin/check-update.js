@@ -8,6 +8,19 @@ import { readRecoverableJsonObject } from '../services/microverse-state.js';
 const CACHE_FILE = 'update-check.json';
 const SETTINGS_FILE = 'pickle_settings.json';
 const DEBUG_LOG = 'debug.log';
+// AP-EXT-ITER94-01: a RUNAWAY BACKSTOP for the installer spawn below, not a schedule.
+// The upgrade payload has no `.git`, so `install.sh` takes its TARBALL branch, whose
+// mandatory step is a NETWORKED `npm install @colbymchenry/codegraph@0.9.9` at the deploy
+// root — measured 46 MB fetched, unpacking to 181 MB, on EVERY upgrade (the rsync above it
+// runs `--delete-excluded`, so `node_modules` is rebuilt each run). The former 30s needed
+// >12 Mbps sustained before a single local step, and this repo's own harness for the same
+// script uses 600_000 after 120_000 was measured a false-failure source (fde629a7: ~95s on
+// the operator host, observed failing twice). A cap that fires lands MID-DEPLOY: the rsync
+// has already published the new JS and the new `extension/package.json`, so
+// `getCurrentVersion()` reports the new version and `checkForUpdate` never retries, while
+// every step after the npm install — the codegraph self-probe, MANAGED_KEYS, the commands
+// rsync and all three hook registrations — never ran.
+const INSTALL_SCRIPT_TIMEOUT_MS = 600_000;
 function log(message) {
     try {
         const extensionRoot = getExtensionRoot();
@@ -350,7 +363,7 @@ function runReleaseInstallScript(extractDir) {
     const install = spawnSync('bash', ['install.sh'], {
         cwd: extractDir,
         encoding: 'utf-8',
-        timeout: 30_000,
+        timeout: INSTALL_SCRIPT_TIMEOUT_MS,
     });
     if (install.status === 0) {
         log('install.sh completed successfully');
