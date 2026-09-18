@@ -7031,3 +7031,170 @@ test('AP-EXT-ITER279-01: the namespace boundary excludes a longer identifier', (
   });
   assert.equal(result.decision, 'approve');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER280-01 — bash resolves a name THROUGH another name, and the
+// reference reader enumerated spellings rather than reading the grammar.
+//
+// `PARAMETER_REFERENCE_RE` (AP-EXT-ITER276-01) matched `$NAME` and `${NAME}`.
+// Bash's INDIRECT expansion `${!NAME}` — "the value of the variable that NAME's
+// value names" — matched neither, so a two-hop name reached NO detector while
+// every one-hop spelling was read.
+//
+// Measured against the pre-fix shipped handler with a live literal control in
+// every run, and shim-verified against a real /bin/bash over a fixture deploy
+// script and a `git` shim that logs its argv: `N=git; R=N; ${!R} reset --hard`
+// APPROVED and really hard-reset, and `S=<deploy>; R=S; <wrapper> ${!R}`
+// APPROVED and really ran the script, while each literal twin blocked.
+//
+// This is the residual-list lesson of AP-EXT-ITER278-01 paid out again, and in
+// the reassuring direction: the ITER276/ITER278 entries declared an `S=$T`
+// double indirection as an OPEN residual, but that spelling BLOCKS on the
+// shipped handler (pinned below) — so the list named a hole that was closed
+// while omitting one that was open.
+//
+// The fix is a WIDENING of the braced arm, not a third alternation: `!` is an
+// optional PREFIX and the rule is unchanged — an expansion whose body is a name
+// contributes that name's value — with `!` saying only how many times the map
+// already built is consulted. One extra lookup, never a parse, which is what
+// keeps the emitted string the FIXPOINT `splitShellSegments`' dedup needs
+// (AP-EXT-ITER277-01): a recorded value never carries a `$`, so neither the
+// intermediate name nor the final value can introduce a reference.
+// ---------------------------------------------------------------------------
+
+/** `${!NAME}` — the indirect reference, assembled like every probe in this file. */
+const iter280Indirect = (name) => `${ITER276_DOLLAR}{!${name}}`;
+
+test('AP-EXT-ITER280-01: an INDIRECT reference decides exactly as its literal twin', () => {
+  // The invariant is an EQUIVALENCE in BOTH directions, so a guard that simply
+  // blocked any command containing `${!` would red the approve halves below.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const decisionFor = (command) => runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  }).decision;
+
+  for (const [label, setup, indirectUse, literalUse] of [
+    [
+      'the deploy script behind a wrapper',
+      `S=${ITER276_DEPLOY_NAME}; R=S; `,
+      `${ITER276_WRAPPER} ${iter280Indirect('R')}`,
+      `${ITER276_WRAPPER} ${ITER276_DEPLOY_NAME}`,
+    ],
+    [
+      'the deploy script behind a dot-source',
+      `S=${ITER276_DEPLOY_NAME}; R=S; `,
+      `source ${iter280Indirect('R')}`,
+      `source ${ITER276_DEPLOY_NAME}`,
+    ],
+    [
+      'a prohibited git verb behind an indirected anchor',
+      'N=git; R=N; ',
+      `${iter280Indirect('R')} reset --hard`,
+      'git reset --hard',
+    ],
+    [
+      'a prohibited git verb behind a glued indirected anchor',
+      'N=git;R=N;',
+      `${iter280Indirect('R')} stash`,
+      'git stash',
+    ],
+    [
+      'an indirected anchor behind a cd chain',
+      'N=git; R=N; ',
+      `cd sub && ${iter280Indirect('R')} push`,
+      'cd sub && git push',
+    ],
+    [
+      'a NON-prohibited git verb, which must keep approving',
+      'N=git; R=N; ',
+      `${iter280Indirect('R')} status`,
+      'git status',
+    ],
+  ]) {
+    assert.equal(
+      decisionFor(setup + indirectUse),
+      decisionFor(setup + literalUse),
+      `the indirect form must decide as its literal twin: ${label}`,
+    );
+  }
+});
+
+test('AP-EXT-ITER280-01: the two-hop value is read through BOTH hops', () => {
+  // The discriminator between the fix and a guard that merely blocks on the
+  // `${!` spelling: the block must depend on what the SECOND hop resolves to.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const decisionFor = (command) => runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  }).decision;
+
+  assert.equal(
+    decisionFor(`S=${ITER276_DEPLOY_NAME}; R=S; ${ITER276_WRAPPER} ${iter280Indirect('R')}`),
+    'block',
+    'a second hop landing on the deploy script must block',
+  );
+  assert.equal(
+    decisionFor(`S=notes.txt; R=S; ${ITER276_WRAPPER} ${iter280Indirect('R')}`),
+    'approve',
+    'a second hop landing on a harmless name must approve',
+  );
+  // The intermediate name is UNSET, so bash expands `${!R}` to nothing and runs
+  // no forbidden op. Resolving it anyway would be an over-block on a command the
+  // shell never runs — the AP-EXT-ITER276-01 over-block bound, one hop further.
+  assert.equal(
+    decisionFor(`R=git; ${iter280Indirect('R')} reset --hard`),
+    'approve',
+    'an unset second hop runs nothing and must keep approving',
+  );
+});
+
+test('AP-EXT-ITER280-01: the `S=$T` residual the catalog declared OPEN is closed', () => {
+  // The ITER276/ITER278 entries list this spelling as an open residual. It
+  // BLOCKS, and pinning that is what stops the next reviewer trusting a residual
+  // list in the reassuring direction — the exact failure ITER278-01 was about.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: {
+      command: `A=${ITER276_DEPLOY_NAME}; B=${ITER276_DOLLAR}A; ${ITER276_WRAPPER} ${ITER276_DOLLAR}B`,
+    },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block');
+});
+
+test('AP-EXT-ITER280-01: an INDIRECT chain stays LINEAR in its length', () => {
+  // The indirect arm adds a second map lookup per reference, so it is the one
+  // place a new reading could reintroduce the AP-EXT-ITER277-01 depth growth.
+  // Pinned on the deterministic SCOPE COUNT for that entry's reason: the stack
+  // limit is a property of the host, the scope count a property of the reading.
+  const chain = (links) => {
+    const words = [`V0=${ITER276_DEPLOY_NAME}`];
+    for (let i = 1; i <= links; i += 1) words.push(`V${i}=V${i - 1}`);
+    const name = `V${links}`;
+    words.push(
+      `${ITER276_WRAPPER} ${iter280Indirect(name)} ${ITER276_DOLLAR}{${name}:-x} `
+      + `${ITER276_DOLLAR}(echo ${ITER276_DOLLAR}${name})`,
+    );
+    return words.join('; ');
+  };
+  const scopesFor = (links) => {
+    try {
+      return splitShellSegments(chain(links)).length;
+    } catch (error) {
+      return assert.fail(`segmenting a ${links}-link indirect chain threw ${error.constructor.name}`);
+    }
+  };
+  const short = scopesFor(6);
+  assert.ok(short > 0, 'the six-link baseline must segment');
+  assert.ok(
+    scopesFor(64) <= 11 * short,
+    `64 links cost ${scopesFor(64)} scopes against a 6-link baseline of ${short}`,
+  );
+});

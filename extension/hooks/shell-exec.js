@@ -1453,13 +1453,37 @@ function inlineParameterExpansionBody(command) {
 /** An assignment WORD: `NAME=` followed by the value, which may be empty. */
 const ASSIGNMENT_WORD_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
 /**
- * A bare parameter REFERENCE — `$NAME` or `${NAME}` and nothing else.
+ * A bare parameter REFERENCE — `$NAME`, `${NAME}`, or bash's INDIRECT `${!NAME}`
+ * — and nothing else.
  *
  * The braced arm requires the whole body to be a name, so it can never claim a
  * word-carrying expansion: `${x:-git}` is `parameterExpansionWords`' to read and
  * stays untouched here. `$1` and `$$` are not names and are not matched.
+ *
+ * The `!` is an OPTIONAL PREFIX on that same arm rather than a third
+ * alternation (AP-EXT-ITER280-01). The reading's rule is unchanged — an
+ * expansion whose body is a name contributes that name's value — and `!` only
+ * says how many times the map is consulted, so the reader still holds two
+ * shapes, not three. `${!NAME*}` / `${!NAME@}` (bash's name-listing forms) and
+ * `${#NAME}` do not match, because the body must be exactly the name.
  */
-const PARAMETER_REFERENCE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+const PARAMETER_REFERENCE_RE = /\$\{(!?)([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+/**
+ * The value a parameter reference contributes: the name's own value, or — for
+ * bash's INDIRECT `${!NAME}` — the value of the variable that value NAMES.
+ *
+ * The indirect arm is ONE extra lookup in the map already built, never a parse,
+ * which is what keeps the emitted string a FIXPOINT (AP-EXT-ITER277-01):
+ * `recordAssignedValues` never records a value carrying a `$`, so both the
+ * intermediate name and the final value are literals holding no reference, and
+ * applying the rendering to its own output returns it unchanged.
+ */
+function resolveParameterReference(values, indirect, name) {
+    const value = values.get(name);
+    if (!indirect || value === undefined)
+        return value;
+    return values.get(value);
+}
 /**
  * Record every `NAME=value` this piece assigns, for the substitution ahead of it.
  *
@@ -1576,8 +1600,8 @@ function inlineAssignedValues(command) {
         // went unrecorded and `$T` reached no detector. The pieces PARTITION the
         // word, so emitting each in turn rebuilds it exactly.
         for (const piece of splitWordAtGluedSeparators(word)) {
-            const rendered = piece.text.replace(PARAMETER_REFERENCE_RE, (reference, braced, bare) => {
-                const value = values.get(braced ?? bare);
+            const rendered = piece.text.replace(PARAMETER_REFERENCE_RE, (reference, bang, braced, bare) => {
+                const value = resolveParameterReference(values, bang === '!', braced ?? bare);
                 if (value === undefined)
                     return reference;
                 budget -= value.length;
