@@ -609,6 +609,96 @@ describe('runT6TrapDoorCoverage', () => {
     assert.equal(matches.length, 1);
     assert.match(matches[0][1], /audit-check\.sh/);
   });
+
+  // ── AP-BIN-ITER15-02: catalogs are DISCOVERED, so a repo-root subsystem catalog is read ──
+  //
+  // `collectClaudeMdFiles` seeded `extension/CLAUDE.md` and walked `extension/src`, so repo-root
+  // `bin/CLAUDE.md` was never opened. MEASURED on the shipped reader before this fix, against the
+  // real repo: its 75 ENFORCE refs went unresolved, and the three test files it is the ONLY
+  // catalog to reference — `purge-update-cache`, `release-gate`, `verify-bundle` — each drew
+  // `orphan-test-file: Test file has no inbound ENFORCE ref`, a statement about a catalog the
+  // reader had not read.
+  //
+  // The fixture uses the real `bin/CLAUDE.md` path and the scoped shape `auditTrapDoorCoverage`
+  // builds in production (a changed test file, no changed catalog), so the wire under test is the
+  // one that emitted those three findings.
+  function mkRepoRootCatalog(projectRoot, relPath, body) {
+    const full = path.join(projectRoot, relPath);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, body, 'utf-8');
+  }
+
+  test('AP-BIN-ITER15-02: a repo-root subsystem catalog supplies an inbound ENFORCE ref', async () => {
+    const projectRoot = path.join(tmpRoot, 'ap15-repo-root-catalog');
+    mkFixture(projectRoot, {
+      enforceLines: '',
+      testFiles: {
+        'extension/tests/purge-update-cache.test.js': "test('purges the cache', () => {});\n",
+      },
+    });
+    mkRepoRootCatalog(projectRoot, 'bin/CLAUDE.md',
+      '## Trap Doors\n\n- `purge-update-cache.js` — INVARIANT: the promotable set decides removal.'
+      + ' ENFORCE: extension/tests/purge-update-cache.test.js#purges-the-cache.\n');
+
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({
+      projectRoot,
+      claudeFiles: [],
+      testFiles: ['extension/tests/purge-update-cache.test.js'],
+    });
+
+    assert.deepEqual(
+      result.findings.filter((f) => f.id.startsWith('orphan-test-file:')),
+      [],
+      'the test file IS referenced — by bin/CLAUDE.md, which a catalog list never reached',
+    );
+  });
+
+  // The control. Without it the assertion above passes for any reader that emits nothing at all:
+  // same fixture, same scope, ONLY the repo-root catalog's ref removed, and the orphan must
+  // return. So the pair fails in both directions — under-report and over-report alike.
+  test('AP-BIN-ITER15-02 (control): with no catalog referencing it, the same file is still orphaned', async () => {
+    const projectRoot = path.join(tmpRoot, 'ap15-repo-root-catalog-control');
+    mkFixture(projectRoot, {
+      enforceLines: '',
+      testFiles: {
+        'extension/tests/purge-update-cache.test.js': "test('purges the cache', () => {});\n",
+      },
+    });
+    mkRepoRootCatalog(projectRoot, 'bin/CLAUDE.md',
+      '## Trap Doors\n\n- `purge-update-cache.js` — INVARIANT: the promotable set decides removal.'
+      + ' ENFORCE: none today (gap).\n');
+
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({
+      projectRoot,
+      claudeFiles: [],
+      testFiles: ['extension/tests/purge-update-cache.test.js'],
+    });
+
+    const orphans = result.findings.filter((f) => f.id.startsWith('orphan-test-file:'));
+    assert.equal(orphans.length, 1, 'an unreferenced test file must still be reported');
+    assert.match(orphans[0].id, /purge-update-cache\.test\.js/);
+  });
+
+  // Reaching the catalog is not the same as AUDITING it: `referencedFiles` would grow even if the
+  // refs themselves were never checked. A ref that resolves to nothing, named ONLY by the
+  // repo-root catalog, must raise its own High — that is the 75 unaudited refs arm.
+  test('AP-BIN-ITER15-02: ENFORCE refs in a repo-root catalog are audited, not just harvested', async () => {
+    const projectRoot = path.join(tmpRoot, 'ap15-repo-root-catalog-audited');
+    mkFixture(projectRoot, { enforceLines: '' });
+    mkRepoRootCatalog(projectRoot, 'bin/CLAUDE.md',
+      '## Trap Doors\n\n- `verify-bundle.js` — INVARIANT: the bundle names its own base.'
+      + ' ENFORCE: extension/tests/deleted-by-a-refactor.test.js#some-anchor.\n');
+
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({ projectRoot });
+
+    const high = result.findings.filter((f) => f.severity === 'High');
+    assert.equal(high.length, 1, 'a dangling ENFORCE ref in bin/CLAUDE.md must be reported');
+    assert.match(high[0].id, /^orphan-enforce:extension\/tests\/deleted-by-a-refactor\.test\.js$/);
+    assert.equal(high[0].file, 'bin/CLAUDE.md', 'the finding must name the catalog a fixer edits');
+  });
 });
 
 describe('runT6TrapDoorCoverage — integration: real extension/CLAUDE.md', () => {

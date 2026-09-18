@@ -57,13 +57,24 @@ export function runT6TrapDoorCoverage(context: CitadelContext): AnalyzerResult {
   return { findings };
 }
 
+/**
+ * AP-BIN-ITER15-02: every CLAUDE.md under the project, DISCOVERED — never a list of locations.
+ * The hand-listed form seeded `extension/CLAUDE.md` and walked `extension/src`, which made
+ * repo-root `bin/CLAUDE.md` and its 75 ENFORCE refs invisible to this reader: its anchors were
+ * never resolved, and the three test files it is the ONLY catalog to reference
+ * (`purge-update-cache`, `release-gate`, `verify-bundle`) were reported `orphan-test-file: has
+ * no inbound ENFORCE ref` — a claim the reader had no way to make true, because it never read
+ * the catalog that refutes it. `audit-trap-door-enforcement.sh` already sweeps one directory
+ * level under the repo root alongside the one under `extension/src` for exactly this reason; a
+ * location list here was the sixth mirror of that rule, and the only one that disagreed.
+ *
+ * No content filter is needed to keep the widening inert over the catalogs it newly visits: a
+ * CLAUDE.md carrying no `ENFORCE:` ref yields neither a finding nor a `referencedFiles` entry,
+ * so repo-root `CLAUDE.md` and `prds/CLAUDE.md` fall out by construction rather than by an
+ * exception member that would rot silently the day either file grows a trap door.
+ */
 function collectClaudeMdFiles(projectRoot: string): string[] {
-  const files: string[] = [];
-  const primary = path.join(projectRoot, 'extension', 'CLAUDE.md');
-  if (existsSync(primary)) files.push(primary);
-  const srcDir = path.join(projectRoot, 'extension', 'src');
-  if (existsSync(srcDir)) files.push(...walkForClaudeMd(srcDir));
-  return files;
+  return walkForClaudeMd(projectRoot).sort();
 }
 
 function walkForClaudeMd(dir: string): string[] {
@@ -72,6 +83,9 @@ function walkForClaudeMd(dir: string): string[] {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
+        // Vendored and scratch trees hold no catalog of this project's. `isDirectory()` is
+        // false for a symlink (that is `isSymbolicLink()`), so the walk cannot cycle.
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
         results.push(...walkForClaudeMd(fullPath));
       } else if (entry.name === 'CLAUDE.md') {
         results.push(fullPath);
