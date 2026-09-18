@@ -1446,6 +1446,102 @@ function inlineParameterExpansionBody(command: string): string {
   return readExpansions(command, parameterExpansionBody);
 }
 
+/** An assignment WORD: `NAME=` followed by the value, which may be empty. */
+const ASSIGNMENT_WORD_RE = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+
+/**
+ * A bare parameter REFERENCE — `$NAME` or `${NAME}` and nothing else.
+ *
+ * The braced arm requires the whole body to be a name, so it can never claim a
+ * word-carrying expansion: `${x:-git}` is `parameterExpansionWords`' to read and
+ * stays untouched here. `$1` and `$$` are not names and are not matched.
+ */
+const PARAMETER_REFERENCE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+
+/**
+ * The rendering in which every `$NAME` / `${NAME}` contributes the LITERAL VALUE
+ * assigned to that name earlier in the SAME command.
+ *
+ * AP-EXT-ITER143-01 recorded this as open on the grounds that such a word
+ * "spells nothing". That is true of the WORD and false of the COMMAND, which is
+ * the unit every reading in this list is taken on: in `S=install.sh; bash $S`
+ * the value is written in plain sight one word over. This is that entry's own
+ * insight — the substituted word is WRITTEN IN THE COMMAND — applied one level
+ * up, where the assignment is in scope.
+ *
+ * Nearest-preceding assignment wins, which is bash's own rule and needs no
+ * choice between first and last: the map is filled and read in ONE left-to-right
+ * pass, so a word only ever sees the assignments standing before it.
+ *
+ * TERMINATION — this is the one reading that can GROW the command, so it cannot
+ * lean on the "strictly shorter" argument the others share. It is IDEMPOTENT
+ * instead: a value carrying a `$` is never recorded, so substitution cannot
+ * introduce a reference, and applying this rendering to its own output therefore
+ * returns it unchanged — the `taken` dedup below ends the recursion one level
+ * in. That bound is also why `S=$T` indirection stays open; it is a bound, not
+ * an oversight.
+ *
+ * BOUNDED in CHARACTERS for the same reason `parameterExpansionWords` is, so a
+ * value referenced many times cannot make the emitted string quadratic in the
+ * command and drive `shellPatternToRegex` past the engine's regex-size limit,
+ * whose SyntaxError is the AP-EXT-ITER5-01 / ITER66-02 fail-OPEN door.
+ *
+ * Overflow abandons the WHOLE rendering rather than truncating it, and that is
+ * load-bearing on TERMINATION, not a style choice. A truncated rendering leaves
+ * the un-substituted references standing beside their assignments, so it is NOT
+ * idempotent: the recursion below re-enters it, spends a FRESH budget on the
+ * next few references, and walks the command one budget at a time. Measured on
+ * the truncating draft — 200 references to a 200-char value cost 4.4 ms and 402
+ * scopes at baseline against 90.8 ms and 4221 scopes, a ten-level recursion, one
+ * level per budget. Returning the command unchanged instead makes the reading a
+ * no-op the `taken` dedup drops, so an overflow costs nothing at all. Nothing is
+ * ever REMOVED either way, so an overflow cannot lose a block a non-substituting
+ * scanner already had.
+ *
+ * Quoting is deliberately not consulted — the AP-EXT-ITER64-01 uniform reading,
+ * the same call `normalizeRedirectOperators` makes. A reference inside single
+ * quotes does not expand in bash, so substituting there can only ADD a segment
+ * the shell would not run: over-block, never under-block, this module's
+ * established direction.
+ */
+function inlineAssignedValues(command: string): string {
+  // No `$` means no reference to substitute, so the whole word walk below can
+  // only rebuild the command it was handed. Every reading is taken on every
+  // command at every recursion level, so declining early is the difference
+  // between charging this rendering to the 12% of commands it reads and
+  // charging it to all of them.
+  if (!command.includes('$')) return command;
+  const values = new Map<string, string>();
+  const out: string[] = [];
+  let budget = BRACE_EXPANSION_STEP_CAP;
+  let cursor = 0;
+  for (const match of command.matchAll(TOKEN_SCAN_RE)) {
+    const word = match[0];
+    const start = match.index ?? 0;
+    out.push(command.slice(cursor, start));
+    cursor = start + word.length;
+    out.push(word.replace(PARAMETER_REFERENCE_RE, (reference, braced, bare) => {
+      const value = values.get(braced ?? bare);
+      if (value === undefined) return reference;
+      budget -= value.length;
+      return value;
+    }));
+    if (budget < 0) return command;
+    // Recorded from the word's BOUNDARY tokens, so a separator glued to the
+    // value (`S=install.sh;`) is not carried into it, and from the FOLD, so
+    // `S="install.sh"` records the name bash will use.
+    const boundary: string[] = [];
+    pushWordBoundaryTokens(word, boundary);
+    for (const token of boundary) {
+      const assignment = ASSIGNMENT_WORD_RE.exec(foldShellWord(token).value);
+      if (!assignment || assignment[2].length === 0 || assignment[2].includes('$')) continue;
+      values.set(assignment[1], assignment[2]);
+    }
+  }
+  out.push(command.slice(cursor));
+  return out.join('');
+}
+
 /**
  * THE shell segmenter for the hooks subsystem. Splits a command into segments
  * at every operator where bash starts a new command — the control operators
@@ -1516,11 +1612,16 @@ export function splitShellSegments(command: string, depth = 0): string[] {
   // per rendering. Each is taken on the RAW string because the segments above
   // have already cut a glued word in half: `$(`/`` ` `` are separators, and a
   // `${…}` body's closing brace has already fused to its last word
-  // (AP-EXT-ITER264-02). A
-  // rendering only ever REMOVES characters, so a reading that differs is strictly
-  // shorter and the recursion terminates; `depth` is passed through unchanged so
+  // (AP-EXT-ITER264-02). `depth` is passed through unchanged so
   // the command-string budget is spent on real nesting only. ONE loop, not a case
-  // per reading — a third rendering is a member of this list and nothing else.
+  // per reading — a fourth rendering is a member of this list and nothing else.
+  //
+  // TERMINATION is per-reading, not one rule for the list (AP-EXT-ITER276-01).
+  // The first three only ever REMOVE characters, so a reading that differs is
+  // strictly shorter. `inlineAssignedValues` can GROW the command and terminates
+  // on IDEMPOTENCE instead — its own output renders to itself, so the `taken`
+  // dedup ends that branch one level in. A fifth reading owes this list one of
+  // those two arguments; neither is inherited by standing here.
   //
   // A reading is taken once. The two renderings AGREE whenever the substitution
   // carries no operand (`git reset$(true) --hard` elides and inlines to the same
@@ -1528,7 +1629,7 @@ export function splitShellSegments(command: string, depth = 0): string[] {
   // buys nothing but a duplicate scope.
   const scopes = [...own];
   const taken = new Set([command]);
-  for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command), inlineParameterExpansionBody(command)]) {
+  for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command), inlineParameterExpansionBody(command), inlineAssignedValues(command)]) {
     if (taken.has(reading)) continue;
     taken.add(reading);
     scopes.push(...splitShellSegments(reading, depth));

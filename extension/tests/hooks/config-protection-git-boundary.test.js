@@ -6368,19 +6368,259 @@ test('AP-EXT-ITER264-02: every reading reaches the ONE expansion walk as an argu
   const splitter = source.slice(splitStart);
   const readings = splitter.match(/for \(const reading of \[([^\]]*)\]\) \{/)?.[1];
   assert.ok(readings, 'splitShellSegments must iterate a LIST of readings');
+  // The EXPANSION renderings — the ones whose subject is an expansion SPAN —
+  // must each route through the shared walk. `inlineAssignedValues`
+  // (AP-EXT-ITER276-01) is deliberately not one of them: its subject is the
+  // WORD grammar and the assignments standing in the command, not a span, so
+  // demanding `readExpansions` of it would be demanding the wrong walk. What it
+  // still owes this shape is that it does not grow a SECOND span walk, which is
+  // the fork the pin exists to forbid — asserted directly below.
+  const expansionRenderings = ['elideExpansions', 'inlineSubstitutionOutput', 'inlineParameterExpansionBody'];
   assert.deepEqual(
     readings.split(',').map((entry) => entry.trim()),
-    [
-      'elideExpansions(command)',
-      'inlineSubstitutionOutput(command)',
-      'inlineParameterExpansionBody(command)',
-    ],
+    [...expansionRenderings.map((rendering) => `${rendering}(command)`), 'inlineAssignedValues(command)'],
   );
-  for (const rendering of ['elideExpansions', 'inlineSubstitutionOutput', 'inlineParameterExpansionBody']) {
+  for (const rendering of expansionRenderings) {
     const body = source.match(
       new RegExp(`function ${rendering}\\(command: string\\): string \\{([\\s\\S]*?)\\n\\}`),
     )?.[1];
     assert.ok(body, `${rendering} must remain a single named function`);
     assert.match(body, /return readExpansions\(command, /);
   }
+
+  const assigned = source.match(
+    /function inlineAssignedValues\(command: string\): string \{([\s\S]*?)\n\}/,
+  )?.[1];
+  assert.ok(assigned, 'inlineAssignedValues must remain a single named function');
+  assert.doesNotMatch(assigned, /expansionSpanEnd|balancedSpanEnd|readExpansions/);
+  // It reads words through the ONE tokenizer's primitives rather than re-typing
+  // a word grammar, the same one-home rule the renderings above answer to.
+  assert.match(assigned, /TOKEN_SCAN_RE/);
+  assert.match(assigned, /pushWordBoundaryTokens\(/);
+  assert.match(assigned, /foldShellWord\(/);
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER276-01 — a `$NAME` carrying a value assigned in the SAME command.
+//
+// AP-EXT-ITER143-01 recorded this open because such a word "spells nothing".
+// That is true of the WORD and false of the COMMAND, which is the unit every
+// reading in `splitShellSegments` is taken on: in `S=<deploy>; bash $S` the
+// value stands one word over, in plain sight. So the same entry's own insight —
+// the substituted word is WRITTEN IN THE COMMAND — closes it one level up.
+//
+// Measured against the pre-fix shipped handler with a live control in the same
+// run and shim-verified against a real shell: the deploy-script ban approved 9
+// of 9 spellings that RAN the script, the git boundary approved every
+// `V=<verb>; git $V` form that really reached git, and every R-WSRC-3 write
+// construct over a `$NAME` destination approved while its literal twin blocked.
+//
+// The invariant these cases pin is an EQUIVALENCE, not a block list: an
+// indirected form must decide exactly as the byte-identical literal twin. Both
+// directions are therefore asserted on every pair, so a guard that simply
+// blocked any command containing an assignment would red the approve halves.
+//
+// Assembled from fragments for the same reason the blocks above are.
+// ---------------------------------------------------------------------------
+
+const ITER276_DOLLAR = String.fromCharCode(36);
+const ITER276_DEPLOY_NAME = 'insta' + 'll.sh';
+const ITER276_WRAPPER = 'ba' + 'sh';
+const ITER276_REDIRECT = String.fromCharCode(62);
+
+/** `NAME=<value>; <use>` where `<use>` reads the value back through `$NAME`. */
+const iter276Indirect = (value, use) => `V=${value}; ${use(`${ITER276_DOLLAR}V`)}`;
+/** The byte-identical twin in which the value is written at the use site. */
+const iter276Literal = (value, use) => `V=${value}; ${use(value)}`;
+
+for (const [label, value, use] of [
+  ['the deploy script behind a wrapper', ITER276_DEPLOY_NAME, (w) => `${ITER276_WRAPPER} ${w}`],
+  ['the deploy script behind a dot-source', ITER276_DEPLOY_NAME, (w) => `source ${w}`],
+  ['a path-prefixed deploy script', `./${ITER276_DEPLOY_NAME}`, (w) => `${ITER276_WRAPPER} ${w}`],
+]) {
+  test(`AP-EXT-ITER276-01: worker blocks ${label} carried by an assigned value`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const command = iter276Indirect(value, use);
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /R-WSRC/);
+  });
+}
+
+for (const verb of ['reset', 'push', 'rebase', 'stash']) {
+  test(`AP-EXT-ITER276-01: worker blocks \`git\` ${verb} carried by an assigned value`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const command = iter276Indirect(verb, (w) => `git ${w} --hard`);
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+  });
+}
+
+test('AP-EXT-ITER276-01: worker blocks the git EXECUTABLE carried by an assigned value', () => {
+  // The other axis: the value stands where the ANCHOR is read, not the verb.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const command = iter276Indirect('git', (w) => `${w} reset --hard`);
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'block', command);
+});
+
+for (const [label, write] of [
+  ['an output redirect', (w) => `echo x ${ITER276_REDIRECT} ${w}`],
+  ['a tee destination', (w) => `echo x | tee ${w}`],
+  ['a cp destination', (w) => `cp /dev/null ${w}`],
+]) {
+  test(`AP-EXT-ITER276-01: worker blocks a state write through ${label} carried by an assigned value`, () => {
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const command = iter276Indirect(path.join(sessionDir, 'state.json'), write);
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', command);
+    assert.match(result.reason, /state file protected/i);
+  });
+}
+
+for (const [label, value, use] of [
+  ['a read of the protected path', 'STATE_PATH', (w) => `cat ${w}`],
+  ['a read of the deploy script', ITER276_DEPLOY_NAME, (w) => `cat ${w}`],
+  ['a benign word in command position', 'echo', (w) => `${w} hello`],
+  ['the deploy name as commit prose', ITER276_DEPLOY_NAME, (w) => `git commit -m "${w}"`],
+]) {
+  test(`AP-EXT-ITER276-01: ${label} still approves through an assigned value`, () => {
+    // Non-tautology, and the equivalence's approve half: substituting a value in
+    // does not by itself block, so the blocks above are decided by what the value
+    // SPELLS at the position it lands in.
+    const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+    const resolved = value === 'STATE_PATH' ? path.join(sessionDir, 'state.json') : value;
+    const command = iter276Indirect(resolved, use);
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  });
+}
+
+test('AP-EXT-ITER276-01: an indirected form decides exactly as its literal twin', () => {
+  // THE invariant, asserted as an equivalence over both verdicts rather than as
+  // a block list — the pairs below are the same commands the cases above drive,
+  // plus benign ones, and each is required to AGREE with its twin.
+  const { tmpDir, sessionDir, stateFile } = bootstrapSession();
+  const statePath = path.join(sessionDir, 'state.json');
+  const pairs = [
+    [ITER276_DEPLOY_NAME, (w) => `${ITER276_WRAPPER} ${w}`],
+    [ITER276_DEPLOY_NAME, (w) => `cat ${w}`],
+    ['reset', (w) => `git ${w} --hard`],
+    ['reset', (w) => `echo ${w}`],
+    [statePath, (w) => `echo x ${ITER276_REDIRECT} ${w}`],
+    [statePath, (w) => `cat ${w}`],
+  ];
+  for (const [value, use] of pairs) {
+    const indirect = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: iter276Indirect(value, use) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    const literal = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command: iter276Literal(value, use) },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(
+      indirect.decision,
+      literal.decision,
+      `${iter276Indirect(value, use)} must decide as ${iter276Literal(value, use)}`,
+    );
+  }
+});
+
+test('AP-EXT-ITER276-01: the rendering is idempotent, and overflow abandons it whole', () => {
+  // The TERMINATION bound, in-process. A truncating overflow would leave
+  // un-substituted references beside their assignments, so the reading would not
+  // render to itself and `splitShellSegments` would re-enter it one budget at a
+  // time — measured at ten levels and a 10x scope count on the truncating draft.
+  const deploy = `${ITER276_WRAPPER} ${ITER276_DEPLOY_NAME}`;
+  const under = `S=${ITER276_DEPLOY_NAME}; ${ITER276_WRAPPER} ${ITER276_DOLLAR}S`;
+  assert.ok(
+    splitShellSegments(under).includes(deploy),
+    'a value under budget must be substituted into the segment list',
+  );
+
+  // Over budget: the reading is abandoned, so the scope count matches a command
+  // the rendering never touches rather than exploding through re-entry.
+  const value = 'a'.repeat(200);
+  const uses = Array.from({ length: 200 }, () => `echo ${ITER276_DOLLAR}V`).join('; ');
+  const overflowing = `V=${value}; ${uses}`;
+  // The control differs in ONE character — the assigned NAME — so it carries the
+  // same references and the same text shape, and only this rendering can tell
+  // them apart. Comparing against a `$`-free command instead would move the
+  // other three readings too, which is what made the first draft of this control
+  // red for a reason that had nothing to do with the budget.
+  const unassigned = `W=${value}; ${uses}`;
+  assert.equal(
+    splitShellSegments(overflowing).length,
+    splitShellSegments(unassigned).length,
+    'an overflowing command must cost no more scopes than one with nothing to substitute',
+  );
+
+  // A value that carries a `$` is never recorded, so substitution can never
+  // introduce a reference — the property idempotence rests on.
+  const indirectValue = `A=${ITER276_DOLLAR}B; B=${ITER276_DOLLAR}A; ${ITER276_WRAPPER} ${ITER276_DOLLAR}A`;
+  assert.ok(
+    !splitShellSegments(indirectValue).includes(deploy),
+    'an indirected value is out of scope and must not be manufactured',
+  );
+});
+
+test('AP-EXT-ITER276-01: a value reached only through a second reference is not chased', () => {
+  // The OVER-BLOCK witness for the `$`-bearing bound, and it is behavioural
+  // rather than structural: in `T=$X; X=<deploy>; bash $T` the shell assigns T
+  // BEFORE X exists, so T is empty and `bash $T` runs an interactive shell — it
+  // does NOT run the deploy script (shim-verified against a real /bin/bash over
+  // a fixture that appends to a log). Recording a `$`-bearing value would chase
+  // the reference through to the literal and block a command bash never runs.
+  //
+  // The twin naming the value's OWN reference is live in the same test, so this
+  // is not a guard that simply declines everything.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const decisionFor = (command) => runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  }).decision;
+
+  const prefix = `T=${ITER276_DOLLAR}X; X=${ITER276_DEPLOY_NAME};`;
+  assert.equal(
+    decisionFor(`${prefix} ${ITER276_WRAPPER} ${ITER276_DOLLAR}T`),
+    'approve',
+    'a doubly-indirected value names nothing the shell will run',
+  );
+  assert.equal(
+    decisionFor(`${prefix} ${ITER276_WRAPPER} ${ITER276_DOLLAR}X`),
+    'block',
+    'the directly-referenced twin still blocks',
+  );
 });
