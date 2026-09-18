@@ -47,13 +47,26 @@ test('hermes-smoke: backend validation lists hermes as accepted value', () => {
     assert.match(result.stderr, /--backend must be one of: claude, codex, hermes/);
 });
 
+// AP-EXT-ITER268-01: the launch-sizing numerator counts the session's ticket
+// DIRECTORIES (`<id>/rick_ticket_<id>.md`), the roster `collectTickets` reads. A
+// `decomposition_manifest.json` fixture pins a file no producer writes, so it can no
+// longer stand in for a roster here.
+function seedTicketRoster(sessionDir, count) {
+    for (let i = 0; i < count; i++) {
+        const id = (i + 1).toString(16).padStart(8, '0');
+        const ticketDir = path.join(sessionDir, id);
+        fs.mkdirSync(ticketDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(ticketDir, `rick_ticket_${id}.md`),
+            `---\nid: ${id}\ntitle: "hermes sizing ticket ${i}"\nstatus: Todo\ncomplexity_tier: medium\norder: ${(i + 1) * 10}\n---\n# ${id}\n`,
+        );
+    }
+}
+
 test('hermes-smoke: launch sizing uses hermes throughput baseline', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-hermes-sizing-'));
     try {
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(9).fill(0).map((_, i) => ({ id: `h${i}` })) }),
-        );
+        seedTicketRoster(dir, 9);
         const config = parseArguments(['--max-time', '30', '--backend', 'hermes', '--task', 'hermes sizing']);
         const captured = [];
 
@@ -70,10 +83,7 @@ test('hermes-smoke: launch sizing uses hermes throughput baseline', () => {
 test('hermes-smoke: launch sizing falls back to built-in hermes baseline', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-hermes-sizing-'));
     try {
-        fs.writeFileSync(
-            path.join(dir, 'decomposition_manifest.json'),
-            JSON.stringify({ tickets: new Array(9).fill(0).map((_, i) => ({ id: `h${i}` })) }),
-        );
+        seedTicketRoster(dir, 9);
         const result = evaluateLaunchSizing(dir, {
             timeLimit: 30,
             throughputBaselines: { claude: 5 },
