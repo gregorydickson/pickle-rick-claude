@@ -300,6 +300,14 @@ test('AC-J3-4: dropOutOfSurfaceViolations.droppedCount round-trips through micro
 // `../services/microverse-state.js`.
 // ---------------------------------------------------------------------------------------------
 
+// The ONE reader of the production recordStall callsites. Both tests below derive the causes they
+// reason about from here rather than from a literal list, so a fourth cause is covered with no list to
+// update; a single scan also means a moved callsite reds for one reason, not two.
+function productionRecordStallCauses() {
+  const runnerSource = fs.readFileSync(path.join(EXTENSION_ROOT, 'src/bin/microverse-runner.ts'), 'utf-8');
+  return [...runnerSource.matchAll(/recordStall\([A-Za-z0-9_.]+,\s*'([^']+)'\)/g)].map((m) => m[1]);
+}
+
 function makeCauseState() {
   return createMicroverseState({
     prdPath: '/tmp/prd.md',
@@ -390,8 +398,7 @@ test('deriveStallCause covers strict-mode-red via recordStall', () => {
 // reverting recordMetricMeasurementFailure's cause to the pre-I2 'no-commit' destroys the whole
 // distinction I2 exists to create, and left all 235 bundle tests green.
 test('the three stall callsites are distinguishable from persisted state alone', () => {
-  const runnerSource = fs.readFileSync(path.join(EXTENSION_ROOT, 'src/bin/microverse-runner.ts'), 'utf-8');
-  const callsiteCauses = [...runnerSource.matchAll(/recordStall\([A-Za-z0-9_.]+,\s*'([^']+)'\)/g)].map((m) => m[1]);
+  const callsiteCauses = productionRecordStallCauses();
   assert.equal(
     callsiteCauses.length, 3,
     `expected the 3 production recordStall callsites, found ${callsiteCauses.length} — the wiring or this scan moved`,
@@ -478,8 +485,7 @@ test('replaying both vendored sessions attributes NO mechanism to either', () =>
 // covered with no list to update. (Same reason as the callsite scan above: a hand-written list asserts
 // only that the test round-trips a set it handed itself.)
 test('the legacy arm never names a recordStall mechanism it never measured', () => {
-  const runnerSource = fs.readFileSync(path.join(EXTENSION_ROOT, 'src/bin/microverse-runner.ts'), 'utf-8');
-  const callsiteCauses = [...runnerSource.matchAll(/recordStall\([A-Za-z0-9_.]+,\s*'([^']+)'\)/g)].map((m) => m[1]);
+  const callsiteCauses = productionRecordStallCauses();
   assert.ok(
     callsiteCauses.length >= 2,
     `expected the production recordStall callsites, found ${callsiteCauses.length} — the wiring or this scan moved`,
