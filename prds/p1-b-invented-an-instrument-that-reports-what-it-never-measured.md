@@ -9,12 +9,16 @@ INSTRUMENT, not the logic.
 
 **All four mechanisms were re-grepped at `0a7e689f` before scoping.** None is stale.
 
-| root | kind | source | surface |
-|---|---|---|---|
-| **I1** the judge compares against a threshold it invented | fix | #32 Cause A | `microverse-runner.ts` |
-| **I2** `recordStall` cannot say which of its two causes fired | fix | #32 Cause B | `microverse-state.ts` |
-| **I3** `install.sh` exits 0 on a refusal to deploy | fix | #40 | `install.sh` |
-| **I4** `runMuxRunnerMain` is undrivable, so no pin is behavioural | fix | #29 | `mux-runner.ts` |
+| root | kind | source | surface | verification |
+|---|---|---|---|---|
+| **I1** the judge compares against a threshold it invented | fix | #32 Cause A | `src/bin/microverse-runner.ts` | `node bin/test-runner.js tests/microverse-helpers.test.js --test-concurrency=1` |
+| **I2** `recordStall` cannot say which of its two causes fired | fix | #32 Cause B | `src/bin/microverse-state.ts` | `node bin/test-runner.js tests/microverse-convergence.test.js --test-concurrency=1` |
+| **I3** `install.sh` exits 0 on a refusal to deploy | fix | #40 | `install.sh` | `node bin/test-runner.js tests/install-script.test.js --test-concurrency=1` |
+| **I4** `runMuxRunnerMain` is undrivable, so no pin is behavioural | fix | #29 | `src/bin/mux-runner.ts` | `node bin/test-runner.js tests/mux-runner.test.js --test-concurrency=1` |
+
+**All commands run from `extension/`.** Repo-wide legs, applied to every root:
+`./node_modules/.bin/tsc --noEmit` (typecheck) · `./node_modules/.bin/tsc` (build) ·
+`./node_modules/.bin/eslint src/ --max-warnings=0` (lint).
 
 ---
 
@@ -39,14 +43,35 @@ code path that never reaches the prompt. The judge is asked to score function si
 silently the moment `eslint.config.js` changes — root `CLAUDE.md` clause 1 and the
 `audit-recorded-ceilings.sh` leg both exist because of this exact shape. Derive it from the config.
 
+### Interface Contracts — I1
+- **Input:** the eslint flat-config array from `extension/eslint.config.js`, plus the existing
+  `buildJudgePrompt` options object.
+- **Output:** `string` — the assembled prompt. When the ceiling resolves, it contains the numeric
+  value; when it does not resolve, the prompt omits any function-size ceiling claim.
+- **Errors:** an unreadable or unparseable config must NOT throw into the judge path and must NOT
+  substitute a default — it degrades to "no ceiling stated".
+- **Invariant:** the number in the prompt equals the number the linter enforces, or no number is
+  stated. There is no third case.
+
 ### AC-I1
-- **AC-I1-1 (executable, FALSE at HEAD):** the assembled judge prompt contains the repo's real enforced
-  function-size ceiling, and that value is **read from `eslint.config.js`**, not a literal in the prompt
-  builder. Assert the prompt contains the ceiling AND that mutating the rule's configured value in a
-  fixture config changes the value the prompt carries.
-- **AC-I1-2 (over-trigger control):** a fixture config whose `max-lines-per-function` is absent must not
-  yield a prompt asserting a fabricated ceiling — it must omit the claim rather than invent one.
-- **AC-I1-3:** the override files' higher ceiling (200) is not silently presented as the global one.
+- [ ] **AC-I1-1 (executable, FALSE at HEAD):** the assembled judge prompt contains the repo's real
+  enforced function-size ceiling, read from `eslint.config.js` rather than a literal in the prompt
+  builder — Verify: `node bin/test-runner.js tests/microverse-helpers.test.js --test-concurrency=1` — Type: test
+- [ ] **AC-I1-2 (derivation proof, REQUIRED):** mutating `max-lines-per-function` in a fixture config
+  changes the value the prompt carries. A test that only asserts the literal `120` appears would pass
+  over a hardcoded constant and is not acceptable — Verify: `node bin/test-runner.js tests/microverse-helpers.test.js --test-concurrency=1` — Type: test
+- [ ] **AC-I1-3 (over-trigger control):** a fixture config with no `max-lines-per-function` yields a
+  prompt that states no ceiling rather than a fabricated one — Verify: `node bin/test-runner.js tests/microverse-helpers.test.js --test-concurrency=1` — Type: test
+- [ ] **AC-I1-4:** the override files' higher ceiling (200) is not presented as the global one —
+  Verify: `node bin/test-runner.js tests/microverse-helpers.test.js --test-concurrency=1` — Type: test
+- [ ] Typecheck, build and lint pass — Verify: `./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/tsc && ./node_modules/.bin/eslint src/ --max-warnings=0` — Type: typecheck
+
+### Test Expectations — I1
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-I1-1 | `tests/microverse-helpers.test.js` | prompt carries the enforced ceiling | assembled prompt matches the value read from the real config |
+| AC-I1-2 | `tests/microverse-helpers.test.js` | fixture config sets the rule to a distinct value | prompt carries THAT value, not 120 |
+| AC-I1-3 | `tests/microverse-helpers.test.js` | fixture config omits the rule | prompt states no ceiling; no fabricated number present |
 
 ---
 
@@ -65,12 +90,31 @@ prose log line is not a measurement — it is the same information loss as #33 a
 iterations of 61s/33s/31s/28s. That is a worker-productivity question; this root only makes the stall
 path able to say which branch it took, which is the prerequisite for ever answering it.
 
+### Interface Contracts — I2
+- **Input:** `recordStall(state, reason)` where `reason` is a typed union — the two causes its own
+  docblock already names — not a free string.
+- **Output:** persisted state in which each stall increment carries its reason.
+- **Errors:** an unrecognised reason is a type error at compile time, not a runtime default.
+- **Invariant:** `stall_counter` equals the number of recorded stall reasons, and the limit fires at
+  the same count as before this change.
+
 ### AC-I2
-- **AC-I2-1 (executable, FALSE at HEAD):** a stall recorded for *no commits* and a stall recorded for
-  *metric unmeasurable* are distinguishable **from persisted state alone**, with no log parsing.
-- **AC-I2-2 (over-trigger control):** the counter's existing arithmetic is unchanged — a run that stalls
-  N times still reaches the same limit at the same iteration. This is a widening, not a new state.
-- **AC-I2-3:** legacy persisted state written before this field still loads (probe the old shape).
+- [ ] **AC-I2-1 (executable, FALSE at HEAD):** a stall recorded for *no commits* and one recorded for
+  *metric unmeasurable* are distinguishable **from persisted state alone**, with no log parsing —
+  Verify: `node bin/test-runner.js tests/microverse-convergence.test.js --test-concurrency=1` — Type: test
+- [ ] **AC-I2-2 (over-trigger control, REQUIRED):** the counter's arithmetic is unchanged — a run that
+  stalls N times reaches the limit at the same iteration as before. This is a widening, not a new
+  state — Verify: `node bin/test-runner.js tests/microverse-convergence.test.js --test-concurrency=1` — Type: test
+- [ ] **AC-I2-3:** legacy persisted state written before this field still loads — probe the old shape
+  explicitly rather than asserting the new one — Verify: `node bin/test-runner.js tests/microverse-convergence.test.js --test-concurrency=1` — Type: test
+- [ ] Typecheck, build and lint pass — Verify: `./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/tsc && ./node_modules/.bin/eslint src/ --max-warnings=0` — Type: typecheck
+
+### Test Expectations — I2
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-I2-1 | `tests/microverse-convergence.test.js` | two stalls, different causes | persisted state reports two distinct reasons |
+| AC-I2-2 | `tests/microverse-convergence.test.js` | N stalls to the limit | limit fires at the same N as before |
+| AC-I2-3 | `tests/microverse-convergence.test.js` | state fixture without the field | loads without throwing; counter still readable |
 
 ---
 
@@ -94,13 +138,35 @@ the runtime then executes stale JS invisibly for every subsequent run.
 **Prefer the subtraction:** make the three refusals in this chain agree rather than adding a fourth
 state. Distinguishing "typed n" from "no TTY" is optional and probably not worth a case.
 
+### Interface Contracts — I3
+- **Input:** `install.sh` argv (`--allow-downgrade`, `--no-confirm`, `--prefix`) and stdin, which may
+  be a TTY, a pipe, or closed.
+- **Output:** process exit status, and the deployed tree under the resolved prefix.
+- **Errors:** every refusal in this guard chain exits non-zero. The three existing refusals —
+  `:200` (active session, 2), `:225` (source older, 1) and the decline at `:209` — must agree in sign.
+- **Invariant:** exit 0 from `install.sh` means a deploy happened. There is no path where it does not.
+
 ### AC-I3
-- **AC-I3-1 (executable, FALSE at HEAD):** `install.sh --allow-downgrade` with non-TTY stdin exits
-  **non-zero** and deploys nothing.
-- **AC-I3-2 (over-trigger control):** `--allow-downgrade --no-confirm` still exits 0 **and** deploys —
-  assert the deployed `package.json` version actually changed, not merely that the exit code is 0. A
-  fix that reds the working path is worse than the defect.
-- **AC-I3-3:** an interactive `y` still proceeds; an interactive `n` exits non-zero.
+- [ ] **AC-I3-1 (executable, FALSE at HEAD):** `install.sh --allow-downgrade` with non-TTY stdin exits
+  **non-zero** and deploys nothing — Verify: `node bin/test-runner.js tests/install-script.test.js --test-concurrency=1` — Type: test
+- [ ] **AC-I3-2 (over-trigger control, REQUIRED):** `--allow-downgrade --no-confirm` still exits 0
+  **and** deploys — assert the deployed `package.json` version actually changed, not merely that the
+  exit code is 0. A fix that reds the working path is worse than the defect —
+  Verify: `node bin/test-runner.js tests/install-script.test.js --test-concurrency=1` — Type: test
+- [ ] **AC-I3-3:** an interactive `y` still proceeds and an interactive `n` exits non-zero —
+  Verify: `node bin/test-runner.js tests/install-script.test.js --test-concurrency=1` — Type: test
+- [ ] Typecheck, build and lint pass — Verify: `./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/tsc && ./node_modules/.bin/eslint src/ --max-warnings=0` — Type: typecheck
+
+**Test against a `--prefix` sandbox, never the real `~/.claude/pickle-rick`.** The existing
+`tests/install-script.test.js` and `tests/install-script-prefix.test.js` already establish that
+pattern; follow it rather than inventing a new harness.
+
+### Test Expectations — I3
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-I3-1 | `tests/install-script.test.js` | downgrade declined via closed stdin | exit status non-zero AND prefix version unchanged |
+| AC-I3-2 | `tests/install-script.test.js` | downgrade with `--no-confirm` | exit 0 AND prefix version changed to source version |
+| AC-I3-3 | `tests/install-script.test.js` | `n` piped to stdin | exit status non-zero |
 
 ---
 
@@ -117,13 +183,33 @@ and **none calls it** — `mux-runner-exit-pending-guard.test.js:5` and
 `mux-runner-extracted-helpers-behaviour.test.js:4` reference it only in comments, which is precisely the
 "pins confirm shape, not behaviour" this issue reported.
 
+### Interface Contracts — I4
+- **Input:** `runMuxRunnerMain({ runIteration, sleep, exit }: MuxRunnerMainDeps)` — the seam already
+  exists; all three are injectable.
+- **Output:** the loop's observable decisions, reachable through the injected `runIteration` and
+  `exit` doubles.
+- **Errors:** unchanged. This root adds no behaviour.
+- **Invariant:** the module's CLI guard still governs execution — importing the module must not run
+  the loop.
+
 ### AC-I4
-- **AC-I4-1 (executable, FALSE at HEAD):** a suite imports `runMuxRunnerMain` and drives it through
-  injected deps, asserting one real loop decision (not a source-text match).
-- **AC-I4-2 (over-trigger control, REQUIRED):** mutate the asserted decision in the source and show the
+- [ ] **AC-I4-1 (executable, FALSE at HEAD):** a suite imports `runMuxRunnerMain` and drives it through
+  injected deps, asserting one real loop decision rather than a source-text match —
+  Verify: `node bin/test-runner.js tests/mux-runner.test.js --test-concurrency=1` — Type: test
+- [ ] **AC-I4-2 (mutation control, REQUIRED):** mutate the asserted decision in the source and show the
   new test **reds**; restore and show it greens. A pin that cannot fail is a green light wired to
-  nothing. Do not `git checkout` to restore — copy the file aside first.
-- **AC-I4-3:** exporting it changes no runtime behaviour — the CLI guard still governs execution.
+  nothing. Do NOT `git checkout` to restore — copy the file aside first, or the mutation revert wipes
+  the uncommitted fix — Verify: recorded in the ticket's conformance artifact — Type: llm-conformance
+- [ ] **AC-I4-3:** exporting it changes no runtime behaviour — importing the module does not run the
+  loop, and the CLI guard still governs execution —
+  Verify: `node bin/test-runner.js tests/mux-runner.test.js --test-concurrency=1` — Type: test
+- [ ] Typecheck, build and lint pass — Verify: `./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/tsc && ./node_modules/.bin/eslint src/ --max-warnings=0` — Type: typecheck
+
+### Test Expectations — I4
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| AC-I4-1 | `tests/mux-runner.test.js` | drive the loop with stub deps | the injected `exit` receives the expected decision |
+| AC-I4-3 | `tests/mux-runner.test.js` | import the module | `runIteration` stub never called on import |
 
 ---
 
