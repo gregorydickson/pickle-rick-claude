@@ -206,7 +206,8 @@ handle_allowed_downgrade() {
     local answer=""
     IFS= read -r answer || true
     if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
-      exit 0
+      echo "REFUSE: downgrade declined" >&2
+      exit 1
     fi
   fi
 
