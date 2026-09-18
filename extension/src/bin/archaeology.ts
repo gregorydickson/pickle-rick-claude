@@ -43,6 +43,24 @@ export interface ArchaeologyRunOptions {
   logActivityFn?: typeof logActivity;
 }
 
+/**
+ * `ArchaeologyRunOptions` with every optional dependency already resolved.
+ * Built once by `resolveDeps` at the entry point and threaded through the
+ * completion helpers, so a default is a single decision rather than one
+ * re-derived at each point of use: `now`, `stdout` and `stateManager` each had
+ * three or four independent `?? default` sites, and the `stateManager` one
+ * silently constructed a SECOND StateManager inside completeSkipped and
+ * completeSuccess even though runArchaeology had already built one.
+ */
+interface ArchaeologyDeps {
+  spawn: typeof spawnSync;
+  out: (message: string) => void;
+  err: (message: string) => void;
+  now: () => Date;
+  stateManager: StateManager;
+  logActivityFn: typeof logActivity;
+}
+
 export interface ArchaeologyRunResult {
   exitCode: number;
   contextPath: string;
@@ -175,56 +193,59 @@ function planArchaeology(args: ArchaeologyArgs): ArchaeologyPlan {
   return { args, backend, classification, contextPath, prompt, invocation };
 }
 
+function resolveDeps(opts: ArchaeologyRunOptions): ArchaeologyDeps {
+  return {
+    spawn: opts.spawn ?? spawnSync,
+    out: opts.stdout ?? ((message: string) => process.stdout.write(`${message}\n`)),
+    err: opts.stderr ?? ((message: string) => process.stderr.write(`${message}\n`)),
+    now: opts.now ?? (() => new Date()),
+    stateManager: opts.stateManager ?? new StateManager(),
+    logActivityFn: opts.logActivityFn ?? logActivity,
+  };
+}
+
 export function runArchaeology(input: ArchaeologyArgs, opts: ArchaeologyRunOptions = {}): ArchaeologyRunResult {
   const plan = planArchaeology(input);
-  const out = opts.stdout ?? ((message: string) => process.stdout.write(`${message}\n`));
-  const stateManager = opts.stateManager ?? new StateManager();
+  const deps = resolveDeps(opts);
 
   if (input.dryRun) {
-    return completeDryRun(plan, out);
+    return completeDryRun(plan, deps);
   }
 
   if (input.noArchaeology) {
-    return completeDisabled(plan, stateManager, opts);
+    return completeDisabled(plan, deps);
   }
 
-  if (fs.existsSync(plan.contextPath) && !shouldRefreshExistingContext(plan, stateManager)) {
-    out(`[archaeology] already exists — written: ${plan.contextPath}`);
+  if (fs.existsSync(plan.contextPath) && !shouldRefreshExistingContext(plan, deps.stateManager)) {
+    deps.out(`[archaeology] already exists — written: ${plan.contextPath}`);
     return { exitCode: 0, contextPath: plan.contextPath, invocation: plan.invocation, projectType: plan.classification.category, backend: plan.backend };
   }
 
-  const now = opts.now ?? (() => new Date());
-  const started = now();
-  const result = runWorker(plan.invocation, opts.spawn ?? spawnSync);
-  const durationMs = Math.max(0, now().getTime() - started.getTime());
+  const started = deps.now();
+  const result = runWorker(plan.invocation, deps.spawn);
+  const durationMs = Math.max(0, deps.now().getTime() - started.getTime());
   if (result.status !== 0 || result.error) {
-    return completeSkipped(plan, result, durationMs, opts);
+    return completeSkipped(plan, result, durationMs, deps);
   }
 
-  return completeSuccess(plan, result.stdout, durationMs, opts);
+  return completeSuccess(plan, result.stdout, durationMs, deps);
 }
 
-function completeDisabled(
-  plan: ArchaeologyPlan,
-  sm: StateManager,
-  opts: ArchaeologyRunOptions,
-): ArchaeologyRunResult {
-  const out = opts.stdout ?? ((message: string) => process.stdout.write(`${message}\n`));
-  const now = opts.now ?? (() => new Date());
+function completeDisabled(plan: ArchaeologyPlan, deps: ArchaeologyDeps): ArchaeologyRunResult {
   try {
     if (fs.existsSync(plan.contextPath)) fs.unlinkSync(plan.contextPath);
   } catch {
     // Best-effort cleanup. The state flag still suppresses prompt injection.
   }
-  recordActivity(plan.args.sessionDir, sm, opts.logActivityFn ?? logActivity, {
+  recordActivity(plan.args.sessionDir, deps, {
     event: 'archaeology_skipped',
-    ts: now().toISOString(),
+    ts: deps.now().toISOString(),
     project_type: plan.classification.category,
     backend: plan.backend,
     error: 'disabled by --no-archaeology',
   });
-  setNoArchaeologyFlag(plan.args.sessionDir, sm);
-  out(`[archaeology] disabled — injection suppressed for session: ${plan.args.sessionDir}`);
+  setNoArchaeologyFlag(plan.args.sessionDir, deps.stateManager);
+  deps.out(`[archaeology] disabled — injection suppressed for session: ${plan.args.sessionDir}`);
   return { exitCode: 0, contextPath: plan.contextPath, invocation: plan.invocation, projectType: plan.classification.category, backend: plan.backend };
 }
 
@@ -270,8 +291,8 @@ function setNoArchaeologyFlag(sessionDir: string, sm: StateManager): void {
   }
 }
 
-function completeDryRun(plan: ArchaeologyPlan, out: (message: string) => void): ArchaeologyRunResult {
-  out(JSON.stringify({
+function completeDryRun(plan: ArchaeologyPlan, deps: ArchaeologyDeps): ArchaeologyRunResult {
+  deps.out(JSON.stringify({
     backend: plan.backend,
     project_type: plan.classification.category,
     confidence: plan.classification.confidence,
@@ -287,20 +308,18 @@ function completeSkipped(
   plan: ArchaeologyPlan,
   result: SpawnSyncReturns<string>,
   durationMs: number,
-  opts: ArchaeologyRunOptions,
+  deps: ArchaeologyDeps,
 ): ArchaeologyRunResult {
-  const err = opts.stderr ?? ((message: string) => process.stderr.write(`${message}\n`));
-  const now = opts.now ?? (() => new Date());
   const message = result.error ? result.error.message : firstNonEmpty(result.stderr) || `worker exited ${result.status}`;
-  recordActivity(plan.args.sessionDir, opts.stateManager ?? new StateManager(), opts.logActivityFn ?? logActivity, {
+  recordActivity(plan.args.sessionDir, deps, {
     event: 'archaeology_skipped',
-    ts: now().toISOString(),
+    ts: deps.now().toISOString(),
     duration_ms: durationMs,
     project_type: plan.classification.category,
     backend: plan.backend,
     error: message,
   });
-  err(`[archaeology] skipped — ${message}`);
+  deps.err(`[archaeology] skipped — ${message}`);
   return { exitCode: result.status ?? 1, contextPath: plan.contextPath, invocation: plan.invocation, projectType: plan.classification.category, backend: plan.backend };
 }
 
@@ -308,15 +327,13 @@ function completeSuccess(
   plan: ArchaeologyPlan,
   workerStdout: string,
   durationMs: number,
-  opts: ArchaeologyRunOptions,
+  deps: ArchaeologyDeps,
 ): ArchaeologyRunResult {
-  const out = opts.stdout ?? ((message: string) => process.stdout.write(`${message}\n`));
-  const now = opts.now ?? (() => new Date());
   const assistant = extractAssistantContent(workerStdout);
   const context = normalizeProjectContext(assistant, plan.classification);
   fs.writeFileSync(plan.contextPath, context, 'utf8');
   const bytes = Buffer.byteLength(context, 'utf8');
-  const completedAt = now().toISOString();
+  const completedAt = deps.now().toISOString();
   const payload: ArchaeologyActivityPayload = {
     event: 'archaeology_complete',
     ts: completedAt,
@@ -327,13 +344,13 @@ function completeSuccess(
     project_type: plan.classification.category,
     backend: plan.backend,
   };
-  recordActivity(plan.args.sessionDir, opts.stateManager ?? new StateManager(), opts.logActivityFn ?? logActivity, payload, {
+  recordActivity(plan.args.sessionDir, deps, payload, {
     project_context_path: plan.contextPath,
     last_run_iso: completedAt,
     file_count: countProjectFiles(plan.args.repoRoot),
     project_type: plan.classification.category,
   });
-  out(`[archaeology] complete — project type: ${plan.classification.category} (confidence: ${plan.classification.confidence}, ${plan.classification.reason}); duration: ${Math.round(durationMs / 1000)}s; bytes: ${bytes.toLocaleString('en-US')}; written: ${plan.contextPath}`);
+  deps.out(`[archaeology] complete — project type: ${plan.classification.category} (confidence: ${plan.classification.confidence}, ${plan.classification.reason}); duration: ${Math.round(durationMs / 1000)}s; bytes: ${bytes.toLocaleString('en-US')}; written: ${plan.contextPath}`);
   return { exitCode: 0, contextPath: plan.contextPath, invocation: plan.invocation, projectType: plan.classification.category, backend: plan.backend };
 }
 
@@ -347,14 +364,13 @@ function runWorker(invocation: SpawnInvocation, spawnFn: typeof spawnSync): Spaw
 
 function recordActivity(
   sessionDir: string,
-  sm: StateManager,
-  logActivityFn: typeof logActivity,
+  deps: ArchaeologyDeps,
   payload: ArchaeologyActivityPayload,
   archaeology?: NonNullable<State['archaeology']>,
 ): void {
   const statePath = path.join(sessionDir, 'state.json');
   try {
-    sm.update(statePath, (state) => {
+    deps.stateManager.update(statePath, (state) => {
       state.activity ??= [];
       state.activity.push(payload);
       if (archaeology) state.archaeology = archaeology;
@@ -363,7 +379,7 @@ function recordActivity(
     // State updates are best-effort here; archaeology should degrade without
     // blocking the caller from continuing without context.
   }
-  logActivityFn({ ...payload, source: 'pickle', session: path.basename(sessionDir) });
+  deps.logActivityFn({ ...payload, source: 'pickle', session: path.basename(sessionDir) });
 }
 
 function estimateTokens(content: string): number {
