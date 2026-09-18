@@ -7,7 +7,7 @@ import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as ts from 'typescript';
-import { execAnchorIndex, execName, execNameIs, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
+import { execAnchorIndex, execName, execNameIs, gitConfigDeliveredValues, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
 import { mkFixtureTmpDir } from '../helpers/fixture-tmpdir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -6371,23 +6371,36 @@ test('AP-EXT-ITER264-02: every reading reaches the ONE expansion walk as an argu
   const readings = splitter.match(/for \(const reading of \[([^\]]*)\]\) \{/)?.[1];
   assert.ok(readings, 'splitShellSegments must iterate a LIST of readings');
   // The EXPANSION renderings — the ones whose subject is an expansion SPAN —
-  // must each route through the shared walk. `inlineAssignedValues`
-  // (AP-EXT-ITER276-01) is deliberately not one of them: its subject is the
-  // WORD grammar and the assignments standing in the command, not a span, so
-  // demanding `readExpansions` of it would be demanding the wrong walk. What it
-  // still owes this shape is that it does not grow a SECOND span walk, which is
-  // the fork the pin exists to forbid — asserted directly below.
-  const expansionRenderings = ['elideExpansions', 'inlineSubstitutionOutput', 'inlineParameterExpansionBody'];
-  assert.deepEqual(
-    readings.split(',').map((entry) => entry.trim()),
-    [...expansionRenderings.map((rendering) => `${rendering}(command)`), 'inlineAssignedValues(command)'],
-  );
-  for (const rendering of expansionRenderings) {
+  // must each route through the shared walk. A reading whose subject is NOT a
+  // span (`inlineAssignedValues`, AP-EXT-ITER276-01, reads the WORD grammar;
+  // `inlineGitConfigValues`, AP-EXT-ITER283-01, reads git's config values) is
+  // deliberately not one of them, and demanding `readExpansions` of it would be
+  // demanding the wrong walk. What EVERY reading owes this shape is that it does
+  // not grow a SECOND span walk, which is the fork the pin exists to forbid.
+  //
+  // DERIVED FROM THE LIST, never mirrored beside it (AP-EXT-ITER283-01): this
+  // assertion enumerated the members and had to be edited to admit a fifth
+  // reading, which is the failure mode a hand-kept copy of a list always has —
+  // the day it is edited to go green is the day it stops checking membership.
+  // Read from the list, the claim covers a reading nobody has written yet.
+  const members = readings.split(',').map((entry) => entry.trim());
+  assert.ok(members.length >= 4, `the readings list must still carry its members: ${readings}`);
+  for (const member of members) {
+    const rendering = member.replace(/\(command\)$/, '');
+    assert.notEqual(rendering, member, `every reading is a call on the raw command: ${member}`);
     const body = source.match(
       new RegExp(`function ${rendering}\\(command: string\\): string \\{([\\s\\S]*?)\\n\\}`),
     )?.[1];
     assert.ok(body, `${rendering} must remain a single named function`);
-    assert.match(body, /return readExpansions\(command, /);
+    // One of the two, never neither: it either IS the shared walk's caller, or
+    // it walks no spans at all.
+    if (!/return readExpansions\(command, /.test(body)) {
+      assert.doesNotMatch(
+        body,
+        /expansionSpanEnd|balancedSpanEnd|readExpansions/,
+        `${rendering} reads spans without the ONE walk — that is the fork this pin forbids`,
+      );
+    }
   }
 
   const assigned = source.match(
@@ -7377,4 +7390,211 @@ test('AP-EXT-ITER282-01: an unbounded re-read RangeErrors into the FATAL catch, 
     extraEnv: { PICKLE_ROLE: 'worker' },
   });
   assert.equal(harmless.decision, 'approve');
+});
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER283-01 — git runs its config VALUES, and ONE reader had been told
+//
+// AP-EXT-ITER282-01 taught `detectProhibitedGitVerb` to read the values git
+// executes. It was the only reader told. The segmenter has five others — the
+// deploy-script ban, the expensive-`node --test` gate, the `.git/` path axis,
+// the protected write-target walk and tsc-gate's commit classifier — and each
+// asks its question of the SEGMENTS, so a forbidden op that is not a git verb
+// rode through the same config surface untouched.
+//
+// MEASURED 2026-09-18 against the shipped handler with PICKLE_ROLE=worker, the
+// literal twin blocking in the same run, and `core.sshCommand` confirmed to
+// REALLY execute its value under real git 2.39.5:
+//   git -c core.pager=<deploy> --paginate log        -> approve
+//   git -c core.editor=<deploy> commit               -> approve
+//   git -c core.sshCommand=<deploy> fetch origin     -> approve
+//
+// The fix is a READING, not a sixth guard: one member of the segmenter's
+// readings list reaches every reader it has and every reader it grows. A guard
+// per reader would have been five edits that rot apart, and would leave the
+// next reader unprotected by construction.
+//
+// Assembled from fragments for the reason the blocks above are: this module
+// matches command TEXT, so a test file spelling the deploy invocation outright
+// blocks the command that writes it.
+// ---------------------------------------------------------------------------
+
+const ITER283_DEPLOY = ['insta', 'll.sh'].join('');
+const ITER283_WRAPPER = ['ba', 'sh'].join('');
+const ITER283_DEPLOY_CMD = `${ITER283_WRAPPER} ${ITER283_DEPLOY}`;
+
+const ITER283_CONFIG_DELIVERED_BLOCKS = [
+  [`git -c core.pager='${ITER283_DEPLOY_CMD}' --paginate log`, 'core.pager'],
+  [`git -c core.editor='${ITER283_DEPLOY_CMD}' commit`, 'core.editor'],
+  [`git -c core.sshCommand='${ITER283_DEPLOY_CMD}' fetch origin`, 'core.sshCommand, the spelling confirmed to really execute'],
+  [`git -c uploadpack.packObjectsHook='${ITER283_DEPLOY_CMD}' upload-pack .`, 'uploadpack.packObjectsHook'],
+  [`cd sub && git -c core.sshCommand='${ITER283_DEPLOY_CMD}' fetch origin`, 'a chained segment'],
+  [`env git -c core.sshCommand='${ITER283_DEPLOY_CMD}' fetch origin`, 'behind a POSIX command prefix'],
+  [
+    `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.sshCommand GIT_CONFIG_VALUE_0='${ITER283_DEPLOY_CMD}' git fetch origin`,
+    'the environment pair, which stands BEFORE the anchor',
+  ],
+  // The reading re-enters itself like any other member, so a config assignment
+  // nested inside a config VALUE is read too. AP-EXT-ITER282-01 recorded this
+  // one OPEN against its own bounded re-read; the reading closes it, and a
+  // draft that carried a bound to stop the re-entry measured it back open.
+  [
+    `git -c core.sshCommand='git -c core.pager="${ITER283_DEPLOY_CMD}" log' fetch origin`,
+    'a config assignment NESTED inside a config value',
+  ],
+  // git's own `!` marks a value as a SHELL command, and the mark is not part of
+  // the command it marks: left on, the value's exec token reads `!bash` and
+  // matches no wrapper. The git-verb half reads both spellings for its own
+  // question (AP-EXT-ITER282-01); this is the same mark seen by the reading.
+  [`git -c credential.helper='!${ITER283_DEPLOY_CMD}' fetch origin`, "git's `!` shell-command marker"],
+];
+
+for (const [command, shape] of ITER283_CONFIG_DELIVERED_BLOCKS) {
+  test(`AP-EXT-ITER283-01: worker blocks the deploy script delivered through a git config value — ${shape}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', `${command} must not reach git`);
+    assert.match(result.reason, /R-WSRC/);
+  });
+}
+
+test('AP-EXT-ITER283-01: the literal twin blocks too, so the block is the OP and not the config', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  const literal = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: ITER283_DEPLOY_CMD },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(literal.decision, 'block');
+  assert.match(literal.reason, /R-WSRC/);
+});
+
+// The over-block direction. Without these the reading could simply be banning
+// `-c`, which would cost the corpus its scratch-repo identity commands.
+const ITER283_HARMLESS_CONFIG_VALUES = [
+  ['git -c user.email=a@b -c user.name=t commit -q --allow-empty -m base', 'the scratch-repo identity, the corpus shape'],
+  ['git -c commit.gpgsign=false commit -m x', 'a boolean value'],
+  [`git -c http.extraHeader='Authorization: token abc' fetch origin`, 'a value that is not a command at all'],
+  [`git -c core.pager='cat ${ITER283_DEPLOY}' --paginate log`, 'a READ of the deploy script, which the ban has never covered'],
+  ['git -c core.quotePath=false status --porcelain', 'a read command with config'],
+  // The git ANCHOR is what makes the reading TRUE, and this is the case that
+  // says so: bash does not run the value of a plain assignment, and no other
+  // tool runs a word merely because it is spelled like a git config key. Read
+  // without the anchor, this command blocks for a command nothing executes.
+  //
+  // The image name carries `git` as a SUBSTRING on purpose. The reading declines
+  // early on a command that does not mention git at all, so a case spelled
+  // without it is decided by that decline and says nothing about the anchor —
+  // measured: the first draft of this case passed with the anchor deleted.
+  [
+    `docker run -e core.sshCommand='${ITER283_DEPLOY_CMD}' ghcr.io/org/git-tools:latest`,
+    'a dotted `<name>=<value>` handed to a tool that is NOT git',
+  ],
+];
+
+for (const [command, shape] of ITER283_HARMLESS_CONFIG_VALUES) {
+  test(`AP-EXT-ITER283-01: worker still runs a git config value delivering no forbidden op — ${shape}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', `${command} must still run`);
+  });
+}
+
+test('AP-EXT-ITER283-01: the delivery NAME is held to git config syntax, so heredoc prose is not read as a command', () => {
+  // The cost half, and it is why the name test exists rather than reading every
+  // `<name>=<value>` word. The tokenizer keeps a quoted span as ONE word, so a
+  // heredoc writing source code hands back whole statements as "values".
+  // MEASURED on the loose draft: 18 such values on one real command, 1,143
+  // characters at the longest, 3,834 -> 174,200 scopes and 1.9s.
+  const prose = `cat > /tmp/x.js <<'EOF'\nconst wrapper = '${ITER283_WRAPPER}';\nconst target = '${ITER283_DEPLOY}';\nEOF\ngit status`;
+  const { tmpDir, stateFile } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash',
+    toolInput: { command: prose },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve', 'a prose `=` in a heredoc is not a config delivery');
+
+  // And the same claim at the seam, where it can be read directly: a dotted
+  // config key and the GIT_CONFIG_ environment spelling deliver; a bare name,
+  // an option operand and a name carrying whitespace do not.
+  const delivered = (command) => gitConfigDeliveredValues(tokenizeShellTokens(command));
+  assert.deepEqual(delivered('git -c core.sshCommand=x fetch'), ['x']);
+  assert.deepEqual(delivered('git -c a.b.c=x fetch'), ['x']);
+  assert.deepEqual(delivered('GIT_CONFIG_VALUE_0=x git fetch'), ['x']);
+  assert.deepEqual(delivered('S=/tmp/x git status'), []);
+  assert.deepEqual(delivered('git log --format=reset -1'), []);
+  // An OPTION word is never a config delivery whatever its name looks like, and
+  // the name test does NOT subsume that: hyphens are legal in a config section,
+  // so `--a.b` satisfies the dotted-key shape. The two predicates are
+  // independent and both load-bearing.
+  assert.deepEqual(delivered('git log --a.b=reset -1'), []);
+  assert.deepEqual(delivered(`git status && echo 'const target = value'`), []);
+});
+
+test('AP-EXT-ITER283-01: the config reading is a MEMBER of the readings list, not a branch beside it', () => {
+  const source = readCode(SHELL_EXEC_TS);
+  const splitter = source.slice(source.indexOf('export function splitShellSegments('));
+  const readings = splitter.match(/for \(const reading of \[([^\]]*)\]\) \{/)?.[1];
+  assert.ok(readings, 'splitShellSegments must iterate a LIST of readings');
+  assert.match(readings, /inlineGitConfigValues\(command\)/);
+  // A guard per reader is the shape this fix exists to avoid, so the reading
+  // must not be re-typed into any consumer of the segmenter.
+  const consumer = readCode(CONFIG_PROTECTION_TS);
+  assert.doesNotMatch(consumer, /function \w*nlineGitConfigValues/);
+  // ONE home for WHICH words are config deliveries; the consumer reads the
+  // shared extractor rather than walking tokens for `=` itself.
+  const valueReader = consumer.slice(
+    consumer.indexOf('function configValueRunsProhibitedCommand('),
+    consumer.indexOf('\n}', consumer.indexOf('function configValueRunsProhibitedCommand(')),
+  );
+  assert.ok(valueReader.length > 0, 'the value reader must remain a named function');
+  assert.match(valueReader, /gitConfigDeliveredValues\(tokens\)/);
+  assert.doesNotMatch(valueReader, /indexOf\('='\)/);
+  // No namespace roster in either half — the set of executing keys grows with
+  // every git release, so naming one is one member short by construction.
+  const reading = source.slice(
+    source.indexOf('function inlineGitConfigValues('),
+    source.indexOf('\n}', source.indexOf('function inlineGitConfigValues(')),
+  );
+  assert.doesNotMatch(reading, /diff\.external|core\.pager|credential\.helper|core\.sshCommand/);
+});
+
+test('AP-EXT-ITER283-01: the reading stays LINEAR in the number of config deliveries', () => {
+  // The reading emits only characters of the values it read, each contributing
+  // token giving up its `<name>=` prefix, so it shrinks strictly and cannot be
+  // re-entered without end. Pinned as a RATIO, not a wall-clock: a RangeError
+  // out of the segmenter reaches main's FATAL catch, which APPROVES
+  // (AP-EXT-ITER277-01), so an explosion here fails OPEN.
+  const scopesFor = (links) => {
+    const command = 'git ' + Array.from({ length: links }, (_, i) => `-c a${i}.b=v${i}`).join(' ') + ' status';
+    try {
+      return splitShellSegments(command).length;
+    } catch (error) {
+      return assert.fail(`segmenting ${links} config deliveries threw ${error.constructor.name}`);
+    }
+  };
+  const short = scopesFor(6);
+  assert.ok(short > 0, 'the six-delivery baseline must segment');
+  assert.ok(
+    scopesFor(64) <= 11 * short,
+    `64 deliveries cost ${scopesFor(64)} scopes against a 6-delivery baseline of ${short}`,
+  );
+  // And nested, which is the direction the re-entry opened.
+  let nested = 'reset --hard';
+  for (let i = 0; i < 16; i++) nested = `git -c a${i}.b='${nested}'`;
+  assert.ok(splitShellSegments(nested).length <= 64, 'sixteen nested deliveries must stay linear');
 });

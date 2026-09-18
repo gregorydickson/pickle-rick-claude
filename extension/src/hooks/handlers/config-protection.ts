@@ -17,6 +17,7 @@ import {
   SHELL_PATTERN_CHARS,
   patternNamesACommand,
   segmentDefinesGitAlias,
+  gitConfigDeliveredValues,
   type ShellToken,
   shellWordWitness,
   splitShellSegments,
@@ -1307,26 +1308,20 @@ function gitConfigValueNamesProhibitedOp(value: string): boolean {
 }
 
 function configValueRunsProhibitedCommand(tokens: readonly ShellToken[]): boolean {
-  return tokens.some(token => {
-    const eq = token.value.indexOf('=');
-    if (eq <= 0) return false;
-    // An OPTION word is not a config assignment, and the distinction is the same
-    // one the verb scan below already draws with `startsWith('-')` rather than a
-    // second notion of it. git's config key is an operand (`diff.external=…`,
-    // `GIT_CONFIG_VALUE_0=…`); `--format=`, `--grep=` and `--stat=` carry option
-    // OPERANDS that routinely spell a gated verb — `git log --format=reset` is a
-    // pinned APPROVE (AP-EXT-ITER53-01) and reading its operand blocks it.
-    if (token.value.startsWith('-')) return false;
-    const value = token.value.slice(eq + 1);
-    if (value.length === 0) return false;
+  // WHICH words are config deliveries — the `<name>=<value>` shape, and the
+  // option-word exclusion that spares the pinned `git log --format=reset`
+  // (AP-EXT-ITER53-01) — is `gitConfigDeliveredValues`, ONE home shared with the
+  // segmenter's own reading of these same values (AP-EXT-ITER283-01). This
+  // reader asks only what it alone asks: does the value name a prohibited GIT
+  // op. Two readers of one surface, not two notions of what the surface is.
+  return gitConfigDeliveredValues(tokens).some(value =>
     // git's OWN grammar marks a value as a shell command with a leading `!`
     // (`alias.*`, `credential.helper`), and the mark hides the command from the
     // `git <value>` reading: `git !sh -c "git reset --hard"` reads null where
     // the unmarked twin blocks. Read BOTH spellings rather than replacing one
     // with the other, so the mark can only ever widen what is read.
-    return gitConfigValueNamesProhibitedOp(value)
-      || (value.startsWith('!') && gitConfigValueNamesProhibitedOp(value.slice(1)));
-  });
+    gitConfigValueNamesProhibitedOp(value)
+      || (value.startsWith('!') && gitConfigValueNamesProhibitedOp(value.slice(1))));
 }
 
 /**

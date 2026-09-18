@@ -1658,6 +1658,111 @@ function inlineAssignedValues(command) {
     return out.join('');
 }
 /**
+ * The values a git command hands to git's CONFIG, as git receives them.
+ *
+ * `-c <key>=<value>`, `--config-env=<key>=<VAR>` and the `GIT_CONFIG_KEY_n` /
+ * `GIT_CONFIG_VALUE_n` environment pair are all spelled `<name>=<value>` in a
+ * single word, which is why reading the WORD needs no table of the options that
+ * deliver it (measured: real git 2.39.5 rejects the glued `-c<key>=<value>`
+ * form with `unknown option`). An OPTION word is excluded through the same
+ * `startsWith('-')` test the git verb scan already draws, because `--format=`,
+ * `--grep=` and `--stat=` carry operands that routinely spell a command.
+ *
+ * The NAME half is held to git's own SYNTAX for the two ways a value arrives —
+ * a dotted config key, or a `GIT_CONFIG_`-prefixed environment name — and that
+ * is NOT the rotting kind of list: what rots is the set of KEYS whose value git
+ * executes, which this module deliberately never enumerates (AP-EXT-ITER282-01),
+ * while `<section>.<name>` is git's grammar and does not grow. Measured reason
+ * it is held at all (AP-EXT-ITER283-01): the tokenizer keeps a quoted span as
+ * ONE word, so inside a heredoc writing a test file a prose `=` handed back
+ * 1,143 characters of JavaScript as a "value" — 18 of them on one real command,
+ * costing 166,394 scopes and 1.7s once each is re-read as a command. The name
+ * test is what separates `core.sshCommand=<cmd>` from `const X = …` without
+ * knowing anything about which keys execute.
+ *
+ * The values come back RAW, git's leading `!` shell-command marker included.
+ * The mark is git's and not bash's, and the two readers ask different questions
+ * of it — one reads the value as a SHELL command, for which the mark is not
+ * part of the command, the other reads it as a git ARGUMENT LIST, for which the
+ * marked spelling is one of two it must try (AP-EXT-ITER282-01). Stripping here
+ * would answer one of those questions inside a helper that serves both.
+ *
+ * ONE home for the extraction, beside `segmentDefinesGitAlias` and for its
+ * reason: the KEY half and the VALUE half of git's config surface are the same
+ * surface, and this module is where the git-anchor readers were collapsed so
+ * they could not re-fork (AP-EXT-ITER281-01).
+ */
+const GIT_CONFIG_DELIVERY_NAME_RE = /^(?:[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_.-]+)+|GIT_CONFIG_[A-Za-z0-9_]+)$/;
+export function gitConfigDeliveredValues(tokens) {
+    const values = [];
+    for (const token of tokens) {
+        const eq = token.value.indexOf('=');
+        if (eq <= 0 || token.value.startsWith('-'))
+            continue;
+        if (!GIT_CONFIG_DELIVERY_NAME_RE.test(token.value.slice(0, eq)))
+            continue;
+        const value = token.value.slice(eq + 1);
+        if (value.length > 0)
+            values.push(value);
+    }
+    return values;
+}
+/**
+ * The FIFTH reading: the commands git runs out of its own config values.
+ *
+ * git does not merely accept a command through config, it RUNS one, and the
+ * value is a SHELL command for every executing key but `alias.` — measured
+ * 2026-09-18 against real git 2.39.5, `git -c core.sshCommand='<cmd>' fetch
+ * ssh://…` really executed `<cmd>`. AP-EXT-ITER282-01 taught ONE reader to read
+ * those values, `detectProhibitedGitVerb`, and that is the defect this reading
+ * subtracts: the OTHER five readers of this segmenter — the `install.sh` deploy
+ * ban, the expensive-`node --test` gate, the `.git/` path axis, the protected
+ * write-target walk and tsc-gate's commit classifier — each ask their question
+ * of the segments and never saw the delivered command at all. MEASURED before
+ * this reading, with the literal twins blocking in the same run:
+ * `git -c core.pager='bash install.sh' --paginate log`,
+ * `git -c core.editor='bash install.sh' commit` and
+ * `git -c core.sshCommand='bash install.sh' fetch origin` all APPROVED for a
+ * worker against the shipped handler while `bash install.sh` blocked.
+ *
+ * A READING, not a sixth guard, for the reason this list exists: a guard per
+ * reader is five edits that rot independently and leaves the next reader
+ * unprotected by construction, while a member of this list reaches every reader
+ * this segmenter has and every one it grows.
+ *
+ * The git ANCHOR is what makes the reading true and is not decoration: bash
+ * does not run the value of a plain `FOO=<value>` assignment, git runs the value
+ * of a config one. Anchored on the whole command rather than per segment, which
+ * over-reaches in this module's established fail-safe direction — a `k=v` word
+ * in a DIFFERENT segment of a command that also invokes git is read as a
+ * command. Measured cost over 5,389 unique real worker commands harvested from
+ * 139 live session logs: see the CLAUDE.md entry.
+ *
+ * TERMINATION is by STRICT SHRINKAGE, the same argument the first three
+ * readings carry and not one inherited by standing in the list: every emitted
+ * character is a character of some token's value, each contributing token gives
+ * up at least its `<name>=` prefix (two characters or more), and the `; ` joiner
+ * costs two per gap against a token separator that already cost one. The output
+ * is therefore strictly shorter than the input whenever it differs from it, so
+ * a differing reading cannot be re-entered without end.
+ */
+function inlineGitConfigValues(command) {
+    // Every reading is taken on every command at every recursion level, so the
+    // cheap decline keeps this one charged to commands that mention git at all.
+    if (!command.includes('git'))
+        return command;
+    const tokens = tokenizeShellTokens(command);
+    if (execAnchorIndex(tokens, 'git') < 0)
+        return command;
+    const values = gitConfigDeliveredValues(tokens);
+    if (values.length === 0)
+        return command;
+    // git's `!` marks the value as a SHELL command; the mark is not part of the
+    // command it marks, and leaving it on hides the command from every detector
+    // (`!sh -c "git reset --hard"` reads as the executable `!sh`).
+    return values.map((value) => (value.startsWith('!') ? value.slice(1) : value)).join('; ');
+}
+/**
  * THE shell segmenter for the hooks subsystem. Splits a command into segments
  * at every operator where bash starts a new command — the control operators
  * `&&`, `||`, `|`, `&`, `;`, an unquoted newline (a top-level command
@@ -1731,14 +1836,30 @@ export function splitShellSegments(command, depth = 0) {
     // `${…}` body's closing brace has already fused to its last word
     // (AP-EXT-ITER264-02). `depth` is passed through unchanged so
     // the command-string budget is spent on real nesting only. ONE loop, not a case
-    // per reading — a fourth rendering is a member of this list and nothing else.
+    // per reading — a further rendering is a member of this list and nothing else.
     //
     // TERMINATION is per-reading, not one rule for the list (AP-EXT-ITER276-01).
     // The first three only ever REMOVE characters, so a reading that differs is
     // strictly shorter. `inlineAssignedValues` can GROW the command and terminates
     // on IDEMPOTENCE instead — its own output renders to itself, so the `taken`
-    // dedup ends that branch one level in. A fifth reading owes this list one of
-    // those two arguments; neither is inherited by standing here.
+    // dedup ends that branch one level in. `inlineGitConfigValues` pays the FIRST
+    // argument: it emits only characters of the values it read, and each
+    // contributing token gives up its `<name>=` prefix (AP-EXT-ITER283-01).
+    // A SIXTH reading owes this list one of those two arguments; neither is
+    // inherited by standing here.
+    //
+    // The config reading is a PLAIN member and re-enters itself like any other,
+    // and that was measured rather than assumed. A draft carried a
+    // `readGitConfigValues` parameter to stop the re-entry, on the theory that a
+    // reading taken at every level is a new branch at every level; with the
+    // delivery NAME held to git's config syntax the parameter bought 42 scopes
+    // across 5,541 real commands and nothing at all on an adversarial nest (17
+    // scopes against 9 at sixteen levels, both linear), while it COST the nested
+    // case its block — `git -c core.sshCommand='git -c core.pager="bash
+    // install.sh" log' fetch` approved with the parameter and blocks without it,
+    // closing a residual AP-EXT-ITER282-01 recorded OPEN. A parameter that buys no
+    // measured cost and sells a real block is not a bound, it is a hole with a
+    // name.
     //
     // A reading is taken once. The two renderings AGREE whenever the substitution
     // carries no operand (`git reset$(true) --hard` elides and inlines to the same
@@ -1746,7 +1867,7 @@ export function splitShellSegments(command, depth = 0) {
     // buys nothing but a duplicate scope.
     const scopes = [...own];
     const taken = new Set([command]);
-    for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command), inlineParameterExpansionBody(command), inlineAssignedValues(command)]) {
+    for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command), inlineParameterExpansionBody(command), inlineAssignedValues(command), inlineGitConfigValues(command)]) {
         if (taken.has(reading))
             continue;
         taken.add(reading);

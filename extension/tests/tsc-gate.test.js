@@ -2293,3 +2293,34 @@ it('AP-EXT-ITER160-01 control: correct staged code in a SUBDIRECTORY project is 
   );
   assert.equal(latestEvent(result.events, 'tsc_gate_failed'), null);
 });
+
+
+it('AP-EXT-ITER283-01: a commit delivered through a git config VALUE still classifies as a commit', async () => {
+  // AP-EXT-ITER282-02, recorded OPEN by the pass that closed the git-verb half:
+  // `git -c core.editor='sh -c "git commit -m x"' diff` classified NON-commit
+  // and SKIPPED the R-WACT tsc gate, while the `alias.` twin classified commit.
+  // The shared-home collapse was not available — that reader asks "does this
+  // value run a COMMIT" where config-protection asks "does it run a PROHIBITED
+  // op" — so it closed instead one level down, where the SEGMENTER reads git's
+  // config values for every reader at once.
+  const { isGitCommitCommand } = await import('../hooks/handlers/tsc-gate.js');
+  const positives = [
+    `git -c core.editor='sh -c "git commit -m x"' diff`,
+    `git -c core.sshCommand='git commit -m x' fetch origin`,
+    `git -c core.pager='git commit --amend' --paginate log`,
+    `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.editor GIT_CONFIG_VALUE_0='git commit -m x' git diff`,
+  ];
+  for (const command of positives) {
+    assert.equal(isGitCommitCommand(command), true, command);
+  }
+  // The over-block direction: config that delivers no commit is not a commit,
+  // or the gate would run on every configured git command in the corpus.
+  const negatives = [
+    'git -c user.email=a@b -c user.name=t diff',
+    'git -c core.quotePath=false status --porcelain',
+    `git -c core.pager='git log --oneline' --paginate log`,
+  ];
+  for (const command of negatives) {
+    assert.equal(isGitCommitCommand(command), false, command);
+  }
+});
