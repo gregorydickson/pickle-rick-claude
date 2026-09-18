@@ -9,8 +9,13 @@ extension/src/types/attractor-schema.ts
 extension/types/attractor-schema.ts
 .DS_Store
 .gitnexus
-# Worker scratch dirs (codex feasibility studies, ad-hoc experiments)
-extension/.tmp/
+# Worker scratch dirs (codex feasibility studies, ad-hoc experiments, A/B BASE twins).
+# DIRECTORIES only, and no member list: a lens names its scratch dir whatever it likes
+# (`.tmp`, `.ap282base`, …), and a name-per-lens rule is one member short of the next one.
+# Every dot-entry extension/ legitimately ships is a FILE (.cli-pins.json, .gitignore,
+# .pipeline-runner-dirty-allowed.json, .readiness-allowlist.json) — measured 2026-09-18,
+# and tracked paths are unaffected by a later ignore rule anyway.
+extension/.*/
 # Claude Code agent worktrees — temporary git worktrees created by isolation:"worktree"
 .claude/worktrees/
 # Runtime data leaks — these belong in PICKLE_DATA_ROOT (~/.local/share/pickle-rick/),
