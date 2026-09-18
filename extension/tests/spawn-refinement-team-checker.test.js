@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
+import AjvModule from 'ajv';
 
 import {
     buildRefinementManifest,
@@ -29,6 +30,8 @@ import {
     computeRequirementCoverageGap,
 } from '../bin/spawn-refinement-team.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+
+const Ajv = AjvModule.default || AjvModule;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -698,15 +701,18 @@ test('AP-RMS-3: the sentinel itself satisfies the schema', () => {
 // pin narrows to the keys that are genuinely emitted AND undeclared. A key that
 // LATER starts being emitted enters the set automatically and reddens the pin, so
 // detection is unchanged in the direction that matters.
-// The schema fix stays fenced out of the active scope, so the real hazard is
-// still PINNED here as an equality, not a subset check: a second emitted-and-
-// undeclared key breaks the build instead of silently joining the backlog.
+// The hazard is PINNED here as an equality, not a subset check: a new emitted-
+// and-undeclared key breaks the build instead of silently joining a backlog.
+// AP-EXT-ITER270-01 emptied the set — `decomposition_quality_flags` is declared
+// in the schema now, so the known-gap list carries nothing to maintain.
 
 /**
  * Root keys the TS interface declares, the schema does not, AND
- * buildRefinementManifest actually emits — known-open ajv hazards, fenced.
+ * buildRefinementManifest actually emits — known-open ajv hazards. EMPTY since
+ * AP-EXT-ITER270-01; a non-empty list here is an open contract divergence, not
+ * a config knob.
  */
-const KNOWN_UNDECLARED_MANIFEST_KEYS = ['decomposition_quality_flags'];
+const KNOWN_UNDECLARED_MANIFEST_KEYS = [];
 
 /**
  * Root keys a real `buildRefinementManifest` return value carries, unioned over
@@ -827,8 +833,11 @@ test('AP-RMS-6: a declared-but-never-emitted interface key is not an ajv hazard'
 // this equality a third item key joins the fenced backlog as silently as
 // `decomposition_quality_flags` did.
 
-/** Item keys the TS interface declares but the schema does not — known-open, fenced. */
-const KNOWN_UNDECLARED_WARNING_ITEM_KEYS = ['analyst', 'cycle'];
+/**
+ * Item keys the TS interface declares but the schema does not — known-open ajv
+ * hazards. EMPTY since AP-EXT-ITER270-01 declared `analyst` and `cycle`.
+ */
+const KNOWN_UNDECLARED_WARNING_ITEM_KEYS = [];
 
 test('AP-RMS-8: the warning item still forbids additional properties (guards the assertion below)', () => {
     assert.equal(
@@ -879,6 +888,117 @@ test('AP-RMS-8: a really-emitted warning carries exactly the pinned undeclared k
         fs.rmSync(refinementDir, { recursive: true, force: true });
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
+});
+
+// --- AP-EXT-ITER270-01: a REAL manifest validates against the REAL schema ----
+// AP-RMS-6 and AP-RMS-8 compare KEY SETS, so they prove declaration coverage and
+// nothing about whether ajv actually accepts what the producer writes. The one
+// ajv leg this repo already had (`refine-analyze-workflow.test.js` AC-DWF-02(c))
+// points at the OTHER producer — the /refine-prd Workflow script, whose manifest
+// never carries `ticket_quality_warnings` or `decomposition_quality_flags`. It
+// therefore ran green for the whole window in which 2 of 2 live
+// `refinement_manifest.json` files written by THIS producer failed ajv on three
+// undeclared keys. A leg pointed away from the population at risk reads more
+// reassuring the longer it runs; this one validates the object
+// `buildRefinementManifest` returns, with both optional arrays non-empty.
+
+/**
+ * A real `buildRefinementManifest` return value carrying BOTH schema-strict
+ * optional arrays populated: analyst-sourced `ticket_quality_warnings` (the only
+ * writer that emits `analyst`/`cycle`) and a non-empty
+ * `decomposition_quality_flags`. Empty arrays exercise no item subschema, so the
+ * fixture has to make both fire.
+ */
+function realManifestWithBothStrictArrays() {
+    __resetGitLsFilesSuffixCacheForTests();
+    const dir = tmpDir('pickle-iter270-session-');
+    const workingDir = tmpDir('pickle-iter270-work-');
+    try {
+        const refinementDir = path.join(dir, 'refinement');
+        fs.mkdirSync(refinementDir, { recursive: true });
+        const prdPath = path.join(dir, 'prd.md');
+        fs.writeFileSync(prdPath, '---\ntitle: AP-EXT-ITER270-01 probe\n---\n\n# Probe\n');
+
+        // One analyst output doing double duty: an unverifiable backticked citation
+        // (-> an analyst-sourced warning carrying `analyst` + `cycle`) and an
+        // ac_shape_smells ticket whose title trips OPEN_ENDED_DERIVATION_RE
+        // (-> a real decomposition_quality_flags entry).
+        fs.writeFileSync(
+            path.join(refinementDir, 'analysis_codebase.md'),
+            [
+                'The fix belongs in `src/does/not/exist.ts`.',
+                '',
+                '## ac_shape_smells',
+                '```json',
+                JSON.stringify({
+                    ac_shape_smells: [],
+                    tickets: [{ id: 'probe-ticket', title: 'Review the whole catalog' }],
+                }),
+                '```',
+                '',
+            ].join('\n')
+        );
+
+        const warnings = scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir);
+        assert.ok(warnings.length > 0, 'fixture must produce an analyst-sourced warning');
+        assert.ok(
+            warnings.some((w) => w.analyst !== undefined && w.cycle !== undefined),
+            'fixture must produce a warning carrying the analyst/cycle keys under test'
+        );
+
+        const manifest = buildRefinementManifest(
+            { prdPath, sessionDir: dir },
+            {
+                refinementDir,
+                cyclesRequested: 1,
+                maxTurns: 1,
+                allCycleResults: [[]],
+                finalResults: [{ roleId: 'codebase', success: true, logPath: path.join(refinementDir, 'worker_codebase_c1.log'), cycle: 1, exitCode: 0 }],
+                allSuccess: true,
+            },
+            warnings
+        );
+        assert.ok(manifest.decomposition_quality_flags.length > 0, 'fixture must produce a decomposition quality flag');
+        return manifest;
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+}
+
+test('AP-EXT-ITER270-01: a real buildRefinementManifest output validates against refinement-manifest.schema.json (ajv)', () => {
+    const validate = new Ajv({ allErrors: true }).compile(readSchema());
+    const manifest = realManifestWithBothStrictArrays();
+    assert.ok(validate(manifest), `real manifest must satisfy its own schema: ${JSON.stringify(validate.errors)}`);
+});
+
+test('AP-EXT-ITER270-01: both strict objects still reject a stray key (the pin above is not vacuous)', () => {
+    // Without these, declaring every key would be indistinguishable from deleting
+    // `additionalProperties: false` — the assertion above would pass either way.
+    const validate = new Ajv({ allErrors: true }).compile(readSchema());
+    const manifest = realManifestWithBothStrictArrays();
+
+    assert.equal(
+        validate({ ...manifest, stray_root_key: true }),
+        false,
+        'a stray ROOT key must still fail the manifest schema'
+    );
+    assert.equal(
+        validate({
+            ...manifest,
+            ticket_quality_warnings: manifest.ticket_quality_warnings.map((w) => ({ ...w, stray_item_key: true })),
+        }),
+        false,
+        'a stray ticket_quality_warnings ITEM key must still fail the manifest schema'
+    );
+    assert.equal(
+        validate({
+            ...manifest,
+            decomposition_quality_flags: manifest.decomposition_quality_flags.map((f) => ({ ...f, stray_item_key: true })),
+        }),
+        false,
+        'a stray decomposition_quality_flags ITEM key must still fail the manifest schema'
+    );
 });
 
 // --- AP-RMS-10: one line-count oracle, off-by-one closed ---------------------

@@ -79,7 +79,40 @@
           "file_line": {
             "type": ["string", "null"],
             "description": "AC-TAQ-07-2: source citation pointer in `path:line` form, or null when unavailable"
+          },
+          "analyst": {
+            "type": "string",
+            "description": "Analyst role id that authored the citation (analyst-sourced warnings only)"
+          },
+          "cycle": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Refinement cycle the citation was authored in (analyst-sourced warnings only)"
           }
+        }
+      }
+    },
+    "decomposition_quality_flags": {
+      "type": "array",
+      "description": "R-ORSR-5: per-ticket decomposition-quality flags raised by the post-decomposition audit",
+      "items": {
+        "type": "object",
+        "required": ["ticket_id", "reason", "evidence", "action", "suggested_reframe"],
+        "additionalProperties": false,
+        "properties": {
+          "ticket_id": { "type": "string", "minLength": 1 },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why the ticket was flagged; `large_tier` or `open_ended_derivation` today. Deliberately NOT an enum: `additionalProperties: false` already fails the WHOLE manifest, and a mirrored value list would do the same the day detectDecompositionQualityFlags grows a reason. The DecompositionQualityFlag union is the one place the vocabulary lives."
+          },
+          "evidence": { "type": "string", "minLength": 1 },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Recommended remedy; `bounded_reframe` or `pre_split` today. Not an enum, same reason as `reason`."
+          },
+          "suggested_reframe": { "type": "string", "minLength": 1 }
         }
       }
     },
