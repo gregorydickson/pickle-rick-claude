@@ -2320,6 +2320,42 @@ function resolveAnalystCycleFromEntries(entries, role) {
     }
     return maxCycle > 0 ? maxCycle : 1;
 }
+// Shared with scanAnalystOutputsForUnverifiedPaths below: the canonical cycle-final
+// output for a role is analysis_<role>.md (per-cycle archives are
+// analysis_<role>_c<cycle>.md and are not counted here).
+const CANONICAL_ANALYSIS_RE = /^analysis_([a-z-]+)\.md$/;
+export function countWrittenAnalyses(refinementDir) {
+    let entries;
+    try {
+        entries = fs.readdirSync(refinementDir);
+    }
+    catch {
+        return 0;
+    }
+    return entries.filter((entry) => CANONICAL_ANALYSIS_RE.test(entry)).length;
+}
+export const ZERO_ANALYSES_EXIT_CODE = 1;
+// Derives the wrapper's exit disposition from what was PRODUCED (files on disk),
+// never from which roles were ASKED — see the CLAUDE.md trap door on this ticket's
+// fix. Zero analyses is a named, non-zero-exit failure; some-but-not-all keeps the
+// pre-existing warn-and-proceed behavior, with the warning stating the actual count.
+export function resolveRefinementDisposition(cycleResults) {
+    if (cycleResults.allSuccess)
+        return { exitCode: 0, message: '' };
+    const failed = cycleResults.finalResults.filter((r) => !r.success).map((r) => r.roleId);
+    const producedCount = countWrittenAnalyses(cycleResults.refinementDir);
+    if (producedCount === 0) {
+        return {
+            exitCode: ZERO_ANALYSES_EXIT_CODE,
+            message: `${Style.RED}❌ Workers failed: ${failed.join(', ')}. Zero analyses were produced — refinement cannot proceed (reason: zero_analyses_produced).${Style.RESET}`,
+        };
+    }
+    const noun = producedCount === 1 ? 'analysis' : 'analyses';
+    return {
+        exitCode: 0,
+        message: `${Style.YELLOW}⚠️  Workers failed: ${failed.join(', ')}. Synthesis will proceed with ${producedCount} produced ${noun}.${Style.RESET}`,
+    };
+}
 export function scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir) {
     const warnings = [];
     let entries;
@@ -2331,9 +2367,8 @@ export function scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir) 
     }
     // Prefer canonical cycle-final outputs (analysis_<role>.md) over per-cycle
     // copies; canonical files are what synthesis consumes.
-    const canonicalRe = /^analysis_([a-z-]+)\.md$/;
     for (const entry of entries) {
-        const m = canonicalRe.exec(entry);
+        const m = CANONICAL_ANALYSIS_RE.exec(entry);
         if (!m)
             continue;
         const role = m[1];
@@ -2505,8 +2540,12 @@ async function main() {
     const readinessStatus = runReadinessGate(args.sessionDir, runtime.workingDir, manifestPath);
     reportAdvisoryGateVerdict('readiness gate', readinessStatus);
     if (!cycleResults.allSuccess) {
-        const failed = cycleResults.finalResults.filter((r) => !r.success).map((r) => r.roleId);
-        console.log(`${Style.YELLOW}⚠️  Workers failed: ${failed.join(', ')}. Synthesis will proceed with available analyses.${Style.RESET}`);
+        const disposition = resolveRefinementDisposition(cycleResults);
+        if (disposition.exitCode !== 0) {
+            console.error(disposition.message);
+            process.exit(disposition.exitCode);
+        }
+        console.log(disposition.message);
     }
     process.stdout.write(`REFINEMENT_DIR=${cycleResults.refinementDir}\n`);
     process.stdout.write(`MANIFEST=${manifestPath}\n`);

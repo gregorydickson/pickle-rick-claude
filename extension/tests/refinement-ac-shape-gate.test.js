@@ -15,6 +15,9 @@ const {
   evaluateAcShapeAdvisory,
   runAcShapeEnforcement,
   isParametrizedTicket,
+  countWrittenAnalyses,
+  resolveRefinementDisposition,
+  ZERO_ANALYSES_EXIT_CODE,
 } = await import('../bin/spawn-refinement-team.js');
 
 // AC-ACSG-1a: cross-field recognition — evaluateAcShapeEnforcement returns [] for valid parametrized tickets
@@ -716,5 +719,97 @@ test('Z3-2: real criteria genuinely stating a negative universal are now recogni
       true,
       `real criterion genuinely stating a negative universal must now be recognized: "${title}"`,
     );
+  }
+});
+
+// eb189d66: the wrapper's exit disposition must derive from the COUNT of analyses
+// actually written to cycleResults.refinementDir, never from which roles were asked.
+
+function makeCycleResults(refinementDir, { allSuccess, finalResults }) {
+  return {
+    refinementDir,
+    cyclesRequested: 1,
+    maxTurns: 1,
+    allCycleResults: [finalResults],
+    finalResults,
+    allSuccess,
+  };
+}
+
+function makeWorkerResult(roleId, success) {
+  return { roleId, success, logPath: `worker_${roleId}_c1.log`, cycle: 1, exitCode: success ? 0 : 1 };
+}
+
+test('eb189d66: countWrittenAnalyses returns 0 for a non-existent directory', () => {
+  const missingDir = path.join(os.tmpdir(), `pickle-refinement-missing-${Date.now()}-${Math.random()}`);
+  assert.equal(countWrittenAnalyses(missingDir), 0, 'a directory that was never created has zero written analyses');
+});
+
+test('eb189d66: countWrittenAnalyses counts only canonical analysis_<role>.md files', () => {
+  const refinementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-refinement-count-'));
+  try {
+    fs.writeFileSync(path.join(refinementDir, 'analysis_requirements.md'), '# requirements\n');
+    fs.writeFileSync(path.join(refinementDir, 'analysis_codebase.md'), '# codebase\n');
+    // per-cycle archive, not canonical — must not be counted
+    fs.writeFileSync(path.join(refinementDir, 'analysis_codebase_c1.md'), '# codebase cycle 1\n');
+    fs.writeFileSync(path.join(refinementDir, 'worker_requirements_c1.log'), 'log\n');
+    assert.equal(countWrittenAnalyses(refinementDir), 2, 'only the two canonical analysis_<role>.md files count');
+  } finally {
+    fs.rmSync(refinementDir, { recursive: true, force: true });
+  }
+});
+
+test('eb189d66: total failure (zero analyses written) exits non-zero with a named reason', () => {
+  const refinementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-refinement-zero-'));
+  try {
+    const finalResults = [
+      makeWorkerResult('requirements', false),
+      makeWorkerResult('codebase', false),
+      makeWorkerResult('risk-scope', false),
+    ];
+    const cycleResults = makeCycleResults(refinementDir, { allSuccess: false, finalResults });
+    const disposition = resolveRefinementDisposition(cycleResults);
+    assert.equal(disposition.exitCode, ZERO_ANALYSES_EXIT_CODE, 'zero analyses must exit non-zero');
+    assert.notEqual(disposition.exitCode, 0, 'zero analyses must never exit 0');
+    assert.match(disposition.message, /zero_analyses_produced/, 'the failure must name a reason');
+    assert.match(disposition.message, /requirements/, 'message must name the failed roles');
+    assert.doesNotMatch(disposition.message, /available analyses/, 'the false "available analyses" claim must be gone');
+  } finally {
+    fs.rmSync(refinementDir, { recursive: true, force: true });
+  }
+});
+
+test('eb189d66 (over-trigger control): partial success still exits 0 and still warns, naming the produced count', () => {
+  const refinementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-refinement-partial-'));
+  try {
+    fs.writeFileSync(path.join(refinementDir, 'analysis_codebase.md'), '# codebase\n');
+    fs.writeFileSync(path.join(refinementDir, 'analysis_risk-scope.md'), '# risk-scope\n');
+    const finalResults = [
+      makeWorkerResult('requirements', false),
+      makeWorkerResult('codebase', true),
+      makeWorkerResult('risk-scope', true),
+    ];
+    const cycleResults = makeCycleResults(refinementDir, { allSuccess: false, finalResults });
+    const disposition = resolveRefinementDisposition(cycleResults);
+    assert.equal(disposition.exitCode, 0, 'a fix that reds partial success is worse than the defect it fixes');
+    assert.match(disposition.message, /⚠/u, 'partial success must still warn');
+    assert.match(disposition.message, /\b2\b/, 'the warning must state the produced count (2)');
+    assert.match(disposition.message, /requirements/, 'the warning must still name the failed role');
+    assert.doesNotMatch(disposition.message, /available analyses/, 'the false "available analyses" claim must be gone');
+  } finally {
+    fs.rmSync(refinementDir, { recursive: true, force: true });
+  }
+});
+
+test('eb189d66: full success is a no-op disposition (unreachable via main, but the function is total)', () => {
+  const refinementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-refinement-full-'));
+  try {
+    const finalResults = [makeWorkerResult('requirements', true)];
+    const cycleResults = makeCycleResults(refinementDir, { allSuccess: true, finalResults });
+    const disposition = resolveRefinementDisposition(cycleResults);
+    assert.equal(disposition.exitCode, 0);
+    assert.equal(disposition.message, '');
+  } finally {
+    fs.rmSync(refinementDir, { recursive: true, force: true });
   }
 });
