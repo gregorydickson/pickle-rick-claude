@@ -1661,8 +1661,14 @@ const JUDGE_STARTUP_REJECTION_WINDOW_MS = 5_000;
  */
 const MICROVERSE_WORKER_ROLE = 'microverse-worker';
 
-/** Env stamp every microverse worker spawn carries (AP-EXT-ITER303-01). */
-export const MICROVERSE_WORKER_SPAWN_OVERRIDES = {
+/**
+ * Env stamp every microverse worker spawn carries (AP-EXT-ITER303-01).
+ *
+ * Module-private on purpose: the ENFORCE case pins this at the CALL SITE by
+ * capturing what `_deps.runIteration` was handed, so exporting the constant
+ * would let it pass over a stamp nothing forwards.
+ */
+const MICROVERSE_WORKER_SPAWN_OVERRIDES = {
   envOverrides: { PICKLE_ROLE: MICROVERSE_WORKER_ROLE },
 } as const;
 
