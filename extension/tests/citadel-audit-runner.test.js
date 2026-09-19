@@ -211,9 +211,16 @@ function makeCommittedRepo(prefix, files) {
 describe('citadel audit-runner composes: wiring (ticket 98dc9bed)', () => {
   test('audit-runner.ts source imports parseWithComposes', () => {
     const src = fs.readFileSync(AUDIT_RUNNER_SRC, 'utf-8');
-    assert.ok(
-      src.includes('parseWithComposes'),
-      'audit-runner.ts must import parseWithComposes for composes: chain walking',
+    // 9ddab87b: bounded to the import CLAUSE, not a bare identifier anywhere in the file.
+    // audit-runner.ts mentions `parseWithComposes` in a docblock sentence as well as importing and
+    // calling it, so the unbounded containment check this replaces was satisfied by the prose:
+    // measured, deleting both the import and the call while keeping only the comment left this row
+    // GREEN. The clause body stays permissive ([^}]*) so reordering or adding sibling named imports
+    // is fine — only the symbol leaving this module's import is meant to red it.
+    assert.match(
+      src,
+      /import \{[^}]*\bparseWithComposes\b[^}]*\} from '\.\/prd-parser\.js';/,
+      'audit-runner.ts must import parseWithComposes from ./prd-parser.js for composes: chain walking',
     );
   });
 
@@ -472,11 +479,15 @@ describe('AP-EXT-ITER288-01: a citadel report that cannot be persisted degrades,
   });
 });
 
-// a695505e: the two git spawns in this file carry `timeout: 30_000` (:196, :319). A bound only
-// protects the suite if expiry THROWS and the throw lands somewhere that fails — a timeout
-// swallowed into a pass is no timeout at all. The landing zones were traced: `:319`'s calls sit in
-// try/finally (which rethrows) and `:196`'s helper has no catch, with all three callers invoking it
-// bare. This row pins the other half — that expiry is a throw and not a silently empty result.
+// a695505e: the two git spawns in this file carry `timeout: 30_000` — one in `makeCommittedRepo`,
+// one in the `buildCitadelAuditReport consumes composed child AC and transition inputs` row. A bound
+// only protects the suite if expiry THROWS and the throw lands somewhere that fails — a timeout
+// swallowed into a pass is no timeout at all. The landing zones were traced: the in-row helper's
+// calls sit in try/finally (which rethrows) and `makeCommittedRepo`'s helper has no catch, with all
+// three callers invoking it bare. This row pins the other half — that expiry is a throw and not a
+// silently empty result.
+// 9ddab87b: the two callsites were named by line number here until an edit above shifted one of
+// them. Enclosing-name anchors do not shift, so the reference cannot rot silently.
 test('a695505e: a spawn exceeding its bound throws, so the timeout reaches a failing assertion', () => {
   let thrown = null;
   try {
