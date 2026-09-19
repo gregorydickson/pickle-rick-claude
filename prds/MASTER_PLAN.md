@@ -53,6 +53,41 @@ count against a flat defect-escape rate is the signal to SUBTRACT, not to keep a
 
 ---
 
+## ⛔ B-INVENTED's GATE WENT RED — 4 legs, 2 causes, neither a stale pin (2026-09-19)
+
+B-INVENTED completed 4/4 (anatomy-park converged at 34 `extension` passes; szechuan converged in 3),
+**45 commits `778a89c9..3ae1d57a`**, but the gate returned **4 red legs** and the commits are **parked
+unpushed** — the branch stays green per bundle.
+
+**G1 — one defect, three legs.** `ac648a36` (an anatomy-park pass) added two `execFileSync('git', …)`
+callsites with no `timeout` at `tests/citadel-audit-runner.test.js:196,319`.
+`audit-subprocess-heavy-tests` runs the scanner, `test_integration` runs it again in
+`pretest:integration`, and `test_fast_budget` reds on `AP-EXT-ITER42-01`, the in-suite oracle. **3 of 3**
+flake runs failed — deterministic.
+
+**Method note:** the flake-budget run logs read `Sep 18 23:06` against a gate that ran
+`Sep 19 03:47-04:37`, and were nearly discarded as stale. `ls` prints **LOCAL** time — 23:06 CDT IS
+04:06 UTC. The logs were this run's.
+
+**G2 — the ratchet is right and the authoring regressed.** Executable-assertion coverage fell from
+**24/73 (32.88%)** at the last green gate to **25/82 (30.49%)**, below `session_min_ratio` 13/40
+(32.5%). Nine tickets added **+9 denominator, +1 numerator** — and one of the two regex matches is
+prose. `audit-acceptance-assertion-coverage.sh:28` documents the floor as a **ratio lower-bound that
+never refuses growth**, so it refuses exactly one thing: the ratio falling. Repaired FORWARD only —
+B-GATERED's own criteria are in executable form. **No retro-edits, no floor change.**
+
+**G3 (#41) — found while dispatching the fix.** The refinement team failed twice on an upstream API
+safeguard error and produced zero analyses, yet `spawn-refinement-team` exited **0** and emitted
+`MANIFEST=`. `spawn-refinement-team.ts:2951-2960` logs `⚠️ Workers failed … will proceed with available
+analyses` and **falls through** to the success path; nothing branches on how many analyses were
+written. The message asserts a non-empty set the code never checked, and it defeats
+`/pickle-pipeline` Step 0d, which cannot fail fast on a status that cannot express the difference.
+
+**B-GATERED's premises were NOT analyst-checked** — the phase that would have checked them is the one
+G3 describes. All three were measured by commands run and read in-session.
+
+---
+
 ## 🔁 THE LOOP'S OWN DEFECTS ARE IN ITS MEASUREMENT LAYER TOO (measured 2026-09-18)
 
 **The recursion, stated plainly:** this file already records that **11 of 14 product defects live in
@@ -183,9 +218,9 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | branch | **`release/v2.2-beta`** — the name is historical; **releases are `v2.1.X`** (operator-set) |
 | version | `extension/package.json` = **`2.1.1`**. Next tag `v2.1.1`. `release.yml` compares tag↔this field |
 | `main` | **= the `v2.1.0` GA commit `c20a9562`**, no longer the stale 2.0 line. Old main preserved at tag `archive/main-2.0-line`; revert = `git push --force origin archive/main-2.0-line:main` |
-| **RUNNING** | **[[B-INVENTED]] session `2026-09-17-df5973be`** — 9 tickets, launched 2026-09-18. Do not intervene while advancing |
+| **RUNNING** | **[[B-GATERED]] session `2026-09-19-4dbaed57`** — 6 tickets. B-INVENTED's 45 commits are PARKED UNPUSHED behind its red gate |
 | deployed | **`2.1.1`, in sync with source** (2026-09-18). Verified BY CONTENT: `bin/` 1 intentional difference (the `tmux-runner.js` symlink), `services/` 0 |
-| open issues | **#40**, **#32**, **#5**. Closed 2026-09-17/18: #39, #37 (verified fixed), #29 (already satisfied) |
+| open issues | **#41** (refine wrapper exits 0 with zero analyses), **#40**, **#32**, **#5**. Closed: #39, #37, #29 |
 | open PRs | **#38 by `sabahmax-dev`** — external, addresses #35, **unreviewed publicly and unmerged; operator's call** |
 | gate runner | **`prds/gate-runner.sh`** (vendored 2026-09-17 so it survives a context clear). 22 legs, ~70 min, derives its audit list from root `CLAUDE.md`. Wait for `GATE_END` |
 
