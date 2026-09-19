@@ -823,8 +823,17 @@ test('eb189d66: total failure (zero analyses written) exits non-zero with a name
 test('eb189d66 (over-trigger control): partial success still exits 0 and still warns, naming the produced count', () => {
   const refinementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-refinement-partial-'));
   try {
+    // 9ddab87b: THREE analyses on disk against TWO successful roles, deliberately asymmetric. A
+    // balanced fixture (2 files, 2 successes) lets the number in the warning come from either
+    // source, so it cannot observe the one invariant this root states — that the disposition derives
+    // from what was PRODUCED, "never from which roles were ASKED" (spawn-refinement-team.ts:2801).
+    // Measured: with 2/2, recomputing the count as `finalResults.filter((r) => r.success).length`
+    // left this row GREEN. Keep the two numbers different.
+    // The extra file is the state the implementation documents as real — an analysis surviving from
+    // an earlier run while this run's role failed.
     fs.writeFileSync(path.join(refinementDir, 'analysis_codebase.md'), '# codebase\n');
     fs.writeFileSync(path.join(refinementDir, 'analysis_risk-scope.md'), '# risk-scope\n');
+    fs.writeFileSync(path.join(refinementDir, 'analysis_requirements.md'), '# requirements (stale)\n');
     const finalResults = [
       makeWorkerResult('requirements', false),
       makeWorkerResult('codebase', true),
@@ -834,7 +843,9 @@ test('eb189d66 (over-trigger control): partial success still exits 0 and still w
     const disposition = resolveRefinementDisposition(cycleResults);
     assert.equal(disposition.exitCode, 0, 'a fix that reds partial success is worse than the defect it fixes');
     assert.match(disposition.message, /⚠/u, 'partial success must still warn');
-    assert.match(disposition.message, /\b2\b/, 'the warning must state the produced count (2)');
+    // Bounded to the word it counts, matching the binary row's idiom below: a bare /\b3\b/ would
+    // accept the digit from anywhere in the message.
+    assert.match(disposition.message, /\b3 produced analyses\b/, 'the warning must state the produced count (3), not the succeeded-role count (2)');
     assert.match(disposition.message, /requirements/, 'the warning must still name the failed role');
     assert.doesNotMatch(disposition.message, /available analyses/, 'the false "available analyses" claim must be gone');
   } finally {
