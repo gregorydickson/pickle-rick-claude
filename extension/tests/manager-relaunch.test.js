@@ -273,3 +273,46 @@ test('isGenuineCrashOrSpawnFailure: null-exit cut-off stays fatal when no pendin
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// AP-EXT-ITER292-01: `managerTurnStartedWithoutResult`'s `if (ev.type === 'result') return false`
+// is the one line that tells a manager which FINISHED from one CUT OFF mid-tool-result, and it was
+// unobserved: every log fixture above is result-FREE (`{"type":"system"}\n{"type":"user"}`), so the
+// branch was dead in the fixture population and its deletion left 13 test files GREEN — measured,
+// including every file in the repo naming the symbol, `isGenuineCrashOrSpawnFailure`, `cutOffMidTurn`
+// or `ppxr`. Amputated, a manager that emitted a terminal `result` reclassifies from fatal to
+// relaunchable, so the runner re-runs an already-completed manager up to the relaunch cap each
+// iteration. The source guard is correct; only its deletion was invisible.
+//
+// The two logs differ by EXACTLY one line, so the terminal `result` event is the sole discriminator,
+// and the relaunchable row is a live ACCEPT control: without it a fix that returned `true`
+// unconditionally would pass the fatal row alone.
+test('AP-EXT-ITER292-01: a terminal result event makes a null-exit manager fatal, and its absence does not', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-ppxr-result-discriminator-'));
+  try {
+    const streamEvents = ['{"type":"system","subtype":"init"}', '{"type":"assistant"}', '{"type":"user"}'];
+    const cutOffLog = path.join(dir, 'cut-off.log');
+    const finishedLog = path.join(dir, 'finished.log');
+    fs.writeFileSync(cutOffLog, `${streamEvents.join('\n')}\n`);
+    fs.writeFileSync(
+      finishedLog,
+      `${streamEvents.join('\n')}\n{"type":"result","subtype":"success","is_error":false,"num_turns":4}\n`,
+    );
+
+    // Pending work, below cap: the ONLY input that can still veto the relaunch is the log.
+    const decision = relaunchDecision({ pendingCount: 2, nextRelaunchCount: 1 });
+    const outcome = { completion: 'error', exitCode: null, timedOut: false, wallSeconds: 7 };
+
+    assert.equal(
+      isGenuineCrashOrSpawnFailure(decision, outcome, cutOffLog),
+      false,
+      'ACCEPT control: stream events with no terminal result is a cut-off turn — relaunchable, not fatal',
+    );
+    assert.equal(
+      isGenuineCrashOrSpawnFailure(decision, outcome, finishedLog),
+      true,
+      'a terminal result event proves the turn was NOT cut off, so the null exit is a genuine crash — fatal',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
