@@ -988,3 +988,102 @@ for (const bin of ['grep', 'git', 'rg']) {
     );
   });
 }
+
+// AP-EXT-ITER300-01: the ENFORCE census admitted `tests/**.test.js` refs ONLY, so a catalog
+// entry naming an audit SCRIPT as its enforcement was neither verified nor reported -- the
+// verdict line read `N ENFORCE reference(s) verified` over 15 refs it had never opened, and
+// two of the scripts named that way had no caller anywhere in the tree. These three arms pin
+// the widened half: that the population is collected at all, that a missing script fails,
+// and that a script nothing invokes fails.
+//
+// An @tier is what makes a test ref live; an INVOKER is the equivalent for a script, and
+// what a mention is when it is not one is prose -- the catalog clause itself, or a docblock
+// beside the code.
+
+test('AP-EXT-ITER300-01 census non-vacuity: the HEAD verdict line reports the script-shaped refs it checked', () => {
+  const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+    cwd: EXTENSION_ROOT,
+    encoding: 'utf8',
+    timeout: 300_000,
+  });
+
+  assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+  const reported = result.stdout.match(/(\d+) of them script-shaped, each with a live invoker/);
+  assert.ok(reported, `verdict line must report the script-shaped count: ${result.stdout}`);
+  // The floor the script enforces for itself. A collapse to near-zero means the matcher
+  // broke, and an empty population reads exactly like agreement -- which is how this shape
+  // stayed dark for two birth-to-HEAD script lifetimes.
+  assert.ok(
+    Number(reported[1]) >= 4,
+    `script-shaped population collapsed to ${reported[1]}; the matcher broke, not the catalogs`
+  );
+});
+
+test('AP-EXT-ITER300-01 missing script: an ENFORCE ref naming a script that does not exist fails', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-trap-door-script-ref-'));
+
+  try {
+    const source = fs.readFileSync(path.join(EXTENSION_ROOT, 'CLAUDE.md'), 'utf8');
+    const fixturePath = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(
+      fixturePath,
+      `${source}\n- fixture — INVARIANT: AP-EXT-ITER300-01 fixture entry. BREAKS: nothing. ENFORCE: extension/scripts/no-such-audit-script.sh. PATTERN_SHAPE: fixture only.\n`
+    );
+
+    const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+      cwd: EXTENSION_ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PATH_OVERRIDE: fixturePath },
+      timeout: 300_000,
+    });
+
+    assert.notEqual(result.status, 0, `stdout: ${result.stdout}`);
+    assert.match(result.stderr, /missing script: extension\/scripts\/no-such-audit-script\.sh/, `stderr: ${result.stderr}`);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER300-01 uninvoked script: an ENFORCE ref naming a script nothing runs fails', () => {
+  // The subject is a smoke script, legitimately uninvoked and named by no ENFORCE clause --
+  // the one thing that can stand in for the defect without being it. It is chosen over the
+  // other uninvoked scripts because its only tracked mention is a COMMENT line, so this one
+  // arm pins BOTH halves of the predicate: accepting everything reds it, and dropping the
+  // comment filter reds it too (the mention would then read as a caller). That filter is the
+  // discriminator the original defect turned on -- the dark refs' only mentions were
+  // docblocks -- so leaving it unpinned would fail open on the very shape this closes.
+  //
+  // Its name is ASSEMBLED, never spelled: the audit's invoker search reads the tracked tree,
+  // and a literal here is a non-comment mention in a tracked file, so writing it out would
+  // hand the subject the very invoker the arm needs it to lack. Measured -- the first draft
+  // spelled it and the audit passed at 16 verified script refs.
+  // If it ever acquires a real caller this arm fails loudly rather than passing vacuously.
+  const subjectName = `${['smoke', 'deployed', 'hooks'].join('-')}.sh`;
+  const subject = `extension/scripts/${subjectName}`;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-trap-door-dark-ref-'));
+
+  try {
+    const source = fs.readFileSync(path.join(EXTENSION_ROOT, 'CLAUDE.md'), 'utf8');
+    const fixturePath = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(
+      fixturePath,
+      `${source}\n- fixture — INVARIANT: AP-EXT-ITER300-01 fixture entry. BREAKS: nothing. ENFORCE: ${subject}. PATTERN_SHAPE: fixture only.\n`
+    );
+
+    const result = spawnSync('bash', ['scripts/audit-trap-door-enforcement.sh'], {
+      cwd: EXTENSION_ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PATH_OVERRIDE: fixturePath },
+      timeout: 300_000,
+    });
+
+    assert.notEqual(result.status, 0, `stdout: ${result.stdout}`);
+    assert.match(
+      result.stderr,
+      new RegExp(`${subjectName.replace('.', '\\.')} is named as enforcement but NOTHING invokes it`),
+      `stderr: ${result.stderr} -- if this subject acquired a caller, pick another uninvoked script`
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

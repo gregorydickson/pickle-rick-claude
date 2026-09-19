@@ -138,6 +138,7 @@ fi
 node - "$CLAUDE_PATH" "$EXTENSION_ROOT" "$REPO_ROOT" "$SUBSYSTEM_CATALOG_ROOT" <<'NODE'
 const fs = require('fs');
 const path = require('path');
+const childProcess = require('child_process');
 
 const [,, primaryClaudePath, extensionRoot, repoRoot, subsystemCatalogRoot] = process.argv;
 
@@ -330,24 +331,35 @@ function anchorTruncation(fileContent, anchor, trailingText) {
 // Collect all ENFORCE: test file references using the same regex as
 // extractEnforceTestFiles() in trap-door-conformance.test.js, plus the optional
 // `#anchor` that the file-only regex used to drop on the floor.
-function collectEnforceRefs(claudePath) {
+// The entry grammar, stated ONCE: an `ENFORCE:` line plus every following line until the
+// next entry or heading. Both ref collectors below read it from here -- two copies of one
+// grammar is exactly the divergence this catalog reds elsewhere, and a widening applied to
+// one copy would silently leave the other reading the old shape.
+function collectEnforceEntries(claudePath) {
   const lines = fs.readFileSync(claudePath, 'utf8').split('\n');
-  // Keyed on `rel#anchor` so each anchored ref is verified on its own, while every
-  // bare ref to one file still collapses to a single `rel#` entry as before.
-  const enforceFiles = new Map(); // 'rel#anchor' -> { rel, anchor, trailingText, lineNum }
+  const entries = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.includes('ENFORCE:')) continue;
+    if (!lines[i].includes('ENFORCE:')) continue;
 
-    // Gather entry text (current line + continuation until next entry/section)
-    let entryText = line;
+    let entryText = lines[i];
     let j = i + 1;
     while (j < lines.length && !lines[j].startsWith('- ') && !lines[j].startsWith('## ')) {
       entryText += '\n' + lines[j];
       j++;
     }
+    entries.push({ entryText, lineNum: i + 1 });
+  }
 
+  return entries;
+}
+
+function collectEnforceRefs(claudePath) {
+  // Keyed on `rel#anchor` so each anchored ref is verified on its own, while every
+  // bare ref to one file still collapses to a single `rel#` entry as before.
+  const enforceFiles = new Map(); // 'rel#anchor' -> { rel, anchor, trailingText, lineNum }
+
+  for (const { entryText, lineNum } of collectEnforceEntries(claudePath)) {
     const matches = entryText.matchAll(
       /\b((?:extension\/)?tests\/[A-Za-z0-9_./-]+\.test\.js)\b(?:#([A-Za-z0-9_.:-]+))?/g
     );
@@ -358,7 +370,7 @@ function collectEnforceRefs(claudePath) {
           rel: m[1],
           anchor: m[2] ?? null,
           trailingText: entryText.slice(m.index + m[0].length),
-          lineNum: i + 1,
+          lineNum,
         });
       }
     }
@@ -444,13 +456,139 @@ for (const claudePath of catalogs) {
   }
 }
 
+// The loop above proves a TEST-shaped ENFORCE ref runs: the file exists, its @tier puts it
+// in a runner, its anchor names a live case. A catalog may equally name a SCRIPT as its
+// enforcement, and the matcher above admits `tests/**.test.js` ONLY -- so 15 script-shaped
+// refs across the 8 swept catalogs were neither verified nor reported, while the verdict line
+// still read `N ENFORCE reference(s) verified`. Measured at the fix: EXACTLY 2 of them named
+// a script with no caller anywhere in the tree -- audit-readiness-allowlist.sh, the SOLE
+// enforcer of the allowlist `source:` schema (extension/CLAUDE.md calls it "enforced at CI
+// time"), and audit-ac-command-glob-safety.sh -- both unwired since their birth commits, both
+// invisible here. This is the clause-3 rot the ENFORCE arm exists to prevent, arriving
+// through the one delivery shape the arm could not see.
+//
+// An @tier is what makes a test ref live. The equivalent for a script is an INVOKER, and
+// what a mention is when it is NOT one is prose: the catalog clause itself, and the docblock
+// line beside the code. So ONE uniform rule settles it with no list of runner locations --
+// the ref must be named on a non-comment line of a tracked non-markdown file other than the
+// script itself. A new workflow, script or test becomes a valid invoker the moment it lands.
+const SCRIPT_REF_RE = /\b((?:extension\/)?scripts\/[A-Za-z0-9_.-]+\.(?:sh|mjs|js))\b/g;
+const COMMENT_LINE_RE = /^\s*(?:\*|\/\/|#|--)/;
+
+function collectEnforceScriptRefs(claudePath) {
+  const refs = new Map(); // rel -> lineNum
+
+  for (const { entryText, lineNum } of collectEnforceEntries(claudePath)) {
+    // From `ENFORCE:` onward only. A script named in an INVARIANT or BREAKS clause is a
+    // description of the system, not a claim that it enforces this entry; admitting those
+    // widens the population from 15 to 29 and points the check at a risk it cannot judge --
+    // check-flake-budget.sh, for one, is uninvoked and legitimately so: it is described
+    // there, never claimed as a guard.
+    const claim = entryText.slice(entryText.indexOf('ENFORCE:'));
+    for (const m of claim.matchAll(SCRIPT_REF_RE)) {
+      if (!refs.has(m[1])) refs.set(m[1], lineNum);
+    }
+  }
+
+  return refs;
+}
+
+// Returns the invoking file, false for none, or null when the measurement itself failed --
+// three answers, because a failed search must not read as either verdict.
+//
+// `git grep` reads the INDEX, so an invoker is only one once staged. That is the honest
+// reading -- an untracked caller is not a caller for anybody else -- but it means a brand
+// new test that runs a claimed script must be `git add`ed before this arm can see it.
+const invokerCache = new Map();
+
+function findInvoker(rel, absPath) {
+  const cacheKey = path.basename(rel);
+  if (invokerCache.has(cacheKey)) return invokerCache.get(cacheKey);
+
+  const probe = childProcess.spawnSync(
+    'git',
+    ['grep', '-I', '-n', '-F', path.basename(rel), '--', '.', ':!*.md'],
+    { cwd: repoRoot, encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 }
+  );
+  // 1 is `no match`; anything above it is a broken search, not an answer. A null is NOT
+  // cached: a transient failure must not be replayed as the verdict for every later ref.
+  if (probe.error || (probe.status !== 0 && probe.status !== 1)) return null;
+
+  const selfRel = path.relative(repoRoot, absPath);
+  let answer = false;
+  for (const row of (probe.stdout || '').split('\n')) {
+    const m = row.match(/^([^:]+):\d+:(.*)$/);
+    if (!m) continue;
+    const [, file, text] = m;
+    if (file === selfRel) continue;
+    if (COMMENT_LINE_RE.test(text)) continue;
+    answer = file;
+    break;
+  }
+  invokerCache.set(cacheKey, answer);
+  return answer;
+}
+
+let scriptRefsSeen = 0;
+
+for (const claudePath of catalogs) {
+  const label = path.relative(repoRoot, claudePath) || claudePath;
+
+  for (const [rel, lineNum] of collectEnforceScriptRefs(claudePath)) {
+    scriptRefsSeen++;
+    const absPath = rel.startsWith('extension/')
+      ? path.join(repoRoot, rel)
+      : path.join(extensionRoot, rel);
+
+    if (!fs.existsSync(absPath)) {
+      process.stderr.write(`ENFORCE: ${label}:${lineNum}: missing script: ${rel}\n`);
+      failures++;
+      continue;
+    }
+
+    const invoker = findInvoker(rel, absPath);
+    if (invoker === null) {
+      process.stderr.write(
+        `ENFORCE: ${label}:${lineNum}: invoker search for ${rel} failed -- no census over the ` +
+          'remaining refs is admissible once one ref went unmeasured\n'
+      );
+      failures++;
+      continue;
+    }
+    if (invoker === false) {
+      process.stderr.write(
+        `ENFORCE: ${label}:${lineNum}: ${rel} is named as enforcement but NOTHING invokes it -- ` +
+          'every mention is markdown or a comment line, so the claim cannot fire. Give it a ' +
+          'caller (a gate leg, a sibling audit, or a test that executes it) or drop the ref\n'
+      );
+      failures++;
+      continue;
+    }
+
+    verified++;
+  }
+}
+
+// An empty script-ref population satisfies the loop above vacuously, and that is exactly
+// how this shape stayed dark: a census that matches nothing reads identically to a census
+// that agrees. 15 refs stood here at the fix; a collapse to near-zero means the matcher
+// broke, not that the catalogs stopped claiming script enforcement.
+if (scriptRefsSeen < 4) {
+  process.stderr.write(
+    `ENFORCE: script-shaped ref census found only ${scriptRefsSeen} ref(s) across ` +
+      `${perCatalog.length} catalog(s) -- a near-empty population means this matcher broke\n`
+  );
+  failures++;
+}
+
 if (failures > 0) {
   process.stderr.write(`\n${failures} ENFORCE reference(s) unreachable\n`);
   process.exit(1);
 }
 
 console.log(
-  `audit-trap-door-enforcement: ${verified} ENFORCE reference(s) verified across ${perCatalog.length} catalog(s) (${perCatalog.join(', ')})`
+  `audit-trap-door-enforcement: ${verified} ENFORCE reference(s) verified across ${perCatalog.length} catalog(s) ` +
+    `(${perCatalog.join(', ')}); ${scriptRefsSeen} of them script-shaped, each with a live invoker`
 );
 NODE
 enforce_arm_rc=$?
