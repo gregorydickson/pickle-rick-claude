@@ -72,7 +72,7 @@ function artifact(acId, overrides = {}) {
     checked_at: '2026-05-02T00:00:00.000Z',
     checker: 'verify-bundle.test',
     checker_version: 'test',
-    evidence: {},
+    evidence: { collected: 'fixture' },
     failure_reason: null,
     remediation_hint: null,
     ...overrides,
@@ -559,7 +559,7 @@ function acceptedShapesForField(field, acId, arm) {
 
 test('verify-bundle.evidence accepts exactly one of the six JSON value shapes', () => {
   assert.deepEqual(
-    acceptedShapesForField('evidence', 'AC-DR-11', 'evidence must be an object'),
+    acceptedShapesForField('evidence', 'AC-DR-11', 'evidence must be a non-empty object'),
     ['object'],
     'exactly the object shape may green the bundle gate for evidence',
   );
@@ -762,5 +762,48 @@ test('verify-bundle.checked-count reports the ACs this run verified, not the who
     );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+// `isObject` is satisfied by a container with ZERO members, so `evidence: {}` greened the
+// release-evidence gate: measured on the real CLI, 15 artifacts each `pass: true` with an empty
+// `evidence` exited 0 `bundle PASS checked=15 missing=0 failures=0`, while `evidence: null` was
+// rejected in the same run. The six-shape enumeration above cannot reach this — it pins WHICH
+// JSON value shape `evidence` accepts and its object row is already non-empty — and the suite's
+// own `artifact()` helper shipped the empty one, so the existing ENFORCE was VACUOUS for it.
+// Both directions are load-bearing: the ACCEPT half stops a rejection that reds every real
+// release (the sole tracked receipt, `bundle/ac-dr-04d.json`, carries 4 members), and the REJECT
+// half runs through the CLI because that is where the false-green was measured.
+test('verify-bundle.an evidence-less receipt cannot green the gate on the strength of its own pass flag', () => {
+  const empty = makeFixture(({ bundleDir }) => {
+    for (const acId of EXPECTED_BUNDLE_AC_IDS) {
+      writeFileSync(
+        path.join(bundleDir, acFileName(acId)),
+        `${JSON.stringify(artifact(acId, { evidence: {} }), null, 2)}\n`,
+      );
+    }
+  });
+  try {
+    const result = runVerifier(empty);
+    assert.equal(
+      result.status,
+      1,
+      `an empty evidence object must not green the gate — exit=${result.status} stdout=${result.stdout}`,
+    );
+    assert.doesNotMatch(result.stdout, /bundle PASS/);
+    assert.match(result.stderr, /AC-DR-01: evidence must be a non-empty object/);
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+
+  // ACCEPT control on the SAME fixture shape, differing only in the members `evidence` carries,
+  // so the rejection above cannot be passing for an unrelated reason.
+  const populated = makeFixture();
+  try {
+    const result = runVerifier(populated);
+    assert.equal(result.status, 0, `a populated evidence object must still green — ${result.stderr}`);
+    assert.match(result.stdout, /bundle PASS/);
+  } finally {
+    rmSync(populated, { recursive: true, force: true });
   }
 });

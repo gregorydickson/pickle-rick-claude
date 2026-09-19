@@ -53,6 +53,17 @@ function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+// `isObject` alone is satisfied by a container with ZERO members, so a receipt could assert
+// `pass: true` while carrying no evidence of the verdict it asserts — measured on the exported
+// verifier, 15 artifacts each `pass: true` with `evidence: {}` returned exit 0
+// `bundle PASS checked=15 missing=0 failures=0`, while `evidence: null` was rejected in the same
+// run. That is the release-evidence gate greening itself. One WIDENED predicate rather than a
+// second `if`: the emptiness rule is the same knowledge as the shape rule, so it gets the same
+// check and the same message, and `validateBundleArtifact` gains no branch.
+function isNonEmptyObject(value) {
+  return isObject(value) && Object.keys(value).length > 0;
+}
+
 function isCanonicalUtcIsoTimestamp(value) {
   if (typeof value !== 'string') return false;
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.]\d{3}Z$/.test(value)) return false;
@@ -76,7 +87,9 @@ export function validateBundleArtifact(artifact) {
   if ('checker_version' in artifact && typeof artifact.checker_version !== 'string') {
     errors.push('checker_version must be a string');
   }
-  if ('evidence' in artifact && !isObject(artifact.evidence)) errors.push('evidence must be an object');
+  if ('evidence' in artifact && !isNonEmptyObject(artifact.evidence)) {
+    errors.push('evidence must be a non-empty object');
+  }
   for (const field of ['failure_reason', 'remediation_hint']) {
     if (field in artifact && artifact[field] !== null && typeof artifact[field] !== 'string') {
       errors.push(`${field} must be a string or null`);

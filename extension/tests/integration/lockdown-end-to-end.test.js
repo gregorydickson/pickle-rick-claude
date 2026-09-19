@@ -79,7 +79,7 @@ function bundleArtifact(acId, overrides = {}) {
     checked_at: '2026-05-02T00:00:00.000Z',
     checker: 'lockdown-end-to-end.test',
     checker_version: '1.0.0',
-    evidence: {},
+    evidence: { collected: 'fixture' },
     failure_reason: null,
     remediation_hint: null,
     ...overrides,
