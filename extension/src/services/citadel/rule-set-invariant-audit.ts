@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { ChangedFileSummary, DiffSummary } from './diff-walker.js';
 import { CitadelFinding, escapeTableCell, slugifyCapped, uniqueSortedStrings } from './reporter.js';
-import { extractTrapDoorsSection } from './trap-doors-section.js';
 
 export type RuleSetInvariantSeverity = 'High' | 'Medium';
 export type RuleSetDeclarationKind = 'array' | 'enum' | 'object';
@@ -330,15 +329,23 @@ export interface TrapDoorDeclarationResult {
 
 const ENFORCE_HAS_REF_RE = /[\w./*-]+\.(?:test\.js|spec\.js|sh)\b/;
 
+// An entry is what it LOOKS like, not where it SITS: a trap-door bullet NAMES its subject before
+// the `INVARIANT:` label, while a `## state.json Field Invariants` bullet leads with the label
+// itself. That one shape separates them with no list of headings to maintain, so an entry appended
+// below an intervening `## ` heading is audited like any other. Identifying entries by a
+// heading-delimited slice instead left 126 live trap doors — 79 in `src/bin`, 35 in `src/services`
+// — permanently unexamined while the audit reported zero findings. The sibling analyzer
+// `trap-door-coverage-audit.ts` abandoned the same slice for the same reason (ticket 9748856d).
+const TRAP_DOOR_ENTRY_RE = /^\s*[-*]\s+\S.*?\bINVARIANT:/;
+
 export function parseTrapDoorDeclarations(content: string): TrapDoorDeclarationResult {
-  const section = extractTrapDoorsSection(content);
   const findings: CitadelFinding[] = [];
   let declarations = 0;
 
-  const lines = section.split('\n');
+  const lines = content.split('\n');
   for (let idx = 0; idx < lines.length; idx += 1) {
     const line = lines[idx];
-    if (!line.includes('INVARIANT:')) continue;
+    if (!TRAP_DOOR_ENTRY_RE.test(line)) continue;
 
     if (!line.includes('BREAKS:')) {
       findings.push({

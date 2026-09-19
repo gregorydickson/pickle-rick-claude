@@ -1,6 +1,7 @@
 // @tier: fast
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -98,7 +99,11 @@ describe('parseTrapDoorDeclarations — unit', () => {
     assert.equal(result.findings.length, 0);
   });
 
-  test('entries outside ## Trap Doors section are ignored', async () => {
+  // AP-EXT-ITER296-01: an entry is identified by its own SHAPE, never by the heading it sits
+  // under. A subject-bearing bullet counts wherever it appears; a `## state.json Field
+  // Invariants` bullet leads with the label itself and is excluded wherever IT appears. The
+  // heading names below are inert decoration to these assertions — that is the whole point.
+  test('AP-EXT-ITER296-01: a subject-bearing entry counts under any heading; a label-leading one counts under none', async () => {
     const { parseTrapDoorDeclarations } = await importModule();
     const content = [
       '## Other Section',
@@ -115,8 +120,16 @@ describe('parseTrapDoorDeclarations — unit', () => {
       '',
     ].join('\n');
     const result = parseTrapDoorDeclarations(content);
-    assert.equal(result.declarations, 1, 'only the entry in Trap Doors section counts');
-    assert.equal(result.findings.length, 0, 'state.json Field Invariants INVARIANT-only entries do not produce findings');
+    assert.equal(
+      result.declarations,
+      2,
+      'both subject-bearing entries count — the one above ## Trap Doors and the one inside it',
+    );
+    assert.equal(
+      result.findings.length,
+      0,
+      'the label-leading state.json field-invariant bullet is not an entry, so its missing BREAKS is not a finding',
+    );
   });
 
   test('empty content returns zero declarations and zero findings', async () => {
@@ -144,6 +157,59 @@ describe('auditTrapDoorDeclarations — integration: real extension/CLAUDE.md', 
       result.findings,
       [],
       `Expected 0 findings; got:\n${result.findings.map((f) => `  ${f.id}: ${f.message}`).join('\n')}`,
+    );
+  });
+
+  // AP-EXT-ITER296-01: the audit used to cut the catalog at the first `## ` heading after
+  // `## Trap Doors`, so every entry a later pass appended below an intervening heading was
+  // unexamined while the audit still reported zero findings. Driven over the REAL catalogs
+  // rather than a fixture, because the defect was invisible precisely to a fixture that keeps
+  // its entries inside the section — the population at risk is the live corpus.
+  test('AP-EXT-ITER296-01: entries below the first heading after ## Trap Doors are audited, not cut away', async () => {
+    const { parseTrapDoorDeclarations } = await importModule();
+    const catalogs = [
+      'extension/src/bin/CLAUDE.md',
+      'extension/src/services/CLAUDE.md',
+      'extension/CLAUDE.md',
+    ];
+
+    let totalBelow = 0;
+    for (const rel of catalogs) {
+      const content = readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
+      const lines = content.split('\n');
+      const trapDoorsIdx = lines.findIndex((l) => /^##\s+Trap Doors\s*$/.test(l));
+      assert.ok(trapDoorsIdx !== -1, `${rel} has no ## Trap Doors heading`);
+      const cutIdx = lines.findIndex((l, i) => i > trapDoorsIdx && /^##\s+/.test(l));
+      assert.ok(cutIdx !== -1, `${rel} has no heading after ## Trap Doors, so it cannot separate`);
+
+      // Everything the OLD slice-based reader could never see.
+      const below = lines.slice(cutIdx).join('\n');
+      const belowResult = parseTrapDoorDeclarations(below);
+      assert.equal(
+        belowResult.findings.length,
+        0,
+        `${rel}: entries below the cut are malformed: ${belowResult.findings
+          .map((f) => f.id)
+          .join(', ')}`,
+      );
+      totalBelow += belowResult.declarations;
+
+      // The whole file must account for the below-the-cut entries too, so a reader that
+      // silently re-narrows to the section cannot satisfy this.
+      const whole = parseTrapDoorDeclarations(content);
+      const above = parseTrapDoorDeclarations(lines.slice(0, cutIdx).join('\n'));
+      assert.equal(
+        whole.declarations,
+        above.declarations + belowResult.declarations,
+        `${rel}: whole-file count must equal above-cut + below-cut`,
+      );
+    }
+
+    // Non-vacuity: if these catalogs ever stop carrying below-the-cut entries the assertions
+    // above all pass on zero, so pin that the population is real and substantial.
+    assert.ok(
+      totalBelow >= 100,
+      `Expected >= 100 trap-door entries below the cut across the catalogs; got ${totalBelow}`,
     );
   });
 });
