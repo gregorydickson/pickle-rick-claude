@@ -342,6 +342,11 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         // two names with it.
         'worker_git_dir_write_blocked',
         'worker_git_dir_write_bypass',
+        // AP-EXT-ITER298-01: the CONFIG/ALIAS axis — `GIT_CONFIG_VERB` is a key
+        // `findGitVerb` returns, so it rides the same table and brings its two
+        // names with it.
+        'worker_git_config_command_blocked',
+        'worker_git_config_command_bypass',
     ];
     assert.equal(VALID_ACTIVITY_EVENTS.length, expected.length);
     for (const e of expected) {

@@ -1626,6 +1626,7 @@ function isWorkerRole() {
 const GIT_DIR_WRITE_KEY = '.git/ write';
 const GIT_VERB_GATE = {
     [GIT_DIR_WRITE_KEY]: { flag: 'allow_git_dir_write_reason', blocked: 'worker_git_dir_write_blocked', bypass: 'worker_git_dir_write_bypass' },
+    [GIT_CONFIG_VERB]: { flag: 'allow_git_config_command_reason', blocked: 'worker_git_config_command_blocked', bypass: 'worker_git_config_command_bypass' },
     'reset': { flag: 'allow_git_reset_reason', blocked: 'worker_git_reset_blocked', bypass: 'worker_git_reset_bypass' },
     'checkout': { flag: 'allow_git_checkout_reason', blocked: 'worker_git_checkout_blocked', bypass: 'worker_git_checkout_bypass' },
     'switch': { flag: 'allow_git_switch_reason', blocked: 'worker_git_switch_blocked', bypass: 'worker_git_switch_bypass' },
@@ -1684,7 +1685,14 @@ function isGitVerbBlockedByRWSRCGR(input, state) {
         return true;
     }
     logGitVerbGateEvent(gate, 'blocked', { command: input.tool_input.command, ticket_id: ticketId ?? null });
-    block(`R-WSRC-GR: \`git ${verb}\` is FORBIDDEN inside worker subprocesses. PRESERVE WORK first (R-WUWC): commit verified changes scoped, then \`git restore <named-files>\` — NEVER \`git restore .\` or a directory over uncommitted work (restore is not blocked and wipes it all). Operator override: set state.flags.${flagField ?? `allow_git_${verb.replace(/\s/g, '_')}_reason`}="<reason>" to bypass.`);
+    // The override hint names the field this gate READS, or says nothing. The
+    // `allow_git_${verb}_reason` BUILDER it replaces is the name-builder shape
+    // `GIT_VERB_GATE`'s docblock forbids (AP-EXT-ITER110-01), reproduced on the
+    // OVERRIDE axis: a verb with no row got an invented flag name no code reads,
+    // so an operator following the instruction saw the identical block again with
+    // no way to learn why (AP-EXT-ITER298-01, measured on `config command`).
+    const overrideHint = flagField ? ` Operator override: set state.flags.${flagField}="<reason>" to bypass.` : '';
+    block(`R-WSRC-GR: \`git ${verb}\` is FORBIDDEN inside worker subprocesses. PRESERVE WORK first (R-WUWC): commit verified changes scoped, then \`git restore <named-files>\` — NEVER \`git restore .\` or a directory over uncommitted work (restore is not blocked and wipes it all).${overrideHint}`);
     return true;
 }
 /**

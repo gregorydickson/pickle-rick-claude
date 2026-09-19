@@ -7803,3 +7803,88 @@ test('AP-EXT-ITER283-03: the ASSIGNMENT PREFIX is the discriminator, not the too
   // An option word is never a delivery, whatever it is handed to.
   assert.deepEqual(delivered('anytool --format=reset -1'), []);
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER298-01 — the block message's override flag is the flag the gate READS
+//
+// `findGitVerb` mints `GIT_CONFIG_VERB` ('config command') at two sites — an
+// alias definition (AP-EXT-ITER279-01) and a config VALUE naming a prohibited op
+// (AP-EXT-ITER281-02) — and that key reached `GIT_VERB_GATE` with no row. The
+// lookup is partial (`| undefined`), so the miss was silent in BOTH directions:
+// the audit emitter returned early and the block message fell through to a
+// `allow_git_${verb}_reason` BUILDER, inventing a flag name no code reads.
+// Measured on the shipped handler, worker role, with `git reset --hard HEAD~1`
+// and `> .git/HEAD` BLOCKING-with-event-and-bypass in the same probe run:
+// `git -c alias.zap='reset --hard' zap` and
+// `git -c diff.external='sh -c "git reset --hard"' commit -m x` blocked while
+// emitting ZERO activity events, and setting the very flag their own reason
+// named left them BLOCKED.
+//
+// The pin is the ROUND TRIP, not the row: extract the flag name FROM the reason,
+// set THAT, and require the decision to flip — so a future minted verb whose row
+// is forgotten reds here rather than shipping an instruction that cannot work.
+// ---------------------------------------------------------------------------
+
+const GIT_BOUNDARY_GATED_COMMANDS = [
+  { label: 'verb axis', command: 'git reset --hard HEAD~1' },
+  { label: 'path axis', command: 'echo x > .git/HEAD' },
+  { label: 'config axis (alias definition)', command: "git -c alias.zap='reset --hard' zap" },
+  { label: 'config axis (config value)', command: `git -c diff.external='sh -c "git reset --hard"' commit -m x` },
+];
+
+for (const { label, command } of GIT_BOUNDARY_GATED_COMMANDS) {
+  test(`AP-EXT-ITER298-01: ${label} — the flag its block names is the flag that bypasses it`, async () => {
+    const { VALID_ACTIVITY_EVENTS } = await import('../../types/index.js');
+
+    const blocked = bootstrapSession();
+    const denied = runHandler({
+      tmpDir: blocked.tmpDir, stateFile: blocked.stateFile,
+      toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(denied.decision, 'block', `${command} must block for a worker`);
+
+    // The audit line is the half that vanished entirely on a missing row.
+    const events = readActivityEvents(blocked.dataRoot)
+      .filter(e => String(e.event).startsWith('worker_git_'));
+    assert.equal(events.length, 1, `expected exactly one audit event, got ${JSON.stringify(events.map(e => e.event))}`);
+    assert.match(events[0].event, /_blocked$/);
+    assert.ok(
+      VALID_ACTIVITY_EVENTS.includes(events[0].event),
+      `${events[0].event} is not registered in VALID_ACTIVITY_EVENTS`,
+    );
+
+    // The flag name is READ BACK OUT of the handler's own message, never
+    // re-typed here: a pin that spells the flag itself passes on a handler that
+    // advertises a different one, which is the whole defect.
+    const named = denied.reason.match(/state\.flags\.([A-Za-z0-9_]+)="<reason>"/);
+    assert.ok(named, `block reason names no override flag: ${denied.reason}`);
+
+    const allowed = bootstrapSession({ flags: { [named[1]]: 'operator probe' } });
+    const result = runHandler({
+      tmpDir: allowed.tmpDir, stateFile: allowed.stateFile,
+      toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(
+      result.decision, 'approve',
+      `state.flags.${named[1]} is advertised by the block but does not bypass it`,
+    );
+  });
+}
+
+test('AP-EXT-ITER298-01: ACCEPT control — a benign git command approves and writes no audit line', () => {
+  // Without this, every assertion above passes on a handler that blocks
+  // unconditionally and advertises one working flag.
+  const { tmpDir, stateFile, dataRoot } = bootstrapSession();
+  const result = runHandler({
+    tmpDir, stateFile,
+    toolName: 'Bash', toolInput: { command: 'git status -sb' },
+    extraEnv: { PICKLE_ROLE: 'worker' },
+  });
+  assert.equal(result.decision, 'approve');
+  assert.deepEqual(
+    readActivityEvents(dataRoot).filter(e => String(e.event).startsWith('worker_git_')),
+    [],
+  );
+});

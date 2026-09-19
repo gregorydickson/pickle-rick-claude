@@ -527,6 +527,13 @@ export const VALID_ACTIVITY_EVENTS = [
     // can express. Emitted by the `GIT_DIR_WRITE_KEY` row of `GIT_VERB_GATE`.
     'worker_git_dir_write_blocked',
     'worker_git_dir_write_bypass',
+    // AP-EXT-ITER298-01: the CONFIG/ALIAS axis of the same Rules — `git -c
+    // <key>=<value>` or an alias definition whose value names a prohibited op,
+    // which no verb member can express either. `findGitVerb` has minted the
+    // `GIT_CONFIG_VERB` key since the alias gate landed; it reached
+    // `GIT_VERB_GATE` with no row, so the block emitted NO audit line at all.
+    'worker_git_config_command_blocked',
+    'worker_git_config_command_bypass',
 ];
 /**
  * Recoverable reasons a ticket can be flipped to Failed by the auto-skip guard (R-WSWA-3).
