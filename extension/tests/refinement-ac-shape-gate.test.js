@@ -745,6 +745,35 @@ test('eb189d66: countWrittenAnalyses returns 0 for a non-existent directory', ()
   assert.equal(countWrittenAnalyses(missingDir), 0, 'a directory that was never created has zero written analyses');
 });
 
+test('80b82391: countWrittenAnalyses throws on an UNREADABLE directory rather than reporting a measured zero', (t) => {
+  const refinementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-refinement-unreadable-'));
+  try {
+    // A real analysis exists, so a returned 0 would be provably wrong, not merely unknown.
+    fs.writeFileSync(path.join(refinementDir, 'analysis_codebase.md'), '# codebase\n');
+    fs.chmodSync(refinementDir, 0o000);
+    // Self-checking skip: mode bits do not constrain uid 0, so under root the directory
+    // stays readable and this row would pass vacuously. Probe first, then skip loudly.
+    let readable = true;
+    try {
+      fs.readdirSync(refinementDir);
+    } catch {
+      readable = false;
+    }
+    if (readable) {
+      t.skip('chmod 000 left the directory readable (running as root?) — this row cannot fire here');
+      return;
+    }
+    assert.throws(
+      () => countWrittenAnalyses(refinementDir),
+      (err) => err instanceof Error && err.code !== 'ENOENT',
+      'an unreadable directory must surface its own errno, never be counted as zero analyses'
+    );
+  } finally {
+    fs.chmodSync(refinementDir, 0o700);
+    fs.rmSync(refinementDir, { recursive: true, force: true });
+  }
+});
+
 test('eb189d66: countWrittenAnalyses counts only canonical analysis_<role>.md files', () => {
   const refinementDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-refinement-count-'));
   try {

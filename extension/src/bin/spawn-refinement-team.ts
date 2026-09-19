@@ -2772,7 +2772,13 @@ export function countWrittenAnalyses(refinementDir: string): number {
   let entries: string[];
   try {
     entries = fs.readdirSync(refinementDir);
-  } catch {
+  } catch (err) {
+    // ENOENT is a real measurement: a directory that was never created holds no
+    // analyses. Any other errno (EACCES, EMFILE, ENOTDIR) means the count is UNKNOWN,
+    // and returning 0 for it would let the caller report `zero_analyses_produced` —
+    // a count this function never took. Rethrow so the failure keeps its own errno;
+    // `main().catch` already prints syscall and path.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
     return 0;
   }
   return entries.filter((entry) => CANONICAL_ANALYSIS_RE.test(entry)).length;
