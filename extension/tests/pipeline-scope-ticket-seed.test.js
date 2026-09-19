@@ -199,3 +199,107 @@ test('setupScope leaves explicit paths scope untouched', async () => {
         cleanup(repo, session);
     }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER291-01: the seeded-scope write is BEST-EFFORT.
+//
+// `persistSeededBranchScope` is called from inside `setupScope`'s own CATCH block
+// (the SCOPE_EMPTY_DIFF recovery), and a throw from a catch is not caught by its own
+// try. Pre-fix it propagated through `setupRuntimeScope` -> `loadPipelineRuntime` ->
+// `main()` — whose only `try` is a `try`/`finally` around the phase loop, entered
+// AFTER the runtime load — and reached the CLI fatal handler: `exit_reason: 'fatal'`,
+// exit 1, ZERO phases run, `pipeline-status.json` never created.
+//
+// Assert the RETURN DISPOSITION and the reported cause, never "does not throw":
+// pre-fix the function threw; a bare doesNotThrow oracle would also pass over a
+// version that silently swallowed, and going silent is the other failure mode.
+// ---------------------------------------------------------------------------
+
+function seedSession(repo, ticketId, declaredPaths) {
+    const session = makeSession(repo, ticketId);
+    writeTicket(session, ticketId, declaredPaths);
+    return session;
+}
+
+function runSeededSetupScope(session, repo) {
+    const messages = [];
+    const scope = setupScopeRef({
+        sessionDir: session,
+        workingDir: repo,
+        target: repo,
+        scopeFlag: 'branch',
+        scopeBase: 'main',
+        log: (m) => messages.push(m),
+    });
+    return { scope, messages };
+}
+
+let setupScopeRef;
+
+test('AP-EXT-ITER291-01: an unwritable scope.json degrades the seed instead of ending the run', async () => {
+    const repo = makeRepo();
+    const session = seedSession(repo, 'seed-eisdir', ['src/feature.ts']);
+    try {
+        ({ setupScope: setupScopeRef } = await loadCompiledModules());
+        // ROOT-INDEPENDENT cause: a directory where the file goes (mode bits do nothing to uid 0).
+        fs.mkdirSync(path.join(session, 'scope.json'), { recursive: true });
+
+        const { scope, messages } = runSeededSetupScope(session, repo);
+
+        assert.equal(scope, null, 'a failed seed takes the existing "could not seed" channel');
+        assert.ok(
+            messages.some((m) => m.includes('could not seed pickle-phase scope') && m.includes('EISDIR')),
+            `the degrade names its cause, got ${JSON.stringify(messages)}`,
+        );
+        assert.ok(
+            messages.some((m) => m.includes('SCOPE_EMPTY_DIFF') && m.includes('continuing')),
+            'the caller still reports the unseeded continue',
+        );
+    } finally {
+        cleanup(repo, session);
+    }
+});
+
+test('AP-EXT-ITER291-01: a second independent cause — a broken-symlink scope.json — degrades the same way', async () => {
+    const repo = makeRepo();
+    const session = seedSession(repo, 'seed-enoent', ['src/feature.ts']);
+    try {
+        ({ setupScope: setupScopeRef } = await loadCompiledModules());
+        // Second ROOT-INDEPENDENT cause: the write follows the link and ENOENTs on the
+        // missing parent. `existsSync` is FALSE on a broken symlink, so nothing upstream
+        // skips it and the throw reaches this writer.
+        fs.symlinkSync('/nonexistent-ap-ext-iter291-01/x', path.join(session, 'scope.json'));
+
+        const { scope, messages } = runSeededSetupScope(session, repo);
+
+        assert.equal(scope, null);
+        assert.ok(
+            messages.some((m) => m.includes('could not seed pickle-phase scope') && m.includes('ENOENT')),
+            `the degrade names its cause, got ${JSON.stringify(messages)}`,
+        );
+    } finally {
+        cleanup(repo, session);
+    }
+});
+
+// Over-trigger control: without this, degrading unconditionally satisfies both cases above.
+test('AP-EXT-ITER291-01 control: a writable session still seeds and persists the scope', async () => {
+    const repo = makeRepo();
+    const session = seedSession(repo, 'seed-healthy', ['src/feature.ts', 'docs/notes.md']);
+    try {
+        ({ setupScope: setupScopeRef } = await loadCompiledModules());
+
+        const { scope, messages } = runSeededSetupScope(session, repo);
+
+        assert.ok(scope, 'the healthy seed is unchanged');
+        assert.deepStrictEqual(scope.allowed_paths, ['docs/notes.md', 'src/feature.ts']);
+        const persisted = JSON.parse(fs.readFileSync(path.join(session, 'scope.json'), 'utf-8'));
+        assert.deepStrictEqual(persisted.allowed_paths, ['docs/notes.md', 'src/feature.ts'], 'the artifact LANDS');
+        assert.ok(
+            !messages.some((m) => m.includes('could not seed')),
+            `a healthy seed reports no degrade, got ${JSON.stringify(messages)}`,
+        );
+    } finally {
+        cleanup(repo, session);
+    }
+});

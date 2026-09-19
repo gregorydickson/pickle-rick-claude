@@ -577,36 +577,72 @@ function resolveSeedPathsForSetup(sessionDir, statePath, target, repoRoot) {
     const normalized = Array.from(new Set(declared.map(normalizeRepoPathForScope).filter(Boolean)));
     return sortScopePaths(filterSeedPathsToTarget(normalized, target, repoRoot));
 }
+/**
+ * AP-EXT-ITER291-01: seeding is BEST-EFFORT, and "could not seed" has ONE channel.
+ *
+ * This function already answers "could not seed" with `null` three times — not a branch
+ * scope, no ticket-declared paths, no resolvable shas — and the caller in `setupScope`'s
+ * SCOPE_EMPTY_DIFF handler turns that `null` into a logged WARN and `continuing; build
+ * phase may produce diff`. A failed persist is the FOURTH member of exactly that set, so
+ * it takes the same channel rather than a fifth disposition; the frame sits at the
+ * function boundary so every step is inside it by construction.
+ *
+ * BREAKS: the write ran bare inside `setupScope`'s own CATCH block, and a throw from a
+ * catch is not caught by its own try. It propagated through `setupRuntimeScope` and
+ * `loadPipelineRuntime` to `main()`, whose only `try` is a `try`/`finally` around the
+ * phase loop — and `loadPipelineRuntime` is called BEFORE that. So the throw reached the
+ * CLI fatal handler, stamped `exit_reason: 'fatal'` and exited 1 with ZERO phases run.
+ * Worse than the AP-EXT-ITER288/289/290 halts one call site over: it dies before
+ * `writeRunningStatus`, so `pipeline-status.json` is never created at all and a monitor
+ * polling it sees nothing. And it sits on the RECOVERY path for a BENIGN, expected
+ * condition — an empty pre-build branch diff is the normal state at pipeline launch.
+ *
+ * MEASURED 2026-09-19 end to end through the real `main()` on a ROOT-INDEPENDENT cause
+ * (no file modes — a mode-based row is vacuous under uid 0): `<session>/scope.json`
+ * occupied by a DIRECTORY, giving EISDIR from the write. Before: the throw escaped
+ * `main()`, 0 phase runners, `exit_reason` never stamped, `pipeline-status.json` absent,
+ * and NOT ONE log line — `setupScope` logs only on its own two return paths.
+ * After: the seed degrades to a logged WARN and the run reaches the phase loop.
+ *
+ * Continuing is not a success claim: an unseeded scope is the same state the no-declared-
+ * paths branch already produces, and the caller's WARN says so.
+ */
 function persistSeededBranchScope(args) {
     const { sessionDir, workingDir, target, scopeBase, scopeFlag } = args;
-    const parsed = parseScope(scopeFlag);
-    if (parsed.mode !== 'branch') {
+    try {
+        const parsed = parseScope(scopeFlag);
+        if (parsed.mode !== 'branch') {
+            return null;
+        }
+        const repoRoot = gitRepoRoot(workingDir);
+        const allowedPaths = resolveSeedPathsForSetup(sessionDir, path.join(sessionDir, 'state.json'), target, repoRoot);
+        if (allowedPaths.length === 0) {
+            return null;
+        }
+        const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
+        const baseRef = resolveSetupScopeBaseRef(repoRoot, scopeBase);
+        const baseSha = runGitString(['merge-base', baseRef, 'HEAD'], repoRoot) ?? computeReviewBase(repoRoot);
+        if (!headSha || !baseSha) {
+            return null;
+        }
+        const scope = {
+            version: 1,
+            mode: 'branch',
+            strategy: parsed.strategy,
+            base_ref: baseRef,
+            base_sha: baseSha,
+            head_sha: headSha,
+            allowed_paths: allowedPaths,
+            resolved_at: new Date().toISOString(),
+            refresh_history: [],
+        };
+        fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify(scope, null, 2));
+        return scope;
+    }
+    catch (err) {
+        args.log(`scope-setup WARN: could not seed pickle-phase scope — ${safeErrorMessage(err)} (continuing unseeded)`);
         return null;
     }
-    const repoRoot = gitRepoRoot(workingDir);
-    const allowedPaths = resolveSeedPathsForSetup(sessionDir, path.join(sessionDir, 'state.json'), target, repoRoot);
-    if (allowedPaths.length === 0) {
-        return null;
-    }
-    const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
-    const baseRef = resolveSetupScopeBaseRef(repoRoot, scopeBase);
-    const baseSha = runGitString(['merge-base', baseRef, 'HEAD'], repoRoot) ?? computeReviewBase(repoRoot);
-    if (!headSha || !baseSha) {
-        return null;
-    }
-    const scope = {
-        version: 1,
-        mode: 'branch',
-        strategy: parsed.strategy,
-        base_ref: baseRef,
-        base_sha: baseSha,
-        head_sha: headSha,
-        allowed_paths: allowedPaths,
-        resolved_at: new Date().toISOString(),
-        refresh_history: [],
-    };
-    fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify(scope, null, 2));
-    return scope;
 }
 /**
  * Resolve the git repo root for `cwd`; falls back to `cwd` for a non-git dir.

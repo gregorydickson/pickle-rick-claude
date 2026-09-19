@@ -1015,3 +1015,70 @@ test('AP-EXT-ITER290-01: writeSkippedByScope reports its failure through the cal
   const leaked = fs.readdirSync(path.join(sessionDir, 'archive')).filter((f) => f.includes('.tmp.'));
   assert.deepEqual(leaked, [], 'the tmp file is cleaned up on the degrade path');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER291-01: a failed seeded-scope write must not end the run at LOAD.
+//
+// The seeded-scope write lives in `setupScope`'s SCOPE_EMPTY_DIFF catch, reached from
+// `loadPipelineRuntime` — which `main()` calls BEFORE entering its `try`/`finally`.
+// Pre-fix the throw escaped `main()` entirely: 0 phase runners, `exit_reason` never
+// stamped, and `pipeline-status.json` never created at all (the halt lands before
+// `writeRunningStatus`, so unlike its AP-EXT-ITER289/290 siblings it leaves no artifact
+// whatsoever for a monitor to read).
+//
+// Assert the PHASES REACHED and the on-disk disposition, never the return value.
+// ---------------------------------------------------------------------------
+
+function makeSeededScopeSession(breakScope) {
+  // NO follow-up commit: an empty pre-build branch diff is what raises SCOPE_EMPTY_DIFF
+  // and routes setup into the seeded-scope recovery this case exercises.
+  const { repo, sessionDir } = makePipelineSession({
+    stateOverrides: { current_ticket: 'seed-e2e' },
+    pipelineOverrides: {
+      phases: ['anatomy-park', 'szechuan-sauce'],
+      scope: 'branch',
+      scope_base: 'main',
+      anatomy_max_iterations: 1,
+      szechuan_max_iterations: 1,
+    },
+  });
+  const ticketDir = path.join(sessionDir, 'seed-e2e');
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketDir, 'rick_ticket_seed-e2e.md'), [
+    '---', 'id: seed-e2e', 'title: Seed', 'status: In Progress', 'updated: "2026-09-19"', '---',
+    '# Implementation Details',
+    '**Files to modify/create**: `services/feature.ts`', '',
+  ].join('\n'));
+  if (breakScope) fs.mkdirSync(path.join(sessionDir, 'scope.json'), { recursive: true });
+  const runnersSpawned = [];
+  __setSpawnRunnerForTests(async (_cmd, args) => {
+    runnersSpawned.push(path.basename(String(args?.[0] ?? '')));
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  return { repo, sessionDir, runnersSpawned };
+}
+
+test('AP-EXT-ITER291-01: an unwritable scope.json degrades the seed — the run still reaches the phase loop', async () => {
+  const { repo, sessionDir } = makeSeededScopeSession(true);
+
+  // Pre-fix this rejected with a raw EISDIR instead of an intercepted process.exit.
+  await expectMainExit(sessionDir, 0);
+
+  const statusPath = path.join(sessionDir, 'pipeline-status.json');
+  assert.ok(fs.existsSync(statusPath), 'pipeline-status.json exists — pre-fix the halt landed before it was ever written');
+  assert.equal(readStatus(sessionDir).current_phase, null, 'the terminal status write ran — the loop reached finalize');
+
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(runnerLog, /could not seed pickle-phase scope: .*EISDIR|could not seed pickle-phase scope — .*EISDIR/, 'the cause is reported, not swallowed');
+  assert.match(runnerLog, /Pipeline finished:/, 'the run reached finalize, not a load-time fatal');
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// The over-trigger control for this fix lives at the `setupScope` seam
+// (tests/pipeline-scope-ticket-seed.test.js, `AP-EXT-ITER291-01 control`), not here.
+// A healthy branch-mode seed cannot reach finalize in THIS harness: seeding requires an
+// empty pre-build branch diff, and with no real build phase to produce one,
+// `refreshPhaseScope` then raises the documented `SCOPE_EMPTY_POST_BUILD` refusal. That
+// is pre-existing, deliberate behaviour (`throwOnEmptyScope`) and not this fix's to pin.
+// The seam-level control asserts the healthy seed LANDS and logs no degrade, so
+// degrading unconditionally still reds.
