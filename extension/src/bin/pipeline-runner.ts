@@ -145,6 +145,22 @@ export type PhaseSkipReason = 'empty_scope' | 'empty_branch_diff' | 'no_subsyste
 /** R-PSSS-3: a phase setup returns `true` on success, or a skip reason. */
 export type PhaseSetupResult = true | { skipReason: PhaseSkipReason };
 
+/**
+ * The skip reasons that are a FAILURE the loop continued past rather than a benign "nothing to
+ * do". Membership is what `computePipelineVerdict` withholds success on, so continuing past one
+ * never reports as a clean run (B-NOSTOP-GATES: continuing is not claiming success).
+ *
+ * `empty_scope` / `empty_branch_diff` / `no_subsystems` stay OUT: those phases had no work, which
+ * is a correct outcome, not a degradation.
+ */
+const DEGRADED_PHASE_SKIP_REASONS: ReadonlySet<PhaseSkipReason> = new Set<PhaseSkipReason>([
+  // A crashed phase downgraded to a skip (B-RELVERD V4).
+  'crash_downgraded',
+  // A setup that could not do its job — a failed `init-microverse.js`, or (AP-EXT-ITER289-01) a
+  // setup step that threw where it used to end the whole run.
+  'setup_error',
+]);
+
 interface PipelineStatus {
   status: PipelineStatusKind;
   current_phase: PipelinePhase | null;
@@ -3660,6 +3676,64 @@ function refreshPhaseScope(
   }
 }
 
+/**
+ * AP-EXT-ITER289-01: ONE recovery frame for the WHOLE setup step, not a guard per write.
+ *
+ * A phase setup persists several artifacts (`anatomy-park.json`, the phase `prd.md`,
+ * `judge-context.md`) and nothing between `phaseConfig.setup` and the CLI catches — not
+ * `runConfiguredPhase`, not `runPhaseIteration`, not `runPipelinePhaseLoop` — so ANY of those
+ * writes throwing ended the whole run with the phase and every phase AFTER it never run. That is
+ * the identical halt AP-EXT-ITER288-01/-02 closed at the citadel phase's own body, one call site
+ * over. Guarding the individual writes would leave the next write added to a setup in exactly the
+ * same place; the frame sits at the call so every step of every phase's setup — including a
+ * future phase's — is inside it by construction.
+ *
+ * MEASURED 2026-09-18 end to end through the real `main()` on two independent causes, both
+ * ROOT-INDEPENDENT (no file modes — a mode-based row is vacuous under uid 0):
+ * `<session>/anatomy-park.json` occupied by a DIRECTORY (EISDIR from `writeStateFile`'s rename)
+ * and `<session>/prd.md` a BROKEN SYMLINK (ENOENT on the write below; `existsSync` is FALSE on a
+ * broken symlink, so the load-time backend assert and `archiveFile` both skip it and the throw
+ * reaches the SETUP rather than the runtime load). A readable-but-unwritable `prd.md` — what
+ * permissions drift and root-owned `ci-repro.sh` artifacts produce — measured identically as uid
+ * 501. Before: the throw escaped `main()`, 0 phase runners, `exit_reason` never stamped and
+ * `pipeline-status.json` left saying `running`. After: the phase is skipped, the phases after it
+ * run, and the run finalizes.
+ *
+ * The crash floor is NOT widened: `preparePhaseState` above runs `sm.read` +
+ * `claimPipelineRunnerActive` unguarded at every phase boundary, and no setup on this path
+ * propagates a state read at all (`readWorkingDirFromState` swallows its own), so an unreadable
+ * `state.json` is still caught by its designated detector before this frame is reached.
+ *
+ * `setup_error` is the `PhaseSkipReason` the setups themselves already return for a failed
+ * `init-microverse.js` six lines above the offending write, so the degrade needs no new member
+ * and no new disposition: `runPhaseIteration` counts the skip, names it in `phase_skips` and logs
+ * it, exactly as it does for every other skip reason.
+ *
+ * Deliberately scoped to the setup call: `preparePhaseState` above it writes `state.json` and
+ * `refreshPhaseScope` throws `SCOPE_EMPTY_POST_BUILD` by design — the first is the genuine crash
+ * floor, the second a documented refusal, and neither is a weak reason to end a run.
+ */
+function runPhaseSetup(runtime: PipelineRuntime, phaseConfig: PhaseConfig, scope: ScopeJson | undefined): PhaseSetupResult {
+  if (!phaseConfig.setup) return true;
+  try {
+    return phaseConfig.setup({
+      sessionDir: runtime.sessionDir,
+      target: runtime.target,
+      workingDir: runtime.repoRoot,
+      extensionRoot: runtime.extensionRoot,
+      log: runtime.log,
+      scope,
+      designSafe: runtime.designSafe,
+    });
+  } catch (err) {
+    runtime.log(
+      `${phaseConfig.name}: setup failed: ${safeErrorMessage(err)} `
+      + '— skipping phase (setup_error), continuing pipeline',
+    );
+    return { skipReason: 'setup_error' };
+  }
+}
+
 async function runConfiguredPhase(
   runtime: PipelineRuntime,
   phaseConfig: PhaseConfig,
@@ -3668,15 +3742,7 @@ async function runConfiguredPhase(
   await postPhaseCleanup(phaseConfig.name, runtime.sessionDir);
   preparePhaseState(phaseConfig, runtime);
   const scope = refreshPhaseScope(phaseConfig, runtime, counters);
-  const setupResult: PhaseSetupResult = phaseConfig.setup ? phaseConfig.setup({
-    sessionDir: runtime.sessionDir,
-    target: runtime.target,
-    workingDir: runtime.repoRoot,
-    extensionRoot: runtime.extensionRoot,
-    log: runtime.log,
-    scope,
-    designSafe: runtime.designSafe,
-  }) : true;
+  const setupResult: PhaseSetupResult = runPhaseSetup(runtime, phaseConfig, scope);
   // R-PSSS-3: a non-`true` setup result carries the skip reason.
   if (setupResult !== true) return { skipped: true, skipReason: setupResult.skipReason, exitCode: null };
   if (phaseConfig.name === 'citadel') return { skipped: false, exitCode: (await executeCitadelPhase(runtime)).exitCode };
@@ -4677,8 +4743,9 @@ function finalizeNonSuccessTerminal(
  * derived HERE from every Done ticket's CURRENT verdict: "is this bundle red now?", not "was any
  * ticket ever red?". Only a run that has a pickle phase asks, exactly as before.
  *
- * B-RELVERD V4: a `crash_downgraded` skip is a crashed phase the loop continued past, so it
- * withholds success; every other skip reason stays a benign skip. Derived from `phaseSkips`,
+ * B-RELVERD V4: a skip that is a FAILURE the loop continued past withholds success; a skip for a
+ * phase that had no work stays benign. The two are told apart by ONE named set,
+ * `DEGRADED_PHASE_SKIP_REASONS`, not by a reason-by-reason chain here. Derived from `phaseSkips`,
  * which already survives crash-resume, rather than raised into the one-way counter.
  */
 export function computePipelineVerdict(runtime: PipelineRuntime, counters: PhaseCounters): {
@@ -4690,8 +4757,8 @@ export function computePipelineVerdict(runtime: PipelineRuntime, counters: Phase
   const pipelineFailed = (counters.completed + counters.skipped) < runtime.config.phases.length;
   const doneOverRed = runtime.config.phases.includes('pickle')
     && reportDoneOverRedTestVerdict(runtime, counters, runtime.log);
-  const crashDowngraded = Object.values(counters.phaseSkips).includes('crash_downgraded');
-  const unsuccessful = pipelineFailed || counters.nonConvergent > 0 || doneOverRed || crashDowngraded;
+  const degradedSkip = Object.values(counters.phaseSkips).some(r => DEGRADED_PHASE_SKIP_REASONS.has(r));
+  const unsuccessful = pipelineFailed || counters.nonConvergent > 0 || doneOverRed || degradedSkip;
   const handoffStop = !!readHandoffExitReason(runtime.statePath);
   return { pipelineFailed, unsuccessful, handoffStop, effectiveFailed: unsuccessful && !handoffStop };
 }

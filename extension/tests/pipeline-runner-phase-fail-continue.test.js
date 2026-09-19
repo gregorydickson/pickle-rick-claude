@@ -774,3 +774,132 @@ test('AP-EXT-ITER211-02 control: the exemption is narrow — non-exempt events a
 
   fs.rmSync(repo, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER289-01: a phase SETUP persists several artifacts (`anatomy-park.json`,
+// the phase `prd.md`, `judge-context.md`) and `phaseConfig.setup` was called BARE in
+// `runConfiguredPhase` — no recovery frame anywhere between it and the CLI fatal
+// handler. So any of those writes throwing ended the whole run with the phase and
+// every phase AFTER it never run: the identical halt AP-EXT-ITER288-01/-02 closed at
+// the citadel phase's own body, one call site over.
+//
+// Two INDEPENDENT causes, both root-independent (no file modes — a mode-based row is
+// vacuous under uid 0):
+//   (a) `<session>/anatomy-park.json` occupied by a DIRECTORY  -> writeStateFile's
+//       renameSync raises EISDIR inside `writeAnatomyConfig`.
+//   (b) `<session>/prd.md` a BROKEN SYMLINK                    -> the setup's own
+//       prd.md write raises ENOENT. `existsSync` is false on a broken symlink, so
+//       the load-time backend assert and `archiveFile` both skip it: this reaches
+//       the SETUP, not the runtime load.
+//
+// Assert the PHASES REACHED and the on-disk disposition, never the return value:
+// `runConfiguredPhase` reports `{skipped:true}` on every degraded path, so a
+// return-value oracle greens over the halt.
+// ---------------------------------------------------------------------------
+
+// Drives the real `main()` over a two-phase pipeline, recording which phase runners
+// were spawned. `breakSetup` corrupts one session artifact before the run.
+function driveTwoPhaseRunWithBrokenSetup(breakSetup) {
+  const { repo, sessionDir } = makePipelineSession({
+    createFollowupCommit: true,
+    pipelineOverrides: {
+      phases: ['anatomy-park', 'szechuan-sauce'],
+      anatomy_max_iterations: 1,
+      szechuan_max_iterations: 1,
+    },
+  });
+  if (breakSetup) breakSetup(sessionDir);
+  const runnersSpawned = [];
+  __setSpawnRunnerForTests(async (_cmd, args) => {
+    runnersSpawned.push(path.basename(String(args?.[0] ?? '')));
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  return { repo, sessionDir, runnersSpawned };
+}
+
+function readStatus(sessionDir) {
+  return JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+}
+
+test('AP-EXT-ITER289-01: an unwritable anatomy-park.json skips that phase — the NEXT phase still runs', async () => {
+  const { repo, sessionDir, runnersSpawned } = driveTwoPhaseRunWithBrokenSetup((dir) => {
+    fs.mkdirSync(path.join(dir, 'anatomy-park.json'), { recursive: true });
+  });
+
+  // Exit 1 because the degrade WITHHOLDS success — the run still reached finalize.
+  await expectMainExit(sessionDir, 1);
+
+  assert.deepEqual(
+    runnersSpawned,
+    ['microverse-runner.js'],
+    'the phase AFTER the failed setup still ran — pre-fix this was 0 runners',
+  );
+  const status = readStatus(sessionDir);
+  assert.equal(status.phase_skips['anatomy-park'], 'setup_error', 'the degrade is named, not silent');
+  assert.equal(status.status, 'failed', 'continuing is not claiming success');
+  assert.equal(status.current_phase, null, 'the terminal status write ran — the loop reached finalize');
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(runnerLog, /anatomy-park: setup failed: .*EISDIR/, 'the cause is reported');
+  assert.match(runnerLog, /Pipeline finished:/, 'the run reached finalize, not a mid-loop fatal');
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('AP-EXT-ITER289-01: a second independent cause — an unwritable session prd.md — degrades the same way', async () => {
+  const { repo, sessionDir, runnersSpawned } = driveTwoPhaseRunWithBrokenSetup((dir) => {
+    fs.symlinkSync('/nonexistent-ap-ext-iter289-01/x', path.join(dir, 'prd.md'));
+  });
+
+  await expectMainExit(sessionDir, 1);
+
+  assert.deepEqual(runnersSpawned, [], 'both setups failed — but on their own, not by ending the run');
+  const status = readStatus(sessionDir);
+  assert.equal(status.phase_skips['anatomy-park'], 'setup_error');
+  assert.equal(status.phase_skips['szechuan-sauce'], 'setup_error', 'the loop reached the second phase');
+  assert.equal(status.status, 'failed');
+  assert.equal(status.skipped_phases, 2);
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(runnerLog, /szechuan-sauce: setup failed: .*ENOENT/);
+  assert.match(runnerLog, /Pipeline finished:/);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// Over-trigger control: the frame must not turn a HEALTHY setup into a skip. Without
+// this, degrading unconditionally would satisfy both cases above.
+test('AP-EXT-ITER289-01 control: a healthy setup still runs both phases and reports success', async () => {
+  const { repo, sessionDir, runnersSpawned } = driveTwoPhaseRunWithBrokenSetup(null);
+
+  await expectMainExit(sessionDir, 0);
+
+  assert.deepEqual(runnersSpawned, ['microverse-runner.js', 'microverse-runner.js']);
+  const status = readStatus(sessionDir);
+  assert.deepEqual(status.phase_skips ?? {}, {}, 'no phase was skipped');
+  assert.equal(status.status, 'completed');
+  assert.equal(status.completed_phases, 2);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// The REPORTING half. Continuing past a failed setup must not report the run as
+// successful — `setup_error` joins `crash_downgraded` in the ONE named set of
+// DEGRADED skip reasons, while the "nothing to do" skips stay benign.
+test('AP-EXT-ITER289-01: a setup_error skip withholds success; a no-work skip does not', () => {
+  const { runtime } = makeRuntime({ configOverrides: { phases: ['anatomy-park'] } });
+  const counters = (reason) => ({
+    completed: 0,
+    skipped: 1,
+    phaseSkips: { 'anatomy-park': reason },
+    nonConvergent: 0,
+    phaseDispositions: {},
+  });
+
+  for (const benignReason of ['empty_scope', 'empty_branch_diff', 'no_subsystems']) {
+    const benign = computePipelineVerdict(runtime, counters(benignReason));
+    assert.equal(benign.unsuccessful, false, `${benignReason} is a phase with no work, not a degradation`);
+  }
+
+  for (const degradedReason of ['setup_error', 'crash_downgraded']) {
+    const degraded = computePipelineVerdict(runtime, counters(degradedReason));
+    assert.equal(degraded.pipelineFailed, false, `${degradedReason}: the phase is accounted for`);
+    assert.equal(degraded.unsuccessful, true, `${degradedReason} withholds the success verdict`);
+    assert.equal(degraded.effectiveFailed, true);
+  }
+});
