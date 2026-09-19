@@ -1153,6 +1153,17 @@ export function expandWord(word) {
  * `"a"&&"git" reset` must still break at the unquoted `&&` (a whole-token test
  * sees a word that starts and ends with `"` and would swallow the boundary,
  * hiding the reset).
+ *
+ * A piece is a boundary when `GLUED_SEPARATOR_RE` produced it — never when it
+ * merely MEMBERS `SHELL_SEGMENT_SEPARATORS`. The two are not the same question:
+ * the regex is the Set MINUS `{`/`}` because those are reserved WORDS, boundaries
+ * only when blank-delimited (AP-EXT-ITER93-06), and asking the Set here re-admitted
+ * exactly the members it excludes. Parts are cut at every quote/escape edge, so a
+ * `{` or `}` abutting one stands alone as a PART while remaining glued inside its
+ * WORD — and the Set read then split a brace expansion back apart, the construct
+ * ITER93-06 removed from the regex to protect. The standalone case needs no arm
+ * here: an undivided `{` reaches the segment loop as its own token and tests the
+ * Set there, which is where a whole-WORD question belongs.
  */
 function splitWordAtGluedSeparators(word) {
     const pieces = [];
@@ -1174,7 +1185,7 @@ function splitWordAtGluedSeparators(word) {
         for (const piece of part.split(GLUED_SEPARATOR_RE)) {
             if (piece.length === 0)
                 continue;
-            if (SHELL_SEGMENT_SEPARATORS.has(piece)) {
+            if (GLUED_SEPARATOR_RE.test(piece)) {
                 flush();
                 pieces.push({ text: piece, separator: true });
                 continue;

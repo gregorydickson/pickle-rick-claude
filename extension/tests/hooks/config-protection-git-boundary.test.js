@@ -4493,6 +4493,111 @@ test('AP-EXT-ITER93-06: braces are declared separators but not GLUED ones', () =
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER297-01 — a brace abutting a quote stands alone as a PART, not as a
+// WORD, and the second separator reader re-admitted it.
+//
+// AP-EXT-ITER93-06 took `{`/`}` out of `GLUED_SEPARATOR_RE` because they are
+// reserved WORDS, boundaries only when blank-delimited. But
+// `splitWordAtGluedSeparators` asked a SECOND, divergent question of each piece
+// — raw membership in `SHELL_SEGMENT_SEPARATORS`, which still carries both. A
+// word is cut into PARTS at every quote/escape edge, so a brace touching one
+// becomes its own part while remaining glued inside its word, and the Set read
+// then split the brace expansion back apart — exactly the construct ITER93-06
+// removed it from the regex to protect.
+//
+// Measured against the pre-fix compiled mirror with a `git` argv shim proving
+// what bash really runs: 6 of 6 quote/escape-abutting forms APPROVED for a
+// worker while every byte-identical literal twin BLOCKED, across the git-verb
+// gate; the same mangled segmentation reaches the `install.sh`, state-write and
+// expensive-test gates, which share `splitShellSegments`.
+// ---------------------------------------------------------------------------
+
+// The discriminator is WHERE the quote sits, which is why the list carries both
+// polarities: a brace touching a quote bypassed, a brace with the quote in the
+// middle of the alternative already blocked. A fixture holding only the first
+// kind cannot tell a fix from a wholesale re-admission of `{` as a boundary.
+const ITER297_01_QUOTE_ABUTTING_BRACE = [
+  ['git {"reset",--hard}', 'git reset --hard'],
+  ['git {reset,--"hard"}', 'git reset --hard'],
+  ["git {reset,--'hard'}", 'git reset --hard'],
+  ['git {reset,"--hard"}', 'git reset --hard'],
+  ['git {"reset","--hard"}', 'git reset --hard'],
+  ['git {reset,--har\\d}', 'git reset --hard'],
+  ['git {"push",origin} main', 'git push origin main'],
+  ['git commit --{"amend",amend} -m x', 'git commit --amend -m x'],
+  // Already blocking before the fix — the quote closes mid-alternative, so the
+  // brace never stood alone as a part. Present so a mutation that re-breaks the
+  // quote-abutting forms cannot pass by accident.
+  ['git {re"set",--hard}', 'git reset --hard'],
+  ['git {reset,--h"a"rd}', 'git reset --hard'],
+];
+test('AP-EXT-ITER297-01: a brace abutting a quote is still one word, and its literal twin still blocks', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const [command, twin] of ITER297_01_QUOTE_ABUTTING_BRACE) {
+    for (const form of [command, twin]) {
+      const result = runHandler({
+        tmpDir, stateFile, toolName: 'Bash', toolInput: { command: form },
+        extraEnv: { PICKLE_ROLE: 'worker' },
+      });
+      assert.equal(result.decision, 'block', form);
+    }
+  }
+});
+
+// The word must survive WHOLE, not merely block. Asserting only the verdict
+// would pass on a fix that re-broke the word somewhere else and recovered the
+// verb by luck.
+test('AP-EXT-ITER297-01: a quote-abutting brace expands rather than splitting the word', () => {
+  assert.deepEqual(splitShellSegments('git {"reset",--hard}'), ['git "reset" --hard']);
+  assert.deepEqual(splitShellSegments('git {reset,--"hard"}'), ['git reset --"hard"']);
+  assert.deepEqual(splitShellSegments('git {reset,--har\\d}'), ['git reset --har\\d']);
+  // The standalone reserved word is UNCHANGED: it needs no arm in the piece
+  // walk because it reaches the segment loop as its own token and tests the Set
+  // there — the one place a whole-WORD question belongs.
+  assert.deepEqual(splitShellSegments('{ git status; }'), ['git status']);
+  assert.deepEqual(splitShellSegments('{ cd x; git status; }'), ['cd x', 'git status']);
+  // Metacharacter operators are boundaries wherever they sit, quoted neighbour
+  // or not — `GLUED_SEPARATOR_RE` still produces them.
+  assert.deepEqual(splitShellSegments('"a"&&"git" status'), ['"a"', '"git" status']);
+  assert.deepEqual(splitShellSegments('echo a;git status'), ['echo a', 'git status']);
+});
+
+// Over-block control. A JSON object literal is the live shape that changes
+// segmentation under this fix (59 of 4,623 real worker commands, all
+// heredoc-bodied JSON/JS); none may gain a block.
+test('AP-EXT-ITER297-01: a JSON object literal gains no block', () => {
+  const { tmpDir, stateFile } = bootstrapSession();
+  for (const command of [
+    'echo {"a":"b"}',
+    'echo {"a":"x","b":"y"}',
+    `echo '{"cmd":"git reset --hard"}'`,
+    'cat <<EOF\n{"name":"x","run":"git status"}\nEOF',
+  ]) {
+    const result = runHandler({
+      tmpDir, stateFile, toolName: 'Bash', toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', command);
+  }
+});
+
+// ONE reader of "is this piece a glued boundary". The Set is the declaration;
+// the regex is the Set MINUS the reserved words, and only the regex may answer
+// this question — re-asking the Set here is the defect, byte for byte.
+test('AP-EXT-ITER297-01: the piece walk reads GLUED_SEPARATOR_RE, never the raw Set', () => {
+  const source = readCode(SHELL_EXEC_TS);
+  const start = source.indexOf('function splitWordAtGluedSeparators(');
+  assert.ok(start > 0, 'splitWordAtGluedSeparators must exist');
+  const end = source.indexOf('\n}', start);
+  assert.ok(end > start, 'function body must terminate');
+  const body = source.slice(start, end);
+  assert.match(body, /if \(GLUED_SEPARATOR_RE\.test\(piece\)\) \{/);
+  assert.doesNotMatch(body, /SHELL_SEGMENT_SEPARATORS/);
+  // The whole-WORD reader stays: the standalone `{ … }` group depends on it.
+  assert.match(source, /if \(SHELL_SEGMENT_SEPARATORS\.has\(token\)\) \{/);
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER93-08 — bash does not stop parsing options at `-c`
 //
 // `shellCommandStringPayload` returned the token immediately AFTER the first
