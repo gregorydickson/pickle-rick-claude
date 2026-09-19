@@ -4408,8 +4408,16 @@ export function createIterationSpawnEnv(
   runtimeOverrides: IterationRuntimeOverrides,
   sessionDir: string,
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
+  // Strip the AMBIENT session markers FIRST, so the deletion means "do not
+  // INHERIT an outer session's role" and nothing more. A caller that STAMPS a
+  // role is declaring what it is spawning, and that declaration must survive —
+  // the unconditional wipe below the spread silently voided it, which is why a
+  // microverse worker could not be told apart from the manager (AP-EXT-ITER303-01).
+  const inherited: NodeJS.ProcessEnv = { ...process.env };
+  delete inherited['CLAUDECODE'];
+  delete inherited['PICKLE_ROLE'];
+  return {
+    ...inherited,
     ...runtimeOverrides.envOverrides,
     ...backendEnvOverrides(backend, { workingDir: state.working_dir || process.cwd(), ticketId: state.current_ticket, sessionDir }),
     ...(invocation.env ?? {}),
@@ -4417,9 +4425,6 @@ export function createIterationSpawnEnv(
     PICKLE_STATE_FILE: statePath,
     PYTHONUNBUFFERED: '1',
   };
-  delete env['CLAUDECODE'];
-  delete env['PICKLE_ROLE'];
-  return env;
 }
 
 function prepareIterationRun(

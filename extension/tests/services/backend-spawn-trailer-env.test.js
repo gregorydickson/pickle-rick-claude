@@ -636,3 +636,64 @@ test('buildRemediatorWorkerInvocation: no argv element exceeds Linux MAX_ARG_STR
     cleanDir(workingDir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER303-01 — the role delete means "do not INHERIT", not "no role ever"
+//
+// This builder serves BOTH the pickle manager and every microverse worker. It
+// strips an ambient `PICKLE_ROLE` so an outer worker session cannot make the
+// manager look like a worker — but it used to apply that strip AFTER the
+// override spread, so a caller that deliberately STAMPED a role had it voided
+// and the two spawn kinds were indistinguishable to `config-protection.ts`.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER303-01: an ambient PICKLE_ROLE is never inherited by a manager spawn', () => {
+  const workingDir = mkTmpDir('iter303-inherit-');
+  const sessionDir = mkTmpDir('iter303-inherit-session-');
+  const priorRole = process.env.PICKLE_ROLE;
+  try {
+    initGitRepo(workingDir);
+    process.env.PICKLE_ROLE = 'outer-session-worker';
+
+    const env = createIterationSpawnEnv(
+      { working_dir: workingDir, current_ticket: null },
+      'claude', { cmd: 'claude', args: [], backend: 'claude' },
+      path.join(sessionDir, 'state.json'), {}, sessionDir,
+    );
+
+    assert.equal('PICKLE_ROLE' in env, false, 'an outer worker role leaked into the manager spawn');
+    assert.equal('CLAUDECODE' in env, false);
+  } finally {
+    if (priorRole === undefined) delete process.env.PICKLE_ROLE;
+    else process.env.PICKLE_ROLE = priorRole;
+    cleanDir(workingDir);
+    cleanDir(sessionDir);
+  }
+});
+
+test('AP-EXT-ITER303-01: an EXPLICIT caller-stamped role survives the strip', () => {
+  const workingDir = mkTmpDir('iter303-stamp-');
+  const sessionDir = mkTmpDir('iter303-stamp-session-');
+  const priorRole = process.env.PICKLE_ROLE;
+  try {
+    initGitRepo(workingDir);
+    // Ambient role set too: the stamp must win over BOTH the inherited value
+    // and the delete, or a microverse worker spawns role-less and ungated.
+    process.env.PICKLE_ROLE = 'outer-session-worker';
+
+    const env = createIterationSpawnEnv(
+      { working_dir: workingDir, current_ticket: null },
+      'claude', { cmd: 'claude', args: [], backend: 'claude' },
+      path.join(sessionDir, 'state.json'),
+      { envOverrides: { PICKLE_ROLE: 'microverse-worker' } },
+      sessionDir,
+    );
+
+    assert.equal(env.PICKLE_ROLE, 'microverse-worker');
+  } finally {
+    if (priorRole === undefined) delete process.env.PICKLE_ROLE;
+    else process.env.PICKLE_ROLE = priorRole;
+    cleanDir(workingDir);
+    cleanDir(sessionDir);
+  }
+});

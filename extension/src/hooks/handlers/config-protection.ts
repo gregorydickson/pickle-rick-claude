@@ -1644,8 +1644,13 @@ const ALLOW_STATE_WRITE_REASON_FIELD = 'allow_state_writes_reason';
 const ALLOW_SETTINGS_WRITE_REASON_FIELD = 'allow_settings_writes_reason';
 const ALLOW_INSTALL_SH_REASON_FIELD = 'allow_install_sh_reason'; // rare manager override only (R-WSRC)
 
-/** Worker-class roles that MUST honor Git Boundary Rules. */
-const WORKER_ROLES = new Set(['worker', 'refinement-worker']);
+/**
+ * A worker-class role NAMES itself one: the bare `worker`, or any `-worker`
+ * suffix. A SHAPE, never a roster — the two-member set this replaced was one
+ * member short the moment a fourth spawner appeared, and a missing member is
+ * indistinguishable from a role the gate does not apply to.
+ */
+const WORKER_ROLE_SHAPE = /(?:^|-)worker$/;
 
 /**
  * The ONE read of `PICKLE_ROLE` behind the Git Boundary Rules gates.
@@ -1655,15 +1660,15 @@ const WORKER_ROLES = new Set(['worker', 'refinement-worker']);
  * per arm; a second copy is how one arm ends up honouring `refinement-worker`
  * and the other not (the R-WSRC-GR-LEAK shape, B-PNTR 2026-05-25).
  *
- * Manager / operator invocations (PICKLE_ROLE unset, or a non-worker role) pass
- * through deliberately. `mux-runner.ts` and `jar-runner.ts` DELETE the variable,
- * so the operator session that legitimately reaches `.git` for a recovery is
- * never gated, and the runtime's own git callers go through `execFileSync` and
- * raise no Bash PreToolUse event at all.
+ * Manager / operator invocations (PICKLE_ROLE unset, or a role that does not
+ * name itself a worker) pass through deliberately. `mux-runner.ts` and
+ * `jar-runner.ts` DELETE the variable, so the operator session that
+ * legitimately reaches `.git` for a recovery is never gated, and the runtime's
+ * own git callers go through `execFileSync` and raise no Bash PreToolUse event
+ * at all.
  */
 function isWorkerRole(): boolean {
-  const role = process.env.PICKLE_ROLE;
-  return !!role && WORKER_ROLES.has(role);
+  return WORKER_ROLE_SHAPE.test(process.env.PICKLE_ROLE ?? '');
 }
 
 /**

@@ -7888,3 +7888,92 @@ test('AP-EXT-ITER298-01: ACCEPT control — a benign git command approves and wr
     [],
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER303-01 — a worker-class role is a SHAPE, not a roster
+//
+// `mux-runner.ts:createIterationSpawnEnv` builds the spawn env for BOTH the
+// pickle manager and every microverse worker, and it deletes `PICKLE_ROLE`, so
+// the two were indistinguishable here. The manager owns branch state and must
+// stay ungated; a microverse worker is handed the Git Boundary Rules verbatim
+// in its prompt, so it declares itself with a `-worker` role and this gate
+// reads that shape rather than a two-member roster one spawner short.
+//
+// The roster's two named pass-through contracts are pinned as controls: a
+// `manager` role (the AP-EXT-ITER10-01/63-01/63-02 "manager context is
+// unaffected" cases) and the R-WSRC-GR-LEAK unknown-role approve.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER303-01: a microverse-worker role is gated on BOTH R-WSRC-GR axes', () => {
+  const verb = bootstrapSession();
+  assert.equal(
+    runHandler({
+      tmpDir: verb.tmpDir, stateFile: verb.stateFile,
+      toolName: 'Bash', toolInput: { command: 'git reset --hard HEAD~1' },
+      extraEnv: { PICKLE_ROLE: 'microverse-worker' },
+    }).decision,
+    'block',
+    'the VERB axis approved for a microverse worker',
+  );
+
+  // The PATH axis rides the same `isWorkerRole` read, so a fix that reached
+  // only the verb gate would leave `> .git/HEAD` open.
+  const pathAxis = bootstrapSession();
+  assert.equal(
+    runHandler({
+      tmpDir: pathAxis.tmpDir, stateFile: pathAxis.stateFile,
+      toolName: 'Bash', toolInput: { command: `echo x > ${path.join(pathAxis.tmpDir, '.git', 'HEAD')}` },
+      extraEnv: { PICKLE_ROLE: 'microverse-worker' },
+    }).decision,
+    'block',
+    'the PATH axis approved for a microverse worker',
+  );
+});
+
+test('AP-EXT-ITER303-01: an INVENTED -worker role no roster would carry is gated too', () => {
+  // This is what pins the SHAPE rather than the literal: re-adding a member
+  // list satisfies the case above and reds this one.
+  const { tmpDir, stateFile } = bootstrapSession();
+  assert.equal(
+    runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash', toolInput: { command: 'git push origin main' },
+      extraEnv: { PICKLE_ROLE: 'codex-review-worker' },
+    }).decision,
+    'block',
+  );
+});
+
+test('AP-EXT-ITER303-01: the roster pass-through contracts survive the widening', () => {
+  // `manager` and an unknown role are the two spellings prior passes pinned as
+  // APPROVE; `coworker` is the boundary — it ends in the word and names no
+  // worker role, so the shape must require a `-` or the start of the string.
+  for (const role of ['manager', 'auditor-readonly', 'coworker']) {
+    const { tmpDir, stateFile } = bootstrapSession();
+    assert.equal(
+      runHandler({
+        tmpDir, stateFile,
+        toolName: 'Bash', toolInput: { command: 'git reset --hard HEAD~1' },
+        extraEnv: { PICKLE_ROLE: role },
+      }).decision,
+      'approve',
+      `PICKLE_ROLE=${role} must pass through (no-over-blocking contract)`,
+    );
+  }
+});
+
+test('AP-EXT-ITER303-01: a role-LESS process still passes through', () => {
+  // The manager/operator path. Without this the widening could satisfy every
+  // case above by gating on the absence of a role instead of on its shape.
+  const { tmpDir, stateFile } = bootstrapSession();
+  const env = { ...process.env };
+  delete env.PICKLE_ROLE;
+  assert.equal(
+    runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash', toolInput: { command: 'git reset --hard HEAD~1' },
+      extraEnv: { PICKLE_ROLE: undefined },
+    }).decision,
+    'approve',
+  );
+});

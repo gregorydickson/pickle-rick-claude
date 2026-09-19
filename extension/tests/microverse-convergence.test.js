@@ -2816,3 +2816,44 @@ test('WIRE: surface -> per-line drop -> ledger -> stall exit -> stall_dispositio
     }
 });
 
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER303-01 — a microverse worker spawn DECLARES itself a worker
+//
+// This runner drives `runIteration`, the same spawn builder the pickle MANAGER
+// uses, and that builder deletes an inherited `PICKLE_ROLE`. So unless the
+// worker spawn stamps one, `config-protection.ts:isWorkerRole` cannot tell a
+// microverse worker from the manager and the whole R-WSRC-GR Git Boundary
+// axis declines for every anatomy-park / szechuan-sauce pass.
+//
+// Pinned at the CALL SITE, not on the constant: the export is only wired in if
+// the production call actually forwards it.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER303-01: the gap-analysis worker spawn stamps a -worker PICKLE_ROLE', async () => {
+    const original = { execFileSync: _deps.execFileSync, runIteration: _deps.runIteration };
+    const workingDir = createGapAnalysisTempGitRepo();
+    const session = createGapAnalysisScopedSession(workingDir, [GAP_STALE_SNAPSHOT_PATH]);
+    const ctx = makeGapAnalysisContext(session.dir, session.runnerState, workingDir);
+
+    let captured = null;
+    _deps.runIteration = async (...args) => {
+        captured = args;
+        return { completion: 'success', exitCode: 0, timedOut: false, wallSeconds: 1 };
+    };
+    _deps.execFileSync = () => JSON.stringify({ score: 0, violations: [], summary: 'clean' });
+
+    try {
+        await executeGapAnalysis(readMicroverseState(session.dir), ctx);
+    } finally {
+        _deps.execFileSync = original.execFileSync;
+        _deps.runIteration = original.runIteration;
+    }
+
+    assert.ok(captured, 'runIteration was never invoked');
+    const role = captured[4]?.envOverrides?.PICKLE_ROLE;
+    assert.ok(
+        typeof role === 'string' && /(?:^|-)worker$/.test(role),
+        `the worker spawn must stamp a role config-protection reads as worker-class, got ${JSON.stringify(role)}`,
+    );
+});

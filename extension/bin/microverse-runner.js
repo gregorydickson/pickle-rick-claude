@@ -1140,6 +1140,27 @@ const RATE_LIMIT_WAIT_FILENAME = 'rate_limit_wait.json';
  * excludes a slow-but-working judge.
  */
 const JUDGE_STARTUP_REJECTION_WINDOW_MS = 5_000;
+/**
+ * The role a microverse worker (anatomy-park / szechuan-sauce / death-crystal /
+ * microverse) is spawned under.
+ *
+ * It exists because this runner drives `runIteration` — the SAME spawn builder
+ * the pickle MANAGER uses — so the two are indistinguishable by env unless one
+ * of them says what it is. The manager owns branch state and must stay ungated;
+ * a microverse worker is handed the Git Boundary Rules verbatim in its prompt
+ * and must be gated, so the WORKER is the one that declares itself.
+ *
+ * A distinct name rather than a bare `worker`: `handlers/stop-hook.ts` reads
+ * `PICKLE_ROLE` too, and `worker` there suppresses `ticket_completed` telemetry
+ * and takes these spawns out of manager idle-backoff. This spelling satisfies
+ * `config-protection.ts`'s `-worker` shape while reading identically to the
+ * former role-less value everywhere in the stop hook.
+ */
+const MICROVERSE_WORKER_ROLE = 'microverse-worker';
+/** Env stamp every microverse worker spawn carries (AP-EXT-ITER303-01). */
+export const MICROVERSE_WORKER_SPAWN_OVERRIDES = {
+    envOverrides: { PICKLE_ROLE: MICROVERSE_WORKER_ROLE },
+};
 export const _deps = {
     execFileSync: execFileSync,
     execFile: execFile,
@@ -3574,7 +3595,7 @@ export async function executeGapAnalysis(state, ctx) {
     writeHandoffFile(ctx.sessionDir, buildMicroverseHandoff(state, ctx.iteration, ctx.workingDir, ctx.sessionDir));
     sm.update(ctx.statePath, s => { s.iteration = ctx.iteration; });
     const passModelOverrides = loadPassModelOverrides(ctx.extensionRoot);
-    const outcome = await _deps.runIteration(ctx.sessionDir, ctx.iteration, ctx.extensionRoot, resolvePassModelOverride(passModelOverrides, ctx.iteration) ?? '');
+    const outcome = await _deps.runIteration(ctx.sessionDir, ctx.iteration, ctx.extensionRoot, resolvePassModelOverride(passModelOverrides, ctx.iteration) ?? '', MICROVERSE_WORKER_SPAWN_OVERRIDES);
     if (outcome.completion === 'error' || outcome.completion === 'inactive') {
         ctx.log(`Gap analysis failed: ${outcome.completion}`);
         state.status = 'stopped';
@@ -5165,7 +5186,7 @@ export async function executeMainLoop(state, ctx) {
             break;
         }
         await prepareIteration(state, ctx);
-        const outcome = await _deps.runIteration(ctx.sessionDir, ctx.iteration, ctx.extensionRoot, resolvePassModelOverride(passModelOverrides, ctx.iteration) ?? '');
+        const outcome = await _deps.runIteration(ctx.sessionDir, ctx.iteration, ctx.extensionRoot, resolvePassModelOverride(passModelOverrides, ctx.iteration) ?? '', MICROVERSE_WORKER_SPAWN_OVERRIDES);
         const stepResult = await handleIterationOutcome(state, baseline, ctx, outcome);
         if (stepResult === 'continue')
             continue;
