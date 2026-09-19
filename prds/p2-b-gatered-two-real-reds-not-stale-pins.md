@@ -138,10 +138,17 @@ $ ls "$SR"/refinement/analysis_*.md
 zsh: no matches found            # zero analyses exist
 ```
 
-`src/bin/spawn-refinement-team.ts:2951-2960`: the `!cycleResults.allSuccess` branch logs and **falls
-through** to the success path. Nothing branches on how many analyses were actually written, `main()`
-returns normally, and the status is 0. **The message is false in the total-failure case** — *"Synthesis
-will proceed with available analyses"* asserts a non-empty set the code never checked.
+**Described the pre-fix code** (accurate at PRD authorship, `ad2b3f94`): the `!cycleResults.allSuccess`
+branch logged and **fell through** to the success path. Nothing branched on how many analyses were
+actually written, `main()` returned normally, and the status was 0. **The message was false in the
+total-failure case** — *"Synthesis will proceed with available analyses"* asserted a non-empty set the
+code never checked.
+
+**Fixed** at `8b3b249f` (+ hardening under ticket `80b82391`): the disposition is now derived from
+`export function resolveRefinementDisposition(cycleResults: CycleResults): RefinementDisposition`
+(`src/bin/spawn-refinement-team.ts:2805`), which returns `export const ZERO_ANALYSES_EXIT_CODE = 69`
+(`:2798`) when `countWrittenAnalyses` is 0, called from `main()`'s
+`if (!cycleResults.allSuccess) { ... }` branch (`:3006`).
 
 This defeats `/pickle-pipeline` Step 0d (*"On refine failure … fail fast … Do NOT launch the pipeline
 against an unrefined PRD"*), which is unenforceable through a status that cannot express the
