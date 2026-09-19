@@ -7,7 +7,7 @@ import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as ts from 'typescript';
-import { execAnchorIndex, execName, execNameIs, gitConfigDeliveredValues, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
+import { execAnchorIndex, execName, execNameIs, toolDeliveredValues, isShellWrapper, splitShellSegments, tokenizeShellTokens } from '../../hooks/shell-exec.js';
 import { mkFixtureTmpDir } from '../helpers/fixture-tmpdir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -6373,7 +6373,7 @@ test('AP-EXT-ITER264-02: every reading reaches the ONE expansion walk as an argu
   // The EXPANSION renderings — the ones whose subject is an expansion SPAN —
   // must each route through the shared walk. A reading whose subject is NOT a
   // span (`inlineAssignedValues`, AP-EXT-ITER276-01, reads the WORD grammar;
-  // `inlineGitConfigValues`, AP-EXT-ITER283-01, reads git's config values) is
+  // `inlineToolDeliveredValues`, AP-EXT-ITER283-01, reads delivered values) is
   // deliberately not one of them, and demanding `readExpansions` of it would be
   // demanding the wrong walk. What EVERY reading owes this shape is that it does
   // not grow a SECOND span walk, which is the fork the pin exists to forbid.
@@ -7484,18 +7484,14 @@ const ITER283_HARMLESS_CONFIG_VALUES = [
   [`git -c http.extraHeader='Authorization: token abc' fetch origin`, 'a value that is not a command at all'],
   [`git -c core.pager='cat ${ITER283_DEPLOY}' --paginate log`, 'a READ of the deploy script, which the ban has never covered'],
   ['git -c core.quotePath=false status --porcelain', 'a read command with config'],
-  // The git ANCHOR is what makes the reading TRUE, and this is the case that
-  // says so: bash does not run the value of a plain assignment, and no other
-  // tool runs a word merely because it is spelled like a git config key. Read
-  // without the anchor, this command blocks for a command nothing executes.
-  //
-  // The image name carries `git` as a SUBSTRING on purpose. The reading declines
-  // early on a command that does not mention git at all, so a case spelled
-  // without it is decided by that decline and says nothing about the anchor —
-  // measured: the first draft of this case passed with the anchor deleted.
+  // A NON-git tool delivering a value that names no command. The git anchor
+  // that used to spare this whole shape is gone (AP-EXT-ITER283-03, below:
+  // ssh really runs what it is handed), so what keeps a delivery to another
+  // tool approved is the same thing that keeps a git one approved — the value
+  // naming no forbidden op.
   [
-    `docker run -e core.sshCommand='${ITER283_DEPLOY_CMD}' ghcr.io/org/git-tools:latest`,
-    'a dotted `<name>=<value>` handed to a tool that is NOT git',
+    'docker run -e LOG_LEVEL=debug ghcr.io/org/git-tools:latest',
+    'a `<name>=<value>` handed to a tool that is NOT git, naming no command',
   ],
 ];
 
@@ -7512,7 +7508,7 @@ for (const [command, shape] of ITER283_HARMLESS_CONFIG_VALUES) {
   });
 }
 
-test('AP-EXT-ITER283-01: the delivery NAME is held to git config syntax, so heredoc prose is not read as a command', () => {
+test('AP-EXT-ITER283-01: the delivery NAME is held to a BARE WORD, so heredoc prose is not read as a command', () => {
   // The cost half, and it is why the name test exists rather than reading every
   // `<name>=<value>` word. The tokenizer keeps a quoted span as ONE word, so a
   // heredoc writing source code hands back whole statements as "values".
@@ -7528,13 +7524,18 @@ test('AP-EXT-ITER283-01: the delivery NAME is held to git config syntax, so here
   });
   assert.equal(result.decision, 'approve', 'a prose `=` in a heredoc is not a config delivery');
 
-  // And the same claim at the seam, where it can be read directly: a dotted
-  // config key and the GIT_CONFIG_ environment spelling deliver; a bare name,
-  // an option operand and a name carrying whitespace do not.
-  const delivered = (command) => gitConfigDeliveredValues(tokenizeShellTokens(command));
+  // And the same claim at the seam, where it can be read directly: a value
+  // handed PAST the assignment prefix delivers whatever its name looks like,
+  // the GIT_CONFIG_ environment spelling delivers from INSIDE that prefix, and
+  // an option operand, a name carrying whitespace and a plain bash assignment
+  // do not.
+  const delivered = (command) => toolDeliveredValues(tokenizeShellTokens(command));
   assert.deepEqual(delivered('git -c core.sshCommand=x fetch'), ['x']);
   assert.deepEqual(delivered('git -c a.b.c=x fetch'), ['x']);
   assert.deepEqual(delivered('GIT_CONFIG_VALUE_0=x git fetch'), ['x']);
+  assert.deepEqual(delivered('ssh -o ProxyCommand=x host'), ['x']);
+  // The ASSIGNMENT PREFIX is bash's, not the tool's: bash assigns this word
+  // itself, so nothing is handed to `git` under a name it reads back.
   assert.deepEqual(delivered('S=/tmp/x git status'), []);
   assert.deepEqual(delivered('git log --format=reset -1'), []);
   // An OPTION word is never a config delivery whatever its name looks like, and
@@ -7550,11 +7551,11 @@ test('AP-EXT-ITER283-01: the config reading is a MEMBER of the readings list, no
   const splitter = source.slice(source.indexOf('export function splitShellSegments('));
   const readings = splitter.match(/for \(const reading of \[([^\]]*)\]\) \{/)?.[1];
   assert.ok(readings, 'splitShellSegments must iterate a LIST of readings');
-  assert.match(readings, /inlineGitConfigValues\(command\)/);
+  assert.match(readings, /inlineToolDeliveredValues\(command\)/);
   // A guard per reader is the shape this fix exists to avoid, so the reading
   // must not be re-typed into any consumer of the segmenter.
   const consumer = readCode(CONFIG_PROTECTION_TS);
-  assert.doesNotMatch(consumer, /function \w*nlineGitConfigValues/);
+  assert.doesNotMatch(consumer, /function \w*nlineToolDeliveredValues/);
   // ONE home for WHICH words are config deliveries; the consumer reads the
   // shared extractor rather than walking tokens for `=` itself.
   const valueReader = consumer.slice(
@@ -7562,13 +7563,13 @@ test('AP-EXT-ITER283-01: the config reading is a MEMBER of the readings list, no
     consumer.indexOf('\n}', consumer.indexOf('function configValueRunsProhibitedCommand(')),
   );
   assert.ok(valueReader.length > 0, 'the value reader must remain a named function');
-  assert.match(valueReader, /gitConfigDeliveredValues\(tokens\)/);
+  assert.match(valueReader, /toolDeliveredValues\(tokens\)/);
   assert.doesNotMatch(valueReader, /indexOf\('='\)/);
   // No namespace roster in either half — the set of executing keys grows with
   // every git release, so naming one is one member short by construction.
   const reading = source.slice(
-    source.indexOf('function inlineGitConfigValues('),
-    source.indexOf('\n}', source.indexOf('function inlineGitConfigValues(')),
+    source.indexOf('function inlineToolDeliveredValues('),
+    source.indexOf('\n}', source.indexOf('function inlineToolDeliveredValues(')),
   );
   assert.doesNotMatch(reading, /diff\.external|core\.pager|credential\.helper|core\.sshCommand/);
 });
@@ -7597,4 +7598,103 @@ test('AP-EXT-ITER283-01: the reading stays LINEAR in the number of config delive
   let nested = 'reset --hard';
   for (let i = 0; i < 16; i++) nested = `git -c a${i}.b='${nested}'`;
   assert.ok(splitShellSegments(nested).length <= 64, 'sixteen nested deliveries must stay linear');
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER283-03: a tool that is NOT git also runs what it is handed.
+//
+// AP-EXT-ITER283-01 made delivered values a READING of the segmenter, but
+// anchored that reading on a git exec token — so the identical shape one tool
+// over reached no detector. MEASURED 2026-09-18 against the post-fix shipped
+// handler with PICKLE_ROLE=worker and the literal twin BLOCKING in the same
+// run: an ssh option delivering the deploy command APPROVED, and it was
+// shim-verified to really execute (a marker script named through the ssh
+// proxy-command option fired against real ssh).
+//
+// The fix is a SUBTRACTION of the anchor, not a roster of tools that execute
+// what they are handed — a roster is one member short by construction. What
+// decides a delivery is bash's own rule: past the ASSIGNMENT PREFIX, a
+// `<name>=<value>` word is an argument the tool interprets.
+// ---------------------------------------------------------------------------
+
+const ITER283_03_DELIVERIES = [
+  [`ssh -o ProxyCommand='${ITER283_DEPLOY_CMD}' host true`, 'the ssh proxy-command option, the spelling shim-verified to really execute'],
+  [`ssh -o LocalCommand='${ITER283_DEPLOY_CMD}' -o PermitLocalCommand=yes host true`, 'the ssh local-command option'],
+  [`scp -o ProxyCommand='${ITER283_DEPLOY_CMD}' a.txt host:/tmp/`, 'the same option surface on scp, one tool further'],
+  [`ssh -o ProxyCommand='git reset --hard' host true`, 'the git-verb axis delivered through a tool that is not git'],
+  [`git -c core.sshCommand='ssh -o ProxyCommand="${ITER283_DEPLOY_CMD}"' fetch origin`, 'a NON-git delivery nested inside a git one'],
+];
+
+for (const [command, shape] of ITER283_03_DELIVERIES) {
+  test(`AP-EXT-ITER283-03: worker blocks a command delivered to a tool that is NOT git — ${shape}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'block', `${command} must not reach the tool`);
+    assert.match(result.reason, /R-WSRC/);
+  });
+}
+
+// The over-block direction. Without these the reading could simply be banning
+// every tool that takes an option, which would cost the corpus its remote work.
+const ITER283_03_HARMLESS = [
+  ['ssh host uptime', 'a plain remote command carrying no delivery'],
+  ['scp a.txt host:/tmp/', 'a plain copy'],
+  ['ssh -o ConnectTimeout=5 -o BatchMode=yes host uptime', 'delivered values that name no command'],
+  [`ssh -o ProxyCommand='cat ${ITER283_DEPLOY}' host true`, 'a READ of the deploy script, which the ban has never covered'],
+];
+
+for (const [command, shape] of ITER283_03_HARMLESS) {
+  test(`AP-EXT-ITER283-03: worker still runs a tool delivering no forbidden op — ${shape}`, () => {
+    const { tmpDir, stateFile } = bootstrapSession();
+    const result = runHandler({
+      tmpDir, stateFile,
+      toolName: 'Bash',
+      toolInput: { command },
+      extraEnv: { PICKLE_ROLE: 'worker' },
+    });
+    assert.equal(result.decision, 'approve', `${command} must still run`);
+  });
+}
+
+test('AP-EXT-ITER283-03: the reading names NO tool and NO option — the anchor is bash, not a roster', () => {
+  const source = readCode(SHELL_EXEC_TS);
+  const reading = source.slice(
+    source.indexOf('function inlineToolDeliveredValues('),
+    source.indexOf('\n}', source.indexOf('function inlineToolDeliveredValues(')),
+  );
+  assert.ok(reading.length > 0, 'the reading must remain a named function');
+  // A tool roster is the enumerated-set liability this module has paid for
+  // repeatedly, and it fails OPEN and SILENTLY when the next tool arrives.
+  assert.doesNotMatch(reading, /'git'|'ssh'|'scp'|'rsync'|'docker'/);
+
+  const extractor = source.slice(
+    source.indexOf('export function toolDeliveredValues('),
+    source.indexOf('\n}', source.indexOf('export function toolDeliveredValues(')),
+  );
+  assert.ok(extractor.length > 0, 'the extractor must remain a named function');
+  assert.doesNotMatch(extractor, /'git'|'ssh'|'scp'|'rsync'|'docker'|ProxyCommand/);
+  // WHERE bash stops assigning has ONE home. A re-typed assignment regex here
+  // is the drift `skipEnvAssignments`' own docblock records tsc-gate paying.
+  assert.match(extractor, /skipEnvAssignments\(/);
+  assert.doesNotMatch(extractor, /\[A-Za-z_\]\[A-Za-z0-9_\]\*=/);
+});
+
+test('AP-EXT-ITER283-03: the ASSIGNMENT PREFIX is the discriminator, not the tool', () => {
+  const delivered = (command) => toolDeliveredValues(tokenizeShellTokens(command));
+  // Past the prefix, ANY bare name delivers — that is what reaches a tool this
+  // module has never heard of.
+  assert.deepEqual(delivered('ssh -o ProxyCommand=x host'), ['x']);
+  assert.deepEqual(delivered('anytool -o AnyName=x operand'), ['x']);
+  // Inside the prefix bash assigns, and only a name the TOOL reads back out of
+  // the environment delivers. Admitting every prefix name instead reads the
+  // `S=<path>` opening a third of real worker commands as a delivered command.
+  assert.deepEqual(delivered('S=/tmp/x anytool'), []);
+  assert.deepEqual(delivered('GIT_CONFIG_VALUE_0=x git fetch'), ['x']);
+  // An option word is never a delivery, whatever it is handed to.
+  assert.deepEqual(delivered('anytool --format=reset -1'), []);
 });

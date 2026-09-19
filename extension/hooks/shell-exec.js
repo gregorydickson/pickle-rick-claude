@@ -1658,27 +1658,41 @@ function inlineAssignedValues(command) {
     return out.join('');
 }
 /**
- * The values a git command hands to git's CONFIG, as git receives them.
+ * The values a command hands to the TOOL it runs, as the tool receives them.
  *
- * `-c <key>=<value>`, `--config-env=<key>=<VAR>` and the `GIT_CONFIG_KEY_n` /
- * `GIT_CONFIG_VALUE_n` environment pair are all spelled `<name>=<value>` in a
- * single word, which is why reading the WORD needs no table of the options that
- * deliver it (measured: real git 2.39.5 rejects the glued `-c<key>=<value>`
- * form with `unknown option`). An OPTION word is excluded through the same
- * `startsWith('-')` test the git verb scan already draws, because `--format=`,
- * `--grep=` and `--stat=` carry operands that routinely spell a command.
+ * WHICH words deliver is bash's own question and needs no table of tools or of
+ * the options they spell. bash assigns a `<name>=<value>` word only in the
+ * ASSIGNMENT PREFIX that opens a simple command; anywhere past that run the word
+ * is an ARGUMENT, and bash hands it through untouched to whatever is running —
+ * `git -c core.pager=<cmd>`, an ssh proxy-command option, an rsync one — so the
+ * value is the TOOL's to interpret, and tools run the commands they are handed.
+ * `skipEnvAssignments` is the ONE definition of that prefix run and is read
+ * here rather than re-typed. (Measured: real git 2.39.5 rejects the glued
+ * `-c<key>=<value>` form with `unknown option`, so a delivery really is its own
+ * word.)
  *
- * The NAME half is held to git's own SYNTAX for the two ways a value arrives —
- * a dotted config key, or a `GIT_CONFIG_`-prefixed environment name — and that
- * is NOT the rotting kind of list: what rots is the set of KEYS whose value git
- * executes, which this module deliberately never enumerates (AP-EXT-ITER282-01),
- * while `<section>.<name>` is git's grammar and does not grow. Measured reason
- * it is held at all (AP-EXT-ITER283-01): the tokenizer keeps a quoted span as
- * ONE word, so inside a heredoc writing a test file a prose `=` handed back
- * 1,143 characters of JavaScript as a "value" — 18 of them on one real command,
- * costing 166,394 scopes and 1.7s once each is re-read as a command. The name
- * test is what separates `core.sshCommand=<cmd>` from `const X = …` without
- * knowing anything about which keys execute.
+ * INSIDE the prefix run bash DOES assign, into the environment, and the tool
+ * reads it back only under a name the tool knows — which is a ROSTER, and the
+ * only reason one appears here. It holds git's config pair alone and is
+ * deliberately not grown: the rest of that surface is recorded OPEN at
+ * AP-EXT-ITER283-02 rather than chased one environment variable at a time.
+ * Admitting every prefix name instead is not free — it reads the `S=<path>`
+ * that opens a third of real worker commands as a delivered command.
+ *
+ * The NAME is held to a BARE WORD, and that ONE shape carries both exclusions
+ * this extractor needs. It is not taste: the tokenizer keeps a quoted span as
+ * ONE word, so without it a heredoc writing a test file hands back 1,143
+ * characters of JavaScript as a "value" — a prose `const target = …` is
+ * rejected on the SPACE in its name. It also carries the OPTION exclusion
+ * outright, because a bare word does not open with `-`: `--format=`, `--grep=`
+ * and `--stat=` carry operands that routinely spell a command (`git log
+ * --format=reset` is a PINNED approve, AP-EXT-ITER53-01), and so does the
+ * option-glued `-oName=<cmd>` spelling. AP-EXT-ITER283-01 needed a SECOND,
+ * independent `startsWith('-')` test here because its name shape admitted a
+ * leading hyphen (`--a.b` satisfies a dotted-key reading); this one does not,
+ * so that test became a branch nothing could reach and is GONE rather than
+ * kept as a guard with no live arm — measured, deleting it reds no case in the
+ * suite that pins it.
  *
  * The values come back RAW, git's leading `!` shell-command marker included.
  * The mark is git's and not bash's, and the two readers ask different questions
@@ -1688,55 +1702,63 @@ function inlineAssignedValues(command) {
  * would answer one of those questions inside a helper that serves both.
  *
  * ONE home for the extraction, beside `segmentDefinesGitAlias` and for its
- * reason: the KEY half and the VALUE half of git's config surface are the same
- * surface, and this module is where the git-anchor readers were collapsed so
+ * reason: this module is where the command-surface readers were collapsed so
  * they could not re-fork (AP-EXT-ITER281-01).
  */
-const GIT_CONFIG_DELIVERY_NAME_RE = /^(?:[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_.-]+)+|GIT_CONFIG_[A-Za-z0-9_]+)$/;
-export function gitConfigDeliveredValues(tokens) {
+const DELIVERED_VALUE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+const ENVIRONMENT_DELIVERY_NAME_RE = /^GIT_CONFIG_[A-Za-z0-9_]+$/;
+export function toolDeliveredValues(tokens) {
+    const bashAssignsBefore = skipEnvAssignments(tokens.map((token) => token.value));
     const values = [];
-    for (const token of tokens) {
-        const eq = token.value.indexOf('=');
-        if (eq <= 0 || token.value.startsWith('-'))
+    for (let i = 0; i < tokens.length; i++) {
+        const word = tokens[i].value;
+        const eq = word.indexOf('=');
+        if (eq <= 0)
             continue;
-        if (!GIT_CONFIG_DELIVERY_NAME_RE.test(token.value.slice(0, eq)))
+        const name = word.slice(0, eq);
+        const delivers = i >= bashAssignsBefore
+            ? DELIVERED_VALUE_NAME_RE.test(name)
+            : ENVIRONMENT_DELIVERY_NAME_RE.test(name);
+        if (!delivers)
             continue;
-        const value = token.value.slice(eq + 1);
+        const value = word.slice(eq + 1);
         if (value.length > 0)
             values.push(value);
     }
     return values;
 }
 /**
- * The FIFTH reading: the commands git runs out of its own config values.
+ * The FIFTH reading: the commands a tool runs out of the values it is handed.
  *
- * git does not merely accept a command through config, it RUNS one, and the
- * value is a SHELL command for every executing key but `alias.` — measured
- * 2026-09-18 against real git 2.39.5, `git -c core.sshCommand='<cmd>' fetch
- * ssh://…` really executed `<cmd>`. AP-EXT-ITER282-01 taught ONE reader to read
- * those values, `detectProhibitedGitVerb`, and that is the defect this reading
- * subtracts: the OTHER five readers of this segmenter — the `install.sh` deploy
- * ban, the expensive-`node --test` gate, the `.git/` path axis, the protected
- * write-target walk and tsc-gate's commit classifier — each ask their question
- * of the segments and never saw the delivered command at all. MEASURED before
- * this reading, with the literal twins blocking in the same run:
- * `git -c core.pager='bash install.sh' --paginate log`,
- * `git -c core.editor='bash install.sh' commit` and
- * `git -c core.sshCommand='bash install.sh' fetch origin` all APPROVED for a
- * worker against the shipped handler while `bash install.sh` blocked.
+ * A tool does not merely accept a command through an option or config value, it
+ * RUNS one — measured 2026-09-18 against real git 2.39.5 (`git -c
+ * core.sshCommand='<cmd>' fetch ssh://…` really executed `<cmd>`) and against
+ * real ssh (a marker script named through the proxy-command option really
+ * fired, AP-EXT-ITER283-03). AP-EXT-ITER282-01 taught those values to ONE
+ * reader, `detectProhibitedGitVerb`; AP-EXT-ITER283-01 made them a reading of
+ * this segmenter so the OTHER five readers — the `install.sh` deploy ban, the
+ * expensive-`node --test` gate, the `.git/` path axis, the protected
+ * write-target walk and tsc-gate's commit classifier — see them too.
  *
- * A READING, not a sixth guard, for the reason this list exists: a guard per
+ * WHAT THIS PASS SUBTRACTS is the git ANCHOR that reading carried
+ * (AP-EXT-ITER283-03). Anchoring on a git exec token made the reading true of
+ * ONE tool, so the identical shape one tool over reached no detector at all:
+ * MEASURED against the post-fix shipped handler with PICKLE_ROLE=worker and the
+ * literal `bash install.sh` twin BLOCKING in the same run, a deploy command
+ * delivered through an ssh option APPROVED, as did the same delivery to scp.
+ * A per-tool anchor is a ROSTER of tools that execute what they are handed, and
+ * a roster is one member short by construction — the enumerated-set liability
+ * this module has paid for repeatedly. The reading now asks bash's question
+ * instead: a value handed PAST the assignment prefix is the tool's to run,
+ * whichever tool it is (`toolDeliveredValues`).
+ *
+ * A READING, not a sixth guard, for the reason that list exists: a guard per
  * reader is five edits that rot independently and leaves the next reader
  * unprotected by construction, while a member of this list reaches every reader
  * this segmenter has and every one it grows.
  *
- * The git ANCHOR is what makes the reading true and is not decoration: bash
- * does not run the value of a plain `FOO=<value>` assignment, git runs the value
- * of a config one. Anchored on the whole command rather than per segment, which
- * over-reaches in this module's established fail-safe direction — a `k=v` word
- * in a DIFFERENT segment of a command that also invokes git is read as a
- * command. Measured cost over 5,389 unique real worker commands harvested from
- * 139 live session logs: see the CLAUDE.md entry.
+ * MEASURED COST of dropping the anchor, over 5,759 unique real worker commands
+ * harvested from 142 live session logs: see the CLAUDE.md entry.
  *
  * TERMINATION is by STRICT SHRINKAGE, the same argument the first three
  * readings carry and not one inherited by standing in the list: every emitted
@@ -1746,15 +1768,15 @@ export function gitConfigDeliveredValues(tokens) {
  * is therefore strictly shorter than the input whenever it differs from it, so
  * a differing reading cannot be re-entered without end.
  */
-function inlineGitConfigValues(command) {
+function inlineToolDeliveredValues(command) {
     // Every reading is taken on every command at every recursion level, so the
-    // cheap decline keeps this one charged to commands that mention git at all.
-    if (!command.includes('git'))
+    // cheap decline keeps this one charged to the commands that can carry a
+    // delivery at all. A delivery is spelled `<name>=<value>` in one word, so a
+    // command with no `=` has none — the tool anchor that used to stand here is
+    // what AP-EXT-ITER283-03 removed.
+    if (!command.includes('='))
         return command;
-    const tokens = tokenizeShellTokens(command);
-    if (execAnchorIndex(tokens, 'git') < 0)
-        return command;
-    const values = gitConfigDeliveredValues(tokens);
+    const values = toolDeliveredValues(tokenizeShellTokens(command));
     if (values.length === 0)
         return command;
     // git's `!` marks the value as a SHELL command; the mark is not part of the
@@ -1842,13 +1864,13 @@ export function splitShellSegments(command, depth = 0) {
     // The first three only ever REMOVE characters, so a reading that differs is
     // strictly shorter. `inlineAssignedValues` can GROW the command and terminates
     // on IDEMPOTENCE instead — its own output renders to itself, so the `taken`
-    // dedup ends that branch one level in. `inlineGitConfigValues` pays the FIRST
+    // dedup ends that branch one level in. `inlineToolDeliveredValues` pays the FIRST
     // argument: it emits only characters of the values it read, and each
     // contributing token gives up its `<name>=` prefix (AP-EXT-ITER283-01).
     // A SIXTH reading owes this list one of those two arguments; neither is
     // inherited by standing here.
     //
-    // The config reading is a PLAIN member and re-enters itself like any other,
+    // The delivery reading is a PLAIN member and re-enters itself like any other,
     // and that was measured rather than assumed. A draft carried a
     // `readGitConfigValues` parameter to stop the re-entry, on the theory that a
     // reading taken at every level is a new branch at every level; with the
@@ -1867,7 +1889,7 @@ export function splitShellSegments(command, depth = 0) {
     // buys nothing but a duplicate scope.
     const scopes = [...own];
     const taken = new Set([command]);
-    for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command), inlineParameterExpansionBody(command), inlineAssignedValues(command), inlineGitConfigValues(command)]) {
+    for (const reading of [elideExpansions(command), inlineSubstitutionOutput(command), inlineParameterExpansionBody(command), inlineAssignedValues(command), inlineToolDeliveredValues(command)]) {
         if (taken.has(reading))
             continue;
         taken.add(reading);
