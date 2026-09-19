@@ -804,9 +804,9 @@ test('eb189d66: total failure (zero analyses written) exits non-zero with a name
     const disposition = resolveRefinementDisposition(cycleResults);
     assert.equal(disposition.exitCode, ZERO_ANALYSES_EXIT_CODE, 'zero analyses must exit non-zero');
     assert.notEqual(disposition.exitCode, 0, 'zero analyses must never exit 0');
-    // 80b82391: the status must be readable by a caller, not merely non-zero. This file
-    // exits 1 for arg/usage errors, for an ensureRefinementDir mkdir failure, and from
-    // main().catch on any uncaught throw, so a 1 here is indistinguishable from a crash.
+    // 80b82391: the status must be readable by a caller, not merely non-zero. 1 is this
+    // file's crash-and-usage code; the exit-1 sites it would collide with are enumerated
+    // once, at the ZERO_ANALYSES_EXIT_CODE definition — not re-listed here to rot.
     assert.notEqual(
       disposition.exitCode,
       1,
