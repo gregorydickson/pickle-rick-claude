@@ -193,7 +193,7 @@ describe('citadel project-shape gate', () => {
  */
 function makeCommittedRepo(prefix, files) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const run = (args) => execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  const run = (args) => execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
   run(['init', '-q', '-b', 'main']);
   run(['config', 'user.email', 't@example.com']);
   run(['config', 'user.name', 'T']);
@@ -316,7 +316,7 @@ describe('citadel audit-runner composes: wiring (ticket 98dc9bed)', () => {
 
   test('buildCitadelAuditReport consumes composed child AC and transition inputs', () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-runner-composed-inputs-'));
-    const run = (args, cwd) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
+    const run = (args, cwd) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 }).toString().trim();
 
     try {
       run(['init'], tmpRoot);
