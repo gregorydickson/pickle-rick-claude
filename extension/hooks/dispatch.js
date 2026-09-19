@@ -198,6 +198,15 @@ function runHookProcess(hookName, command, inputData) {
         let stdout = '';
         let stderr = '';
         writeChildInput(child, inputData);
+        // AP-EXT-ITER299-01: ONE decoder across the whole read. A pipe chunk boundary is a BYTE
+        // offset, so without this a multi-byte character straddling it decodes to two U+FFFD and
+        // the per-chunk `.toString()` below cannot recover it. `setEncoding` routes the stream
+        // through a StringDecoder that withholds a partial sequence until its continuation bytes
+        // arrive, which makes that `.toString()` a no-op on an already-decoded string — the same
+        // shape every other spawn reader in this tree already carries (`pipeline-runner.ts`,
+        // `microverse-runner.ts`, `convergence-gate.ts`, `codegraph-query-runner.ts`).
+        child.stdout?.setEncoding('utf-8');
+        child.stderr?.setEncoding('utf-8');
         child.stdout?.on('data', (data) => (stdout += data.toString()));
         child.stderr?.on('data', (data) => (stderr += data.toString()));
         child.on('close', (code) => {

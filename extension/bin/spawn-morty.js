@@ -2912,6 +2912,11 @@ export function attachCompletionCommitAckListener(proc, ticketId, workerActivity
     // Done-flip path), NOT here — persisting evidence at announce-time would also
     // feed the worker-gate failed-flip-suppression and wrongly preserve a
     // gate-failing ticket's commit.
+    // AP-EXT-ITER299-01-ADJUDICATED: per-chunk decode, and it stays that way. This is a SECOND
+    // listener on a stream other consumers read as Buffers, and `setEncoding` is a property of the
+    // STREAM rather than of a listener — setting it here would change the chunk type delivered to
+    // every other consumer. Safe by construction instead: `ackLineBuf` is consumed only by the
+    // ASCII `COMPLETION_COMMIT_ACK_RE`, and a mangled non-ASCII byte cannot alter a sha token.
     let ackLineBuf = '';
     proc.stdout?.on('data', (chunk) => {
         ackLineBuf += chunk.toString('utf8');

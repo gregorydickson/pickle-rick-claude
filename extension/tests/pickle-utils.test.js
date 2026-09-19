@@ -2087,3 +2087,157 @@ test('AP-EXT-ITER112-01 negative control: own tmux session still reclaims the ol
         try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
 });
+
+// --- AP-EXT-ITER299-01: the chunk-boundary invariant gets a FALSIFIER, not just a PATTERN_SHAPE ---
+//
+// AP-EXT-ITER7-01/86-01 declare a tree-wide invariant — every reader that consumes text in
+// byte-sized CHUNKS and ACCUMULATES it holds ONE decoder across the whole read — and record a
+// transport-agnostic PATTERN_SHAPE for sweeping it. Nothing ever re-ran that shape, so the
+// invariant was prose with a permanent green light: at HEAD it had TWO unguarded members, and
+// only one of them was catalogued (behind a `scope.json` fence that no longer exists). The other,
+// `mux-runner.ts spawnRateLimitProbe`, was never noticed at all.
+//
+// These three cases are the missing wire. The sweep DERIVES its population from the tree rather
+// than checking a hand-written list of known sites, so the next accumulating reader anyone adds is
+// covered without being told it exists — a hand list is the enumerated-set liability this
+// invariant has already paid for twice.
+
+const ITER299_SRC_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'src');
+
+function iter299CollectTsFiles(dir) {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            if (entry.name === '__tests__' || entry.name === 'node_modules') continue;
+            out.push(...iter299CollectTsFiles(full));
+        } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
+            out.push(full);
+        }
+    }
+    return out;
+}
+
+/** The enclosing brace-balanced block a match sits in, so "in the same function" is a real
+ *  question rather than a fixed-size window that a long handler slips out of. */
+function iter299EnclosingBlock(text, index) {
+    let start = index;
+    let depth = 0;
+    while (start > 0) {
+        const ch = text[start];
+        if (ch === '}') depth += 1;
+        else if (ch === '{') {
+            if (depth === 0) break;
+            depth -= 1;
+        }
+        start -= 1;
+    }
+    // Walk back to the head of the declaration so `setEncoding` calls placed above the
+    // handlers — which is where every correct sibling puts them — are inside the slice.
+    const head = Math.max(0, text.lastIndexOf('\n', Math.max(0, text.lastIndexOf('\n', start) - 1)) - 600);
+    let end = index;
+    depth = 0;
+    while (end < text.length) {
+        const ch = text[end];
+        if (ch === '{') depth += 1;
+        else if (ch === '}') {
+            depth -= 1;
+            if (depth <= 0) break;
+        }
+        end += 1;
+    }
+    return text.slice(head, Math.min(text.length, end + 1));
+}
+
+const ITER299_WAIVER = 'AP-EXT-ITER299-01-ADJUDICATED';
+
+/** Every `.on('data'` handler in the tree whose body APPENDS to an accumulator. A handler that
+ *  pushes raw Buffers, or forwards them untouched, is byte-exact by construction and is not a
+ *  member — so it needs no entry on any exception list. */
+function iter299FindStreamAccumulators() {
+    const hits = [];
+    for (const file of iter299CollectTsFiles(ITER299_SRC_ROOT)) {
+        const text = fs.readFileSync(file, 'utf-8');
+        const re = /\.on\(\s*['"]data['"]\s*,/g;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            // The handler body: from the match to the end of its arrow function.
+            const body = iter299EnclosingBlock(text, m.index + m[0].length);
+            const handlerSlice = text.slice(m.index, m.index + 400);
+            if (!/\+=/.test(handlerSlice)) continue;
+            const line = text.slice(0, m.index).split('\n').length;
+            hits.push({
+                file: path.relative(ITER299_SRC_ROOT, file),
+                line,
+                guarded: /setEncoding\(/.test(body),
+                waived: body.includes(ITER299_WAIVER),
+            });
+        }
+    }
+    return hits;
+}
+
+test('AP-EXT-ITER299-01: every accumulating stream reader in src/ decodes on the STREAM', () => {
+    const hits = iter299FindStreamAccumulators();
+    // Non-vacuity: the sweep must actually be finding readers. A refactor that renames the
+    // handler shape would otherwise make this pass over an empty set — an audit over nothing
+    // reads exactly like an audit that agrees.
+    assert.ok(hits.length >= 4, `sweep found only ${hits.length} accumulating 'data' handlers — the matcher has gone blind`);
+    const unguarded = hits.filter(h => !h.guarded && !h.waived);
+    assert.deepEqual(
+        unguarded.map(h => `${h.file}:${h.line}`),
+        [],
+        'an accumulating .on("data") reader with no setEncoding() in its function and no ' +
+        `${ITER299_WAIVER} adjudication — a multi-byte char straddling a pipe chunk boundary ` +
+        'decodes to U+FFFD there (AP-EXT-ITER7-01/86-01)',
+    );
+});
+
+test('AP-EXT-ITER299-01: the waiver is an adjudication, not a blanket — it stays rare and justified', () => {
+    const waived = iter299FindStreamAccumulators().filter(h => h.waived && !h.guarded);
+    // If this number grows, the waiver has become the default and the invariant is prose again.
+    assert.ok(waived.length <= 1, `${waived.length} waived accumulators: ${waived.map(h => h.file).join(', ')}`);
+});
+
+test('AP-EXT-ITER299-01: the real dispatch.js transport round-trips a multi-byte payload', async () => {
+    // Drives the SHIPPED compiled hook dispatcher end to end, because the defect lives in the
+    // parent's pipe transport and no unit-level double reproduces a 64KB read boundary.
+    // Asserts the ROUND TRIP, never parseability: JSON.parse SUCCEEDS over the mangled payload
+    // (U+FFFD is legal inside a JSON string), which is exactly why this rotted unseen.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-iter299-'));
+    try {
+        const handlers = path.join(root, 'extension', 'hooks', 'handlers');
+        fs.mkdirSync(handlers, { recursive: true });
+        const blob = '\u2014'.repeat(60000); // 3-byte chars, 180_000 bytes — past one 64KB read
+        fs.writeFileSync(
+            path.join(handlers, 'iter299probe.js'),
+            `process.stdout.write(JSON.stringify({ decision: 'block', reason: '\\u2014'.repeat(60000) }) + '\\n');\n`,
+        );
+        const dispatchJs = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', 'hooks', 'dispatch.js');
+        // dispatch.js prints its decision and then calls process.exit(), which TRUNCATES an
+        // in-flight async write to a pipe at the buffer boundary. Capture to a FILE, where the
+        // write is synchronous, so this case measures the decoder and not that truncation.
+        const outPath = path.join(root, 'dispatch-stdout.txt');
+        const outFd = fs.openSync(outPath, 'w');
+        await new Promise((resolve, reject) => {
+            const child = spawn(process.execPath, [dispatchJs, 'iter299probe'], {
+                env: { ...process.env, EXTENSION_DIR: root },
+                stdio: ['pipe', outFd, 'pipe'],
+                // AP-EXT-ITER42-01 hang guard. dispatch.js arms its own 10s watchdog, so this
+                // only ever fires if the dispatcher itself stops making progress.
+                timeout: 30_000,
+            });
+            child.on('error', reject);
+            child.on('close', resolve);
+            child.stdin.end('{}');
+        });
+        fs.closeSync(outFd);
+        const out = fs.readFileSync(outPath, 'utf-8');
+        const parsed = JSON.parse(out.trim());
+        assert.equal(parsed.decision, 'block');
+        assert.equal(parsed.reason, blob, 'dispatch mangled a multi-byte payload across a pipe chunk boundary');
+        assert.equal(parsed.reason.indexOf('\uFFFD'), -1, 'U+FFFD replacement char in the hook decision');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

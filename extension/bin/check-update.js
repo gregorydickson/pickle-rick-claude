@@ -464,6 +464,10 @@ function appendDowngradeAudit(srcVersion, depVersion, options, sessionId) {
 function confirmDowngrade(srcVersion, depVersion) {
     process.stderr.write(`Downgrade ${depVersion} → ${srcVersion} — proceed? [y/N] `);
     try {
+        // AP-EXT-ITER299-01-ADJUDICATED: a one-byte read loop decoding per byte, which shreds every
+        // multi-byte character — and that is harmless here by construction. The only consumers are
+        // the ASCII comparisons `=== 'y'` / `=== 'Y'` below, so a mangled byte can only ever fail
+        // them, which is the refuse-the-downgrade direction.
         const chunks = [];
         const buffer = Buffer.alloc(1);
         while (chunks.length < 1024) {

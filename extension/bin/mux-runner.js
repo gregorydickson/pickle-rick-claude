@@ -7919,6 +7919,12 @@ function spawnRateLimitProbe(cmd, args, opts) {
                 child.kill('SIGTERM');
             reject(new Error(`rate-limit probe timed out after ${opts.timeoutMs}ms`));
         }, opts.timeoutMs);
+        // AP-EXT-ITER299-01: decode on the STREAM, never per chunk — `stdout += chunk` on a raw
+        // Buffer calls `Buffer.prototype.toString()` once PER CHUNK, so a multi-byte character
+        // straddling a pipe boundary is shredded into U+FFFD before `classifyIterationExit` ever
+        // reads the transcript this accumulates.
+        child.stdout?.setEncoding('utf-8');
+        child.stderr?.setEncoding('utf-8');
         child.stdout?.on('data', (chunk) => { stdout += chunk; });
         child.stderr?.on('data', (chunk) => { stderr += chunk; });
         child.on('error', (err) => {
