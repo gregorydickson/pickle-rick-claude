@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 // The EXACT wire `check-update.ts:readCache` reads the purged cache back through.
@@ -80,6 +80,23 @@ function runPurge(fixture, args = []) {
   };
   return spawnSync('node', [PURGE_SCRIPT, ...args], { encoding: 'utf8', env });
 }
+
+// Same hermetic env as `runPurge`, but the script under node is the CALLER, not the purge script
+// — so `process.argv[1]` carries the importer's own name (or nothing at all under `-e`), which is
+// exactly what the entry guard discriminates on. An explicit timeout keeps this out of the
+// un-baselined set `scripts/audit-subprocess-heavy-tests.sh` scans for.
+function runNodeImporter(fixture, nodeArgs) {
+  const env = {
+    PATH: process.env.PATH,
+    HOME: fixture.homeDir,
+    TMPDIR: fixture.tmpRoot,
+    PICKLE_PURGE_VAR_FOLDERS_ROOT: fixture.varFoldersRoot,
+  };
+  return spawnSync('node', nodeArgs, { encoding: 'utf8', env, timeout: 30_000 });
+}
+
+const IMPORT_PROBE_BODY = `await import(${JSON.stringify(pathToFileURL(PURGE_SCRIPT).href)});\n`
+  + "process.stdout.write('IMPORTER_SURVIVED\\n');\n";
 
 // A pid that is provably not alive, so `shouldSkipLiveTmp` does not defer the orphan tmp.
 function deadPidForOrphanTmp() {
@@ -213,6 +230,65 @@ describe('purge-update-cache.js', () => {
       assert.equal(existsSync(fixture.auditPath), true, 'accept control wrote no CACHE_PURGE row');
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  // `import` is an INVOCATION MODE, not an argument shape. The argument parse and the real
+  // `rm -rf` both ran at module top level, so merely loading this module performed the purge —
+  // and when the loading process carried any extra argv token it instead terminated that process
+  // with status 2 and this script's usage line, which is the shape a `node --test <file>` runner
+  // hands it. Both sibling `bin/*.js` scripts already carry the CLAUDE.md Required Pattern guard;
+  // this one did not, and its own catalog entry recorded the gap as unenforced. The ACCEPT
+  // control at the end drives the real CLI over the SAME fixture shape, so the survival
+  // assertions cannot pass because the fixture was unpurgeable.
+  test('AP-BIN-ITER256-01 importing the module purges nothing and never exits its host', () => {
+    for (const extraArgv of [[], ['--some-flag'], ['--dry-run'], ['tests/some.test.js']]) {
+      const fixture = makeFixture();
+      try {
+        const importer = path.join(fixture.dir, 'importer.mjs');
+        writeFileSync(importer, IMPORT_PROBE_BODY);
+        const result = runNodeImporter(fixture, [importer, ...extraArgv]);
+        const shown = JSON.stringify(extraArgv);
+        assert.strictEqual(
+          result.status, 0,
+          `importer argv ${shown}: expected exit 0, got ${result.status}: ${result.stderr}`,
+        );
+        assert.match(result.stdout, /IMPORTER_SURVIVED/, `importer argv ${shown} did not survive the import`);
+        assert.doesNotMatch(result.stderr, /Removed|Would remove/, `importer argv ${shown} performed a purge`);
+        assert.doesNotMatch(result.stderr, /Usage: purge-update-cache/, `importer argv ${shown} got the CLI usage line`);
+        assert.equal(existsSync(fixture.cachePath), true, `importer argv ${shown} removed the update cache`);
+        assert.equal(existsSync(fixture.tarballDir), true, `importer argv ${shown} removed a pickle-update- root`);
+        assert.equal(existsSync(fixture.extractDir), true, `importer argv ${shown} removed a pickle-extract- root`);
+        assert.equal(existsSync(fixture.auditPath), false, `importer argv ${shown} wrote a CACHE_PURGE row`);
+      } finally {
+        rmSync(fixture.dir, { recursive: true, force: true });
+      }
+    }
+
+    // The argv[1]-ABSENT arm: `-e` leaves `process.argv[1]` undefined, so it is the truthiness
+    // conjunct of the guard that rejects here, not the basename comparison above.
+    const evalFixture = makeFixture();
+    try {
+      const result = runNodeImporter(evalFixture, ['--input-type=module', '-e', IMPORT_PROBE_BODY]);
+      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.match(result.stdout, /IMPORTER_SURVIVED/);
+      assert.doesNotMatch(result.stderr, /Removed|Would remove/, 'an argv[1]-less import performed a purge');
+      assert.equal(existsSync(evalFixture.cachePath), true, 'an argv[1]-less import removed the update cache');
+      assert.equal(existsSync(evalFixture.tarballDir), true, 'an argv[1]-less import removed a pickle-update- root');
+      assert.equal(existsSync(evalFixture.auditPath), false, 'an argv[1]-less import wrote a CACHE_PURGE row');
+    } finally {
+      rmSync(evalFixture.dir, { recursive: true, force: true });
+    }
+
+    const control = makeFixture();
+    try {
+      const result = runPurge(control, []);
+      assert.strictEqual(result.status, 0, `accept control: expected exit 0, got ${result.status}: ${result.stderr}`);
+      assert.equal(existsSync(control.cachePath), false, 'accept control did not purge the update cache');
+      assert.equal(existsSync(control.tarballDir), false, 'accept control did not purge the pickle-update- root');
+      assert.equal(existsSync(control.auditPath), true, 'accept control wrote no CACHE_PURGE row');
+    } finally {
+      rmSync(control.dir, { recursive: true, force: true });
     }
   });
 

@@ -4,15 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { getExtensionRoot } from '../extension/services/pickle-utils.js';
 
-const args = process.argv.slice(2);
-const dryRun = args.includes('--dry-run');
-const unexpected = args.filter((arg) => arg !== '--dry-run');
-
-if (unexpected.length > 0) {
-  process.stderr.write(`Usage: purge-update-cache.js [--dry-run]\n`);
-  process.exit(2);
-}
-
 const runtimeRoot = getExtensionRoot();
 const cachePath = path.join(runtimeRoot, 'update-check.json');
 const auditPath = path.join(runtimeRoot, 'deploy-audit.log');
@@ -27,7 +18,7 @@ function pathExists(targetPath) {
   }
 }
 
-function removePath(targetPath) {
+function removePath(targetPath, dryRun) {
   if (!pathExists(targetPath)) return;
   removedPaths.push(targetPath);
   if (!dryRun) {
@@ -101,7 +92,7 @@ function collectVarFolderMatches(rootDir) {
   return matches;
 }
 
-function appendAudit() {
+function appendAudit(dryRun) {
   if (removedPaths.length === 0) return;
   const event = {
     event: 'CACHE_PURGE',
@@ -116,23 +107,47 @@ function appendAudit() {
   }
 }
 
-// Siblings FIRST: `removePath` deletes, and a purge that dies partway must not leave the base
-// gone with a promotable orphan still beside it — that is precisely the defective state.
-for (const targetPath of collectPromotableTmpSiblings(cachePath)) {
-  removePath(targetPath);
-}
-removePath(cachePath);
+function main(argv) {
+  const dryRun = argv.includes('--dry-run');
+  const unexpected = argv.filter((arg) => arg !== '--dry-run');
 
-const tmpRoot = process.env.TMPDIR || os.tmpdir();
-for (const targetPath of collectTmpRootMatches(tmpRoot)) {
-  removePath(targetPath);
-}
-
-const varFoldersRoot = process.env.PICKLE_PURGE_VAR_FOLDERS_ROOT || '/var/folders';
-if (process.platform === 'darwin') {
-  for (const targetPath of collectVarFolderMatches(varFoldersRoot)) {
-    removePath(targetPath);
+  if (unexpected.length > 0) {
+    process.stderr.write(`Usage: purge-update-cache.js [--dry-run]\n`);
+    process.exit(2);
   }
+
+  // Siblings FIRST: `removePath` deletes, and a purge that dies partway must not leave the base
+  // gone with a promotable orphan still beside it — that is precisely the defective state.
+  for (const targetPath of collectPromotableTmpSiblings(cachePath)) {
+    removePath(targetPath, dryRun);
+  }
+  removePath(cachePath, dryRun);
+
+  const tmpRoot = process.env.TMPDIR || os.tmpdir();
+  for (const targetPath of collectTmpRootMatches(tmpRoot)) {
+    removePath(targetPath, dryRun);
+  }
+
+  const varFoldersRoot = process.env.PICKLE_PURGE_VAR_FOLDERS_ROOT || '/var/folders';
+  if (process.platform === 'darwin') {
+    for (const targetPath of collectVarFolderMatches(varFoldersRoot)) {
+      removePath(targetPath, dryRun);
+    }
+  }
+
+  appendAudit(dryRun);
 }
 
-appendAudit();
+// The CLAUDE.md Required Pattern, which both sibling `bin/*.js` scripts already carry and this
+// one shipped without: the argument parse and the `rm -rf` ran at MODULE TOP LEVEL, so `import`
+// alone performed them. Measured on the shipped file against a hermetic HOME/TMPDIR fixture, two
+// arms: `await import(...)` from an ordinary `.mjs` (and from `node -e`) DELETED the update cache
+// and every `pickle-update-`/`pickle-extract-` root and wrote a CACHE_PURGE row, returning
+// control to the importer as if nothing happened; an importer whose own process carried any
+// extra argv token instead got `process.exit(2)` and another program's usage line — the module
+// terminating its host, which is the shape `node --test <file>` hands it. Both are invocation
+// modes, not argument shapes, so they belong behind ONE entry guard rather than a second check
+// beside the argument one.
+if (process.argv[1] && path.basename(process.argv[1]) === 'purge-update-cache.js') {
+  main(process.argv.slice(2));
+}
