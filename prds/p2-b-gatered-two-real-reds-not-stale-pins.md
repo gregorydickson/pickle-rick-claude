@@ -24,7 +24,11 @@ lines for G2, and two captured exit codes for G3.
 `timeout`**:
 
 - `:196` — `const run = (args) => execFileSync('git', args, { cwd: root, stdio: [...] });`
-- `:319` — `const run = (args, cwd) => execFileSync('git', args, { cwd, stdio: [...] }).toString().trim();`
+- in test `'buildCitadelAuditReport consumes composed child AC and transition inputs'` (originally
+  `:319`, since shifted — anchor by enclosing test name, not line number, per e3de37c4) —
+  `const run = (args, cwd) => execFileSync('git', args, { cwd, stdio: [...] }).toString().trim();`
+
+**Fixed** at `dc5c53dd` — both callsites now carry `timeout: 30_000`.
 
 Root `CLAUDE.md`'s Worker Forbidden Ops table lists `spawnSync`/`spawn` with no `timeout` as forbidden,
 enforced per-callsite by trap doors. The scanner reports:
