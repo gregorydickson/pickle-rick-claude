@@ -8,6 +8,7 @@ import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import {
   buildCitadelAuditReport,
+  runCitadelAudit,
   __setAnalyzerOverridesForTests,
 } from '../services/citadel/audit-runner.js';
 import { parseWithComposes } from '../services/citadel/prd-parser.js';
@@ -386,5 +387,87 @@ describe('citadel audit-runner composes: wiring (ticket 98dc9bed)', () => {
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// AP-EXT-ITER288-01: the OUTPUT half of AP-EXT-ITER287-01's rule, same entry point. The report
+// WRITE ran outside every recovery frame — `executeCitadelPhase` awaits `runCitadelAudit` and
+// nothing between it and the CLI catches — so an unwritable report path, or `withLock`'s 30s
+// timeout, reached pipeline-runner's fatal handler and ended the run with anatomy-park and
+// szechuan-sauce never run. Measured end to end through the real `main()` on 2026-09-18: 0 phase
+// runners after citadel and no stamped `exit_reason`, against a control that finalized
+// `completed`. A gate MAY refuse a local action; it MAY NEVER break the phase loop.
+describe('AP-EXT-ITER288-01: a citadel report that cannot be persisted degrades, it does not end the run', () => {
+  // The fixture is the real seam the phase calls (`runCitadelAudit`, not `buildCitadelAuditReport`),
+  // because the persist step is the whole subject and only that entry point performs it.
+  async function auditIntoSession(mutate) {
+    const tmpRoot = makeCommittedRepo('audit-runner-persist-', {
+      'prds/bundle.md': '# Bundle\n\nAC-PERSIST-1 acceptance criterion.\n',
+    });
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-runner-persist-session-'));
+    const reportPath = path.join(sessionDir, 'citadel_report.json');
+    try {
+      mutate(reportPath);
+      const report = await runCitadelAudit({
+        prdPath: 'prds/bundle.md',
+        diffRange: 'HEAD..HEAD',
+        repoRoot: tmpRoot,
+        sessionDir,
+      });
+      // Read back BEFORE the finally tears the session dir down; `null` when nothing was written.
+      let onDisk = null;
+      try { onDisk = JSON.parse(fs.readFileSync(reportPath, 'utf-8')); } catch { /* not written */ }
+      return { report, reportPath, onDisk };
+    } finally {
+      try { fs.chmodSync(reportPath, 0o600); } catch { /* absent or already writable */ }
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  }
+
+  // EACCES: a pre-existing unwritable report. Root-owned artifacts (a docker-backed
+  // `ci-repro.sh` run) and ordinary permissions drift both produce exactly this state.
+  test('an unwritable report path is REPORTED via persist_error, and the audit still returns', async (t) => {
+    if (process.getuid && process.getuid() === 0) {
+      t.skip('uid 0 ignores the mode bits this case depends on');
+      return;
+    }
+    const { report } = await auditIntoSession((reportPath) => {
+      fs.writeFileSync(reportPath, '{}\n');
+      fs.chmodSync(reportPath, 0o400);
+    });
+
+    assert.equal(typeof report.persist_error, 'string', 'the failed write must name itself');
+    assert.match(report.persist_error, /EACCES/);
+    // The measurement itself must survive the failed write — the findings are what the phase
+    // remediates from, and they are computed before persistence is even attempted.
+    assert.ok(report.sections, 'the audit must still return its sections');
+    assert.equal(report.schema, '1.0');
+  });
+
+  // EISDIR: the second independent cause, so the case cannot pass by recognizing one errno.
+  test('a report path occupied by a directory degrades the same way', async () => {
+    const { report } = await auditIntoSession((reportPath) => {
+      fs.mkdirSync(reportPath, { recursive: true });
+    });
+
+    assert.equal(typeof report.persist_error, 'string');
+    assert.match(report.persist_error, /EISDIR/);
+  });
+
+  // Over-trigger control: a writable path must persist AND leave `persist_error` undefined, so
+  // the fix can pass neither by reverting nor by declaring every write failed. The written file
+  // must also NOT carry the key — it is set after the serialization that failed.
+  test('a writable report path writes the file and leaves persist_error undefined', async () => {
+    const { report, onDisk } = await auditIntoSession(() => { /* leave the path writable */ });
+
+    assert.equal(report.persist_error, undefined, 'a successful write must leave no degrade marker');
+    assert.ok(onDisk, 'a writable path must actually produce the report file');
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(onDisk, 'persist_error'),
+      false,
+      'persist_error must never appear inside a written report',
+    );
+    assert.equal(onDisk.schema, '1.0');
   });
 });

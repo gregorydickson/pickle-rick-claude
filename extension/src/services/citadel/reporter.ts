@@ -44,6 +44,12 @@ export interface CitadelJsonReport {
   decisions: CitadelDecision[];
   summary: CitadelSummary;
   markdown: string;
+  /**
+   * AP-EXT-ITER288-01: present ONLY when the report could not be persisted, so the caller can
+   * report the degrade instead of claiming a write it did not make. It is set AFTER the
+   * serialization that failed, so it can never appear inside a written report.
+   */
+  persist_error?: string;
 }
 
 export interface CitadelSummary {

@@ -2636,7 +2636,12 @@ export async function executeCitadelPhase(runtime) {
         const cyclePartition = partitionCitadelCycleFindings(result.findings, threshold, mechanicalEnabled);
         toRemediate = cyclePartition.toRemediate;
         lastAdvisory = cyclePartition.advisory;
-        runtime.log(`citadel: cycle ${cycle + 1}/${cap} — wrote ${reportPath} with ${result.findings.length} finding(s), ${cyclePartition.remediable.length} remediable (>= ${threshold}), ${cyclePartition.mechanical.length} mechanical, ${toRemediate.length} total, ${lastAdvisory.length} advisory`);
+        // AP-EXT-ITER288-01: a report that could not be persisted is a DEGRADE, not a write. Naming
+        // the write unconditionally made this line claim an artifact the next phase would not find.
+        const wrote = result.persist_error === undefined
+            ? `wrote ${reportPath}`
+            : `report NOT written to ${reportPath} (${result.persist_error}) —`;
+        runtime.log(`citadel: cycle ${cycle + 1}/${cap} — ${wrote} with ${result.findings.length} finding(s), ${cyclePartition.remediable.length} remediable (>= ${threshold}), ${cyclePartition.mechanical.length} mechanical, ${toRemediate.length} total, ${lastAdvisory.length} advisory`);
         if (toRemediate.length === 0) {
             runtime.log('citadel: no remediable findings — phase complete, continuing pipeline');
             surfaceCitadelAdvisory(runtime, lastAdvisory);

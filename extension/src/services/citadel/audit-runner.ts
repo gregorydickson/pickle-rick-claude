@@ -78,17 +78,62 @@ export async function runCitadelAudit(options: CitadelAuditOptions): Promise<Cit
   if (!options.sessionDir && !options.reportPath) return report;
 
   const reportPath = options.reportPath ?? path.join(options.sessionDir ?? '', 'citadel_report.json');
-  const lockKey = `citadel:${path.resolve(options.sessionDir ?? path.dirname(reportPath))}`;
-  await withLock(lockKey, {}, async () => {
-    mkdirSync(path.dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, `${stableJson(report)}\n`, 'utf-8');
-  });
+  const persistError = await persistCitadelReport(reportPath, options.sessionDir, report);
+  if (persistError !== null) {
+    report.persist_error = persistError;
+    process.stderr.write(
+      `[citadel] report NOT written to ${reportPath}: ${persistError} — the audit measured `
+      + `${report.findings.length} finding(s) in-process and the phase continues\n`,
+    );
+  }
 
   if (options.sessionDir) {
     writeSkepticSink(options.sessionDir, options.diffRange, path.resolve(options.repoRoot ?? process.cwd()));
   }
 
   return report;
+}
+
+/**
+ * AP-EXT-ITER288-01: persist the report, DEGRADING instead of throwing. Returns `null` on a
+ * written report, or the failure message.
+ *
+ * Same rule, same entry point, other half: AP-EXT-ITER287-01 stopped the audit's INPUT step from
+ * ending the run; this is its OUTPUT step, which ran outside every recovery frame in exactly the
+ * same way. `runCitadelAudit` is awaited by `executeCitadelPhase` and nothing between it and the
+ * CLI catches — not `runPhaseIteration`, not `runPipelinePhaseLoop` — so a lock timeout or a
+ * failed write reached pipeline-runner's fatal handler, stamped `exit_reason: 'fatal'` and exited
+ * 1 with anatomy-park and szechuan-sauce NEVER RUN. A gate MAY refuse a local action; it MAY
+ * NEVER break the phase loop, and "could not save my own output" is the weakest possible reason to
+ * end a run whose remaining phases do not need the file.
+ *
+ * MEASURED 2026-09-18 end to end through the real `main()`: with the report path unwritable the
+ * pre-fix loop spawned 0 phase runners after citadel and left `exit_reason` unstamped; the
+ * control run spawned its successor and finalized `completed`. Two independent causes reproduce
+ * it as uid 501 — `EACCES` on a pre-existing unwritable report (root-owned artifacts and
+ * permissions drift both produce one) and `EISDIR` — and `withLock`'s 30s `LockError` is the
+ * third, which is why the lock is INSIDE the try rather than beside it.
+ *
+ * The failure is REPORTED, never swallowed: `report.persist_error` carries it to the caller and a
+ * stderr line names it. `writeSkepticSink` below is the deliberate contrast — a report-only sink
+ * whose failure nobody needs to hear about — and the two writes sitting six lines apart under
+ * opposite rules, only one of them guarded, is what left this open.
+ */
+async function persistCitadelReport(
+  reportPath: string,
+  sessionDir: string | undefined,
+  report: CitadelJsonReport,
+): Promise<string | null> {
+  const lockKey = `citadel:${path.resolve(sessionDir ?? path.dirname(reportPath))}`;
+  try {
+    await withLock(lockKey, {}, async () => {
+      mkdirSync(path.dirname(reportPath), { recursive: true });
+      writeFileSync(reportPath, `${stableJson(report)}\n`, 'utf-8');
+    });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }
 
 // Report-only skeptic lens sink: walks the diff, runs the lens, and writes a
