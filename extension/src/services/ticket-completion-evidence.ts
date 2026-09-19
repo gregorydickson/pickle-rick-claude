@@ -884,29 +884,6 @@ function recoverFromAnnouncement(ctx: CompletionDecisionCtx): EvidenceResult | n
 }
 
 /**
- * WS-2 (fix a): true iff `evidence` is a scan-sourced accept for a ticket that
- * DECLARES a recognized `zero_diff_intent`. A declared zero-diff ticket must
- * never have scan-sourced evidence promoted into its explicit field — the scan
- * arm's best-effort guess (bundle-generic ref-token matches, per the research)
- * is never a legitimate borrow target for a ticket that declares it produces no
- * commit of its own. Read-only: consults the existing `ctx.zeroDiffIntent()`
- * resolver, adds no new write and no new call site of the `zero_diff_intent`
- * frontmatter key (the sanctioned single-occurrence pin stays intact).
- */
-function isZeroDiffScanBorrowExcluded(ctx: CompletionDecisionCtx, evidence: EvidenceResult): boolean {
-  if (evidence.kind !== 'committed' || evidence.via !== 'scan') return false;
-  if (!ctx.zeroDiffIntent) return false;
-  let declared: string | null;
-  try {
-    declared = ctx.zeroDiffIntent();
-  } catch {
-    return false;
-  }
-  const intent = declared?.trim().toLowerCase();
-  return !!intent && ZERO_DIFF_INTENTS.has(intent);
-}
-
-/**
  * B-1SEAM WS-1: the ONE completion predicate — the single policy answering
  * "may this ticket's completion evidence be acted on?". Policy is the shipped
  * `guardCompletionCommitBeforeDone` ladder VERBATIM (the strictest site):
@@ -923,6 +900,11 @@ function isZeroDiffScanBorrowExcluded(ctx: CompletionDecisionCtx, evidence: Evid
  *      exempt on the 'phantom-watch' keep, refused for 'attribution'). Placed after
  *      every attribution branch so committed evidence always wins, and before
  *      `refuseAbsent` so the declaration is the last thing consulted, never the first.
+ *      AP-EXT-ITER301-01: there is NO zero-diff exclusion on the scan arm. A scan
+ *      hit is an exact `Pickle-Ticket: <this ticket id>` trailer (B-GITATTR WS-3
+ *      deleted the ref-token/file-touch inference a blanket exclusion once had to
+ *      defend against), so a declared zero-diff ticket cannot be handed a FOREIGN
+ *      sha by the scan — while excluding it discarded the ticket's OWN commit.
  *   4. Promote-once (R-WUWC SOFT-variant): persistEvidence writes the committed
  *      SHA into the explicit field (no-ops when already present) + re-probe.
  *   5. decision === 'done-flip' ONLY: worker-gate verdict fail-closed (R-CWGE) —
@@ -1083,18 +1065,12 @@ export function evaluateCompletionEvidence(
 export function evaluateCompletionEvidence(ctx: CompletionDecisionCtx): CompletionDecision;
 export function evaluateCompletionEvidence(ctx: CompletionDecisionCtx): CompletionDecision {
   let evidence = readEvidence(ctx);
-  if (isZeroDiffScanBorrowExcluded(ctx, evidence)) {
-    evidence = { kind: 'absent', absentReason: 'no_evidence' };
-  }
   if (!isAcceptedEvidence(evidence)) {
     // R-CCGR: the worker commits + stamps `completion_commit`, then emits its
     // done-promise; a decision site can read this predicate before that
     // frontmatter write is durably visible. Re-read once after a short backoff.
     sleepSyncMs(ctx.rereadBackoffMs ?? defaultRereadBackoffMs());
     evidence = readEvidence(ctx);
-    if (isZeroDiffScanBorrowExcluded(ctx, evidence)) {
-      evidence = { kind: 'absent', absentReason: 'no_evidence' };
-    }
   }
   let via: EvidenceVia | 'announcement' | undefined = evidence.via;
   if (!isAcceptedEvidence(evidence)) {

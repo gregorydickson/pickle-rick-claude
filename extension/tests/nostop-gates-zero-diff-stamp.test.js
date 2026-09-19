@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { evaluateCompletionEvidence } from '../services/ticket-completion-evidence.js';
+import { evaluateCompletionEvidence, gateForPhantomDoneRevert } from '../services/ticket-completion-evidence.js';
 
 /** The medium-tier lifecycle artifact set (TIER_LIFECYCLE-derived). */
 const MEDIUM_TIER_ARTIFACTS = [
@@ -46,6 +46,11 @@ function commitWith(dir, file, message) {
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
 }
 
+/** Commits with a `Pickle-Ticket` trailer — what the WS-1 producer hook stamps. */
+function commitWithTrailer(dir, file, subject, trailerTicketId) {
+  return commitWith(dir, file, `${subject}\n\nPickle-Ticket: ${trailerTicketId}`);
+}
+
 function writeTicketFile(sessionDir, ticketId, frontmatterLines, { artifacts = [] } = {}) {
   const ticketDir = path.join(sessionDir, ticketId);
   fs.mkdirSync(ticketDir, { recursive: true });
@@ -72,24 +77,21 @@ function zeroDiffIntentResolverFor(sessionDir, ticketId) {
 }
 
 // ---------------------------------------------------------------------------
-// AC-NSG-7 — declared zero-diff + a scan hit that a SIBLING's commit would
-// otherwise satisfy (the sibling's message names BOTH itself and this
-// ticket's own id — own-attribution wins under R-OMA, so the scan-arm
-// symmetric guard alone (fix b) would NOT reject it). Fix (a) — the
-// zero-diff scan-borrow exclusion — is what stops the borrow here: a
-// declared zero-diff ticket's scan-sourced evidence is never a promote
-// target, regardless of whose commit it resolves to.
+// AC-NSG-7 — declared zero-diff + a sibling commit whose MESSAGE names both
+// itself and this ticket's own id. AP-EXT-ITER301-01: what stops the borrow is
+// the trailer scan's exactness, not an exclusion — B-GITATTR WS-3 deleted the
+// ref-token message inference, so a commit carrying no `Pickle-Ticket: ws2ad001`
+// trailer is not a scan hit at all and the message text is never consulted.
 // ---------------------------------------------------------------------------
 
 test('AC-NSG-7: declared zero-diff ticket never borrows a scan-sourced sha, even an own-attributed one', () => {
   const root = mkTmp('pickle-nsg7-');
   try {
     initGitRepo(root);
-    // Names the SIBLING's own work but also touches this ticket's id — R-OMA
-    // would call this "own wins" (not foreign), so fix (b) alone would still
-    // let the scan arm accept it. Only fix (a) (zero-diff scan-borrow
-    // exclusion) prevents this sibling-authored sha from being promoted onto
-    // a ticket that declared it produces no commit of its own.
+    // Names the SIBLING's own work but also touches this ticket's id. It carries
+    // no `Pickle-Ticket` trailer, so the scan arm never sees it; the accept below
+    // comes from the zero-diff arm, and the sha is absent because there is no
+    // evidence, not because an exclusion threw evidence away.
     commitWith(root, 'sibwork.txt', 'feat(ws2sib02): sibling delivers real work; touches ws2ad001 tracking doc');
 
     const sessionDir = path.join(root, 'session');
@@ -230,6 +232,132 @@ test('AC-NSG-10: field replay of the reported wedge (7af891d4) resolves committe
       assert.notEqual(decision.reason, 'foreign_attribution');
       assert.notEqual(decision.reason, 'baseline_sha');
     }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER301-01 — a declared zero-diff ticket that DID commit, with its own
+// `Pickle-Ticket` trailer on the commit, must keep that sha as evidence.
+//
+// The scan arm matches an exact `Pickle-Ticket: <this ticket id>` trailer
+// (B-GITATTR WS-3 deleted the ref-token/file-touch inference). The removed
+// scan-borrow exclusion discarded that positive evidence: the sha was dropped on
+// the accept path, and with an incomplete artifact set the Done flip was refused
+// `no_evidence` while the phantom-Done watcher REVERTED shipped work.
+//
+// The three arms below are the fail-CLOSED half; #ap-ext-iter301-01-foreign is
+// the falsifying control — deleting the exclusion must not let a FOREIGN
+// trailered sha reach this ticket (AC-NSG-7's invariant, now carried by the
+// trailer's exactness rather than by a blanket exclusion).
+// ---------------------------------------------------------------------------
+
+function zeroDiffTrailerFixture({ artifacts, trailerTicketId }) {
+  const root = mkTmp('pickle-ap301-');
+  initGitRepo(root);
+  const sha = commitWithTrailer(root, 'work.txt', 'docs: correct the stale catalog clause', trailerTicketId);
+  const sessionDir = path.join(root, 'session');
+  writeTicketFile(sessionDir, 'zd00001', [
+    'id: zd00001',
+    'status: "Done"',
+    'complexity_tier: medium',
+    'zero_diff_intent: already-satisfied',
+  ], { artifacts });
+  // a sibling ticket dir so the R-OMA enumeration is live, not empty
+  writeTicketFile(sessionDir, 'sib0002', ['id: sib0002', 'status: "Done"']);
+  return { root, sessionDir, sha };
+}
+
+function zeroDiffCtx(sessionDir, root, decision) {
+  return {
+    sessionDir,
+    ticketId: 'zd00001',
+    workingDir: root,
+    startCommit: null,
+    pinnedSha: null,
+    decision,
+    rereadBackoffMs: 0,
+    workerGateVerdict: () => ({ verdict: 'green', computedVia: 'fixture' }),
+    zeroDiffIntent: zeroDiffIntentResolverFor(sessionDir, 'zd00001'),
+  };
+}
+
+test('AP-EXT-ITER301-01: a declared zero-diff ticket keeps its OWN trailered sha as evidence', () => {
+  const { root, sessionDir, sha } = zeroDiffTrailerFixture({
+    artifacts: MEDIUM_TIER_ARTIFACTS,
+    trailerTicketId: 'zd00001',
+  });
+  try {
+    const decision = evaluateCompletionEvidence(zeroDiffCtx(sessionDir, root, 'done-flip'));
+    assert.equal(decision.ok, true, `expected a committed accept, got reason=${decision.reason ?? 'n/a'}`);
+    assert.equal(decision.sha, sha,
+      'the ticket own-trailered commit is positive evidence — it must not be discarded as a borrow');
+    assert.equal(decision.via, 'scan');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER301-01: an incomplete artifact set never reverts a zero-diff ticket that has its own trailered commit', () => {
+  const { root, sessionDir, sha } = zeroDiffTrailerFixture({
+    artifacts: MEDIUM_TIER_ARTIFACTS.slice(0, 5),
+    trailerTicketId: 'zd00001',
+  });
+  try {
+    // R-DSAN never-discard: the watcher must KEEP shipped Done work whose commit
+    // is positively attributed, whatever the lifecycle artifact set looks like.
+    const revert = gateForPhantomDoneRevert({
+      sessionDir,
+      ticketId: 'zd00001',
+      workingDir: root,
+      zeroDiffIntent: zeroDiffIntentResolverFor(sessionDir, 'zd00001'),
+    });
+    assert.equal(revert.action, 'keep', 'shipped Done work with a trailered commit must never be reverted');
+    assert.equal(revert.sha, sha);
+
+    const flip = evaluateCompletionEvidence(zeroDiffCtx(sessionDir, root, 'done-flip'));
+    assert.equal(flip.ok, true, `done-flip must act on the trailered sha, got reason=${flip.reason ?? 'n/a'}`);
+    assert.equal(flip.sha, sha);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER301-01: attribution reports a zero-diff ticket that really committed as committed', () => {
+  const { root, sessionDir, sha } = zeroDiffTrailerFixture({
+    artifacts: MEDIUM_TIER_ARTIFACTS,
+    trailerTicketId: 'zd00001',
+  });
+  try {
+    // Roster honesty runs BOTH ways: a declaration must not hide unfinished work,
+    // and a ticket that shipped a commit must not report as unfinished.
+    const decision = evaluateCompletionEvidence(zeroDiffCtx(sessionDir, root, 'attribution'));
+    assert.equal(decision.ok, true, `expected attributably-committed, got reason=${decision.reason ?? 'n/a'}`);
+    assert.equal(decision.sha, sha);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER301-01-foreign: a SIBLING-trailered sha is still never handed to the zero-diff ticket', () => {
+  const { root, sessionDir } = zeroDiffTrailerFixture({
+    artifacts: MEDIUM_TIER_ARTIFACTS,
+    trailerTicketId: 'sib0002',
+  });
+  try {
+    // The falsifying control for the three arms above: the ONLY commit in the repo
+    // carries a sibling's trailer. AC-NSG-7's invariant must still hold with no
+    // exclusion present — the trailer's exactness is what carries it.
+    const decision = evaluateCompletionEvidence(zeroDiffCtx(sessionDir, root, 'done-flip'));
+    assert.equal(decision.ok, true, `expected the zero-diff accept, got reason=${decision.reason ?? 'n/a'}`);
+    assert.equal(decision.via, 'zero-diff');
+    assert.equal(decision.sha, undefined, 'a foreign-trailered sha must never be handed to this ticket');
+
+    const raw = fs.readFileSync(ticketPath(sessionDir, 'zd00001'), 'utf8');
+    assert.equal(/^completion_commit:/m.test(raw), false,
+      'the sibling sha must never land on disk');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
