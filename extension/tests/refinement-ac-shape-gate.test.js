@@ -765,7 +765,11 @@ test('80b82391: countWrittenAnalyses throws on an UNREADABLE directory rather th
     }
     assert.throws(
       () => countWrittenAnalyses(refinementDir),
-      (err) => err instanceof Error && err.code !== 'ENOENT',
+      // `typeof err.code === 'string'` is the load-bearing half: without it the row
+      // accepts ANY non-ENOENT throw, so a refactor that lost the errno and threw a bare
+      // TypeError kept this row GREEN (measured) while the message below claimed an errno
+      // had been surfaced. Assert what the message says.
+      (err) => err instanceof Error && typeof err.code === 'string' && err.code !== 'ENOENT',
       'an unreadable directory must surface its own errno, never be counted as zero analyses'
     );
   } finally {
