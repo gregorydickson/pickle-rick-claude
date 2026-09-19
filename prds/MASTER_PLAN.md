@@ -88,6 +88,46 @@ G3 describes. All three were measured by commands run and read in-session.
 
 ---
 
+## 📐 THE "NEAR-FIXED ~300-MINUTE REVIEW TOLL" IS FALSIFIED (measured 2026-09-19)
+
+Root `CLAUDE.md`'s bundle-sizing clause rests on a stated economic premise: *"ANATOMY-PARK +
+SZECHUAN-SAUCE are a near-fixed ~300-minute toll"*, and this file records those durations as
+*"measured from `pipeline-runner.log` timestamps and stand."* **Re-measured across two consecutive
+bundles, they do not stand.**
+
+| | B-VERDICT `3c7489fc` | B-INVENTED `df5973be` |
+|---|---:|---:|
+| tickets | 10 | 9 |
+| commits | 21 | **45** |
+| pickle | 269m 45s (16 iter) | 245m 26s (10 iter) |
+| **anatomy-park** | 134m 8s (7 iter) | **995m 34s (41 iter)** |
+| szechuan | 67m 47s (3 iter) | 35m 52s (3 iter) |
+| **review toll** | **202m** | **1031m** |
+| toll share of run | 43% | **81%** |
+
+**The toll varied 5x between two bundles of nearly identical ticket count.** It is not fixed, and it
+does not track tickets — it tracks **findings**. B-INVENTED touched twice the diff (45 commits vs 21)
+and anatomy-park kept finding real defects, recording ~1 trap door per pass across 34 `extension`
+passes before converging. Citadel's advisory count moved the same way and in the same direction: 11 on
+B-INVENTED, **5** on the much smaller B-GATERED.
+
+**What survives:** the PICKLE linearity. 269m/10 and 245m/9 are both **~27 min/ticket**, close to the
+recorded 22-25.
+
+**What this does NOT license.** It is not an argument for small bundles. A large bundle still pays one
+review cycle instead of two, and the toll rises with the diff whenever that diff is reviewed — split
+into two bundles, the same findings are still found, plus a second pickle phase and a second gate. The
+correction is narrower and it is about honesty in the premise: **"the toll is fixed, so composition is
+free" is false. Composition is cheaper, not free, and the saving is one review CYCLE, not the review
+TIME.** Plan wall-clock from the expected diff, not from the ticket count.
+
+**Bundle sizes this session were 10, 9, 7 tickets** — above the 5-ticket minimum, trending down, and
+far below the "dozens" the clause asks for. The binding constraint was **backlog depth, not policy**:
+after closing #39, #37 and #29, only #40, #32, #41 and the #5 enhancement remained, and #40/#32 were
+already in flight. A bundle cannot be composed from rows that do not exist.
+
+---
+
 ## 🔁 THE LOOP'S OWN DEFECTS ARE IN ITS MEASUREMENT LAYER TOO (measured 2026-09-18)
 
 **The recursion, stated plainly:** this file already records that **11 of 14 product defects live in
