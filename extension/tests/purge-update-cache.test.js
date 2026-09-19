@@ -180,6 +180,42 @@ describe('purge-update-cache.js', () => {
     }
   });
 
+  // The ONLY safety flag this script has is spelled exactly one way, and the script's
+  // default action is a real `rm -rf`. Amputating the unknown-argument guard leaves the
+  // suite GREEN while `--dryrun` / `--dry_run` / `-n` delete the operator's updater cache
+  // and every `pickle-update-*` / `pickle-extract-*` root and exit 0 — the operator asked
+  // for a preview and got a deletion. The `[]` arm is the load-bearing control: it proves
+  // this fixture IS purgeable, so the rejection arms' survival assertions cannot pass
+  // vacuously, and a parser that threw on EVERYTHING would red it.
+  test('AP-BIN-ITER254-01 a malformed invocation exits 2 instead of silently performing the real purge', () => {
+    for (const args of [['--dryrun'], ['--dry_run'], ['-n'], ['--dry-run', 'extra']]) {
+      const fixture = makeFixture();
+      try {
+        const result = runPurge(fixture, args);
+        const shown = JSON.stringify(args);
+        assert.strictEqual(result.status, 2, `expected exit 2 for ${shown}, got ${result.status}: ${result.stderr}`);
+        assert.match(result.stderr, /Usage: purge-update-cache\.js \[--dry-run\]/);
+        assert.equal(existsSync(fixture.cachePath), true, `${shown} removed the update cache`);
+        assert.equal(existsSync(fixture.tarballDir), true, `${shown} removed a pickle-update- root`);
+        assert.equal(existsSync(fixture.extractDir), true, `${shown} removed a pickle-extract- root`);
+        assert.equal(existsSync(fixture.auditPath), false, `${shown} wrote a CACHE_PURGE row`);
+      } finally {
+        rmSync(fixture.dir, { recursive: true, force: true });
+      }
+    }
+
+    const fixture = makeFixture();
+    try {
+      const result = runPurge(fixture, []);
+      assert.strictEqual(result.status, 0, `expected exit 0 for [], got ${result.status}: ${result.stderr}`);
+      assert.equal(existsSync(fixture.cachePath), false, 'accept control did not purge the update cache');
+      assert.equal(existsSync(fixture.tarballDir), false, 'accept control did not purge the pickle-update- root');
+      assert.equal(existsSync(fixture.auditPath), true, 'accept control wrote no CACHE_PURGE row');
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   test('honors EXTENSION_DIR for update cache and audit paths', () => {
     const fixture = makeFixture();
     const overrideRoot = path.join(fixture.dir, 'override-extension-root');
