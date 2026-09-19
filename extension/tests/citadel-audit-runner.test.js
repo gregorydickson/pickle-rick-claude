@@ -486,8 +486,7 @@ describe('AP-EXT-ITER288-01: a citadel report that cannot be persisted degrades,
 // calls sit in try/finally (which rethrows) and `makeCommittedRepo`'s helper has no catch, with all
 // three callers invoking it bare. This row pins the other half — that expiry is a throw and not a
 // silently empty result.
-// 9ddab87b: the two callsites were named by line number here until an edit above shifted one of
-// them. Enclosing-name anchors do not shift, so the reference cannot rot silently.
+// 9ddab87b: anchored by enclosing name, not line number — any edit above these callsites moves them.
 test('a695505e: a spawn exceeding its bound throws, so the timeout reaches a failing assertion', () => {
   let thrown = null;
   try {
