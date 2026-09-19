@@ -234,3 +234,105 @@ test('honest-failure: HEAD static + clean tree → no commit, outcome=honest_fai
     cleanup(workingDir, sessionDir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER302-01 — the out-of-allowlist residue pre-stash is a DESTRUCTIVE
+// sequence over uncommitted worker work, and both of its results are
+// load-bearing. `stashUnattributableRemainder` is best-effort (null on any git
+// failure) and `git checkout -- <pathspec>` is atomic over its pathspec. Before
+// the fix both results were discarded: a failed anchor still destroyed, and one
+// untracked member aborted the whole restore so out-of-allowlist work landed in
+// the ticket's commit. These pins are the falsifying control for both halves.
+// ---------------------------------------------------------------------------
+
+/** Scoped fixture: session data OUTSIDE the repo so only source residue is dirty. */
+function scopedFixture(label, allowedPaths) {
+  const workingDir = makeTmp(`dura-t10-${label}-`);
+  initGitRepo(workingDir);
+  const sessionDir = makeTmp(`dura-t10-${label}-sess-`);
+  writeTicket(sessionDir, T, 'In Progress', 1);
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({ schema_version: 5, activity: [] }));
+  fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ allowed_paths: allowedPaths }));
+  // Tracked out-of-allowlist file carrying committed content, so a restore is observable.
+  fs.writeFileSync(path.join(workingDir, 'extension', 'residue.txt'), 'COMMITTED-V1\n');
+  execFileSync('git', ['add', '-A'], { cwd: workingDir, stdio: 'ignore', timeout: 30_000 });
+  execFileSync('git', ['commit', '-q', '-m', 'residue baseline', '--no-gpg-sign'], { cwd: workingDir, stdio: 'ignore', timeout: 30_000 });
+  return { workingDir, sessionDir, salvageRef: `refs/pickle/salvage/${path.basename(sessionDir)}` };
+}
+
+const readIfPresent = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8').trim() : null);
+const committedNames = (dir) =>
+  execFileSync('git', ['show', '--name-only', '--pretty=format:', 'HEAD'], { cwd: dir, encoding: 'utf8', timeout: 30_000 });
+
+test('AP-EXT-ITER302-01 salvage anchor failed → the restore is REFUSED, uncommitted out-of-allowlist work survives in the tree', () => {
+  const { workingDir, sessionDir, salvageRef } = scopedFixture('salvagefail', ['extension/allowed.txt']);
+  try {
+    // A child ref under the salvage name makes `update-ref <salvageRef>` fail with a
+    // real F/D conflict — the anchor step returns null with no code mutation.
+    execFileSync('git', ['update-ref', `${salvageRef}/blocker`, head(workingDir)], { cwd: workingDir, timeout: 30_000 });
+
+    const preIterSha = head(workingDir);
+    fs.writeFileSync(path.join(workingDir, 'extension', 'allowed.txt'), 'OWNED WORK\n');
+    fs.writeFileSync(path.join(workingDir, 'extension', 'residue.txt'), 'UNCOMMITTED-V2-WORK\n');
+
+    const logs = [];
+    const input = { ...baseInput(sessionDir, workingDir, T, preIterSha, passGate), log: (m) => logs.push(m) };
+    const result = commitGatePassingDeliverableAtBoundary(input);
+
+    // ACCEPT control on the SAME fixture: the boundary still commits the owned
+    // deliverable, so the survival assertion below cannot pass on a dead path.
+    assert.equal(result.outcome, 'committed', `expected committed, got ${result.outcome}/${result.reason}`);
+    assert.match(committedNames(workingDir), /allowed\.txt/, 'owned in-allowlist work must still be committed');
+
+    // The defect: destroying on an anchor that was never written. The worker's
+    // uncommitted edit must still be readable from the working tree.
+    assert.equal(
+      readIfPresent(path.join(workingDir, 'extension', 'residue.txt')),
+      'UNCOMMITTED-V2-WORK',
+      'a failed salvage anchor must SUPPRESS the restore — uncommitted work may not be destroyed with no ref naming it',
+    );
+    assert.ok(
+      logs.some((l) => /NOT pre-stashed/.test(l) && /salvage anchor failed/.test(l)),
+      `the refusal must be reported, got: ${JSON.stringify(logs)}`,
+    );
+    assert.ok(
+      !logs.some((l) => /pre-stashed \d+ out-of-allowlist path\(s\) to refs\//.test(l)),
+      'must not report a pre-stash that did not happen',
+    );
+  } finally {
+    cleanup(workingDir, sessionDir);
+  }
+});
+
+test('AP-EXT-ITER302-01 untracked out-of-allowlist residue → restore still applies, staged ⊆ allowlist, both halves recoverable at the salvage ref', () => {
+  const { workingDir, sessionDir, salvageRef } = scopedFixture('untracked', ['extension/allowed.txt']);
+  try {
+    const preIterSha = head(workingDir);
+    fs.writeFileSync(path.join(workingDir, 'extension', 'allowed.txt'), 'OWNED WORK\n');
+    fs.writeFileSync(path.join(workingDir, 'extension', 'residue.txt'), 'UNCOMMITTED-V2-WORK\n');
+    // Untracked out-of-allowlist residue: HEAD does not hold it, so it is absent
+    // from a `checkout --` pathspec and pre-fix aborted the whole restore.
+    fs.writeFileSync(path.join(workingDir, 'extension', 'newresidue.txt'), 'UNCOMMITTED-NEW-WORK\n');
+
+    const result = commitGatePassingDeliverableAtBoundary(baseInput(sessionDir, workingDir, T, preIterSha, passGate));
+
+    assert.equal(result.outcome, 'committed', `expected committed, got ${result.outcome}/${result.reason}`);
+    const names = committedNames(workingDir);
+    assert.match(names, /allowed\.txt/, 'ACCEPT control: owned in-allowlist work is committed');
+    assert.doesNotMatch(names, /newresidue\.txt/, 'AC-DURA-2: untracked out-of-allowlist residue may not enter the ticket commit');
+    assert.doesNotMatch(names, /residue\.txt\b(?!.*allowed)/, 'AC-DURA-2: tracked out-of-allowlist residue may not enter the ticket commit');
+
+    // Restored to HEAD: tracked reverted, untracked (absent from HEAD) removed.
+    assert.equal(readIfPresent(path.join(workingDir, 'extension', 'residue.txt')), 'COMMITTED-V1',
+      'tracked out-of-allowlist residue must be restored to HEAD');
+    assert.equal(readIfPresent(path.join(workingDir, 'extension', 'newresidue.txt')), null,
+      'untracked out-of-allowlist residue must be removed from the tree');
+
+    // Nothing was destroyed without a recoverable copy: BOTH halves at the ref.
+    const refNames = execFileSync('git', ['show', '--name-only', '--pretty=format:', salvageRef], { cwd: workingDir, encoding: 'utf8', timeout: 30_000 });
+    assert.match(refNames, /newresidue\.txt/, 'untracked residue must be recoverable at the salvage ref');
+    assert.match(refNames, /residue\.txt/, 'tracked residue must be recoverable at the salvage ref');
+  } finally {
+    cleanup(workingDir, sessionDir);
+  }
+});

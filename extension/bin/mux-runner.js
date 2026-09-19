@@ -5965,10 +5965,36 @@ function attributeBoundaryHeadMoved(sessionDir, ticketId, workingDir) {
     return { outcome: 'honest_failure', reason: 'head-moved-untagged' };
 }
 /**
+ * AP-EXT-ITER302-01: partition `paths` by whether HEAD holds them, using git itself
+ * as the oracle (`ls-tree` over the exact pathspec) rather than a second porcelain
+ * parse. "Restore to HEAD" means two different operations either side of that line
+ * — check the tracked half out, delete the untracked half, which HEAD does not hold
+ * — and `git checkout -- <pathspec>` is ATOMIC: a single untracked member makes the
+ * whole command fail and restores NOTHING. Returns null when git could not answer;
+ * an unanswered partition is not an empty one and the caller must not destroy on it.
+ */
+function partitionPathsHeldByHead(workingDir, paths) {
+    const r = spawnSync('git', ['-C', workingDir, 'ls-tree', '--name-only', '-z', 'HEAD', '--', ...paths], {
+        encoding: 'utf-8', timeout: 30000,
+    });
+    if (r.status !== 0)
+        return null;
+    const held = new Set((r.stdout ?? '').split('\0').filter(Boolean));
+    return { tracked: paths.filter((p) => held.has(p)), untracked: paths.filter((p) => !held.has(p)) };
+}
+/**
  * T10 allowlist-intersection staging filter: pre-stash any dirty path NOT within
  * the ticket's scope.json allowed_paths to the salvage ref and restore it to HEAD,
  * so the reused exit committer can only stage paths ⊆ the allowlist (AC-DURA-2).
  * Unscoped session (no scope.json) → no-op. Best-effort.
+ *
+ * AP-EXT-ITER302-01: this is a DESTRUCTIVE sequence over uncommitted worker work,
+ * and every step's result is load-bearing. `stashUnattributableRemainder` is
+ * best-effort and returns null on ANY git failure; a null means the snapshot was
+ * never anchored, so destroying on it removes work no ref names (recoverable only
+ * via `git fsck --lost-found`, and only until the next gc). Same shape the sibling
+ * `git-utils.ts:resetToSha` closed for `archiveBeforeDestructive` (AP-EXT-ITER32-01):
+ * destroy ONLY what is provably saved, and report only what actually happened.
  */
 function preStashOutOfAllowlistResidue(sessionDir, workingDir, ticketId, log) {
     // Only a RESOLVED fence names what is out of scope; with no fence, or one we
@@ -5983,13 +6009,30 @@ function preStashOutOfAllowlistResidue(sessionDir, workingDir, ticketId, log) {
         // committer already routes session-dir-foreign residue to the salvage ref.
         if (outOfScope.length === 0)
             return;
-        stashUnattributableRemainder(workingDir, sessionDir, log);
+        // The two preconditions of a safe destroy, answered BEFORE anything is touched:
+        // the remainder is anchored at a ref, and git can say which paths HEAD holds.
+        const salvageRef = stashUnattributableRemainder(workingDir, sessionDir, log);
+        const split = salvageRef ? partitionPathsHeldByHead(workingDir, outOfScope) : null;
+        if (!salvageRef || !split) {
+            log(`[boundary-commit] ticket ${ticketId}: NOT pre-stashed — ${salvageRef ? 'could not partition' : 'salvage anchor failed'}; leaving ${outOfScope.length} out-of-allowlist path(s) in the tree (refusing an unrecoverable restore)`);
+            return;
+        }
         // Restore the out-of-scope residue to HEAD so it cannot be swept into the
-        // ticket-attributed commit; the salvage ref retains a recoverable copy.
-        spawnSync('git', ['-C', workingDir, 'checkout', '--', ...outOfScope], {
+        // ticket-attributed commit; `salvageRef` retains a recoverable copy of both
+        // halves. Untracked paths are absent from HEAD, so restoring them is removal.
+        const restore = spawnSync('git', ['-C', workingDir, 'checkout', '--', ...split.tracked], {
             encoding: 'utf-8', timeout: 30000,
         });
-        log(`[boundary-commit] ticket ${ticketId}: pre-stashed ${outOfScope.length} out-of-allowlist path(s) to salvage ref`);
+        const restored = split.tracked.length === 0 || restore.status === 0;
+        let removed = 0;
+        for (const relPath of split.untracked) {
+            try {
+                fs.unlinkSync(path.join(workingDir, relPath));
+                removed += 1;
+            }
+            catch { /* best-effort */ }
+        }
+        log(`[boundary-commit] ticket ${ticketId}: pre-stashed ${outOfScope.length} out-of-allowlist path(s) to ${salvageRef} (restored ${restored ? split.tracked.length : 0}/${split.tracked.length} tracked, removed ${removed}/${split.untracked.length} untracked)`);
     }
     catch (err) {
         log(`[boundary-commit] allowlist pre-stash failed (continuing): ${safeErrorMessage(err)}`);
