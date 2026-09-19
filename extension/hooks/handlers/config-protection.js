@@ -1378,10 +1378,12 @@ export function detectProhibitedGitVerb(command, readValues = true) {
         // scratch repo: one commit still, HEAD sha replaced, subject overwritten)
         // while a `=== '--amend'` compare saw `--amen?`, matched nothing, and
         // APPROVED a history rewrite for a worker. `--prun?` and `--amen[d]`
-        // measured the same and block now; the BRACE spelling `--{amend,amend}`
-        // does NOT, and is not this seam's to fix — `splitShellSegments` reads its
-        // `{`/`}` as command-group delimiters and splits the word before any flag
-        // test runs (AP-EXT-ITER93-06, open). The `--` of `isCheckoutRefOperation`
+        // measured the same and block now, and so does the BRACE spelling
+        // `--{amend,amend}`: AP-EXT-ITER93-06 landed 2026-08-29 and `expandWord`
+        // now expands the word at `pushWordBoundaryTokens`' flush, UPSTREAM of this
+        // seam, so the flag test sees `--amend`. Re-measured on the shipped handler
+        // 2026-09-19 — `--{amend,amend}` and `--{prune,prune}` both block, at
+        // brace/literal parity. The `--` of `isCheckoutRefOperation`
         // deliberately stays literal: that arm returns FALSE (path-mode is
         // ALLOWED), so widening it is the under-block direction, the same reason
         // `NEGATIVE_GIT_SUBCOMMANDS` stays literal.
