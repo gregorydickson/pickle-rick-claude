@@ -213,6 +213,78 @@ describe('buildAcCoverageScorecard', () => {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   });
+
+  // AP-EXT-ITER286-01: reproduces the live shape from session 2026-09-16-383e1249, where AC-T2's
+  // entire test axis rested on the letter `a`. `SYMBOL_PATTERN` keys on the English words
+  // `type`/`class`/`const`, and `diff-walker` classifies markdown `production`, so PROSE yields a
+  // declaration that does not exist; that token is then the identity for `line.includes(symbol)`
+  // against every changed test file. The evidence itself must survive — only the identity goes.
+  test('AP-EXT-ITER286-01: a prose-derived one-character symbol cannot carry the test axis', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-scorecard-'));
+    try {
+      writeFile(
+        repoRoot,
+        'docs/design-notes.md',
+        ['# Notes', '', 'AC-XY-7 is about the type a reader must hold while it stays bounded.', ''].join('\n'),
+      );
+      // No AC id, no implementation symbol, none of the AC's keyword anchors — the ONLY thing
+      // this line shares with the criterion is the letter `a`, inside `serial`.
+      writeFile(repoRoot, 'tests/.serial-tests.json', ['{', '  "_comment": "serial sub-tier"', '}', ''].join('\n'));
+
+      const result = buildAcCoverageScorecard(
+        [{ id: 'AC-XY-7', line: 3, text: '- **AC-XY-7**: the type a reader must hold while it stays bounded.' }],
+        diffSummary(repoRoot, [
+          changedFile('docs/design-notes.md', 'production'),
+          changedFile('tests/.serial-tests.json', 'test'),
+        ]),
+        { repoRoot },
+      );
+
+      const row = result.rows[0];
+      assert.equal(row.implemented, true, 'the id match itself is untouched — only the symbol is dropped');
+      assert.equal(row.implementationEvidence[0].matchType, 'ac_id');
+      assert.equal(row.implementationEvidence[0].symbol, undefined, 'prose `type a` is not a declared symbol');
+      assert.deepEqual(row.implementationSymbols, [], 'no identity is minted from prose');
+      assert.equal(row.tested, false, 'the letter `a` matching `serial` is not test evidence');
+      assert.deepEqual(row.testEvidence, []);
+      assert.deepEqual(
+        result.findings.map((finding) => finding.id),
+        ['citadel-ac-coverage-AC-XY-7-test'],
+        'the missing test axis is reported, not silently certified',
+      );
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // AP-EXT-ITER286-01 over-trigger control: the floor is exactly 4 characters, so a real
+  // four-character symbol (`head` and `line` both occur in the live corpus) must still mint an
+  // identity and still carry the symbol axis.
+  test('AP-EXT-ITER286-01 control: a four-character declared symbol still carries the test axis', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-scorecard-'));
+    try {
+      writeFile(repoRoot, 'src/head.ts', ['export const head = (rows) => rows[0];', ''].join('\n'));
+      writeFile(
+        repoRoot,
+        'tests/head.test.ts',
+        ['test("first row", () => {', '  assert.equal(head([1]), 1);', '});', ''].join('\n'),
+      );
+
+      const result = buildAcCoverageScorecard(
+        [{ id: 'AC-XY-8', line: 4, text: '- **AC-XY-8**: the head helper returns the leading row.' }],
+        diffSummary(repoRoot, [changedFile('src/head.ts', 'production'), changedFile('tests/head.test.ts', 'test')]),
+        { repoRoot },
+      );
+
+      const row = result.rows[0];
+      assert.deepEqual(row.implementationSymbols, ['head']);
+      assert.equal(row.tested, true);
+      assert.equal(row.testEvidence[0].matchType, 'symbol');
+      assert.deepEqual(result.findings, []);
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('extractKeywordAnchors', () => {

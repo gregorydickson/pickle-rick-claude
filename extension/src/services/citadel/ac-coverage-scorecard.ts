@@ -149,13 +149,36 @@ export function renderAcCoverageMarkdownTable(rows: AcCoverageRow[]): string {
   ].join('\n');
 }
 
+/**
+ * AP-EXT-ITER286-01: the ONE rule for "this token can stand as an identity in a `line.includes`
+ * evidence match". Both evidence axes key on raw substring containment, so a token too short or
+ * too generic to discriminate matches everything it is tested against — but only the ANCHOR axis
+ * carried the rule, and `extractSymbolName`, whose output is used the same way, carried none.
+ *
+ * `SYMBOL_PATTERN` keys on the words `function|class|interface|type|enum|const|let|var`, which are
+ * ordinary ENGLISH; run over the markdown that `diff-walker` also classifies `production`, prose
+ * yields declarations that do not exist. Measured on the live corpus: `class rather` -> `rather`,
+ * `type a` -> `a`, and that one-character "symbol" then carried AC-T2's whole test axis
+ * (session 2026-09-16-383e1249: all three test-evidence rows matched the letter `a` in
+ * `tests/.serial-tests.json`), reporting the criterion TESTED on noise.
+ *
+ * One predicate for both axes, not a second guard beside the first: a fork here is how the two
+ * drifted apart to begin with. It does NOT claim to recognise prose — `rather`/`guard`/`alias`
+ * survive it — only that a token below the module's own identity floor is not evidence of
+ * anything. Blast radius MEASURED over 154 distinct implementation symbols in 16 recorded
+ * sessions: exactly one token (`a`) fails it, so no real symbol is lost.
+ */
+function isUsableIdentityToken(token: string): boolean {
+  return token.length >= 4 && !COMMON_WORDS.has(token.toLowerCase());
+}
+
 export function extractKeywordAnchors(text: string): string[] {
   const withoutIds = text.replace(AC_ID_PATTERN, ' ');
   const words = withoutIds.match(WORD_PATTERN) ?? [];
   const anchors = words
     .flatMap(splitIdentifierWords)
     .map((word) => word.toLowerCase())
-    .filter((word) => word.length >= 4 && !COMMON_WORDS.has(word));
+    .filter(isUsableIdentityToken);
   return uniqueSortedStrings(anchors);
 }
 
@@ -323,7 +346,11 @@ function toEvidence(
 
 function extractSymbolName(line: string): string | undefined {
   const match = line.match(SYMBOL_PATTERN);
-  return match?.[1] ?? match?.[2];
+  const name = match?.[1] ?? match?.[2];
+  // AP-EXT-ITER286-01: filtered HERE, the extractor, because every consumer uses the name as an
+  // identity — `evidence.symbol`, `implementationSymbols`, and the `line.includes(symbol)` test
+  // axis all read this one return.
+  return name !== undefined && isUsableIdentityToken(name) ? name : undefined;
 }
 
 function symbolContainsAnchor(symbol: string, anchor: string): boolean {
