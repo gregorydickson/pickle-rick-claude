@@ -1,9 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { TIER_LIFECYCLE, type LifecyclePhase, type TicketComplexityTier } from './pickle-utils.js';
+import { matchesArtifactPrefix } from '../types/index.js';
 
+/**
+ * AP-EXT-ITER199-02: the prefixes of `prefixes` that `files` carries no gated
+ * artifact for. "Carries" is decided by `matchesArtifactPrefix` (`types/index.ts`),
+ * THE single expression of the `<prefix>.md` / `<prefix>_*` contract rule — it is
+ * not restated here. A second hand-written copy is how one function's two halves
+ * came to disagree about whether the same review file existed (AP-EXT-ITER199-01).
+ */
 export function findMissingPrefixes(files: readonly string[], prefixes: readonly string[]): string[] {
-  return prefixes.filter((prefix) => !files.some((file) => file === `${prefix}.md` || file.startsWith(`${prefix}_`)));
+  return prefixes.filter((prefix) => !files.some((file) => matchesArtifactPrefix(file, prefix)));
 }
 
 /**
