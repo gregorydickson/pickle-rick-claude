@@ -587,6 +587,92 @@ function reclaimUndeletableGateTmpdir(leaked) {
   rmSync(leaked, { recursive: true, force: true });
 }
 
+// AP-BIN-ITER254-02. The mode `case`'s catch-all is the SOLE rejector of a typo'd mode at the
+// right arity (the `$#` guard above it cannot see one), and the `$#` guard is the sole rejector of
+// a wrong argument COUNT. Both were PRESENT and correct and neither was observable: amputating the
+// catch-all made `--pretag <tag>` exit 0 printing nothing, amputating the arity guard degraded
+// exit 2 into an undocumented `set -u` exit 1 at argc<2 and silently ran the gate at argc>2 —
+// suite 54/54 GREEN through both. The two arms whose rejection a broken fixture could fake — a
+// wrong mode and a surplus argument — therefore carry a live ACCEPT control on the SAME fixture, so
+// exit 2 can never pass because the fixture was unpassable. The under-arity arm needs none: its
+// discriminator is exit 2 rather than the mutant's undocumented 1, which no fixture can supply.
+describe('release-gate.invocation', () => {
+  test('AP-BIN-ITER254-02 exits 2 on a misspelled mode at the right arity instead of reporting a release it never checked', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    try {
+      for (const mode of ['--pretag', '--post_tag', '--pre_tag', '-p', 'pre-tag']) {
+        const result = gate([mode, tagName], { cwd: repoDir });
+        assert.equal(
+          result.status,
+          2,
+          `mode ${mode} did not reach the catch-all: exit ${result.status} ${result.stdout}${result.stderr}`,
+        );
+        assert.match(result.stderr, /^usage: bin\/release-gate\.sh --pre-tag <tag>$/m);
+        assert.equal(result.stdout, '', `mode ${mode} produced a verdict on stdout: ${result.stdout}`);
+      }
+
+      // ACCEPT control: the ONLY difference is the mode's spelling, so the rejections above cannot
+      // be coming from an unpassable fixture.
+      const accepted = gate(['--pre-tag', tagName], { cwd: repoDir });
+      assert.equal(accepted.status, 0, accepted.stderr);
+      assert.match(accepted.stdout, /^ok: tag /m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-BIN-ITER254-02 exits 2 with the usage block, not a set -u failure, when the tag is missing', () => {
+    const { dir: repoDir } = makeGitFixture();
+    try {
+      for (const args of [[], ['--pre-tag'], ['--post-tag']]) {
+        const result = gate(args, { cwd: repoDir });
+        assert.equal(
+          result.status,
+          2,
+          `argc ${args.length} exited ${result.status}, a code the usage block does not document: ${result.stderr}`,
+        );
+        assert.match(result.stderr, /^usage: bin\/release-gate\.sh --pre-tag <tag>$/m);
+        assert.doesNotMatch(
+          result.stderr,
+          /unbound variable/,
+          `argc ${args.length} reached the mode dispatch with an unset positional instead of the usage block`,
+        );
+        assert.equal(result.stdout, '');
+      }
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-BIN-ITER254-02 exits 2 instead of silently ignoring an argument after the tag', () => {
+    const { dir: repoDir, tagName } = makeGitFixture();
+    try {
+      for (const extra of ['extra', '--post-tag', '']) {
+        const result = gate(['--pre-tag', tagName, extra], { cwd: repoDir });
+        assert.equal(
+          result.status,
+          2,
+          `argc 3 exited ${result.status} — the gate ran over an invocation it never validated: ${result.stdout}`,
+        );
+        assert.match(result.stderr, /^usage: bin\/release-gate\.sh --pre-tag <tag>$/m);
+        assert.equal(
+          result.stdout,
+          '',
+          `argc 3 reported a verdict while ignoring the trailing argument: ${result.stdout}`,
+        );
+      }
+
+      // ACCEPT control: drop the trailing argument and the same fixture passes, so the rejections
+      // above are the arity guard firing and not the gate failing for an unrelated reason.
+      const accepted = gate(['--pre-tag', tagName], { cwd: repoDir });
+      assert.equal(accepted.status, 0, accepted.stderr);
+      assert.match(accepted.stdout, /^ok: tag /m);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('release-gate.pre-tag', () => {
   test('passes when tag package version matches HEAD package version', () => {
     const { dir: repoDir, tagName } = makeGitFixture();
