@@ -2,7 +2,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { spawnSync } from 'child_process';
 import { logActivity } from '../services/activity-logger.js';
 import { listRickTicketFiles } from '../services/artifact-validation.js';
 import { computeOneHop } from '../services/scope-resolver.js';
@@ -10,7 +9,6 @@ import { isRecord } from '../lib/is-record.js';
 import { formatLocalDateKey, safeErrorMessage, writeStateFile } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { readRecoverableJsonObject } from '../services/recoverable-json.js';
-import { UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted } from '../types/index.js';
 import { resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { SCOPE_AUTO_EXTEND_MAX, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
@@ -47,7 +45,6 @@ const ALLOWLIST_FILE_REL = 'extension/.readiness-allowlist.json';
 // R-CCR-13: head segments that identify inline code snippets (test-runner
 // context or workflow inputs) rather than in-repo contract references.
 const SNIPPET_HEAD_SEGMENTS = new Set(['t', 'inputs']);
-const GIT_LS_FILES_TIMEOUT_MS = 30_000;
 const DOC_EXTENSION_ALLOWLIST = new Set([
     'md',
     'sh',
@@ -217,7 +214,7 @@ function resolvePathRef(ref, repoRoot, ticket, sessionDir, cache) {
         return true;
     // AC-B2: a ref prefixed with this repo's own basename (e.g.
     // `pickle-rick-claude/CLAUDE.md`) cannot resolve against the repo-root-relative
-    // HEAD path (`CLAUDE.md`) via the bases or the git ls-files suffix-match below.
+    // HEAD path (`CLAUDE.md`) via the bases or the tracked-file suffix-match below.
     // Strip exactly ONE leading segment when it equals path.basename(repoRoot);
     // unrelated leading segments (e.g. `other-repo/x`) are left untouched.
     let normalizedRef = ref;
@@ -243,66 +240,16 @@ function resolvePathRef(ref, repoRoot, ticket, sessionDir, cache) {
     ].filter((base) => typeof base === 'string');
     if (bases.some((base) => fs.existsSync(path.resolve(base, normalizedRef))))
         return true;
-    // R-RTRC-4: git ls-files suffix-match fallback. Equivalent to
-    //   git ls-files | grep -E '/<ref>$|^<ref>$'
+    // R-RTRC-4: tracked-file suffix-match fallback over `cache.trackedAllFiles` — the repo
+    //   enumeration `createResolverCache` already made. Equivalent to matching each tracked
+    //   path against `(?:^|/)<ref>$`.
     // Catches deep repo paths whose containing dir none of the bases above resolve.
-    // The `??` arm is UNREACHABLE in this binary — see gitTrackedFiles below. It is kept
-    // only so a cache-less call is not a crash; the lazy-init write that used to sit here
-    // was dead for the same reason and was removed rather than left to read as live.
-    const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot);
+    // ONE enumeration, made once by `createResolverCache` and required on the cache by type.
+    // This binary no longer carries a repo-enumeration copy of its own (AP-EXT-ITER294-01).
+    const tracked = cache.trackedAllFiles;
     const escaped = normalizedRef.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const suffixRe = new RegExp(`(?:^|/)${escaped}$`);
     return tracked.some((file) => suffixRe.test(file));
-}
-/**
- * AP-EXT-ITER81-01: THIS FUNCTION HAS NO REACHABLE CALLER, AND THE CEILING BELOW
- * THEREFORE PROTECTS NOTHING. Do not read it as the gate's enumeration guard.
- *
- * Its one callsite is the `??` arm in `resolvePathRef`, which fires only when
- * `cache.trackedAllFiles` is undefined. `createResolverCache`
- * (services/signature-caller-gap.ts) sets that field EAGERLY on every cache it
- * returns, and both callers of `resolvePathRef` — `findPathFindings` (via
- * `runReadiness`) and `countUnresolvedReferences` — always pass such a cache.
- * Neither `resolvePathRef` nor `findPathFindings` is exported, so no test reaches
- * the arm either. Measured: `createResolverCache(repoRoot, 120_000).trackedAllFiles`
- * is a 2114-entry array on this repo. Pinned by
- * `tests/readiness-signature-change-caller-gap.test.js` (`AP-EXT-ITER81-01`) so this
- * claim reddens if the eager population ever goes lazy again.
- *
- * WHAT ACTUALLY FEEDS THE GATE: `trackedAllFiles` (suffix resolution here) and
- * `trackedSourceFiles` (candidate scan in `resolveSymbolRef`) both come from
- * `signature-caller-gap.ts`'s OWN `gitTrackedFiles`, not from this one.
- *
- * AP-EXT-ITER293-01 CORRECTS THIS BLOCK'S FORMER CLAIM that that twin is uncapped
- * and status-only. It has carried `maxBuffer: UNBOUNDED_READ_MAX_BUFFER` and
- * `enumerationCompleted` since `a89b28b9` (2026-09-12) — the two bodies are now
- * byte-identical — so the ENOBUFS-truncation exposure this block described was
- * already closed, and nothing in the gate could say so. Re-measure a claim about
- * another file before inheriting it.
- *
- * The exposure that WAS live is the disposition, not the ceiling: the twin mapped a
- * non-completing enumeration to `[]`, which published a fabrication as a
- * measurement and turned every ref into a BLOCKING `file_path` / `contract`
- * finding — exit 2 on a verdict manufactured by a failed spawn (measured: a shim
- * failing only `git ls-files` moved the same tree from exit 0 to exit 2). It now
- * returns `null`, `createResolverCache` folds that into the cache's existing
- * `truncated` flag, and both readers degrade an undecided ref to a non-blocking
- * `performance` self-report.
- *
- * This copy's `enumerationCompleted` guard and ceiling stay correct-but-INERT: the
- * arm is unreachable, so its `[]` cannot reach a consumer. Deleting the copy is the
- * standing subtraction, blocked only by the unreachable `??` arm this block pins.
- */
-function gitTrackedFiles(repoRoot) {
-    const result = spawnSync('git', ['ls-files'], {
-        cwd: repoRoot,
-        encoding: 'utf-8',
-        timeout: GIT_LS_FILES_TIMEOUT_MS,
-        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
-    });
-    if (!enumerationCompleted(result))
-        return [];
-    return result.stdout.split('\n').filter(Boolean);
 }
 // R-RCEX (Finding #65): bounds for the node_modules `.d.ts` resolution scan.
 const EXTERNAL_DTS_FILE_CAP = 3_000;
@@ -831,7 +778,7 @@ function findPathFindings(ticket, repoRoot, sessionDir, cache) {
     for (const match of content.matchAll(PATH_RE))
         refs.add(match[0]);
     // A `file_path` ref hard-halts iff it suffix-matches no HEAD path (a true
-    // phantom) — via R-RTRC-4's repo-prefix strip + git ls-files `(?:^|/)<ref>$`.
+    // phantom) — via R-RTRC-4's repo-prefix strip + tracked-path `(?:^|/)<ref>$`.
     // The `allowlist` (R-RTRC-5) filter below is a distinct suppression surface.
     // Same degrade as `unresolvedContractFinding`: `resolvePathRef`'s R-RTRC-4 suffix
     // fallback matches against `cache.trackedAllFiles`, so under an incomplete

@@ -15,8 +15,14 @@ test('check-readiness contract resolution passes explicit one-hop timeout', () =
   assert.match(source, /computeOneHop\([^;]+findImportersTimeoutMs:\s*FIND_IMPORTERS_TIMEOUT_MS[^;]+\)/s);
 });
 
-test('check-readiness tracked-file discovery passes explicit git timeout', () => {
-  const source = readFileSync(sourcePath, 'utf8');
+// AP-EXT-ITER294-01: this assertion used to read `check-readiness.ts`, where the enumeration was a
+// DIVERGENT COPY with no reachable caller — the pin was green over dead code, so the timeout it
+// claimed to protect protected nothing. The copy is deleted; the pin now reads the ONE live
+// enumeration, in the shared module every consumer actually resolves against.
+const enumerationSourcePath = resolve(__dirname, '../src/services/signature-caller-gap.ts');
+
+test('AP-EXT-ITER294-01: the single live tracked-file enumeration passes an explicit git timeout', () => {
+  const source = readFileSync(enumerationSourcePath, 'utf8');
 
   assert.match(source, /const GIT_LS_FILES_TIMEOUT_MS = 30_000;/);
   assert.match(source, /spawnSync\('git', \['ls-files'\], \{[^}]+timeout:\s*GIT_LS_FILES_TIMEOUT_MS[^}]+\}\)/s);

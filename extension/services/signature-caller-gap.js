@@ -172,11 +172,11 @@ function isCallerInBundleScope(trackedFile, declaredAll) {
 }
 // Candidate caller files: tracked specs/factory-builder files plus ordinary
 // tracked TS/TSX production callers, capped in deterministic git order.
-function callerCandidateFiles(repoRoot, cache) {
-    // Pure query: `trackedAllFiles` is eagerly populated by createResolverCache,
-    // so no lazy-init cache mutation happens here. The `?? gitTrackedFiles` arm
-    // only fires for the cache-less path (tests / direct invocation).
-    const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot) ?? [];
+function callerCandidateFiles(cache) {
+    // Pure query over the one enumeration `createResolverCache` already made. A second
+    // `gitTrackedFiles(repoRoot) ?? []` fallback used to sit here: unreachable, and its `[]`
+    // re-fabricated the very disposition AP-EXT-ITER293-01 routed through `truncated`.
+    const tracked = cache.trackedAllFiles;
     const candidates = [];
     const seen = new Set();
     for (const file of tracked) {
@@ -256,7 +256,7 @@ function collectSchemaShapeGapCallers(input) {
 export function detectSignatureCallerGaps(input) {
     try {
         const { ticketContents, declaredFiles, repoRoot, cache } = input;
-        const candidates = callerCandidateFiles(repoRoot, cache);
+        const candidates = callerCandidateFiles(cache);
         const gaps = [];
         for (const content of ticketContents) {
             for (const symbol of extractAritySymbols(content)) {

@@ -43,7 +43,13 @@ function gitTrackedFiles(repoRoot: string): string[] | null {
 
 export interface ResolverCache {
   trackedSourceFiles: string[];
-  trackedAllFiles?: string[];
+  // REQUIRED, not optional: `createResolverCache` is the sole construction site and populates
+  // this eagerly from the one `git ls-files` spawn. Declaring it optional was a fiction that
+  // bought two `?? gitTrackedFiles(...)` fallback arms nothing could reach, and kept a
+  // divergent copy of this module's enumeration alive in `bin/check-readiness.ts`. tsc now
+  // carries the invariant a 40-line docblock and a dedicated pin used to assert.
+  // (AP-EXT-ITER294-01)
+  trackedAllFiles: string[];
   externalDtsFiles?: string[];
   fileContents: Map<string, string>;
   deadline: number;
@@ -190,11 +196,11 @@ function isCallerInBundleScope(trackedFile: string, declaredAll: Set<string>): b
 
 // Candidate caller files: tracked specs/factory-builder files plus ordinary
 // tracked TS/TSX production callers, capped in deterministic git order.
-function callerCandidateFiles(repoRoot: string, cache?: ResolverCache): string[] {
-  // Pure query: `trackedAllFiles` is eagerly populated by createResolverCache,
-  // so no lazy-init cache mutation happens here. The `?? gitTrackedFiles` arm
-  // only fires for the cache-less path (tests / direct invocation).
-  const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot) ?? [];
+function callerCandidateFiles(cache: ResolverCache): string[] {
+  // Pure query over the one enumeration `createResolverCache` already made. A second
+  // `gitTrackedFiles(repoRoot) ?? []` fallback used to sit here: unreachable, and its `[]`
+  // re-fabricated the very disposition AP-EXT-ITER293-01 routed through `truncated`.
+  const tracked = cache.trackedAllFiles;
   const candidates: string[] = [];
   const seen = new Set<string>();
   for (const file of tracked) {
@@ -231,7 +237,7 @@ export interface CallerGapInput {
   ticketContents: string[];
   declaredFiles: Set<string>;
   repoRoot: string;
-  cache?: ResolverCache;
+  cache: ResolverCache;
 }
 
 function readCandidateFile(repoRoot: string, file: string, cache?: ResolverCache): string | undefined {
@@ -298,7 +304,7 @@ function collectSchemaShapeGapCallers(input: GapCallerScanInput): GapCallerScanR
 export function detectSignatureCallerGaps(input: CallerGapInput): CallerGap[] {
   try {
     const { ticketContents, declaredFiles, repoRoot, cache } = input;
-    const candidates = callerCandidateFiles(repoRoot, cache);
+    const candidates = callerCandidateFiles(cache);
     const gaps: CallerGap[] = [];
     for (const content of ticketContents) {
       for (const symbol of extractAritySymbols(content)) {

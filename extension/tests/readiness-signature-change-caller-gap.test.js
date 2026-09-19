@@ -312,14 +312,43 @@ test('W5b: budget row retired and no gate_skipped events emitted for signature_c
   }
 });
 
-// AP-EXT-ITER81-01: pins the fact that makes check-readiness.ts's own guarded
-// `gitTrackedFiles` (UNBOUNDED_READ_MAX_BUFFER + `enumerationCompleted`) UNREACHABLE:
-// `createResolverCache` populates `trackedAllFiles` EAGERLY, so `resolvePathRef`'s
-// `cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot)` never takes the right arm.
-// The corrected docblock at that function asserts exactly this. If the eager
-// population ever goes lazy again the arm comes alive, the docblock's claim becomes
-// false, and this test is what says so.
-test('AP-EXT-ITER81-01: createResolverCache populates trackedAllFiles eagerly, so the check-readiness ls-files fallback stays unreachable', async () => {
+// AP-EXT-ITER294-01 (supersedes the AP-EXT-ITER81-01 unreachability pin).
+//
+// AP-EXT-ITER81-01 pinned that `createResolverCache` populates `trackedAllFiles` EAGERLY, so
+// `resolvePathRef`'s `cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot)` arm never fired. That
+// was true, and it was the wrong thing to spend a gate leg on: the optional field was a fiction —
+// the sole construction site always set it — and its optionality was the only thing keeping alive
+// (a) two unreachable `?? gitTrackedFiles(...)` arms and (b) a DIVERGENT COPY of the enumeration
+// inside `bin/check-readiness.ts` whose failure arm still returned the `[]` fabrication
+// AP-EXT-ITER293-01 closed as CRITICAL in the live copy.
+//
+// The field is now REQUIRED, both arms are gone, and the copy is deleted. The optionality half is
+// carried by tsc (a `string[] | undefined` field fails to typecheck at `const tracked: string[]`),
+// so it needs no test. What tsc CANNOT carry is the divergence itself: nothing stops a future pass
+// re-adding a second `git ls-files` to the readiness binary. That is what this pins, and it reads
+// the COMPILED artifact so a mention in prose or a docblock cannot satisfy it.
+test('AP-EXT-ITER294-01: the readiness binary owns no tracked-file enumeration of its own', async () => {
+  const compiledReadiness = path.resolve(__dirname, '..', 'bin', 'check-readiness.js');
+  const compiled = fs.readFileSync(compiledReadiness, 'utf-8');
+
+  assert.ok(
+    !/\bls-files\b/.test(compiled),
+    'bin/check-readiness.js must contain NO `git ls-files` enumeration: the one enumeration lives '
+      + 'in services/signature-caller-gap.ts, whose module header claims the divergent copy was '
+      + 'eliminated. A second copy re-forks the failure disposition the shared one routes through '
+      + '`truncated`, and a reader fixing one can leave the other.',
+  );
+  assert.ok(
+    !/\bgitTrackedFiles\b/.test(compiled),
+    'bin/check-readiness.js must not redefine or call its own gitTrackedFiles — it resolves against '
+      + 'the cache field the shared producer populates.',
+  );
+});
+
+// The companion fact, asserted at RUNTIME rather than by source text: the required field is
+// actually populated with a real measurement, so the type-level collapse above cannot be satisfied
+// by a producer that types the field `string[]` and hands back an empty list.
+test('AP-EXT-ITER294-01: createResolverCache populates the required trackedAllFiles from a real enumeration', async () => {
   const { createResolverCache } = await import('../services/signature-caller-gap.js');
   const repoRoot = path.resolve(__dirname, '..', '..');
 
@@ -327,14 +356,13 @@ test('AP-EXT-ITER81-01: createResolverCache populates trackedAllFiles eagerly, s
 
   assert.ok(
     Array.isArray(cache.trackedAllFiles),
-    'trackedAllFiles must be an array on a freshly created cache — a lazy/undefined field '
-      + 'revives resolvePathRef\'s `?? gitTrackedFiles(repoRoot)` arm and falsifies the '
-      + 'AP-EXT-ITER81-01 docblock in src/bin/check-readiness.ts',
+    'trackedAllFiles must be an array on a freshly created cache — it is the ONLY list '
+      + 'resolvePathRef\'s R-RTRC-4 suffix fallback consults now that the local copy is gone',
   );
   assert.ok(
     cache.trackedAllFiles.length > 0,
     'trackedAllFiles must be non-empty for this repo; an empty listing means the enumeration '
-      + 'itself failed, which is the AP-EXT-ITER81-01 exposure rather than this pin',
+      + 'itself failed, which is the AP-EXT-ITER293-01 exposure rather than this pin',
   );
   assert.ok(
     cache.trackedSourceFiles.length > 0,
