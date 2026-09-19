@@ -16,6 +16,7 @@ import {
   main,
   recordRecoverablePhaseFailure,
   shouldHaltAfterPhase,
+  writeSkippedByScope,
 } from '../bin/pipeline-runner.js';
 import { MICROVERSE_FATAL_REASONS } from '../types/index.js';
 import { StateManager } from '../services/state-manager.js';
@@ -902,4 +903,115 @@ test('AP-EXT-ITER289-01: a setup_error skip withholds success; a no-work skip do
     assert.equal(degraded.unsuccessful, true, `${degradedReason} withholds the success verdict`);
     assert.equal(degraded.effectiveFailed, true);
   }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER290-01 — a "Pure audit file" write ended the whole pipeline.
+//
+// `writeSkippedByScope` writes `archive/skipped_by_scope.<phase>.json`, and its own
+// docblock calls it a pure audit file. But its throw was rethrown by
+// `refreshPhaseScope` (only SCOPE_EMPTY_POST_BUILD is special-cased there, and that
+// path throws too), and nothing above it caught — `main` wraps the phase loop in
+// `try`/`finally`, NOT `try`/`catch`. So an observability write ended the run with
+// the phase and every phase AFTER it never run: the same halt AP-EXT-ITER288-01/-02
+// and AP-EXT-ITER289-01 closed, one call site over.
+//
+// Root-independent break (no file modes — a mode-based row is vacuous under uid 0):
+// the artifact's own output path occupied by a DIRECTORY, giving EISDIR from the
+// rename. It touches nothing but this writer's final step, so the throw cannot be
+// attributed to a neighbouring write.
+//
+// The scope fixture uses mode:'paths', which `computeRefreshedAllowed` returns
+// VERBATIM — no diff, no HEAD dependency — so it can never trip refreshScope's own
+// SCOPE_EMPTY_POST_BUILD refusal, which is what blocks a branch-mode fixture from
+// ever reaching this writer.
+//
+// Assert the PHASES REACHED and the on-disk disposition, never the return value.
+// ---------------------------------------------------------------------------
+
+function seedPathsModeScope(sessionDir) {
+  fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
+    version: 1,
+    mode: 'paths',
+    strategy: 'strict',
+    base_ref: null,
+    base_sha: null,
+    head_sha: null,
+    allowed_paths: ['services/a.ts'],
+    resolved_at: new Date().toISOString(),
+    refresh_history: [],
+  }, null, 2));
+}
+
+async function runScopedPipeline(breakAudit) {
+  const { repo, sessionDir, runnersSpawned } = driveTwoPhaseRunWithBrokenSetup((dir) => {
+    seedPathsModeScope(dir);
+    if (breakAudit) {
+      fs.mkdirSync(path.join(dir, 'archive', 'skipped_by_scope.anatomy-park.json'), { recursive: true });
+    }
+  });
+  // exit 0: an unwritable AUDIT file loses no work, so success is NOT withheld.
+  await expectMainExit(sessionDir, 0);
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  const status = readStatus(sessionDir);
+  // szechuan-sauce refreshes scope too, so its audit artifact is the un-broken
+  // half: it must still LAND. Without this, a writer degraded into a no-op would
+  // satisfy every other assertion here.
+  const auditWritten = fs.existsSync(path.join(sessionDir, 'archive', 'skipped_by_scope.szechuan-sauce.json'));
+  fs.rmSync(repo, { recursive: true, force: true });
+  return { runnersSpawned, status, runnerLog, auditWritten };
+}
+
+test('AP-EXT-ITER290-01: an unwritable skipped_by_scope audit file no longer ends the run', async () => {
+  const { runnersSpawned, status, runnerLog } = await runScopedPipeline(true);
+
+  // Pre-fix this was 0 runners: the EISDIR escaped main() and every phase after
+  // the audit write never ran.
+  assert.ok(runnersSpawned.length > 0, 'the pipeline still spawned its phase runners');
+  assert.equal(status.status, 'completed', 'the run reached a terminal status');
+  assert.notEqual(status.status, 'running', 'pre-fix pipeline-status.json was left saying running');
+  assert.match(runnerLog, /Pipeline finished:/, 'the run reached finalize, not a mid-loop fatal');
+  // Degrading must not be SILENT — the log line is the honest report.
+  assert.match(
+    runnerLog,
+    /scope-audit: could not write skipped_by_scope\.anatomy-park\.json: .*EISDIR/,
+    'the audit failure and its cause are reported',
+  );
+  assert.match(runnerLog, /observability only, phase unaffected/);
+});
+
+// Over-trigger control: the frame must not change what a HEALTHY run does, and the
+// audit artifact must still actually be written. Without this, swallowing every
+// write unconditionally — or never writing at all — would satisfy the case above.
+test('AP-EXT-ITER290-01 control: a healthy audit write is unchanged and still lands', async () => {
+  const broken = await runScopedPipeline(true);
+  const healthy = await runScopedPipeline(false);
+
+  assert.deepEqual(
+    broken.runnersSpawned,
+    healthy.runnersSpawned,
+    'a failed audit write is invisible to the pipeline outcome — same phases run',
+  );
+  assert.equal(broken.status.status, healthy.status.status, 'same terminal status');
+  assert.doesNotMatch(healthy.runnerLog, /scope-audit: could not write/, 'no warning on a healthy run');
+  assert.equal(healthy.auditWritten, true, 'the audit artifact is still actually written');
+  assert.equal(broken.auditWritten, true, 'breaking one phase audit file does not suppress the other');
+});
+
+test('AP-EXT-ITER290-01: writeSkippedByScope reports its failure through the caller-supplied log', () => {
+  const sessionDir = tmpDir('ap-ext-iter290-audit-');
+  fs.mkdirSync(path.join(sessionDir, 'archive', 'skipped_by_scope.szechuan-sauce.json'), { recursive: true });
+  const scope = { head_sha: 'deadbeef', allowed_paths: ['services/a.ts'] };
+  const lines = [];
+
+  // The contract lives at the writer, not at its one production call site: a
+  // second caller inherits the degrade instead of re-forking the guard.
+  assert.doesNotThrow(() => {
+    writeSkippedByScope(sessionDir, 'szechuan-sauce', scope, sessionDir, sessionDir, (m) => lines.push(m));
+  });
+
+  assert.equal(lines.length, 1, 'exactly one warning, not a silent swallow');
+  assert.match(lines[0], /scope-audit: could not write skipped_by_scope\.szechuan-sauce\.json/);
+  const leaked = fs.readdirSync(path.join(sessionDir, 'archive')).filter((f) => f.includes('.tmp.'));
+  assert.deepEqual(leaked, [], 'the tmp file is cleaned up on the degrade path');
 });

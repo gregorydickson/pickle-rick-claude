@@ -2088,6 +2088,30 @@ export function setupScope(args: SetupScopeArgs): ScopeJson | null {
  * Write `archive/skipped_by_scope.<phase>.json` — an observability record of
  * what scope filtered out for `phase`. Pure audit file; worker-side filters
  * (A6/A7) are out of scope for this ticket.
+ *
+ * AP-EXT-ITER290-01: that "pure audit file" contract is now ENFORCED here rather than merely
+ * stated in this docblock. Every step is inside ONE frame, so a failed observability write
+ * degrades to a logged warning and the phase proceeds. Before, the throw was rethrown by
+ * `refreshPhaseScope` (only `SCOPE_EMPTY_POST_BUILD` is special-cased there, and that path
+ * throws too) and nothing above it caught — `main` wraps the phase loop in `try`/`finally`, NOT
+ * `try`/`catch` — so an audit file ended the whole run with the phase and EVERY PHASE AFTER IT
+ * never run. Identical halt to AP-EXT-ITER288-01/-02 and AP-EXT-ITER289-01, one call site over.
+ *
+ * MEASURED 2026-09-18 end to end through the real `main()` on a ROOT-INDEPENDENT cause (no file
+ * modes — a mode-based row is vacuous under uid 0): `archive/skipped_by_scope.anatomy-park.json`
+ * occupied by a DIRECTORY, giving EISDIR from the rename below. Before: the throw escaped
+ * `main()`, 0 phase runners, `exit_reason` never stamped and `pipeline-status.json` left saying
+ * `running`. After: both phases run and the run finalizes.
+ *
+ * The frame is HERE, at the function that claims to be observability, not at its one production
+ * call site: the contract "an audit record never ends your run" belongs to the artifact's own
+ * writer, so a future second caller inherits it instead of re-forking the guard. It also covers
+ * `discoverSubsystems` / `filterBySubsystem` below, which read the target tree, by construction.
+ *
+ * Deliberately NOT a `DEGRADED_PHASE_SKIP_REASONS` member, and success is deliberately NOT
+ * withheld: unlike a failed setup, NO WORK IS LOST — the phase runs in full, and this artifact
+ * has ZERO production readers (censused 2026-09-18 across the tree: only tests read it). The log
+ * line IS the honest report; going silent is what would be dishonest.
  */
 export function writeSkippedByScope(
   sessionDir: string,
@@ -2095,40 +2119,42 @@ export function writeSkippedByScope(
   scope: ScopeJson,
   target: string,
   workingDir: string,
+  log: (msg: string) => void = (msg) => { process.stderr.write(`${msg}\n`); },
 ): void {
   const archiveDir = path.join(sessionDir, 'archive');
-  fs.mkdirSync(archiveDir, { recursive: true });
   const outPath = path.join(archiveDir, `skipped_by_scope.${scopePhase}.json`);
-
-  let payload: Record<string, unknown>;
-  if (scopePhase === 'anatomy-park') {
-    const discovered = discoverSubsystems(target).map((s) => s.name);
-    const kept = filterBySubsystem(discovered, scope.allowed_paths, target, workingDir);
-    const keptSet = new Set(kept);
-    const skipped = discovered.filter((n) => !keptSet.has(n));
-    payload = {
-      phase: scopePhase,
-      head_sha: scope.head_sha,
-      allowed_paths: scope.allowed_paths,
-      subsystems_discovered: discovered,
-      subsystems_kept: kept,
-      subsystems_skipped: skipped,
-    };
-  } else {
-    payload = {
-      phase: scopePhase,
-      head_sha: scope.head_sha,
-      allowed_paths: scope.allowed_paths,
-    };
-  }
-
   const tmp = `${outPath}.tmp.${process.pid}`;
   try {
+    fs.mkdirSync(archiveDir, { recursive: true });
+    let payload: Record<string, unknown>;
+    if (scopePhase === 'anatomy-park') {
+      const discovered = discoverSubsystems(target).map((s) => s.name);
+      const kept = filterBySubsystem(discovered, scope.allowed_paths, target, workingDir);
+      const keptSet = new Set(kept);
+      const skipped = discovered.filter((n) => !keptSet.has(n));
+      payload = {
+        phase: scopePhase,
+        head_sha: scope.head_sha,
+        allowed_paths: scope.allowed_paths,
+        subsystems_discovered: discovered,
+        subsystems_kept: kept,
+        subsystems_skipped: skipped,
+      };
+    } else {
+      payload = {
+        phase: scopePhase,
+        head_sha: scope.head_sha,
+        allowed_paths: scope.allowed_paths,
+      };
+    }
     fs.writeFileSync(tmp, JSON.stringify(payload, null, 2));
     fs.renameSync(tmp, outPath);
   } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-    throw err;
+    try { fs.unlinkSync(tmp); } catch { /* no tmp to clean */ }
+    log(
+      `scope-audit: could not write skipped_by_scope.${scopePhase}.json: ${safeErrorMessage(err)} `
+      + '— continuing (observability only, phase unaffected)',
+    );
   }
 }
 
@@ -3658,7 +3684,7 @@ function refreshPhaseScope(
       log: runtime.log,
     });
     if (refreshed) {
-      writeSkippedByScope(runtime.sessionDir, phaseConfig.name, refreshed, runtime.target, runtime.repoRoot);
+      writeSkippedByScope(runtime.sessionDir, phaseConfig.name, refreshed, runtime.target, runtime.repoRoot, runtime.log);
     }
     return refreshed ?? undefined;
   } catch (err) {
