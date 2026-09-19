@@ -771,6 +771,14 @@ test('eb189d66: total failure (zero analyses written) exits non-zero with a name
     const disposition = resolveRefinementDisposition(cycleResults);
     assert.equal(disposition.exitCode, ZERO_ANALYSES_EXIT_CODE, 'zero analyses must exit non-zero');
     assert.notEqual(disposition.exitCode, 0, 'zero analyses must never exit 0');
+    // 80b82391: the status must be readable by a caller, not merely non-zero. This file
+    // exits 1 for arg/usage errors, for an ensureRefinementDir mkdir failure, and from
+    // main().catch on any uncaught throw, so a 1 here is indistinguishable from a crash.
+    assert.notEqual(
+      disposition.exitCode,
+      1,
+      'zero analyses must not reuse 1 — this file exits 1 on usage errors and on any uncaught throw'
+    );
     assert.match(disposition.message, /zero_analyses_produced/, 'the failure must name a reason');
     assert.match(disposition.message, /requirements/, 'message must name the failed roles');
     assert.doesNotMatch(disposition.message, /available analyses/, 'the false "available analyses" claim must be gone');

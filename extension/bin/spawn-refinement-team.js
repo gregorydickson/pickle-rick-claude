@@ -2334,7 +2334,13 @@ export function countWrittenAnalyses(refinementDir) {
     }
     return entries.filter((entry) => CANONICAL_ANALYSIS_RE.test(entry)).length;
 }
-export const ZERO_ANALYSES_EXIT_CODE = 1;
+// sysexits EX_UNAVAILABLE. Deliberately NOT 1: this file already exits 1 for arg/usage
+// errors, for an `ensureRefinementDir` mkdir failure, and from `main().catch` on any
+// uncaught throw, so a 1 here would be indistinguishable from a crash — the exact
+// ambiguity this disposition exists to remove. Follows the dedicated-code precedent of
+// `SKIP_AC_SHAPE_GATE_EXIT_CODE = 64` (EX_USAGE) above. Not 2 either: that code is bound
+// to the AC-shape collapse-or-justify remediation, which would misdirect the operator.
+export const ZERO_ANALYSES_EXIT_CODE = 69;
 // Derives the wrapper's exit disposition from what was PRODUCED (files on disk),
 // never from which roles were ASKED — see the CLAUDE.md trap door on this ticket's
 // fix. Zero analyses is a named, non-zero-exit failure; some-but-not-all keeps the
