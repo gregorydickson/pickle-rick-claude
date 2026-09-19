@@ -21,6 +21,7 @@ const {
     findStaleAnchorWarnings,
     parseAcShapeSection,
     runReadinessGate,
+    ZERO_ANALYSES_EXIT_CODE,
 } = await import('../bin/spawn-refinement-team.js');
 
 // 10s → 45s → 120s: budget for system load when run alongside concurrent
@@ -665,7 +666,7 @@ test('spawn-refinement-team: recovered working_dir controls worker cwd and codeb
             }
         );
 
-        assert.equal(result.status, 0, `expected success, got: ${(result.stdout || '') + (result.stderr || '')}`);
+        assert.equal(result.status, ZERO_ANALYSES_EXIT_CODE, `expected zero-analyses exit, got: ${(result.stdout || '') + (result.stderr || '')}`);
         assert.ok(fs.existsSync(logPath), 'refinement worker should be invoked');
 
         const invocations = fs.readFileSync(logPath, 'utf-8')
@@ -731,7 +732,7 @@ test('spawn-refinement-team: emits stale-anchor warnings before refinement worke
             }
         );
 
-        assert.equal(result.status, 0, `expected success, got: ${(result.stdout || '') + (result.stderr || '')}`);
+        assert.equal(result.status, ZERO_ANALYSES_EXIT_CODE, `expected zero-analyses exit, got: ${(result.stdout || '') + (result.stderr || '')}`);
         assert.match(result.stderr, /stale-anchor warning: 2 PRD citation\(s\) no longer resolve against HEAD/);
         assert.match(result.stderr, /stale-anchor tracked\.ts:9 \(PRD line 3\): line 9 exceeds HEAD line count/);
         assert.match(result.stderr, /stale-anchor missing\.ts:1 \(PRD line 3\): not found at HEAD:missing\.ts/);
