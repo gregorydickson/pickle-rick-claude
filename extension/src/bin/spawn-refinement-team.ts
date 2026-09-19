@@ -2797,10 +2797,11 @@ export interface RefinementDisposition {
 // to the AC-shape collapse-or-justify remediation, which would misdirect the operator.
 export const ZERO_ANALYSES_EXIT_CODE = 69;
 
-// Derives the wrapper's exit disposition from what was PRODUCED (files on disk),
-// never from which roles were ASKED — see the CLAUDE.md trap door on this ticket's
-// fix. Zero analyses is a named, non-zero-exit failure; some-but-not-all keeps the
-// pre-existing warn-and-proceed behavior, with the warning stating the actual count.
+// Derives the wrapper's exit disposition from what was PRODUCED (files on disk), never
+// from which roles were ASKED: a role can be asked and fail, and a file can survive from
+// an earlier run, so only the files on disk answer "is there anything to synthesize?".
+// Zero analyses is a named, non-zero-exit failure; some-but-not-all keeps the pre-existing
+// warn-and-proceed behavior, with the warning stating the actual count.
 export function resolveRefinementDisposition(cycleResults: CycleResults): RefinementDisposition {
   if (cycleResults.allSuccess) return { exitCode: 0, message: '' };
   const failed = cycleResults.finalResults.filter((r) => !r.success).map((r) => r.roleId);
