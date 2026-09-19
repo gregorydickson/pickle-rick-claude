@@ -180,6 +180,12 @@ function sanitizeForFilename(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'unknown';
 }
 
+/**
+ * Writes the report and NOTHING else. The browser hand-off used to live inside this
+ * function, which made a `write*` name lie about what it did and gave every caller a
+ * desktop side effect it could neither see nor decline. Opening is now its own named
+ * export (`openDeathCrystalReport`) so the call site states it.
+ */
 export function writeDeathCrystalReport(
   sessionRoot: string,
   report: DeathCrystalReport,
@@ -197,8 +203,11 @@ export function writeDeathCrystalReport(
   try { fs.unlinkSync(symlinkPath); } catch { }
   fs.symlinkSync(htmlFile, symlinkPath);
 
+  return { htmlPath, symlinkPath };
+}
+
+/** Hands `htmlPath` to the platform opener. Best-effort: a headless box has no opener. */
+export function openDeathCrystalReport(htmlPath: string): void {
   const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
   spawnSync(opener, [htmlPath], { timeout: OPEN_TIMEOUT_MS });
-
-  return { htmlPath, symlinkPath };
 }

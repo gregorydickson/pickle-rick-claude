@@ -178,11 +178,12 @@ Then render:
 node --input-type=module - "${SESSION_ROOT}" "${SESSION_ROOT}/death-crystal/_report_tmp.json" <<'NODEEOF'
 import fs from 'node:fs';
 const [,,sessionRoot, reportPath] = process.argv;
-const { writeDeathCrystalReport } = await import(
+const { writeDeathCrystalReport, openDeathCrystalReport } = await import(
   `file://${process.env.HOME}/.claude/pickle-rick/extension/services/death-crystal-html.js`
 );
 const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
 const { htmlPath, symlinkPath } = writeDeathCrystalReport(sessionRoot, report);
+openDeathCrystalReport(htmlPath);
 console.log(`HTML report: ${htmlPath}`);
 console.log(`Symlink:     ${symlinkPath}`);
 NODEEOF
@@ -191,7 +192,7 @@ rm -f "${SESSION_ROOT}/death-crystal/_report_tmp.json"
 
 If the node command fails, print the error and stop.
 
-Print the HTML path and the symlink path. The renderer auto-opens the report via `open` (macOS) / `xdg-open` (Linux).
+Print the HTML path and the symlink path. The heredoc above opens the report itself, via the separate `openDeathCrystalReport` export (`open` on macOS / `xdg-open` elsewhere) — `writeDeathCrystalReport` only writes.
 
 ### Step D4: Present Candidates and Grilling Loop
 
