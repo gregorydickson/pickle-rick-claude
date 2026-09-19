@@ -3002,60 +3002,85 @@ function writeCitadelGateResultFile(sessionDir: string, findings: CitadelFinding
   return gateResultPath;
 }
 
-function readCitadelBriefFile(briefPath: string, runtime: PipelineRuntime): string | null {
-  try {
-    return fs.readFileSync(briefPath, 'utf-8');
-  } catch (err) {
-    runtime.log(`citadel: cannot read brief at ${briefPath}: ${safeErrorMessage(err)}`);
-    return null;
-  }
+// Sync FS isolated in a non-async helper (same reason as the writer above): the async remediation
+// flow stays free of blocking-fs lint warnings. It no longer swallows — the ONE frame in
+// `remediateCitadelFindings` is this function's recovery (AP-EXT-ITER288-02).
+function readCitadelBriefFile(briefPath: string): string {
+  return fs.readFileSync(briefPath, 'utf-8');
 }
 
+/**
+ * AP-EXT-ITER288-02: ONE recovery frame for the whole remediation cycle, not a guard per step.
+ *
+ * `executeCitadelPhase` awaits this function and nothing between it and the CLI catches — not
+ * `runPhaseIteration`, not `runPipelinePhaseLoop` — so any step that throws here reaches
+ * pipeline-runner's fatal handler and ends the run with anatomy-park and szechuan-sauce NEVER RUN.
+ * That is the identical halt AP-EXT-ITER288-01 closed one function over, and the loop above this
+ * one says in its own comment that the phase ALWAYS returns success.
+ *
+ * The hole was structural, not a missing case: three same-theme guards (the brief-prep spawn, the
+ * brief read, the remediator spawn) each caught their own step, and the step added LAST — the
+ * gate-result write that OPENS the function — landed outside all of them. A fourth guard would
+ * leave the fifth step in exactly the same place, so the guards are COLLAPSED into one frame at
+ * the function boundary: every step of this cycle is now inside it by construction.
+ *
+ * MEASURED 2026-09-18 end to end through the real `main()`, two independent causes as uid 501 —
+ * `<session>/gate` occupied by a file (EEXIST on the directory create) and a pre-existing
+ * unwritable `gate/` directory (EACCES on the write, which root-owned artifacts from a
+ * docker-backed `ci-repro.sh` and ordinary permissions drift both produce). Before: 0 phase
+ * runners after citadel and `exit_reason` never stamped. After: every phase runs and the run
+ * finalizes `completed`.
+ *
+ * `step` names which part failed, so the collapse costs no reporting: the log line is as specific
+ * as the three messages it replaces. The two CONTROL-FLOW returns below (a non-zero brief-prep
+ * exit, an absent `BRIEF_PATH=`) are not error handling and are unchanged — those are documented
+ * outcomes of a brief-prep that ran.
+ */
 async function remediateCitadelFindings(
   runtime: PipelineRuntime,
   findings: CitadelFinding[],
   remediatorTimeoutMs: number,
   cycle: number,
 ): Promise<void> {
-  const gateResultPath = writeCitadelGateResultFile(runtime.sessionDir, findings);
-
-  // Brief-prep — invoked exactly as finalize-gate does (argv interface, --reason 'strict').
-  const briefLines: string[] = [];
-  let briefCode: number;
+  let step = 'gate-result write';
   try {
-    briefCode = await citadelRemediationDeps.spawnGateRemediatorMain({
+    const gateResultPath = writeCitadelGateResultFile(runtime.sessionDir, findings);
+
+    // Brief-prep — invoked exactly as finalize-gate does (argv interface, --reason 'strict').
+    step = 'brief-prep';
+    const briefLines: string[] = [];
+    const briefCode = await citadelRemediationDeps.spawnGateRemediatorMain({
       argv: ['--gate-result', gateResultPath, '--session-root', runtime.sessionDir, '--reason', 'strict'],
       stdout: (msg: string) => briefLines.push(msg),
       stderr: (msg: string) => runtime.log(`[citadel-remediator] ${msg}`),
     });
-  } catch (err) {
-    runtime.log(`citadel: brief-prep threw on cycle ${cycle + 1}: ${safeErrorMessage(err)}`);
-    return;
-  }
-  if (briefCode !== 0) {
-    runtime.log(`citadel: brief-prep exited ${briefCode} on cycle ${cycle + 1} — skipping remediator`);
-    return;
-  }
-  const briefPathLine = briefLines.find(l => l.startsWith('BRIEF_PATH='));
-  if (!briefPathLine) {
-    runtime.log(`citadel: no BRIEF_PATH from brief-prep on cycle ${cycle + 1}`);
-    return;
-  }
-  const briefPath = briefPathLine.slice('BRIEF_PATH='.length);
-  const briefContent = readCitadelBriefFile(briefPath, runtime);
-  if (briefContent === null) return;
+    if (briefCode !== 0) {
+      runtime.log(`citadel: brief-prep exited ${briefCode} on cycle ${cycle + 1} — skipping remediator`);
+      return;
+    }
+    const briefPathLine = briefLines.find(l => l.startsWith('BRIEF_PATH='));
+    if (!briefPathLine) {
+      runtime.log(`citadel: no BRIEF_PATH from brief-prep on cycle ${cycle + 1}`);
+      return;
+    }
 
-  const backend = resolveBackend(sm.read(runtime.statePath));
-  const invocation = buildWorkerInvocation(backend, { prompt: briefContent, addDirs: [runtime.workingDir] });
-  runtime.log(`citadel: spawning remediator (cycle ${cycle + 1})`);
-  try {
+    step = 'brief read';
+    const briefContent = readCitadelBriefFile(briefPathLine.slice('BRIEF_PATH='.length));
+
+    step = 'remediator spawn';
+    const backend = resolveBackend(sm.read(runtime.statePath));
+    const invocation = buildWorkerInvocation(backend, { prompt: briefContent, addDirs: [runtime.workingDir] });
+    runtime.log(`citadel: spawning remediator (cycle ${cycle + 1})`);
     citadelRemediationDeps.spawnRemediator(invocation.cmd, invocation.args, {
       cwd: runtime.workingDir,
       timeout: remediatorTimeoutMs,
       env: { ...process.env, ...backendEnvOverrides(invocation.backend) },
     });
   } catch (err) {
-    runtime.log(`citadel: remediator exited non-zero or timed out: ${safeErrorMessage(err)}`);
+    runtime.log(
+      `citadel: remediation ${step} failed on cycle ${cycle + 1}: ${safeErrorMessage(err)} `
+      + '— skipping remediation, continuing pipeline',
+    );
   }
 }
 

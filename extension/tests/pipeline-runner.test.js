@@ -2836,6 +2836,125 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
     }
   });
 
+  // -------------------------------------------------------------------------
+  // AP-EXT-ITER288-02 — the remediation cycle's steps all sit inside ONE recovery
+  // frame. `executeCitadelPhase` awaits remediateCitadelFindings and nothing
+  // between it and the CLI catches, so a throw from ANY step ends the run with
+  // anatomy-park and szechuan-sauce never run. The step that opened the function
+  // (the gate-result write) was outside the three per-step guards its siblings
+  // carried; the collapse puts every step inside one frame by construction.
+  //
+  // Assert the PHASE DISPOSITION (returned vs threw) and whether the remediator
+  // was reached — never the return value alone, which is {exitCode:0} on every
+  // non-throwing path.
+  // -------------------------------------------------------------------------
+
+  // Drives executeCitadelPhase once with a remediable finding, capturing the log
+  // lines and whether the remediator was reached. `breakGate` occupies
+  // <session>/gate so the gate-result write throws EEXIST.
+  async function runCitadelRemediationCycle({ breakGate = false, briefPrep, dirForGate } = {}) {
+    const dir = tmpDir();
+    try {
+      writeCitadelState(path.join(dir, 'state.json'));
+      if (breakGate) fs.writeFileSync(path.join(dir, 'gate'), 'occupied');
+      const logs = [];
+      const runtime = { ...makeRuntime(dir), log: (m) => logs.push(m) };
+      let auditCalls = 0;
+      let remediatorSpawned = 0;
+      __setCitadelRemediationDepsForTests({
+        loadSettings: () => ({ cap: 1, remediatorTimeoutMs: 1000 }),
+        runCitadelAudit: async () => citadelResult(auditCalls++ === 0 ? CRITICAL : []),
+        spawnGateRemediatorMain: briefPrep ?? (async ({ stdout }) => {
+          const briefPath = path.join(dir, 'gate', 'brief.md');
+          fs.writeFileSync(briefPath, 'fix it');
+          stdout(`BRIEF_PATH=${briefPath}`);
+          return 0;
+        }),
+        spawnRemediator: () => { remediatorSpawned += 1; },
+      });
+
+      let threw = null;
+      let exitCode = null;
+      try {
+        ({ exitCode } = await executeCitadelPhase(runtime));
+      } catch (err) {
+        threw = err instanceof Error ? err.message : String(err);
+      }
+      return { threw, exitCode, logs, remediatorSpawned, dir };
+    } finally {
+      __setCitadelRemediationDepsForTests(null);
+      if (!dirForGate) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test('AP-EXT-ITER288-02: a failed gate-result write degrades the cycle instead of ending the run', async () => {
+    const r = await runCitadelRemediationCycle({ breakGate: true });
+
+    assert.equal(
+      r.threw,
+      null,
+      'the gate-result write must not throw out of executeCitadelPhase — that reaches the CLI '
+      + 'fatal handler and anatomy-park + szechuan-sauce never run',
+    );
+    assert.equal(r.exitCode, 0, 'the phase still returns its non-halting exit code');
+    assert.equal(r.remediatorSpawned, 0, 'no remediator is spawned when its input could not be written');
+    const degraded = r.logs.find(l => l.includes('remediation gate-result write failed'));
+    assert.ok(
+      degraded,
+      `the degrade must be REPORTED, naming the failed step; got: ${JSON.stringify(r.logs)}`,
+    );
+    assert.match(degraded, /EEXIST|ENOTDIR|EACCES/, 'the log line carries the underlying cause');
+  });
+
+  test('AP-EXT-ITER288-02 (over-trigger control): a writable gate still reaches the remediator', async () => {
+    const r = await runCitadelRemediationCycle();
+
+    assert.equal(r.threw, null, 'the healthy path does not throw');
+    assert.equal(r.exitCode, 0, 'the healthy path returns its non-halting exit code');
+    assert.equal(r.remediatorSpawned, 1, 'the remediator IS spawned when every step succeeds');
+    assert.equal(
+      r.logs.filter(l => l.includes('remediation') && l.includes('failed')).length,
+      0,
+      'a successful cycle reports no degradation',
+    );
+  });
+
+  test('AP-EXT-ITER288-02: the collapsed frame still names WHICH step failed', async () => {
+    const r = await runCitadelRemediationCycle({
+      briefPrep: async () => { throw new Error('brief-prep exploded'); },
+    });
+
+    assert.equal(r.threw, null, 'a brief-prep throw is still contained');
+    assert.equal(r.remediatorSpawned, 0, 'a failed brief-prep does not reach the remediator');
+    const degraded = r.logs.find(l => l.includes('remediation brief-prep failed'));
+    assert.ok(
+      degraded,
+      `the one frame must not collapse the step identity; got: ${JSON.stringify(r.logs)}`,
+    );
+    assert.match(degraded, /brief-prep exploded/, 'the log line carries the underlying cause');
+  });
+
+  test('AP-EXT-ITER288-02: control-flow returns are NOT error handling and are unchanged', async () => {
+    const nonZero = await runCitadelRemediationCycle({ briefPrep: async () => 1 });
+    assert.equal(nonZero.remediatorSpawned, 0, 'a non-zero brief-prep exit skips the remediator');
+    assert.ok(
+      nonZero.logs.some(l => l.includes('brief-prep exited 1')),
+      'a non-zero brief-prep exit keeps its own documented message, not the degrade line',
+    );
+    assert.equal(
+      nonZero.logs.filter(l => l.includes('remediation') && l.includes('failed')).length,
+      0,
+      'a brief-prep that RAN and exited non-zero is not a degraded step',
+    );
+
+    const noBrief = await runCitadelRemediationCycle({ briefPrep: async () => 0 });
+    assert.equal(noBrief.remediatorSpawned, 0, 'an absent BRIEF_PATH skips the remediator');
+    assert.ok(
+      noBrief.logs.some(l => l.includes('no BRIEF_PATH')),
+      'an absent BRIEF_PATH keeps its own documented message',
+    );
+  });
+
   // PATTERN_SHAPE: no shouldHaltAfterPhase branch references 'citadel'; no
   // citadel_strict ? 'High' : 'Critical' halt-threshold expression remains anywhere.
   test('PATTERN_SHAPE: halt path no longer special-cases citadel and the halt-threshold ternary is gone', () => {
