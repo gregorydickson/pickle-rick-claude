@@ -150,12 +150,14 @@ code never checked.
 (`:2798`) when `countWrittenAnalyses` is 0, called from `main()`'s
 `if (!cycleResults.allSuccess) { ... }` branch (`:3006`).
 
-This defeats `/pickle-pipeline` Step 0d (*"On refine failure … fail fast … Do NOT launch the pipeline
-against an unrefined PRD"*), which is unenforceable through a status that cannot express the
-difference. On the previous bundle the analysts cut **2 of 4** roots, so the signal is not cosmetic.
+The pre-fix code defeated `/pickle-pipeline` Step 0d (*"On refine failure … fail fast … Do NOT launch
+the pipeline against an unrefined PRD"*), which was unenforceable through a status that could not
+express the difference. On the previous bundle the analysts cut **2 of 4** roots, so the signal was
+not cosmetic.
 
-**Prefer the collapse:** derive the disposition from the count of analyses actually written, rather than
-adding a third case. Zero analyses exits non-zero; some-but-not-all keeps today's warning and exit 0.
+**Preferred the collapse:** derive the disposition from the count of analyses actually written, rather
+than adding a third case. Zero analyses exits non-zero; some-but-not-all keeps the pre-existing
+warning and exit 0. This is what the fix above implements.
 
 ### Interface Contracts — G3
 - **Inputs**: `cycleResults` and the refinement directory as it exists on disk after the run.
