@@ -854,3 +854,104 @@ test('eb189d66: full success is a no-op disposition (unreachable via main, but t
     fs.rmSync(refinementDir, { recursive: true, force: true });
   }
 });
+
+// a695505e: every test above asserts what `resolveRefinementDisposition` RETURNS. The status a
+// caller actually reads is what `process.exit(disposition.exitCode)` sets
+// (src/bin/spawn-refinement-team.ts:3010), and nothing observed that statement: mutating it to
+// `process.exit(0)` — the literal defect this bundle exists to fix — left the suites at 78 pass /
+// 0 fail. The two rows below run the real binary and assert its real status, so the consumption
+// site is pinned, not just the pure function feeding it.
+const STUB_SENTINEL = 'a695505e-stub-analyst-refused';
+
+/**
+ * A hermetic refinement sandbox: a session holding a PRD, plus a `claude` stub on PATH that every
+ * analyst spawn resolves to. The stub exits 1 without writing an analysis, which is what drives the
+ * run down the failure branch in ~7s with no network. `--cycles 1` keeps it to one round.
+ */
+function makeRefinementSandbox(prefix) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const stubDir = path.join(root, 'bin');
+  const sessionDir = path.join(root, 'session');
+  fs.mkdirSync(stubDir, { recursive: true });
+  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.writeFileSync(path.join(stubDir, 'claude'), `#!/bin/sh\necho "${STUB_SENTINEL}" >&2\nexit 1\n`);
+  fs.chmodSync(path.join(stubDir, 'claude'), 0o755);
+  fs.writeFileSync(path.join(sessionDir, 'prd.md'), '# Probe PRD\n\n## Requirements\n\n- R1 do a thing\n');
+  return { root, stubDir, sessionDir, refinementDir: path.join(sessionDir, 'refinement') };
+}
+
+function runRefinementBinary(sandbox) {
+  return spawnSync(
+    process.execPath,
+    [BIN, '--prd', path.join(sandbox.sessionDir, 'prd.md'), '--session-dir', sandbox.sessionDir, '--cycles', '1', '--timeout', '15'],
+    {
+      encoding: 'utf-8',
+      timeout: 120_000,
+      env: { ...process.env, PATH: `${sandbox.stubDir}${path.delimiter}${process.env.PATH ?? ''}` },
+    },
+  );
+}
+
+/**
+ * Without this the rows below can pass for the wrong reason: a PATH that failed to shadow `claude`
+ * would spawn the real CLI, and "no analyses were produced" could then mean "the analyst had no API
+ * key" rather than "the stub refused". Proving the stub ran makes that failure loud.
+ */
+function assertStubActuallyRan(sandbox, result) {
+  const logs = fs.existsSync(sandbox.refinementDir)
+    ? fs.readdirSync(sandbox.refinementDir).filter((entry) => entry.endsWith('.log'))
+    : [];
+  const sawSentinel = logs.some((entry) =>
+    fs.readFileSync(path.join(sandbox.refinementDir, entry), 'utf-8').includes(STUB_SENTINEL),
+  );
+  assert.ok(
+    sawSentinel,
+    `the claude stub never ran — PATH did not shadow the real CLI, so this row proves nothing (status=${result.status})`,
+  );
+}
+
+test('a695505e: zero analyses exits ZERO_ANALYSES_EXIT_CODE through main() — the status a caller reads', () => {
+  const sandbox = makeRefinementSandbox('a695505e-zero-');
+  try {
+    const result = runRefinementBinary(sandbox);
+    assertStubActuallyRan(sandbox, result);
+    // Counted through the binary's OWN counter rather than a second copy of its regex: a local
+    // `/^analysis_[a-z-]+\.md$/` would be a duplicate of CANONICAL_ANALYSIS_RE
+    // (spawn-refinement-team.ts:2769) free to drift away from it silently.
+    assert.equal(
+      countWrittenAnalyses(sandbox.refinementDir),
+      0,
+      'precondition: the stub must leave zero analyses on disk',
+    );
+    // The load-bearing assertion: the PROCESS status, not the disposition object. This is the hop
+    // `/pickle-pipeline` Step 0d ultimately depends on, and it was unobserved before this row.
+    assert.equal(
+      result.status,
+      ZERO_ANALYSES_EXIT_CODE,
+      'a total-failure refinement must exit non-zero THROUGH main(), or every caller reads success',
+    );
+    assert.match(result.stderr, /zero_analyses_produced/, 'the status must arrive with its named reason');
+  } finally {
+    fs.rmSync(sandbox.root, { recursive: true, force: true });
+  }
+});
+
+test('a695505e (over-trigger control): partial success exits 0 through main(), naming the produced count', () => {
+  const sandbox = makeRefinementSandbox('a695505e-partial-');
+  try {
+    // Written BEFORE the run, so their mtime predates each analyst's startTime: every role still
+    // settles as failed (evaluateAnalystSuccess), yet two analyses exist to synthesize from. That is
+    // exactly the some-but-not-all state, and reddening it would be worse than the original defect.
+    fs.mkdirSync(sandbox.refinementDir, { recursive: true });
+    fs.writeFileSync(path.join(sandbox.refinementDir, 'analysis_codebase.md'), '# codebase\n');
+    fs.writeFileSync(path.join(sandbox.refinementDir, 'analysis_risk-scope.md'), '# risk-scope\n');
+    const result = runRefinementBinary(sandbox);
+    assertStubActuallyRan(sandbox, result);
+    assert.equal(result.status, 0, 'some-but-not-all analyses must still exit 0 through main()');
+    // stdout, not stderr: main() routes the two dispositions to different streams — `console.error`
+    // before the non-zero exit, `console.log` for the warn-and-proceed case (:3010 vs :3012).
+    assert.match(result.stdout, /2 produced analyses/, 'the warning must state the count that was observed');
+  } finally {
+    fs.rmSync(sandbox.root, { recursive: true, force: true });
+  }
+});

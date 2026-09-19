@@ -471,3 +471,25 @@ describe('AP-EXT-ITER288-01: a citadel report that cannot be persisted degrades,
     assert.equal(onDisk.schema, '1.0');
   });
 });
+
+// a695505e: the two git spawns in this file carry `timeout: 30_000` (:196, :319). A bound only
+// protects the suite if expiry THROWS and the throw lands somewhere that fails — a timeout
+// swallowed into a pass is no timeout at all. The landing zones were traced: `:319`'s calls sit in
+// try/finally (which rethrows) and `:196`'s helper has no catch, with all three callers invoking it
+// bare. This row pins the other half — that expiry is a throw and not a silently empty result.
+test('a695505e: a spawn exceeding its bound throws, so the timeout reaches a failing assertion', () => {
+  let thrown = null;
+  try {
+    execFileSync(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 250,
+    });
+  } catch (err) {
+    thrown = err;
+  }
+  assert.ok(thrown, 'an over-bound spawn must throw — a bound that returns normally is decorative');
+  // Asserting the shape, not just that something threw: without this a refactor that swallowed the
+  // kill and rethrew a bare Error would keep this row green while claiming expiry was surfaced.
+  assert.equal(thrown.signal, 'SIGTERM', 'expiry must surface as the kill signal');
+  assert.equal(thrown.code, 'ETIMEDOUT', 'expiry must surface its own errno, not a generic failure');
+});
