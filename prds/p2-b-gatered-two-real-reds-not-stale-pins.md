@@ -55,7 +55,7 @@ repo keeps finding.
   after. The fix is at the callsite.
 
 ### AC-G1
-- [ ] Neither callsite spawns without a timeout — Verify: `grep -c "execFileSync('git', args, { cwd" tests/citadel-audit-runner.test.js` returns 0 — Type: lint
+- [ ] Neither callsite spawns without a timeout — Verify: `grep -n "execFileSync('git'" tests/citadel-audit-runner.test.js | grep -vc "timeout"` returns 0 — Type: lint
 - [ ] The scanner reports no un-baselined callsite — Verify: `bash scripts/audit-subprocess-heavy-tests.sh` exits 0 — Type: lint
 - [ ] The in-suite oracle greens — Verify: `node bin/test-runner.js tests/audit-subprocess-heavy-tests-missing-timeout.test.js --test-concurrency=1` exits 0 — Type: test
 - [ ] The baseline file is unchanged — Verify: `git diff --name-only -- scripts/subprocess-heavy-missing-timeout-baseline.json` returns 0 — Type: lint
