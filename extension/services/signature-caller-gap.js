@@ -19,6 +19,12 @@ export const CALLER_CANDIDATE_MAX = 512;
 function escapeRegExp(literal) {
     return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+// `null` means the enumeration did NOT complete — never `[]`. An empty array here
+// is indistinguishable from a repo with no tracked files, and every consumer reads
+// it as a measurement: `resolvePathRef` suffix-matches against it and
+// `resolveSymbolRef` draws candidates from it, so a failed spawn turns every ref
+// into an unresolved one. Same shape `getChangedSince` closed for the sweep's
+// symbol axis (AP-EXT-ITER48-01) — see `CLAUDE.md`.
 function gitTrackedFiles(repoRoot) {
     const result = spawnSync('git', ['ls-files'], {
         cwd: repoRoot,
@@ -27,7 +33,7 @@ function gitTrackedFiles(repoRoot) {
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
     });
     if (!enumerationCompleted(result))
-        return [];
+        return null;
     return result.stdout.split('\n').filter(Boolean);
 }
 export function createResolverCache(repoRoot, maxWallMs, allowlist = new Set()) {
@@ -36,7 +42,7 @@ export function createResolverCache(repoRoot, maxWallMs, allowlist = new Set()) 
     // produced false positives whenever a ticket cited a test-defined helper.
     // Extension allowlist (ts|tsx|js|jsx|mjs|cjs) is unchanged.
     const trackedAll = gitTrackedFiles(repoRoot);
-    const tracked = trackedAll.filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file));
+    const tracked = (trackedAll ?? []).filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file));
     return {
         trackedSourceFiles: tracked,
         // Eagerly capture the RAW git-tracked list (from the single spawn already
@@ -44,10 +50,15 @@ export function createResolverCache(repoRoot, maxWallMs, allowlist = new Set()) 
         // read by callerCandidateFiles here and by check-readiness.ts resolvePathRef
         // (R-RTRC-4) — is a pre-populated pure read, never a lazy-init side effect
         // hidden inside a query.
-        trackedAllFiles: trackedAll,
+        trackedAllFiles: trackedAll ?? [],
         fileContents: new Map(),
         deadline: Date.now() + maxWallMs,
-        truncated: false,
+        // An enumeration that did not complete is the SAME condition as a spent wall
+        // budget: the resolver could not measure. Reusing `truncated` keeps ONE
+        // unmeasurable disposition rather than standing a second one beside it —
+        // readers already degrade their findings to non-blocking `performance` and
+        // `runReadiness` already emits `resolver_indeterminate` off this field.
+        truncated: trackedAll === null,
         allowlist,
     };
 }
@@ -165,7 +176,7 @@ function callerCandidateFiles(repoRoot, cache) {
     // Pure query: `trackedAllFiles` is eagerly populated by createResolverCache,
     // so no lazy-init cache mutation happens here. The `?? gitTrackedFiles` arm
     // only fires for the cache-less path (tests / direct invocation).
-    const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot);
+    const tracked = cache?.trackedAllFiles ?? gitTrackedFiles(repoRoot) ?? [];
     const candidates = [];
     const seen = new Set();
     for (const file of tracked) {

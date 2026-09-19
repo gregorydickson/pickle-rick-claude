@@ -242,6 +242,14 @@ test('check-readiness: R-RCEX (#65) external SDK symbol resolves against node_mo
 test('check-readiness: R-RCEX (#65) a symbol absent from every dependency still fails', () => runFixture((sessionDir) => {
     const repoRoot = tmpDir('pickle-readiness-repo-');
     try {
+        // AP-EXT-ITER293-01: `git init` is the PRECONDITION this assertion needs, not
+        // decoration. The claim is "absent from every dependency", which is a verdict —
+        // and a verdict requires a MEASURED tracked-file list. A bare temp dir makes
+        // `git ls-files` fail, and a symbol unresolvable against a list that was never
+        // enumerated is undecided, so the gate now degrades it to a non-blocking
+        // `performance` self-report instead of exiting 2 on a manufactured verdict.
+        // An empty index is fine here: emptiness that was MEASURED is a measurement.
+        spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot, timeout: 30000 });
         fs.writeFileSync(
             path.join(repoRoot, 'package.json'),
             JSON.stringify({ name: 'rcex-fixture', dependencies: { reductoish: '0.1.0' } }),

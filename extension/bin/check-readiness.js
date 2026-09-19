@@ -269,29 +269,29 @@ function resolvePathRef(ref, repoRoot, ticket, sessionDir, cache) {
  * `tests/readiness-signature-change-caller-gap.test.js` (`AP-EXT-ITER81-01`) so this
  * claim reddens if the eager population ever goes lazy again.
  *
- * WHAT ACTUALLY FEEDS THE GATE, and the live exposure: `trackedAllFiles` (suffix
- * resolution here) and `trackedSourceFiles` (candidate scan in `resolveSymbolRef`)
- * both come from `signature-caller-gap.ts`'s OWN `gitTrackedFiles`, which guards on
- * `result.status !== 0` alone and declares NO `maxBuffer` — Node's 1 MB default. Past
- * 1 MB of `git ls-files` output that child is truncated with `status: 0` /
- * `error.code === 'ENOBUFS'`, the status-only guard reads it as a COMPLETE listing,
- * and the partial list makes real tracked files resolve as absent. Those become
- * `file_path` / `contract` findings, which are BLOCKING (`blockingFindings`) — so the
- * gate returns exit 2 on a verdict manufactured by buffer size. Repo-size dependent:
- * this repo's listing is ~115 KB, a large monorepo clears 1 MB.
+ * WHAT ACTUALLY FEEDS THE GATE: `trackedAllFiles` (suffix resolution here) and
+ * `trackedSourceFiles` (candidate scan in `resolveSymbolRef`) both come from
+ * `signature-caller-gap.ts`'s OWN `gitTrackedFiles`, not from this one.
  *
- * FENCE: `services/signature-caller-gap.ts` and
- * `tests/check-readiness-hang-guard.test.js` (which asserts this spawn's timeout by
- * SOURCE TEXT, and so is green over this dead code) are both OUTSIDE the current
- * scope.json, so neither the real fix nor the deletion of this copy is landable here.
- * `src/bin/CLAUDE.md` already records signature-caller-gap.ts as an out-of-fence
- * survivor of the AP-EXT-ITER55-01 maxBuffer family; the dead-guard half is the trap
- * door in `src/services/CLAUDE.md`.
+ * AP-EXT-ITER293-01 CORRECTS THIS BLOCK'S FORMER CLAIM that that twin is uncapped
+ * and status-only. It has carried `maxBuffer: UNBOUNDED_READ_MAX_BUFFER` and
+ * `enumerationCompleted` since `a89b28b9` (2026-09-12) — the two bodies are now
+ * byte-identical — so the ENOBUFS-truncation exposure this block described was
+ * already closed, and nothing in the gate could say so. Re-measure a claim about
+ * another file before inheriting it.
  *
- * The `enumerationCompleted` call below is retained (not the `[]` the predicate's own
- * docblock forbids mapping an unmeasured read to, but the callers here cannot consume
- * a `null`, and turning an unmeasurable read into a throw would add an abort condition
- * the PRIME DIRECTIVE forbids). It is correct-but-inert, exactly like the ceiling.
+ * The exposure that WAS live is the disposition, not the ceiling: the twin mapped a
+ * non-completing enumeration to `[]`, which published a fabrication as a
+ * measurement and turned every ref into a BLOCKING `file_path` / `contract`
+ * finding — exit 2 on a verdict manufactured by a failed spawn (measured: a shim
+ * failing only `git ls-files` moved the same tree from exit 0 to exit 2). It now
+ * returns `null`, `createResolverCache` folds that into the cache's existing
+ * `truncated` flag, and both readers degrade an undecided ref to a non-blocking
+ * `performance` self-report.
+ *
+ * This copy's `enumerationCompleted` guard and ceiling stay correct-but-INERT: the
+ * arm is unreachable, so its `[]` cannot reach a consumer. Deleting the copy is the
+ * standing subtraction, blocked only by the unreachable `??` arm this block pins.
  */
 function gitTrackedFiles(repoRoot) {
     const result = spawnSync('git', ['ls-files'], {
@@ -454,12 +454,20 @@ function findMachinabilityFindings(ticketFile, content) {
 }
 // R-RCFF (Step 1+3): a ref matching the bundle creation index is forward-created
 // Genuinely-unresolvable refs (absent at HEAD) keep kind:'contract'.
-function unresolvedContractFinding(ticketFile, ref) {
+// A ref that fails to resolve against an UNMEASURED file list is undecided, not
+// absent: `resolveSymbolRef` draws its candidates from `cache.trackedSourceFiles`,
+// so an incomplete enumeration makes every ref look unresolved. Report the
+// undecided ones as the checker's own incompleteness (`performance`, which R-RHFP
+// already keeps out of `blockingFindings`) instead of blocking the bundle on a
+// verdict the gate manufactured.
+function unresolvedContractFinding(ticketFile, ref, measured) {
     return {
         ticket: ticketFile,
-        kind: 'contract',
+        kind: measured ? 'contract' : 'performance',
         analyst: 'codebase',
-        message: 'Referenced contract does not resolve',
+        message: measured
+            ? 'Referenced contract does not resolve'
+            : 'Referenced contract could not be checked: repo file enumeration did not complete',
         detail: ref,
     };
 }
@@ -488,7 +496,7 @@ export function findReadinessFindings(ticketFile, repoRoot, opts) {
                 break;
             }
             if (!resolveSymbolRef(ref, repoRoot, cache)) {
-                findings.push(unresolvedContractFinding(ticketFile, ref));
+                findings.push(unresolvedContractFinding(ticketFile, ref, !cache.truncated));
             }
         }
     }
@@ -825,14 +833,20 @@ function findPathFindings(ticket, repoRoot, sessionDir, cache) {
     // A `file_path` ref hard-halts iff it suffix-matches no HEAD path (a true
     // phantom) — via R-RTRC-4's repo-prefix strip + git ls-files `(?:^|/)<ref>$`.
     // The `allowlist` (R-RTRC-5) filter below is a distinct suppression surface.
+    // Same degrade as `unresolvedContractFinding`: `resolvePathRef`'s R-RTRC-4 suffix
+    // fallback matches against `cache.trackedAllFiles`, so under an incomplete
+    // enumeration a non-resolving ref is undecided rather than phantom.
+    const measured = !cache?.truncated;
     return [...refs].sort()
         .filter((ref) => !allowlist.has(ref))
         .filter((ref) => !resolvePathRef(ref, repoRoot, ticket, sessionDir, cache))
         .map((ref) => ({
         ticket: ticket.file,
-        kind: 'file_path',
+        kind: measured ? 'file_path' : 'performance',
         analyst: 'codebase',
-        message: 'Referenced ticket file path does not resolve',
+        message: measured
+            ? 'Referenced ticket file path does not resolve'
+            : 'Referenced ticket file path could not be checked: repo file enumeration did not complete',
         detail: ref,
     }));
 }

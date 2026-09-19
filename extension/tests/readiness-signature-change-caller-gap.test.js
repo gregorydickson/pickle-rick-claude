@@ -342,3 +342,120 @@ test('AP-EXT-ITER81-01: createResolverCache populates trackedAllFiles eagerly, s
       + 'single enumeration',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER293-01. The pin above proves the enumeration is EAGER; this one proves
+// the gate can tell a FAILED enumeration from an empty repo.
+//
+// `createResolverCache` mapped a non-completing `git ls-files` to `[]` and left
+// `truncated` false, so `trackedAllFiles`/`trackedSourceFiles` — the only lists
+// `resolvePathRef`'s R-RTRC-4 suffix fallback and `resolveSymbolRef`'s candidate
+// scan consult — published a fabrication as a measurement. Every ref then read as
+// unresolved and became a BLOCKING `file_path` / `contract` finding: exit 2 on a
+// verdict manufactured by a failed spawn, with nothing in the output naming the
+// cause. Same shape AP-EXT-ITER48-01 closed for the sweep's symbol axis, recorded
+// there as its OPEN REPLAY.
+//
+// The fixture fails ONLY `git ls-files` and delegates every other verb to the real
+// binary, so the rest of the gate stays live — an overbroad git stub would make the
+// assertions below vacuous. The ACCEPT control is the SAME tree under the real
+// binary: it must still resolve both refs, so the fix cannot degrade into
+// never-reporting, and the negative control asserts a genuinely phantom ref still
+// BLOCKS while the enumeration is measured.
+// ---------------------------------------------------------------------------
+function lsFilesFailingGitShim() {
+  const realGit = spawnSync('which', ['git'], { encoding: 'utf-8', timeout: 30000 }).stdout.trim();
+  assert.ok(realGit, 'git must be on PATH for this fixture to delegate to it');
+  const dir = tmpDir('pickle-sigf-shim-');
+  fs.writeFileSync(
+    path.join(dir, 'git'),
+    `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = "ls-files" ]; then echo "fatal: simulated enumeration failure" >&2; exit 128; fi\ndone\nexec ${realGit} "$@"\n`,
+    { mode: 0o755 },
+  );
+  // Non-vacuity: the shim must break ls-files and NOTHING else.
+  const probeRepo = gitRepoWith({ 'src/probe.ts': 'export const probe = 1;\n' });
+  try {
+    const env = { ...process.env, PATH: `${dir}:${process.env.PATH}` };
+    assert.equal(spawnSync('git', ['ls-files'], { cwd: probeRepo, env, encoding: 'utf-8', timeout: 30000 }).status, 128,
+      'shim must fail `git ls-files`');
+    assert.equal(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: probeRepo, env, encoding: 'utf-8', timeout: 30000 }).status, 0,
+      'shim must delegate every other git verb — an overbroad stub makes this pin vacuous');
+  } finally {
+    fs.rmSync(probeRepo, { recursive: true, force: true });
+  }
+  return dir;
+}
+
+// A path ref reachable ONLY through the tracked-file suffix fallback (no base
+// resolves `widget/service.ts`) plus a symbol ref resolved only from
+// `trackedSourceFiles` — one ticket that exercises both consumers of the list.
+function enumerationTicketBody() {
+  return [
+    '---', 'id: enum1', 'key: ENUM-1', 'ac_ids: []', '---', '',
+    '# Extend the widget', '',
+    '## Files to modify', '', '- `widget/service.ts`', '',
+    '## Acceptance Criteria', '', '- [ ] `WidgetService.start` returns 2.', '',
+  ].join('\n');
+}
+
+const ENUMERATION_REPO_FILES = {
+  'src/widget/service.ts': 'export class WidgetService {\n  start() { return 1; }\n}\n',
+};
+
+test('AP-EXT-ITER293-01: a failed git ls-files is reported as unmeasured, never as a blocking phantom-ref verdict', () => {
+  const shim = lsFilesFailingGitShim();
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith(ENUMERATION_REPO_FILES);
+  try {
+    writeTicket(sessionDir, 'enum1', enumerationTicketBody());
+    const result = runReadiness(sessionDir, repoRoot, { PATH: `${shim}:${process.env.PATH}` });
+
+    assert.equal(result.status, 0,
+      'an enumeration failure is a measurement failure, not a ticket defect — it must never '
+      + `exit 2 and halt the bundle; got ${result.status}, stdout=${result.stdout}`);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.status, 'pass');
+    const findings = out.findings ?? [];
+    assert.ok(findings.length > 0,
+      'the gate must SAY it could not measure — silence here is the original defect, where an '
+      + 'unmeasured list was published as a measurement');
+    for (const finding of findings) {
+      assert.equal(finding.kind, 'performance',
+        `every undecided ref must degrade to the non-blocking self-report kind; got ${JSON.stringify(finding)}`);
+      assert.match(finding.message, /enumeration did not complete/,
+        'the finding must name the enumeration failure, not describe the ref as absent');
+    }
+    const details = findings.map((f) => f.detail).sort();
+    assert.deepEqual(details, ['WidgetService.start', 'widget/service.ts'],
+      'both consumers of the tracked list — the path suffix fallback and the symbol candidate '
+      + 'scan — must be covered, or one half can regress unseen');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    fs.rmSync(shim, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER293-01 (control): with a real git ls-files the SAME tree resolves both refs, and a phantom ref still blocks', () => {
+  const sessionDir = tmpDir();
+  const repoRoot = gitRepoWith(ENUMERATION_REPO_FILES);
+  try {
+    writeTicket(sessionDir, 'enum1', enumerationTicketBody());
+    const resolved = runReadiness(sessionDir, repoRoot);
+    assert.equal(resolved.status, 0, `control tree must pass; stdout=${resolved.stdout}`);
+    assert.deepEqual(JSON.parse(resolved.stdout).findings ?? [], [],
+      'both refs resolve under a real enumeration — if they did not, the unmeasured case above '
+      + 'would pass for the wrong reason');
+
+    // Negative control: a genuinely phantom ref must still BLOCK while measured, so the
+    // degrade cannot silently become "never report".
+    writeTicket(sessionDir, 'enum2', enumerationTicketBody().replace('widget/service.ts', 'widget/absent.ts'));
+    const phantom = runReadiness(sessionDir, repoRoot);
+    assert.equal(phantom.status, 2, `a phantom path ref must still block under a measured enumeration; stdout=${phantom.stdout}`);
+    const kinds = (JSON.parse(phantom.stdout).findings ?? []).map((f) => f.kind);
+    assert.ok(kinds.includes('file_path'), `expected a blocking file_path finding; got ${JSON.stringify(kinds)}`);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
