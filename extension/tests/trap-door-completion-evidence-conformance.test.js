@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '..', '..');
@@ -430,5 +430,78 @@ test('AP-BIN-ITER15-01: the release-gate sweep reads every subsystem catalog on 
     `catalogs carrying ENFORCE refs that the release gate collected nothing from `
       + `(their trap doors' enforcement is unverified):\n  ${unswept.join('\n  ')}\n`
       + `census: ${census[1]}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// AP-BIN-ITER255-01. AP-BIN-ITER15-01 above pins the SHELL audit's census over the
+// REAL tree. Its citadel twin was pinned over PLANTED fixtures only
+// (extension/tests/citadel/trap-door-coverage-audit.test.js writes a `bin/CLAUDE.md`
+// into a tmp projectRoot), and a synthetic root proves the reader CAN open a
+// repo-root catalog, never that it opens THIS one — the dark-root shape this repo
+// keeps getting burned by.
+//
+// That missing half is what let `bin/CLAUDE.md` carry an `OPEN GAP` clause asserting
+// citadel's `collectClaudeMdFiles` was still scoped to `extension/src` long after the
+// walk was widened. An open-claim in a catalog names no observable, so nothing in the
+// gate can falsify one: the clause rotted GREEN, and every pass that read it inherited
+// a closed defect as open.
+//
+// The observable is orphan SUPPRESSION. `bin/CLAUDE.md` is the only tracked catalog
+// that ENFORCE-references the three `bin/` specs, so a reader that never opens it
+// reports all three as `orphan-test-file`. Both preconditions are asserted from the
+// git index rather than a hand list, and the orphan detector must be shown FIRING in
+// the same run — otherwise an empty result reads as agreement.
+// ---------------------------------------------------------------------------
+const BIN_SUBSYSTEM_SPECS = [
+  'extension/tests/purge-update-cache.test.js',
+  'extension/tests/release-gate.test.js',
+  'extension/tests/verify-bundle.test.js',
+];
+
+test('AP-BIN-ITER255-01: citadel\'s trap-door reader audits the REAL repo-root bin/CLAUDE.md', async () => {
+  const trackedCatalogs = spawnSync('git', ['ls-files', '*CLAUDE.md'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  assert.equal(trackedCatalogs.status, 0, `git ls-files failed:\n${trackedCatalogs.stderr}`);
+  const catalogs = trackedCatalogs.stdout.split('\n').filter(Boolean);
+  assert.ok(catalogs.includes('bin/CLAUDE.md'), 'bin/CLAUDE.md is untracked — re-anchor this pin');
+
+  // Non-vacuity: each spec exists, and bin/CLAUDE.md is its SOLE referencing catalog.
+  // Once a second catalog names one, that spec stops witnessing a dark bin/CLAUDE.md.
+  for (const rel of BIN_SUBSYSTEM_SPECS) {
+    assert.ok(fs.existsSync(path.join(repoRoot, rel)), `${rel} is gone — re-anchor this pin`);
+    const naming = catalogs.filter((cat) =>
+      fs.readFileSync(path.join(repoRoot, cat), 'utf8').includes(path.posix.basename(rel)),
+    );
+    assert.deepEqual(
+      naming,
+      ['bin/CLAUDE.md'],
+      `${rel} must be referenced by bin/CLAUDE.md ALONE or it cannot witness an unread catalog`,
+    );
+  }
+
+  const { runT6TrapDoorCoverage } = await import(
+    pathToFileURL(path.join(repoRoot, 'extension/services/citadel/trap-door-coverage-audit.js')).href
+  );
+  const { findings } = runT6TrapDoorCoverage({ projectRoot: repoRoot });
+
+  // The live control: the orphan detector must be firing somewhere in THIS run, or the
+  // empty result below is a dead detector rather than a clean verdict.
+  assert.ok(
+    findings.some((f) => f.id.startsWith('orphan-test-file:')),
+    'the orphan-test-file detector reported nothing at all — an empty bin result proves nothing',
+  );
+
+  const orphaned = BIN_SUBSYSTEM_SPECS.filter((rel) =>
+    findings.some((f) => f.id === `orphan-test-file:${rel}`),
+  );
+  assert.deepEqual(
+    orphaned,
+    [],
+    `citadel's catalog walk stopped reading repo-root bin/CLAUDE.md — these specs are its ONLY `
+      + `inbound ENFORCE refs and are now reported orphaned:\n  ${orphaned.join('\n  ')}`,
   );
 });
