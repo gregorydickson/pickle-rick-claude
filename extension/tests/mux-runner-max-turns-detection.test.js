@@ -137,3 +137,64 @@ test('max-turns-detection: missing max-turns budget returns false', () => {
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
+
+// AP-EXT-ITER292-02: the last-result-event discriminator set is enumerated, but only
+// `stop_reason` and `is_error` were fixtured. `terminal_reason` and the `turn_count`
+// fallback both survived a 602-test oracle when amputated, because every fixture in the
+// corpus pairs `terminal_reason: 'completed'` with `stop_reason: 'end_turn'` and supplies
+// `num_turns`, so neither ever varied independently of its siblings.
+test('AP-EXT-ITER292-02: terminal_reason discriminates independently of stop_reason', () => {
+    const rows = [
+        { terminalReason: 'completed', expected: true },
+        { terminalReason: 'max_turns', expected: false },
+        { terminalReason: 'crash', expected: false },
+        { terminalReason: 'error_during_execution', expected: false },
+    ];
+    for (const { terminalReason, expected } of rows) {
+        const { dir, logFile } = writeLog(
+            `{"type":"result","stop_reason":"end_turn","terminal_reason":"${terminalReason}","is_error":false,"num_turns":40}\n`
+        );
+        try {
+            assert.equal(
+                detectManagerMaxTurnsExit(managerResultFixture(), logFile, 40),
+                expected,
+                `terminal_reason=${terminalReason} with every sibling field at the accepting value`,
+            );
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }
+});
+
+test('AP-EXT-ITER292-02: turn_count is the live budget source when num_turns is absent', () => {
+    const rows = [
+        { turnCount: 40, expected: true },
+        { turnCount: 41, expected: true },
+        { turnCount: 39, expected: false },
+    ];
+    for (const { turnCount, expected } of rows) {
+        const { dir, logFile } = writeLog(
+            `{"type":"result","stop_reason":"end_turn","terminal_reason":"completed","is_error":false,"turn_count":${turnCount}}\n`
+        );
+        try {
+            assert.equal(
+                detectManagerMaxTurnsExit(managerResultFixture(), logFile, 40),
+                expected,
+                `turn_count=${turnCount} against a budget of 40, no num_turns present`,
+            );
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }
+});
+
+test('AP-EXT-ITER292-02: num_turns wins over a disagreeing turn_count', () => {
+    const { dir, logFile } = writeLog(
+        '{"type":"result","stop_reason":"end_turn","terminal_reason":"completed","is_error":false,"num_turns":39,"turn_count":40}\n'
+    );
+    try {
+        assert.equal(detectManagerMaxTurnsExit(managerResultFixture(), logFile, 40), false);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
