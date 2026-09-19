@@ -185,6 +185,28 @@ describe('citadel project-shape gate', () => {
 // parsedPrd.composedRcodes is non-empty when the PRD lists composed sources.
 // Pre-fix: audit-runner called parsePrdMarkdown (no composes walk) and
 // composedRcodes stayed an empty Map forever.
+/**
+ * AP-EXT-ITER287-01: a REAL one-commit repo, because the degrade under test lets the run reach
+ * `walkDiff` — a bare `.git` directory would fail there instead, and the case would pass for the
+ * wrong reason.
+ */
+function makeCommittedRepo(prefix, files) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const run = (args) => execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  run(['init', '-q', '-b', 'main']);
+  run(['config', 'user.email', 't@example.com']);
+  run(['config', 'user.name', 'T']);
+  run(['config', 'commit.gpgsign', 'false']);
+  for (const [relPath, content] of Object.entries(files)) {
+    const full = path.join(root, relPath);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+  }
+  run(['add', '.']);
+  run(['commit', '-qm', 'base']);
+  return root;
+}
+
 describe('citadel audit-runner composes: wiring (ticket 98dc9bed)', () => {
   test('audit-runner.ts source imports parseWithComposes', () => {
     const src = fs.readFileSync(AUDIT_RUNNER_SRC, 'utf-8');
@@ -230,22 +252,65 @@ describe('citadel audit-runner composes: wiring (ticket 98dc9bed)', () => {
     }
   });
 
-  test('buildCitadelAuditReport rethrows malformed composes: paths instead of silently auditing the wrong graph', () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-runner-bad-composes-'));
-    fs.mkdirSync(path.join(tmpRoot, '.git'), { recursive: true });
-    const badComposer = path.join(tmpRoot, 'composer.md');
-    fs.writeFileSync(badComposer, '---\ncomposes:\n  - ../escape.md\n---\n# Composer\n');
+  // AP-EXT-ITER287-01: ticket 98dc9bed's intent — a malformed compose graph must never be
+  // SILENTLY audited as the wrong scope — is kept; only its disposition changes. It used to
+  // throw, and nothing between here and the CLI catches (not buildCitadelAuditReport, not
+  // executeCitadelPhase, not runPhaseIteration, not runPipelinePhaseLoop), so the throw reached
+  // pipeline-runner's fatal handler and ended the run with anatomy-park and szechuan-sauce never
+  // run. Honesty is a reporting property, halting is a disposition; this pins the report.
+  test('AP-EXT-ITER287-01: a malformed composes: path is REPORTED, not thrown — the audit still returns', () => {
+    const tmpRoot = makeCommittedRepo('audit-runner-bad-composes-', {
+      'composer.md': '---\ncomposes:\n  - ../escape.md\n---\n# Composer\n',
+    });
 
-    assert.throws(
-      () => buildCitadelAuditReport({
-        prdPath: path.relative(tmpRoot, badComposer),
+    try {
+      const report = buildCitadelAuditReport({
+        prdPath: 'composer.md',
         diffRange: 'HEAD..HEAD',
         repoRoot: tmpRoot,
-      }),
-      /Invalid composes: path "\.\.\/escape\.md"/,
-    );
+      });
+      const breadcrumb = report.findings.find((finding) => finding.id === 'citadel-prd-parse');
+      assert.ok(breadcrumb, 'the unresolved compose graph must be reported as a finding');
+      assert.equal(breadcrumb.analyzer_threw, true);
+      assert.equal(breadcrumb.severity, 'Low');
+      assert.match(breadcrumb.message, /Invalid composes: path "\.\.\/escape\.md"/);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  // The live-repo family: 35 of this repo's 466 PRDs made parseWithComposes throw when measured
+  // on 2026-09-18, and the largest cause is the QUOTED block-list entry that several committed
+  // PRDs use — the quotes are not stripped, so `path.join` resolves a path nobody wrote. The
+  // composed sibling here EXISTS; only the quoting is at fault, which is why this case proves
+  // the degrade rather than a missing file.
+  test('AP-EXT-ITER287-01: a quoted composes: entry degrades the audit instead of ending the run', () => {
+    const tmpRoot = makeCommittedRepo('audit-runner-quoted-composes-', {
+      'prds/child.md': '# Child\n\nAC-QUOTED-1 child acceptance criterion.\n',
+      'prds/bundle.md': '---\ncomposes:\n  - "prds/child.md"\n---\n# Bundle\n',
+    });
+
+    try {
+      const report = buildCitadelAuditReport({
+        prdPath: 'prds/bundle.md',
+        diffRange: 'HEAD..HEAD',
+        repoRoot: tmpRoot,
+      });
+      const breadcrumb = report.findings.find((finding) => finding.id === 'citadel-prd-parse');
+      assert.ok(breadcrumb, 'a quoted composes: entry must leave a named breadcrumb');
+      assert.equal(
+        report.sections.ac_coverage.findings[0].id,
+        'citadel-prd-parse',
+        'the breadcrumb rides the section whose population the failed parse emptied',
+      );
+      assert.equal(
+        report.sections.ac_coverage.rows,
+        undefined,
+        'a degraded ac_coverage must not report rows it never scored',
+      );
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   test('buildCitadelAuditReport consumes composed child AC and transition inputs', () => {
@@ -300,6 +365,14 @@ describe('citadel audit-runner composes: wiring (ticket 98dc9bed)', () => {
         repoRoot: tmpRoot,
       });
 
+      // AP-EXT-ITER287-01 over-trigger control: a compose graph that DOES resolve must leave no
+      // degrade breadcrumb and must still carry the composed child's AC. A fix that degraded
+      // unconditionally would pass the two cases above and fail here.
+      assert.equal(
+        report.findings.some((finding) => finding.id === 'citadel-prd-parse'),
+        false,
+        'a resolvable composes: graph must not be reported as unresolved',
+      );
       assert.equal(
         report.sections.ac_coverage.rows.some((row) => row.id === 'AC-CHILD-1'),
         true,

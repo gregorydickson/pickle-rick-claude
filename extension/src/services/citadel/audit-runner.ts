@@ -157,6 +157,13 @@ interface CitadelAnalyzerInputs {
   parsedPrd: ParsedPrd;
   diff: DiffSummary;
   projectShapes: ProjectShape[];
+  /**
+   * AP-EXT-ITER287-01: the message when the PRD could not be read or its `composes:` graph
+   * could not be resolved; `null` when the PRD resolved (or none was supplied). One nullable
+   * field rather than a per-cause enumeration — every `ComposesError` subclass, and an
+   * unreadable PRD, degrade identically.
+   */
+  prdUnresolved: string | null;
 }
 
 // Section keys are spread in order: collectSectionFindings follows section order.
@@ -179,29 +186,108 @@ function loadAnalyzerInputs(
   repoRoot: string,
   resolvedPrdPath: string | undefined,
 ): CitadelAnalyzerInputs {
-  const prdMarkdown = resolvedPrdPath ? readFileSync(resolvedPrdPath, 'utf-8') : '';
-  // ticket 98dc9bed F3.1: parseWithComposes already handles PRDs without a
-  // composes: front-matter block. Swallowing ComposesError here masks malformed
-  // compose graphs and audits the wrong PRD scope.
-  const parsedPrd: ParsedPrd = resolvedPrdPath
-    ? parseWithComposes(resolvedPrdPath, { repoRoot })
-    : { decisions: [], acceptanceCriteria: [], endpoints: [], allowlistEntries: [], statusCodeRows: [], transitionAuditRows: [], composedRcodes: new Map() };
+  const prd = readPrdInputs(resolvedPrdPath, repoRoot);
   const diff = walkDiff(options.diffRange, { repoRoot });
   const projectShapes = detectProjectShapes(repoRoot);
-  return { options, repoRoot, resolvedPrdPath, prdMarkdown, parsedPrd, diff, projectShapes };
+  return { options, repoRoot, resolvedPrdPath, ...prd, diff, projectShapes };
+}
+
+function emptyParsedPrd(): ParsedPrd {
+  return {
+    decisions: [],
+    acceptanceCriteria: [],
+    endpoints: [],
+    allowlistEntries: [],
+    statusCodeRows: [],
+    transitionAuditRows: [],
+    composedRcodes: new Map(),
+  };
+}
+
+/**
+ * AP-EXT-ITER287-01: read the PRD and resolve its `composes:` graph, DEGRADING instead of
+ * throwing. `loadAnalyzerInputs` runs outside every `safeRunAnalyzer` wrapper, and nothing
+ * between here and `pipeline-runner.ts` catches — not `buildCitadelAuditReport`, not
+ * `executeCitadelPhase`, not `runPhaseIteration`, not `runPipelinePhaseLoop` — so a throw here
+ * reached the CLI's fatal handler, stamped `exit_reason: 'fatal'` and exited 1 with
+ * anatomy-park and szechuan-sauce never run. That is the one disposition the PRIME DIRECTIVE
+ * forbids a measurement to take: a gate MAY refuse a local action, it MAY NEVER break the
+ * phase loop.
+ *
+ * ticket 98dc9bed F3.1 removed an earlier swallow here for a real reason — masking a malformed
+ * compose graph audits the wrong PRD scope silently. That reason is preserved, not reverted:
+ * the failure is REPORTED (`citadel-prd-parse`, the same `analyzer_threw` shape every wrapped
+ * analyzer emits) rather than swallowed. Honesty is a reporting property; halting is a
+ * disposition. This changes only the second one.
+ *
+ * MEASURED 2026-09-18 over this repo's own `prds/` tree: 35 of 466 PRDs make `parseWithComposes`
+ * throw, and one of them — `prds/p2-bug-fix-bundle-b-rlh-review-loop-honesty.md` — is the bundle
+ * `prds/MASTER_PLAN.md` names as the next launch. 8 of the 16 recorded sessions hand citadel a
+ * repo PRD directly, so the path is the operator's normal one.
+ *
+ * `prdMarkdown` keeps whatever was read before the failure: a `ComposesError` leaves the root
+ * PRD's own text perfectly usable, and `auditRuleSetInvariants` consumes it.
+ */
+function readPrdInputs(
+  resolvedPrdPath: string | undefined,
+  repoRoot: string,
+): { prdMarkdown: string; parsedPrd: ParsedPrd; prdUnresolved: string | null } {
+  if (resolvedPrdPath === undefined) {
+    return { prdMarkdown: '', parsedPrd: emptyParsedPrd(), prdUnresolved: null };
+  }
+  let prdMarkdown = '';
+  try {
+    prdMarkdown = readFileSync(resolvedPrdPath, 'utf-8');
+    return { prdMarkdown, parsedPrd: parseWithComposes(resolvedPrdPath, { repoRoot }), prdUnresolved: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { prdMarkdown, parsedPrd: emptyParsedPrd(), prdUnresolved: message };
+  }
+}
+
+const EMPTY_AC_SHAPE: AcShapeAuditReport = {
+  decisionsRequired: [],
+  findings: [],
+  summary: { decisionsRequired: 0, highFindings: 0 },
+};
+
+/**
+ * AP-EXT-ITER287-01: the degrade breadcrumb for a PRD that did not resolve, in
+ * `safeRunAnalyzer`'s OWN `AnalyzerErrorResult` shape — "this analyzer could not run" already
+ * has exactly one spelling in this report and this is that spelling, not a second one. It rides
+ * `ac_coverage` because that is the section whose population (`parsedPrd.acceptanceCriteria`)
+ * the failed parse emptied: the row that would otherwise read as "no AC findings" is the row
+ * that says why it is empty.
+ */
+function prdUnresolvedResult(prdUnresolved: string): AnalyzerErrorResult {
+  return {
+    skipped: false,
+    findings: [{
+      id: 'citadel-prd-parse',
+      severity: 'Low',
+      analyzer_threw: true,
+      message:
+        'PRD could not be read or its composes: graph could not be resolved; every PRD-derived '
+        + `section ran against an EMPTY PRD this run: ${prdUnresolved}`,
+    }],
+  };
 }
 
 function runScopeAnalyzers(inputs: CitadelAnalyzerInputs) {
-  const { options, repoRoot, resolvedPrdPath, prdMarkdown, diff, projectShapes } = inputs;
+  const { options, repoRoot, resolvedPrdPath, prdMarkdown, prdUnresolved, diff, projectShapes } = inputs;
   const siblingAuth = auditSiblingAuthPreconditions(diff, { projectShapes });
   const frontendPropDrift = safeRunAnalyzer(
     'citadel-frontend-prop-drift',
     () => auditFrontendPropDrift(diff),
     { analyzerCompatibility: ['react-frontend'], projectShapes },
   );
-  const acShape = resolvedPrdPath
+  // AP-EXT-ITER287-01: `auditAcShape` is the SECOND unguarded read of the same PRD, so it runs
+  // only on the condition that first read succeeded on — one predicate governs both. Measured
+  // cost of not running it on a ComposesError (where the root PRD is readable but its graph is
+  // not): zero — `ac_shape` emitted 0 findings across all 16 recorded sessions.
+  const acShape = resolvedPrdPath !== undefined && prdUnresolved === null
     ? auditAcShape({ prdPath: resolvedPrdPath, sessionDir: options.sessionDir })
-    : { findings: [], decisionsRequired: [], summary: { decisionsRequired: 0, highFindings: 0 } };
+    : EMPTY_AC_SHAPE;
   const ruleSetInvariants = resolvedPrdPath
     ? auditRuleSetInvariants(diff, { repoRoot, prdMarkdown })
     : NO_PRD_SKIPPED;
@@ -226,11 +312,13 @@ function runCrossPhaseAnalyzers({ options, diff }: CitadelAnalyzerInputs) {
   };
 }
 
-function runPrdContractAnalyzers({ repoRoot, resolvedPrdPath, parsedPrd, diff, projectShapes }: CitadelAnalyzerInputs) {
-  const acCoverage = resolvedPrdPath
-    ? safeRunAnalyzer('citadel-ac-coverage', () =>
-        buildAcCoverageScorecard(parsedPrd.acceptanceCriteria, diff, { repoRoot }))
-    : NO_PRD_SKIPPED;
+function runPrdContractAnalyzers({ repoRoot, resolvedPrdPath, parsedPrd, prdUnresolved, diff, projectShapes }: CitadelAnalyzerInputs) {
+  const acCoverage = resolvedPrdPath === undefined
+    ? NO_PRD_SKIPPED
+    : prdUnresolved !== null
+      ? prdUnresolvedResult(prdUnresolved)
+      : safeRunAnalyzer('citadel-ac-coverage', () =>
+          buildAcCoverageScorecard(parsedPrd.acceptanceCriteria, diff, { repoRoot }));
   const allowlistDead = safeRunAnalyzer('citadel-allowlist-dead', () =>
     detectAllowlistDeadEntries(diff, { repoRoot }));
   const stateTransitions = resolvedPrdPath
