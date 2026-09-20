@@ -376,9 +376,21 @@ export function parseChangedExportedSymbolsFromDiff(diffText) {
  * module's own premise is stated at `microverse-runner.ts:enumerateInterfaceSweepAxes` ("no
  * exported declaration changes without its file changing"); rename detection falsifies its
  * dual. Fix the CONTRACT — never re-expand a rename in JS.
+ *
+ * AP-EXT-ITER314-01: both halves of the read are anchored at the repo ROOT — `:(top)` on each
+ * glob, and `diff.relative=false` pinned against ambient config — because `workingDir` is
+ * `state.working_dir || process.cwd()` and is never reconciled to `--show-toplevel`. A wildcard
+ * pathspec is still cwd-relative, so a bare `*.ts` one directory down sees only that subtree
+ * while the `getChangedSince` sibling (no pathspec) keeps reporting the whole repo — the two
+ * axes of ONE measurement in two spaces. The miss is exit 0 with EMPTY output, so
+ * `enumerationCompleted` cannot see it: the set comes back empty-but-non-null,
+ * `enumerateInterfaceSweepAxes` reads it as the positive finding "this phase changed no
+ * exported symbol", and `runInterfaceChangeSweep` returns `ran: false, skipped: null` — the
+ * INV-NO-SELF-DISOWN guard silently disarmed with NO degrade reason to render.
  */
 export function getChangedExportedSymbols(workingDir, sinceCommit) {
-    const result = spawnSync('git', ['diff', '--no-renames', `${sinceCommit}..HEAD`, '--', '*.ts', '*.tsx'], { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
+    const result = spawnSync('git', ['-c', 'diff.relative=false', 'diff', '--no-renames', `${sinceCommit}..HEAD`,
+        '--', ':(top)*.ts', ':(top)*.tsx'], { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });
     if (!enumerationCompleted(result))
         return null;
     return parseChangedExportedSymbolsFromDiff(result.stdout || '');
@@ -686,7 +698,13 @@ function getChangedSince(workingDir, since) {
     // AP-EXT-ITER34-01 thesis, reached through the rename contract). Byte-identical flag
     // set and ORDER to `mux-runner.ts:listRangeTouchedPaths`, this reader's sibling
     // across the same contract, so any future divergence is one grep away.
-    const result = spawnSync('git', ['diff', '--name-only', '--no-renames', '-z', `${since}..HEAD`], {
+    //
+    // AP-EXT-ITER314-01: `diff.relative=false` for the same reason the symbol-axis sibling
+    // carries it. This reader has no pathspec, so `:(top)` has nothing to anchor — but an
+    // ambient `diff.relative=true` restricts the OUTPUT to the cwd subtree regardless, and
+    // this function's whole contract is "repo-relative changed files". The two axes of the
+    // interface-change sweep must read ONE space or the pair is incoherent.
+    const result = spawnSync('git', ['-c', 'diff.relative=false', 'diff', '--name-only', '--no-renames', '-z', `${since}..HEAD`], {
         cwd: workingDir,
         encoding: 'utf-8',
         timeout: 30_000,

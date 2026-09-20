@@ -1674,3 +1674,144 @@ test('AP-EXT-ITER221-01 control: an ordinary not-converged iteration still does 
     fs.rmSync(workingDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER314-01: the sweep's two git readers read the same PATH SPACE.
+//
+// `workingDir` is `state.working_dir || process.cwd()` (microverse-runner.ts) and is never
+// reconciled to `--show-toplevel`. A wildcard pathspec is STILL cwd-relative, so the bare
+// `-- '*.ts' '*.tsx'` symbol read saw only the cwd subtree while its `getChangedSince`
+// sibling (no pathspec) kept reporting the whole repo. The miss is exit 0 with EMPTY output,
+// so `enumerationCompleted` cannot see it: the set returns empty-but-non-null and
+// `runInterfaceChangeSweep` reads it as the POSITIVE finding "this phase changed no exported
+// symbol" — `ran: false`, `skipped: null`, no degrade reason, no whole-repo typecheck, and
+// INV-NO-SELF-DISOWN silently disarmed.
+//
+// Same defect class as the AP-EXT-ITER117-01 cases above, reached through the pathspec SPACE
+// instead of the rename contract, and the same `empty !== measured-zero` thesis as
+// AP-EXT-ITER47-01. `enumerateInterfaceSweepAxes`'s incoherence detector cannot cover for it:
+// it tests `symbols > 0 && files === 0`, the exact MIRROR of what this produces.
+// ---------------------------------------------------------------------------
+
+/** A repo whose exported-symbol change is at the TOPLEVEL, with a subdirectory to read from. */
+function makeBelowToplevelRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  git(dir, ['init']);
+  git(dir, ['config', 'user.name', 'Test User']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+  fs.mkdirSync(path.join(dir, 'pkg', 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'top.ts'), 'export interface AuditResult { sum: number }\n');
+  fs.writeFileSync(path.join(dir, 'pkg', 'sub', 'leaf.ts'), 'export const leaf = 1;\n');
+  fs.writeFileSync(path.join(dir, 'README.md'), 'one\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'base']);
+  const base = headSha(dir);
+
+  fs.writeFileSync(path.join(dir, 'top.ts'), 'export interface AuditResult { total: number }\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'change the exported shape at the toplevel']);
+  return { dir, base, subDir: path.join(dir, 'pkg', 'sub') };
+}
+
+test('AP-EXT-ITER314-01: a subdirectory workingDir AGREES with the toplevel about changed exported symbols', () => {
+  const { dir, base, subDir } = makeBelowToplevelRepo('cg-apiter314-space-');
+  try {
+    // Fixture precondition: the subdirectory really is BELOW the git toplevel, and it is not
+    // the directory the changed file lives in. Without this the two reads are identical by
+    // construction and every assertion below passes vacuously.
+    assert.equal(fs.existsSync(subDir), true, 'fixture precondition: the subdirectory exists');
+    assert.equal(fs.existsSync(path.join(subDir, '.git')), false, 'fixture precondition: it is not its own repo');
+
+    const atTop = getChangedExportedSymbols(dir, base);
+    const atSub = getChangedExportedSymbols(subDir, base);
+    assert.ok(atTop instanceof Set && atSub instanceof Set, 'both reads must MEASURE');
+    assert.equal(atTop.has('AuditResult'), true, 'fixture guard: the toplevel read sees the changed declaration');
+    assert.deepStrictEqual(
+      [...atSub].sort(), [...atTop].sort(),
+      'the symbol axis must not depend on where the session was launched from — a bare `*.ts` ' +
+      'pathspec one directory down reports EMPTY over a real exported-interface change',
+    );
+
+    // The file axis is the same measurement's other half and must agree too.
+    assert.deepStrictEqual(
+      getChangedFilesSince(subDir, base), getChangedFilesSince(dir, base),
+      'the file axis is repo-relative by contract from any cwd',
+    );
+
+    // Over-trigger control, in the SAME case: the anchor widens the SPACE, never the FILTER.
+    // The control diff touches only non-TS files that DO carry `export` declarations — the
+    // compiled `.js` mirror every source edit in this repo also produces. A "fix" that simply
+    // dropped the pathspec would satisfy the agreement above and red here.
+    const ctl = makeBelowToplevelRepo('cg-apiter314-ctl-');
+    try {
+      fs.writeFileSync(path.join(ctl.dir, 'README.md'), '```\nexport const docsOnlyPhantom = 1;\n```\n');
+      fs.writeFileSync(path.join(ctl.dir, 'mirror.js'), 'export const compiledMirrorOnly = 1;\n');
+      fs.writeFileSync(path.join(ctl.dir, 'pkg', 'sub', 'leaf.js'), 'export const leafMirrorOnly = 1;\n');
+      git(ctl.dir, ['add', '.']);
+      git(ctl.dir, ['commit', '-m', 'non-TS files only, each carrying an export declaration']);
+      const ctlBase = execFileSync('git', ['rev-parse', 'HEAD~1'], {
+        cwd: ctl.dir, encoding: 'utf-8', timeout: 30_000,
+      }).trim();
+      assert.deepStrictEqual(
+        [...getChangedExportedSymbols(ctl.dir, ctlBase)], [],
+        'a non-TS-only diff is zero at the toplevel however many `export` lines it carries',
+      );
+      assert.deepStrictEqual(
+        [...getChangedExportedSymbols(ctl.subDir, ctlBase)], [],
+        'and zero below it — the anchor widens the SPACE, not the `*.ts`/`*.tsx` filter',
+      );
+    } finally {
+      fs.rmSync(ctl.dir, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER314-01: an ambient diff.relative=true does not re-narrow either axis', () => {
+  const { dir, base, subDir } = makeBelowToplevelRepo('cg-apiter314-relative-');
+  try {
+    git(dir, ['config', 'diff.relative', 'true']);
+    assert.equal(
+      execFileSync('git', ['config', '--get', 'diff.relative'], { cwd: dir, encoding: 'utf-8', timeout: 30_000 }).trim(),
+      'true',
+      'fixture precondition: the ambient config really is set, or this case pins nothing',
+    );
+
+    // `:(top)` anchors the PATHSPEC; `diff.relative` restricts the OUTPUT regardless of it,
+    // so the two halves of the anchor are independently load-bearing.
+    const atSub = getChangedExportedSymbols(subDir, base);
+    assert.ok(atSub instanceof Set, 'the read must MEASURE');
+    assert.equal(atSub.has('AuditResult'), true, 'the symbol axis survives diff.relative=true below the toplevel');
+    assert.deepStrictEqual(
+      getChangedFilesSince(subDir, base), getChangedFilesSince(dir, base),
+      'and so does the pathspec-less file axis, which diff.relative narrows on its own',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER314-01: the sweep ARMS from a subdirectory instead of reporting an unskipped clean verdict', async () => {
+  const { dir, base, subDir } = makeBelowToplevelRepo('cg-apiter314-chain-');
+  let gateCalls = 0;
+  try {
+    // Both axes are the REAL producers — an injected fn cannot observe an argv.
+    const sweep = await runInterfaceChangeSweep({
+      workingDir: subDir,
+      sessionDir: dir,
+      startCommit: base,
+      runGateFn: async () => { gateCalls++; return { failures: [] }; },
+      logActivityFn: () => {},
+    });
+    assert.equal(gateCalls, 1, 'the sweep must actually measure — pre-fix it short-circuited with zero gate calls');
+    assert.equal(sweep.ran, true, 'a toplevel interface change must ARM the sweep from any cwd');
+    assert.equal(
+      sweep.skipped, null,
+      'and pre-fix it was not even tagged unmeasurable: `skipped: null` with `ran: false` is the ' +
+      'silent disarm — nothing rendered, no degrade reason, INV-NO-SELF-DISOWN off',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
