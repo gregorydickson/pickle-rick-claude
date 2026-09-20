@@ -10721,8 +10721,18 @@ export function computeSourceTreeSignature(workingDir: string): string | null {
  * `recordWorkerArtifactProgress` charges a zero-progress spawn against a ticket that progressed.
  * Absence stays the unscoped-fallback case — decided AFTER the recovering read, never as a
  * pre-gate above it (an `existsSync` pre-gate makes the promotion dead code).
+ *
+ * AP-EXT-ITER308-02: the returned specs are ANCHORED here, at the one read, so no consumer
+ * can spend them in the wrong PATH SPACE. `allowed_paths` is repo-root-relative (R-RSBI-2)
+ * while `working_dir` is an unnormalized `process.cwd()`, and a git pathspec resolves against
+ * the spawn's cwd — so one directory below the toplevel a bare `extension/src` asks for
+ * `extension/extension/src` and every probe exits 0 with EMPTY output. Resolving each spec
+ * against `resolveRepoRoot(workingDir)` deletes that distinction instead of guarding it at
+ * each consumer: `path.resolve` is idempotent over an already-absolute entry, git accepts an
+ * absolute pathspec from any cwd inside the repo (globs included), and the probe OUTPUT is
+ * root-relative either way, so a persisted `last_source_signature` compares unchanged.
  */
-function readScopeAllowedPathSpecsFromFile(scopeJsonPath?: string): string[] {
+function readScopeAllowedPathSpecsFromFile(scopeJsonPath: string | undefined, workingDir: string): string[] {
   const pathSpecs: string[] = [];
   if (!scopeJsonPath) return pathSpecs;
   try {
@@ -10733,7 +10743,9 @@ function readScopeAllowedPathSpecsFromFile(scopeJsonPath?: string): string[] {
       }
     }
   } catch { /* scope.json absent or malformed — fall through to unscoped */ }
-  return pathSpecs;
+  if (pathSpecs.length === 0) return pathSpecs;
+  const repoRoot = muxRealpathOrSelf(resolveRepoRoot(workingDir, workingDir));
+  return pathSpecs.map((spec) => path.resolve(repoRoot, spec));
 }
 
 /**
@@ -10810,7 +10822,7 @@ export function computeScopedSourceTreeSignature(
   workingDir: string,
   scopeJsonPath?: string,
 ): string | null {
-  const pathSpecs = readScopeAllowedPathSpecsFromFile(scopeJsonPath);
+  const pathSpecs = readScopeAllowedPathSpecsFromFile(scopeJsonPath, workingDir);
   if (pathSpecs.length === 0) return computeSourceTreeSignature(workingDir);
   try {
     return gitProbesToSignature(gitSignatureProbes(workingDir, pathSpecs));
@@ -11127,7 +11139,7 @@ function readAutoHandoffLogTail(logPath: string | null, n = 20): string[] {
  */
 function readAutoHandoffDirtyPaths(workingDir: string, scopeJsonPath: string): string[] {
   try {
-    const pathSpecs = readScopeAllowedPathSpecsFromFile(scopeJsonPath);
+    const pathSpecs = readScopeAllowedPathSpecsFromFile(scopeJsonPath, workingDir);
     const args = ['-C', workingDir, 'status', '--porcelain', '-uall'];
     if (pathSpecs.length > 0) args.push('--', ...pathSpecs);
     const result = spawnSync('git', args, { encoding: 'utf-8', timeout: 10_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER });

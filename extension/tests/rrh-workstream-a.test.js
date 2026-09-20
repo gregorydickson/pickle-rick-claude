@@ -739,3 +739,109 @@ test('AP-EXT-ITER162-01: an OUT-OF-SCOPE commit does not move the scoped signatu
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// ── AP-EXT-ITER308-02 — the scoped progress probe measures below the git toplevel ──
+//
+// `allowed_paths` is repo-root-relative (R-RSBI-2) while `working_dir` is an
+// unnormalized `process.cwd()`, and a git pathspec resolves against the spawn's
+// cwd. One directory below the toplevel a bare `extension/src` asks for
+// `extension/extension/src`, every probe exits 0 with EMPTY output, and the
+// signature is a constant -- so `isSourceSignatureProgress` charges a producing
+// worker zero progress. Anchoring the specs at the repo root RESOLVES them; it
+// does not widen the set, which is what the out-of-allowlist case below pins.
+
+function initNestedSignatureRepo(prefix) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf-8', stdio: 'pipe', timeout: 10_000 });
+  git('init', '-q');
+  git('config', 'user.email', 't@t.t');
+  git('config', 'user.name', 't');
+  fs.mkdirSync(path.join(repo, 'extension', 'src'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'extension', 'src', 'a.ts'), 'export const a = 1;\n');
+  fs.writeFileSync(path.join(repo, 'pkg', 'other.txt'), 'peer\n');
+  git('add', '-A');
+  git('commit', '-qm', 'seed', '--no-gpg-sign');
+  return { repo, sub: path.join(repo, 'extension') };
+}
+
+test('AP-EXT-ITER308-02: the scoped signature moves on an in-allowlist edit from a SUBDIRECTORY working_dir', async () => {
+  const { computeScopedSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const { repo, sub } = initNestedSignatureRepo('ap308-02-sub-');
+  try {
+    const scopePath = path.join(repo, 'scope.json');
+    // Repo-root-relative, exactly as `scope-resolver.ts` writes it.
+    fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['extension/src'] }));
+
+    const baselineSub = computeScopedSourceTreeSignature(sub, scopePath);
+    assert.equal(
+      baselineSub,
+      computeScopedSourceTreeSignature(repo, scopePath),
+      'the scoped signature is the SAME from any cwd inside the repo',
+    );
+
+    // The worker's entire output: a real edit INSIDE allowed_paths.
+    fs.appendFileSync(path.join(repo, 'extension', 'src', 'a.ts'), 'export const b = 2;\n');
+
+    const afterSub = computeScopedSourceTreeSignature(sub, scopePath);
+    assert.notEqual(afterSub, baselineSub, 'an in-allowlist edit MOVES the signature below the toplevel');
+    assert.ok(afterSub.includes('extension/src/a.ts'), 'the probe enumerated the edited file, not an empty set');
+    assert.equal(afterSub, computeScopedSourceTreeSignature(repo, scopePath), 'and it still agrees with the toplevel reading');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER308-02: an OUT-of-allowlist edit still does NOT move it from a subdirectory (the anchor resolves, it does not widen)', async () => {
+  const { computeScopedSourceTreeSignature } = await import('../bin/mux-runner.js');
+  const { repo, sub } = initNestedSignatureRepo('ap308-02-blast-');
+  try {
+    const scopePath = path.join(repo, 'scope.json');
+    fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['extension/src'] }));
+
+    const before = computeScopedSourceTreeSignature(sub, scopePath);
+    fs.appendFileSync(path.join(repo, 'pkg', 'other.txt'), 'peer session dirt\n');
+    assert.equal(
+      computeScopedSourceTreeSignature(sub, scopePath),
+      before,
+      'a peer session dirtying a path outside allowed_paths is still absent from the signature',
+    );
+
+    // ACCEPT control on the SAME fixture, so "did not move" cannot pass on a probe
+    // that measures nothing at all.
+    fs.appendFileSync(path.join(repo, 'extension', 'src', 'a.ts'), 'export const c = 3;\n');
+    assert.notEqual(computeScopedSourceTreeSignature(sub, scopePath), before, 'the in-allowlist edit still moves it');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER308-02: the auto-handoff note lists in-scope dirty paths from a SUBDIRECTORY working_dir', async () => {
+  const { recordWorkerArtifactProgress } = await import('../bin/mux-runner.js');
+  const { sessionDir, statePath } = setupSession('ap308-02-handoff-');
+  const { repo, sub } = initNestedSignatureRepo('ap308-02-handoff-work-');
+  const id = 'ap30802h';
+  const ticketDir = path.join(sessionDir, id);
+  fs.mkdirSync(ticketDir, { recursive: true });
+  // The scope reader `readAutoHandoffDirtyPaths` crosses is the SAME one the
+  // signature probes use, so the anchor has to reach both consumers.
+  fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ allowed_paths: ['extension/src'] }));
+  // A FROZEN signature: this spawn is charged zero-progress, the exact spawn
+  // appendAutoHandoffFallback writes its continuity block on.
+  const sigFn = () => 'frozen-signature';
+  try {
+    fs.writeFileSync(path.join(repo, 'extension', 'src', 'b.ts'), 'export const b = 2;\n');
+    fs.writeFileSync(path.join(repo, 'pkg', 'peer.txt'), 'peer dirt\n');
+
+    recordWorkerArtifactProgress(statePath, sessionDir, id, 0, { k: 3, workingDir: sub, sourceSignatureFn: sigFn });
+    const r = recordWorkerArtifactProgress(statePath, sessionDir, id, 0, { k: 3, workingDir: sub, sourceSignatureFn: sigFn });
+    assert.equal(r.zeroProgressCount, 1, 'spawn-2 is charged zero-progress (the note-writing spawn)');
+
+    const notes = fs.readFileSync(path.join(ticketDir, 'handoff_notes.md'), 'utf-8');
+    assert.ok(notes.includes('extension/src/b.ts'), 'the note names the in-scope file the worker produced');
+    assert.ok(!notes.includes('pkg/peer.txt'), 'and still excludes dirt outside allowed_paths');
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
