@@ -1445,13 +1445,17 @@ test('AP-EXT-ITER123-01: a definite not-exists on the primary rung is still FINA
 // render the phantom-Done watcher inert.
 
 /**
- * A `git` shim that DIES UNSPOKEN (SIGKILL -> `status: null`) for the matched
- * subcommand and delegates everything else to the real git. That is the shape of
- * a spawn that never produced an exit status — an EAGAIN/EMFILE fork failure
- * under tier load, an EACCES on the binary, the 5s timeout kill — reached
+ * A `git` shim that DIES UNSPOKEN (SIGKILL -> `status: null`) whenever `matchArg`
+ * appears in argv, and delegates everything else to the real git. That is the
+ * shape of a spawn that never produced an exit status — an EAGAIN/EMFILE fork
+ * failure under tier load, an EACCES on the binary, the 5s timeout kill — reached
  * instantly instead of waiting a timeout out.
+ *
+ * `matchArg` is a subcommand (`cat-file`, `log`) or, since AP-EXT-ITER327-02, a
+ * repo path — every probe here passes its dir as `-C <dir>`, so one arg-equality
+ * shim breaks a single SUBCOMMAND or a single LADDER RUNG with no second helper.
  */
-function withGitUnableToSpeak(subcommand, fn) {
+function withGitUnableToSpeak(matchArg, fn) {
   const realGit = execFileSync('which', ['git'], { encoding: 'utf8', timeout: 30_000 }).trim();
   const shimDir = mkTmp('pickle-iter327-shim-');
   const shim = path.join(shimDir, 'git');
@@ -1459,7 +1463,7 @@ function withGitUnableToSpeak(subcommand, fn) {
     shim,
     ['#!/bin/sh',
      'for a in "$@"; do',
-     `  if [ "$a" = ${JSON.stringify(subcommand)} ]; then kill -9 $$; fi`,
+     `  if [ "$a" = ${JSON.stringify(matchArg)} ]; then kill -9 $$; fi`,
      'done',
      `exec ${JSON.stringify(realGit)} "$@"`,
      ''].join('\n'),
@@ -1568,5 +1572,150 @@ test('AP-EXT-ITER327-01: the Done FLIP stays fail-closed on the same unmeasured 
     assert.equal(decision.unmeasured, true, 'the flip refusal still carries why it could not decide');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER327-02 — the same absence-of-proof on the TRAILER SCAN arm
+// ---------------------------------------------------------------------------
+//
+// AP-EXT-ITER327-01 closed the sha-probe ladder. The scan ladder kept the
+// collapsed null: a `git log` that could not RUN read as "no commit carries this
+// trailer". That is the arm a ticket carrying NO stamped field depends on
+// entirely — the sha probe never runs for it — so the unmeasured absence reached
+// `gateForPhantomDoneRevert` with `unmeasured: false` and the watcher wrote back
+// Done -> Todo over correctly-trailered, shipped work.
+//
+// The controls below are the over-trigger half: `git log` reports an ordinary
+// "nothing matches" as exit 0 with empty output and an unborn HEAD as exit 128,
+// so keying on ladder exhaustion instead of `gitReportedExitStatus` would mark
+// every scan miss unmeasured and make the watcher inert.
+
+test('AP-EXT-ITER327-02: a trailer scan git never answered must not revert a Done ticket', () => {
+  // A FRESH fixture per arm: the accept path runs `promoteOnceAndReprobe`, which
+  // WRITES the scan sha into the ticket's `completion_commit`. Re-using one fixture
+  // hands the treatment arm a stamped field the control just created, and the
+  // treatment then resolves through the cat-file ladder this case is not about.
+  const mkFixture = (id) => {
+    const root = mkTmp(`pickle-iter32702-${id}-`);
+    initGitRepo(root);
+    // No stamped field anywhere: the trailer scan is this ticket's ONLY evidence path.
+    const sha = commitFileWithTrailer(root, 'own.txt', 'feat(trl32702): the work this ticket shipped', 'trl32702');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'trl32702', {});
+    return { root, sha, ctx: baseCtx(sessionDir, 'trl32702', root) };
+  };
+  const control = mkFixture('ctl');
+  const evidenceArm = mkFixture('ev');
+  const decisionArm = mkFixture('dec');
+  try {
+    // ACCEPT control on an IDENTICAL fixture: healthy git attributes it via the
+    // scan, so the keep asserted below cannot pass on an unkeepable fixture.
+    const healthy = gateForPhantomDoneRevert(control.ctx);
+    assert.equal(healthy.action, 'keep');
+    assert.equal(healthy.kind, 'committed', 'control: the trailered commit IS this ticket-s evidence');
+    assert.equal(healthy.sha, control.sha);
+
+    const ev = withGitUnableToSpeak('log', () => readEvidence(evidenceArm.ctx));
+    assert.equal(ev.kind, 'absent');
+    assert.equal(ev.unmeasured, true, 'a scan ladder that exhausted without git ever speaking measured NOTHING');
+
+    const decision = withGitUnableToSpeak('log', () => gateForPhantomDoneRevert(decisionArm.ctx));
+    assert.equal(
+      decision.action, 'keep',
+      'reverting Done -> Todo on an unmeasured scan discards shipped work (R-DSAN never-discard)',
+    );
+  } finally {
+    for (const f of [control, evidenceArm, decisionArm]) fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER327-02 over-trigger control: a scan that RAN and matched nothing still reverts', () => {
+  const root = mkTmp('pickle-iter32702-meas-');
+  try {
+    initGitRepo(root);
+    // A commit with no trailer at all: `git log` exits 0 and matches nothing. That
+    // is a real measurement, so the watcher must still correct the phantom Done.
+    commitFile(root, 'other.txt', 'chore: unrelated work carrying no trailer');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'mea32702', {});
+    const ctx = baseCtx(sessionDir, 'mea32702', root);
+
+    const ev = readEvidence(ctx);
+    assert.equal(ev.absentReason, 'no_evidence');
+    assert.equal(ev.unmeasured, false, 'git ran and reported an empty window — the absence was MEASURED');
+    assert.equal(
+      gateForPhantomDoneRevert(ctx).action, 'revert',
+      'the watcher must not go inert: an answered scan miss is still a phantom Done',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER327-02 over-trigger control: a git log that EXITS 128 is measured and still reverts', () => {
+  const root = mkTmp('pickle-iter32702-unborn-');
+  try {
+    // An unborn HEAD: `git log ... HEAD` THROWS, with exit 128 — git ran and
+    // answered. This is the arm the exit-0 control above cannot reach, and the
+    // only thing standing between it and a permanently-kept phantom Done is the
+    // `gitReportedExitStatus` test inside the catch.
+    execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore', timeout: 30_000 });
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'unb32702', {});
+    const ctx = baseCtx(sessionDir, 'unb32702', root);
+
+    const ev = readEvidence(ctx);
+    assert.equal(ev.kind, 'absent');
+    assert.equal(ev.unmeasured, false, 'a 128 is git SPEAKING — the empty history was MEASURED');
+    assert.equal(
+      gateForPhantomDoneRevert(ctx).action, 'revert',
+      'keying on the catch rather than on the exit status would make the watcher inert',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER327-02: an unspoken rung BEFORE a hit stays out of the verdict', () => {
+  // The scan arm can still end at `absent()` after a hit, via `rejectsAccept`. So
+  // the unspoken-rung observation must be reported at ladder EXHAUSTION, never
+  // eagerly from the catch: reporting eagerly marks that positively-REJECTED
+  // absence unmeasured and keeps a baseline-sha ticket Done forever.
+  const broken = mkTmp('pickle-iter32702-brk-');
+  const good = mkTmp('pickle-iter32702-good-');
+  try {
+    initGitRepo(broken);
+    initGitRepo(good);
+    const scanSha = commitFileWithTrailer(good, 'own.txt', 'feat(hit32702): trailered work', 'hit32702');
+    const sessionDir = path.join(good, 'session');
+    writeTicket(sessionDir, 'hit32702', {});
+    // Rung 0 (workingDir) dies unspoken; rung 1 (the R-CCR-1 fallbackDir) answers
+    // and HITS. The hit is the R-CXOR-2 baseline, so `rejectsAccept` sends it to
+    // `absent()` — where `unmeasured` is finally read.
+    const ctx = baseCtx(sessionDir, 'hit32702', broken, { fallbackDir: good, startCommit: scanSha });
+
+    const rejected = withGitUnableToSpeak(broken, () => readEvidence(ctx));
+    assert.equal(rejected.kind, 'absent');
+    assert.equal(rejected.absentReason, 'no_evidence', 'a scan-arm rejection downgrades to the best-effort reason');
+    assert.equal(
+      rejected.unmeasured, false,
+      'the ladder HIT, so its earlier unspoken rung is not an exhaustion — this absence is a positive rejection',
+    );
+    assert.equal(
+      withGitUnableToSpeak(broken, () => gateForPhantomDoneRevert(ctx)).action, 'revert',
+      'a baseline sha must not survive as Done behind an unspoken rung it never depended on',
+    );
+
+    // Same ladder, no baseline: the fallback rung's hit is a plain accept and
+    // carries no unmeasured observation at all.
+    const acceptCtx = baseCtx(sessionDir, 'hit32702', broken, { fallbackDir: good });
+    const accepted = withGitUnableToSpeak(broken, () => readEvidence(acceptCtx));
+    assert.equal(accepted.kind, 'committed');
+    assert.equal(accepted.sha, scanSha);
+    assert.equal(accepted.unmeasured, undefined, 'an accepted scan carries no unmeasured observation');
+  } finally {
+    fs.rmSync(broken, { recursive: true, force: true });
+    fs.rmSync(good, { recursive: true, force: true });
   }
 });

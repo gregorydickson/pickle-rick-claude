@@ -375,11 +375,18 @@ function parseTrailerLog(raw: string): TrailerLogEntry[] {
  * Newest-first-wins, since `git log` iterates newest-first.
  *
  * Best-effort: any git failure returns null, never throws.
+ *
+ * AP-EXT-ITER327-02: that best-effort null answers TWO questions — "no commit in
+ * the window carries this trailer" and "git never ran". `onGitDidNotSpeak` is the
+ * same OBSERVATION beside the verdict that `probeCatFile` takes (AP-EXT-ITER327-01),
+ * reading `gitReportedExitStatus` rather than any errno list, so this stays a
+ * two-state function and the caller decides what an unspoken rung means.
  */
 function scanGitLogByTrailer(args: {
   workingDir: string;
   ticketId: string | null;
   startTimeEpoch?: number | null;
+  onGitDidNotSpeak?: () => void;
 }): { sha: string } | null {
   if (!args.ticketId) return null;
   const wantedId = args.ticketId.trim().toLowerCase();
@@ -415,7 +422,12 @@ function scanGitLogByTrailer(args: {
         maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
       },
     );
-  } catch {
+  } catch (err) {
+    // The ordinary "this repo has no such commit" is an exit 0 with empty output,
+    // and an unborn HEAD / non-repo is an exit 128 — both are git SPEAKING. Only a
+    // spawn that produced no exit status at all (ENOENT on the binary, an
+    // EAGAIN/EMFILE fork failure, the 5s timeout kill) measured nothing.
+    if (!gitReportedExitStatus(err)) args.onGitDidNotSpeak?.();
     return null;
   }
 
@@ -554,19 +566,29 @@ function scanGitLog(args: {
   dirs: string[];
   ticketId: string | null;
   startTimeEpoch?: number | null;
+  onUnmeasured?: () => void;
 }): { sha: string } | null {
   // AP-EXT-ITER123-01: walks the same `gitDirLadder` as the stamped-field arms.
   // `scanGitLogByTrailer` stays the single-dir primitive (mirroring
   // `showCommitMessage`), so the ladder has exactly one definition and the
   // execFileSync inventory is unchanged.
+  // AP-EXT-ITER327-02: exactly `probeShaOverLadder`'s shape — record whether any
+  // rung failed to speak, and report it ONLY at exhaustion. Reporting eagerly
+  // would mark a run that went on to find a hit, and the scan arm's hit can still
+  // end at `absent()` via `rejectsAccept` — a baseline/foreign sha positively
+  // rejected there is a MEASURED absence and must keep reverting.
+  let gitDidNotSpeak = false;
+  const markUnspoken = (): void => { gitDidNotSpeak = true; };
   for (const dir of args.dirs) {
     const hit = scanGitLogByTrailer({
       workingDir: dir,
       ticketId: args.ticketId,
       startTimeEpoch: args.startTimeEpoch,
+      onGitDidNotSpeak: markUnspoken,
     });
     if (hit) return hit;
   }
+  if (gitDidNotSpeak) args.onUnmeasured?.();
   return null;
 }
 
@@ -642,9 +664,11 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
     return { kind: 'absent', unmeasured: true };
   }
 
-  // AP-EXT-ITER327-01: set when a dir-ladder probe exhausted without git ever
-  // speaking. `absent()` carries it so the discarding consumer can tell an
-  // absence that was MEASURED from one that was not.
+  // AP-EXT-ITER327-01/-02: set when a dir ladder exhausted without git ever
+  // speaking — the sha probe (`probeShaOverLadder`) and, since -02, the trailer
+  // scan (`scanGitLog`), which is the ONLY attribution path for a ticket carrying
+  // no stamped field at all. `absent()` carries it so the discarding consumer can
+  // tell an absence that was MEASURED from one that was not.
   let probeUnmeasured = false;
   const markUnmeasured = (): void => { probeUnmeasured = true; };
 
@@ -684,6 +708,7 @@ export function readEvidence(ctx: EvidenceCtx): EvidenceResult {
     dirs: gitDirLadder(ctx),
     ticketId: selfId,
     startTimeEpoch: ctx.startTimeEpoch,
+    onUnmeasured: markUnmeasured,
   });
   if (scan) {
     // Scan-arm rejections stay a best-effort miss (`no_evidence`), never the
