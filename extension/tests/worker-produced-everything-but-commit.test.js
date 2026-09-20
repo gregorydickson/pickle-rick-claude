@@ -22,6 +22,7 @@ import {
   checkFailedAfterResearchApproved,
   checkPartialLifecycleExit,
   claimWorkerProducedEverythingButCommit,
+  attemptRecoveryBeforeTerminal,
   commitAndContinueDoneFlip,
   countWorkerArtifacts,
   executeConvergedPlanAdapter,
@@ -1145,6 +1146,78 @@ test('AP-EXT-ITER6-01: the whole-tree add carries the shared codegraph pathspec 
     /\.\.\.CODEGRAPH_PATHSPEC_EXCLUDES/,
     'the whole-tree add must spread the ONE shared exclusion constant, not a hand-copied pathspec',
   );
+});
+
+// ─────────── AP-EXT-ITER304-01: rung 1 partitions before it commits ───────────
+//
+// The OWNERSHIP half of AP-EXT-ITER6-01, cataloged OPEN for the sessions whose
+// `scope.json` fenced `dirty-tree-salvage-callsites.test.js` out of reach.
+// `commitAndContinueDoneFlip` has exactly two ticket-holding callers, and only the
+// exit-path one partitioned: rung 1 passed no `stagePaths`, taking the committer's
+// whole-tree `git add -A`, so a LAGGING SIBLING ticket's in-flight artifacts were
+// stamped as THIS ticket's `completion_commit` on the Done flip.
+//
+// The session lives INSIDE the working dir here (`<workingDir>/.pickle-rick/sessions/`)
+// because that is the only topology where `partitionExitPathDirtyByOwnership`
+// discriminates at all — it calls a path foreign ONLY when it sits under another
+// ticket's session dir. With an out-of-repo session dir both committers fall back to
+// `add -A` and there is nothing to tell apart, which is exactly how this stayed dark.
+//
+// Assert the COMMIT CONTENT, never the return value (the AP-EXT-ITER6-01 rule: the
+// guard and Done flip run AFTER the commit lands). The owned-path assertion is this
+// case's own ACCEPT control — without it a rung that refused EVERYTHING would satisfy
+// the exclusion assertion vacuously.
+test('AP-EXT-ITER304-01: recovery rung 1 excludes a sibling ticket\'s artifacts from this ticket\'s commit', () => {
+  const { repo } = makeRepo('ap-iter304-repo-');
+  const ticketId = 'aaa11111';
+  const siblingId = 'bbb22222';
+  const sessionDir = path.join(repo, '.pickle-rick', 'sessions', 's1');
+  mkdirSync(sessionDir, { recursive: true });
+  const statePath = path.join(sessionDir, 'state.json');
+  writeFileSync(statePath, JSON.stringify({
+    active: true,
+    schema_version: 5,
+    session_dir: sessionDir,
+    working_dir: repo,
+    current_ticket: ticketId,
+    activity: [],
+  }));
+  // Both tickets are mid-flight; their artifact dirs are dirty paths inside the repo.
+  makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+  makeTicket(sessionDir, siblingId, { tier: 'small', status: 'In Progress' });
+  // This ticket's actual deliverable — the work that makes rung 1 reachable.
+  writeFileSync(path.join(repo, 'owned-by-this-ticket.txt'), 'the recovering ticket\'s work\n');
+
+  attemptRecoveryBeforeTerminal({
+    sessionDir,
+    statePath,
+    // No remediator binary under this root, so rung 2 fails fast rather than
+    // spawning a real gate remediator (the worker-gate-not-run-invariant idiom).
+    extensionRoot: path.join(repo, 'absent-extension-root'),
+    workingDir: repo,
+    ticketId,
+    iteration: 1,
+    flags: null,
+    log: () => {},
+  });
+
+  const committed = git(repo, ['show', '--pretty=format:', '--name-only', 'HEAD'])
+    .split('\n').map(s => s.trim()).filter(Boolean);
+
+  // ACCEPT control: the rung really did commit this ticket's own work. A blanket
+  // refusal (or a no-op ladder) fails HERE, so the exclusion below cannot pass alone.
+  assert.ok(
+    committed.includes('owned-by-this-ticket.txt'),
+    `rung 1 must still commit the recovering ticket's own work (got ${JSON.stringify(committed)})`,
+  );
+  // The defect: the sibling's artifacts must never ride into this ticket's commit.
+  assert.deepEqual(
+    committed.filter(p => p.includes(siblingId)),
+    [],
+    `a lagging sibling ticket's artifacts must never be stamped as this ticket's completion_commit (got ${JSON.stringify(committed)})`,
+  );
+
+  rmSync(repo, { recursive: true, force: true });
 });
 
 // AP-EXT-ITER6-01 replay: the sibling whole-tree add — `executeConvergedPlanAdapter`'s

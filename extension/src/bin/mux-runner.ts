@@ -7003,10 +7003,68 @@ function commitExitPathDeliverableIfGateGreen(
 }
 
 /**
+ * `refuse` — nothing is positively owned by this ticket (or the probe threw), so NO
+ * commit may be stamped under it. `stage` with an absent `stagePaths` means the dirty
+ * set is entirely owned, where the committer's whole-tree `add -A` IS the owned set.
+ */
+type TicketOwnedStaging =
+  | { kind: 'refuse' }
+  | { kind: 'stage'; stagePaths?: string[] };
+
+/**
+ * AP-EXT-ITER304-01: the ONE ownership-staging decision behind BOTH callers of
+ * `commitAndContinueDoneFlip` that hold a ticket — the exit-path committer and the
+ * recovery ladder's rung 1/2 `commitAndFlipDone`.
+ *
+ * It exists because the committer's `stagePaths`-absent default is a whole-tree
+ * `git add -A`, and only ONE of its two callers used to partition first. Rung 1
+ * (`attemptRecoveryBeforeTerminal`) passed nothing, so a lagging sibling ticket's
+ * in-flight artifacts were staged and stamped as THIS ticket's `completion_commit`
+ * on the Done flip — measured on a `<workingDir>/.pickle-rick/sessions/` tree, where
+ * ticketB's `research.md` + `plan_b.md` landed in ticketA's recovery commit.
+ *
+ * A shared decision rather than a second guard at the call site: two partitions is
+ * how one caller ends up honouring the salvage seam and the other not. The refusal
+ * is NOT a new terminal — it is the exit path's existing `clean-ticket-tree`
+ * disposition, and for the ladder it returns a not-ok rung, which
+ * `attemptCommitAndContinue` already records and falls THROUGH (INV-LADDER-RUNG-FAILURE).
+ */
+function resolveTicketOwnedStaging(
+  workingDir: string,
+  sessionDir: string,
+  ticketId: string,
+  logPrefix: string,
+  log: (msg: string) => void,
+): TicketOwnedStaging {
+  try {
+    const dirtyPaths = listWorkingTreeDirtyPaths(workingDir);
+    const allTicketIds = collectTickets(sessionDir).map(t => t.id).filter((id): id is string => Boolean(id));
+    const { owned, foreign } = partitionExitPathDirtyByOwnership(dirtyPaths, workingDir, sessionDir, ticketId, allTicketIds);
+    if (owned.length === 0) {
+      log(`${logPrefix} ticket ${ticketId}: no ticket-owned dirty work (${foreign.length} foreign path(s)) — not committing under this ticket`);
+      return { kind: 'refuse' };
+    }
+    if (foreign.length === 0) return { kind: 'stage' };
+    // B-PCOMP: an un-attributable remainder goes to the shared salvage seam, never
+    // to a whole-tree add (trap door B-PCOMP #b736337f, `src/bin/CLAUDE.md`).
+    const plan = salvageDirtyTree({ workingDir, sessionDir, owned, foreign, log });
+    log(`${logPrefix} ticket ${ticketId}: staging ${owned.length} owned path(s), stashed ${foreign.length} un-attributable path(s)`);
+    return { kind: 'stage', stagePaths: plan.stagePaths };
+  } catch (err) {
+    // B-PCOMP: probe failed => nothing is positively attributable, so stash the
+    // whole remainder and commit nothing (same trap door as the branch above).
+    log(`${logPrefix} ownership probe failed for ${ticketId}: ${safeErrorMessage(err)}`);
+    stashUnattributableRemainder(workingDir, sessionDir, log);
+    return { kind: 'refuse' };
+  }
+}
+
+/**
  * M1 ownership pre-check: the shared committer would stage the WHOLE dirty tree
  * under `ticketId`, which on a shared working dir misattributes a lagging sibling
- * ticket's work. Partition the dirty set first and refuse to commit when NOTHING
- * is owned by this ticket; otherwise stage ONLY the owned paths.
+ * ticket's work. Partition the dirty set first (via the ONE shared
+ * `resolveTicketOwnedStaging`) and refuse to commit when NOTHING is owned by this
+ * ticket; otherwise stage ONLY the owned paths.
  */
 export function commitGatePassingDeliverableOnExitPath(
   input: CommitGatePassingDeliverableInput,
@@ -7028,30 +7086,9 @@ export function commitGatePassingDeliverableOnExitPath(
     // of the exported `CommitGatePassingDeliverableReason` union and is deliberately not renamed.
     const extensionDir = resolveGateProjectDir(workingDir);
     if (extensionDir === null) return { committed: false, reason: 'no-extension-dir' };
-    let stagePaths: string[] | undefined;
-    try {
-      const dirtyPaths = listWorkingTreeDirtyPaths(workingDir);
-      const allTicketIds = collectTickets(sessionDir).map(t => t.id).filter((id): id is string => Boolean(id));
-      const { owned, foreign } = partitionExitPathDirtyByOwnership(dirtyPaths, workingDir, sessionDir, ticketId, allTicketIds);
-      if (owned.length === 0) {
-        log(`[exit-commit] ticket ${ticketId}: no ticket-owned dirty work (${foreign.length} foreign path(s)) — not committing under this ticket`);
-        return { committed: false, reason: 'clean-ticket-tree' };
-      }
-      // B-PCOMP: an un-attributable remainder goes to the shared salvage seam, never
-      // to a whole-tree add (trap door B-PCOMP #b736337f, `src/bin/CLAUDE.md`).
-      if (foreign.length > 0) {
-        const plan = salvageDirtyTree({ workingDir, sessionDir, owned, foreign, log });
-        stagePaths = plan.stagePaths;
-        log(`[exit-commit] ticket ${ticketId}: staging ${owned.length} owned path(s), stashed ${foreign.length} un-attributable path(s)`);
-      }
-    } catch (err) {
-      // B-PCOMP: probe failed => nothing is positively attributable, so stash the
-      // whole remainder and commit nothing (same trap door as the branch above).
-      log(`[exit-commit] ownership probe failed for ${ticketId}: ${safeErrorMessage(err)}`);
-      stashUnattributableRemainder(workingDir, sessionDir, log);
-      return { committed: false, reason: 'clean-ticket-tree' };
-    }
-    return commitExitPathDeliverableIfGateGreen(input, ticketId, extensionDir, gate, stagePaths);
+    const staging = resolveTicketOwnedStaging(workingDir, sessionDir, ticketId, '[exit-commit]', log);
+    if (staging.kind === 'refuse') return { committed: false, reason: 'clean-ticket-tree' };
+    return commitExitPathDeliverableIfGateGreen(input, ticketId, extensionDir, gate, staging.stagePaths);
   } catch (err) {
     log(`[exit-commit] threw (ignored): ${safeErrorMessage(err)}`);
     return { committed: false, reason: 'error' };
@@ -8226,21 +8263,31 @@ export function attemptRecoveryBeforeTerminal(input: AttemptRecoveryBeforeTermin
       lastGateMeasured = gate.measured;
       return { ok: gate.ok };
     },
-    commitAndFlipDone: () => commitAndContinueDoneFlip({
-      sessionDir: input.sessionDir,
-      ticketId: input.ticketId,
-      workingDir: input.workingDir,
-      statePath: input.statePath,
-      flags: input.flags,
-      log: input.log,
-      // AC-R2-3: rung 1 is a runner-driven recovery commit, not a worker's
-      // declaration of completion. Never auto-flip Done over a gate that never ran.
-      allowDoneWhenGateNotRun: false,
-      // AP-EXT-ITER157-04: and this is what makes the line above reachable. The stamp
-      // runs BEFORE the withhold reads the verdict, so without carrying the measurement
-      // the withhold always resolved `green` and could never fire.
-      gateMeasured: lastGateMeasured,
-    }),
+    commitAndFlipDone: () => {
+      // AP-EXT-ITER304-01: partition BEFORE committing, through the same decision the
+      // exit-path committer uses. Passing no `stagePaths` here selected the committer's
+      // whole-tree `add -A`, which stamped a lagging sibling ticket's artifacts as THIS
+      // ticket's `completion_commit`. A refusal is a not-ok RUNG, never a terminal —
+      // the ladder records it and falls through to fix-forward-trivial.
+      const staging = resolveTicketOwnedStaging(input.workingDir, input.sessionDir, input.ticketId, '[recovery]', input.log);
+      if (staging.kind === 'refuse') return { ok: false };
+      return commitAndContinueDoneFlip({
+        sessionDir: input.sessionDir,
+        ticketId: input.ticketId,
+        workingDir: input.workingDir,
+        statePath: input.statePath,
+        flags: input.flags,
+        log: input.log,
+        // AC-R2-3: rung 1 is a runner-driven recovery commit, not a worker's
+        // declaration of completion. Never auto-flip Done over a gate that never ran.
+        allowDoneWhenGateNotRun: false,
+        // AP-EXT-ITER157-04: and this is what makes the line above reachable. The stamp
+        // runs BEFORE the withhold reads the verdict, so without carrying the measurement
+        // the withhold always resolved `green` and could never fire.
+        gateMeasured: lastGateMeasured,
+        ...(staging.stagePaths ? { stagePaths: staging.stagePaths } : {}),
+      });
+    },
     spawnRemediator: () => spawnRecoveryRemediator(input, lastGateFailures),
     executeConvergedPlan: () => executeConvergedPlanAdapter({
       sessionDir: input.sessionDir,
