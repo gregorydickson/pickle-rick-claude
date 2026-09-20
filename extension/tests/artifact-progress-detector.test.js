@@ -209,3 +209,61 @@ test('R-WTB-A1 detectArtifactProgress: new commit SHA → progressed', () => {
   assert.notEqual(result.latestCommitSha, oldSha);
   fs.rmSync(dir, { recursive: true });
 });
+
+// --- AP-EXT-ITER312-01: allowed_paths are repo-root-relative, the probe must read them there ---
+
+test('AP-EXT-ITER312-01 getLatestCommitInScope: a subdirectory workingDir AGREES with the toplevel reading', () => {
+  const dir = makeTmpDir();
+  initGit(dir);
+  const sha = gitCommit(dir, 'pkg/a.txt', 'feat: in-scope change');
+  const subDir = path.join(dir, 'pkg');
+
+  // `allowed_paths` is repo-root-relative (R-RSBI-2), exactly as scope-resolver writes it.
+  const scopePath = path.join(dir, 'scope.json');
+  fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['pkg/a.txt'] }));
+
+  const atTop = getLatestCommitInScope(dir, 3600, scopePath);
+  const atSub = getLatestCommitInScope(subDir, 3600, scopePath);
+
+  assert.ok(atTop !== null, 'expected a SHA at the git toplevel');
+  assert.ok(sha.startsWith(atTop ?? ''), `expected ${sha} to start with ${atTop}`);
+  // The reading must not depend on where the session was launched from.
+  assert.equal(atSub, atTop, 'a workingDir below the toplevel must read the same commit');
+
+  // Over-trigger control: the scoping still FENCES. A fix that simply dropped the
+  // pathspecs would satisfy the assertions above and red here.
+  const fencePath = path.join(dir, 'scope-fence.json');
+  fs.writeFileSync(fencePath, JSON.stringify({ allowed_paths: ['nonexistent/z.txt'] }));
+  assert.equal(getLatestCommitInScope(dir, 3600, fencePath), null,
+    'an out-of-scope-only window is null at the toplevel');
+  assert.equal(getLatestCommitInScope(subDir, 3600, fencePath), null,
+    'an out-of-scope-only window is null below the toplevel too');
+
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('AP-EXT-ITER312-01 detectArtifactProgress: a committing worker below the toplevel is not charged zero progress', () => {
+  const dir = makeTmpDir();
+  const ticketDir = path.join(dir, 'ticket1');
+  fs.mkdirSync(ticketDir);
+  initGit(dir);
+  const sha = gitCommit(dir, 'pkg/a.txt', 'feat: worker committed in-scope work');
+  const scopePath = path.join(dir, 'scope.json');
+  fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['pkg/a.txt'] }));
+
+  // No .md artifacts in the ticket dir, so the mtime arm is frozen at 0 and the
+  // commit arm is the ONLY progress signal — the production timeout-probe shape.
+  const snapshot = { latestMtimeEpoch: 0, latestCommitSha: 'aaabbbccc' };
+  const result = detectArtifactProgress(ticketDir, snapshot, {
+    workingDir: path.join(dir, 'pkg'),
+    scopeJsonPath: scopePath,
+    windowSeconds: 3600,
+  });
+
+  assert.equal(result.latestMtimeEpoch, 0, 'fixture guard: the mtime arm must be inert');
+  assert.ok(result.latestCommitSha !== null, 'the commit arm must see the worker commit');
+  assert.ok(sha.startsWith(result.latestCommitSha ?? ''));
+  assert.equal(result.progressed, true);
+
+  fs.rmSync(dir, { recursive: true });
+});

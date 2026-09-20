@@ -31,6 +31,20 @@ export function getLatestArtifactMtime(ticketDir) {
     catch { /* dir missing or unreadable */ }
     return latest;
 }
+/**
+ * AP-EXT-ITER312-01: each spec is anchored at the repo ROOT with git's `:(top)` pathspec
+ * magic, so the probe reads the same PATH SPACE the specs were written in from any cwd.
+ * `allowed_paths` is repo-root-relative (R-RSBI-2) while `workingDir` is an unnormalized
+ * `process.cwd()` (`setup.ts`) never reconciled to `--show-toplevel`, and a git pathspec
+ * resolves against the SPAWN's cwd — so one directory below the toplevel a bare
+ * `extension/src` asks for `extension/extension/src`. A pathspec miss is reported as exit 0
+ * with EMPTY stdout, so the `status !== 0` guard below cannot see it: the probe fabricates
+ * `null`, `detectArtifactProgress`'s commit arm reads false over real committed work, and
+ * `probeTimeoutArtifactProgress` votes no-progress on a producing worker. `:(top)` buys the
+ * root anchor with no resolver, no extra spawn and no new branch — the same subtraction
+ * AP-EXT-ITER311-01 made in `microverse-runner.ts:computeTouchedLineNumbers`, rather than a
+ * sixth hand-copied `--show-toplevel` resolver.
+ */
 export function getLatestCommitInScope(workingDir, sinceSeconds, scopeJsonPath) {
     const pathSpecs = [];
     if (scopeJsonPath) {
@@ -39,7 +53,7 @@ export function getLatestCommitInScope(workingDir, sinceSeconds, scopeJsonPath) 
             if (Array.isArray(raw?.allowed_paths)) {
                 for (const p of raw.allowed_paths) {
                     if (typeof p === 'string')
-                        pathSpecs.push(p);
+                        pathSpecs.push(`:(top)${p}`);
                 }
             }
         }
