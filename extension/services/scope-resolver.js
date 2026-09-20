@@ -312,6 +312,10 @@ function persistRefreshedScope(sessionRoot, scopePath, refreshed, sm, statePath,
  * that is not repo-relative at all. `pipeline-runner.ts:filterSeedPathsToTarget`
  * already anchors both sides this way; this is the other half of that anchor.
  *
+ * Shared by {@link filterBySubsystem} and `filterByTarget`: anchoring at the
+ * comparison rather than at each signature means no caller — and no future
+ * consumer — can re-fork the space.
+ *
  * BOTH are resolved or NEITHER is — one `try`, deliberately not two. Resolving
  * only the side that happens to exist on disk re-creates the very mismatch this
  * removes, and a pair that agreed before must still agree after.
@@ -618,10 +622,19 @@ function getBinaryPathSet(baseSha, headSha, repoRoot) {
     }
     return binaries;
 }
+/**
+ * Narrow `paths` (repo-relative POSIX) to those under `target`.
+ *
+ * AP-EXT-ITER310-02: the two anchors go through {@link anchorPair} for the same
+ * reason `filterBySubsystem` does — production sources them independently, one
+ * from a realpath-resolving producer and one raw — except that HERE the
+ * mismatch does not narrow the fence, it EMPTIES it.
+ */
 function filterByTarget(paths, target, repoRoot) {
     if (!target)
         return paths;
-    const relTarget = toPosix(path.relative(repoRoot, path.resolve(target)));
+    const { root, targetRoot } = anchorPair(repoRoot, target);
+    const relTarget = toPosix(path.relative(root, targetRoot));
     if (relTarget.length === 0)
         return paths;
     const prefix = relTarget.endsWith('/') ? relTarget : `${relTarget}/`;
