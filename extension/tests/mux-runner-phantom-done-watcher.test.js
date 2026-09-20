@@ -58,7 +58,7 @@ test('AC-ICP-04-3: payload count covers ≥3 registration sites (lint per AC)', 
   assert.ok(total >= 3, `expected ≥3 references across the 3 files, got ${total}`);
 });
 
-const { inspectPhantomDoneTicketFile } = await import('../bin/mux-runner.js');
+const { inspectPhantomDoneTicketFile, correctPhantomDoneTickets } = await import('../bin/mux-runner.js');
 
 function makeTicketFile(dir, ticketId, frontmatter) {
   const file = path.join(dir, `rick_ticket_${ticketId}.md`);
@@ -291,6 +291,136 @@ test('AP-EXT-ITER330-01: a MEASURED absence still reverts, and claims nothing', 
     assert.equal(result.changed, true);
     assert.equal(statusOf(fx.ticketFile), 'In Progress', 'the prior status must be restored');
     assert.doesNotMatch(stderr, /evidence UNMEASURED/, 'a revert is never an unmeasured keep');
+  } finally {
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
+
+/**
+ * AP-EXT-ITER330-02 — a keep must not claim evidence whose absence is its own premise.
+ *
+ * REPLAY of AP-EXT-ITER330-01 on the ZERO-DIFF axis. `gateForPhantomDoneRevert` maps a
+ * zero-diff accept to `kind: 'committed'` with NO `sha` (a declared zero-diff ticket has
+ * no commit by construction), and `logPhantomDoneKept` derived its claim from
+ * `kind === 'committed'` — so the batch loop reported `valid completion_commit evidence`
+ * over a ticket that provably carried no `completion_commit` at all. The DECISION was
+ * always right (keep); only the claim was wrong, exactly as in -330-01.
+ *
+ * The fix carries `via` across the `RevertDecision` boundary rather than widening
+ * `EvidenceKind`, which -330-01's own guard reads as a two-state
+ * measured/unmeasured discriminator.
+ *
+ * Driven end to end through the real `correctPhantomDoneTickets`, because the claim IS
+ * the defect and the reporter is what emits it. The stamped-sha case is the load-bearing
+ * over-trigger control: a fix that simply renamed the claim for every keep passes the
+ * pin below just as well and destroys the distinction it exists to carry.
+ */
+
+/** The `trivial` tier's whole lifecycle set is `code_review` — the corroboration the arm requires. */
+function writeTrivialTierArtifact(ticketFile) {
+  fs.writeFileSync(path.join(path.dirname(ticketFile), 'code_review_2026-09-20.md'), 'reviewed\n');
+}
+
+/** Runs the batch loop with its `log` captured and activity writes pinned off the real tree. */
+function correctCapturingLog(sessionDir, workingDir) {
+  const lines = [];
+  const previousDataRoot = process.env.PICKLE_DATA_ROOT;
+  const dataRoot = fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'phantom-watcher-data-'));
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  try {
+    const corrected = correctPhantomDoneTickets({
+      sessionDir,
+      workingDir,
+      startCommit: null,
+      iteration: 1,
+      log: (msg) => lines.push(msg),
+    });
+    return { corrected, log: lines.join('\n') };
+  } finally {
+    if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = previousDataRoot;
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER330-02: a zero-diff keep names its declared basis and claims no completion_commit', () => {
+  const fx = makeDoneTicketFixture('zd580001', () => ({
+    id: 'zd580001',
+    title: 'zero-diff fixture',
+    status: 'Done',
+    order: 1,
+    complexity_tier: 'trivial',
+    zero_diff_intent: 'already-satisfied',
+  }));
+  try {
+    writeTrivialTierArtifact(fx.ticketFile);
+    // Fixture precondition: the claim assertion below is only meaningful while the
+    // ticket really has no stamp. A fixture that grew one would pass vacuously.
+    assert.doesNotMatch(
+      fs.readFileSync(fx.ticketFile, 'utf8'),
+      /completion_commit/,
+      'precondition: a zero-diff ticket carries no completion_commit by construction',
+    );
+
+    const { corrected, log } = correctCapturingLog(fx.sessionDir, fx.tmp);
+
+    assert.equal(corrected, 0, 'a corroborated zero-diff Done must be KEPT, not reverted');
+    assert.equal(statusOf(fx.ticketFile), 'Done', 'the Done status must survive on disk');
+    assert.doesNotMatch(
+      log,
+      /completion_commit/,
+      'the keep must not claim evidence the ticket provably does not have',
+    );
+    assert.match(log, /zero-diff/, 'the keep must name the basis it actually rests on');
+    assert.match(log, /zd580001/, 'the claim must name the ticket it kept');
+  } finally {
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER330-02: a keep backed by a RESOLVED sha still claims completion_commit evidence', () => {
+  // The load-bearing half: renaming the claim for EVERY keep would satisfy the pin
+  // above while erasing the distinction between a commit and a declaration.
+  const fx = makeDoneTicketFixture('zd580002', (sha) => ({
+    id: 'zd580002',
+    title: 'stamped fixture',
+    status: 'Done',
+    order: 1,
+    completion_commit: sha,
+  }));
+  try {
+    const { corrected, log } = correctCapturingLog(fx.sessionDir, fx.tmp);
+
+    assert.equal(corrected, 0, 'a resolved stamp still keeps');
+    assert.equal(statusOf(fx.ticketFile), 'Done');
+    assert.match(
+      log,
+      /valid completion_commit evidence/,
+      'a commit-backed keep must keep saying so — that is the claim the zero-diff arm must not borrow',
+    );
+    assert.doesNotMatch(log, /zero-diff/, 'a commit-backed keep has no zero-diff basis to name');
+  } finally {
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER330-02: a declaration WITHOUT its tier artifacts still reverts', () => {
+  // Non-vacuity control: the keep above comes from the CORROBORATED declaration, not
+  // from an inert loop. Drop the one artifact the tier requires and the revert returns.
+  const fx = makeDoneTicketFixture('zd580003', () => ({
+    id: 'zd580003',
+    title: 'uncorroborated fixture',
+    status: 'Done',
+    order: 1,
+    complexity_tier: 'trivial',
+    zero_diff_intent: 'already-satisfied',
+  }));
+  try {
+    const { corrected, log } = correctCapturingLog(fx.sessionDir, fx.tmp);
+
+    assert.equal(corrected, 1, 'an uncorroborated declaration is not evidence — it must revert');
+    assert.equal(statusOf(fx.ticketFile), 'Todo', 'the revert must land on disk');
+    assert.doesNotMatch(log, /zero-diff/, 'a revert has no keep to claim anything about');
   } finally {
     fs.rmSync(fx.tmp, { recursive: true, force: true });
   }

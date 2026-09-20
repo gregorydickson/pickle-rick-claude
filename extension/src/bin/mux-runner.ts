@@ -2023,6 +2023,24 @@ function unmeasuredKeepClaim(ticketId: string): string {
 }
 
 /**
+ * AP-EXT-ITER330-02: the ONE home for what a keep CLAIMS, keyed on the DECISION
+ * rather than on a boolean a caller derives from it. `decision.kind === 'committed'`
+ * was that boolean, and it is true for a zero-diff accept — a ticket that has no
+ * commit by construction — so the projection claimed `completion_commit` evidence
+ * over evidence whose absence is the keep's own premise. Reading `via` (carried
+ * since -330-02) means the claim cannot outlive its basis. The `kind === 'absent'`
+ * arm delegates to `unmeasuredKeepClaim` so the two reporters keep ONE spelling of
+ * the R-DSAN claim, exactly as -330-01 left it.
+ */
+function phantomDoneKeepClaim(ticketId: string, decision: RevertDecision): string {
+  if (decision.kind === 'absent') return unmeasuredKeepClaim(ticketId);
+  if (decision.via === 'zero-diff') {
+    return `Phantom-Done watcher kept ticket ${ticketId} Done — declared zero-diff intent with its tier's lifecycle artifacts on disk; no commit of its own by construction`;
+  }
+  return `Phantom-Done watcher kept ticket ${ticketId} Done — valid completion_commit evidence`;
+}
+
+/**
  * R-CCR-1: emit the phantom-Done "kept" log lines, including the fallback-probe
  * note. Extracted from `correctPhantomDoneTickets` to keep that loop under the
  * eslint complexity ceiling.
@@ -2031,19 +2049,19 @@ function logPhantomDoneKept(
   input: CorrectPhantomDoneTicketsInput,
   ticketId: string,
   workingDir: string,
-  fallbackFired: boolean,
-  measured: boolean = true,
+  decision: RevertDecision,
 ): void {
-  if (fallbackFired) {
+  if (decision.fallbackFired) {
     input.log?.(`Phantom-Done watcher: per-ticket working_dir '${workingDir}' unusable for git; retried in session dir '${input.workingDir}'. Ticket ${ticketId} kept Done.`);
   }
-  // AP-EXT-ITER327-01: `keep` now has TWO causes and they are not the same claim.
+  // AP-EXT-ITER327-01: `keep` has SEVERAL causes and they are not the same claim.
   // Reporting an unmeasured keep as "valid completion_commit evidence" is the
   // fake-green this repo names as its most frequent failure mode: continuing is not
   // claiming success. Degrade the CLAIM, never the decision.
-  input.log?.(measured
-    ? `Phantom-Done watcher kept ticket ${ticketId} Done — valid completion_commit evidence`
-    : unmeasuredKeepClaim(ticketId));
+  // AP-EXT-ITER330-02: the decision itself is the argument. The retired `measured`
+  // boolean and `fallbackFired` were both PROJECTIONS of it computed at the call
+  // site, and the first one lost the zero-diff basis on the way in.
+  input.log?.(phantomDoneKeepClaim(ticketId, decision));
 }
 
 /**
@@ -2112,7 +2130,7 @@ function batchLoopPhantomDoneKind(
       }
     } catch { /* best-effort: persist failure must not block keep-Done */ }
     if (promoted) return 'inferred';
-    logPhantomDoneKept(input, ticketId, workingDir, decision.fallbackFired ?? false, decision.kind === 'committed');
+    logPhantomDoneKept(input, ticketId, workingDir, decision);
     return 'explicit-reachable';
   }
   // decision.action === 'revert'

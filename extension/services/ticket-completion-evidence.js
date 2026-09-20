@@ -923,7 +923,10 @@ export function gateForPhantomDoneRevert(ctx, _policy) {
         rereadBackoffMs: 0,
     });
     if (decision.ok) {
-        return { action: 'keep', kind: 'committed', sha: decision.sha, fallbackFired: decision.usedFallback };
+        // AP-EXT-ITER330-02: `via` rides along UNCHANGED — no new kind, no new action, no
+        // branch here. `kind` stays the two-state measured/unmeasured discriminator
+        // AP-EXT-ITER330-01's guard reads; `via` is what tells a REPORTER which accept it is.
+        return { action: 'keep', kind: 'committed', sha: decision.sha, fallbackFired: decision.usedFallback, via: decision.via };
     }
     // AP-EXT-ITER327-01 (R-DSAN never-discard): revert requires a MEASURED absence.
     // When no repo on the ladder ever answered, `absent` is absence-of-proof, and
