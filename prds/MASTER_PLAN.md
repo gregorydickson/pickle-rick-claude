@@ -230,6 +230,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | **1** | **finish B-GATERED** (running) | G1 timeout callsites, G2 executable-assertion ratio, G3/#41 wrapper exit status | its green gate lands **BOTH** B-GATERED and the parked B-INVENTED |
 | **2** | **close out to zero** | verify + close **#40**, **#32** (fixed by B-INVENTED), **#41** (fixed by B-GATERED) by grepped mechanism | tracker reaches **zero open bugs** |
 | **3** | **B-CITADEL (#42)** | citadel iterates until its findings resolve — the approved quality enhancement | see #42's binding constraint below |
+| **4** | **B-SELFSTAMP (#44)** | Pickle Rick stamps its name + version on the commits it authors — 0 of the last 200 carry one | must keep `grep -c "stampPickleTicketTrailer(" …mux-runner.ts` == **3** (B-RATRAIL) |
 | — | deferred | **#43** `--teams` parallelism (operator deferred: quality first) · **#5** persistent-knowledge model | |
 
 **#42 carries a BINDING constraint, recorded on the issue:** a test written to close an AC-coverage
@@ -246,8 +247,8 @@ unfalsifiable controls (`ef3d3222`, `1bcf5108`) in hand-written criteria.
 | `main` | = the `v2.1.0` GA commit `c20a9562`; old main at tag `archive/main-2.0-line` |
 | **RUNNING** | **[[B-GATERED]] session `2026-09-19-4dbaed57`** — phase 3/4 anatomy-park, `extension` at ~40 of the non-fatal 50-pass ceiling, `bin` converged |
 | **PARKED** | **[[B-INVENTED]]'s 45 commits `778a89c9..3ae1d57a` are UNPUSHED** behind its red gate. Do not push until a gate is green |
-| deployed | `2.1.1`, in sync with source (verified BY CONTENT) |
-| open | bugs **#40, #32, #41** (all fixed-or-in-flight) · enhancements **#42** (next), **#43** (deferred), **#5** |
+| deployed | `2.1.1`. **NOT in sync** as of 2026-09-20T15:11Z — deployed tree is from `2026-09-18T03:01Z` and 58 commits have since touched `extension/src`, so 29 built files differ. This is expected build drift, **not** #40; do NOT `install.sh` mid-run. Deploy after the gate |
+| open | bugs **#40, #32, #41** (all fixed-or-in-flight) · enhancements **#42** (next), **#44** (queued behind it), **#43** (deferred), **#5** |
 | closed this session | **#39, #37** (verified fixed), **#29** (already satisfied — my premise was wrong) |
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min, derives audits from root `CLAUDE.md`. Wait for `GATE_END` with a matching `RUN_ID` |
 
