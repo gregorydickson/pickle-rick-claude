@@ -471,3 +471,134 @@ test('AP-EXT-ITER16-01: a committed rename wholly inside the fence is not drift'
     'a real in-scope verdict logs nothing — an unevaluable enumeration would log "NOT evaluated"',
   );
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER314-06: the PATH SPACE axis of this reader's argv, and the last
+// unguarded member of the R-CWRR family AP-EXT-ITER314-03 and -05 closed for
+// `mux-runner.ts:listRangeTouchedPaths` and `check-scope-diff.ts:getStagedPaths`.
+//
+// `ctx.workingDir` is `state.working_dir || process.cwd()` (`buildRunContext`),
+// never reconciled to `--show-toplevel`, and this read takes NO pathspec — so the
+// `:(top)` anchor its siblings use structurally cannot reach it, and only a
+// `diff.relative=false` pin can. A pathspec-less porcelain diff is narrowed by
+// ambient config ALONE: one directory down under an operator's `diff.relative=true`
+// git DROPS every committed path outside the cwd subtree and re-spells the
+// survivors cwd-relative, at EXIT 0 — so `enumerationCompleted`, the predicate this
+// reader already calls for the ENOBUFS half, reads the filtered listing as complete
+// and the audit renders a verdict over a set it never saw.
+//
+// Both arms move, in opposite directions, and the fail-OPEN one is why this is not
+// merely a mis-spelling: a committed out-of-scope path outside the read cwd VANISHES
+// and the audit emits ZERO events and ZERO log lines — an observable byte-identical
+// to a clean iteration, strictly worse than `enumeration_failed`, which at least
+// logs "NOT evaluated ... UNKNOWN, not absent". That is a disarmed R-SSOC audit on
+// the one scope check a codex worker cannot bypass.
+//
+// Every pre-existing case in this suite reads AT the toplevel, where the two spaces
+// coincide, so none of them can see this axis. These two drive the REAL reader over
+// a REAL repo from a SUBDIRECTORY and assert the emitted VERDICT, never the argv.
+// ---------------------------------------------------------------------------
+
+// A real two-commit repo with `diff.relative=true` set, whose second commit edits
+// `editPath`. `readFrom` is a directory that exists and is NOT the toplevel, so the
+// config has something to relativize against.
+function makeSpaceRepo(editPath) {
+  const repo = makeTmp();
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 'test@test.com');
+  git(repo, 'config', 'user.name', 'Test');
+  for (const p of ['extension/src/keep.ts', 'unrelated/secret.ts']) {
+    fs.mkdirSync(path.join(repo, path.dirname(p)), { recursive: true });
+    fs.writeFileSync(path.join(repo, p), 'export {};');
+  }
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-qm', 'base');
+  const preSha = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+  fs.writeFileSync(path.join(repo, editPath), 'export const changed = 1;');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-qm', 'work');
+  const postSha = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+  git(repo, 'config', 'diff.relative', 'true');
+  return { repo, preSha, postSha };
+}
+
+// Runs the audit with the REAL `_deps.spawnSync` from `readFrom` inside the repo.
+// Returns the drift events, with the `[R-SSOC]` log lines attached.
+function auditFromDir({ editPath, readFrom, allowedPaths }) {
+  const { repo, preSha, postSha } = makeSpaceRepo(editPath);
+  const sessionDir = makeTmp();
+  const captured = [];
+  const logLines = [];
+  const origLog = _deps.logActivity;
+  try {
+    // Fixture precondition: the pre-fix argv must really lose the path from this
+    // cwd, and the pinned argv must really restore it. Without these the case can
+    // pass on a git or platform where `diff.relative` is inert — a green proving
+    // nothing. Asserted on the SAME repo the audit below reads.
+    const bare = ['diff', '--name-only', '--no-renames', '-z', `${preSha}..${postSha}`];
+    const readCwd = path.join(repo, readFrom);
+    const unpinned = spawnSync('git', bare, { cwd: readCwd, encoding: 'utf-8', timeout: 30_000 });
+    const pinned = spawnSync('git', ['-c', 'diff.relative=false', ...bare], { cwd: readCwd, encoding: 'utf-8', timeout: 30_000 });
+    const split = (r) => (r.stdout || '').split('\0').filter(Boolean);
+    assert.notDeepEqual(
+      split(unpinned), [editPath],
+      `fixture precondition: the unpinned argv must NOT return ${editPath} in root space from ${readFrom}`,
+    );
+    assert.deepEqual(
+      split(pinned), [editPath],
+      `fixture precondition: the pinned argv must return exactly ${editPath} from ${readFrom}`,
+    );
+
+    writeScopeJson(sessionDir, allowedPaths);
+    _deps.logActivity = (ev) => { captured.push(ev); };
+    auditPostIterationScope(
+      { sessionDir, workingDir: readCwd, preIterSha: preSha, postIterSha: postSha, log: (m) => { logLines.push(m); } },
+      { current_subsystem: 'extension' },
+    );
+  } finally {
+    _deps.logActivity = origLog;
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+  const events = captured.filter((e) => e.event === 'worker_edit_outside_scope');
+  events.logLines = logLines;
+  return events;
+}
+
+test('AP-EXT-ITER314-06: a committed out-of-scope path outside the read cwd is still flagged, in root space', () => {
+  const events = auditFromDir({
+    editPath: 'unrelated/secret.ts',
+    readFrom: 'extension/src',
+    allowedPaths: ['extension/src'],
+  });
+  assert.equal(
+    events.length, 1,
+    'the committed path lies outside both the fence and the read cwd subtree — narrowing it away disarms the audit silently',
+  );
+  assert.deepEqual(
+    events[0].gate_payload.staged_paths_outside_scope,
+    ['unrelated/secret.ts'],
+    'the drift must be named in the repo-root space `allowed_paths` is written in, not re-spelled against the read cwd',
+  );
+});
+
+// The ACCEPT control, and the opposite arm of the same defect: without it, an audit
+// that flags EVERYTHING satisfies the case above. An explicitly ALLOWED path under
+// the read cwd must not be re-spelled out of its own `allowed_paths` and fabricated
+// into drift — pre-fix this emitted `outside_scope` naming the bare `keep.ts`, a
+// path nobody wrote. The empty log-line assertion keeps it non-vacuous: a `null`
+// enumeration also emits zero events, and only the absent "NOT evaluated" line
+// separates a real `ok` verdict from one the reader could not render.
+test('AP-EXT-ITER314-06: an allowed path under the read cwd is not fabricated into drift', () => {
+  const events = auditFromDir({
+    editPath: 'extension/src/keep.ts',
+    readFrom: 'extension/src',
+    allowedPaths: ['extension/src'],
+  });
+  assert.equal(events.length, 0, 'an in-fence committed path must not read as drift from any cwd');
+  assert.deepEqual(
+    events.logLines.filter((l) => l.includes('[R-SSOC]')),
+    [],
+    'a real in-scope verdict logs nothing — an unevaluable enumeration would log "NOT evaluated"',
+  );
+});

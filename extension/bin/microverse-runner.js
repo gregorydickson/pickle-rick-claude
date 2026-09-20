@@ -4499,7 +4499,16 @@ function listCommittedFilesInRange(workingDir, fromSha, toSha) {
     // AP-EXT-ITER31-01: same contract as `allowed_paths` (`-z`). Without it a
     // non-ASCII in-scope commit is C-quoted, matches no allowed path, and this
     // audit reports `worker_edit_outside_scope` over a file the fence allows.
-    ['diff', '--name-only', '--no-renames', '-z', `${fromSha}..${toSha}`], {
+    //
+    // AP-EXT-ITER314-06: `diff.relative=false` pins the SPACE the same way, as a
+    // git-global `-c` ahead of `diff` so the subsequence above stays verbatim.
+    // `workingDir` is `state.working_dir || process.cwd()`, never `--show-toplevel`,
+    // and this read takes no pathspec, so `:(top)` cannot reach it — ambient config
+    // alone narrows it. Both consumers score the result in repo-root space: the
+    // R-SSOC audit against `allowed_paths`, and `applyLedgerPartialProgress` against
+    // judge-reported paths, the same space `computeTouchedLineNumbers` pins for the
+    // surface those paths are tested against.
+    ['-c', 'diff.relative=false', 'diff', '--name-only', '--no-renames', '-z', `${fromSha}..${toSha}`], {
         cwd: workingDir,
         encoding: 'utf-8',
         timeout: 15_000,
