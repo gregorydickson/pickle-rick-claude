@@ -1749,6 +1749,15 @@ export function collectVerdictRoster(sessionDir) {
     return withFreshTicketStatuses(sessionDir, tickets);
 }
 /**
+ * AP-EXT-ITER330-01: the ONE spelling of the R-DSAN unmeasured-keep claim, so the
+ * gate's TWO keep consumers cannot disagree about what an unmeasured keep says.
+ * `gateForPhantomDoneRevert` answers `keep` for two different reasons — evidence it
+ * RESOLVED, and an absence it could not MEASURE — and only the second needs saying.
+ */
+function unmeasuredKeepClaim(ticketId) {
+    return `Phantom-Done watcher kept ticket ${ticketId} Done — evidence UNMEASURED (no repo on the dir ladder answered); keeping rather than discarding shipped work (R-DSAN)`;
+}
+/**
  * R-CCR-1: emit the phantom-Done "kept" log lines, including the fallback-probe
  * note. Extracted from `correctPhantomDoneTickets` to keep that loop under the
  * eslint complexity ceiling.
@@ -1763,7 +1772,7 @@ function logPhantomDoneKept(input, ticketId, workingDir, fallbackFired, measured
     // claiming success. Degrade the CLAIM, never the decision.
     input.log?.(measured
         ? `Phantom-Done watcher kept ticket ${ticketId} Done — valid completion_commit evidence`
-        : `Phantom-Done watcher kept ticket ${ticketId} Done — evidence UNMEASURED (no repo on the dir ladder answered); keeping rather than discarding shipped work (R-DSAN)`);
+        : unmeasuredKeepClaim(ticketId));
 }
 /**
  * D1 (84c209ae) promote-once: promote a git-verified inferred SHA to the EXPLICIT
@@ -2068,6 +2077,18 @@ function applyInspectPhantomDoneDecision(content, filePath, sessionDir, ticketId
     }
     switch (decision.action) {
         case 'keep': {
+            // AP-EXT-ITER330-01 (R-DSAN never-discard, the REPORTING half): `keep` carries two
+            // causes and `kind: 'absent'` is the one the gate could not MEASURE. Collapsing it
+            // into the bare `has_completion_commit` reason below claims evidence that does not
+            // exist, and since this function's caller drops every `changed: false` result, that
+            // claim was also the ONLY trace — a dead dir ladder kept every Done ticket in total
+            // silence on the `fs.watch` path while the `logPhantomDoneKept` sibling reported it.
+            // The warn is owned HERE, at the decision, for the same reason `rejectsAsBaseline`
+            // and the R-AICF fall-through own theirs: no caller can then drop it. The reason
+            // string is deliberately unchanged — it is the pinned "kept" signal across this
+            // watcher's whole test surface, and this arm still keeps.
+            if (decision.kind === 'absent')
+                process.stderr.write(`${unmeasuredKeepClaim(ticketId)}\n`);
             // Explicit field was already present and the predicate resolved it → keep as-is.
             if (hadExplicit || !decision.sha)
                 return { changed: false, reason: 'has_completion_commit' };

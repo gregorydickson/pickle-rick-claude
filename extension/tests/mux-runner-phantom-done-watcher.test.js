@@ -153,3 +153,145 @@ test('AC-ICP-04: missing id frontmatter → missing_id (defensive)', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+/**
+ * AP-EXT-ITER330-01 — an unmeasured keep must SAY it was unmeasured.
+ *
+ * `gateForPhantomDoneRevert` answers `keep` for two causes: evidence it resolved, and
+ * (AP-EXT-ITER327-01/-02, -328-01) an absence no repo on the dir ladder could measure.
+ * `applyInspectPhantomDoneDecision` returns the SAME `has_completion_commit` reason for
+ * both, and `handlePhantomDoneTicketEvent` drops every `changed: false` result — so the
+ * `fs.watch` path kept Done tickets over a dead ladder in total silence while its
+ * batch-loop sibling logged it. The decision is correct either way; only the CLAIM was.
+ *
+ * The rejection arm is fixtured with its own live over-trigger control, because a warn
+ * emitted on EVERY keep passes the defect case just as well and disarms the signal.
+ */
+
+/**
+ * Puts a `git` on PATH that dies unspoken (SIGKILL, no exit status) whenever any argv
+ * element equals `matchArg`, and execs the real git otherwise. That is the distinction
+ * this case turns on: an unrunnable git is not a git that answered "no".
+ */
+function withGitUnableToSpeak(matchArg, fn) {
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8', timeout: 30_000 }).trim();
+  const shimDir = fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'phantom-watcher-shim-'));
+  const shim = path.join(shimDir, 'git');
+  fs.writeFileSync(shim, [
+    '#!/bin/sh',
+    'for a in "$@"; do',
+    `  if [ "$a" = ${JSON.stringify(matchArg)} ]; then kill -9 $$; fi`,
+    'done',
+    `exec ${JSON.stringify(realGit)} "$@"`,
+    '',
+  ].join('\n'));
+  fs.chmodSync(shim, 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${shimDir}${path.delimiter}${savedPath}`;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(shimDir, { recursive: true, force: true });
+  }
+}
+
+/** A one-commit repo plus a Done ticket, returning the sha so a stamp can be REAL. */
+function makeDoneTicketFixture(ticketId, frontmatterFor) {
+  const tmp = fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'phantom-watcher-test-'));
+  execFileSync('git', ['init', '-q'], { cwd: tmp, stdio: 'ignore', timeout: 30_000 });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmp, timeout: 30_000 });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: tmp, timeout: 30_000 });
+  fs.writeFileSync(path.join(tmp, 'work.txt'), 'work\n');
+  execFileSync('git', ['add', '-A'], { cwd: tmp, stdio: 'ignore', timeout: 30_000 });
+  execFileSync('git', ['commit', '-q', '-m', 'work', '--no-gpg-sign'], { cwd: tmp, stdio: 'ignore', timeout: 30_000 });
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8', timeout: 30_000 }).trim();
+  const sessionDir = path.join(tmp, 'session');
+  const ticketDir = path.join(sessionDir, ticketId);
+  fs.mkdirSync(ticketDir, { recursive: true });
+  const ticketFile = makeTicketFile(ticketDir, ticketId, frontmatterFor(sha));
+  return { tmp, sessionDir, ticketFile, sha };
+}
+
+/** Runs the inspect with `process.stderr.write` captured, returning result + stderr. */
+function inspectCapturingStderr(ticketFile, sessionDir, workingDir, priorStatus) {
+  const captured = [];
+  const realWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk, ...rest) => {
+    captured.push(typeof chunk === 'string' ? chunk : String(chunk));
+    return realWrite(chunk, ...rest);
+  };
+  try {
+    const result = inspectPhantomDoneTicketFile(ticketFile, sessionDir, workingDir, priorStatus);
+    return { result, stderr: captured.join('') };
+  } finally {
+    process.stderr.write = realWrite;
+  }
+}
+
+// Quote-stripped, matching `restorablePriorStatus`: the revert writer emits the
+// restored value quoted, the seed path does not, and the status is the same either way.
+const statusOf = (ticketFile) =>
+  /^status:\s*(.+)$/m.exec(fs.readFileSync(ticketFile, 'utf8'))[1].replace(/["']/g, '').trim();
+
+test('AP-EXT-ITER330-01: a keep the dir ladder never measured reports itself UNMEASURED', () => {
+  const fx = makeDoneTicketFixture('a1b2c330', (sha) => ({
+    id: 'a1b2c330',
+    status: 'Done',
+    completion_commit: sha,
+  }));
+  try {
+    // `cat-file` is the sha probe every accept arm resolves on. Killed unspoken, the
+    // ladder exhausts having measured NOTHING — the R-DSAN keep.
+    const { result, stderr } = withGitUnableToSpeak('cat-file', () =>
+      inspectCapturingStderr(fx.ticketFile, fx.sessionDir, fx.tmp, 'In Progress'));
+    assert.equal(result.changed, false, 'an unmeasured absence must never revert (R-DSAN)');
+    assert.equal(statusOf(fx.ticketFile), 'Done', 'the Done status must survive on disk');
+    assert.match(
+      stderr,
+      /evidence UNMEASURED \(no repo on the dir ladder answered\)/,
+      'the unmeasured keep must say so — a silent keep is indistinguishable from resolved evidence',
+    );
+    assert.match(stderr, /R-DSAN/, 'the claim must name the rule it is keeping under');
+    assert.match(stderr, /a1b2c330/, 'the claim must name the ticket it kept');
+  } finally {
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER330-01: a keep backed by a RESOLVED sha emits no unmeasured claim', () => {
+  // The load-bearing half: a warn on every keep would pass the case above while
+  // destroying the signal it exists to carry.
+  const fx = makeDoneTicketFixture('c3d4e330', (sha) => ({
+    id: 'c3d4e330',
+    status: 'Done',
+    completion_commit: sha,
+  }));
+  try {
+    const { result, stderr } = inspectCapturingStderr(fx.ticketFile, fx.sessionDir, fx.tmp, 'In Progress');
+    assert.equal(result.reason, 'has_completion_commit', 'a resolved stamp still keeps');
+    assert.equal(statusOf(fx.ticketFile), 'Done');
+    assert.doesNotMatch(
+      stderr,
+      /evidence UNMEASURED/,
+      'a MEASURED keep must not borrow the unmeasured claim',
+    );
+  } finally {
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER330-01: a MEASURED absence still reverts, and claims nothing', () => {
+  // Non-vacuity control on the same fixture shape: git is healthy and answers, so the
+  // absence is a finding and the revert must still happen.
+  const fx = makeDoneTicketFixture('e5f6a330', () => ({ id: 'e5f6a330', status: 'Done' }));
+  try {
+    const { result, stderr } = inspectCapturingStderr(fx.ticketFile, fx.sessionDir, fx.tmp, 'In Progress');
+    assert.equal(result.reason, 'reverted', 'a measured absence is a finding and must revert');
+    assert.equal(result.changed, true);
+    assert.equal(statusOf(fx.ticketFile), 'In Progress', 'the prior status must be restored');
+    assert.doesNotMatch(stderr, /evidence UNMEASURED/, 'a revert is never an unmeasured keep');
+  } finally {
+    fs.rmSync(fx.tmp, { recursive: true, force: true });
+  }
+});
