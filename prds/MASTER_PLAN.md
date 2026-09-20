@@ -221,6 +221,62 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🚢 SESSION HANDOFF — 2026-09-20 (context cleared here). **READ THIS FIRST.**
+
+### ▶ PLAN FOR THE NEXT FEW BUNDLES (operator priority: converge to zero bugs, THEN enhancements)
+
+| # | bundle | contents | gate |
+|---|---|---|---|
+| **1** | **finish B-GATERED** (running) | G1 timeout callsites, G2 executable-assertion ratio, G3/#41 wrapper exit status | its green gate lands **BOTH** B-GATERED and the parked B-INVENTED |
+| **2** | **close out to zero** | verify + close **#40**, **#32** (fixed by B-INVENTED), **#41** (fixed by B-GATERED) by grepped mechanism | tracker reaches **zero open bugs** |
+| **3** | **B-CITADEL (#42)** | citadel iterates until its findings resolve — the approved quality enhancement | see #42's binding constraint below |
+| — | deferred | **#43** `--teams` parallelism (operator deferred: quality first) · **#5** persistent-knowledge model | |
+
+**#42 carries a BINDING constraint, recorded on the issue:** a test written to close an AC-coverage
+finding MUST be mutation-verified (break the subject, observe red, restore, observe green) or the
+enhancement manufactures fake-green at loop speed. This session's own hardening caught two
+unfalsifiable controls (`ef3d3222`, `1bcf5108`) in hand-written criteria.
+
+### ▶ IMMEDIATE STATE
+
+| | |
+|---|---|
+| branch | **`release/v2.2-beta`** — name is historical; **releases are `v2.1.X`** |
+| version | `extension/package.json` = **`2.1.1`**. Nothing tagged since `v2.1.0` (cadence, not oversight) |
+| `main` | = the `v2.1.0` GA commit `c20a9562`; old main at tag `archive/main-2.0-line` |
+| **RUNNING** | **[[B-GATERED]] session `2026-09-19-4dbaed57`** — phase 3/4 anatomy-park, `extension` at ~40 of the non-fatal 50-pass ceiling, `bin` converged |
+| **PARKED** | **[[B-INVENTED]]'s 45 commits `778a89c9..3ae1d57a` are UNPUSHED** behind its red gate. Do not push until a gate is green |
+| deployed | `2.1.1`, in sync with source (verified BY CONTENT) |
+| open | bugs **#40, #32, #41** (all fixed-or-in-flight) · enhancements **#42** (next), **#43** (deferred), **#5** |
+| closed this session | **#39, #37** (verified fixed), **#29** (already satisfied — my premise was wrong) |
+| gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min, derives audits from root `CLAUDE.md`. Wait for `GATE_END` with a matching `RUN_ID` |
+
+### ⛔ TRAPS THAT CAUGHT ME THIS SESSION — apply these
+
+1. **`ls` and `stat -f '%Sm'` print LOCAL time.** Flake-budget logs read `Sep 18 23:06` against a gate
+   that ran `Sep 19 03:47–04:37Z`; I nearly discarded a **valid red** as a stale log. 23:06 CDT **is**
+   04:06 UTC. Prefix `TZ=UTC` before comparing against anything in Zulu.
+2. **A symbol-liveness grep is not a capability measurement.** `grep -c "export .*runMuxRunnerMain"`
+   returns `0` and is literally true — the export is the *wrapper*, `driveMuxRunnerMain`. I filed a
+   whole bundle root on that before the analysts falsified it. Ask "can a suite DO this?", then read
+   the call sites.
+3. **Verify every cited path before committing a PRD.** Three invented paths this session
+   (`tests/subprocess-heavy-audit.test.js`, `tests/refinement-team.test.js`,
+   `src/bin/microverse-state.ts` — the last lives under `src/services/`). All plausible, all wrong,
+   all caught only by running `ls`/`grep` first.
+4. **`state.json` age alone is NOT a stall signal.** Iterations ran 22–57 min. The discriminators are
+   `anatomy-park.json` mtime and live `node --test` processes. Check those BEFORE declaring anything.
+5. **Author every acceptance criterion in executable form** (`` `cmd` exits N `` / `` `cmd` returns N ``).
+   Nine tickets with one executable assertion dragged the coverage ratio from 24/73 to 25/82, below the
+   `session_min_ratio` floor of 13/40 — that was one of B-INVENTED's four gate reds, and it was mine.
+6. **`install.sh` needs `--allow-downgrade --no-confirm`** while source (`2.1.1`) is semver-older than a
+   stale deployed version. Without `--no-confirm` it prompts, declines on EOF, and **exits 0 having
+   deployed nothing** (that is #40). Always verify the deploy BY CONTENT, never by exit code.
+7. **A wrapper can exit 0 with every worker dead.** `spawn-refinement-team` did exactly that twice
+   (#41), emitting `MANIFEST=` with zero analyses on disk. An absent result is not a pass.
+
+---
+
 ## 🚢 SESSION HANDOFF — 2026-09-17 (context cleared here). **READ THIS FIRST.**
 
 ### ▶ IMMEDIATE STATE
