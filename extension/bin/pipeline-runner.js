@@ -2215,12 +2215,29 @@ export function setupAnatomyPark(sessionDir, target, stallLimit, extensionRoot, 
     const persistedAllowedPaths = !scope || scope.allowedPaths.length === 0
         ? readPersistedAllowedPaths(sessionDir)
         : undefined;
+    // AP-EXT-ITER321-01: both arms of this ternary must produce a proven git toplevel.
+    //
+    // `repoRoot` is spent by `filterBySubsystem`, which spells each discovered subsystem as
+    // `path.relative(repoRoot, path.resolve(target, name))` and matches that against
+    // `allowed_paths` — a repo-root-relative set. The LIVE arm was already right: its caller
+    // hands `runtime.repoRoot`, a real `rev-parse --show-toplevel`. The RESUME arm took
+    // `state.working_dir` RAW (an unnormalized `process.cwd()`; a per-workspace monorepo dir is
+    // a documented shape, `detectMultiRepo`), so one directory below the toplevel every
+    // subsystem spelled as `../alpha`, matched nothing, and `kept.size === 0` routed the phase
+    // to the `empty_scope` skip — a reason deliberately OUTSIDE `DEGRADED_PHASE_SKIP_REASONS`,
+    // so the run kept its SUCCESS verdict over a tree nobody reviewed, under a WARN that blames
+    // the operator's scope and advises widening it (advice that cannot help).
+    //
+    // Anchoring here makes the two arms agree by construction, and the `target` fallback the
+    // same `gitRepoRoot(target)` the sibling `resolveAnatomySubsystems` already defaults to.
+    // Zero new branches: `gitRepoRoot` is a no-op at the toplevel and returns its argument
+    // unchanged for a non-git dir, so it can only move the answer in the one broken cell.
     const effectiveScope = scope && scope.allowedPaths.length > 0
         ? scope
         : persistedAllowedPaths && persistedAllowedPaths.length > 0
             ? {
                 allowedPaths: persistedAllowedPaths,
-                repoRoot: readWorkingDirFromState(sessionDir, target),
+                repoRoot: gitRepoRoot(readWorkingDirFromState(sessionDir, target)),
             }
             : undefined;
     if (!scope && effectiveScope) {

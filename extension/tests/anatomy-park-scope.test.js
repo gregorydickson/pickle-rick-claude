@@ -351,6 +351,102 @@ test('resume: persisted scope.json promotes newer dead tmp before filtering anat
 });
 
 // ---------------------------------------------------------------------------
+// AP-EXT-ITER321-01: the RESUME arm's scope base is a proven git toplevel.
+//
+// Every fixture above puts `state.working_dir` AT the target, where the working-dir and
+// repo-root path spaces coincide — so none of them can fail on the defect these two cases
+// pin. A real git repo and a below-toplevel `working_dir` are the only way to separate them.
+// ---------------------------------------------------------------------------
+
+function makeGitTarget() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-scope-gitrepo-'));
+  for (const argv of [['init', '-q', '.'], ['config', 'user.email', 'ap@test'], ['config', 'user.name', 'AP']]) {
+    const r = spawnSync('git', ['-C', root, ...argv], { encoding: 'utf-8', timeout: 5_000 });
+    assert.equal(r.status, 0, `git ${argv[0]} failed: ${r.stderr}`);
+  }
+  return root;
+}
+
+function writeResumeScope(sessionDir, allowedPaths) {
+  fs.writeFileSync(
+    path.join(sessionDir, 'scope.json'),
+    JSON.stringify({ allowed_paths: allowedPaths, mode: 'branch', strategy: 'strict', head_sha: 'abc123' }),
+  );
+}
+
+test('AP-EXT-ITER321-01: a resume below the git toplevel keeps the SAME subsystems as the toplevel reading', () => {
+  const target = makeGitTarget();
+  const below = path.join(target, 'pkg', 'sub');
+  const sessionTop = makeSession();
+  const sessionBelow = makeSession();
+  try {
+    makeSubsystem(target, 'alpha');
+    makeSubsystem(target, 'beta');
+    fs.mkdirSync(below, { recursive: true });
+
+    // FIXTURE PRECONDITION: this fixture genuinely separates the two path spaces. Without
+    // it the agreement assertion below could green on a fixture where they coincide.
+    assert.deepStrictEqual(filterBySubsystem(['alpha'], ['alpha/f0.ts'], target, below), []);
+    assert.deepStrictEqual(filterBySubsystem(['alpha'], ['alpha/f0.ts'], target, target), ['alpha']);
+
+    writeResumeScope(sessionTop, ['alpha/f0.ts']);
+    writeState(sessionTop, target);
+    writeResumeScope(sessionBelow, ['alpha/f0.ts']);
+    writeState(sessionBelow, below);
+
+    const atTop = setupAnatomyPark(sessionTop, target, 3, EXTENSION_ROOT, () => {});
+    const fromBelow = setupAnatomyPark(sessionBelow, target, 3, EXTENSION_ROOT, () => {});
+
+    assert.equal(atTop, true);
+    // Asserted to AGREE with the toplevel reading on the same tree, not merely to be
+    // non-empty: pre-fix this was `{ skipReason: 'empty_scope' }` and the phase never ran.
+    assert.equal(fromBelow, true);
+    assert.deepStrictEqual(
+      readAnatomyPark(sessionBelow).subsystems,
+      readAnatomyPark(sessionTop).subsystems,
+    );
+    assert.deepStrictEqual(readAnatomyPark(sessionTop).subsystems, ['alpha']);
+  } finally {
+    fs.rmSync(sessionTop, { recursive: true, force: true });
+    fs.rmSync(sessionBelow, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER321-01: anchoring the resume base RESOLVES it, it does not widen the kept set', () => {
+  const target = makeGitTarget();
+  const below = path.join(target, 'pkg', 'sub');
+  const sessionKeep = makeSession();
+  const sessionSkip = makeSession();
+  try {
+    makeSubsystem(target, 'alpha');
+    makeSubsystem(target, 'beta');
+    fs.mkdirSync(below, { recursive: true });
+
+    // ACCEPT control: from the SAME below-toplevel working_dir the filter still
+    // discriminates — a scope naming only beta keeps beta and drops alpha, so the case
+    // above cannot be satisfied by a base that keeps everything.
+    writeResumeScope(sessionKeep, ['beta/f0.ts']);
+    writeState(sessionKeep, below);
+    assert.equal(setupAnatomyPark(sessionKeep, target, 3, EXTENSION_ROOT, () => {}), true);
+    assert.deepStrictEqual(readAnatomyPark(sessionKeep).subsystems, ['beta']);
+
+    // REJECT control: a scope naming no subsystem at all still skips as empty_scope, so
+    // the anchor did not disarm the skip it is meant to stop MISFIRING.
+    writeResumeScope(sessionSkip, ['gamma/f0.ts']);
+    writeState(sessionSkip, below);
+    assert.deepStrictEqual(
+      setupAnatomyPark(sessionSkip, target, 3, EXTENSION_ROOT, () => {}),
+      { skipReason: 'empty_scope' },
+    );
+  } finally {
+    fs.rmSync(sessionKeep, { recursive: true, force: true });
+    fs.rmSync(sessionSkip, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Standalone mode parity: filterBySubsystem with same fixture → same result
 // ---------------------------------------------------------------------------
 
