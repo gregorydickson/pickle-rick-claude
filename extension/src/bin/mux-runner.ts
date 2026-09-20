@@ -7015,6 +7015,34 @@ function commitExitPathDeliverableIfGateGreen(
 }
 
 /**
+ * AP-EXT-ITER305-01: git's `status --porcelain` answers in REPO-ROOT space whatever
+ * directory it was asked from (measured), while every consumer below reads its answer in
+ * `workingDir` space — the ownership partition resolves each path with
+ * `path.resolve(workingDir, rel)`, `isCodegraphArtifact` matches a leading `.codegraph/`,
+ * and all three committers run `git add -- <path>` AT `workingDir`. `workingDir` is
+ * `process.cwd()` at setup (`bin/setup.ts`) or a ticket's authored `working_dir`, never
+ * normalised to the toplevel, so below the root the two spaces diverge and the partition
+ * resolves every dirty path to a phantom: nothing matches a sibling's prefix, the whole
+ * tree reads OWNED, and the ownership collapse is silently back to `git add -A`.
+ *
+ * Re-expressed at the ONE point git's answer enters, so the space cannot fork again
+ * downstream. Unconditional, with no identity short-circuit: when `workingDir` IS the
+ * toplevel the rewrite is already the identity (measured — removing a short-circuit form
+ * changed no case in this file's 89), and one path cannot disagree with itself. Realpath
+ * BOTH anchors: `--show-toplevel` comes back realpath-resolved (macOS `/var` →
+ * `/private/var`, which every `os.tmpdir()` fixture is under) while `workingDir` does not,
+ * and an unresolved pair makes every rewritten path climb out of the repo.
+ * `resolveRepoRoot` falls back to the directory itself outside a repo, where the rewrite
+ * is the identity again — the no-repo case needs no arm of its own.
+ */
+function dirtyPathsInWorkingDirSpace(workingDir: string): string[] {
+  const workingDirAbs = muxRealpathOrSelf(path.resolve(workingDir));
+  const repoRoot = muxRealpathOrSelf(resolveRepoRoot(workingDir, workingDir));
+  return listWorkingTreeDirtyPaths(workingDir)
+    .map(rel => path.relative(workingDirAbs, path.resolve(repoRoot, rel)));
+}
+
+/**
  * `refuse` — nothing is positively owned by this ticket (or the probe threw), so NO
  * commit may be stamped under it. `stage` with an absent `stagePaths` means the dirty
  * set is entirely owned, where the committer's whole-tree `add -A` IS the owned set.
@@ -7053,7 +7081,7 @@ function resolveTicketOwnedStaging(
     // arm. The whole-tree arm drops it via `CODEGRAPH_PATHSPEC_EXCLUDES`; filtering the
     // dirty SOURCE makes the explicit-paths arm agree, instead of leaving one arm of one
     // shared decision able to stage what the other excludes (the AP-EXT-ITER6-01 axis).
-    const dirtyPaths = listWorkingTreeDirtyPaths(workingDir).filter(p => !isCodegraphArtifact(p));
+    const dirtyPaths = dirtyPathsInWorkingDirSpace(workingDir).filter(p => !isCodegraphArtifact(p));
     const allTicketIds = collectTickets(sessionDir).map(t => t.id).filter((id): id is string => Boolean(id));
     const { owned, foreign } = partitionExitPathDirtyByOwnership(dirtyPaths, workingDir, sessionDir, ticketId, allTicketIds);
     if (owned.length === 0) {

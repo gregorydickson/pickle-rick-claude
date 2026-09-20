@@ -1273,18 +1273,23 @@ test('AP-EXT-ITER6-01 (replay): execute-converged-plan phase commits exclude .co
 // ticket's session dir, so an out-of-repo session dir has nothing to tell apart.
 //
 // Assert the COMMIT CONTENT, never the return value (the AP-EXT-ITER6-01 rule).
-function makeConvergedPlanOwnershipFixture(prefix) {
+function makeConvergedPlanOwnershipFixture(prefix, { workingSubdir = null } = {}) {
   const { repo } = makeRepo(prefix);
+  // `workingSubdir` puts the whole pickle topology BELOW the git toplevel, which is what
+  // `working_dir: process.cwd()` produces whenever the operator launches from anywhere but
+  // the root (AP-EXT-ITER305-01). Default null keeps the two cases above at the toplevel.
+  const workingDir = workingSubdir ? path.join(repo, workingSubdir) : repo;
+  mkdirSync(workingDir, { recursive: true });
   const ticketId = 'aaa11111';
   const siblingId = 'bbb22222';
-  const sessionDir = path.join(repo, '.pickle-rick', 'sessions', 's1');
+  const sessionDir = path.join(workingDir, '.pickle-rick', 'sessions', 's1');
   mkdirSync(sessionDir, { recursive: true });
   const statePath = path.join(sessionDir, 'state.json');
   writeFileSync(statePath, JSON.stringify({
     active: true,
     schema_version: 5,
     session_dir: sessionDir,
-    working_dir: repo,
+    working_dir: workingDir,
     current_ticket: ticketId,
     activity: [],
   }));
@@ -1293,7 +1298,7 @@ function makeConvergedPlanOwnershipFixture(prefix) {
     path.join(ticketDir, 'plan_2026-09-19.md'),
     '# plan\n\n## Phase 1 — do the thing\n\n**Verify:** `true`\n',
   );
-  return { repo, sessionDir, statePath, ticketId, siblingId };
+  return { repo, workingDir, sessionDir, statePath, ticketId, siblingId };
 }
 
 test('AP-EXT-ITER304-02: a converged-plan phase commit excludes a sibling ticket\'s artifacts', () => {
@@ -1420,6 +1425,98 @@ function writeSinglePhasePlan(ticketDir, verifyCommand) {
     `# plan\n\n## Phase 1 — verbose but passing\n\n**Verify:** \`${verifyCommand}\`\n`,
   );
 }
+
+// ─────────── AP-EXT-ITER305-01: the ownership partition's PATH SPACE ───────────
+//
+// The axis underneath all three cases above. `git status --porcelain` answers in
+// REPO-ROOT space whatever directory it was asked from, while the ownership partition
+// resolves each path with `path.resolve(workingDir, rel)` and all three committers run
+// `git add -- <path>` AT `workingDir`. `working_dir` is `process.cwd()` at setup
+// (`bin/setup.ts`) or a ticket's authored `working_dir` — never normalised to the
+// toplevel — so one directory below the root the two spaces diverge, every dirty path
+// resolves to a phantom, NOTHING matches a sibling's prefix, and the whole tree reads
+// OWNED. The collapse of iterations 303/304 is silently back to a whole-tree `git add -A`
+// under this ticket's `Pickle-Ticket` trailer.
+//
+// Invisible until now because every fixture above puts the session at the git toplevel,
+// where the two spaces are identical — the AP-EXT-ITER160-01 shape, one path-space family
+// over (`services/CLAUDE.md` AP-EXT-ITER8-02 / AP-EXT-ITER34-01, `hooks/CLAUDE.md`
+// AP-EXT-ITER160-01). The fixture below is the SAME one, moved one directory down.
+test('AP-EXT-ITER305-01: a workingDir BELOW the git toplevel still excludes a sibling ticket\'s artifacts', () => {
+  const { repo, workingDir, sessionDir, statePath, ticketId, siblingId } =
+    makeConvergedPlanOwnershipFixture('ap-iter305a-repo-', { workingSubdir: 'nested/work' });
+  makeTicket(sessionDir, siblingId, { tier: 'small', status: 'In Progress' });
+  writeFileSync(path.join(workingDir, 'owned-by-this-ticket.txt'), 'the recovering ticket\'s work\n');
+  // The codegraph index sits beside the working dir, not beside the git root: under the
+  // defect `isCodegraphArtifact` is handed a root-relative `nested/work/.codegraph/...`
+  // and declines, so the same rewrite that fixes attribution has to fix this too.
+  mkdirSync(path.join(workingDir, '.codegraph'), { recursive: true });
+  writeFileSync(path.join(workingDir, '.codegraph', 'graph.db'), 'BINARY-INDEX\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir, statePath, log: () => {},
+  });
+  assert.equal(out.ok, true, 'the single-phase plan executes and commits from a nested working dir');
+
+  const committed = git(repo, ['show', '--pretty=format:', '--name-only', 'HEAD'])
+    .split('\n').map(s => s.trim()).filter(Boolean);
+
+  // ACCEPT control: the phase really committed this ticket's own work from down here. A
+  // blanket refusal — or a `git add --` fed root-relative pathspecs it cannot match from
+  // this cwd — fails HERE, so the exclusions below cannot pass vacuously.
+  assert.ok(
+    committed.includes('nested/work/owned-by-this-ticket.txt'),
+    `the phase must still commit the recovering ticket's own work (got ${JSON.stringify(committed)})`,
+  );
+  assert.deepEqual(
+    committed.filter(p => p.includes(siblingId)),
+    [],
+    `a sibling ticket's artifacts must never carry this ticket's Pickle-Ticket trailer (got ${JSON.stringify(committed)})`,
+  );
+  assert.equal(
+    git(repo, ['show', '-s', '--format=%(trailers:key=Pickle-Ticket,valueonly)', 'HEAD']).trim(),
+    ticketId,
+    'the phase commit carries this ticket\'s Pickle-Ticket trailer',
+  );
+  assert.deepEqual(
+    committed.filter(p => p.includes('.codegraph')),
+    [],
+    `the codegraph index must never ride into an ownership-scoped phase commit (got ${JSON.stringify(committed)})`,
+  );
+  // Excluded, never destroyed: the sibling's in-flight work is still on the floor for its
+  // own ticket, and the bystander snapshot is anchored where an operator can reach it.
+  assert.ok(
+    git(repo, ['status', '--porcelain']).split('\n').some(l => l.includes(siblingId)),
+    'the sibling ticket\'s uncommitted work must survive in the working tree',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// The refusal arm from a nested working dir. Under the defect the sibling's dirt reads as
+// OWNED, so this commits (HEAD moves) and reports ok — a fabricated green over another
+// ticket's work, which is strictly worse than the honest not-ok the fixed path gives.
+test('AP-EXT-ITER305-01: from a nested workingDir an entirely-foreign dirty tree is still a no-op phase', () => {
+  const { repo, workingDir, sessionDir, statePath, ticketId, siblingId } =
+    makeConvergedPlanOwnershipFixture('ap-iter305b-repo-', { workingSubdir: 'nested/work' });
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-q', '-m', 'this ticket\'s artifacts']);
+  const headBefore = git(repo, ['rev-parse', 'HEAD']);
+  makeTicket(sessionDir, siblingId, { tier: 'small', status: 'In Progress' });
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, false, 'no commit landed, so the rung reports not-ok rather than a fabricated green');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), headBefore, 'HEAD must not move over work this ticket does not own');
+  assert.ok(
+    existsSync(path.join(sessionDir, siblingId, `rick_ticket_${siblingId}.md`)),
+    'the sibling ticket\'s work must survive untouched',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+});
 
 test('AP-EXT-ITER55-02: a plan-phase verify streaming past the 1MB default is still OK and commits', () => {
   const { repo, baseSha } = makeRepo('ap-iter55b-repo-');
