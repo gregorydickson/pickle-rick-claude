@@ -277,6 +277,88 @@ test('phantom-watch keep does NOT extend to an undeclared absent-evidence Done',
   }, { intent: null });
 });
 
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER328-01 — the ARTIFACT axis of AP-EXT-ITER327-02's absence-of-proof
+//
+// `hasLifecycleArtifacts` returned a bare `false` for a ticket dir it could not
+// LIST, which is the SAME answer it gives for a dir whose artifacts are genuinely
+// missing. `zeroDiffAccept` mapped that to null, `refuseAbsent` carried only the
+// GIT ladder's `unmeasured`, and the phantom-Done watcher REVERTED. A zero-diff
+// Done carries no `completion_commit` by construction, so this arm is its whole
+// defence: a transient EACCES/EMFILE on one readdir discarded shipped work.
+//
+// The fixture isolates THIS catch from the ticket-file-read catch (-327-01) by
+// mode 0111: the dir stays traversable, so the ticket file is still openable by
+// name and the declaration still reads — only `readdirSync` fails.
+//
+// Both directions are pinned. The over-trigger control is load-bearing: a fix that
+// marked every false unmeasured would disarm the watcher wholesale, and it passes
+// the defect case just as well as the correct one.
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs `fn` with the ticket dir at `mode`, restoring 0o755 before cleanup so the
+ * fixture stays removable. Returns null when the mode did not actually take away
+ * the read — running as root, or on a filesystem that ignores the bits — so the
+ * assertion is SKIPPED rather than passing vacuously against a fixture that
+ * cannot express the state under test.
+ */
+function withTicketDirMode(mode, fn, ticketOpts) {
+  const repo = mkTmp('pickle-zd-mode-repo-');
+  const sessionDir = mkTmp('pickle-zd-mode-session-');
+  const ticketDir = path.join(sessionDir, TICKET_ID);
+  try {
+    initGitRepo(repo);
+    writeZeroDiffTicket(sessionDir, ticketOpts);
+    fs.chmodSync(ticketDir, mode);
+    let listable = false;
+    try { fs.readdirSync(ticketDir); listable = true; } catch { /* the state we want */ }
+    if (listable) return null;
+    try {
+      // `accessSync`, not a read: this asserts the PERMISSION state the fixture is
+      // built to create, and AP-EXT-ITER182-01 rightly confines raw byte reads in
+      // this file to its three declared readers.
+      fs.accessSync(path.join(ticketDir, `rick_ticket_${TICKET_ID}.md`), fs.constants.R_OK);
+    } catch {
+      // The mode took away MORE than the listing — the declaration is unreachable too,
+      // which is -327-01's catch, not this one. Refuse to assert on a mixed fixture.
+      return null;
+    }
+    return { decision: fn({ repo, sessionDir }) };
+  } finally {
+    try { fs.chmodSync(ticketDir, 0o755); } catch { /* dir may not exist */ }
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER328-01: a ticket dir the artifact probe could not LIST must not revert a zero-diff Done', (t) => {
+  const run = withTicketDirMode(0o111, ({ repo, sessionDir }) =>
+    gateForPhantomDoneRevert(ctxFor(sessionDir, repo, 'phantom-watch')));
+
+  if (!run) {
+    t.skip('fixture cannot express an unlistable-but-traversable dir here (root, or mode bits ignored)');
+    return;
+  }
+
+  assert.equal(run.decision.action, 'keep',
+    'the declaration and the artifact set are BOTH intact — the only thing that failed is the '
+    + 'readdir. Reverting here discards shipped work over a transient EACCES/EMFILE, and a '
+    + 'zero-diff Done has no completion_commit to recover it from (R-DSAN never-discard). '
+    + 'Absence of proof is not proof of absence.');
+});
+
+test('AP-EXT-ITER328-01 over-trigger control: a READABLE dir genuinely missing an artifact still reverts', () => {
+  withFixture(({ repo, sessionDir }) => {
+    const decided = gateForPhantomDoneRevert(ctxFor(sessionDir, repo, 'phantom-watch'));
+    assert.equal(decided.action, 'revert',
+      'this dir listed fine and the artifacts are really absent — a MEASURED absence, which must '
+      + 'keep reverting. A fix that marked every false unmeasured would pass the defect case and '
+      + 'disarm the watcher wholesale; this is the assertion that tells the two apart.');
+  }, { artifacts: MEDIUM_TIER_ARTIFACTS.slice(0, 3) });
+});
+
 // ---------------------------------------------------------------------------
 // Hard-absent evidence is never laundered by a declaration
 // ---------------------------------------------------------------------------

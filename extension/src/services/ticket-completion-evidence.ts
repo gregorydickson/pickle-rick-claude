@@ -1041,8 +1041,19 @@ function workerGateRefusal(ctx: CompletionDecisionCtx): CompletionDecision | nul
  *
  * Fail-closed: any read error yields false, so a zero-diff accept never rests on
  * an unreadable ticket directory.
+ *
+ * AP-EXT-ITER328-01: that false answers TWO questions — "this dir's artifacts are
+ * missing" and "this dir could not be READ". `onCouldNotMeasure` is the same
+ * OBSERVATION beside the verdict that `scanGitLogByTrailer` takes
+ * (AP-EXT-ITER327-02), so this stays a two-state predicate and the caller decides
+ * what an unread dir means. Only the `catch` reports: the explicit `return false`
+ * arms above it (no ticket path, no declared tier, a prefix genuinely missing) are
+ * all MEASURED absences and must keep discarding.
  */
-function hasLifecycleArtifacts(ctx: CompletionDecisionCtx): boolean {
+function hasLifecycleArtifacts(
+  ctx: CompletionDecisionCtx,
+  onCouldNotMeasure?: () => void,
+): boolean {
   const tPath = resolveTicketPath(ctx);
   if (!tPath) return false;
   try {
@@ -1055,6 +1066,7 @@ function hasLifecycleArtifacts(ctx: CompletionDecisionCtx): boolean {
     const files = fs.readdirSync(path.dirname(tPath));
     return findMissingPrefixes(files, required).length === 0;
   } catch {
+    onCouldNotMeasure?.();
     return false;
   }
 }
@@ -1102,7 +1114,19 @@ function zeroDiffAccept(
   }
   const intent = declared?.trim().toLowerCase();
   if (!intent || !ZERO_DIFF_INTENTS.has(intent)) return null;
-  if (!hasLifecycleArtifacts(ctx)) return null;
+  // AP-EXT-ITER328-01 (R-DSAN never-discard, the artifact axis of -327-02): a ticket
+  // dir we could not READ is not a ticket whose artifacts are missing. Returning null
+  // there sends a declared zero-diff Done to `refuseAbsent` carrying only the GIT
+  // ladder's `unmeasured`, and the phantom-Done watcher discards shipped work over a
+  // transient EACCES/EMFILE — a zero-diff Done has no `completion_commit` by
+  // construction, so this arm is its whole defence. Refuse with the observation
+  // instead of a bare null: no new verdict and no new reason, just the flag the one
+  // discarding consumer already reads. A readable dir that is genuinely
+  // artifact-less still returns null here and still reverts.
+  let artifactsUnmeasured = false;
+  if (!hasLifecycleArtifacts(ctx, () => { artifactsUnmeasured = true; })) {
+    return artifactsUnmeasured ? refuseAbsent({ ...evidence, unmeasured: true }) : null;
+  }
   if (ctx.decision === 'done-flip') {
     // Return the gate's OWN refusal rather than null. Falling through to
     // `refuseAbsent` would report `no_evidence` — true but useless — for a ticket
