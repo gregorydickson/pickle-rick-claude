@@ -433,3 +433,125 @@ test('refreshScope: unreadable state.json is logged, not swallowed, before treat
         cleanup(repo, session);
     }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER323-01 — refreshScope derives its own repo-root anchor.
+//
+// Closes the axis this file was previously VACUOUS on: every pre-existing
+// `refreshScope(` case above passes `{ repoRoot: repo }` where `repo` IS the git
+// toplevel, so the cwd space and the repo space are the same space and neither the
+// caller-trusted parameter nor the `state.working_dir` fallback can be wrong.
+//
+// The defect is only expressible with a REAL git repo, work BOTH above and below
+// the package dir, and a below-toplevel base. Each case asserts AGREEMENT with the
+// toplevel reading of the SAME target rather than mere non-emptiness — a fence
+// spelled in the wrong space looks exactly like one that legitimately matched
+// little, and in the other direction exactly like one that legitimately matched a lot.
+// ---------------------------------------------------------------------------
+
+/** A repo whose diff touches a path ABOVE `pkg/sub` and one INSIDE it. */
+function makeNestedRepo() {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-refresh-nested-'));
+    git(['init', '-q', '-b', 'main'], repo);
+    git(['config', 'commit.gpgsign', 'false'], repo);
+    fs.mkdirSync(path.join(repo, 'alpha'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'pkg', 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'seed.txt'), 'seed\n');
+    git(['add', '.'], repo);
+    git(['commit', '-qm', 'base'], repo);
+    git(['checkout', '-qb', 'feature'], repo);
+    fs.writeFileSync(path.join(repo, 'alpha', 'a1.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(repo, 'pkg', 'sub', 'b1.ts'), 'export const b = 1;\n');
+    git(['add', '.'], repo);
+    git(['commit', '-qm', 'work'], repo);
+    return { repo, below: path.join(repo, 'pkg', 'sub') };
+}
+
+/** A session whose persisted scope was resolved from the TOPLEVEL, as setup does. */
+function makeNestedSession(repo, workingDir) {
+    const session = makeSession(workingDir);
+    resolveScope({ scopeFlag: 'branch', scopeBase: 'main', sessionRoot: session, repoRoot: repo });
+    return session;
+}
+
+test('AP-EXT-ITER323-01: FIXTURE PRECONDITION — the toplevel reading sees work above AND below pkg/sub', () => {
+    const { repo } = makeNestedRepo();
+    const session = makeNestedSession(repo, repo);
+    try {
+        const refreshed = refreshScope(session, 'anatomy-park', { repoRoot: repo, log: () => {} });
+        assert.deepStrictEqual(
+            refreshed.allowed_paths,
+            ['alpha/a1.ts', 'pkg/sub/b1.ts'],
+            'fixture must straddle the package dir, or the cases below cannot separate the two path spaces',
+        );
+    } finally {
+        cleanup(repo, session);
+    }
+});
+
+test('AP-EXT-ITER323-01: a below-toplevel opts.repoRoot agrees with the toplevel reading (target ABOVE it)', () => {
+    const { repo, below } = makeNestedRepo();
+    const control = makeNestedSession(repo, repo);
+    const subject = makeNestedSession(repo, repo);
+    try {
+        // Pre-fix this is the FATAL arm: `path.relative(pkg/sub, <toplevel>)` is `../..`,
+        // every repo-relative diff path fails the prefix test, and anatomy-park's
+        // throwOnEmptyScope turns the empty result into SCOPE_EMPTY_POST_BUILD — which
+        // ends the pipeline, not just this phase's review surface.
+        const expected = refreshScope(control, 'anatomy-park', { repoRoot: repo, target: repo, log: () => {} });
+        const actual = refreshScope(subject, 'anatomy-park', { repoRoot: below, target: repo, log: () => {} });
+        assert.deepStrictEqual(actual.allowed_paths, expected.allowed_paths);
+        assert.deepStrictEqual(actual.allowed_paths, ['alpha/a1.ts', 'pkg/sub/b1.ts']);
+    } finally {
+        cleanup(repo, control, subject);
+    }
+});
+
+test('AP-EXT-ITER323-01: a below-toplevel opts.repoRoot agrees with the toplevel reading (target IS it)', () => {
+    const { repo, below } = makeNestedRepo();
+    const control = makeNestedSession(repo, repo);
+    const subject = makeNestedSession(repo, repo);
+    try {
+        // The other direction, and the DEFAULT one — `config.target || workingDir` makes
+        // target === repoRoot whenever no explicit target is configured. Pre-fix
+        // `path.relative(pkg/sub, pkg/sub)` is '', filterByTarget returns early, and the
+        // fence ADMITS `alpha/a1.ts` — a path outside the target the session narrowed to.
+        const expected = refreshScope(control, 'anatomy-park', { repoRoot: repo, target: below, log: () => {} });
+        const actual = refreshScope(subject, 'anatomy-park', { repoRoot: below, target: below, log: () => {} });
+        assert.deepStrictEqual(actual.allowed_paths, expected.allowed_paths);
+        assert.deepStrictEqual(actual.allowed_paths, ['pkg/sub/b1.ts'], 'target narrowing must survive the anchor');
+    } finally {
+        cleanup(repo, control, subject);
+    }
+});
+
+test('AP-EXT-ITER323-01: the state.working_dir fallback is anchored too (opts.repoRoot omitted)', () => {
+    const { repo, below } = makeNestedRepo();
+    const control = makeNestedSession(repo, repo);
+    // Only variable: state.working_dir, an unnormalized process.cwd() that is a
+    // documented monorepo package dir — never reconciled to --show-toplevel.
+    const subject = makeNestedSession(repo, below);
+    try {
+        const expected = refreshScope(control, 'anatomy-park', { repoRoot: repo, target: repo, log: () => {} });
+        const actual = refreshScope(subject, 'anatomy-park', { target: repo, log: () => {} });
+        assert.deepStrictEqual(actual.allowed_paths, expected.allowed_paths);
+        assert.deepStrictEqual(actual.allowed_paths, ['alpha/a1.ts', 'pkg/sub/b1.ts']);
+    } finally {
+        cleanup(repo, control, subject);
+    }
+});
+
+test('AP-EXT-ITER323-01: anchoring NARROWS nothing it should not — a non-repo base still refuses', () => {
+    // Negative control: the anchor must not become a way to succeed from anywhere.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-refresh-nonrepo-'));
+    const { repo } = makeNestedRepo();
+    const session = makeNestedSession(repo, repo);
+    try {
+        assert.throws(
+            () => refreshScope(session, 'anatomy-park', { repoRoot: outside, log: () => {} }),
+            (err) => err instanceof ScopeError && err.code === 'SCOPE_NOT_A_REPO',
+        );
+    } finally {
+        cleanup(repo, session, outside);
+    }
+});

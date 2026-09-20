@@ -235,7 +235,10 @@ export function refreshScope(sessionRoot, phase, opts = {}) {
     const scope = readRecoverableJsonObject(scopePath);
     if (!scope)
         return null;
-    const repoRoot = opts.repoRoot ?? resolveRepoRootFromState(sm, statePath);
+    // AP-EXT-ITER323-01: derived, not trusted — the same {@link resolveRepoToplevel} the
+    // sibling entry point uses, so BOTH producers of this module's path space own their
+    // anchor and no call site can hand either one a base below the toplevel.
+    const repoRoot = resolveRepoToplevel(opts.repoRoot ?? resolveRepoRootFromState(sm, statePath));
     const newHead = getHeadSha(repoRoot);
     const newAllowed = computeRefreshedAllowed(scope, newHead, repoRoot, opts.target);
     if (newAllowed.length === 0 && phase === 'anatomy-park') {
@@ -266,6 +269,13 @@ function isPhaseAlreadyEntered(sm, statePath, phase, log) {
         return false;
     }
 }
+/**
+ * Last-resort base for {@link refreshScope}. Returns `state.working_dir` RAW — an
+ * unnormalized `process.cwd()` that a monorepo package dir is a documented shape for
+ * (`detectMultiRepo`), and never reconciled to a toplevel (R-CWRR). The only caller
+ * anchors the result through {@link resolveRepoToplevel}, so this deliberately stays
+ * a plain read: anchoring here too would fork the derivation across two sites.
+ */
 function resolveRepoRootFromState(sm, statePath) {
     if (!fs.existsSync(statePath)) {
         throw new ScopeError('SCOPE_NOT_A_REPO', `refreshScope: no repoRoot given and no state.json at ${statePath}`);
@@ -494,6 +504,13 @@ export function computeOneHop(diffFiles, repoRoot, options = {}) {
  * spelled in the wrong space looks exactly like a fence that legitimately matched
  * little. `bin/resolve-scope.ts` resolves the same toplevel before calling in
  * (R-RSBI-2) and is a no-op under this; so is any caller already at the toplevel.
+ *
+ * AP-EXT-ITER323-01: shared with {@link refreshScope} for the same reason — two entry
+ * points of one module must not disagree about who owns the anchor. `refreshScope`'s
+ * base is `opts.repoRoot` (whose one production caller fills it from a
+ * `resolveGitRepoRoot` that falls back to the RAW `workingDir` on ANY git failure,
+ * a 5s timeout included) or `state.working_dir` outright, so trusting either re-opened
+ * the space this closes — one direction EMPTIES the fence, the other admits the repo.
  */
 function resolveRepoToplevel(repoRoot) {
     const toplevel = runGitSafe(['rev-parse', '--show-toplevel'], repoRoot).trim();
