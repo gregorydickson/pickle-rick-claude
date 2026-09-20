@@ -1,5 +1,4 @@
 import * as path from 'path';
-import { execFileSync } from 'child_process';
 import { resolveScope, ScopeError } from '../services/scope-resolver.js';
 
 const USAGE = 'Usage: resolve-scope --scope <flag> --session-root <path> [--scope-base <ref>] [--target <path>]';
@@ -8,21 +7,6 @@ function parseFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
   if (idx === -1 || idx + 1 >= args.length) return undefined;
   return args[idx + 1];
-}
-
-// `paths:<glob>` is always resolved against the git repository toplevel so the
-// same --scope value produces identical allowed_paths regardless of which
-// working_dir invoked this CLI (R-RSBI-2).
-function resolveRepoRoot(cwd: string): string {
-  try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd,
-      encoding: 'utf-8',
-      timeout: 5000,
-    }).trim();
-  } catch {
-    return cwd;
-  }
 }
 
 if (process.argv[1] && path.basename(process.argv[1]) === 'resolve-scope.js') {
@@ -50,7 +34,14 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'resolve-scope.js') {
       scopeBase,
       target,
       sessionRoot,
-      repoRoot: resolveRepoRoot(process.cwd()),
+      // `paths:<glob>` is always resolved against the git repository toplevel so the
+      // same --scope value produces identical allowed_paths regardless of which
+      // working_dir invoked this CLI (R-RSBI-2). The anchoring is `resolveScope`'s own
+      // (`resolveRepoToplevel`, AP-EXT-ITER322-01): it derives the toplevel from whatever
+      // directory it is handed, so a raw cwd here IS the toplevel reading. Resolving it a
+      // second time here would be a fifth spelling of one predicate whose every arm the
+      // callee already repeats (AP-EXT-ITER326-01).
+      repoRoot: process.cwd(),
     });
   } catch (err) {
     if (err instanceof Error && err instanceof ScopeError) {

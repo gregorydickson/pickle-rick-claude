@@ -641,8 +641,11 @@ export function computeOneHop(
  * gives for anchoring at the comparison: a per-caller anchor is an enumerated set of
  * sites that must each remember, and a site that forgets fails SILENTLY — a fence
  * spelled in the wrong space looks exactly like a fence that legitimately matched
- * little. `bin/resolve-scope.ts` resolves the same toplevel before calling in
- * (R-RSBI-2) and is a no-op under this; so is any caller already at the toplevel.
+ * little. AP-EXT-ITER326-01: `bin/resolve-scope.ts` USED to resolve the same toplevel
+ * before calling in (R-RSBI-2); that resolver is DELETED and the CLI now hands in a raw
+ * `process.cwd()`, because a second resolution of a predicate this one already owns is a
+ * divergence waiting to happen, not a belt. Any caller already at the toplevel is likewise
+ * a no-op here.
  *
  * AP-EXT-ITER323-01: shared with {@link refreshScope} for the same reason — two entry
  * points of one module must not disagree about who owns the anchor. `refreshScope`'s
