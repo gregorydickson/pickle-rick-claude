@@ -7245,12 +7245,20 @@ function attributeBoundaryHeadMoved(
  * — and `git checkout -- <pathspec>` is ATOMIC: a single untracked member makes the
  * whole command fail and restores NOTHING. Returns null when git could not answer;
  * an unanswered partition is not an empty one and the caller must not destroy on it.
+ *
+ * AP-EXT-ITER308-01: `paths` are REPO-ROOT-relative (they come from
+ * `listWorkingTreeDirtyPaths`, and `status --porcelain` answers in root space from
+ * any cwd), so the oracle must be asked AT the root — hence `repoRoot`, not a
+ * `workingDir` nobody proved is the toplevel. `ls-tree` resolves its pathspec
+ * against the cwd and reports a miss by exiting 0 with EMPTY output, so asking it
+ * one directory down does not fail: it silently answers "HEAD holds none of these",
+ * which the `status !== 0` guard above cannot distinguish from a real empty tree.
  */
 function partitionPathsHeldByHead(
-  workingDir: string,
+  repoRoot: string,
   paths: string[],
 ): { tracked: string[]; untracked: string[] } | null {
-  const r = spawnSync('git', ['-C', workingDir, 'ls-tree', '--name-only', '-z', 'HEAD', '--', ...paths], {
+  const r = spawnSync('git', ['-C', repoRoot, 'ls-tree', '--name-only', '-z', 'HEAD', '--', ...paths], {
     encoding: 'utf-8', timeout: 30000,
   });
   if (r.status !== 0) return null;
@@ -7283,6 +7291,10 @@ function preStashOutOfAllowlistResidue(
   const fence = readScopeAllowedPaths(sessionDir);
   if (fence.kind !== 'scoped') return;
   try {
+    // AP-EXT-ITER308-01: the ONE anchor every consumption of this path set uses.
+    // `dirty`, `fence.allowed` and the partition all speak repo-root space; at the
+    // toplevel this is the identity, below it, it is the whole defect.
+    const repoRoot = muxRealpathOrSelf(resolveRepoRoot(workingDir, workingDir));
     const dirty = listWorkingTreeDirtyPaths(workingDir);
     const outOfScope = dirty.filter((f) => !isWithinAllowedPaths(f, fence.allowed));
     // Only owned-but-out-of-scope source residue needs pre-stashing; the exit
@@ -7291,7 +7303,7 @@ function preStashOutOfAllowlistResidue(
     // The two preconditions of a safe destroy, answered BEFORE anything is touched:
     // the remainder is anchored at a ref, and git can say which paths HEAD holds.
     const salvageRef = stashUnattributableRemainder(workingDir, sessionDir, log);
-    const split = salvageRef ? partitionPathsHeldByHead(workingDir, outOfScope) : null;
+    const split = salvageRef ? partitionPathsHeldByHead(repoRoot, outOfScope) : null;
     if (!salvageRef || !split) {
       log(`[boundary-commit] ticket ${ticketId}: NOT pre-stashed — ${salvageRef ? 'could not partition' : 'salvage anchor failed'}; leaving ${outOfScope.length} out-of-allowlist path(s) in the tree (refusing an unrecoverable restore)`);
       return;
@@ -7299,13 +7311,13 @@ function preStashOutOfAllowlistResidue(
     // Restore the out-of-scope residue to HEAD so it cannot be swept into the
     // ticket-attributed commit; `salvageRef` retains a recoverable copy of both
     // halves. Untracked paths are absent from HEAD, so restoring them is removal.
-    const restore = spawnSync('git', ['-C', workingDir, 'checkout', '--', ...split.tracked], {
+    const restore = spawnSync('git', ['-C', repoRoot, 'checkout', '--', ...split.tracked], {
       encoding: 'utf-8', timeout: 30000,
     });
     const restored = split.tracked.length === 0 || restore.status === 0;
     let removed = 0;
     for (const relPath of split.untracked) {
-      try { fs.unlinkSync(path.join(workingDir, relPath)); removed += 1; } catch { /* best-effort */ }
+      try { fs.unlinkSync(path.join(repoRoot, relPath)); removed += 1; } catch { /* best-effort */ }
     }
     log(`[boundary-commit] ticket ${ticketId}: pre-stashed ${outOfScope.length} out-of-allowlist path(s) to ${salvageRef} (restored ${restored ? split.tracked.length : 0}/${split.tracked.length} tracked, removed ${removed}/${split.untracked.length} untracked)`);
   } catch (err) {

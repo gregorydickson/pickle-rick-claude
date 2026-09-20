@@ -336,3 +336,122 @@ test('AP-EXT-ITER302-01 untracked out-of-allowlist residue → restore still app
     cleanup(workingDir, sessionDir);
   }
 });
+
+// AP-EXT-ITER308-01 — the pre-stash's path set is REPO-ROOT-relative (porcelain
+// answers in root space from any cwd), but every consumption of it — the `ls-tree`
+// HEAD-membership oracle, the `checkout --` restore and the untracked `unlink` —
+// was anchored at `workingDir`, which is an unnormalized `process.cwd()` and is
+// never proven to be the toplevel. `ls-tree` reports a pathspec miss by exiting 0
+// with EMPTY output, so one directory down it answers "HEAD holds none of these"
+// and the `status !== 0 → null` guard cannot see the wrong partition: nothing is
+// restored, every unlink is an ENOENT, success-shaped counts are logged, and the
+// out-of-allowlist residue stays in the tree for the ticket-attributed committer.
+// Every pre-existing fixture in this file puts the session AT the toplevel, where
+// the two spaces are identical — which is why this was invisible.
+// ---------------------------------------------------------------------------
+
+/**
+ * The scoped fixture with the git toplevel ONE DIRECTORY ABOVE `workingDir`.
+ * `allowed_paths` is repo-root-relative (R-RSBI-2), so it carries the `pkg/` prefix
+ * while `extensionRoot` stays under `workingDir` — exactly the production topology.
+ */
+function nestedScopedFixture(label, allowedPaths, { dirtAbove = false } = {}) {
+  const repoRoot = makeTmp(`dura-t10-${label}-`);
+  execFileSync('git', ['init', '-q'], { cwd: repoRoot, stdio: 'ignore', timeout: 30_000 });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot, timeout: 30_000 });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot, timeout: 30_000 });
+  const workingDir = path.join(repoRoot, 'pkg');
+  fs.mkdirSync(path.join(workingDir, 'extension'), { recursive: true });
+  fs.writeFileSync(path.join(workingDir, 'extension', 'README.md'), 'fixture\n');
+  fs.writeFileSync(path.join(workingDir, 'extension', 'residue.txt'), 'COMMITTED-V1\n');
+  if (dirtAbove) {
+    fs.mkdirSync(path.join(repoRoot, 'sibling'), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, 'sibling', 'above.txt'), 'ABOVE-COMMITTED-V1\n');
+  }
+  execFileSync('git', ['add', '-A'], { cwd: repoRoot, stdio: 'ignore', timeout: 30_000 });
+  execFileSync('git', ['commit', '-q', '-m', 'nested baseline', '--no-gpg-sign'], { cwd: repoRoot, stdio: 'ignore', timeout: 30_000 });
+
+  const sessionDir = makeTmp(`dura-t10-${label}-sess-`);
+  writeTicket(sessionDir, T, 'In Progress', 1);
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({ schema_version: 5, activity: [] }));
+  fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({ allowed_paths: allowedPaths }));
+  return { repoRoot, workingDir, sessionDir, salvageRef: `refs/pickle/salvage/${path.basename(sessionDir)}` };
+}
+
+test('AP-EXT-ITER308-01 working_dir ONE BELOW the git toplevel → the HEAD partition still resolves, residue is restored/removed and kept out of the ticket commit', () => {
+  const { repoRoot, workingDir, sessionDir } = nestedScopedFixture('nested', ['pkg/extension/allowed.txt']);
+  try {
+    const preIterSha = head(repoRoot);
+    fs.writeFileSync(path.join(workingDir, 'extension', 'allowed.txt'), 'OWNED WORK\n');
+    fs.writeFileSync(path.join(workingDir, 'extension', 'residue.txt'), 'UNCOMMITTED-V2-WORK\n');
+    fs.writeFileSync(path.join(workingDir, 'extension', 'newresidue.txt'), 'UNCOMMITTED-NEW-WORK\n');
+
+    const logs = [];
+    const input = { ...baseInput(sessionDir, workingDir, T, preIterSha, passGate), log: (m) => logs.push(m) };
+    const result = commitGatePassingDeliverableAtBoundary(input);
+
+    // ACCEPT control on the SAME fixture: the boundary really ran and really
+    // committed, so every "kept out" assertion below cannot pass on a dead path.
+    assert.equal(result.outcome, 'committed', `expected committed, got ${result.outcome}/${result.reason}`);
+    const names = committedNames(repoRoot);
+    assert.match(names, /pkg\/extension\/allowed\.txt/, 'ACCEPT control: owned in-allowlist work must still be committed');
+
+    // The defect: below the toplevel `ls-tree` answered EMPTY at exit 0, so every
+    // tracked path was called untracked, nothing was restored or removed, and both
+    // residue files were swept into the ticket-attributed commit (AC-DURA-2).
+    assert.doesNotMatch(names, /residue\.txt/, 'AC-DURA-2: out-of-allowlist residue may not enter the ticket commit below the toplevel');
+    assert.equal(
+      readIfPresent(path.join(workingDir, 'extension', 'residue.txt')), 'COMMITTED-V1',
+      'tracked out-of-allowlist residue must be RESTORED to HEAD below the toplevel, not left dirty',
+    );
+    assert.equal(
+      readIfPresent(path.join(workingDir, 'extension', 'newresidue.txt')), null,
+      'untracked out-of-allowlist residue must be REMOVED below the toplevel',
+    );
+    // The counts are a measurement, not a claim: a partition that resolved nothing
+    // logs the same success-shaped line as one that did the whole job.
+    assert.ok(
+      logs.some((l) => /pre-stashed 2 out-of-allowlist path\(s\)/.test(l) && /restored 1\/1 tracked, removed 1\/1 untracked/.test(l)),
+      `the pre-stash must report the work it actually did, got: ${JSON.stringify(logs.filter((l) => /pre-stash/.test(l)))}`,
+    );
+  } finally {
+    cleanup(repoRoot, sessionDir);
+  }
+});
+
+test('AP-EXT-ITER308-01 blast-radius control: the root anchor resolves the named paths, it does not widen the set — in-allowlist dirt ABOVE working_dir survives and out-of-allowlist dirt stays recoverable', () => {
+  const { repoRoot, workingDir, sessionDir, salvageRef } = nestedScopedFixture(
+    'nestedabove', ['pkg/extension/allowed.txt', 'sibling/above.txt'], { dirtAbove: true },
+  );
+  try {
+    const preIterSha = head(repoRoot);
+    fs.writeFileSync(path.join(workingDir, 'extension', 'allowed.txt'), 'OWNED WORK\n');
+    // IN-allowlist and ABOVE `workingDir`: the fence admits it, so the pre-stash
+    // must leave it alone however the anchor moved.
+    fs.writeFileSync(path.join(repoRoot, 'sibling', 'above.txt'), 'ABOVE-UNCOMMITTED-V2\n');
+    // OUT-of-allowlist: destroyed only because `stashUnattributableRemainder`
+    // anchors the WHOLE tree, above `workingDir` included (measured).
+    fs.writeFileSync(path.join(workingDir, 'extension', 'residue.txt'), 'UNCOMMITTED-V2-WORK\n');
+
+    const result = commitGatePassingDeliverableAtBoundary(baseInput(sessionDir, workingDir, T, preIterSha, passGate));
+
+    assert.equal(result.outcome, 'committed', `expected committed, got ${result.outcome}/${result.reason}`);
+    // ACCEPT arm: the run really destroyed something in this very fixture, so the
+    // survival assertion below cannot pass on a pre-stash that did nothing at all.
+    assert.equal(
+      readIfPresent(path.join(workingDir, 'extension', 'residue.txt')), 'COMMITTED-V1',
+      'ACCEPT arm: out-of-allowlist residue must really be restored in this fixture',
+    );
+    assert.equal(
+      readIfPresent(path.join(repoRoot, 'sibling', 'above.txt')), 'ABOVE-UNCOMMITTED-V2',
+      'in-allowlist dirt ABOVE working_dir must survive — the root anchor resolves paths, it must not widen the destroyed set',
+    );
+    assert.match(
+      execFileSync('git', ['show', '--name-only', '--pretty=format:', salvageRef], { cwd: repoRoot, encoding: 'utf8', timeout: 30_000 }),
+      /residue\.txt/,
+      'nothing is destroyed without a recoverable copy at the salvage ref',
+    );
+  } finally {
+    cleanup(repoRoot, sessionDir);
+  }
+});
