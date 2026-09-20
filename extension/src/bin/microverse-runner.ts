@@ -4235,6 +4235,12 @@ export function parseChangedLineNumbersFromDiff(diffText: string): Map<string, S
  * the surface's own base (`db605b05`'s producer), never `start_commit` or a whole-file blame date.
  * `null` means the enumeration did NOT complete (AP-EXT-ITER38-01 shape: an unmeasurable diff is
  * not an empty one) so the caller must fail OPEN, never treat it as "nothing touched".
+ *
+ * AP-EXT-ITER311-01: the pathspecs carry the `:(top)` magic prefix so they resolve from the repo
+ * ROOT, the space they are written in, rather than from `workingDir` — which is `state.working_dir
+ * || process.cwd()`, never normalised to `--show-toplevel`. A pathspec that matches nothing is
+ * reported by `git diff` as exit 0 with EMPTY output, so `enumerationCompleted` cannot see the
+ * miss and the caller would read a fabricated "nothing touched" as a completed measurement.
  */
 function computeTouchedLineNumbers(workingDir: string, base: string, paths: string[]): Map<string, Set<number>> | null {
   if (paths.length === 0) return new Map();
@@ -4244,9 +4250,11 @@ function computeTouchedLineNumbers(workingDir: string, base: string, paths: stri
     // similarity-index header with no +/- lines, which would silently empty this path's set.
     // The rest pin the header shape the parser keys on against ambient config: quotePath off
     // (a non-ASCII name stays unquoted), explicit a/ b/ prefixes (diff.noprefix,
-    // diff.mnemonicPrefix), no colour escapes, no external diff driver.
-    ['-c', 'core.quotePath=false', 'diff', '--no-renames', '--no-color', '--no-ext-diff',
-      '--src-prefix=a/', '--dst-prefix=b/', `${base}..HEAD`, '--', ...paths],
+    // diff.mnemonicPrefix), no colour escapes, no external diff driver, and diff.relative off
+    // so the `b/` keys stay repo-root-relative from any cwd (AP-EXT-ITER311-01).
+    ['-c', 'core.quotePath=false', '-c', 'diff.relative=false', 'diff', '--no-renames', '--no-color',
+      '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', `${base}..HEAD`, '--',
+      ...paths.map((p) => `:(top)${p}`)],
     { cwd: workingDir, encoding: 'utf-8', timeout: 30_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER },
   );
   if (!enumerationCompleted(result)) return null;

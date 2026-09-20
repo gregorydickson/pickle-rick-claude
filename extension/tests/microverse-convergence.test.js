@@ -2589,6 +2589,92 @@ test('dropOutOfSurfaceViolations: per-line, both directions in one assertion (un
     }
 });
 
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER311-01 — the per-line surface read must answer the SAME thing from a
+// `working_dir` below the git toplevel. `dropOutOfSurfaceViolations` receives
+// `state.working_dir || process.cwd()` (never normalised to `--show-toplevel`,
+// R-CWRR) while both the violation locators and `git diff`'s own `b/` output keys
+// are repo-root-relative. A pathspec that matches nothing is reported by git as
+// exit 0 with EMPTY output, so `enumerationCompleted` cannot see the miss: below
+// the toplevel every locator-bearing violation was dropped before scoring and
+// before `violation_ledger` — the fail-CLOSED direction this function's own
+// docblock promises it never takes. Every pre-existing real-git fixture above sits
+// AT the toplevel, where the two spaces are identical.
+// ---------------------------------------------------------------------------
+
+/** A repo whose only source lives one directory below the toplevel, with line 3 of
+ * each file touched by `base..HEAD` and lines 1-2 untouched. Returns the realpathed
+ * toplevel (an os.tmpdir() fixture is itself under a symlink on macOS) and the base. */
+function subdirSurfaceRepo() {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-subdir-surface-')));
+    const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+        { cwd: dir, encoding: 'utf-8', stdio: 'pipe', timeout: 30000 });
+    git('init', '-q');
+    fs.mkdirSync(path.join(dir, 'pkg', 'src'), { recursive: true });
+    for (const n of ['a.ts', 'odd name.ts']) {
+        fs.writeFileSync(path.join(dir, 'pkg', 'src', n), 'one\ntwo\nthree\n');
+    }
+    git('add', '.');
+    git('commit', '-q', '-m', 'base');
+    const base = git('rev-parse', 'HEAD').trim();
+    for (const n of ['a.ts', 'odd name.ts']) {
+        fs.writeFileSync(path.join(dir, 'pkg', 'src', n), 'one\ntwo\nTHREE\n');
+    }
+    git('commit', '-q', '-am', 'touch line 3');
+    return { dir, base, git };
+}
+
+const subdirViolations = () => [
+    { id: 'touched', path: 'pkg/src/a.ts', line: 3, severity: 'low', description: 'on the touched line' },
+    { id: 'pre-existing', path: 'pkg/src/a.ts', line: 1, severity: 'low', description: 'untouched line' },
+    { id: 'touched-odd', path: 'pkg/src/odd name.ts', line: 3, severity: 'low', description: 'touched, name with a space' },
+];
+
+test('AP-EXT-ITER311-01: a working_dir below the git toplevel reads the SAME surface as the toplevel', () => {
+    const { dir, base } = subdirSurfaceRepo();
+    try {
+        const surface = { kind: 'derived', paths: ['pkg/src'], base };
+        const atTop = dropOutOfSurfaceViolations(subdirViolations(), surface, dir);
+        const belowTop = dropOutOfSurfaceViolations(subdirViolations(), surface, path.join(dir, 'pkg'));
+
+        // The ACCEPT half: the two genuinely touched lines survive from BOTH anchors.
+        // The over-trigger control rides in the same assertion: the untouched line is
+        // still dropped, so a filter neutered into keep-everything reds here too.
+        assert.deepEqual(
+            { kept: atTop.kept.map((v) => v.id), droppedCount: atTop.droppedCount },
+            { kept: ['touched', 'touched-odd'], droppedCount: 1 },
+            'toplevel reading is the oracle: only the pre-existing untouched line is dropped',
+        );
+        assert.deepEqual(
+            { kept: belowTop.kept.map((v) => v.id), droppedCount: belowTop.droppedCount },
+            { kept: ['touched', 'touched-odd'], droppedCount: 1 },
+            'one directory down the pathspec must still resolve from the repo ROOT — a silent '
+            + 'pathspec miss (exit 0, empty output) would drop every locator-bearing violation',
+        );
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER311-01: an ambient diff.relative=true cannot re-key the surface below the toplevel', () => {
+    const { dir, base, git } = subdirSurfaceRepo();
+    try {
+        // diff.relative re-keys `+++ b/<path>` to be cwd-relative, which would make every
+        // root-relative locator miss the map even once the pathspec resolves. The read pins
+        // it off alongside the other ambient-config pins (core.quotePath, the a/ b/ prefixes).
+        git('config', 'diff.relative', 'true');
+        const surface = { kind: 'derived', paths: ['pkg/src'], base };
+        const belowTop = dropOutOfSurfaceViolations(subdirViolations(), surface, path.join(dir, 'pkg'));
+        assert.deepEqual(
+            { kept: belowTop.kept.map((v) => v.id), droppedCount: belowTop.droppedCount },
+            { kept: ['touched', 'touched-odd'], droppedCount: 1 },
+            'the b/ keys must stay repo-root-relative whatever diff.relative says',
+        );
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 function perLineTempGitRepo() {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mv-perline-work-')));
     execSync('git init', { cwd: dir, stdio: 'pipe', timeout: 30000 });
