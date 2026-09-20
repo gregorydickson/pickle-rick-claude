@@ -21,7 +21,7 @@ const {
   handleIterationOutcome,
 } = await import(path.resolve(__dirname, '../bin/microverse-runner.js'));
 
-const { runGate, assertBaselineFresh, BaselineStaleError } = await import(path.resolve(__dirname, '../services/convergence-gate.js'));
+const { runGate, assertBaselineFresh, BaselineStaleError, detectProjectType } = await import(path.resolve(__dirname, '../services/convergence-gate.js'));
 
 // ---------------------------------------------------------------------------
 // Env isolation: keep real activity-logger writes off the operator's data dir.
@@ -1252,5 +1252,178 @@ test('AP-EXT-ITER129-01: the post-commit per-iteration gate survives an unusable
   } finally {
     rm(workingDir);
     rm(sessionDir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER316-01: the check whose command could not be SPAWNED.
+//
+// `detectProjectType` reads a lockfile, never a toolchain, and `detectMissingTools` screens
+// only `NON_GUARANTEED_TOOLS` (rg/fd/jq class — no build tool is a member), so a repo whose
+// package manager is absent from PATH reaches the spawn and fails at exec. The pre-fix
+// `child.on('error')` resolved `exitCode: 1` with EMPTY streams — byte-identical to "the tool
+// ran, printed nothing, exited 1" — so `classifyUnrunnableCheck` had nothing to match on and
+// the gate recorded a MEASURED failure over a process that never started.
+//
+// Driven through the REAL `runGate` against a REAL git repo with a PATH holding git and
+// nothing else: the exec failure is produced by the operating system, not simulated, which is
+// the only way to exercise the `'error'` settle path (`runCheckSubtree` is module-private and
+// takes no spawn seam).
+// ---------------------------------------------------------------------------
+
+/** A PATH containing `git` and nothing else, so any other bin fails at exec with ENOENT. */
+function makeGitOnlyPath(binDir) {
+  const gitBin = (process.env.PATH ?? '')
+    .split(path.delimiter)
+    .map((d) => (d ? path.join(d, 'git') : null))
+    .find((candidate) => {
+      if (candidate === null) return false;
+      try { const st = fs.statSync(candidate); return st.isFile() && (st.mode & 0o111) !== 0; }
+      catch { return false; }
+    });
+  assert.ok(gitBin, 'fixture precondition: git must resolve on PATH');
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.symlinkSync(gitBin, path.join(binDir, 'git'));
+  return binDir;
+}
+
+/** A pnpm-typed project (lockfile only) whose `typecheck` script would pass IF pnpm existed. */
+function writePnpmTypedFixtureRepo(dir) {
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({ name: 'apext316-fixture', private: true, scripts: { typecheck: 'node -e "process.exit(0)"' } }, null, 2),
+  );
+  fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+}
+
+test('AP-EXT-ITER316-01: a check whose command cannot be SPAWNED marks the baseline uncertifiable and names the errno', async () => {
+  const workingDir = makeGitRepo('apext316-repo-');
+  const binDir = mkTmp('apext316-bin-');
+  const savedPath = process.env.PATH;
+
+  try {
+    writePnpmTypedFixtureRepo(workingDir);
+    commitAll(workingDir, 'pnpm-typed project whose package manager is absent');
+    assert.equal(detectProjectType(workingDir), 'pnpm', 'fixture precondition: the lockfile alone must resolve the project type');
+
+    makeGitOnlyPath(binDir);
+    // Self-checking fixture: if `pnpm` were reachable the check would RUN and every
+    // assertion below would pass vacuously against a real measurement.
+    assert.throws(
+      () => execFileSync('pnpm', ['--version'], { env: { ...process.env, PATH: binDir }, stdio: 'pipe', timeout: 5000 }),
+      (err) => err.code === 'ENOENT',
+      'fixture precondition: pnpm must be unspawnable on the restricted PATH',
+    );
+
+    const baselinePath = path.join(workingDir, 'gate-baseline.json');
+    let result;
+    try {
+      process.env.PATH = binDir;
+      result = await runGate({
+        workingDir, mode: 'baseline', scope: 'full', checks: ['typecheck'],
+        baselinePath, baselineIteration: 1, onEvent: () => {},
+      });
+    } finally { process.env.PATH = savedPath; }
+
+    assert.equal(
+      result.check_status.typecheck, 'failed',
+      "a check whose process never started is not a check that 'ran' — `hasUnmeasuredCheck`/`isCheckUnmeasured` read this field and nothing else",
+    );
+
+    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+    assert.equal(
+      baseline.project_type, null,
+      'the R-SZGB-D uncertifiable route must fire: a certified baseline makes the phantom failure subtractable forever',
+    );
+    assert.equal(baseline.check_status.typecheck, 'failed', 'the persisted status carries the same fact as the returned one');
+    assert.equal(baseline.failures.length, 1, 'exactly one failure stands for the unrunnable check');
+    assert.match(
+      baseline.failures[0].message, /ENOENT/,
+      'the errno the spawn reported must survive into the failure — `exit code 1` over empty streams names nothing',
+    );
+    assert.equal(
+      baseline.failures[0].ruleOrCode, '127',
+      'the POSIX exec-failure code is what routes this through the EXISTING classifier arm (no new pattern per errno)',
+    );
+  } finally {
+    process.env.PATH = savedPath;
+    rm(workingDir);
+    rm(binDir);
+  }
+});
+
+test('AP-EXT-ITER316-01 control: a check that really RAN and failed stays MEASURED and certifiable', async () => {
+  const workingDir = makeGitRepo('apext316-ctl-repo-');
+
+  try {
+    fs.writeFileSync(
+      path.join(workingDir, 'package.json'),
+      JSON.stringify({
+        name: 'apext316-ctl',
+        private: true,
+        scripts: { typecheck: 'node -e "console.log(\'a.ts(3,5): error TS2304: nope\'); process.exit(2)"' },
+      }, null, 2),
+    );
+    fs.writeFileSync(path.join(workingDir, 'package-lock.json'), '{"lockfileVersion":3}');
+    commitAll(workingDir, 'npm project whose typecheck genuinely fails');
+
+    const baselinePath = path.join(workingDir, 'gate-baseline.json');
+    const result = await runGate({
+      workingDir, mode: 'baseline', scope: 'full', checks: ['typecheck'],
+      baselinePath, baselineIteration: 1, onEvent: () => {},
+    });
+
+    assert.equal(result.check_status.typecheck, 'ran', 'a tool that ran and found errors produced a measurement');
+    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+    assert.equal(baseline.project_type, 'npm', 'a real failure must stay CERTIFIABLE — turning it uncertifiable would defer every iteration');
+    assert.ok(
+      baseline.failures.some((f) => f.ruleOrCode === 'TS2304'),
+      'the granular parser still attributes the real error, so 127 did not swallow the runnable path',
+    );
+  } finally {
+    rm(workingDir);
+  }
+});
+
+// The case that ONLY the exit-code route covers: `spawn pnpm EACCES` matches NO member of
+// `UNRUNNABLE_CHECK_PATTERNS` (measured), so carrying the message alone would still classify a
+// non-executable package manager as a MEASURED failure. Enumerating errnos is the shape that
+// left the hole; the POSIX exec-failure code closes it for every errno at once.
+test('AP-EXT-ITER316-01: an exec failure whose errno matches NO unrunnable pattern (EACCES) is still unmeasured', async () => {
+  const workingDir = makeGitRepo('apext316-eacces-repo-');
+  const binDir = mkTmp('apext316-eacces-bin-');
+  const savedPath = process.env.PATH;
+
+  try {
+    writePnpmTypedFixtureRepo(workingDir);
+    commitAll(workingDir, 'pnpm-typed project whose package manager is not executable');
+    makeGitOnlyPath(binDir);
+    // A PATH match that is NOT executable: execvp finds it, cannot exec it, and (with no later
+    // PATH entry to fall through to) reports EACCES.
+    fs.writeFileSync(path.join(binDir, 'pnpm'), '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+    assert.throws(
+      () => execFileSync('pnpm', ['--version'], { env: { ...process.env, PATH: binDir }, stdio: 'pipe', timeout: 5000 }),
+      (err) => err.code === 'EACCES',
+      'fixture precondition: the PATH match must fail with EACCES, not ENOENT',
+    );
+
+    const baselinePath = path.join(workingDir, 'gate-baseline.json');
+    let result;
+    try {
+      process.env.PATH = binDir;
+      result = await runGate({
+        workingDir, mode: 'baseline', scope: 'full', checks: ['typecheck'],
+        baselinePath, baselineIteration: 1, onEvent: () => {},
+      });
+    } finally { process.env.PATH = savedPath; }
+
+    assert.equal(result.check_status.typecheck, 'failed', 'an EACCES exec failure measured nothing either');
+    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+    assert.equal(baseline.project_type, null, 'uncertifiable regardless of which errno the exec failed with');
+    assert.match(baseline.failures[0].message, /EACCES/, 'the errno rides out even though no pattern spells it');
+  } finally {
+    process.env.PATH = savedPath;
+    rm(workingDir);
+    rm(binDir);
   }
 });

@@ -697,8 +697,12 @@ async function classifyReestimatedPass(committedStdout) {
   }];
   const originalSpawn = _deps.spawnSync;
   const diffRanges = [];
+  // `args[0]` is NOT the subcommand: `listCommittedFilesInRange` spends a git-GLOBAL
+  // `-c diff.relative=false` prefix (AP-EXT-ITER314-06), so an argv[0] anchor silently stops
+  // matching and this double goes dead — the real git runs and the stub asserts nothing.
+  // Match the subcommand TOKEN wherever it sits.
   _deps.spawnSync = (cmd, args, opts) => {
-    if (cmd === 'git' && Array.isArray(args) && args[0] === 'diff') {
+    if (cmd === 'git' && Array.isArray(args) && args.includes('diff')) {
       diffRanges.push(args[args.length - 1]);
       return { status: 0, stdout: committedStdout, stderr: '' };
     }
@@ -1195,8 +1199,9 @@ async function runTwoSizedJudgePasses(firstLines, secondLines) {
   // AP-EXT-ITER265-01: a size fall counts only on a path the iteration's commits touched — model the worker
   // having edited the entry's file, as the recorded session did.
   const originalSpawn = _deps.spawnSync;
+  // Subcommand TOKEN, not `args[0]` — see the note in the sibling double above.
   _deps.spawnSync = (cmd, args, opts) => (
-    cmd === 'git' && Array.isArray(args) && args[0] === 'diff'
+    cmd === 'git' && Array.isArray(args) && args.includes('diff')
       ? { status: 0, stdout: 'src/big.ts\0', stderr: '' }
       : originalSpawn(cmd, args, opts)
   );

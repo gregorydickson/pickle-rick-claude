@@ -858,9 +858,10 @@ function killCheckSubtree(child: ChildProcess, signal: NodeJS.Signals): void {
  * `detached` is the only shape in which the child LEADS a group there is something to
  * reap; the two are driven off one platform predicate so they cannot drift.
  *
- * `error` RESOLVES rather than rejects, byte-for-byte the pre-fix disposition: only a
- * `GateTimeoutError` is caught by `runGateCheck`, so rejecting here would throw out of
- * `runGate` instead of producing a red result.
+ * `error` RESOLVES rather than rejects — only a `GateTimeoutError` is caught by
+ * `runGateCheck`, so rejecting here would throw out of `runGate` instead of producing a red
+ * result. It resolves `exitCode: 127` carrying the errno message (AP-EXT-ITER316-01, see the
+ * settle path below); the RESOLVE half is byte-for-byte the pre-ITER54-01 disposition.
  *
  * This function is the whole of that contract: the `detached` spawn and BOTH teardowns
  * (timeout, output cap) live here together, which is what the invariant requires — they
@@ -906,12 +907,33 @@ async function runCheckSubtree(
     child.stdout?.on('data', capture((c) => { stdout += c; }));
     child.stderr?.on('data', capture((c) => { stderr += c; }));
 
-    // `error` and `close` differ only in the exit code they carry out — one settle path,
-    // not two.
+    // `error` and `close` share ONE settle path, not two; they differ in the exit code they
+    // carry out and in the diagnosis `error` alone holds.
+    //
+    // AP-EXT-ITER316-01: `error` means the process NEVER STARTED, and that fact has to leave
+    // this function, because `classifyUnrunnableCheck` reads the RESULT and nothing else. The
+    // pre-fix pair carried `exitCode: 1` with EMPTY streams — byte-identical to "the tool ran,
+    // printed nothing, exited 1" — so a missing package manager (`detectProjectType` reads a
+    // lockfile, never a toolchain, and `detectMissingTools` only screens
+    // `NON_GUARANTEED_TOOLS`, which holds no build tool) classified as a MEASURED failure:
+    // `check_status: 'ran'`, a certifiable baseline, and a content-free
+    // `<check> failed with exit code 1` fingerprint that every later iteration subtracts.
+    // `127` is the POSIX exec-failure code and `classifyUnrunnableCheck` ALREADY has that arm,
+    // so this routes the WHOLE errno space (ENOENT, EACCES, EAGAIN, EMFILE, ENOMEM) through
+    // the existing classifier without a new pattern, field or branch — matching only the
+    // errnos someone remembered to spell is what left this hole. The message rides in
+    // `stderr` so the failure the gate reports names the real cause instead of an exit code.
+    //
+    // "NEVER STARTED" is the only meaning `error` can carry HERE, and that is a property of
+    // this function, not of Node: the event also fires for a failed kill, but both kills run
+    // INSIDE `settle(...)`, which latches `settled = true` before its callback, so a kill-borne
+    // `error` reaches `settleWith` already settled and no-ops. There is no `ipc` in `stdio`, so
+    // the third cause cannot arise. Adding a kill outside `settle` would break that and put a
+    // check that really ran behind this exit code.
     const settleWith = (exitCode: number): void => {
       settle(() => { resolve({ stdout, stderr, exitCode }); });
     };
-    child.on('error', () => { settleWith(1); });
+    child.on('error', (err) => { stderr += `${err.message}\n`; settleWith(127); });
     child.on('close', (code) => { settleWith(typeof code === 'number' ? code : 1); });
 
     // Stays REF'D for the duration of the in-flight check: this is the SOLE settle path
