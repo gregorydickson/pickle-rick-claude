@@ -774,6 +774,68 @@ test('AC-WMFF-2B: codegraph dirt is excluded from the COUNT, not merely from the
   }
 });
 
+// AP-EXT-ITER306-01: the two codegraph cases above, with the working dir one directory BELOW
+// the git toplevel. The breadcrumb's set MUST equal the set `archiveBeforeDestructive` would
+// save, and the archive reaches its exclusion through a cwd-relative git PATHSPEC while these
+// callers reached it through `.filter(!isCodegraphArtifact)` alone. `git status --porcelain`
+// answers in REPO-ROOT space whatever cwd it was asked from, so down here the runtime's own
+// index arrives spelled `nested/work/.codegraph/...`, the leading-`.codegraph/` predicate
+// declines it, and the two sets diverge (measured: consumer `['nested/work/.codegraph/x']` vs
+// archive `[]`). A fire here sends the operator after a `pre_reset_*.patch` the archive never
+// wrote. Both cases share the toplevel fixtures above; only `workingDir` moves.
+test('AP-EXT-ITER306-01: below the toplevel a codegraph-only tree is STILL not recoverable work', () => {
+  const { repo, baseSha } = makeRepo('wmff-2b-cgn-repo-');
+  const { sessionDir } = makeSession('wmff-2b-cgn-sess-');
+  try {
+    const id = 'bb66cgnd';
+    makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+    const workingDir = path.join(repo, 'nested', 'work');
+    mkdirSync(path.join(workingDir, '.codegraph'), { recursive: true });
+    writeFileSync(path.join(workingDir, '.codegraph', 'codegraph.db'), 'binary-ish\n');
+
+    assert.equal(
+      claimWorkerProducedEverythingButCommit({
+        sessionDir, workingDir, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha: baseSha,
+      }),
+      null,
+      'a codegraph-only tree has no recoverable work from a nested working dir either — the archive would save nothing here',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER306-01: below the toplevel codegraph dirt is excluded from the COUNT', () => {
+  const { repo, baseSha } = makeRepo('wmff-2b-cgnmix-repo-');
+  const { sessionDir } = makeSession('wmff-2b-cgnmix-sess-');
+  try {
+    const id = 'bb55cgnm';
+    makeTicket(sessionDir, id, { status: 'Failed', extraFiles: { 'worker_session_1.log': '' } });
+    const workingDir = path.join(repo, 'nested', 'work');
+    mkdirSync(path.join(workingDir, '.codegraph'), { recursive: true });
+    writeFileSync(path.join(workingDir, '.codegraph', 'codegraph.db'), 'binary-ish\n');
+    writeFileSync(path.join(workingDir, 'real.ts'), 'export const real = 1;\n');   // genuine worker output
+
+    const payload = claimWorkerProducedEverythingButCommit({
+      sessionDir, workingDir, ticketId: id, iteration: 1, sessionLogBytes: 0, preIterSha: baseSha,
+    });
+
+    // ACCEPT control: the claim must still FIRE from down here. A reader that returned
+    // nothing at all from a nested cwd would green the case above vacuously.
+    assert.ok(payload, 'real uncommitted work below the toplevel still fires');
+    assert.deepEqual(
+      payload.dirty_in_scope_paths,
+      ['nested/work/real.ts'],
+      'the runtime index beside a nested working dir never reaches the payload',
+    );
+    assert.equal(payload.total_count, 1, 'total_count reports the RECOVERABLE set — the set the archive would save');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
 test('AC-WMFF-2B: idempotent once per (ticket, iteration); a NEW iteration re-arms', () => {
   const { repo, baseSha } = makeRepo('wmff-2b-idem-repo-');
   const { sessionDir } = makeSession('wmff-2b-idem-sess-');

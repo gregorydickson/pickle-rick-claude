@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { runCmd, writeStateFile, safeErrorMessage } from './pickle-utils.js';
 import { readRecoverableJsonObject } from './microverse-state.js';
-import { isCodegraphArtifact, listWorkingTreeDirtyPaths } from './git-utils.js';
+import { listWorkingTreeDirtyPathsExcludingCodegraph } from './git-utils.js';
 const CONSTRAINT_DISCOVERY_PATTERN = /\b(constraint|invariant|assumption|requirement|contract|blocked by|discovered)\b/i;
 const CORRECT_COURSE_SUGGESTION = 'Suggested recovery: run /pickle-correct-course "<discovery>"';
 const NO_PROGRESS_REASON_PREFIX = /^No progress in \d+ iterations/;
@@ -164,10 +164,12 @@ export function detectProgress(workingDir, lastKnownHead, prevStep, currentStep,
     // the rescue probe and the breaker could previously answer the SAME tree oppositely.
     // `.codegraph/` is untracked dirt on a fresh clone (ignored only through the local,
     // unversioned `.git/info/exclude`); unfiltered it would read as progress on every
-    // stagnant iteration and the no-progress breaker could never trip at all.
+    // stagnant iteration and the no-progress breaker could never trip at all. That
+    // exclusion lives in the SHARED reader (AP-EXT-ITER306-01) — a local
+    // `.filter(isCodegraphArtifact)` is space-blind below the git toplevel.
     let dirtyPaths;
     try {
-        dirtyPaths = listWorkingTreeDirtyPaths(workingDir).filter((p) => !isCodegraphArtifact(p));
+        dirtyPaths = listWorkingTreeDirtyPathsExcludingCodegraph(workingDir);
     }
     catch {
         // The working tree could not be measured. Assume progress: advancing the

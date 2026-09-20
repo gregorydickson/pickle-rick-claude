@@ -406,6 +406,26 @@ export function isCodegraphArtifact(p: string): boolean {
 }
 
 /**
+ * The ONE dirty-tree read that drops the runtime's own regenerable codegraph index.
+ *
+ * Every consumer that asks "is there uncommitted WORK here?" must use this and nothing
+ * else, because the exclusion needs BOTH halves and the JS half alone is space-blind.
+ * `listWorkingTreeDirtyPaths` answers relative to the REPO TOPLEVEL whatever cwd it was
+ * asked from, while codegraph writes its index at `<cwd>/.codegraph/` — so one directory
+ * below the toplevel the index arrives spelled `sub/.codegraph/…`, `isCodegraphArtifact`
+ * declines it (it matches a LEADING `.codegraph/` only), and the runtime reads its own
+ * index as worker output. The `[CODEGRAPH_DIR]` pathspec is cwd-relative and therefore
+ * correct in every space; at the toplevel the two formulations are byte-identical, which
+ * is why four hand-copied filter-only sites were invisible for as long as they were.
+ *
+ * Callers MUST NOT re-spell this as `listWorkingTreeDirtyPaths(cwd).filter(...)`: that is
+ * the shape this function exists to collapse.
+ */
+export function listWorkingTreeDirtyPathsExcludingCodegraph(cwd: string): string[] {
+  return listWorkingTreeDirtyPaths(cwd, [CODEGRAPH_DIR]).filter((p) => !isCodegraphArtifact(p));
+}
+
+/**
  * Byte-exact git read — the one contract every patch section is built from.
  *
  * Decoding is NOT allowed on this path. Git classifies a file as TEXT when its
@@ -497,7 +517,7 @@ export function archiveBeforeDestructive(
   ctx: ArchiveContext,
   byteCap: number = ARCHIVE_UNTRACKED_BYTE_CAP,
 ): ArchiveResult | null {
-  const files = listWorkingTreeDirtyPaths(ctx.cwd, [CODEGRAPH_DIR]).filter((p) => !isCodegraphArtifact(p));
+  const files = listWorkingTreeDirtyPathsExcludingCodegraph(ctx.cwd);
   if (files.length === 0) return null;
 
   const ticket = ctx.ticketDir ? path.basename(ctx.ticketDir) : null;

@@ -416,6 +416,43 @@ test('AP-EXT-ITER222-01: a regenerable .codegraph artifact is NOT work', () => {
     }
 });
 
+// AP-EXT-ITER306-01: the SAME case as above, with the session working dir one directory
+// BELOW the git toplevel. `git status --porcelain` answers relative to the TOPLEVEL whatever
+// cwd it was asked from, while codegraph writes its index at `<workingDir>/.codegraph/` — so
+// down here the index arrives spelled `nested/work/.codegraph/...` and a bare
+// `.filter(!isCodegraphArtifact)` (which matches a LEADING `.codegraph/` only) declines to
+// drop it. The exclusion therefore has to reach git as a cwd-relative PATHSPEC, which is what
+// the shared `listWorkingTreeDirtyPathsExcludingCodegraph` does. Every fixture above sits at
+// the toplevel, where the two spellings are identical, so this gap was invisible by
+// construction — the AP-EXT-ITER305-01 path-space family.
+test('AP-EXT-ITER306-01: below the git toplevel a .codegraph artifact is STILL not work', () => {
+    const repo = makeTmpDir('cb-test-cg-nested-');
+    try {
+        const head = initGitRepo(repo);
+        const workingDir = path.join(repo, 'nested', 'work');
+        fs.mkdirSync(path.join(workingDir, '.codegraph'), { recursive: true });
+        fs.writeFileSync(path.join(workingDir, '.codegraph', 'index.json'), '{}');
+
+        const result = detectProgress(workingDir, head, 'implement', 'implement', 'ticket-A', 'ticket-A');
+        assert.equal(
+            result.hasProgress,
+            false,
+            'the runtime index must not read as progress from a nested working dir either — counting it resets the no-progress counter every stagnant iteration and the breaker can never trip',
+        );
+        assert.equal(result.filesChanged, 0);
+
+        // ACCEPT control on the SAME fixture: real work down here MUST still read as
+        // progress. Without this, a reader that returns nothing at all from a nested cwd
+        // would satisfy the assertions above vacuously.
+        fs.writeFileSync(path.join(workingDir, 'real.ts'), 'export const real = 1;\n');
+        const withWork = detectProgress(workingDir, head, 'implement', 'implement', 'ticket-A', 'ticket-A');
+        assert.equal(withWork.hasProgress, true, 'genuine uncommitted work below the toplevel is still progress');
+        assert.equal(withWork.filesChanged, 1, 'the count reports the real file and NOT the codegraph index beside it');
+    } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+    }
+});
+
 test('R-DEFCHURN #127: a REAL commit (HEAD + tree changed) is still progress', () => {
     const tmpDir = makeTmpDir();
     try {

@@ -24,7 +24,7 @@ import {
   type ManagerRelaunchExitKind,
   type ManagerRelaunchDecision,
 } from '../services/manager-relaunch.js';
-import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, probeTreeDirty, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
+import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, listWorkingTreeDirtyPathsExcludingCodegraph, probeTreeDirty, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible, type PlanPhase, type RecoveryDeps, type RecoveryEvidence, type RecoveryOutcome, type ReExecutionSeam } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds, type ArtifactProgressSnapshot } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, type EvidenceCtx, type RevertDecision, type CompletionDecisionCtx, type CompletionDecisionKind } from '../services/ticket-completion-evidence.js';
@@ -5013,7 +5013,7 @@ export function commitPendingProbe(input: CommitPendingProbeInput): CommitPendin
   // dropped through the same exported predicate `collectDirtyInScopePaths` uses.
   let hasUncommitted: boolean;
   try {
-    hasUncommitted = listWorkingTreeDirtyPaths(workingDir).some((p) => !isCodegraphArtifact(p));
+    hasUncommitted = listWorkingTreeDirtyPathsExcludingCodegraph(workingDir).length > 0;
   } catch (err) {
     log(`commit-pending probe: git probe failed (${safeErrorMessage(err)}) — skipping`);
     return 'skipped:no-uncommitted';
@@ -12107,7 +12107,7 @@ const everythingButCommitClaimed = new Set<string>();
  * fresh clone it is plain untracked dirt.
  */
 function collectDirtyInScopePaths(workingDir: string, sessionDir: string): string[] {
-  const dirty = listWorkingTreeDirtyPaths(workingDir).filter((p) => !isCodegraphArtifact(p));
+  const dirty = listWorkingTreeDirtyPathsExcludingCodegraph(workingDir);
   if (dirty.length === 0) {
     return [];
   }
