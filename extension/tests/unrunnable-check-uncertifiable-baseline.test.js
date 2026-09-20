@@ -1427,3 +1427,64 @@ test('AP-EXT-ITER316-01: an exec failure whose errno matches NO unrunnable patte
     rm(binDir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER318-01: the check that was KILLED — the sibling door to ITER316-01.
+//
+// ITER316-01 closed `on('error')`, which fires only when the process never STARTED. A check
+// that started and was then killed from outside (OOM reaper, an operator `pkill`, a supervisor)
+// takes the OTHER door: `close` fires with `code === null` and the signal beside it, and
+// `error` never fires at all. The pre-fix handler collapsed that null onto `1`, which is
+// byte-identical to "the tool ran, printed nothing, exited 1" — so `classifyUnrunnableCheck`
+// had nothing to match, `check_status` said `'ran'`, the baseline persisted CERTIFIABLE, and
+// its content-free `typecheck failed with exit code 1` fingerprint was subtracted by every
+// later iteration. A killed tier became a permanent green.
+//
+// Driven through the REAL `runGate` against a REAL npm project: the `typecheck` script kills
+// its own parent (`kill -9 $PPID`, which is the `npm` process `runCheckSubtree` spawned), so
+// the SIGKILL is delivered by the operating system to the direct child. The kill is targeted
+// by pid, NOT by process group, so this case cannot reach the test runner's own group even if
+// `detached` is later mutated to false.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER318-01: a check KILLED by a signal is unmeasured, not a measured exit 1', async () => {
+  const workingDir = makeGitRepo('apext318-repo-');
+
+  try {
+    fs.writeFileSync(
+      path.join(workingDir, 'package.json'),
+      JSON.stringify({ name: 'apext318-fixture', private: true, scripts: { typecheck: 'kill -9 $PPID' } }, null, 2),
+    );
+    commitAll(workingDir, 'npm project whose typecheck check gets killed mid-flight');
+    assert.equal(detectProjectType(workingDir), 'npm', 'fixture precondition: package.json alone must resolve the project type');
+
+    const baselinePath = path.join(workingDir, 'gate-baseline.json');
+    const result = await runGate({
+      workingDir, mode: 'baseline', scope: 'full', checks: ['typecheck'],
+      baselinePath, baselineIteration: 1, onEvent: () => {},
+    });
+
+    assert.equal(
+      result.check_status.typecheck, 'failed',
+      "a check that was killed is not a check that 'ran' — `hasUnmeasuredCheck`/`isCheckUnmeasured` read this field and nothing else",
+    );
+
+    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+    assert.equal(
+      baseline.project_type, null,
+      'the uncertifiable route must fire: certifying this baseline makes the phantom failure subtractable forever',
+    );
+    assert.equal(baseline.check_status.typecheck, 'failed', 'the persisted status carries the same fact as the returned one');
+    assert.equal(baseline.failures.length, 1, 'exactly one failure stands for the killed check');
+    assert.equal(
+      baseline.failures[0].ruleOrCode, 'no-exit-status',
+      'the phantom must not borrow a real exit code — `1` is exactly the fingerprint baseline subtraction removes',
+    );
+    assert.match(
+      `${baseline.failures[0].message}`, /SIGKILL|no exit status/,
+      'the signal that ended the check must survive into the failure — `exit code 1` names nothing',
+    );
+  } finally {
+    rm(workingDir);
+  }
+});

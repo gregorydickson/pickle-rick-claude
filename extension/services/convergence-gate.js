@@ -816,11 +816,30 @@ async function runCheckSubtree(check, bin, args, cwd, timeout_ms) {
         // `error` reaches `settleWith` already settled and no-ops. There is no `ipc` in `stdio`, so
         // the third cause cannot arise. Adding a kill outside `settle` would break that and put a
         // check that really ran behind this exit code.
+        //
+        // AP-EXT-ITER318-01, the SIBLING door: `close` carries `(code, signal)` and an EXTERNALLY
+        // killed check (OOM reaper, operator `pkill`, supervisor) delivers `code === null` with the
+        // signal beside it — `error` never fires, so the ITER316-01 path above cannot see this at
+        // all. Collapsing that null onto `1` made a check that NEVER COMPLETED byte-identical to one
+        // that ran and exited 1, which is the same fake-green: `classifyUnrunnableCheck` had nothing
+        // to match, `check_status` said `'ran'`, and the certifiable baseline persisted a content-
+        // free `<check> failed with exit code 1` fingerprint that every later pass subtracts.
+        // The null is PASSED THROUGH rather than re-encoded, because the one thing the collapse
+        // destroyed was the distinction itself; `CheckResult.exitCode` carries it and the TYPE makes
+        // every consumer answer for it. The signal name rides in `stderr` so the reported failure
+        // names the real cause, exactly as the errno does for `error`. Do NOT close this by adding a
+        // `/terminated by signal/` member to `UNRUNNABLE_CHECK_PATTERNS` — an enumeration of
+        // spellings is what left the ITER316-01 hole, and a shell-convention `128 + signal` code
+        // would re-enter the same collision with programs that legitimately exit 137.
         const settleWith = (exitCode) => {
             settle(() => { resolve({ stdout, stderr, exitCode }); });
         };
         child.on('error', (err) => { stderr += `${err.message}\n`; settleWith(127); });
-        child.on('close', (code) => { settleWith(typeof code === 'number' ? code : 1); });
+        child.on('close', (code, signal) => {
+            if (code === null)
+                stderr += `check terminated by signal ${signal ?? 'unknown'}\n`;
+            settleWith(code);
+        });
         // Stays REF'D for the duration of the in-flight check: this is the SOLE settle path
         // when the check's child hangs — it neither closes nor errors — so an `.unref()` here
         // would make the timeout conditional on some UNRELATED handle happening to hold the
@@ -1005,6 +1024,18 @@ const FAILURE_PARSERS = {
     lint: parseEslintOutput,
     tests: parseTestOutput,
 };
+/**
+ * The ONE spelling of an exit status for a failure record. `ruleOrCode` and the fallback
+ * `message` are exactly what baseline subtraction fingerprints on, so a result carrying NO exit
+ * status must not borrow the fingerprint of a real exit code — sharing `'1'` with a genuine
+ * empty-output failure is what made a signal-killed check silently subtractable every pass
+ * (AP-EXT-ITER318-01).
+ */
+function describeExitStatus(exitCode) {
+    return exitCode === null
+        ? { token: 'no-exit-status', phrase: 'no exit status (terminated by signal)' }
+        : { token: String(exitCode), phrase: `exit code ${exitCode}` };
+}
 export function buildFailures(result, check, pkgDir) {
     // R-FGNC-2: the subprocess exit code is the source of truth for "did this
     // check fail" — stdout/stderr is scraped only to enumerate WHICH failures
@@ -1019,14 +1050,15 @@ export function buildFailures(result, check, pkgDir) {
     const parsed = FAILURE_PARSERS[check](output, pkgDir);
     if (parsed.length > 0)
         return parsed;
+    const exitStatus = describeExitStatus(result.exitCode);
     return [{
             check,
             file: pkgDir,
             line: 0,
-            ruleOrCode: String(result.exitCode),
+            ruleOrCode: exitStatus.token,
             // V3-3: keep the TAIL. A runner prints startup noise first and the failing test / summary last,
             // so a head slice records the part that names nothing.
-            message: output.slice(-500) || `${check} failed with exit code ${result.exitCode}`,
+            message: output.slice(-500) || `${check} failed with ${exitStatus.phrase}`,
             severity: 'error',
             occurrence_index: 0,
         }];
@@ -1045,6 +1077,11 @@ const UNRUNNABLE_CHECK_PATTERNS = [
     { re: /\bcommand not found\b|is not recognized as an internal or external command/i, reason: 'command not found' },
 ];
 function classifyUnrunnableCheck(result) {
+    // AP-EXT-ITER318-01: no exit status at all is the purest member of this class — the check did
+    // not complete, so there is no measurement to trust. Keyed on the TYPE rather than on output
+    // text, so no spelling has to be remembered and tsc forces the state to be handled.
+    if (result.exitCode === null)
+        return 'terminated by signal: no exit status';
     if (result.exitCode === 0)
         return null;
     if (result.exitCode === 127)

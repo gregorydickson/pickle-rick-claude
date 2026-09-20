@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { isUnrunnableCheckResult, runGate } from '../../services/convergence-gate.js';
+import { buildFailures, isUnrunnableCheckResult, runGate } from '../../services/convergence-gate.js';
 
 // ---------------------------------------------------------------------------
 // AC-SZGBD-03 regression guard: isUnrunnableCheckResult unit cases.
@@ -177,4 +177,42 @@ test('runGate baseline: a genuine typecheck failure (real TSxxxx-shaped output) 
   } finally {
     fs.rmSync(workingDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER318-01: a check with NO exit status.
+//
+// `runCheckSubtree`'s `close` handler receives `(code, signal)`, and an externally killed
+// check delivers `code === null` — `error` never fires, so the AP-EXT-ITER316-01 exec-failure
+// path cannot see this at all. Collapsing that null onto `1` made a check that never completed
+// byte-identical to one that ran and exited 1. These two cases pin the halves that collapse
+// destroyed: the CLASSIFICATION (it did not run) and the FINGERPRINT (baseline subtraction must
+// not remove it as an ordinary exit-1 failure).
+//
+// The over-trigger controls live above: the three `NOT unrunnable` cases (real tsc failure,
+// real eslint violation, real failing test run) all red under a blanket always-unrunnable
+// mutant, so neither case below can pass vacuously.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER318-01: a result carrying NO exit status is unrunnable', () => {
+  assert.equal(
+    isUnrunnableCheckResult({ stdout: 'ran 400 of 900 tests...', stderr: '', exitCode: null }),
+    true,
+    'no exit status means the check never completed — there is no measurement to trust, however much output it managed to print first',
+  );
+});
+
+test('AP-EXT-ITER318-01: a no-exit-status failure does not borrow a real exit code\'s fingerprint', () => {
+  const [killed] = buildFailures({ stdout: '', stderr: '', exitCode: null }, 'typecheck', '/pkg');
+  const [real] = buildFailures({ stdout: '', stderr: '', exitCode: 1 }, 'typecheck', '/pkg');
+
+  assert.equal(killed.ruleOrCode, 'no-exit-status');
+  assert.match(killed.message, /no exit status/);
+  assert.notEqual(
+    killed.ruleOrCode, real.ruleOrCode,
+    'sharing the generic exit-N fingerprint is what let baseline subtraction remove the phantom on every later pass',
+  );
+  assert.notEqual(killed.message, real.message);
+  // The arm the null check sits beside is unmoved: exit 0 is still no failure at all.
+  assert.deepEqual(buildFailures({ stdout: '', stderr: '', exitCode: 0 }, 'typecheck', '/pkg'), []);
 });
