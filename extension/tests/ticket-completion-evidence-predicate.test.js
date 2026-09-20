@@ -1426,3 +1426,147 @@ test('AP-EXT-ITER123-01: a definite not-exists on the primary rung is still FINA
     f.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER327-01 — absence-of-proof is not proof-of-absence
+// ---------------------------------------------------------------------------
+//
+// `probeShaOverLadder` returns `null` for TWO different facts: "every rung
+// answered, none has this commit" and "no rung ever spoke". The second is not a
+// finding, and the one consumer that DISCARDS on `absent`
+// (gateForPhantomDoneRevert -> writeTicketStatus(..., 'Todo')) treated it as one,
+// throwing away a Done ticket whose commit was sitting in the repo the whole time.
+//
+// Assert the DECISION, never the probe: pre-fix the same fixtures return
+// `action: 'revert'`. The exit-128 controls below are load-bearing in the other
+// direction — the ORDINARY "this repo lacks that commit" is also bucketed
+// `'git-could-not-run'` (AP-EXT-ITER76-02), so a fix keyed on ladder exhaustion
+// rather than on `gitReportedExitStatus` would mark every absence unmeasured and
+// render the phantom-Done watcher inert.
+
+/**
+ * A `git` shim that DIES UNSPOKEN (SIGKILL -> `status: null`) for the matched
+ * subcommand and delegates everything else to the real git. That is the shape of
+ * a spawn that never produced an exit status — an EAGAIN/EMFILE fork failure
+ * under tier load, an EACCES on the binary, the 5s timeout kill — reached
+ * instantly instead of waiting a timeout out.
+ */
+function withGitUnableToSpeak(subcommand, fn) {
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8', timeout: 30_000 }).trim();
+  const shimDir = mkTmp('pickle-iter327-shim-');
+  const shim = path.join(shimDir, 'git');
+  fs.writeFileSync(
+    shim,
+    ['#!/bin/sh',
+     'for a in "$@"; do',
+     `  if [ "$a" = ${JSON.stringify(subcommand)} ]; then kill -9 $$; fi`,
+     'done',
+     `exec ${JSON.stringify(realGit)} "$@"`,
+     ''].join('\n'),
+  );
+  fs.chmodSync(shim, 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${shimDir}${path.delimiter}${savedPath}`;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(shimDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER327-01: a sha probe git never answered must not revert a Done ticket', () => {
+  const root = mkTmp('pickle-iter327-');
+  try {
+    initGitRepo(root);
+    const ownSha = commitFile(root, 'own.txt', 'fix(uns32701): the work this ticket really shipped');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'uns32701', { completionCommit: ownSha });
+    const ctx = baseCtx(sessionDir, 'uns32701', root);
+
+    // ACCEPT control on the SAME fixture: with git healthy the ticket is kept on
+    // real evidence, so the keep asserted below cannot pass on an unkeepable fixture.
+    const healthy = gateForPhantomDoneRevert(ctx);
+    assert.equal(healthy.action, 'keep');
+    assert.equal(healthy.kind, 'committed', 'control: a healthy probe keeps on MEASURED evidence');
+
+    const ev = withGitUnableToSpeak('cat-file', () => readEvidence(ctx));
+    assert.equal(ev.kind, 'absent');
+    assert.equal(ev.unmeasured, true, 'a ladder that exhausted without git ever speaking measured NOTHING');
+
+    const decision = withGitUnableToSpeak('cat-file', () => gateForPhantomDoneRevert(ctx));
+    assert.equal(
+      decision.action, 'keep',
+      'reverting Done -> Todo on an unmeasured absence discards shipped work (R-DSAN never-discard)',
+    );
+
+    // The commit was resolvable the whole time — the revert would have been wrong,
+    // not merely cautious.
+    assert.doesNotThrow(
+      () => execFileSync('git', ['-C', root, 'cat-file', '-e', `${ownSha}^{commit}`], { timeout: 30_000, stdio: 'ignore' }),
+      'the stamped sha is genuinely reachable in the fixture repo',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER327-01 over-trigger control: an exit-128 absence IS measured and still reverts', () => {
+  const root = mkTmp('pickle-iter327-meas-');
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+    // A hallucinated stamp: git RUNS and reports 128 on every rung. That is a real
+    // measurement, so the phantom-Done watcher must still correct the ticket.
+    writeTicket(sessionDir, 'mea32701', { completionCommit: HALLUCINATED_SHA });
+    const ctx = baseCtx(sessionDir, 'mea32701', root);
+
+    const ev = readEvidence(ctx);
+    assert.equal(ev.kind, 'absent');
+    assert.equal(ev.unmeasured, false, 'git answered 128 on every rung — the absence was MEASURED');
+    assert.equal(
+      gateForPhantomDoneRevert(ctx).action, 'revert',
+      'the watcher must not go inert: an answered absence is still a phantom Done',
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER327-01 over-trigger control: a ticket with no evidence at all still reverts', () => {
+  const root = mkTmp('pickle-iter327-none-');
+  try {
+    initGitRepo(root);
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'non32701', {});
+    const ctx = baseCtx(sessionDir, 'non32701', root);
+
+    const ev = readEvidence(ctx);
+    assert.equal(ev.absentReason, 'no_evidence');
+    assert.equal(ev.unmeasured, false, 'no stamp and no trailer is a measured no_evidence, not an unmeasured one');
+    assert.equal(gateForPhantomDoneRevert(ctx).action, 'revert');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER327-01: the Done FLIP stays fail-closed on the same unmeasured absence', () => {
+  const root = mkTmp('pickle-iter327-flip-');
+  try {
+    initGitRepo(root);
+    const ownSha = commitFile(root, 'own.txt', 'fix(flp32701): shipped work');
+    const sessionDir = path.join(root, 'session');
+    writeTicket(sessionDir, 'flp32701', { completionCommit: ownSha });
+
+    // Refusing a flip PARKS a ticket; reverting a Done DISCARDS one. Only the
+    // discarding consumer reads `unmeasured`, so the flip must still refuse here.
+    const decision = withGitUnableToSpeak('cat-file', () => evaluateCompletionEvidence(baseCtx(
+      sessionDir, 'flp32701', root,
+      { decision: 'done-flip', workerGateVerdict: () => ({ verdict: 'green', computedVia: 'test' }) },
+    )));
+    assert.equal(decision.ok, false, 'an unmeasured absence must not become a Done-flip ACCEPT');
+    assert.equal(decision.unmeasured, true, 'the flip refusal still carries why it could not decide');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

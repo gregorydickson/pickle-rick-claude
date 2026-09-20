@@ -22,6 +22,7 @@ import { execFileSync } from 'node:child_process';
 import { readFrontmatterField, upsertFrontmatterField, normalizeCompletionCommitField, ticketFilePath, } from './pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from './artifact-validation.js';
 import { VALID_TICKET_COMPLEXITY_TIERS } from './pickle-utils.js';
+import { gitReportedExitStatus } from './git-utils.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 /**
  * Count ceiling for the trailer scan, used ONLY when the session carries no
@@ -70,7 +71,7 @@ function resolveTicketPath(ctx) {
  * it is what makes the verdict follow git's contract rather than this call site's
  * current spelling of it.
  */
-function probeCatFile(workingDir, sha) {
+function probeCatFile(workingDir, sha, onGitDidNotSpeak) {
     try {
         execFileSync('git', ['-C', workingDir, 'cat-file', '-e', `${sha}^{commit}`], {
             timeout: 5000,
@@ -79,6 +80,14 @@ function probeCatFile(workingDir, sha) {
         return 'exists';
     }
     catch (err) {
+        // AP-EXT-ITER327-01: an OBSERVATION beside the verdict, never a fourth verdict.
+        // `'git-could-not-run'` is overwhelmingly "git ran and said 128" (ITER76-02), so
+        // the bucket cannot tell a caller whether anything was MEASURED. `gitReportedExitStatus`
+        // is the ONE home for that distinction (git-utils.ts), shared with the
+        // `--show-toplevel` resolvers; it reads the PRESENCE of an exit status and needs
+        // no errno list, so the ITER111-01 no-survivor-list doctrine is untouched.
+        if (!gitReportedExitStatus(err))
+            onGitDidNotSpeak?.();
         return err.status === 1 ? 'not-exists' : 'git-could-not-run';
     }
 }
@@ -149,16 +158,23 @@ function rejectsAsBaseline(sha, ctx) {
  * Returns the EvidenceResult on success, or null when no rung can resolve the
  * sha (caller maps null → absent).
  */
-function probeShaOverLadder(sha, ctx) {
+function probeShaOverLadder(sha, ctx, onUnmeasured) {
     const dirs = gitDirLadder(ctx);
+    // AP-EXT-ITER327-01: the ladder's `null` answers TWO different questions — "every
+    // rung said no" and "no rung ever spoke". Only the first is a finding. Descent is
+    // unchanged; this records whether the exhaustion measured anything at all.
+    let gitDidNotSpeak = false;
+    const markUnspoken = () => { gitDidNotSpeak = true; };
     for (const [rung, dir] of dirs.entries()) {
-        const probe = probeCatFile(dir, sha);
+        const probe = probeCatFile(dir, sha, markUnspoken);
         if (probe === 'exists') {
             return rung === 0 ? { kind: 'committed', sha } : { kind: 'committed', sha, usedFallback: true };
         }
         if (probe !== 'git-could-not-run')
             return null;
     }
+    if (gitDidNotSpeak)
+        onUnmeasured?.();
     return null;
 }
 /**
@@ -412,7 +428,7 @@ function scanGitLog(args) {
  * (AP-EXT-ITER195-01): a stamp is a CLAIM, and a claim git cannot confirm is not
  * a verdict about any OTHER attribution path.
  */
-function readInferredArm(ctx, content) {
+function readInferredArm(ctx, content, onUnmeasured) {
     const inferredField = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit_inferred'));
     if (!inferredField)
         return null;
@@ -422,7 +438,7 @@ function readInferredArm(ctx, content) {
     // AP-EXT-ITER123-01: the SAME ladder the explicit arm accepts over. A bare
     // `commitExists(ctx.workingDir, …)` here made an unusable per-ticket
     // working_dir revert a Done ticket whose sha the fallback repo could name.
-    const probed = probeShaOverLadder(inferredField, ctx);
+    const probed = probeShaOverLadder(inferredField, ctx, onUnmeasured);
     if (probed)
         return { ...probed, via: 'inferred' };
     // AP-EXT-ITER195-01 / R-AICF parity: null — fall through to the scan arm,
@@ -457,8 +473,14 @@ export function readEvidence(ctx) {
         content = fs.readFileSync(tPath, 'utf8');
     }
     catch {
-        return { kind: 'absent' };
+        // AP-EXT-ITER327-01: a ticket we could not READ is not a ticket without evidence.
+        return { kind: 'absent', unmeasured: true };
     }
+    // AP-EXT-ITER327-01: set when a dir-ladder probe exhausted without git ever
+    // speaking. `absent()` carries it so the discarding consumer can tell an
+    // absence that was MEASURED from one that was not.
+    let probeUnmeasured = false;
+    const markUnmeasured = () => { probeUnmeasured = true; };
     // --- Explicit completion_commit field ---
     const explicit = normalizeCompletionCommitField(readFrontmatterField(content, 'completion_commit'));
     let unreachableExplicit = false;
@@ -469,7 +491,7 @@ export function readEvidence(ctx) {
         const rejection = rejectsAccept(explicit, ctx, content);
         if (rejection)
             return { kind: 'absent', absentReason: rejection };
-        const r = probeShaOverLadder(explicit, ctx);
+        const r = probeShaOverLadder(explicit, ctx, markUnmeasured);
         if (r)
             return { ...r, via: 'explicit' };
         // R-AICF: explicit SHA present but UNREACHABLE (hallucinated/dropped stamp).
@@ -482,9 +504,10 @@ export function readEvidence(ctx) {
     const absent = () => ({
         kind: 'absent',
         absentReason: unreachableExplicit ? 'unreachable_explicit_unattributable' : 'no_evidence',
+        unmeasured: probeUnmeasured,
     });
     // --- Inferred field (completion_commit_inferred) ---
-    const inferred = readInferredArm(ctx, content);
+    const inferred = readInferredArm(ctx, content, markUnmeasured);
     if (inferred)
         return inferred;
     // --- Git log scan (WS-2 Pickle-Ticket trailer) ---
@@ -662,7 +685,7 @@ function isAcceptedEvidence(r) {
     return r.kind === 'committed' && !!r.sha;
 }
 function refuseAbsent(evidence) {
-    return { ok: false, reason: evidence.absentReason ?? 'no_evidence' };
+    return { ok: false, reason: evidence.absentReason ?? 'no_evidence', unmeasured: evidence.unmeasured };
 }
 /**
  * R-WUWC SOFT-variant promote-once: write the SHA into the explicit
@@ -857,5 +880,12 @@ export function gateForPhantomDoneRevert(ctx, _policy) {
     if (decision.ok) {
         return { action: 'keep', kind: 'committed', sha: decision.sha, fallbackFired: decision.usedFallback };
     }
+    // AP-EXT-ITER327-01 (R-DSAN never-discard): revert requires a MEASURED absence.
+    // When no repo on the ladder ever answered, `absent` is absence-of-proof, and
+    // reverting on it throws away shipped work over a transient spawn failure. Keeping
+    // is recoverable and the next sweep re-probes; reverting is not. The Done FLIP is
+    // deliberately unchanged — refusing a flip parks a ticket, reverting discards one.
+    if (decision.unmeasured)
+        return { action: 'keep', kind: 'absent' };
     return { action: 'revert', kind: 'absent' };
 }

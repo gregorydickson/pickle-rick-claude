@@ -2022,11 +2022,18 @@ function logPhantomDoneKept(
   ticketId: string,
   workingDir: string,
   fallbackFired: boolean,
+  measured: boolean = true,
 ): void {
   if (fallbackFired) {
     input.log?.(`Phantom-Done watcher: per-ticket working_dir '${workingDir}' unusable for git; retried in session dir '${input.workingDir}'. Ticket ${ticketId} kept Done.`);
   }
-  input.log?.(`Phantom-Done watcher kept ticket ${ticketId} Done — valid completion_commit evidence`);
+  // AP-EXT-ITER327-01: `keep` now has TWO causes and they are not the same claim.
+  // Reporting an unmeasured keep as "valid completion_commit evidence" is the
+  // fake-green this repo names as its most frequent failure mode: continuing is not
+  // claiming success. Degrade the CLAIM, never the decision.
+  input.log?.(measured
+    ? `Phantom-Done watcher kept ticket ${ticketId} Done — valid completion_commit evidence`
+    : `Phantom-Done watcher kept ticket ${ticketId} Done — evidence UNMEASURED (no repo on the dir ladder answered); keeping rather than discarding shipped work (R-DSAN)`);
 }
 
 /**
@@ -2095,7 +2102,7 @@ function batchLoopPhantomDoneKind(
       }
     } catch { /* best-effort: persist failure must not block keep-Done */ }
     if (promoted) return 'inferred';
-    logPhantomDoneKept(input, ticketId, workingDir, decision.fallbackFired ?? false);
+    logPhantomDoneKept(input, ticketId, workingDir, decision.fallbackFired ?? false, decision.kind === 'committed');
     return 'explicit-reachable';
   }
   // decision.action === 'revert'
