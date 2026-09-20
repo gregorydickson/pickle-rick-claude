@@ -1046,3 +1046,136 @@ test('AC-G1-4 (F5) FAIL-CLOSED: a repo with no runnable gate still refuses, hone
   assert.equal(result.committed, false);
   assert.equal(result.reason, 'no-extension-dir');
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER318-02 — a check that produced NO EXIT STATUS must not be reported as
+// a code-quality failure.
+//
+// `runCommand` returns `status: null` for every child that never delivered one: a
+// `spawn` failure (`error` fires with the errno only in the message) and a child
+// killed by a signal it did not choose (OOM reaper, operator `pkill`, supervisor —
+// `close` fires with `code === null`). `isCommandResultUnrunnable` used to hand the
+// shared classifier `result.status ?? 1`, which made both byte-identical to a check
+// that RAN and exited 1: no code to key on, and for the errnos nobody spelled into
+// `UNRUNNABLE_CHECK_PATTERNS` no text either. The gate then authored a phantom RED
+// naming a failure nothing measured. Same collapse AP-EXT-ITER318-01 closed one
+// frame over, in `convergence-gate.ts`.
+//
+// These fixtures drive the REAL `runWorkerGate` off-repo path end to end. The
+// package manager is resolved from the lockfile and then spawned FROM PATH, so a
+// fixture `npm` earlier on PATH is the actual child `runCommand` waits on — which
+// is the only place a null exit status can be produced honestly.
+// ---------------------------------------------------------------------------
+
+/**
+ * A target repo whose `npm` is ours. `behavior` is a JS expression evaluated inside
+ * the fake binary with `script` bound to the requested script name, so one binary
+ * serves every dimension and each dimension can die differently.
+ *
+ * `pickle_settings.json` carries `worker_test_gate_timeout_ms`: the SETTINGS arm of
+ * `resolveWorkerTestGateTimeoutMs` applies no floor (the env arm clamps to 60s), and
+ * `runOffRepoWorkerGate` resolves it against the TARGET root — so a hang is a
+ * sub-second observation here instead of a minute.
+ */
+function makeFakeNpmFixture(behavior, { timeoutMs = 120_000 } = {}) {
+  const root = makeTmp();
+  const ticketId = 'fff66666';
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+    name: 'target-repo',
+    version: '1.0.0',
+    // `classifyTestScriptSafety` reads this TEXT (it never spawns), so the test
+    // dimension is classified runnable and really reaches the fake binary.
+    scripts: { typecheck: 'tsc --noEmit', lint: 'eslint .', test: 'node --test' },
+  }, null, 2));
+  fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
+  fs.writeFileSync(path.join(root, 'pickle_settings.json'), JSON.stringify({ worker_test_gate_timeout_ms: timeoutMs }));
+  const binDir = path.join(root, 'fakebin');
+  fs.mkdirSync(binDir, { recursive: true });
+  const npmPath = path.join(binDir, 'npm');
+  fs.writeFileSync(npmPath, `#!/usr/bin/env node
+const script = process.argv[3] ?? '';
+${behavior}
+`, { mode: 0o755 });
+  writeTicket(root, ticketId);
+  return { root, ticketId, statePath: writeState(root), binDir, npmPath };
+}
+
+/**
+ * Runs the gate with the fixture's `npm` first on PATH. `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS`
+ * is cleared for the call: the env arm outranks the settings arm and would drag every
+ * hang back up to its 60s floor if an operator had it exported.
+ */
+async function runGateWithFakeNpm(fixture) {
+  const savedPath = process.env.PATH;
+  const savedTimeout = process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+  process.env.PATH = `${fixture.binDir}${path.delimiter}${savedPath}`;
+  delete process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+  try {
+    return await runWorkerGate([], gateArgs(fixture));
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedTimeout === undefined) delete process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS;
+    else process.env.PICKLE_WORKER_TEST_FAST_TIMEOUT_MS = savedTimeout;
+  }
+}
+
+test('AP-EXT-ITER318-02: a gate check KILLED by a signal is not_run, never a phantom red', async () => {
+  // The child chooses nothing: it dies by SIGKILL exactly as an OOM reaper would
+  // leave it, so `close` carries `code === null` and the result has no exit status.
+  const fixture = makeFakeNpmFixture("process.kill(process.pid, 'SIGKILL');");
+
+  const result = await runGateWithFakeNpm(fixture);
+
+  // Pre-fix this read `red`: `?? 1` turned "never completed" into "ran and exited 1",
+  // which is a verdict about code quality authored over zero measurement.
+  assert.equal(
+    frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_verdict'),
+    'not_run',
+    'a check that produced no exit status verified nothing, so it may not be reported as a failure',
+  );
+  assert.equal(frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_tests_verdict'), 'not_run');
+  // Honest reporting, not a halt: the disposition changes, the loop does not stop.
+  assert.equal(result.ok, true);
+});
+
+test('AP-EXT-ITER318-02 CONTROL: a check WE timed out stays a failure, never not_run', async () => {
+  // The discriminator, and the whole reason the predicate cannot simply pass every
+  // missing exit status through. A timeout kill ALSO leaves `status: null` — but the
+  // deadline was ours and the hang is the finding. `runOffRepoGateDimension` reaches
+  // its `__timeout__` record only AFTER `isCommandResultUnrunnable` declines, so if
+  // the `timedOut` arm is ever dropped, a hung tier silently becomes "not_run" and
+  // R-TIERWEDGE stops reporting the thing it exists to detect.
+  const fixture = makeFakeNpmFixture(
+    "if (script === 'typecheck') { setTimeout(() => {}, 60_000); } else { process.exit(0); }",
+    { timeoutMs: 1500 },
+  );
+
+  const result = await runGateWithFakeNpm(fixture);
+
+  assert.equal(
+    frontmatterField(fixture.root, fixture.ticketId, 'worker_gate_verdict'),
+    'red',
+    'a check that hung past its deadline failed — it did not fail to run',
+  );
+  assert.equal(result.ok, true);
+});
+
+test('AP-EXT-ITER318-02 CONTROL: a genuine non-zero exit is still red, and a pass is still green', async () => {
+  // The over-trigger control. Widening "unrunnable" is only safe if it cannot swallow
+  // a real verdict, so both live directions are asserted on the SAME fixture shape —
+  // the green arm additionally proves the fixture is capable of passing at all, so
+  // the not_run assertions above cannot be reading a fixture that could never be green.
+  const red = makeFakeNpmFixture("process.stderr.write('1 error\\n'); process.exit(1);");
+  await runGateWithFakeNpm(red);
+  assert.equal(
+    frontmatterField(red.root, red.ticketId, 'worker_gate_verdict'),
+    'red',
+    'a command that RAN and exited non-zero is a real failure and must stay red',
+  );
+
+  const green = makeFakeNpmFixture('process.exit(0);');
+  const greenResult = await runGateWithFakeNpm(green);
+  assert.equal(frontmatterField(green.root, green.ticketId, 'worker_gate_verdict'), 'green');
+  assert.equal(frontmatterField(green.root, green.ticketId, 'worker_gate_tests_verdict'), 'green');
+  assert.equal(greenResult.ok, true);
+});

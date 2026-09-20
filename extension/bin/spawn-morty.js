@@ -1501,14 +1501,37 @@ function stageAndCommitLintAutofix(workingDir, ticketId, fileList) {
 }
 /**
  * R-WGFR (AC-GTRUTH-A3a-2): a check whose COMMAND never ran (binary absent from
- * PATH / ENOENT / exit 127 / missing script) is an environment problem, not a
- * code-quality failure. Reuses the shared classifier instead of adding a new
- * session-start PATH probe. Passing results are never unrunnable by definition.
+ * PATH / ENOENT / exit 127 / missing script) or that was killed before it could
+ * report an exit status is an environment problem, not a code-quality failure.
+ * Reuses the shared classifier instead of adding a new session-start PATH probe.
+ * Passing results are never unrunnable by definition.
+ *
+ * AP-EXT-ITER318-02: the exit status is PASSED THROUGH, not collapsed. `runCommand`
+ * reports `status: null` for every child that produced no exit status — an
+ * externally killed check (OOM reaper, operator `pkill`, supervisor) and every
+ * `spawn` failure alike — and `?? 1` made those byte-identical to a check that ran
+ * and exited 1. The classifier then had neither a code to key on nor, for the errnos
+ * nobody spelled into `UNRUNNABLE_CHECK_PATTERNS`, any text either: ENOENT is the one
+ * member with a pattern, so the exhaustion errnos a loaded host really produces
+ * (EAGAIN / EMFILE / ENOMEM) had nothing to match and a check that NEVER COMPLETED
+ * was reported as a genuine lint/tsc/test failure. (EACCES is NOT in that set here,
+ * measured: every caller spells a bare command NAME, and PATH search SKIPS a
+ * non-executable file rather than failing on it.) `CheckResult.exitCode` carries the null
+ * (AP-EXT-ITER318-01), so the distinction survives instead of being re-encoded — do
+ * NOT close this by adding errno spellings to the pattern list.
+ *
+ * `timedOut` is the ONE case where a missing exit status is a verdict about the
+ * CHECK rather than about the environment: the deadline is ours, we sent the signal,
+ * and the hang is the finding. It must stay a failure or `runOffRepoGateDimension`'s
+ * `__timeout__` record — which it reaches only AFTER this predicate declines — is
+ * silently downgraded to `not_run`, and a hung tier stops being reported at all.
  */
 function isCommandResultUnrunnable(result) {
     if (result.ok)
         return false;
-    return isUnrunnableCheckResult({ stdout: result.stdout, stderr: result.stderr, exitCode: result.status ?? 1 });
+    if (result.timedOut)
+        return false;
+    return isUnrunnableCheckResult({ stdout: result.stdout, stderr: result.stderr, exitCode: result.status });
 }
 /** No lint targets: nothing to lint, so the tsc dimension alone decides the gate. */
 const LINT_PHASE_NOT_RUN = { ok: true, errors: 0, ran: false, unrunnable: false, failures: [] };
@@ -1618,7 +1641,7 @@ function didWorkerGateFail(lintOk, tscOk, testsOk) {
  *   - `test:fast` — DROPPED, here and in the fallback recompute
  *     (`recomputeAbsentWorkerGateVerdict`, mux-runner.ts). A c=8 flake
  *     false-reddening a sticky verdict is fatal, so neither path counts it.
- *   - unrunnable (ENOENT / exit 127 / missing script, per
+ *   - unrunnable (ENOENT / exit 127 / missing script / no exit status at all, per
  *     `isCommandResultUnrunnable`) — EXEMPTED, but only up to the floor below.
  *
  * The exemption exists so ONE broken tool cannot false-red a tree the other tool
@@ -1805,13 +1828,19 @@ export function resolvePackageManagerBin(dir, fallback) {
 }
 /**
  * Run one command from the resolved cmdMap. A command the project does not
- * declare, or one whose binary/script is absent (`isCommandResultUnrunnable` —
- * ENOENT / exit 127 / "Missing script"), is `not_run`, NOT a failure.
+ * declare, or one that produced no measurement at all (`isCommandResultUnrunnable`
+ * — ENOENT / exit 127 / "Missing script" / killed before it could report an exit
+ * status), is `not_run`, NOT a failure.
  *
  * `isCommandResultUnrunnable` answers this from the command's ACTUAL result rather
  * than a static probe — but only for a command it was safe to spawn in the first
  * place. Whether it was is a DIFFERENT question, and it must be asked before this
  * function is reached: see `runOffRepoTestDimension`.
+ *
+ * ORDER IS LOAD-BEARING (AP-EXT-ITER318-02): the unrunnable test runs BEFORE the
+ * `timedOut` record below, so the timeout arm survives only because the predicate
+ * itself declines a result we timed out. Do not reorder these on the assumption
+ * that the later branch protects itself.
  */
 async function runOffRepoGateDimension(phase, commandString, dir, timeoutMs) {
     const parts = (commandString ?? '').trim().split(/\s+/).filter(Boolean);
