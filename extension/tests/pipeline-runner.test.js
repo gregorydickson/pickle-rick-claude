@@ -38,8 +38,10 @@ import {
   resetInterruptedTicketWorkForRelaunch,
   runRelaunchSelfHeal,
   main,
+  gitRepoRoot,
 } from '../bin/pipeline-runner.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { simulateBinaryAbsent } from './helpers/simulate-binary-absent.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
@@ -4521,3 +4523,113 @@ describe('AP-EXT-ITER307-01 launch self-heal below the git toplevel', () => {
   });
 });
 
+
+/**
+ * AP-EXT-ITER324-01 — the anchor resolver reported a GUESS as an answer.
+ *
+ * `gitRepoRoot` falls back to its own argument when `--show-toplevel` does not come back. That
+ * fallback is EXACT when git ran and said "not a git repository" (a real exit status), and a GUESS
+ * when git never spoke at all (spawn failure, timeout: `status === null`). The pre-fix bare `catch`
+ * collapsed the two, so a guess was byte-identical to a proven anchor — and a wrong anchor is
+ * invisible downstream: citadel's `walkDiff` handed a below-toplevel root still lists every changed
+ * file while returning `changedLines: []` and `blame: []` for each, which reads exactly like a diff
+ * that changed nothing.
+ *
+ * The fallback still happens (refusing here would add a halt path); it is just no longer silent.
+ */
+describe('AP-EXT-ITER324-01: an unproven repo-root anchor is reported, not silently returned', () => {
+  function makeRepoWithSubdir() {
+    const dir = tmpDir();
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, timeout: 30_000 });
+    execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: dir, timeout: 30_000 });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, timeout: 30_000 });
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir, timeout: 30_000 });
+    fs.mkdirSync(path.join(dir, 'pkg', 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'pkg', 'sub', 'b1.ts'), 'export const b = 1;\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir, timeout: 30_000 });
+    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir, timeout: 30_000 });
+    // git resolves --show-toplevel through the realpath, so compare against the same space.
+    return { dir: fs.realpathSync(dir), sub: fs.realpathSync(path.join(dir, 'pkg', 'sub')) };
+  }
+
+  test('AP-EXT-ITER324-01: a healthy below-toplevel read resolves the toplevel and reports NOTHING', () => {
+    const { dir, sub } = makeRepoWithSubdir();
+    try {
+      const reported = [];
+      const root = gitRepoRoot(sub, (d) => reported.push(d));
+      // ACCEPT control: without this the "reported nothing" assertion passes vacuously on a
+      // resolver that reports nothing because it never resolves anything either.
+      assert.equal(root, dir, 'a readable git subdirectory resolves to its toplevel');
+      assert.deepEqual(reported, [], 'a proven anchor is not reported as unproven');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER324-01: git ANSWERING "not a git repository" keeps the silent fallback — that answer is exact', () => {
+    const dir = fs.realpathSync(tmpDir());
+    try {
+      const reported = [];
+      const root = gitRepoRoot(dir, (d) => reported.push(d));
+      assert.equal(root, dir, 'a non-git dir falls back to itself, as before');
+      assert.deepEqual(
+        reported,
+        [],
+        'git exited 128 — it RAN and reported, so the fallback is the right answer and stays silent',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER324-01: git NEVER SPEAKING still falls back — but reports the anchor as unproven', () => {
+    const { dir, sub } = makeRepoWithSubdir();
+    const realPath = process.env.PATH;
+    try {
+      // FIXTURE PRECONDITION: the simulation must actually take, or this case measures a healthy
+      // git and passes against the defect. `simulateBinaryAbsent` throws if `git` still resolves.
+      process.env.PATH = simulateBinaryAbsent(realPath ?? '', 'git');
+      let threw = null;
+      try {
+        execFileSync('git', ['--version'], { encoding: 'utf-8', timeout: 30_000 });
+      } catch (err) {
+        threw = err;
+      }
+      assert.equal(threw?.code, 'ENOENT', 'precondition: git must be unspawnable on the shimmed PATH');
+      assert.equal(threw?.status ?? null, null, 'precondition: a spawn failure carries NO exit status');
+
+      const reported = [];
+      const root = gitRepoRoot(sub, (d) => reported.push(d));
+
+      assert.equal(root, sub, 'the fallback still happens — refusing here would add a halt path');
+      assert.equal(reported.length, 1, 'an unproven anchor is reported exactly once');
+      assert.match(
+        String(reported[0]),
+        /ENOENT/,
+        'the report carries WHY git did not answer, not just that it did not',
+      );
+    } finally {
+      process.env.PATH = realPath;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER324-01: the two toplevel resolvers share ONE home — no second --show-toplevel spawn', () => {
+    const src = fs.readFileSync(
+      path.resolve(url.fileURLToPath(new URL('.', import.meta.url)), '../src/bin/pipeline-runner.ts'),
+      'utf-8',
+    );
+    // Count CODE occurrences only: this file's own comments name the flag in prose.
+    const spawns = src.split('\n').filter((l) => l.includes("'--show-toplevel'")).length;
+    assert.equal(
+      spawns,
+      1,
+      'resolveGitRepoRoot delegates to gitRepoRoot; a second copy is how an anchoring fix ' +
+        'lands at one call site and silently misses its clone',
+    );
+    // Both names stay LIVE: each is cited in backticks by the trap-door catalogs, and deleting
+    // either would make those citations name a phantom symbol.
+    assert.match(src, /function gitRepoRoot\(/, 'gitRepoRoot remains the shared home');
+    assert.match(src, /function resolveGitRepoRoot\(/, 'resolveGitRepoRoot remains the citadel entry point');
+  });
+});

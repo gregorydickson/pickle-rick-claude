@@ -836,17 +836,48 @@ function persistSeededBranchScope(args: SetupScopeArgs): ScopeJson | null {
  * Resolve the git repo root for `cwd`; falls back to `cwd` for a non-git dir.
  * `git status --porcelain` paths are repo-root-relative, so containment checks
  * MUST resolve dirty paths against the repo root, not the (possibly-subdir) cwd.
+ *
+ * AP-EXT-ITER324-01: this is the ONE home for `--show-toplevel` in this file —
+ * `resolveGitRepoRoot` delegates here rather than carrying a second copy, because a
+ * duplicated resolver is how an anchoring fix lands at one call site and silently
+ * misses its clone. `onUnprovenAnchor` fires only when git NEVER SPOKE (see
+ * {@link gitReportedExitStatus}); the guess is still returned, since refusing here
+ * would add a halt path, but it is no longer INDISTINGUISHABLE from a proven anchor.
+ * That distinction is load-bearing downstream: citadel's `walkDiff` handed a
+ * below-toplevel root still lists every changed file while returning `changedLines: []`
+ * and `blame: []` for each — byte-identical to a diff that changed nothing.
  */
-function gitRepoRoot(cwd: string): string {
+export function gitRepoRoot(cwd: string, onUnprovenAnchor?: (detail: string) => void): string {
   try {
     const out = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
       encoding: 'utf-8',
       timeout: GIT_REPO_ROOT_TIMEOUT_MS,
     }).trim();
-    return out || cwd;
-  } catch {
-    return cwd;
+    if (out) return out;
+  } catch (err) {
+    // AP-EXT-ITER324-01: the fallback is only an ANSWER when git answered.
+    if (!gitReportedExitStatus(err)) {
+      onUnprovenAnchor?.(err instanceof Error ? err.message : String(err));
+    }
   }
+  return cwd;
+}
+
+/**
+ * True when git RAN and reported a verdict. `execFileSync` fills `status` with the exit
+ * code of a process that actually ran — 128 is "not a git repository", a ceiling
+ * directory, or a bare repo, and for every one of those `cwd` IS the right answer, so
+ * the fallback is exact. A spawn failure or a timeout kill leaves `status` NULL and
+ * carries the reason on `code`/`signal` instead: git never spoke, and `cwd` is then a
+ * GUESS merely shaped like an anchor.
+ *
+ * Reading the PRESENCE of an exit status is deliberately not an enumeration of errnos —
+ * ENOENT, EACCES, EAGAIN and ETIMEDOUT are all "git never spoke" without anyone
+ * maintaining a list of their spellings, the failure mode the sibling
+ * `UNRUNNABLE_CHECK_PATTERNS` collapse (AP-EXT-ITER318-01) closed for `exitCode`.
+ */
+function gitReportedExitStatus(err: unknown): boolean {
+  return typeof (err as { status?: unknown } | null)?.status === 'number';
 }
 
 /**
@@ -4018,16 +4049,13 @@ function preparePipelineWorkingTree(
  * repo-relative paths on (R-CWRR): in a monorepo the session's working dir is a package
  * subdirectory, and using it as the repo root yields package-relative paths that match
  * nothing. Falls back to `workingDir` itself when it is not a git checkout.
+ *
+ * AP-EXT-ITER324-01: delegates to {@link gitRepoRoot} — this was a byte-identical second
+ * copy of it, 3,200 lines away in the SAME FILE, and a duplicated resolver is precisely
+ * how the below-toplevel anchoring family kept re-appearing after each site was fixed.
  */
-function resolveGitRepoRoot(workingDir: string): string {
-  try {
-    const out = execFileSync('git', ['-C', workingDir, 'rev-parse', '--show-toplevel'], {
-      encoding: 'utf-8',
-      timeout: GIT_REPO_ROOT_TIMEOUT_MS,
-    }).trim();
-    if (out) return out;
-  } catch { /* non-git dir — fall back to workingDir */ }
-  return workingDir;
+function resolveGitRepoRoot(workingDir: string, onUnprovenAnchor?: (detail: string) => void): string {
+  return gitRepoRoot(workingDir, onUnprovenAnchor);
 }
 
 function loadPipelineRuntime(sessionDir: string, opts: MainOpts, log: (msg: string) => void): PipelineRuntime {
@@ -4045,7 +4073,13 @@ function loadPipelineRuntime(sessionDir: string, opts: MainOpts, log: (msg: stri
   preparePipelineWorkingTree(state, workingDir, sessionDir, statePath, config, log);
   setupRuntimeScope(sessionDir, workingDir, config.target || workingDir, opts, pipelineRaw, log);
 
-  const repoRoot = resolveGitRepoRoot(workingDir);
+  // AP-EXT-ITER324-01: this anchor is what citadel's diff walker keys its repo-relative
+  // paths on. When git never answered, the fallback is a guess, and a guess below the
+  // toplevel makes a real diff read as having changed no lines — so say so rather than
+  // letting a degraded anchor look exactly like a proven one.
+  const repoRoot = resolveGitRepoRoot(workingDir, (detail) => {
+    log(`repo_root_unproven: git did not answer --show-toplevel for ${workingDir} (${detail}); anchoring on it UNPROVEN`);
+  });
   const designSafe = resolveDesignSafe(state.start_commit, repoRoot, opts.designSafeFlag);
   log(`design_safe resolved: ${String(designSafe)}${opts.designSafeFlag !== undefined ? ' (CLI override)' : ' (auto-detected)'}`);
 

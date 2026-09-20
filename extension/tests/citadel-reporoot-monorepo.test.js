@@ -131,10 +131,23 @@ describe('R-CWRR citadel repoRoot monorepo fix', () => {
 
   test('structural: loadPipelineRuntime computes repoRoot via git rev-parse with timeout', () => {
     const src = fs.readFileSync(PIPELINE_RUNNER_SRC, 'utf-8');
+    // AP-EXT-ITER324-01: the second operand is matched as ANY identifier, never the literal
+    // name `workingDir`. `resolveGitRepoRoot` now delegates to the shared `gitRepoRoot`, whose
+    // parameter is `cwd` because its seven other callers pass a `target` or a state-read dir —
+    // so a name-keyed needle read an intact resolver as deleted. The invariant this pin states
+    // is that loadPipelineRuntime's repoRoot comes from a TIMED `rev-parse --show-toplevel`,
+    // and that claim is about the spawn, not about what anyone named its argument.
     assert.match(
       src,
-      /execFileSync\('git',\s*\['-C',\s*workingDir,\s*'rev-parse',\s*'--show-toplevel'\]/,
-      'loadPipelineRuntime must call git -C <workingDir> rev-parse --show-toplevel',
+      /execFileSync\('git',\s*\['-C',\s*\w+,\s*'rev-parse',\s*'--show-toplevel'\]/,
+      'loadPipelineRuntime must call git -C <dir> rev-parse --show-toplevel',
+    );
+    // ...and that loadPipelineRuntime actually REACHES it, so the argv above cannot drift into
+    // a function no call path uses.
+    assert.match(
+      src,
+      /const repoRoot = resolveGitRepoRoot\(workingDir/,
+      'loadPipelineRuntime must resolve repoRoot through resolveGitRepoRoot',
     );
     assert.match(
       src,
