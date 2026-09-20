@@ -10768,6 +10768,19 @@ function readScopeAllowedPathSpecsFromFile(scopeJsonPath: string | undefined, wo
  * that moves work OUT of their output domain -- the pair reads a commit as the ERASURE
  * of work rather than as work. It carries the SAME `spec`, so an out-of-scope commit
  * does not move the signature, matching `hasScopedIterationWindowCommit`'s scoping rule.
+ *
+ * AP-EXT-ITER315-01: all three probes share ONE invocation prefix, and it pins
+ * `diff.relative=false`. The three probes are NOT equally exposed to ambient config --
+ * `status --porcelain` is documented stable "regardless of user configuration" and
+ * `log -1 --format=%H` carries no diff -- but deciding that per-probe is the enumerated
+ * set that made this site read as safe: a reviewer who checks the porcelain half and
+ * stops never reaches `diff --numstat`, which IS narrowed. So the prefix is shared
+ * rather than applied to the one probe that cares, and no future probe added here can
+ * be the exposed one. AP-EXT-ITER308-02 anchored the PATHSPECS at the repo root; that
+ * is a different axis and structurally cannot reach this one -- MEASURED, an absolute
+ * repo-root pathspec is still narrowed away by `diff.relative`, because `--relative`
+ * excludes by CWD after the pathspec selects. `workingDir` is an unnormalized
+ * `state.working_dir`/`process.cwd()`, never `--show-toplevel`.
  */
 function gitSignatureProbes(
   workingDir: string,
@@ -10775,10 +10788,11 @@ function gitSignatureProbes(
 ): { status: ReturnType<typeof spawnSync>; numstat: ReturnType<typeof spawnSync>; head: ReturnType<typeof spawnSync> } {
   const spec = pathSpecs.length > 0 ? ['--', ...pathSpecs] : [];
   const opts = { encoding: 'utf-8' as const, timeout: 10_000, maxBuffer: UNBOUNDED_READ_MAX_BUFFER };
+  const git = ['-C', workingDir, '-c', 'diff.relative=false'];
   return {
-    status: spawnSync('git', ['-C', workingDir, 'status', '--porcelain', '-uall', ...spec], opts),
-    numstat: spawnSync('git', ['-C', workingDir, 'diff', '--numstat', ...spec], opts),
-    head: spawnSync('git', ['-C', workingDir, 'log', '-1', '--format=%H', ...spec], opts),
+    status: spawnSync('git', [...git, 'status', '--porcelain', '-uall', ...spec], opts),
+    numstat: spawnSync('git', [...git, 'diff', '--numstat', ...spec], opts),
+    head: spawnSync('git', [...git, 'log', '-1', '--format=%H', ...spec], opts),
   };
 }
 

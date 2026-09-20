@@ -276,3 +276,122 @@ test('M4: unreadable/corrupt ticket file → resolvePreTicket keeps the ticket A
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER315-01: the PATH SPACE axis of the signature probes themselves.
+//
+// Every case above drives the signal through a SCRIPTED signature function, so none
+// of them can see how the real signature is computed. These two drive the REAL
+// `computeSourceTreeSignature` / `computeScopedSourceTreeSignature` over a REAL repo
+// from a SUBDIRECTORY, and assert the SIGNATURE MOVES across a real progress step —
+// never the argv, which would pin the spelling rather than the behaviour.
+//
+// `gitSignatureProbes` spends three probes at `-C workingDir`, and `workingDir` is an
+// unnormalized `state.working_dir`/`process.cwd()`, never `--show-toplevel`. Two of
+// the three are blind to ambient config (`status --porcelain` is documented stable
+// "regardless of user configuration"; `log -1 --format=%H` carries no diff) — but
+// `diff --numstat` is NOT, and it is the only term carrying LINE-LEVEL growth inside
+// an already-dirty file. So under an operator's `diff.relative=true`, one directory
+// below the toplevel, a worker that keeps adding lines to a file it already dirtied
+// produces a BYTE-IDENTICAL signature: `isSourceSignatureProgress` reads false,
+// `computeArtifactProgressCharge` increments `zero_progress_count`, and at
+// `bounded_terminal_escape_cap` relaunches a genuinely producing ticket is forced
+// terminal. Exit 0 with complete output, so `enumerationCompleted` cannot see it.
+//
+// AP-EXT-ITER308-02 anchored the PATHSPECS at the repo root; the fixture precondition
+// below asserts that axis is structurally unable to reach this one — an ABSOLUTE
+// repo-root pathspec is still narrowed away, because `--relative` excludes by CWD
+// after the pathspec selects.
+// ---------------------------------------------------------------------------
+
+function makeSpaceRepo315() {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'wmnp-sig-space-'));
+  const g = (...a) => spawnSync('git', a, { cwd: repo, encoding: 'utf-8', timeout: 30_000 });
+  g('init', '-q', '.');
+  g('config', 'user.email', 'test@test.com');
+  g('config', 'user.name', 'Test');
+  for (const p of ['extension/src/keep.ts', 'worksub/work.ts']) {
+    fs.mkdirSync(path.join(repo, path.dirname(p)), { recursive: true });
+    fs.writeFileSync(path.join(repo, p), 'export {};\n');
+  }
+  g('add', '-A');
+  g('commit', '-qm', 'base');
+  g('config', 'diff.relative', 'true');
+  return repo;
+}
+
+// The progress step a real worker makes across two spawns: `worksub/work.ts` is
+// ALREADY dirty (so the `status` term is byte-identical on both reads and cannot
+// rescue the signal), and the second spawn adds lines to it.
+async function signaturePairFromSubdir(readFrom, useScoped) {
+  const repo = makeSpaceRepo315();
+  const work = path.join(repo, 'worksub/work.ts');
+  const readCwd = path.join(repo, readFrom);
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmnp-sig-scope-'));
+  const scopeJsonPath = path.join(sessionDir, 'scope.json');
+  // `allowed_paths` is repo-root-relative by construction (R-RSBI-2).
+  fs.writeFileSync(scopeJsonPath, JSON.stringify({ allowed_paths: ['worksub', 'extension/src'] }));
+  try {
+    // Fixture precondition, on the SAME repo and cwd the signature is read from:
+    // the unpinned argv must really lose the change here, the pinned argv must
+    // really keep it, and the AP-EXT-ITER308-02 absolute pathspec must NOT rescue
+    // it. Without these, a green proves nothing on a git where `diff.relative`
+    // is inert, and the "different axis" claim above is untested.
+    fs.writeFileSync(work, 'export {};\nexport const a = 1;\n');
+    const numstat = (extra) => spawnSync(
+      'git', ['-C', readCwd, ...extra, 'diff', '--numstat'], { cwd: readCwd, encoding: 'utf-8', timeout: 30_000 },
+    ).stdout.trim();
+    assert.equal(numstat([]), '', 'fixture precondition: the unpinned numstat probe must lose the change from this cwd');
+    assert.ok(
+      numstat(['-c', 'diff.relative=false']).includes('worksub/work.ts'),
+      'fixture precondition: the pinned numstat probe must see the change in root space',
+    );
+    assert.equal(
+      spawnSync('git', ['-C', readCwd, 'diff', '--numstat', '--', path.join(repo, 'worksub')], { cwd: readCwd, encoding: 'utf-8', timeout: 30_000 }).stdout.trim(),
+      '',
+      'fixture precondition: an ABSOLUTE repo-root pathspec does NOT rescue it — the pathspec axis cannot reach the config axis',
+    );
+
+    const mux = await import('../../bin/mux-runner.js');
+    const read = () => (useScoped
+      ? mux.computeScopedSourceTreeSignature(readCwd, scopeJsonPath)
+      : mux.computeSourceTreeSignature(readCwd));
+    const before = read();
+    fs.writeFileSync(work, 'export {};\nexport const a = 1;\nexport const b = 2;\nexport const c = 3;\n');
+    const after = read();
+    return { before, after };
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+}
+
+test('AP-EXT-ITER315-01: real source progress moves the signature when read from a SUBDIRECTORY', async () => {
+  for (const useScoped of [false, true]) {
+    const { before, after } = await signaturePairFromSubdir('extension/src', useScoped);
+    assert.ok(before !== null && after !== null, `${useScoped ? 'scoped' : 'unscoped'}: both probes must COMPLETE`);
+    assert.notEqual(
+      after, before,
+      `${useScoped ? 'scoped' : 'unscoped'}: line growth inside an already-dirty file is the numstat term's unique signal — a byte-identical signature charges a producing worker zero progress`,
+    );
+  }
+});
+
+// The ACCEPT control, and the over-trigger direction: without it, a signature that
+// changed on EVERY read (a clock, a nonce, an unstable digest) would satisfy the case
+// above while destroying the no-progress signal entirely. Read twice with NO work in
+// between, from the same subdirectory — it must be STABLE.
+test('AP-EXT-ITER315-01: an idle spawn from the same SUBDIRECTORY leaves the signature byte-identical', async () => {
+  const repo = makeSpaceRepo315();
+  const readCwd = path.join(repo, 'extension/src');
+  try {
+    const mux = await import('../../bin/mux-runner.js');
+    fs.writeFileSync(path.join(repo, 'worksub/work.ts'), 'export {};\nexport const a = 1;\n');
+    const first = mux.computeSourceTreeSignature(readCwd);
+    const second = mux.computeSourceTreeSignature(readCwd);
+    assert.ok(first !== null, 'the probe must COMPLETE');
+    assert.equal(second, first, 'no work between reads must read as no progress — the signal must not fire on every spawn');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
