@@ -11582,12 +11582,19 @@ function isWithinAllowedPaths(file: string, allowed: string[]): boolean {
  * - `-z`: `core.quotePath` is ON by default, so without it a non-ASCII path arrives
  *   C-quoted (`"caf\303\251.ts"`) and matches nothing in `allowed_paths`.
  *
+ * - AP-EXT-ITER314-03 `diff.relative=false`: `workingDir` is the raw `state.working_dir`
+ *   (per-workspace monorepo dirs included, see `detectMultiRepo`), never reconciled
+ *   to `--show-toplevel`. A pathspec-LESS diff is narrowed by ambient config ALONE, so one
+ *   directory down an operator's `diff.relative=true` reports the cwd SUBTREE re-spelled
+ *   cwd-relative, while every caller compares those keys against repo-root-space
+ *   `allowed_paths` / declared files. The pin is a byte-identical no-op at the toplevel.
+ *
  * Returns `null` when git could not answer — an unanswered enumeration is NOT an empty
  * one, and every caller routes `null` to its conservative arm. No `.trim()` per token:
  * `-z` makes the delimiter exact, and trimming would corrupt a path with a trailing space.
  */
 function listRangeTouchedPaths(workingDir: string, range: string): string[] | null {
-  const out = silentDeathGit(['diff', '--name-only', '--no-renames', '-z', range], workingDir);
+  const out = silentDeathGit(['-c', 'diff.relative=false', 'diff', '--name-only', '--no-renames', '-z', range], workingDir);
   if (out === null) return null;
   return out.split('\0').filter(Boolean);
 }

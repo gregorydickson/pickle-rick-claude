@@ -373,6 +373,89 @@ test('AP-EXT-ITER103-01(c): a C-quoted in-scope path is still ff-reattached (the
   }
 });
 
+// AP-EXT-ITER314-03 — the third contract `listRangeTouchedPaths` crosses is the PATH SPACE.
+// `--no-renames` and `-z` fix WHAT git prints; neither fixes WHERE it prints it FROM. The
+// reader takes no pathspec, so it cannot be anchored with `:(top)` the way its `convergence-
+// gate.ts` siblings are — an ambient `diff.relative=true` narrows a pathspec-less diff by
+// config ALONE. `workingDir` is the raw `state.working_dir` (a per-workspace monorepo dir is
+// a documented shape, `detectMultiRepo`), so one directory down the touched set loses every
+// path outside the cwd subtree AND re-spells the survivors cwd-relative, while T40 compares
+// those keys against the ticket's repo-root-space declared files.
+//
+// Both arms live in ONE case on purpose: the defect arm alone is satisfiable by a reader
+// that never excludes anything, so the control arm — a ticket whose declared file genuinely
+// was NOT touched — must keep excluding from the same subdirectory. The fix widens the
+// SPACE; it must not move the VERDICT.
+test('AP-EXT-ITER314-03: the T40 window is read in repo-root space from a subdirectory', () => {
+  const repo = initRepo();
+  let sessionFix;
+  try {
+    const START = commitFiles(repo, {
+      'outside/legacy.ts': 'base\n',
+      'untouched/other.ts': 'base\n',
+      'pkg/sub/b.ts': 'base\n',
+    }, 'base');
+    // The Failed ticket's declared file really was touched in the window — ground truth is
+    // "NOT excludable" from any cwd.
+    commitFiles(repo, { 'outside/legacy.ts': 'ticket work\n' }, 'worker: land declared work');
+
+    // The ambient operator config the pin exists to defeat.
+    git(['config', 'diff.relative', 'true'], repo);
+    const sub = path.join(repo, 'pkg', 'sub');
+
+    // Fixture precondition — without it the case pins nothing. The pre-fix argv taken from
+    // the subdirectory must really lose the declared path, and really keep reporting a
+    // narrowed set rather than erroring, so the miss arrives as exit 0 with the wrong answer.
+    assert.equal(
+      git(['diff', '--name-only', '--no-renames', `${START}..HEAD`], sub),
+      '',
+      'fixture precondition: without the pin the subdirectory read cannot see the declared file',
+    );
+    assert.equal(
+      git(['-c', 'diff.relative=false', 'diff', '--name-only', '--no-renames', `${START}..HEAD`], sub),
+      'outside/legacy.ts',
+      'fixture precondition: the pin restores the repo-root spelling from the same cwd',
+    );
+
+    sessionFix = makeSessionDir(repo);
+    const { sessionDir } = sessionFix;
+    const writeTicket = (id, declared) => {
+      mkdirSync(path.join(sessionDir, id), { recursive: true });
+      writeFileSync(
+        path.join(sessionDir, id, `rick_ticket_${id}.md`),
+        ['---', `id: ${id}`, 'title: "ap314-03 fixture"', 'status: Failed', '---',
+          '', '## Files to modify', '', `- \`${declared}\``, ''].join('\n'),
+      );
+    };
+    writeTicket('ap31403t', 'outside/legacy.ts');   // declared file WAS touched
+    writeTicket('ap31403u', 'untouched/other.ts');  // declared file was NOT touched
+
+    const excludableFrom = (workingDir, ticketId) =>
+      isFailedTicketTerminalExcludable({ sessionDir, workingDir, startCommit: START }, ticketId);
+
+    // The defect arm, asserted as AGREEMENT with the toplevel reading rather than merely as
+    // `false` — the two cwds must answer identically about the same commit on disk.
+    assert.equal(excludableFrom(repo, 'ap31403t'), false, 'toplevel: a touched declared file blocks advance');
+    assert.equal(
+      excludableFrom(sub, 'ap31403t'),
+      excludableFrom(repo, 'ap31403t'),
+      'a subdirectory workingDir must not turn a landed Failed ticket into a terminal-excludable one',
+    );
+
+    // Over-trigger control, same cwd, same reader: an untouched declared file must STILL be
+    // excludable, so the assertion above cannot be satisfied by a guard that blocks always.
+    assert.equal(excludableFrom(repo, 'ap31403u'), true, 'toplevel control: an untouched declared file stays excludable');
+    assert.equal(
+      excludableFrom(sub, 'ap31403u'),
+      excludableFrom(repo, 'ap31403u'),
+      'over-trigger control: the pin widens the path space, it does not change the verdict',
+    );
+  } finally {
+    if (sessionFix) rmSync(sessionFix.tmp, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 
 // --- AP-EXT-ITER202-01 -------------------------------------------------------
 // `wouldResetOrphanCommit` is the LAST guard before `guardedMicroverseRollback`
