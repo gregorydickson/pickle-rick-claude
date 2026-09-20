@@ -12,7 +12,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateEpicCompletion } from '../bin/mux-runner.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { evaluateEpicCompletion, collectVerdictRoster } from '../bin/mux-runner.js';
+import { collectTickets } from '../services/pickle-utils.js';
 import { FALSE_EPIC_THRESHOLD } from '../types/index.js';
 
 const T = (id, status, extras = {}) => ({
@@ -232,4 +236,71 @@ test('evaluateEpicCompletion: Skipped tickets do NOT count toward Done but are n
     });
     assert.equal(decision.kind, 'recover_advance');
     assert.deepEqual(decision.pendingIds, ['c']);  // Skipped excluded
+});
+
+// --- AP-EXT-ITER319-01: an UNREADABLE roster must not read as a FINISHED one ---
+//
+// `collectTickets` returns `[]` for both "no tickets" and "readdir threw", and the
+// test above ('empty ticket list (defensive) → genuine') pins that an empty roster
+// with a null current_ticket certifies `genuine`. Composed, a session dir that could
+// not be read exits the epic `success` over a roster nobody saw. `collectVerdictRoster`
+// is the seam that keeps the two apart; these cases pin both directions of that split.
+test('AP-EXT-ITER319-01 collectVerdictRoster: unreadable session dir is null, not an empty (finished) roster', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ap47-roster-'));
+    const sessionDir = path.join(root, 'sess');
+    fs.mkdirSync(path.join(sessionDir, 't1'), { recursive: true });
+    fs.writeFileSync(
+        path.join(sessionDir, 't1', 'rick_ticket_t1.md'),
+        '---\nid: t1\ntitle: probe\nstatus: Todo\n---\nbody\n',
+    );
+
+    // ACCEPT control on the SAME fixture: a readable roster resolves to real tickets,
+    // so the null assertion below cannot pass over an unpopulated directory.
+    const readable = collectVerdictRoster(sessionDir);
+    assert.ok(Array.isArray(readable), 'readable session dir must yield an array');
+    assert.equal(readable.length, 1);
+    assert.equal(readable[0].id, 't1');
+
+    fs.chmodSync(sessionDir, 0o000);
+    try {
+        // Root ignores mode bits, which would make every assertion below vacuous.
+        let throws = false;
+        try { fs.readdirSync(sessionDir); } catch { throws = true; }
+        if (!throws) {
+            assert.ok(true, 'SKIP: session dir still readable at mode 000 (running as root)');
+            return;
+        }
+
+        // The collapse this fix exists to break: the raw reader cannot tell the two
+        // apart, and the pure verdict then certifies completion off that empty value.
+        assert.deepEqual(collectTickets(sessionDir), [], 'collectTickets collapses unreadable → []');
+        assert.equal(
+            evaluateEpicCompletion({
+                tickets: collectTickets(sessionDir),
+                currentTicket: null,
+                priorFalseCount: 0,
+                priorFalseTicket: null,
+            }).kind,
+            'genuine',
+            'the collapsed value certifies genuine — this is what the seam must never be handed',
+        );
+
+        assert.equal(collectVerdictRoster(sessionDir), null, 'unreadable roster must be null');
+    } finally {
+        fs.chmodSync(sessionDir, 0o755);
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER319-01 collectVerdictRoster: readable session dir with no tickets stays empty (genuine path preserved)', () => {
+    // Sessions with zero ticket dirs are real, so the fix must NOT refuse them —
+    // that would trade the false-green above for a live regression.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ap47-roster-empty-'));
+    const sessionDir = path.join(root, 'sess');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    try {
+        assert.deepEqual(collectVerdictRoster(sessionDir), []);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });

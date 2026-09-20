@@ -1701,6 +1701,33 @@ function withFreshTicketStatuses(sessionDir, tickets) {
     });
 }
 /**
+ * AP-EXT-ITER319-01: the ticket roster an epic-completion verdict is computed from,
+ * or `null` when the session directory could not be READ.
+ *
+ * `collectTickets` returns `[]` for BOTH "this session has no tickets" and "readdir
+ * threw" (its outer `catch` in `pickle-utils.ts`), and `evaluateEpicCompletion`
+ * certifies an empty roster with a null `current_ticket` as `genuine` — so a session
+ * dir that momentarily could not be read exits the epic `success` over a roster
+ * nobody saw. That is the same consequence `29b48268` closed on this function's
+ * per-ticket axis, reached through the whole-directory one.
+ *
+ * `collectRickTicketPaths` is the sibling reader that already keeps the two apart
+ * (`null` unreadable vs `[]` empty) and is what `applyAllTicketsDoneCompletion`
+ * consults; reuse it rather than minting a second readability signal. It is probed
+ * ONLY when the roster came back empty — the sole ambiguous case — so a populated
+ * session pays no extra readdir.
+ *
+ * A genuinely empty session keeps its existing verdict: sessions with zero ticket
+ * dirs are real, so refusing `genuine` on `totalCount === 0` would trade this
+ * false-green for a live regression.
+ */
+export function collectVerdictRoster(sessionDir) {
+    const tickets = collectTickets(sessionDir);
+    if (tickets.length === 0 && collectRickTicketPaths(sessionDir) === null)
+        return null;
+    return withFreshTicketStatuses(sessionDir, tickets);
+}
+/**
  * R-CCR-1: emit the phantom-Done "kept" log lines, including the fallback-probe
  * note. Extracted from `correctPhantomDoneTickets` to keep that loop under the
  * eslint complexity ceiling.
@@ -8740,8 +8767,15 @@ function processTaskCompleted(state, ctx) {
         ctx.log(`ERROR: Cannot read state.json after task_completed: ${safeErrorMessage(err)}. Exiting.`);
         return { kind: 'break', reason: 'success' };
     }
+    // AP-EXT-ITER319-01: an UNREADABLE roster must never be mistaken for a FINISHED
+    // one. Park and keep draining (stall detection left armed, so this is bounded).
+    const verdictRoster = collectVerdictRoster(ctx.sessionDir);
+    if (verdictRoster === null) {
+        ctx.log(`epic-completion: session dir ${ctx.sessionDir} could not be read — refusing to certify completion over an unread roster`);
+        return { kind: 'continue', resetStall: false };
+    }
     const decision = evaluateEpicCompletion({
-        tickets: withFreshTicketStatuses(ctx.sessionDir, collectTickets(ctx.sessionDir)), currentTicket: curState.current_ticket || null,
+        tickets: verdictRoster, currentTicket: curState.current_ticket || null,
         priorFalseCount: Number(curState.false_epic_completed_count) || 0,
         priorFalseTicket: curState.false_epic_completed_ticket ?? null,
         // B-DURA T40: supply git context so a genuinely-Failed ticket is excluded from
@@ -12931,7 +12965,13 @@ function resolveTaskCompletedClaim(input) {
     // below is the only place that decides genuine vs. recoverable vs.
     // pathological — a single false EPIC_COMPLETED no longer kills the
     // pipeline. See `evaluateEpicCompletion` for the full state machine.
-    const allTickets = withFreshTicketStatuses(sessionDir, collectTickets(sessionDir));
+    // AP-EXT-ITER319-01: see `collectVerdictRoster` — `[]` from an unreadable session
+    // dir would otherwise certify `genuine` and exit the epic over an unread roster.
+    const allTickets = collectVerdictRoster(sessionDir);
+    if (allTickets === null) {
+        log(`epic-completion: session dir ${sessionDir} could not be read — refusing to certify completion over an unread roster`);
+        return { kind: 'park' };
+    }
     const decision = evaluateEpicCompletion({
         tickets: allTickets,
         currentTicket: curState.current_ticket || null,
