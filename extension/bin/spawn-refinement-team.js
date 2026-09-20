@@ -423,7 +423,17 @@ export function resolveTrackedSuffixMatches(workingDir, token, spawnSyncFn = spa
         return cached;
     let matches = [];
     try {
-        const result = spawnSyncFn('git', ['ls-files', '-z', '--', `*${token}`], {
+        // AP-EXT-ITER314-02: `:(top)` anchors the PATHSPEC at the repo root. A bare
+        // `*<token>` is cwd-relative, and `workingDir` is the raw
+        // `state.working_dir || process.cwd()` — never reconciled to
+        // `--show-toplevel` — so one directory down the listing covers that subtree
+        // ONLY and a correctly-cited tracked file resolves to zero matches. The miss
+        // is exit 0 with EMPTY stdout, so `enumerationCompleted` above reads it as a
+        // complete answer and the citation is reported path_not_found. The OUTPUT
+        // space stays cwd-relative on purpose: `checkAnalystOutputPaths` joins the
+        // resolved path onto `workingDir`, so `--full-name` would anchor the space
+        // the caller does NOT read in and break the line-range read.
+        const result = spawnSyncFn('git', ['ls-files', '-z', '--', `:(top)*${token}`], {
             cwd: workingDir,
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'pipe'],

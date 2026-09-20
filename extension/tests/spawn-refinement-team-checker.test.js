@@ -1770,6 +1770,112 @@ test('AP-EXT-ITER104-02: a C-quoted twin still counts toward ambiguous_citation'
     }
 });
 
+// --- AP-EXT-ITER314-02: the suffix listing is anchored at the repo root -------
+// `workingDir` is the raw `state.working_dir || process.cwd()` and is never
+// reconciled to `--show-toplevel`, so a bare cwd-relative `*<token>` pathspec
+// one directory down covers that subtree ONLY. The miss is exit 0 with EMPTY
+// stdout, so `enumerationCompleted` reads it as a complete answer and a
+// correctly-cited REAL tracked file becomes a fabricated `path_not_found`.
+// The anchor widens the SPACE, never the FILTER — the boundary and fabrication
+// controls below are asserted from the SAME subdirectory, so an anchor that
+// resolved a citation the toplevel reading rejects reds here. They do NOT
+// discriminate the prefilter's WIDTH, and cannot: `matchesOnPathBoundary` is
+// the resolution rule and `*<token>` is documented as a cheap git-side
+// prefilter. Dropping the token entirely (`':(top)*'`) is an output-EQUIVALENT
+// mutant, adjudicated not undetected — every path passing the boundary filter
+// ends with the token, so `':(top)*'` is a strict superset of `':(top)*<token>'`
+// and both reduce to the identical matched set (measured on this fixture). It
+// costs only bytes, which is the AP-EXT-ITER56-01 ceiling's problem, not this
+// anchor's. The OUTPUT space deliberately stays
+// cwd-relative (`--full-name` is the wrong half): `checkAnalystOutputPaths`
+// joins the resolved path onto `workingDir` to range-check a line citation.
+// REPLAY of AP-EXT-ITER314-01 (services/convergence-gate.ts), same path-space
+// contract; measured on the shipped compiled module before the fix.
+
+function initSubdirRepo(dir) {
+    quotingGit(dir, ['init', '-q']);
+    quotingGit(dir, ['config', 'user.email', 'test@example.com']);
+    quotingGit(dir, ['config', 'user.name', 'Test']);
+    for (const relativePath of ['services/state-manager.ts', 'pkg/sub/leaf.ts']) {
+        const absolute = path.join(dir, relativePath);
+        fs.mkdirSync(path.dirname(absolute), { recursive: true });
+        fs.writeFileSync(absolute, '// tracked\n');
+    }
+    quotingGit(dir, ['add', '.']);
+    quotingGit(dir, ['commit', '-q', '-m', 'init']);
+    // Precondition: the cited file really is OUTSIDE the subdirectory we read
+    // from. Without this the case could pass on a fixture where the two path
+    // spaces happen to coincide, which is exactly where the defect is invisible.
+    const subdir = path.join(dir, 'pkg', 'sub');
+    assert.ok(!path.resolve(dir, 'services/state-manager.ts').startsWith(subdir + path.sep),
+        'fixture precondition: the cited file must sit outside the read cwd');
+    return subdir;
+}
+
+test('AP-EXT-ITER314-02: a citation read from a subdirectory resolves the same file the toplevel resolves', () => {
+    const workingDir = tmpDir('pickle-apv-subdir-');
+    try {
+        const subdir = initSubdirRepo(workingDir);
+
+        __resetGitLsFilesSuffixCacheForTests();
+        const fromTop = resolveTrackedSuffixMatches(workingDir, 'state-manager.ts');
+        __resetGitLsFilesSuffixCacheForTests();
+        const fromSub = resolveTrackedSuffixMatches(subdir, 'state-manager.ts');
+
+        // AGREEMENT, not mere non-emptiness: both readings must name the one
+        // real file on disk, each resolved in its own reader's cwd space.
+        assert.equal(fromTop.length, 1, `toplevel reading must resolve; got ${JSON.stringify(fromTop)}`);
+        assert.equal(fromSub.length, 1, `subdirectory reading must resolve; got ${JSON.stringify(fromSub)}`);
+        assert.equal(
+            path.resolve(subdir, fromSub[0]),
+            path.resolve(workingDir, fromTop[0]),
+            'both readings must name the same file on disk'
+        );
+
+        __resetGitLsFilesSuffixCacheForTests();
+        assert.deepEqual(
+            checkAnalystOutputPaths('Cited: `state-manager.ts`.\n', subdir),
+            [],
+            'a correctly-cited real file must not warn from a subdirectory'
+        );
+
+        // Over-trigger controls, same cwd: the anchor must not turn the prefilter
+        // into a match-everything read.
+        __resetGitLsFilesSuffixCacheForTests();
+        assert.deepEqual(resolveTrackedSuffixMatches(subdir, 'does-not-exist.ts'), [],
+            'a fabricated citation must still resolve to nothing');
+        __resetGitLsFilesSuffixCacheForTests();
+        assert.deepEqual(resolveTrackedSuffixMatches(subdir, 'manager.ts'), [],
+            'AP-RMS-12: a mid-segment glob hit must still fail the path-boundary filter');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('AP-EXT-ITER314-02: the resolved path is still joinable onto workingDir for the line-range read', () => {
+    const workingDir = tmpDir('pickle-apv-subdir-');
+    try {
+        const subdir = initSubdirRepo(workingDir);
+
+        // The pair is the assertion. In-range-clean alone passes vacuously when
+        // the join fails, because the range check's catch is silent; the
+        // out-of-range arm proves the file was actually opened and counted.
+        __resetGitLsFilesSuffixCacheForTests();
+        assert.deepEqual(
+            checkAnalystOutputPaths('Cited: `state-manager.ts:1`.\n', subdir),
+            [],
+            'a line inside the real file must not warn'
+        );
+
+        __resetGitLsFilesSuffixCacheForTests();
+        const overrun = checkAnalystOutputPaths('Cited: `state-manager.ts:999`.\n', subdir);
+        assert.equal(overrun.length, 1, `the range check must have read the file; got ${JSON.stringify(overrun)}`);
+        assert.equal(overrun[0].defect_class, 'line_out_of_range');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
 /**
  * The file's code with every comment blanked out — by the LANGUAGE's parser, and
  * without moving a single character, so an index taken from this text addresses
