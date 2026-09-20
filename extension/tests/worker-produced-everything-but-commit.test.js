@@ -1134,18 +1134,24 @@ test('AP-EXT-ITER6-01: a stagePaths-less Done-flip commit excludes .codegraph/ a
   rmSync(sessionDir, { recursive: true, force: true });
 });
 
-test('AP-EXT-ITER6-01: the whole-tree add carries the shared codegraph pathspec excludes', () => {
+// AP-EXT-ITER304-02 re-anchored this off `commitAndContinueDoneFlip`'s body. The
+// whole-tree branch moved into the shared `ticketOwnedAddArgs`, and a pin scoped to ONE
+// function's name is exactly how the sibling `commitConvergedPlanPhase` kept its own
+// unpartitioned copy of this argv for as long as it did. Sweep EVERY whole-tree `add -A`
+// argv in the file instead — which is the PATTERN_SHAPE the catalog entry already states.
+test('AP-EXT-ITER6-01: every whole-tree add in mux-runner carries the shared codegraph pathspec excludes', () => {
   const src = readFileSync(SRC_MUX, 'utf8');
-  const start = src.indexOf('export function commitAndContinueDoneFlip');
-  assert.ok(start > 0, 'the committer exists');
-  const body = src.slice(start, src.indexOf('\n}\n', start));
-  const wholeTreeAdd = body.match(/'add',\s*'-A'[^\]]*/);
-  assert.ok(wholeTreeAdd, 'the committer still has its whole-tree add branch');
-  assert.match(
-    wholeTreeAdd[0],
-    /\.\.\.CODEGRAPH_PATHSPEC_EXCLUDES/,
-    'the whole-tree add must spread the ONE shared exclusion constant, not a hand-copied pathspec',
-  );
+  const wholeTreeAdds = src.match(/'add',\s*'-A'[^\]]*/g);
+  // Non-vacuity: a rename or a reshape that leaves ZERO matches must RED here rather
+  // than green over an empty sweep.
+  assert.ok(wholeTreeAdds && wholeTreeAdds.length > 0, 'the runtime still has a whole-tree add branch');
+  for (const wholeTreeAdd of wholeTreeAdds) {
+    assert.match(
+      wholeTreeAdd,
+      /\.\.\.CODEGRAPH_PATHSPEC_EXCLUDES/,
+      'every whole-tree add must spread the ONE shared exclusion constant, not a hand-copied pathspec',
+    );
+  }
 });
 
 // ─────────── AP-EXT-ITER304-01: rung 1 partitions before it commits ───────────
@@ -1252,6 +1258,125 @@ test('AP-EXT-ITER6-01 (replay): execute-converged-plan phase commits exclude .co
 
   rmSync(repo, { recursive: true, force: true });
   rmSync(sessionDir, { recursive: true, force: true });
+});
+// ─────────── AP-EXT-ITER304-02: the converged-plan phase committer partitions too ───────────
+//
+// The OWNERSHIP axis of the AP-EXT-ITER6-01 replay directly above. That replay adjudicated
+// this same site MITIGATED — on the CODEGRAPH-exclusion axis alone — and the whole-tree
+// `git add -A` it left in place still staged a LAGGING SIBLING ticket's in-flight artifacts,
+// under a `Pickle-Ticket: <this ticket>` trailer. That trailer is the only git-log arm
+// `readEvidence` has since B-GITATTR WS-3, so the sibling's work read as THIS ticket's
+// completion evidence. Re-derive a replay verdict per AXIS, never per site.
+//
+// The session lives INSIDE the working dir for the same reason as AP-EXT-ITER304-01:
+// `partitionExitPathDirtyByOwnership` calls a path foreign ONLY when it sits under another
+// ticket's session dir, so an out-of-repo session dir has nothing to tell apart.
+//
+// Assert the COMMIT CONTENT, never the return value (the AP-EXT-ITER6-01 rule).
+function makeConvergedPlanOwnershipFixture(prefix) {
+  const { repo } = makeRepo(prefix);
+  const ticketId = 'aaa11111';
+  const siblingId = 'bbb22222';
+  const sessionDir = path.join(repo, '.pickle-rick', 'sessions', 's1');
+  mkdirSync(sessionDir, { recursive: true });
+  const statePath = path.join(sessionDir, 'state.json');
+  writeFileSync(statePath, JSON.stringify({
+    active: true,
+    schema_version: 5,
+    session_dir: sessionDir,
+    working_dir: repo,
+    current_ticket: ticketId,
+    activity: [],
+  }));
+  const ticketDir = makeTicket(sessionDir, ticketId, { tier: 'small', status: 'In Progress' });
+  writeFileSync(
+    path.join(ticketDir, 'plan_2026-09-19.md'),
+    '# plan\n\n## Phase 1 — do the thing\n\n**Verify:** `true`\n',
+  );
+  return { repo, sessionDir, statePath, ticketId, siblingId };
+}
+
+test('AP-EXT-ITER304-02: a converged-plan phase commit excludes a sibling ticket\'s artifacts', () => {
+  const { repo, sessionDir, statePath, ticketId, siblingId } = makeConvergedPlanOwnershipFixture('ap-iter304b-repo-');
+  // The lagging sibling is mid-flight; its artifact dir is dirty inside the same repo.
+  makeTicket(sessionDir, siblingId, { tier: 'small', status: 'In Progress' });
+  // This ticket's actual deliverable — the work the phase commit exists to land.
+  writeFileSync(path.join(repo, 'owned-by-this-ticket.txt'), 'the recovering ticket\'s work\n');
+  // The runtime's own index, dirty at the same time. Foreign dirt present means this
+  // commit takes the EXPLICIT-PATHS arm, where `CODEGRAPH_PATHSPEC_EXCLUDES` does not
+  // apply — so the shared decision has to drop the index from the owned set itself, or
+  // the AP-EXT-ITER6-01 exclusion silently holds on only one of its two arms.
+  mkdirSync(path.join(repo, '.codegraph'), { recursive: true });
+  writeFileSync(path.join(repo, '.codegraph', 'graph.db'), 'BINARY-INDEX\n');
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+  assert.equal(out.ok, true, 'the single-phase plan executes and commits');
+
+  const committed = git(repo, ['show', '--pretty=format:', '--name-only', 'HEAD'])
+    .split('\n').map(s => s.trim()).filter(Boolean);
+
+  // ACCEPT control: the phase really did commit this ticket's own work. A blanket
+  // refusal fails HERE, so the exclusion below cannot pass vacuously.
+  assert.ok(
+    committed.includes('owned-by-this-ticket.txt'),
+    `the phase must still commit the recovering ticket's own work (got ${JSON.stringify(committed)})`,
+  );
+  // The defect: the sibling's artifacts must never ride into this ticket's commit...
+  assert.deepEqual(
+    committed.filter(p => p.includes(siblingId)),
+    [],
+    `a sibling ticket's artifacts must never carry this ticket's Pickle-Ticket trailer (got ${JSON.stringify(committed)})`,
+  );
+  // ...and the commit really is attributed to this ticket, so the exclusion above is a
+  // statement about ATTRIBUTION and not merely about an unattributed commit.
+  assert.equal(
+    git(repo, ['show', '-s', '--format=%(trailers:key=Pickle-Ticket,valueonly)', 'HEAD']).trim(),
+    ticketId,
+    'the phase commit carries this ticket\'s Pickle-Ticket trailer',
+  );
+  // The codegraph exclusion holds on the explicit-paths arm too, not just under `add -A`.
+  assert.deepEqual(
+    committed.filter(p => p === '.codegraph' || p.startsWith('.codegraph/')),
+    [],
+    `the codegraph index must never ride into an ownership-scoped phase commit (got ${JSON.stringify(committed)})`,
+  );
+  // The remainder is EXCLUDED, never destroyed — the sibling's in-flight work survives
+  // in the worktree for its own ticket to commit.
+  assert.ok(
+    existsSync(path.join(sessionDir, siblingId, `rick_ticket_${siblingId}.md`)),
+    'the sibling ticket\'s uncommitted work must survive in the working tree',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// The refusal arm of the same decision: when NOTHING in the dirty tree is owned by this
+// ticket there is nothing to stage, which is the empty-index case one step later — a
+// no-op phase, never a phase FAILURE and never a new abort condition. The rung's verdict
+// stays ground truth: `convergedPlanCommitLanded` requires HEAD to move, so an all-refused
+// run reports not-ok HONESTLY rather than fabricating a green over a sibling's work.
+test('AP-EXT-ITER304-02: an entirely-foreign dirty tree is a no-op phase, not a commit and not an abort', () => {
+  const { repo, sessionDir, statePath, ticketId, siblingId } = makeConvergedPlanOwnershipFixture('ap-iter304c-repo-');
+  // Commit this ticket's own artifacts FIRST so the only dirt left is the sibling's.
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-q', '-m', 'this ticket\'s artifacts']);
+  const headBefore = git(repo, ['rev-parse', 'HEAD']);
+  makeTicket(sessionDir, siblingId, { tier: 'small', status: 'In Progress' });
+
+  const out = executeConvergedPlanAdapter({
+    sessionDir, ticketId, workingDir: repo, statePath, log: () => {},
+  });
+
+  assert.equal(out.ok, false, 'no commit landed, so the rung reports not-ok rather than a fabricated green');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), headBefore, 'HEAD must not move over work this ticket does not own');
+  assert.ok(
+    existsSync(path.join(sessionDir, siblingId, `rick_ticket_${siblingId}.md`)),
+    'the sibling ticket\'s work must survive untouched',
+  );
+
+  rmSync(repo, { recursive: true, force: true });
 });
 
 // --- AP-EXT-ITER55-02: the plan-phase verify's capture buffer IS the verdict ---------------

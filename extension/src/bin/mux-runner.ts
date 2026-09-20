@@ -6814,11 +6814,25 @@ function finalizeDoneFlipAfterCommit(
 }
 
 /**
- * M1: ownership-scoped staging when `stagePaths` is provided (exit-path commit);
- * otherwise the whole-tree add (Done-flip path), which MUST spread the ONE shared
- * `CODEGRAPH_PATHSPEC_EXCLUDES` rather than a hand-copied pathspec. The rationale
- * and the pollution it prevents are stated once, in the AP-EXT-ITER6-01 trap door
- * (`src/bin/CLAUDE.md`) — do not re-state them here.
+ * AP-EXT-ITER304-02: the ONE `git add` pathspec every ticket-attributed runner commit
+ * stages through — ownership-scoped when `stagePaths` is provided, otherwise the
+ * whole-tree add, which MUST spread the ONE shared `CODEGRAPH_PATHSPEC_EXCLUDES`
+ * rather than a hand-copied pathspec. The rationale and the pollution it prevents are
+ * stated once, in the AP-EXT-ITER6-01 trap door (`src/bin/CLAUDE.md`).
+ *
+ * Shared rather than re-expressed at each committer: two spellings of "stage the owned
+ * set" is how `commitConvergedPlanPhase` kept a whole-tree `add -A` after the Done-flip
+ * committer had already learned to partition. Prepend `-C <workingDir>` or pass `cwd`
+ * as the caller's own git invocation shape requires.
+ */
+function ticketOwnedAddArgs(stagePaths: readonly string[] | undefined): string[] {
+  return stagePaths && stagePaths.length > 0
+    ? ['add', '--', ...stagePaths]
+    : ['add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES];
+}
+
+/**
+ * M1: ownership-scoped staging via the ONE shared `ticketOwnedAddArgs` above.
  *
  * B-CWGE: runner-authored commit — when the caller's armed #99 gate actually ran
  * (extension/ present under workingDir) it already proved GREEN, so record that
@@ -6837,9 +6851,7 @@ function finalizeDoneFlipAfterCommit(
  */
 export function commitAndContinueDoneFlip(input: CommitAndContinueDoneFlipInput): { ok: boolean; sha?: string } {
   assertWorkingDirUnderTmpdirIfTestMode(input.workingDir);
-  const addArgs = input.stagePaths && input.stagePaths.length > 0
-    ? ['-C', input.workingDir, 'add', '--', ...input.stagePaths]
-    : ['-C', input.workingDir, 'add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES];
+  const addArgs = ['-C', input.workingDir, ...ticketOwnedAddArgs(input.stagePaths)];
   const add = spawnSync('git', addArgs, { encoding: 'utf-8', timeout: 30000 });
   if (add.status !== 0) {
     input.log(`commit-and-continue: git add failed for ${input.ticketId} (status ${add.status ?? 'null'})`);
@@ -7037,7 +7049,11 @@ function resolveTicketOwnedStaging(
   log: (msg: string) => void,
 ): TicketOwnedStaging {
   try {
-    const dirtyPaths = listWorkingTreeDirtyPaths(workingDir);
+    // AP-EXT-ITER304-02: the runtime's own code index is not stageable work on EITHER
+    // arm. The whole-tree arm drops it via `CODEGRAPH_PATHSPEC_EXCLUDES`; filtering the
+    // dirty SOURCE makes the explicit-paths arm agree, instead of leaving one arm of one
+    // shared decision able to stage what the other excludes (the AP-EXT-ITER6-01 axis).
+    const dirtyPaths = listWorkingTreeDirtyPaths(workingDir).filter(p => !isCodegraphArtifact(p));
     const allTicketIds = collectTickets(sessionDir).map(t => t.id).filter((id): id is string => Boolean(id));
     const { owned, foreign } = partitionExitPathDirtyByOwnership(dirtyPaths, workingDir, sessionDir, ticketId, allTicketIds);
     if (owned.length === 0) {
@@ -7964,10 +7980,22 @@ function reportConvergedPlanOutcome(args: {
  * `Pickle-Ticket` trailer on the phase commit.
  */
 function commitConvergedPlanPhase(input: ExecuteConvergedPlanInput, phase: PlanPhase | null): { ok: boolean } {
-  // AP-EXT-ITER6-01 replay: the sibling whole-tree add. Same shared exclusion —
-  // a per-Phase recovery commit must not carry the runtime's own `.codegraph/`
-  // index into the target repo.
-  const add = spawnSync('git', ['add', '-A', ...CODEGRAPH_PATHSPEC_EXCLUDES], {
+  // AP-EXT-ITER304-02, the OWNERSHIP axis of the AP-EXT-ITER6-01 replay: that replay
+  // adjudicated this site MITIGATED on the CODEGRAPH-exclusion axis alone, and the
+  // whole-tree add it left in place still staged a LAGGING SIBLING ticket's in-flight
+  // artifacts — under a `Pickle-Ticket: <this ticket>` trailer, which is the only git-log
+  // arm `readEvidence` has since B-GITATTR WS-3, so a sibling's work read as THIS ticket's
+  // completion evidence. The third staging formulation in this file is now the same ONE
+  // shared decision its two siblings use.
+  const staging = resolveTicketOwnedStaging(
+    input.workingDir, input.sessionDir, input.ticketId, '[converged-plan]', input.log,
+  );
+  // Nothing positively owned is the EMPTY-INDEX case one step earlier, so it takes that
+  // branch's disposition: a no-op phase, never a failure and never a new abort condition.
+  // The rung's verdict stays ground truth — `convergedPlanCommitLanded` requires HEAD to
+  // move, which a no-op cannot fake, so refusing every phase reports not-ok honestly.
+  if (staging.kind === 'refuse') return { ok: true };
+  const add = spawnSync('git', ticketOwnedAddArgs(staging.stagePaths), {
     cwd: input.workingDir, encoding: 'utf-8', timeout: CONVERGED_PLAN_GIT_TIMEOUT_MS,
   });
   if (add.status !== 0) {

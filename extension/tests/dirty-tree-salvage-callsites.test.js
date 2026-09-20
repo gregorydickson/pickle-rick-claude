@@ -88,10 +88,21 @@ test('(d) no whole-tree `git add -u` anywhere; `add -A` staging only at the pinn
   assert.equal(count(microverse, "'add', '-u'"), 0, 'git add -u must not exist in microverse-runner.ts');
   assert.equal(count(mux, "'add', '-u'"), 0, 'git add -u must not exist in mux-runner.ts');
   assert.equal(count(microverse, "'add', '-A'"), 0, 'whole-tree add must not exist in microverse-runner.ts');
-  // mux-runner keeps exactly its two PRE-EXISTING documented whole-tree adds:
-  // commitAndContinueDoneFlip's no-stagePaths default (Done-flip path) and the
-  // execute-converged-plan commitPhase. A THIRD occurrence is a regression.
-  assert.equal(count(mux, "'add', '-A'"), 2, 'mux-runner whole-tree add count must stay pinned at the 2 sanctioned sites');
+  // AP-EXT-ITER304-02 collapsed the two whole-tree adds this clause used to count
+  // into the ONE shared `ticketOwnedAddArgs`, which all three ticket-attributed
+  // stages route through. Read the ROUTING fact the message names, not the
+  // cardinality: a count is a proxy a legitimate collapse falsifies (the
+  // AP-BIN-ITER37-01 lesson), and it would also pass over a third add placed
+  // beside the two it counted. Requiring EVERY whole-tree add in the file to sit
+  // inside that helper survives both a collapse and a new caller, and reds on the
+  // regression either form of the count would have missed.
+  const muxWholeTreeAdds = count(mux, "'add', '-A'");
+  assert.ok(muxWholeTreeAdds > 0, 'mux-runner must still have a whole-tree add branch (a zero-match sweep proves nothing)');
+  assert.equal(
+    count(extractFunction(mux, 'function ticketOwnedAddArgs('), "'add', '-A'"),
+    muxWholeTreeAdds,
+    'every whole-tree add in mux-runner must live in the shared ticketOwnedAddArgs staging helper',
+  );
   // The service's only whole-tree add lives inside the throwaway-index stash.
   assert.equal(count(salvage, "'add', '-A'"), 1, 'service must contain exactly one add -A (the stash)');
   assert.match(salvage, /GIT_INDEX_FILE/, 'the service stash must use the throwaway GIT_INDEX_FILE index');
