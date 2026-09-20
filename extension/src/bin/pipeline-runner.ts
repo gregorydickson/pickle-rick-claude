@@ -441,6 +441,29 @@ function subsystemRoots(target: string): string[] {
     .map(e => path.join(target, e.name));
 }
 
+/**
+ * AP-EXT-ITER320-01: did the target tree get LISTED, or merely come back empty?
+ *
+ * `subsystemRoots` above swallows a failed listing into `[]`, so `discoverSubsystems`
+ * returns an empty roster for BOTH "this repo has no subsystem directories" and "the
+ * target could not be read at all" — a missing or relocated `pipeline.json` target, or
+ * a path that is not a directory. `resolveAnatomySubsystems` turned that into
+ * `no_subsystems`, which is deliberately OUTSIDE `DEGRADED_PHASE_SKIP_REASONS`, so the
+ * run reported SUCCESS having reviewed a tree nobody listed. Same collapse
+ * AP-EXT-ITER319-01 closed for the epic-completion roster, one directory over.
+ *
+ * The probe repeats the exact call `subsystemRoots` makes rather than asking
+ * `statSync().isDirectory()`, so the two can never disagree about what "readable"
+ * means. It runs ONLY when the roster came back empty — the sole ambiguous case — so a
+ * repo with subsystems pays no second listing and the TOCTOU window stays narrow.
+ */
+function targetTreeWasListed(target: string): boolean {
+  try {
+    fs.readdirSync(target);
+    return true;
+  } catch { return false; }
+}
+
 export function discoverSubsystems(target: string): { name: string; fileCount: number }[] {
   const subsystems: { name: string; fileCount: number }[] = [];
 
@@ -2478,6 +2501,13 @@ function resolveAnatomySubsystems(
 ): Array<{ name: string; fileCount: number }> | { skipReason: PhaseSkipReason } {
   const discovered = discoverSubsystems(target);
   if (discovered.length === 0) {
+    // AP-EXT-ITER320-01: an UNLISTABLE target is a failed setup, not a repo with no
+    // work in it. `setup_error` is the reason this same function already returns when
+    // its other setup step cannot do its job, and it withholds the success verdict.
+    if (!targetTreeWasListed(target)) {
+      log(`anatomy-park setup: target ${target} could not be listed — refusing to skip the phase as "no subsystems"`);
+      return { skipReason: 'setup_error' };
+    }
     log('No subsystems discovered — skipping anatomy-park phase');
     return { skipReason: 'no_subsystems' };
   }

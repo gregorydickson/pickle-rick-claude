@@ -137,6 +137,54 @@ test('R-PSSS-3: anatomy-park with no subsystems returns a no_subsystems skip dis
   }
 });
 
+// AP-EXT-ITER320-01 — an UNLISTABLE target was reported as a repo with no subsystems.
+//
+// `subsystemRoots` swallows a failed listing into `[]`, so `discoverSubsystems` returns
+// an empty roster for both "no subsystem directories" and "the target could not be read".
+// `no_subsystems` is deliberately OUTSIDE `DEGRADED_PHASE_SKIP_REASONS`, so a missing or
+// relocated target skipped anatomy-park AND kept the success verdict — a review phase
+// certifying a tree nobody listed. The ACCEPT control is the case directly above: an empty
+// but LISTABLE target must still resolve to `no_subsystems`, so the discriminator cannot
+// be satisfied by refusing everything. The reason -> verdict half is already pinned by
+// AP-EXT-ITER289-01 in pipeline-runner-phase-fail-continue.test.js.
+//
+// Both causes are root-independent on purpose: a mode-based fixture is vacuous under uid 0.
+test('AP-EXT-ITER320-01: a target that cannot be listed is a setup_error, not no_subsystems', () => {
+  const session = makeSession();
+  const absent = path.join(os.tmpdir(), `ap-scope-absent-${process.pid}-${Date.now()}`);
+  try {
+    assert.equal(fs.existsSync(absent), false, 'fixture precondition: the target must not exist');
+    const logs = [];
+    const ok = setupAnatomyPark(session, absent, 3, EXTENSION_ROOT, (m) => logs.push(m));
+    assert.deepStrictEqual(
+      ok, { skipReason: 'setup_error' },
+      'a target that does not exist was never listed — the phase skip must withhold success',
+    );
+    assert.match(
+      logs.join('\n'), /could not be listed/,
+      'the log must name the real cause, not "no subsystems"',
+    );
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER320-01: a target that is a file, not a directory, is a setup_error', () => {
+  const session = makeSession();
+  const asFile = path.join(os.tmpdir(), `ap-scope-notdir-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(asFile, 'this is a file, not a subsystem tree\n');
+  try {
+    const ok = setupAnatomyPark(session, asFile, 3, EXTENSION_ROOT, () => {});
+    assert.deepStrictEqual(
+      ok, { skipReason: 'setup_error' },
+      'a non-directory target cannot be listed, so the phase skip must withhold success',
+    );
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(asFile, { force: true });
+  }
+});
+
 test('R-PSSS-3: writePipelineStatus persists non-empty phase_skips and omits an empty map', () => {
   const dir = makeSession();
   try {
