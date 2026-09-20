@@ -153,8 +153,8 @@ export function parseScope(flag: string): ParsedScope {
  * via `computeOneHop`. See that function for grep-based limitations.
  */
 export function resolveScope(args: ScopeArgs): ScopeJson {
-  const { repoRoot, sessionRoot } = args;
-  assertIsRepo(repoRoot);
+  const { sessionRoot } = args;
+  const repoRoot = resolveRepoToplevel(args.repoRoot);
 
   const parsed = parseScope(args.scopeFlag);
   const headSha = getHeadSha(repoRoot);
@@ -610,11 +610,36 @@ export function computeOneHop(
 // Internals
 // ---------------------------------------------------------------------------
 
-function assertIsRepo(repoRoot: string): void {
-  const out = runGitSafe(['rev-parse', '--git-dir'], repoRoot);
-  if (!out || out.length === 0) {
+/**
+ * Prove `repoRoot` is a git worktree AND resolve it to that worktree's TOPLEVEL,
+ * in one `rev-parse`. Callers hand in whatever directory they happen to hold — a
+ * `working_dir` is an unnormalized `process.cwd()` and a monorepo package dir is a
+ * documented shape (`detectMultiRepo`) — and every path this module produces or
+ * compares is spelled relative to this anchor.
+ *
+ * AP-EXT-ITER322-01: the proving step USED to answer repo-or-not (`--git-dir`) and
+ * pass the caller's directory straight through, so the anchor was whatever was
+ * handed in. One directory below the toplevel the two scope MODES then answered in
+ * DIFFERENT path spaces: `ls-files -co` lists the cwd SUBTREE and spells it
+ * cwd-relative, so `paths:<glob>` silently dropped every file above the cwd and
+ * re-spelled the survivors as repo-root names nobody wrote, while `diff --name-status`
+ * is root-relative from anywhere and `filterByTarget`'s `path.relative(root, target)`
+ * collapsed to `''`, admitting the WHOLE repo into a fence the session had narrowed
+ * to one package.
+ *
+ * Resolved HERE rather than at each call site for the reason {@link anchorPair}
+ * gives for anchoring at the comparison: a per-caller anchor is an enumerated set of
+ * sites that must each remember, and a site that forgets fails SILENTLY — a fence
+ * spelled in the wrong space looks exactly like a fence that legitimately matched
+ * little. `bin/resolve-scope.ts` resolves the same toplevel before calling in
+ * (R-RSBI-2) and is a no-op under this; so is any caller already at the toplevel.
+ */
+function resolveRepoToplevel(repoRoot: string): string {
+  const toplevel = runGitSafe(['rev-parse', '--show-toplevel'], repoRoot).trim();
+  if (toplevel.length === 0) {
     throw new ScopeError('SCOPE_NOT_A_REPO', `Not a git repository: ${repoRoot}`);
   }
+  return toplevel;
 }
 
 function resolveDefaultBase(repoRoot: string): string {

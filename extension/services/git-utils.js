@@ -327,9 +327,10 @@ export function probeTreeDirty(cwd) {
         return isWorkingTreeDirty(cwd);
     }
     catch { /* fall through to the repo probe */ }
-    // Same predicate the two existing non-repo probes use (setup.ts `isInsideGitRepo`,
-    // scope-resolver.ts `assertIsRepo`): `rev-parse --git-dir` answers repo-or-not even
-    // when `status` cannot run. If it fails too, the answer stays unmeasurable.
+    // Same predicate `setup.ts`'s `isInsideGitRepo` probe uses: `rev-parse --git-dir`
+    // answers repo-or-not even when `status` cannot run, and unlike `--show-toplevel`
+    // it does not additionally require a worktree. If it fails too, the answer stays
+    // unmeasurable.
     try {
         return runGitSafe(['rev-parse', '--git-dir'], cwd).trim().length > 0 ? null : false;
     }

@@ -340,3 +340,126 @@ test('writeSkippedByScope szechuan-sauce: no subsystem fields (flat payload)', (
         cleanup(repo, session);
     }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER322-01 — setupScope's producer base must be the git TOPLEVEL
+//
+// Every case above passes `workingDir: repo`, the toplevel, where the cwd space
+// and the repo space coincide — which is why a producer written one directory
+// below the toplevel was invisible. `state.working_dir` is an unnormalized
+// `process.cwd()` and a monorepo package dir is a documented shape, so these
+// fixtures put work BOTH above and below the read cwd and assert the fence is
+// spelled in the repo's space either way.
+// ---------------------------------------------------------------------------
+
+function makeNestedRepo() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-pipeline-nested-'));
+    git(['init', '-q', '-b', 'main'], dir);
+    git(['config', 'commit.gpgsign', 'false'], dir);
+    fs.mkdirSync(path.join(dir, 'alpha'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'pkg', 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'alpha', 'a1.ts'), 'export const x = 1;\n');
+    fs.writeFileSync(path.join(dir, 'pkg', 'sub', 'b1.ts'), 'export const y = 2;\n');
+    git(['add', '.'], dir);
+    git(['commit', '-qm', 'initial'], dir);
+    git(['checkout', '-qb', 'feature'], dir);
+    fs.writeFileSync(path.join(dir, 'alpha', 'a1.ts'), 'export const x = 2;\n');
+    fs.writeFileSync(path.join(dir, 'pkg', 'sub', 'b1.ts'), 'export const y = 3;\n');
+    git(['add', '.'], dir);
+    git(['commit', '-qm', 'work in both'], dir);
+    return dir;
+}
+
+function resolveVia(repo, workingDir, target, scopeFlag) {
+    const session = makeSession(repo);
+    try {
+        const scope = setupScope({
+            sessionDir: session,
+            workingDir,
+            target,
+            scopeFlag,
+            scopeBase: 'main',
+            log: () => {},
+        });
+        assert.ok(scope, `setupScope returned no scope for ${scopeFlag} from ${workingDir}`);
+        return scope.allowed_paths;
+    } finally {
+        cleanup(session);
+    }
+}
+
+test('AP-EXT-ITER322-01: setupScope below the toplevel keeps the work ABOVE the cwd and spells it repo-relative', () => {
+    const repo = makeNestedRepo();
+    const sub = path.join(repo, 'pkg', 'sub');
+    try {
+        // FIXTURE PRECONDITION: read from the toplevel, both modes see the pair.
+        // Without this an empty/one-element answer below could pass vacuously.
+        const topBranch = resolveVia(repo, repo, repo, 'branch');
+        const topPaths = resolveVia(repo, repo, repo, 'paths:**/*.ts');
+        assert.deepStrictEqual(topBranch, ['alpha/a1.ts', 'pkg/sub/b1.ts'],
+            'fixture precondition: branch mode at the toplevel sees both files');
+        assert.deepStrictEqual(topPaths, ['alpha/a1.ts', 'pkg/sub/b1.ts'],
+            'fixture precondition: paths mode at the toplevel sees both files');
+
+        // The defect axis: workingDir one directory below the toplevel, whole repo
+        // targeted. `ls-files -co` run there lists the cwd SUBTREE ONLY and spells it
+        // cwd-relative, so pre-fix this returned ['b1.ts'] — alpha/ dropped outright
+        // and the survivor renamed to a repo-root file nobody wrote.
+        assert.deepStrictEqual(resolveVia(repo, sub, repo, 'paths:**/*.ts'), topPaths,
+            'paths mode from below the toplevel must AGREE with the toplevel reading');
+        assert.deepStrictEqual(resolveVia(repo, sub, repo, 'branch'), topBranch,
+            'branch mode from below the toplevel must AGREE with the toplevel reading');
+    } finally {
+        cleanup(repo);
+    }
+});
+
+test('AP-EXT-ITER322-01: setupScope below the toplevel still NARROWS the fence to its target', () => {
+    const repo = makeNestedRepo();
+    const sub = path.join(repo, 'pkg', 'sub');
+    try {
+        // The monorepo shape: working_dir AND target are the package dir. Pre-fix the
+        // base and the target were the same directory, so `filterByTarget`'s
+        // `path.relative(root, target)` collapsed to '' and narrowing became a no-op —
+        // branch mode admitted alpha/ into a fence the session had narrowed to pkg/sub.
+        assert.deepStrictEqual(resolveVia(repo, sub, sub, 'branch'), ['pkg/sub/b1.ts'],
+            'branch mode must not admit paths outside the target');
+        assert.deepStrictEqual(resolveVia(repo, sub, sub, 'paths:**/*.ts'), ['pkg/sub/b1.ts'],
+            'paths mode must not admit paths outside the target');
+    } finally {
+        cleanup(repo);
+    }
+});
+
+test('AP-EXT-ITER322-01 ACCEPT/REJECT controls: toplevel reading is unchanged, non-repo still refuses', () => {
+    const repo = makeNestedRepo();
+    try {
+        // ACCEPT control: the anchor is a no-op where it always was one. An
+        // always-reject normalizer would red here.
+        assert.deepStrictEqual(resolveVia(repo, repo, path.join(repo, 'alpha'), 'branch'),
+            ['alpha/a1.ts'], 'toplevel reading still narrows to its target');
+
+        // REJECT control: the proving half of the anchor survives. An always-accept
+        // normalizer (one that passes any directory through) would red here.
+        const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-pipeline-nonrepo-'));
+        const session = makeSession(nonRepo);
+        try {
+            assert.throws(
+                () => setupScope({
+                    sessionDir: session,
+                    workingDir: nonRepo,
+                    target: nonRepo,
+                    scopeFlag: 'branch',
+                    scopeBase: 'main',
+                    log: () => {},
+                }),
+                (err) => err instanceof ScopeError && err.code === 'SCOPE_NOT_A_REPO',
+                'a directory that is not a git worktree must still refuse',
+            );
+        } finally {
+            cleanup(nonRepo, session);
+        }
+    } finally {
+        cleanup(repo);
+    }
+});
