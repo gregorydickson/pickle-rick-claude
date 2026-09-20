@@ -514,3 +514,131 @@ test('AC-BUNDLE-APWS-01: check-scope-diff rejects out-of-scope staged paths in w
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER310-01: the scope filter's two anchors must share a symlink space
+//
+// Production hands `filterBySubsystem` a `repoRoot` that came from
+// `git rev-parse --show-toplevel` (pipeline-runner:resolveGitRepoRoot), which is
+// realpath-resolved, and a `target` that is the raw operator-supplied
+// `pipeline.json:target`. Under a symlinked checkout prefix the two disagree,
+// `path.relative` yields a `../`-escaping path, every subsystem is dropped and
+// the whole anatomy-park phase takes the `empty_scope` skip.
+//
+// Every pre-existing fixture in this file sets `repoRoot = target`, where the
+// two spaces are identical — which is why the defect was invisible here.
+// ---------------------------------------------------------------------------
+
+function makeSymlinkedTargetFixture() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ap310-symlink-'));
+  const realDir = path.join(base, 'real');
+  const linkDir = path.join(base, 'link');
+  fs.mkdirSync(realDir, { recursive: true });
+  fs.symlinkSync(realDir, linkDir, 'dir');
+
+  const pkgReal = path.join(realDir, 'pkg');
+  makeSubsystem(pkgReal, 'alpha');
+  makeSubsystem(pkgReal, 'beta');
+  makeSubsystem(pkgReal, 'gamma');
+
+  // What production passes: the realpath-resolved git toplevel …
+  const repoRoot = fs.realpathSync(realDir);
+  // … against a target addressed THROUGH the symlink.
+  const targetViaLink = path.join(linkDir, 'pkg');
+
+  // The axis must actually be live, or every assertion below passes vacuously:
+  // on a filesystem where the symlink did not take, this fixture proves nothing.
+  assert.notEqual(
+    fs.realpathSync(targetViaLink),
+    targetViaLink,
+    'fixture invalid: target must reach the repo through a symlink',
+  );
+
+  return { base, repoRoot, targetViaLink, targetReal: pkgReal };
+}
+
+test('AP-EXT-ITER310-01: symlinked target + realpath repoRoot still filters to the in-scope subsystem', () => {
+  const { base, repoRoot, targetViaLink } = makeSymlinkedTargetFixture();
+  const session = makeSession();
+  try {
+    const logs = [];
+    const res = setupAnatomyPark(session, targetViaLink, 3, EXTENSION_ROOT, (m) => logs.push(m), {
+      allowedPaths: ['pkg/alpha/f0.ts'],
+      repoRoot,
+    });
+
+    assert.equal(res, true, `phase must run, not skip; logs: ${logs.join(' | ')}`);
+    // Exactly the in-scope subsystem: a filter that degenerated into keep-everything
+    // would return all three, so this doubles as the blast-radius control.
+    assert.deepStrictEqual(readAnatomyPark(session).subsystems, ['alpha']);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER310-01: anchoring RESOLVES the target, it does not widen the kept set', () => {
+  const { base, repoRoot, targetViaLink, targetReal } = makeSymlinkedTargetFixture();
+  const viaLink = makeSession();
+  const direct = makeSession();
+  try {
+    const allowedPaths = ['pkg/alpha/f0.ts'];
+    setupAnatomyPark(viaLink, targetViaLink, 3, EXTENSION_ROOT, () => {}, { allowedPaths, repoRoot });
+    setupAnatomyPark(direct, targetReal, 3, EXTENSION_ROOT, () => {}, { allowedPaths, repoRoot });
+
+    // Same tree addressed two ways → identical verdict, and `beta`/`gamma`
+    // stay excluded on both readings.
+    assert.deepStrictEqual(
+      readAnatomyPark(viaLink).subsystems,
+      readAnatomyPark(direct).subsystems,
+      'the symlinked and direct readings of one tree must agree',
+    );
+    assert.deepStrictEqual(readAnatomyPark(direct).subsystems, ['alpha']);
+  } finally {
+    fs.rmSync(viaLink, { recursive: true, force: true });
+    fs.rmSync(direct, { recursive: true, force: true });
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER310-01: filterBySubsystem itself anchors both sides, not just its caller', () => {
+  const { base, repoRoot, targetViaLink } = makeSymlinkedTargetFixture();
+  try {
+    const names = ['alpha', 'beta', 'gamma'];
+    const allowedPaths = ['pkg/alpha/f0.ts', 'pkg/gamma/f2.ts'];
+
+    assert.deepStrictEqual(
+      filterBySubsystem(names, allowedPaths, targetViaLink, repoRoot),
+      ['alpha', 'gamma'],
+      'a target reached through a symlink must resolve into repoRoot space',
+    );
+    // A non-existent repoRoot/target pair has no realpath to take: the helper
+    // falls back to path.resolve, so the pure-fixture callers keep working.
+    assert.deepStrictEqual(
+      filterBySubsystem(names, ['pkg/beta/f0.ts'], '/nowhere-ap310/pkg', '/nowhere-ap310'),
+      ['beta'],
+    );
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER310-01: a pair that agreed before anchoring still agrees when only one side exists', () => {
+  // The anchor resolves BOTH sides or NEITHER. Resolving only the side that
+  // happens to exist on disk would re-introduce the split this fix removes:
+  // here `repoRoot` is realpath-resolvable and `target` is not, and the two are
+  // handed over in the SAME raw spelling — so they must still relate.
+  const { base } = makeSymlinkedTargetFixture();
+  try {
+    const rawRoot = path.join(base, 'real');          // exists, addressed raw
+    const missingTarget = path.join(rawRoot, 'nope'); // never created
+    assert.ok(fs.existsSync(rawRoot) && !fs.existsSync(missingTarget), 'fixture invalid');
+
+    assert.deepStrictEqual(
+      filterBySubsystem(['alpha', 'beta'], ['nope/alpha/f0.ts'], missingTarget, rawRoot),
+      ['alpha'],
+    );
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});

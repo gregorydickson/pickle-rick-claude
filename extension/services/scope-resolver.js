@@ -302,11 +302,39 @@ function persistRefreshedScope(sessionRoot, scopePath, refreshed, sm, statePath,
     }
 }
 /**
+ * Put `repoRoot` and `target` into ONE symlink space so `path.relative` between
+ * them yields a repo-relative path.
+ *
+ * AP-EXT-ITER310-01: `git rev-parse --show-toplevel` hands back an
+ * already-realpath-resolved root (macOS /tmp → /private/tmp, a symlinked
+ * checkout prefix anywhere) while an operator-supplied `target` is raw, and two
+ * anchors in different spaces relate to each other by a `../`-escaping string
+ * that is not repo-relative at all. `pipeline-runner.ts:filterSeedPathsToTarget`
+ * already anchors both sides this way; this is the other half of that anchor.
+ *
+ * BOTH are resolved or NEITHER is — one `try`, deliberately not two. Resolving
+ * only the side that happens to exist on disk re-creates the very mismatch this
+ * removes, and a pair that agreed before must still agree after.
+ */
+function anchorPair(repoRoot, target) {
+    try {
+        return {
+            root: fs.realpathSync(path.resolve(repoRoot)),
+            targetRoot: fs.realpathSync(path.resolve(target)),
+        };
+    }
+    catch {
+        return { root: path.resolve(repoRoot), targetRoot: path.resolve(target) };
+    }
+}
+/**
  * Narrow a subsystem-name list to those whose directory (resolved relative
  * to `target`) contains at least one `allowedPaths` entry.
  *
  * `subsystems` are names relative to `target`; `allowedPaths` are
- * repo-relative POSIX paths; `target` and `repoRoot` are absolute.
+ * repo-relative POSIX paths; `target` and `repoRoot` are absolute and are put
+ * into one symlink space by {@link anchorPair} before being compared, so a
+ * caller cannot make the two disagree about it.
  * Returns sorted byte-order unique names.
  */
 export function filterBySubsystem(subsystems, allowedPaths, target, repoRoot) {
@@ -314,9 +342,10 @@ export function filterBySubsystem(subsystems, allowedPaths, target, repoRoot) {
         return [];
     const kept = new Set();
     const allowedSet = new Set(allowedPaths.map(toPosix));
+    const { root, targetRoot } = anchorPair(repoRoot, target);
     for (const name of subsystems) {
-        const absDir = path.resolve(target, name);
-        const relDir = toPosix(path.relative(repoRoot, absDir));
+        const absDir = path.resolve(targetRoot, name);
+        const relDir = toPosix(path.relative(root, absDir));
         const prefix = relDir.length === 0 ? '' : relDir.endsWith('/') ? relDir : `${relDir}/`;
         for (const ap of allowedSet) {
             if (prefix === '' || ap === relDir || ap.startsWith(prefix)) {
