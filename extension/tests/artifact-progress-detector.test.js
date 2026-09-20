@@ -34,6 +34,18 @@ function initGit(dir) {
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
 }
 
+// AP-EXT-ITER313-01: a REAL repo whose only commit is far outside any window, so
+// "git answered: nothing landed" is reachable without depending on a non-repo cwd.
+function initGitBackdated(dir) {
+  const env = { ...process.env, GIT_AUTHOR_DATE: '2020-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2020-01-01T00:00:00Z' };
+  execFileSync('git', ['init', '--quiet'], { cwd: dir, timeout: 30_000 });
+  execFileSync('git', ['config', 'user.email', 'test@example.local'], { cwd: dir, timeout: 30_000 });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir, timeout: 30_000 });
+  fs.writeFileSync(path.join(dir, 'base.md'), 'baseline\n');
+  execFileSync('git', ['add', '.'], { cwd: dir, timeout: 30_000 });
+  execFileSync('git', ['commit', '-m', 'baseline', '--quiet'], { cwd: dir, env, timeout: 30_000 });
+}
+
 function gitCommit(dir, file, msg) {
   const fullPath = path.join(dir, file);
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
@@ -123,8 +135,9 @@ test('R-WTB-A1 getLatestCommitInScope: recent commit in last window → returns 
   initGit(dir);
   const sha = gitCommit(dir, 'work.ts', 'feat: add work');
   const result = getLatestCommitInScope(dir, 3600); // 1h window
-  assert.ok(result !== null, 'expected a SHA');
-  assert.ok(sha.startsWith(result ?? ''), `expected ${sha} to start with ${result}`);
+  assert.equal(result.measured, true, 'git answered');
+  assert.ok(result.sha !== null, 'expected a SHA');
+  assert.ok(sha.startsWith(result.sha ?? ''), `expected ${sha} to start with ${result.sha}`);
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -133,8 +146,9 @@ test('R-WTB-A1 getLatestCommitInScope: old commit before window → null', () =>
   initGit(dir);
   // window of 1 second — the initial commit is older
   const result = getLatestCommitInScope(dir, 1);
-  // This might return null or a very recent commit; just verify it returns a string or null
-  assert.ok(result === null || typeof result === 'string');
+  // This might report null or a very recent commit; either way git ANSWERED.
+  assert.equal(result.measured, true);
+  assert.ok(result.sha === null || typeof result.sha === 'string');
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -147,8 +161,9 @@ test('R-WTB-A1 getLatestCommitInScope: with scope.json paths → uses path filte
   const scopePath = path.join(dir, 'scope.json');
   fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['src/'] }));
   const result = getLatestCommitInScope(dir, 3600, scopePath);
-  assert.ok(result !== null, 'expected SHA from scoped commit');
-  assert.ok(sha.startsWith(result ?? ''));
+  assert.equal(result.measured, true);
+  assert.ok(result.sha !== null, 'expected SHA from scoped commit');
+  assert.ok(sha.startsWith(result.sha ?? ''));
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -156,8 +171,14 @@ test('R-WTB-A1 getLatestCommitInScope: with scope.json paths → uses path filte
 
 test('R-WTB-A1 detectArtifactProgress: no files, no commits → not progressed', () => {
   const dir = makeTmpDir();
+  // AP-EXT-ITER313-01: a REAL repo with nothing in the window. This case previously ran
+  // against a non-repo cwd, where git exits 128 — it was asserting the collapse, not the
+  // empty window, and could never have distinguished the two.
+  initGitBackdated(dir);
+  fs.unlinkSync(path.join(dir, 'base.md'));
   const snapshot = { latestMtimeEpoch: 0, latestCommitSha: null };
-  const result = detectArtifactProgress(dir, snapshot, { workingDir: dir, windowSeconds: 1 });
+  const result = detectArtifactProgress(dir, snapshot, { workingDir: dir, windowSeconds: 60 });
+  assert.equal(result.commitProbeMeasured, true, 'fixture guard: git must have ANSWERED');
   assert.equal(result.progressed, false);
   assert.equal(result.latestMtimeEpoch, 0);
   assert.equal(result.latestCommitSha, null);
@@ -225,19 +246,19 @@ test('AP-EXT-ITER312-01 getLatestCommitInScope: a subdirectory workingDir AGREES
   const atTop = getLatestCommitInScope(dir, 3600, scopePath);
   const atSub = getLatestCommitInScope(subDir, 3600, scopePath);
 
-  assert.ok(atTop !== null, 'expected a SHA at the git toplevel');
-  assert.ok(sha.startsWith(atTop ?? ''), `expected ${sha} to start with ${atTop}`);
+  assert.ok(atTop.sha !== null, 'expected a SHA at the git toplevel');
+  assert.ok(sha.startsWith(atTop.sha ?? ''), `expected ${sha} to start with ${atTop.sha}`);
   // The reading must not depend on where the session was launched from.
-  assert.equal(atSub, atTop, 'a workingDir below the toplevel must read the same commit');
+  assert.deepStrictEqual(atSub, atTop, 'a workingDir below the toplevel must read the same commit');
 
   // Over-trigger control: the scoping still FENCES. A fix that simply dropped the
   // pathspecs would satisfy the assertions above and red here.
   const fencePath = path.join(dir, 'scope-fence.json');
   fs.writeFileSync(fencePath, JSON.stringify({ allowed_paths: ['nonexistent/z.txt'] }));
-  assert.equal(getLatestCommitInScope(dir, 3600, fencePath), null,
-    'an out-of-scope-only window is null at the toplevel');
-  assert.equal(getLatestCommitInScope(subDir, 3600, fencePath), null,
-    'an out-of-scope-only window is null below the toplevel too');
+  assert.deepStrictEqual(getLatestCommitInScope(dir, 3600, fencePath), { measured: true, sha: null },
+    'an out-of-scope-only window is a MEASURED empty at the toplevel');
+  assert.deepStrictEqual(getLatestCommitInScope(subDir, 3600, fencePath), { measured: true, sha: null },
+    'an out-of-scope-only window is a MEASURED empty below the toplevel too');
 
   fs.rmSync(dir, { recursive: true });
 });
@@ -266,4 +287,75 @@ test('AP-EXT-ITER312-01 detectArtifactProgress: a committing worker below the to
   assert.equal(result.progressed, true);
 
   fs.rmSync(dir, { recursive: true });
+});
+
+// --- AP-EXT-ITER313-01: git DECLINING to answer is not git answering "nothing landed" ---
+
+test('AP-EXT-ITER313-01 getLatestCommitInScope: an unanswered probe is measured:false, an empty window is measured:true', () => {
+  const dir = makeTmpDir();
+  initGit(dir);
+  const sha = gitCommit(dir, 'work.ts', 'feat: real work');
+
+  // Positive control: git answered and there IS a commit.
+  const answered = getLatestCommitInScope(dir, 3600);
+  assert.equal(answered.measured, true);
+  assert.ok(sha.startsWith(answered.sha ?? ''), 'fixture guard: the probe can see a real commit');
+
+  // Answered, and the answer is "nothing in the window" — the only shape that may vote
+  // no-progress. Its `sha: null` is the SAME null the unmeasurable arms produce, which is
+  // exactly why the boolean and not the sha carries the distinction.
+  const empty = makeTmpDir();
+  initGitBackdated(empty);
+  assert.deepStrictEqual(getLatestCommitInScope(empty, 60), { measured: true, sha: null });
+
+  // Unanswered, non-zero exit: workingDir is not a git repository (git exits 128).
+  const notARepo = makeTmpDir();
+  assert.deepStrictEqual(getLatestCommitInScope(notARepo, 3600), { measured: false, sha: null });
+
+  // Unanswered, spawn failure: the cwd does not exist, so `status` is null and `error` is
+  // ENOENT — the same result shape an absent `git` binary and the 10s timeout produce, and
+  // the shape the retired `(result.status ?? 1)` reading mapped onto a plain no-commit.
+  assert.deepStrictEqual(
+    getLatestCommitInScope(path.join(notARepo, 'gone'), 3600),
+    { measured: false, sha: null },
+  );
+
+  fs.rmSync(dir, { recursive: true });
+  fs.rmSync(empty, { recursive: true });
+  fs.rmSync(notARepo, { recursive: true });
+});
+
+test('AP-EXT-ITER313-01 detectArtifactProgress: an unanswered probe extends instead of voting the run-ending halt', () => {
+  const dir = makeTmpDir();
+  const ticketDir = path.join(dir, 'ticket1');
+  fs.mkdirSync(ticketDir);
+
+  // No .md in the ticket dir, so the mtime arm is inert and the commit probe is the ONLY
+  // signal — the production timeout-probe shape during Implement, which writes no .md.
+  const priorSha = 'aaabbbccc';
+  const snapshot = { latestMtimeEpoch: 0, latestCommitSha: priorSha };
+
+  // Answered, empty window: this is the ONE reading allowed to reach
+  // `routeTimeoutNoProgress`, which stamps `ticket_timeout_halted_no_progress` and breaks
+  // the mux loop with `exit_reason: timeout_repeat`. It doubles as the over-trigger control
+  // — a fix that simply returned `progressed: true` for everything reds here.
+  const answeredEmpty = makeTmpDir();
+  initGitBackdated(answeredEmpty);
+  const measured = detectArtifactProgress(ticketDir, snapshot, {
+    workingDir: answeredEmpty, windowSeconds: 60,
+  });
+  assert.equal(measured.commitProbeMeasured, true);
+  assert.equal(measured.progressed, false, 'a measured empty window still votes no-progress');
+
+  // Unanswered: the same `sha: null`, but the run must NOT end on an unknown.
+  const unanswered = detectArtifactProgress(ticketDir, snapshot, {
+    workingDir: path.join(dir, 'no-such-dir'), windowSeconds: 60,
+  });
+  assert.equal(unanswered.commitProbeMeasured, false);
+  assert.equal(unanswered.progressed, true, 'an unanswered probe must not vote the halt');
+  assert.equal(unanswered.latestCommitSha, priorSha,
+    'the prior sha is carried forward, never overwritten with a fabricated null');
+
+  fs.rmSync(dir, { recursive: true });
+  fs.rmSync(answeredEmpty, { recursive: true });
 });

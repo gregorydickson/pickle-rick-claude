@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,6 +35,20 @@ function makeTmpSession() {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wtb-a3-')));
   const ticketDir = path.join(dir, TICKET_ID);
   fs.mkdirSync(ticketDir, { recursive: true });
+  // AP-EXT-ITER313-01: the workingDir must be a REAL repository whose only commit is far
+  // outside any window, so the commit arm reads a MEASURED empty rather than git refusing to
+  // answer. Both fixtures previously pointed at a bare tmp dir, where git exits 128 — so
+  // Fixture 2 was proving the halt fires on an UNANSWERED probe (the defect) and Fixture 1's
+  // "no halt" passed whether or not an artifact was ever written.
+  execFileSync('git', ['init', '--quiet'], { cwd: dir, timeout: 30_000 });
+  execFileSync('git', [
+    '-c', 'user.email=test@example.local', '-c', 'user.name=Test User',
+    'commit', '--allow-empty', '--quiet', '-m', 'baseline',
+  ], {
+    cwd: dir,
+    env: { ...process.env, GIT_AUTHOR_DATE: '2020-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2020-01-01T00:00:00Z' },
+    timeout: 30_000,
+  });
   return { sessionDir: dir, ticketDir };
 }
 
@@ -86,11 +101,14 @@ test('R-WTB-A3 productive: 50-min implement with regular artifact writes fires n
 
       if (counter.halt) {
         // R-WTB-A1 integrated decision: check artifact progress before halting.
-        // workingDir has no .git → latestCommitSha always null; progress relies on mtime.
+        // workingDir is a real repo with nothing in the window, so the commit arm reads a
+        // MEASURED empty and progress rests on the mtime arm alone — as in production.
         const pResult = detectArtifactProgress(ticketDir, snapshot, {
           workingDir: sessionDir,
           windowSeconds: resolveNoProgressWindowSeconds({ [NO_PROGRESS_WINDOW_ENV]: '300' }),
         });
+        assert.equal(pResult.commitProbeMeasured, true,
+          'fixture guard: git must ANSWER, or "no halt" proves nothing about the mtime arm');
         snapshot = { latestMtimeEpoch: pResult.latestMtimeEpoch, latestCommitSha: pResult.latestCommitSha };
 
         if (pResult.progressed) {
@@ -184,6 +202,8 @@ test('R-WTB-A3 no-progress: halt fires after 2 consecutive timeouts with no arti
       windowSeconds: NO_PROGRESS_WINDOW_S,
     });
 
+    assert.equal(haltCheck.commitProbeMeasured, true,
+      'fixture guard: only a MEASURED empty window may reach the halt decision');
     assert.equal(haltCheck.progressed, false,
       'no new artifacts → detectArtifactProgress must return progressed=false');
 

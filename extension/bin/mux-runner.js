@@ -12714,6 +12714,9 @@ function probeTimeoutArtifactProgress(input) {
     const snapshot = { latestMtimeEpoch: pResult.latestMtimeEpoch, latestCommitSha: pResult.latestCommitSha };
     if (!pResult.progressed)
         return { progressed: false, snapshot };
+    // AP-EXT-ITER313-01: the extension is the same DISPOSITION either way, but the report is not
+    // — an unanswered commit probe must never be logged as observed progress. Honesty is a
+    // reporting property; halting is a disposition, and these are not the same wire.
     writeActivityEntry(statePath, {
         event: 'ticket_timeout_progress_extension',
         ts: new Date().toISOString(),
@@ -12721,11 +12724,14 @@ function probeTimeoutArtifactProgress(input) {
         gate_payload: {
             latest_mtime_epoch: pResult.latestMtimeEpoch,
             latest_commit_sha: pResult.latestCommitSha,
+            commit_probe_measured: pResult.commitProbeMeasured,
             timeout_count: timeoutCount,
             no_progress_window_seconds: noProgressWindowS,
         },
     });
-    log(`[info] Artifact progress detected for ticket ${ticketForTimeout} — timeout counter reset (window: ${noProgressWindowS}s)`);
+    log(pResult.commitProbeMeasured
+        ? `[info] Artifact progress detected for ticket ${ticketForTimeout} — timeout counter reset (window: ${noProgressWindowS}s)`
+        : `[info] Commit probe unanswered for ticket ${ticketForTimeout} — extending rather than halting on an unknown (window: ${noProgressWindowS}s)`);
     return { progressed: true, snapshot };
 }
 /**

@@ -44,6 +44,20 @@ export function getLatestArtifactMtime(ticketDir) {
  * root anchor with no resolver, no extra spawn and no new branch — the same subtraction
  * AP-EXT-ITER311-01 made in `microverse-runner.ts:computeTouchedLineNumbers`, rather than a
  * sixth hand-copied `--show-toplevel` resolver.
+ *
+ * AP-EXT-ITER313-01: the return is a READING, not a sha, because git declining to answer and
+ * git answering "no commit" are different facts and the single `string | null` collapsed them.
+ * MEASURED: a non-repo `workingDir` exits 128, an absent git binary gives `status: null` +
+ * `error: ENOENT`, and the 10s cap gives `status: null` + `error: ETIMEDOUT` — while a genuine
+ * empty window is `status: 0` with EMPTY stdout, so `status === 0 && !error` is the exact
+ * discriminator. The old `(result.status ?? 1) !== 0 || !result.stdout` mapped all four onto
+ * `null`; the consumer then voted no-progress, `routeTimeoutNoProgress` stamped
+ * `ticket_timeout_halted_no_progress`, and the loop `break`s with `exit_reason: timeout_repeat`
+ * — the WHOLE run ended on an unanswered probe. The mtime arm cannot cover for it:
+ * `getLatestArtifactMtime` counts only `.md`, which the Implement phase does not write, so
+ * during Implement this probe is the only progress signal. Halting on UNKNOWN is the false-halt
+ * the root CLAUDE.md forbids; the `|| !result.stdout` disjunct is GONE rather than guarded, so
+ * the empty-window case has exactly one reading site.
  */
 export function getLatestCommitInScope(workingDir, sinceSeconds, scopeJsonPath) {
     const pathSpecs = [];
@@ -67,18 +81,21 @@ export function getLatestCommitInScope(workingDir, sinceSeconds, scopeJsonPath) 
         encoding: 'utf-8',
         timeout: 10_000,
     });
-    if ((result.status ?? 1) !== 0 || !result.stdout)
-        return null;
-    const lines = result.stdout.trim().split('\n').filter(Boolean);
-    if (lines.length === 0)
-        return null;
-    return lines[0].split(' ')[0] ?? null;
+    if (result.error || result.status !== 0)
+        return { measured: false, sha: null };
+    const lines = (result.stdout ?? '').trim().split('\n').filter(Boolean);
+    return { measured: true, sha: lines.length === 0 ? null : (lines[0].split(' ')[0] ?? null) };
 }
 export function detectArtifactProgress(ticketDir, lastSnapshot, opts) {
     const windowSeconds = opts?.windowSeconds ?? resolveNoProgressWindowSeconds(opts?.env);
     const latestMtimeEpoch = getLatestArtifactMtime(ticketDir);
-    const latestCommitSha = getLatestCommitInScope(opts?.workingDir ?? process.cwd(), windowSeconds, opts?.scopeJsonPath);
-    const progressed = latestMtimeEpoch > lastSnapshot.latestMtimeEpoch ||
+    const reading = getLatestCommitInScope(opts?.workingDir ?? process.cwd(), windowSeconds, opts?.scopeJsonPath);
+    // AP-EXT-ITER313-01: an unanswered probe carries the prior sha forward rather than
+    // publishing a fabricated `null` — the `?? prev` convention `mux-runner.ts`'s scoped
+    // source-state signature already uses for the same git-declined states.
+    const latestCommitSha = reading.measured ? reading.sha : lastSnapshot.latestCommitSha;
+    const progressed = !reading.measured ||
+        latestMtimeEpoch > lastSnapshot.latestMtimeEpoch ||
         (latestCommitSha !== null && latestCommitSha !== lastSnapshot.latestCommitSha);
-    return { progressed, latestMtimeEpoch, latestCommitSha };
+    return { progressed, latestMtimeEpoch, latestCommitSha, commitProbeMeasured: reading.measured };
 }

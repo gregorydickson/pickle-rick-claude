@@ -1426,6 +1426,7 @@
           "properties": {
             "latest_mtime_epoch": { "type": "number" },
             "latest_commit_sha": { "type": ["string", "null"] },
+            "commit_probe_measured": { "type": "boolean" },
             "timeout_count": { "type": "number" },
             "no_progress_window_seconds": { "type": "number" }
           }
