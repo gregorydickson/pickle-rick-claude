@@ -13,6 +13,27 @@ export function runGit(cmd, cwd) {
 export function runGitSafe(cmd, cwd) {
     return runCmd(['git', ...cmd], { cwd, check: false });
 }
+/**
+ * True when git RAN and reported a verdict. `execFileSync`/`spawnSync` fill `status` with
+ * the exit code of a process that actually ran — 128 is "not a git repository", a ceiling
+ * directory, or a bare repo, and for every one of those the caller's own directory IS the
+ * right answer, so a fallback to it is EXACT. A spawn failure, a timeout kill or an
+ * external signal leaves `status` NULL and carries the reason on `code`/`signal` instead:
+ * git never spoke, and any fallback is then a GUESS merely shaped like an answer.
+ *
+ * Reading the PRESENCE of an exit status is deliberately not an enumeration of errnos —
+ * ENOENT, EACCES, EAGAIN and ETIMEDOUT are all "git never spoke" without anyone
+ * maintaining a list of their spellings, the failure mode the sibling
+ * `UNRUNNABLE_CHECK_PATTERNS` collapse (AP-EXT-ITER318-01) closed for `exitCode`.
+ *
+ * AP-EXT-ITER325-01: ONE home, shared by every `--show-toplevel` resolver that splits its
+ * catch on this distinction (`../bin/pipeline-runner.ts:gitRepoRoot`,
+ * `../bin/mux-runner.ts:anchorRepoRoot`). A per-file copy of a predicate is how the NEXT
+ * resolver gets a subtly different spelling of the same question.
+ */
+export function gitReportedExitStatus(err) {
+    return typeof err?.status === 'number';
+}
 export function getGithubUser() {
     try {
         return runCmd(['gh', 'api', 'user', '-q', '.login']);

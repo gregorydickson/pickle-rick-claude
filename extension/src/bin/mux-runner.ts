@@ -24,7 +24,7 @@ import {
   type ManagerRelaunchExitKind,
   type ManagerRelaunchDecision,
 } from '../services/manager-relaunch.js';
-import { getHeadBranch, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, listWorkingTreeDirtyPathsExcludingCodegraph, probeTreeDirty, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
+import { getHeadBranch, gitReportedExitStatus, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, listWorkingTreeDirtyPathsExcludingCodegraph, probeTreeDirty, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible, type PlanPhase, type RecoveryDeps, type RecoveryEvidence, type RecoveryOutcome, type ReExecutionSeam } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds, type ArtifactProgressSnapshot } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, type EvidenceCtx, type RevertDecision, type CompletionDecisionCtx, type CompletionDecisionKind } from '../services/ticket-completion-evidence.js';
@@ -1476,11 +1476,31 @@ export function truncateTaskNotes(content: string, maxChars: number = TASK_NOTES
 }
 
 /**
+ * The answer plus whether git AUTHORISED it. `proven: false` means the fallback is a
+ * GUESS shaped like an anchor, not that the answer is unusable — every consumer still
+ * receives a directory, and each decides for itself whether a guess is good enough.
+ */
+type RepoRootAnchor = { root: string; proven: boolean };
+
+/**
  * R-MRFP: resolves a directory to its enclosing git repository root. Falls
  * back to the absolute directory path when it is not inside a git repo (or
  * does not exist), so forward-created dirs still get a stable identity.
+ *
+ * AP-EXT-ITER325-01: the fallback is only an ANSWER when git answered. `absDir` is
+ * EXACT when git reported an exit status (128 is "not a git repository", a ceiling
+ * directory, a bare repo) and a GUESS when git never spoke (spawn failure, the 5s
+ * timeout, an external kill) — see {@link gitReportedExitStatus}, the ONE home for that
+ * distinction, shared with `pipeline-runner.ts:gitRepoRoot`. Exit-0-with-EMPTY-output
+ * stays `proven` here, matching that twin deliberately rather than inventing a third
+ * behaviour for a state measured near-unreachable (a bare repo exits 128).
+ *
+ * The guess is still RETURNED: refusing would add a halt path, and `dirtyPathsInWorkingDirSpace`
+ * / `preStashOutOfAllowlistResidue` want the identity rewrite even when it degrades to
+ * the identity. It is simply no longer INDISTINGUISHABLE from a proven anchor for the
+ * one consumer whose silent degradation is measured — see `readScopeAllowedPathSpecsFromFile`.
  */
-function resolveRepoRoot(dir: string, stableBase: string): string {
+function anchorRepoRoot(dir: string, stableBase: string): RepoRootAnchor {
   const absDir = path.isAbsolute(dir) ? dir : path.resolve(stableBase, dir);
   try {
     const out = execFileSync('git', ['-C', absDir, 'rev-parse', '--show-toplevel'], {
@@ -1488,9 +1508,17 @@ function resolveRepoRoot(dir: string, stableBase: string): string {
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    if (out) return out;
-  } catch { /* not a git repo / missing dir — fall back to the path itself */ }
-  return absDir;
+    if (out) return { root: out, proven: true };
+  } catch (err) {
+    // not a git repo / missing dir — fall back to the path itself, which is EXACT there.
+    if (!gitReportedExitStatus(err)) return { root: absDir, proven: false };
+  }
+  return { root: absDir, proven: true };
+}
+
+/** The anchor alone, for consumers whose rewrite degrades to the identity on a guess. */
+function resolveRepoRoot(dir: string, stableBase: string): string {
+  return anchorRepoRoot(dir, stableBase).root;
 }
 
 /**
@@ -10777,8 +10805,19 @@ function readScopeAllowedPathSpecsFromFile(scopeJsonPath: string | undefined, wo
       }
     }
   } catch { /* scope.json absent or malformed — fall through to unscoped */ }
-  if (pathSpecs.length === 0) return pathSpecs;
-  const repoRoot = muxRealpathOrSelf(resolveRepoRoot(workingDir, workingDir));
+  // AP-EXT-ITER325-01: ONE question — do we have a fence we can spell in a PROVEN space?
+  // An unproven anchor resolves every spec against a directory git never authorised, and
+  // a pathspec that resolves nowhere exits 0 with EMPTY output, so the probes below report
+  // a CONSTANT signature and `isSourceSignatureProgress` charges a producing worker zero
+  // progress — indistinguishable from a worker that wrote nothing. The unscoped set is the
+  // honest degrade: it over-reports progress (costing at most one more spawn) where the
+  // resolved-against-a-guess set silently under-reports it (costing the ticket). Both
+  // consumers already take `[]` as "measure the whole tree", so this is the EXISTING arm an
+  // absent scope.json takes, not a new one — which is why the emptiness early-return is gone
+  // rather than joined by a second guard: `pathSpecs.map` over an empty set is already `[]`.
+  const anchor = anchorRepoRoot(workingDir, workingDir);
+  if (!anchor.proven) return [];
+  const repoRoot = muxRealpathOrSelf(anchor.root);
   return pathSpecs.map((spec) => path.resolve(repoRoot, spec));
 }
 

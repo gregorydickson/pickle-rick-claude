@@ -58,6 +58,7 @@ import { collapseAnalystTicketCopies, type RefinementTicketManifestEntry } from 
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 import {
   isGitIgnoredPath,
+  gitReportedExitStatus,
   listWorkingTreeDirtyPaths,
   getDiffFiles,
   archiveBeforeDestructive,
@@ -861,23 +862,6 @@ export function gitRepoRoot(cwd: string, onUnprovenAnchor?: (detail: string) => 
     }
   }
   return cwd;
-}
-
-/**
- * True when git RAN and reported a verdict. `execFileSync` fills `status` with the exit
- * code of a process that actually ran — 128 is "not a git repository", a ceiling
- * directory, or a bare repo, and for every one of those `cwd` IS the right answer, so
- * the fallback is exact. A spawn failure or a timeout kill leaves `status` NULL and
- * carries the reason on `code`/`signal` instead: git never spoke, and `cwd` is then a
- * GUESS merely shaped like an anchor.
- *
- * Reading the PRESENCE of an exit status is deliberately not an enumeration of errnos —
- * ENOENT, EACCES, EAGAIN and ETIMEDOUT are all "git never spoke" without anyone
- * maintaining a list of their spellings, the failure mode the sibling
- * `UNRUNNABLE_CHECK_PATTERNS` collapse (AP-EXT-ITER318-01) closed for `exitCode`.
- */
-function gitReportedExitStatus(err: unknown): boolean {
-  return typeof (err as { status?: unknown } | null)?.status === 'number';
 }
 
 /**

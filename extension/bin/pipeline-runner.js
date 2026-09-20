@@ -36,7 +36,7 @@ import { collapseAnalystTicketCopies } from './spawn-refinement-team.js';
 // Re-export the single cap literal so existing importers (tests, Module Export Catalog)
 // keep resolving it from pipeline-runner without a second definition.
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
-import { isGitIgnoredPath, listWorkingTreeDirtyPaths, getDiffFiles, archiveBeforeDestructive, updateTicketStatus, ARCHIVE_UNTRACKED_BYTE_CAP, } from '../services/git-utils.js';
+import { isGitIgnoredPath, gitReportedExitStatus, listWorkingTreeDirtyPaths, getDiffFiles, archiveBeforeDestructive, updateTicketStatus, ARCHIVE_UNTRACKED_BYTE_CAP, } from '../services/git-utils.js';
 import { logActivity } from '../services/activity-logger.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
@@ -677,22 +677,6 @@ export function gitRepoRoot(cwd, onUnprovenAnchor) {
         }
     }
     return cwd;
-}
-/**
- * True when git RAN and reported a verdict. `execFileSync` fills `status` with the exit
- * code of a process that actually ran — 128 is "not a git repository", a ceiling
- * directory, or a bare repo, and for every one of those `cwd` IS the right answer, so
- * the fallback is exact. A spawn failure or a timeout kill leaves `status` NULL and
- * carries the reason on `code`/`signal` instead: git never spoke, and `cwd` is then a
- * GUESS merely shaped like an anchor.
- *
- * Reading the PRESENCE of an exit status is deliberately not an enumeration of errnos —
- * ENOENT, EACCES, EAGAIN and ETIMEDOUT are all "git never spoke" without anyone
- * maintaining a list of their spellings, the failure mode the sibling
- * `UNRUNNABLE_CHECK_PATTERNS` collapse (AP-EXT-ITER318-01) closed for `exitCode`.
- */
-function gitReportedExitStatus(err) {
-    return typeof err?.status === 'number';
 }
 /**
  * True when `dirtyPath` (a `git status --porcelain` repo-root-relative path)

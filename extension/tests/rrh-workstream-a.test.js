@@ -845,3 +845,126 @@ test('AP-EXT-ITER308-02: the auto-handoff note lists in-scope dirty paths from a
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
+
+// ── AP-EXT-ITER325-01 — the scoped progress probe's ANCHOR must be a proven one ──
+//
+// `readScopeAllowedPathSpecsFromFile` resolves repo-root-relative `allowed_paths`
+// against `anchorRepoRoot(workingDir)`. When git NEVER SPOKE (spawn failure, the 5s
+// timeout, an external kill) the pre-fix resolver returned `workingDir` itself, and
+// below the toplevel every resolved spec then matched NOTHING: each probe exits 0 with
+// EMPTY output, so the signature is a CONSTANT before and after a real edit and
+// `isSourceSignatureProgress` charges a producing worker zero progress — the
+// AP-EXT-ITER308-02 defect re-entered through the anchor-provenance axis.
+//
+// Driven in a CHILD process so the shimmed PATH is hermetic: mutating
+// `process.env.PATH` in-process is the R-TSPF-4 process-global-state race, and this
+// file runs at integration concurrency.
+
+function realGitPath() {
+  return execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8', timeout: 30_000 }).trim();
+}
+
+// A `git` that passes everything through to the real binary EXCEPT
+// `rev-parse --show-toplevel`, for which it kills itself — `status: null`, the
+// "git never spoke" shape, reached instantly rather than by waiting out a 5s timeout.
+function writeSilentToplevelShim(dir, realGit) {
+  const shimDir = path.join(dir, 'shim');
+  fs.mkdirSync(shimDir, { recursive: true });
+  const shim = path.join(shimDir, 'git');
+  fs.writeFileSync(
+    shim,
+    `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = "--show-toplevel" ]; then kill -9 $$; fi\ndone\nexec ${realGit} "$@"\n`,
+  );
+  fs.chmodSync(shim, 0o755);
+  return shimDir;
+}
+
+// Returns { base, after } — the scoped signature read from `sub` before and after
+// `edit()` runs. `shimDir` null means the real git answers.
+function probeScopedSignature({ repo, sub, scopePath, editPath, shimDir }) {
+  const probe = path.join(repo, 'ap325-probe.mjs');
+  const muxUrl = new URL('../bin/mux-runner.js', import.meta.url).href;
+  fs.writeFileSync(
+    probe,
+    `import fs from 'node:fs';\n` +
+      `const { computeScopedSourceTreeSignature } = await import(${JSON.stringify(muxUrl)});\n` +
+      `const sub = ${JSON.stringify(sub)};\n` +
+      `const scopePath = ${JSON.stringify(scopePath)};\n` +
+      `const base = computeScopedSourceTreeSignature(sub, scopePath);\n` +
+      `fs.appendFileSync(${JSON.stringify(editPath)}, 'export const added = 2;\\n');\n` +
+      `const after = computeScopedSourceTreeSignature(sub, scopePath);\n` +
+      `process.stdout.write(JSON.stringify({ base, after }));\n`,
+  );
+  const env = { ...process.env };
+  if (shimDir) env.PATH = `${shimDir}:${env.PATH}`;
+  const res = spawnSync(process.execPath, [probe], { encoding: 'utf-8', timeout: 120_000, env });
+  assert.equal(res.status, 0, `probe child exited ${res.status}: ${res.stderr}`);
+  return JSON.parse(res.stdout);
+}
+
+test('AP-EXT-ITER325-01: FIXTURE PRECONDITION — the shim really makes git NEVER SPEAK for --show-toplevel', () => {
+  const { repo } = initNestedSignatureRepo('ap325-precond-');
+  try {
+    const shimDir = writeSilentToplevelShim(repo, realGitPath());
+    const env = { ...process.env, PATH: `${shimDir}:${process.env.PATH}` };
+
+    const silent = spawnSync('git', ['-C', repo, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf-8', timeout: 30_000, env,
+    });
+    assert.equal(silent.status, null, 'the shimmed --show-toplevel reports NO exit status');
+
+    // The shim must break ONLY that one read — if it broke git wholesale the defect
+    // case below would measure a dead git rather than an unproven anchor.
+    const passthrough = spawnSync('git', ['-C', repo, 'status', '--porcelain'], {
+      encoding: 'utf-8', timeout: 30_000, env,
+    });
+    assert.equal(passthrough.status, 0, 'every OTHER git command still reaches the real binary');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER325-01: an UNPROVEN anchor degrades to the UNSCOPED signature, never to a constant', () => {
+  const { repo, sub } = initNestedSignatureRepo('ap325-unproven-');
+  try {
+    const scopePath = path.join(repo, 'scope.json');
+    fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['extension/src'] }));
+    const shimDir = writeSilentToplevelShim(repo, realGitPath());
+
+    const { base, after } = probeScopedSignature({
+      repo, sub, scopePath,
+      editPath: path.join(repo, 'extension', 'src', 'a.ts'),
+      shimDir,
+    });
+
+    assert.notEqual(after, base, 'a real in-allowlist edit MOVES the signature even on an unproven anchor');
+    assert.ok(
+      after.includes('extension/src/a.ts'),
+      'the probe enumerated the edited file, not an empty set (a constant signature is the defect)',
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER325-01: a PROVEN anchor still NARROWS — an out-of-allowlist edit does not move it', () => {
+  const { repo, sub } = initNestedSignatureRepo('ap325-proven-');
+  try {
+    const scopePath = path.join(repo, 'scope.json');
+    fs.writeFileSync(scopePath, JSON.stringify({ allowed_paths: ['extension/src'] }));
+
+    // No shim: git answers, the anchor is proven, so the specs must still RESOLVE and
+    // narrow. This is the over-trigger control — a fix that always returned the unscoped
+    // set would move the signature here.
+    const { base, after } = probeScopedSignature({
+      repo, sub, scopePath,
+      editPath: path.join(repo, 'pkg', 'other.txt'),
+      shimDir: null,
+    });
+
+    assert.equal(after, base, 'an out-of-allowlist edit does NOT move the scoped signature');
+    assert.ok(!after.includes('pkg/other.txt'), 'and the out-of-scope file is absent from the probe output');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
