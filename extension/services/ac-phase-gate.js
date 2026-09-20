@@ -164,8 +164,21 @@ function runCriterion(criterion, cwd, sessionDir) {
     const result = Array.isArray(criterion.command)
         ? spawnSync(criterion.command[0], criterion.command.slice(1), { cwd: commandCwd, encoding: 'utf-8', timeout })
         : runStringCommand(criterion.command, commandCwd, timeout);
-    if (result.error) {
-        return { id: criterion.id, reason: safeErrorMessage(result.error) };
+    // AP-EXT-ITER317-01: `status` is null for TWO different events — a timeout (which
+    // also sets `error`, measured) and an external signal from a process-tree reap or
+    // the OOM killer (which sets ONLY `signal`; `error` is undefined). Collapsing that
+    // null onto 1 made a criterion that never completed byte-identical to one that RAN
+    // and exited 1: a PASS whenever the criterion declares `expected_exit_code: 1`, and
+    // a phantom `got 1` attribution otherwise. A process that did not exit has no exit
+    // status, so it is routed through the same did-not-complete branch the timeout
+    // already takes rather than compared against `expected`. Widened, not added —
+    // enumerating signal numbers into a 128+N exit code would be the same
+    // enumerated-set liability that left this hole.
+    if (result.error || result.signal) {
+        return {
+            id: criterion.id,
+            reason: safeErrorMessage(result.error ?? `killed by signal ${result.signal}`),
+        };
     }
     const actual = result.status ?? 1;
     if (actual !== expected) {
