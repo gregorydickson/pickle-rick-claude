@@ -662,3 +662,94 @@ test('AP-EXT-ITER14-01: a rename wholly inside the fence is not drift, and both 
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER314-05: the fence's two operands were read in DIFFERENT path spaces.
+// `allowed_paths` is repo-root-relative by construction (`computeAllowedFromDiff`
+// → `getDiffFiles`, cwd `repoRoot`); this reader passes no `cwd` at all, so it
+// inherits the worker's `process.cwd()`. Under an operator's `diff.relative=true`
+// that is not a cosmetic re-spelling — git DROPS every staged path outside the
+// cwd subtree, so a staged violation becomes invisible and the fence greens.
+//
+// Both cases cross the `_spawnSync` seam to place the REAL git invocation in a
+// subdirectory (the reader takes no `cwd` argument, so there is no other way to
+// vary it) — the argv under test is the shipped one, and the verdict is the
+// shipped verdict. Asserting the `-c` operand alone would pin the spelling and
+// not the behaviour.
+// ---------------------------------------------------------------------------
+
+function makeRelativeConfigRepo() {
+  const tmp = makeTmp();
+  const git = (args, cwd = tmp) =>
+    spawnSync('git', args, { cwd, encoding: 'utf-8', timeout: 30_000 });
+  git(['init', '-q']);
+  // Explicit identity: a fixture that lets git guess `user@host` fails on hosts
+  // where that guess is unresolvable.
+  git(['config', 'user.email', 'test@test.com']);
+  git(['config', 'user.name', 'Test']);
+  git(['config', 'commit.gpgsign', 'false']);
+  // The operator setting under test. Repo-local, so it cannot leak to the host.
+  git(['config', 'diff.relative', 'true']);
+
+  fs.mkdirSync(path.join(tmp, 'extension', 'src', 'bin'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, '.claude', 'commands'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'extension', 'src', 'bin', 'setup.ts'), 'export {};\n');
+  fs.writeFileSync(path.join(tmp, '.claude', 'commands', 'pickle.md'), '# base\n');
+  git(['add', '-A']);
+  git(['commit', '-qm', 'base']);
+  return { tmp, git, subdir: path.join(tmp, 'extension') };
+}
+
+// Forces the REAL spawnSync into `cwd`, leaving argv and the real reader intact.
+// The literal `timeout` is a floor the spread DELIBERATELY overrides: the reader
+// declares its own (15s) and that is the value under test, but a spawnSync callsite
+// whose only ceiling arrives through a spread is invisible to
+// `audit-subprocess-heavy-tests.sh`, and an unbounded spawn in a test is exactly
+// what that audit exists to catch.
+function spawnSyncIn(cwd) {
+  return (bin, args, opts) => spawnSync(bin, args, { timeout: 30_000, ...opts, cwd });
+}
+
+test('AP-EXT-ITER314-05: a staged OUT-OF-SCOPE path outside the reader cwd is still fenced under diff.relative=true', () => {
+  const { tmp, git, subdir } = makeRelativeConfigRepo();
+  try {
+    const scopeJsonPath = writeScopeJson(tmp, ['extension/src/bin']);
+    // The violation lives OUTSIDE the cwd the reader will inherit, which is what
+    // `--relative` filters away rather than merely re-spelling.
+    fs.appendFileSync(path.join(tmp, '.claude', 'commands', 'pickle.md'), 'edit\n');
+    git(['add', '.claude/commands/pickle.md']);
+
+    const result = checkScopeDiff({ scopeJsonPath, _spawnSync: spawnSyncIn(subdir) });
+
+    // Pre-fix, measured: `{ status: 'ok', staged_count: 0 }` — the fence rendered a
+    // GREEN verdict over a staged violation, the one thing it exists to prevent.
+    assert.equal(result.status, 'outside_scope', 'the fence must see a staged path outside its cwd');
+    assert.deepEqual(
+      result.staged_paths_outside_scope,
+      ['.claude/commands/pickle.md'],
+      'and report it in the repo-root space `allowed_paths` is written in',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('AP-EXT-ITER314-05: a staged IN-SCOPE path under the reader cwd is not fabricated into a violation', () => {
+  const { tmp, git, subdir } = makeRelativeConfigRepo();
+  try {
+    const scopeJsonPath = writeScopeJson(tmp, ['extension/src/bin']);
+    fs.appendFileSync(path.join(tmp, 'extension', 'src', 'bin', 'setup.ts'), '// edit\n');
+    git(['add', 'extension/src/bin/setup.ts']);
+
+    const result = checkScopeDiff({ scopeJsonPath, _spawnSync: spawnSyncIn(subdir) });
+
+    // The ACCEPT control, on the SAME fixture shape as the case above: it fails if
+    // the pin is dropped (pre-fix this read `src/bin/setup.ts` and was reported
+    // `outside_scope` — an explicitly ALLOWED file fabricated into a violation), and
+    // it fails if any future fix over-triggers into rejecting everything.
+    assert.equal(result.status, 'ok', 'an allowed file must not be re-spelled out of its own fence');
+    assert.equal(result.staged_count, 1, 'and the enumeration must not be filtered down to nothing');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

@@ -78,12 +78,23 @@ function maybeEmitImpactWarning(service, stagedPaths, allowedPaths) {
  * (on by default) C-quotes every non-ASCII path — `café.ts` reads back as the
  * literal `"caf\303\251.ts"`, matches nothing in the fence, and an explicitly
  * ALLOWED file is reported `outside_scope`. Fix the contract, never un-quote in JS.
+ *
+ * AP-EXT-ITER314-05: `diff.relative=false` is the SAME contract at the other axis.
+ * `-z` fixes WHAT git prints; only this fixes WHERE it prints it FROM. This reader
+ * passes no `cwd`, so it inherits the worker's `process.cwd()` — and under an
+ * operator's `diff.relative=true`, one directory down git both re-spells the listing
+ * against that cwd AND DROPS every staged path outside it. Measured from
+ * `extension/` with only an out-of-scope file staged: `{status:'ok',staged_count:0}`,
+ * a green fence over a staged violation it never saw. The producer of the other
+ * operand is unambiguously repo-root space (`scope-resolver.ts:computeAllowedFromDiff`
+ * → `git-utils.ts:getDiffFiles`, cwd `repoRoot`), so pinning the consumer to the same
+ * space COLLAPSES the divergence rather than guarding it.
  */
 // `spawnSyncFn`, never `spawn`: the `pickle/spawn-error-handler` rule keys on the
 // IDENTIFIER, so a parameter named `spawn` reads as the async API and demands an
 // `.on('error')` handler a synchronous call can never have.
 function getStagedPaths(spawnSyncFn = spawnSync) {
-    const result = spawnSyncFn('git', ['diff', '--staged', '--name-only', '--no-renames', '-z'], {
+    const result = spawnSyncFn('git', ['-c', 'diff.relative=false', 'diff', '--staged', '--name-only', '--no-renames', '-z'], {
         encoding: 'utf-8',
         timeout: 15_000,
         // AP-EXT-ITER38-01: the staged name list is an unbounded enumeration, so it
