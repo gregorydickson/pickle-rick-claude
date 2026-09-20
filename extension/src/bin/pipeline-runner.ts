@@ -536,11 +536,17 @@ function allowedDirtyPathsForLaunch(workingDir: string, opts?: DirtyResolverScop
   const scopeActive = Array.isArray(allowedPaths) && allowedPaths.length > 0;
   const allowlist = loadAllowedDirtyPaths(workingDir);
   const dirtyPaths = listWorkingTreeDirtyPaths(workingDir, exemptSegments);
+  // AP-EXT-ITER307-01: every path in `dirtyPaths` is REPO-ROOT-relative (porcelain answers
+  // that way from any cwd), so `check-ignore` must be asked from the repo root too. Asked
+  // from a `workingDir` below the toplevel it resolves `sub/x.ts` as `sub/sub/x.ts` and
+  // reports NOT-ignored for a path that is ignored — the exemption would depend on where
+  // the session happens to sit rather than on the tree.
+  const repoRoot = gitRepoRoot(workingDir);
   return dirtyPaths.filter(
     (filePath) =>
       !isDirtyPathExemptBySegment(filePath, exemptSegments) &&
       !allowlist.has(filePath) &&
-      !isGitIgnoredPath(workingDir, filePath) &&
+      !isGitIgnoredPath(repoRoot, filePath) &&
       (!scopeActive || isDirtyPathInScope(filePath, allowedPaths)),
   );
 }
@@ -596,40 +602,8 @@ export function resetInterruptedTicketWorkForRelaunch(
   const blockingPaths = allowedDirtyPathsForLaunch(workingDir, scope);
   if (blockingPaths.length === 0) return;
   log(`[relaunch-reset] Resetting ${blockingPaths.length} dirty blocking file(s) from interrupted in-flight ticket`);
-
-  // Unstage any staged changes so the post-reset status parse is accurate.
-  spawnSync('git', ['reset', 'HEAD', '--', ...blockingPaths], {
-    cwd: workingDir,
-    encoding: 'utf-8',
-    timeout: 30_000,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  // Re-enumerate post-reset status to split tracked vs untracked.
-  const statusResult = spawnSync('git', ['status', '--porcelain', '-z', '--', ...blockingPaths], {
-    cwd: workingDir,
-    encoding: 'utf-8',
-    timeout: 30_000,
-    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  const { trackedPaths, untrackedPaths } = splitPorcelainStatusPaths(statusResult.stdout || '');
-
-  if (trackedPaths.length > 0) {
-    spawnSync('git', ['checkout', '--', ...trackedPaths], {
-      cwd: workingDir,
-      encoding: 'utf-8',
-      timeout: 30_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  }
-
-  for (const relPath of untrackedPaths) {
-    try { fs.unlinkSync(path.join(workingDir, relPath)); } catch { /* best effort */ }
-  }
-
-  log(`[relaunch-reset] Done: ${trackedPaths.length} tracked restored, ${untrackedPaths.length} untracked removed`);
+  const { tracked, untracked } = cleanScopedDirtyPaths(workingDir, blockingPaths);
+  log(`[relaunch-reset] Done: ${tracked} tracked restored, ${untracked} untracked removed`);
 }
 
 /**
@@ -881,17 +855,34 @@ function emitQuarantineEvent(
   } catch { /* best-effort telemetry; never block the launch decision */ }
 }
 
-/** Default destructive cleaner: path-scoped reset + checkout + untracked unlink (runner-only). */
-function cleanScopedDirtyPaths(workingDir: string, scopedPaths: string[]): void {
-  if (scopedPaths.length === 0) return;
+/**
+ * The ONE destructive cleaner behind both launch self-heals: path-scoped reset + checkout +
+ * untracked unlink (runner-only). Returns what it actually did, so a caller's log line is a
+ * measurement rather than a claim.
+ *
+ * AP-EXT-ITER307-01: every path it is handed comes from `allowedDirtyPathsForLaunch` /
+ * `classifyDirtyTreeBranch` and is therefore REPO-ROOT-relative, so every consumption of it
+ * — git pathspec and `path.join` alike — is anchored at the git toplevel, NEVER at
+ * `workingDir`. Asked from a `workingDir` below the toplevel, `sub/x.ts` resolves as
+ * `sub/sub/x.ts`: the status re-enumeration matches nothing, both lists come back empty,
+ * and the cleaner reports `0 tracked restored, 0 untracked removed` having restored and
+ * removed nothing — after which `assertCleanWorkingTree` FATALs the launch this self-heal
+ * exists to save. `classifyDirtyTreeBranch` already resolves the same paths against
+ * `gitRepoRoot`; this is the other half of that anchor.
+ */
+function cleanScopedDirtyPaths(workingDir: string, scopedPaths: string[]): { tracked: number; untracked: number } {
+  if (scopedPaths.length === 0) return { tracked: 0, untracked: 0 };
+  const repoRoot = gitRepoRoot(workingDir);
+  // Unstage any staged changes so the post-reset status parse is accurate.
   spawnSync('git', ['reset', 'HEAD', '--', ...scopedPaths], {
-    cwd: workingDir,
+    cwd: repoRoot,
     encoding: 'utf-8',
     timeout: 30_000,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // Re-enumerate post-reset status to split tracked vs untracked.
   const statusResult = spawnSync('git', ['status', '--porcelain', '-z', '--', ...scopedPaths], {
-    cwd: workingDir,
+    cwd: repoRoot,
     encoding: 'utf-8',
     timeout: 30_000,
     maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
@@ -900,15 +891,16 @@ function cleanScopedDirtyPaths(workingDir: string, scopedPaths: string[]): void 
   const { trackedPaths: tracked, untrackedPaths: untracked } = splitPorcelainStatusPaths(statusResult.stdout || '');
   if (tracked.length > 0) {
     spawnSync('git', ['checkout', '--', ...tracked], {
-      cwd: workingDir,
+      cwd: repoRoot,
       encoding: 'utf-8',
       timeout: 30_000,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   }
   for (const relPath of untracked) {
-    try { fs.unlinkSync(path.join(workingDir, relPath)); } catch { /* best effort */ }
+    try { fs.unlinkSync(path.join(repoRoot, relPath)); } catch { /* best effort */ }
   }
+  return { tracked: tracked.length, untracked: untracked.length };
 }
 
 export interface CrashedTicketQuarantineArgs {

@@ -344,3 +344,63 @@ test('AC4: dirty path OUTSIDE working_dir → FATAL (no scope creep)', () => {
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// AP-EXT-ITER307-01: the Branch 1/2 cleaner below the git toplevel.
+//
+// `classifyDirtyTreeBranch` already resolves its blocking paths against `gitRepoRoot`
+// (the `outside_working_dir` pin above proves it), but the destructive cleaner that
+// consumes the SAME paths anchored them at `workingDir`. One directory below the
+// toplevel the archive was written and the ticket reset to Todo while the crashed
+// file was never removed — after which `assertCleanWorkingTree` FATALs the launch.
+// ---------------------------------------------------------------------------
+
+test('AP-EXT-ITER307-01: Branch 1 cleans the in-scope crashed file when working_dir is a subdirectory', () => {
+  const tmp = tmpRoot();
+  const dataRoot = path.join(tmp, 'data');
+  fs.mkdirSync(dataRoot, { recursive: true });
+  const sessionDir = path.join(tmp, 'session');
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const repoDir = path.join(tmp, 'repo');
+  fs.mkdirSync(repoDir, { recursive: true });
+  initGitRepo(repoDir);
+  fs.writeFileSync(path.join(repoDir, 'README.md'), 'base\n');
+  fs.mkdirSync(path.join(repoDir, 'pkg', 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, 'pkg', 'src', 'keep.ts'), 'export const keep = 0;\n');
+  gitCommitAll(repoDir, 'baseline');
+
+  // working_dir is the PACKAGE subdirectory, the monorepo topology `resolveGitRepoRoot`
+  // documents — not the git toplevel.
+  const workingDir = path.join(repoDir, 'pkg');
+  const ticketId = 'cccc3333';
+  writeTicket(sessionDir, ticketId, 'In Progress', ['pkg/src/crashed.ts']);
+  fs.writeFileSync(path.join(repoDir, 'pkg', 'src', 'crashed.ts'), 'export const halfImplemented = 42;\n');
+
+  const prevRoot = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  try {
+    quarantineCrashedTicketFilesOrFatal({
+      workingDir,
+      sessionDir,
+      statePath: path.join(sessionDir, 'state.json'),
+      currentTicket: ticketId,
+      declaredFilesByTicket: new Map([[ticketId, ['pkg/src/crashed.ts']]]),
+      log: NO_OP_LOG,
+    });
+  } finally {
+    if (prevRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prevRoot;
+  }
+
+  assert.equal(ticketStatus(sessionDir, ticketId), 'Todo', 'crashed ticket must be reset to Todo');
+  assert.ok(
+    !fs.existsSync(path.join(repoDir, 'pkg', 'src', 'crashed.ts')),
+    'the in-scope crashed file must actually be removed — a quarantine that leaves it FATALs the launch',
+  );
+  assert.ok(
+    fs.existsSync(path.join(repoDir, 'pkg', 'src', 'keep.ts')),
+    'a committed sibling must survive',
+  );
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});

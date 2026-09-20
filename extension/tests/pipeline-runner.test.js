@@ -4410,3 +4410,114 @@ describe('AP-EXT-ITER98-01 untracked-directory collapse', () => {
     }
   });
 });
+
+// AP-EXT-ITER307-01: `git status --porcelain` answers REPO-ROOT-relative from any cwd, but
+// `working_dir` is `process.cwd()` at setup and is never normalised to `--show-toplevel`
+// (the same file's `resolveGitRepoRoot` docblock states the monorepo subdirectory case).
+// Both launch self-heals fed those root-relative paths to git as CWD-relative pathspecs and
+// to `path.join(workingDir, …)`, so one directory below the toplevel they restored and
+// removed NOTHING while logging a success-shaped count, and `assertCleanWorkingTree` then
+// FATALed the launch the self-heal exists to save.
+describe('AP-EXT-ITER307-01 launch self-heal below the git toplevel', () => {
+  function initSubdirRepo(dir) {
+    initRepo(dir);
+    fs.mkdirSync(path.join(dir, 'sub', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'sub', 'src', 'tracked.ts'), 'export const tracked = 0;\n');
+    fs.writeFileSync(path.join(dir, 'rootfile.ts'), 'export const root = 0;\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir, timeout: 30_000 });
+    execFileSync('git', ['commit', '-q', '-m', 'subdir baseline'], { cwd: dir, timeout: 30_000 });
+    return path.join(dir, 'sub');
+  }
+
+  test('AP-EXT-ITER307-01: the self-heal restores and removes the interrupted work when working_dir is a subdirectory', () => {
+    const dir = tmpDir();
+    try {
+      const workingDir = initSubdirRepo(dir);
+      fs.writeFileSync(path.join(dir, 'sub', 'src', 'tracked.ts'), 'CRASHED EDIT\n');
+      fs.writeFileSync(path.join(dir, 'sub', 'src', 'untracked.ts'), 'export const half = 1;\n');
+
+      const logs = [];
+      resetInterruptedTicketWorkForRelaunch(workingDir, { exemptSegments: ['prds', 'docs'] }, (m) => logs.push(m));
+
+      assert.equal(
+        fs.readFileSync(path.join(dir, 'sub', 'src', 'tracked.ts'), 'utf-8'),
+        'export const tracked = 0;\n',
+        'the tracked edit must be restored from HEAD, not left dirty',
+      );
+      assert.equal(
+        fs.existsSync(path.join(dir, 'sub', 'src', 'untracked.ts')),
+        false,
+        'the untracked crash artifact must be removed',
+      );
+      assert.ok(
+        logs.some((m) => /1 tracked restored, 1 untracked removed/.test(m)),
+        `the count must report what was actually done; got: ${logs.join(' | ')}`,
+      );
+      assert.doesNotThrow(
+        () => assertCleanWorkingTree(workingDir, { exemptSegments: ['prds', 'docs'] }),
+        'the self-heal must leave a tree the launch gate accepts — a FATAL here is the halt this pins',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER307-01: anchoring at the repo root does not widen the blast radius past working_dir', () => {
+    const dir = tmpDir();
+    try {
+      const workingDir = initSubdirRepo(dir);
+      // Dirt ABOVE working_dir — outside the reader's `-- .` subtree scope, so never blocking.
+      fs.writeFileSync(path.join(dir, 'rootfile.ts'), 'OPERATOR EDIT ABOVE working_dir\n');
+      fs.writeFileSync(path.join(dir, 'rootnew.ts'), 'untracked above working_dir\n');
+      // Dirt INSIDE working_dir — the ACCEPT control: the run must really have cleaned something,
+      // so the survival assertions below cannot pass on a cleaner that did nothing at all.
+      fs.writeFileSync(path.join(dir, 'sub', 'src', 'untracked.ts'), 'export const half = 1;\n');
+
+      resetInterruptedTicketWorkForRelaunch(workingDir, { exemptSegments: ['prds', 'docs'] }, () => {});
+
+      assert.equal(
+        fs.existsSync(path.join(dir, 'sub', 'src', 'untracked.ts')),
+        false,
+        'ACCEPT control: in-working_dir dirt must be cleaned in this same run',
+      );
+      assert.equal(
+        fs.readFileSync(path.join(dir, 'rootfile.ts'), 'utf-8'),
+        'OPERATOR EDIT ABOVE working_dir\n',
+        'a tracked edit above working_dir must survive — the root anchor resolves paths, it does not widen the set',
+      );
+      assert.equal(
+        fs.existsSync(path.join(dir, 'rootnew.ts')),
+        true,
+        'an untracked file above working_dir must survive',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AP-EXT-ITER307-01: the gitignore exemption answers the same below the toplevel as at it', () => {
+    const dir = tmpDir();
+    try {
+      const workingDir = initSubdirRepo(dir);
+      fs.writeFileSync(path.join(dir, '.gitignore'), 'sub/src/generated.ts\n');
+      fs.writeFileSync(path.join(dir, 'sub', 'src', 'generated.ts'), 'export const generated = 0;\n');
+      execFileSync('git', ['add', '-A', '-f'], { cwd: dir, timeout: 30_000 });
+      execFileSync('git', ['commit', '-q', '-m', 'tracked but gitignored'], { cwd: dir, timeout: 30_000 });
+      // gitignore does not apply to a TRACKED file, so this edit really does reach porcelain.
+      fs.writeFileSync(path.join(dir, 'sub', 'src', 'generated.ts'), 'REGENERATED\n');
+
+      assert.doesNotThrow(
+        () => assertCleanWorkingTree(workingDir, { exemptSegments: ['prds', 'docs'] }),
+        'a gitignored path is exempt from the repo root; asked from the subdirectory it must answer the same',
+      );
+      assert.equal(
+        fs.readFileSync(path.join(dir, 'sub', 'src', 'generated.ts'), 'utf-8'),
+        'REGENERATED\n',
+        'the exempt path must not be destroyed by the self-heal',
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
