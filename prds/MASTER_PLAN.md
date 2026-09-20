@@ -238,11 +238,48 @@ finding MUST be mutation-verified (break the subject, observe red, restore, obse
 enhancement manufactures fake-green at loop speed. This session's own hardening caught two
 unfalsifiable controls (`ef3d3222`, `1bcf5108`) in hand-written criteria.
 
+### ⛔ BRANCH TRANSITION — DECIDED 2026-09-20, BLOCKED ON THE GREEN GATE (operator-set)
+
+**Operator decision: development moves to `main` now that `v2.1.0` has shipped.** `release/v2.2-beta`
+becomes historical. This is NOT yet executed — do not switch until the precondition below is met.
+
+**Precondition (non-negotiable): B-GATERED's gate must be GREEN and the 84 commits pushed first.**
+`main` is the repository DEFAULT branch, so every `git`/`gh` command that can default to it resolves
+there. Moving `main` onto an UNGATED tip publishes B-INVENTED's 45 parked commits to the default branch
+behind the very red gate they are parked behind — it converts "parked unpushed" into "shipped by
+default". The per-bundle-green rule is what makes the parking meaningful; do not spend it on a rename.
+
+**Feasibility, measured 2026-09-20:** `git merge-base --is-ancestor c20a9562 HEAD` exits **0** — the
+`v2.1.0` GA commit is an ancestor of the branch tip, so `main` FAST-FORWARDS; no merge, no rebase, no
+conflict. Local `main` was stale at the retired 2.0 line (`e0c91e17`) and was force-synced to
+`origin/main` (`c20a9562`) on 2026-09-20; the old value remains reachable at tag
+`archive/main-2.0-line`, so nothing was made unreachable.
+
+**Blast radius is 3 files** (`grep -rln "release/v2.2-beta"`, excluding `.git/` and build output):
+`CLAUDE.md:262`, `prds/MASTER_PLAN.md` (4 rows), `.github/workflows/ci.yml:7` (a COMMENT only).
+**CI needs no change** — `ci.yml` already triggers on `main` and `release/**` for both `push` and
+`pull_request`.
+
+**Execution order, after the gate is green:**
+
+1. `git push origin release/v2.2-beta` — land both bundles on the gated branch, as planned.
+2. `git push origin release/v2.2-beta:main` — fast-forward `main` to the same gated tip.
+3. `git checkout main` (only with NO pipeline running and a clean tree).
+4. Update root `CLAUDE.md`'s NO-PULL-REQUESTS clause: the v2.1 line ships by tag from **`main`**.
+   That clause is BINDING and loads every session — a stale one sends the next context-cleared session
+   to the wrong branch. Update the `branch` rows here too.
+5. Leave `release/v2.2-beta` in place as a historical ref. Do not delete it.
+
+**The explicit-target rule does NOT relax when `main` becomes the working branch.** It gets MORE
+load-bearing, not less: a defaulting `gh release create` would then tag a moving development tip rather
+than a stale line, which is a worse failure than [[B-RELTAG]], not a better one. Keep
+`--target "$(git rev-parse HEAD)"` on every tag and verify with `verify-release-tag.sh`.
+
 ### ▶ IMMEDIATE STATE
 
 | | |
 |---|---|
-| branch | **`release/v2.2-beta`** — name is historical; **releases are `v2.1.X`** |
+| branch | **`release/v2.2-beta`** — name is historical; **releases are `v2.1.X`**. ⛔ Operator decided 2026-09-20 to move development to **`main`**; see BRANCH TRANSITION above — blocked on the green gate |
 | version | `extension/package.json` = **`2.1.1`**. Nothing tagged since `v2.1.0` (cadence, not oversight) |
 | `main` | = the `v2.1.0` GA commit `c20a9562`; old main at tag `archive/main-2.0-line` |
 | **RUNNING** | **[[B-GATERED]] session `2026-09-19-4dbaed57`** — phase 3/4 anatomy-park, `extension` at ~40 of the non-fatal 50-pass ceiling, `bin` converged |
