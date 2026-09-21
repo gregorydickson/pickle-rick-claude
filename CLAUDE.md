@@ -259,11 +259,18 @@ Applies to new writing; fix old occurrences only when already touching the file.
 
 ## 🚫 NO PULL REQUESTS (operator-set 2026-09-06, BINDING)
 
-**This repo does not use PRs.** The **v2.1 line** ships by TAG from `release/v2.2-beta` —
-**releases are `v2.1.X` patch tags** (operator-set 2026-09-17); the branch name is historical and does
-NOT set the version, `extension/package.json` does. Next tag: `v2.1.1`. —
+**This repo does not use PRs.** The **v2.1 line** ships by TAG from **`main`** (operator-set
+2026-09-21: development moved to `main` once `v2.1.0` shipped; `release/v2.2-beta` is retained as a
+historical ref and is no longer written to) — **releases are `v2.1.X` patch tags** (operator-set
+2026-09-17); the branch name never set the version, `extension/package.json` does. Next tag: `v2.1.1`. —
 `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`. Work lands as commits pushed straight to
-the release branch. **Never run `gh pr create`**; `services/pr-factory.ts` and its manager-prompt caller were deleted
+`main`.
+
+**⛔ `main` IS NOW THE WORKING BRANCH, AND THAT MAKES THE EXPLICIT-TARGET RULE MORE LOAD-BEARING, NOT
+LESS.** A `git`/`gh` command that defaults to the repository default branch used to hit a stale line;
+it now hits the MOVING development tip, so a defaulting `gh release create` would tag whatever landed
+last rather than the commit you gated. That is a worse failure than [[B-RELTAG]], not a milder one.
+Name the target on every such command and verify with `extension/scripts/verify-release-tag.sh`. **Never run `gh pr create`**; `services/pr-factory.ts` and its manager-prompt caller were deleted
 2026-09-17, so nothing in the tree opens a PR.
 
 **`main` IS NO LONGER STALE (2026-09-16).** It was force-moved to the `v2.1.0` GA commit `c20a9562`, so

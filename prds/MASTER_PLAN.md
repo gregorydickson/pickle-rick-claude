@@ -238,10 +238,17 @@ finding MUST be mutation-verified (break the subject, observe red, restore, obse
 enhancement manufactures fake-green at loop speed. This session's own hardening caught two
 unfalsifiable controls (`ef3d3222`, `1bcf5108`) in hand-written criteria.
 
-### ⛔ BRANCH TRANSITION — DECIDED 2026-09-20, BLOCKED ON THE GREEN GATE (operator-set)
+### ✅ BRANCH TRANSITION — EXECUTED 2026-09-21 (was: decided 2026-09-20, blocked on the green gate)
 
-**Operator decision: development moves to `main` now that `v2.1.0` has shipped.** `release/v2.2-beta`
-becomes historical. This is NOT yet executed — do not switch until the precondition below is met.
+**DONE 2026-09-21T01:5xZ.** B-GATERED's gate came back GREEN (22 legs, 0 reds, `GATE_END` with
+matching `RUN_ID=20260920T234822Z-19914`, soak wall-clock **1803.7s** against `SOAK_SECONDS` 1800, zero
+`SOAK_UNRUN`, zero skips), so the precondition was met and the transition ran:
+`release/v2.2-beta` pushed `1f0f978c..8cc58b73` (94 commits: **B-INVENTED's 45 + B-GATERED**), then
+`main` fast-forwarded `c20a9562..8cc58b73`, then checked out. **`main` is now the working branch**;
+`release/v2.2-beta` is retained as a historical ref and is no longer written to. NOT tagged — cadence
+says bundles accumulate. Root `CLAUDE.md`'s NO-PULL-REQUESTS clause was updated in the same commit.
+
+The original plan and its measurements are kept below for the record.
 
 **Precondition (non-negotiable): B-GATERED's gate must be GREEN and the 84 commits pushed first.**
 `main` is the repository DEFAULT branch, so every `git`/`gh` command that can default to it resolves
@@ -279,13 +286,13 @@ than a stale line, which is a worse failure than [[B-RELTAG]], not a better one.
 
 | | |
 |---|---|
-| branch | **`release/v2.2-beta`** — name is historical; **releases are `v2.1.X`**. ⛔ Operator decided 2026-09-20 to move development to **`main`**; see BRANCH TRANSITION above — blocked on the green gate |
+| branch | **`main`** (moved 2026-09-21 after B-GATERED's green gate). **Releases are `v2.1.X`**; next tag `v2.1.1`. `release/v2.2-beta` is historical, do not write to it |
 | version | `extension/package.json` = **`2.1.1`**. Nothing tagged since `v2.1.0` (cadence, not oversight) |
 | `main` | = the `v2.1.0` GA commit `c20a9562`; old main at tag `archive/main-2.0-line` |
-| **RUNNING** | **[[B-GATERED]] session `2026-09-19-4dbaed57`** — phase 3/4 anatomy-park, `extension` at ~40 of the non-fatal 50-pass ceiling, `bin` converged |
-| **PARKED** | **[[B-INVENTED]]'s 45 commits `778a89c9..3ae1d57a` are UNPUSHED** behind its red gate. Do not push until a gate is green |
+| **RUNNING** | **nothing.** B-GATERED session `2026-09-19-4dbaed57` finished 2026-09-20T21:54Z: `3/4 phases, 2165m 17s`, dispositions `anatomy-park: anatomy_non_convergent` + `szechuan-sauce: metric_unmeasurable_unrecoverable` (see #45). Degraded-but-complete: every phase ran, success withheld |
+| **PARKED** | **nothing.** B-INVENTED's 45 commits shipped with B-GATERED in the `8cc58b73` push. Zero unpushed |
 | deployed | `2.1.1`. **NOT in sync** as of 2026-09-20T15:11Z — deployed tree is from `2026-09-18T03:01Z` and 58 commits have since touched `extension/src`, so 29 built files differ. This is expected build drift, **not** #40; do NOT `install.sh` mid-run. Deploy after the gate |
-| open | bugs **#40, #32, #41** (all fixed-or-in-flight) · enhancements **#42** (next), **#44** (queued behind it), **#43** (deferred), **#5** |
+| open | bugs **#40, #32, #41** (all fixed-or-in-flight), **#45** (NEW — szechuan measurement layer, degraded this run's phase 4/4) · enhancements **#42** (next), **#44**, **#43** (deferred), **#5** |
 | closed this session | **#39, #37** (verified fixed), **#29** (already satisfied — my premise was wrong) |
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min, derives audits from root `CLAUDE.md`. Wait for `GATE_END` with a matching `RUN_ID` |
 
