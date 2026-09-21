@@ -225,6 +225,15 @@ finds itself proposing one, it must answer all four in the ticket first.
 strict/non-strict severity distinction is collapsed or its default flipped — not guarded by a new case.
 **Explicitly OUT of contract**: `citadel_max_remediation_cycles` keeps its current default of `3`.
 Changing the cap is a separate, separately-evidenced question and must not ride this root.
+**⚠ BLAST RADIUS — measure it, do not "monitor" it (risk-analyst P0).** This root's own thesis is that
+the admitted class DOMINATES citadel's output. Admitting it therefore raises the number of findings
+entering a loop whose cap stays at 3, so the predictable side effect is that
+`citadel_findings_unremediated` goes from RARE to COMMON — a visible worsening of completion behaviour
+with zero signal in the original criteria. That is exactly the "we'll watch it" gap this PRD refuses to
+accept from itself elsewhere. The ticket MUST carry a before/after count of findings admitted under
+default config on a fixed fixture, so the change's magnitude is a measurement and not a surprise. If
+that count shows the cap is now systematically exhausted, file the cap question separately with THAT
+number as its evidence — do not silently raise the cap here.
 **`citadel_strict === true` post-fix (was unspecified — analyst P1):** strict mode MUST remain at least
 as wide as default. State the chosen direction explicitly in the ticket and test it; an untested strict
 path is how a collapse silently narrows one arm while widening the other.
@@ -244,6 +253,7 @@ continues.
 - `grep -c "strict ? 'High' : 'Critical'" src/bin/pipeline-runner.ts` returns `0`
 - a test asserts a `High` ac-coverage finding is admitted to remediation under default (non-strict) config
 - a negative control asserts a below-threshold severity is still excluded, so the change is not a blanket admit
+- the ticket records a before/after count of findings admitted under default config over a fixed fixture — the blast radius is a number, not a hope (risk-analyst P0)
 - `./node_modules/.bin/tsc --noEmit` exits `0`
 - `npx eslint src/ --max-warnings=0` exits `0`
 
@@ -298,6 +308,16 @@ signature — the B-RATRAIL anchor pins its call-site count at exactly two.
 PARSED trailers (`git interpret-trailers`, `--if-exists addIfDifferentNeighbor`).
 **New accessor**: resolves the DEPLOYED runtime's version, returning a typed unknown on failure — never
 throwing, never guessing, never silently substituting the source tree's version.
+**Version SOURCE, pinned here so refinement does not invent it (risk-analyst P0):** read `version` from
+`${EXTENSION_ROOT}/extension/package.json` — the deployed manifest. This is a deliberate, structurally
+guaranteed artifact, not an incidental one: `install.sh:379` records *"package.json is included —
+required for ESM `type:module`"*, and `install.sh:218` already reads that exact path as
+`DEPLOYED_PACKAGE_JSON` for its own downgrade check. **Verified present and readable at HEAD**
+(`2.1.1`, 4471 bytes). Because ESM module resolution cannot work without it, a deploy that omits it is
+already broken in a louder way — so the degrade branch stays the rare case rather than becoming the
+common one (the failure shape the analyst correctly flagged, citing the beta.25 tarball that shipped
+without `extension/lib`). Do NOT read the SOURCE tree's `package.json`: that is the isolation this root
+exists to measure across.
 **Invariants**: idempotent (re-stamping yields exactly one `Pickle-Rick:` line); a blank/whitespace
 `ticketId` returns the message UNCHANGED; a trailer is never emitted valueless or doubled, because
 `scanGitLogByTrailer` reads a doubled value as unattributed.
@@ -356,3 +376,62 @@ ignoring the blank-id guard, and observe exactly the no-op pin RED.
 - `grep -n "severity: 'High'" src/services/citadel/ac-coverage-scorecard.ts` returns nothing → R3's one-notch claim is wrong.
 - `git log -200 --format='%B' | grep -ciE 'pickle.?rick.*[0-9]+\.[0-9]+\.[0-9]+'` returns non-zero → R4 already satisfied.
 - `grep -c "stampPickleTicketTrailer(" src/bin/mux-runner.ts` does not return `3` → R4's binding constraint must be re-derived before designing.
+
+---
+
+# Refinement Record *(refined: requirements + codebase + risk-scope analysts, cycle 1, 2026-09-21)*
+
+Three analysts ran on `claude-sonnet-5` (the default model refused — see #46). All three produced
+analyses; every finding below was **independently re-verified against HEAD before being applied**, per
+the standing rule that an analyst result is a claim, not a measurement.
+
+## Findings APPLIED to the PRD above
+
+| # | analyst | finding | disposition |
+|---|---|---|---|
+| 1 | codebase | **R2's premise is false — the judge output contract already exists twice** (`JUDGE_OUTPUT_JSON_SCHEMA` `:2065`, system prompt `:2073`, re-assert-last `:2229`), landed `8a64bc5f` **2026-07-27**, two months before R2's motivating incident | **R2 rewritten.** Independently verified. The "add a contract" half is deleted as already-satisfied; its AC is deleted as a fake-green. The retry half survives, re-verified at `:3585`. |
+| 2 | requirements | R2 was **missing from FALSIFY** — and was the one root not re-grepped, contradicting the PRD's own preamble | FALSIFY entry added for both the contract and the retry mechanism |
+| 3 | requirements | R4's "typed unknown" degrade path is documented but **unfalsifiable** — no test, no AC | degrade-path test row + AC added |
+| 4 | requirements | R4 verifies only the WRITE side, never the motivating READ ("which build authored commit X") | read-side AC added (`%(trailers:key=Pickle-Rick,valueonly)`) |
+| 5 | requirements | R3's mutation verification was prose, not steps; strict-mode behaviour unspecified | concrete revert/over-trigger steps + an explicit strict-mode clause added |
+| 6 | requirements | R2 has no coverage for a **malformed-but-shaped** answer — the likeliest real failure once a contract exists | AC added |
+| 7 | risk-scope | **R3's blast radius is unmeasured**: admitting the dominant class into a loop capped at 3 predictably turns `citadel_findings_unremediated` from rare to common | before/after count AC added; cap change still explicitly out of scope, but now with a number to justify filing it separately |
+| 8 | risk-scope | **R4's version SOURCE was unspecified** — refinement would have invented it | source pinned to the deployed `extension/package.json`, with the reason it is structurally guaranteed (ESM `type:module`, `install.sh:379`) |
+
+## Findings NOT applied, with reasons
+
+- **"No relative priority across R1–R4" (requirements P2).** Deliberate. The bundle is composed by
+  SHARED SURFACE, not priority tier, per the sizing clause — ranking roots would invite splitting the
+  bundle and paying the review toll twice.
+- **"eslint AC inconsistent across roots" (requirements P2).** R1/R2 touch no new lint surface; R3/R4
+  do. Left as is.
+- **"Trailer ordering unspecified" (requirements P2).** Immaterial to `interpret-trailers --parse`,
+  which is the only reader that matters here.
+
+## Analyst reliability note
+
+The codebase analyst's line numbers for the "pushed LAST" comment were off by ~50 lines (it cited
+`:2178-2183`; the re-assertion is at `:2229`). **The substance was correct and the conclusion stands** —
+which is why every claim was re-grepped rather than accepted. Cite the verified numbers above, not the
+analysis files.
+
+---
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Tier | Entry | Exit | Files |
+|---|---|---|---|---|---|---|---|
+| 10 | `4e6644a9` | Replace the in-band `baseline_score` sentinel with a type that expresses absence | High | medium | clean tree, tsc green | sentinel gone, every read handles null, both mutations observed | `types/index.ts`, `bin/microverse-runner.ts`, 2 tests |
+| 20 | `3a1f0bc0` | Make the judge retry carry its prior failure instead of re-asking identically | High | medium | `4e6644a9` | attempt N+1 differs from N; no third contract copy | `bin/microverse-runner.ts`, 1 test |
+| 30 | `35f945c6` | Admit the dominant ac-coverage class to citadel remediation and measure the blast radius | High | medium | clean tree | `High` admitted by default; blast radius recorded as a number | `bin/pipeline-runner.ts`, 1 test |
+| 40 | `7b3c8785` | Add a deployed-runtime version accessor that degrades typed | High | medium | clean tree | one accessor, typed degrade, never reads source tree | new `services/` module + existing test host |
+| 50 | `4eaf450e` | Stamp the authoring build version inside `stampPickleTicketTrailer` | High | medium | `7b3c8785` | both trailers present; B-RATRAIL anchor still 3 | `bin/mux-runner.ts`, 1 test |
+| 60 | `5199ea3a` | Stamp the version on the two raw microverse commits and the trailer hook | High | medium | `7b3c8785`, `4eaf450e` | zero untrailered raw commits | `bin/microverse-runner.ts`, `services/git-trailer-hooks.ts`, 1 test |
+| 70 | `0dd1bcba` | **Wire**: one version accessor consumed uniformly, all four roots verified together | High | medium | all six above | one producer/many consumers; full gate green | all of the above |
+| 80 | `dee0608e` | **Harden**: code quality review of the B-MEASURED diff | High | large | `0dd1bcba` | zero P0–P1; exactly one version-resolution impl | MODIFIED_FILES |
+| 90 | `8fc895e5` | **Audit**: data flow integrity across the B-MEASURED diff | High | large | `dee0608e` | zero CRITICAL+HIGH; no `?? 0` on `baseline_score` | MODIFIED_FILES |
+| 100 | `3ee47c1e` | **Harden**: test quality review of the B-MEASURED diff | High | large | `8fc895e5` | every AC mapped; every over-trigger control real; no fake-greens | TEST_FILES |
+| 110 | `4e0633db` | **Audit**: cross-reference consistency for B-MEASURED | High | medium | `3ee47c1e` | anchors verified live; new knobs documented | DOC_FILES |
+
+**11 tickets.** Six implementation, one wiring, four hardening. Composed by shared surface — `bin/`
+dominates all four roots — so the ANATOMY-PARK + SZECHUAN toll is paid once.
