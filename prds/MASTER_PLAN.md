@@ -228,7 +228,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | # | bundle | contents | gate |
 |---|---|---|---|
 | **1** | **finish B-GATERED** (running) | G1 timeout callsites, G2 executable-assertion ratio, G3/#41 wrapper exit status | its green gate lands **BOTH** B-GATERED and the parked B-INVENTED |
-| **2** | **close out to zero** | verify + close **#40**, **#32** (fixed by B-INVENTED), **#41** (fixed by B-GATERED) by grepped mechanism | tracker reaches **zero open bugs** |
+| ~~2~~ | ~~close out to zero~~ **DONE 2026-09-21** | #40, #41, #32 each verified FIXED by BEHAVIOUR (not by reading the diff) against the compiled modules, every check with an over-trigger control, then closed with the evidence on the issue | **zero open bugs** reached; #45 opened the same day from this run's own phase-4 degradation, so the tracker holds one bug again — enhancements #42/#44/#43/#5 remain |
 | **3** | **B-CITADEL (#42)** | citadel iterates until its findings resolve — the approved quality enhancement | see #42's binding constraint below |
 | **4** | **B-SELFSTAMP (#44)** | Pickle Rick stamps its name + version on the commits it authors — 0 of the last 200 carry one | must keep `grep -c "stampPickleTicketTrailer(" …mux-runner.ts` == **3** (B-RATRAIL) |
 | — | deferred | **#43** `--teams` parallelism (operator deferred: quality first) · **#5** persistent-knowledge model | |
@@ -292,7 +292,7 @@ than a stale line, which is a worse failure than [[B-RELTAG]], not a better one.
 | **RUNNING** | **nothing.** B-GATERED session `2026-09-19-4dbaed57` finished 2026-09-20T21:54Z: `3/4 phases, 2165m 17s`, dispositions `anatomy-park: anatomy_non_convergent` + `szechuan-sauce: metric_unmeasurable_unrecoverable` (see #45). Degraded-but-complete: every phase ran, success withheld |
 | **PARKED** | **nothing.** B-INVENTED's 45 commits shipped with B-GATERED in the `8cc58b73` push. Zero unpushed |
 | deployed | `2.1.1`. **NOT in sync** as of 2026-09-20T15:11Z — deployed tree is from `2026-09-18T03:01Z` and 58 commits have since touched `extension/src`, so 29 built files differ. This is expected build drift, **not** #40; do NOT `install.sh` mid-run. Deploy after the gate |
-| open | bugs **#40, #32, #41** (all fixed-or-in-flight), **#45** (NEW — szechuan measurement layer, degraded this run's phase 4/4) · enhancements **#42** (next), **#44**, **#43** (deferred), **#5** |
+| open | bugs **#45** only (szechuan measurement layer; degraded this run's phase 4/4) · enhancements **#42** (next), **#44**, **#43** (deferred), **#5**. #40/#41/#32 closed 2026-09-21 on measured evidence |
 | closed this session | **#39, #37** (verified fixed), **#29** (already satisfied — my premise was wrong) |
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min, derives audits from root `CLAUDE.md`. Wait for `GATE_END` with a matching `RUN_ID` |
 
