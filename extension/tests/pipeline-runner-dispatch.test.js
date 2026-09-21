@@ -284,6 +284,19 @@ describe('pipeline phase config dispatch', () => {
     );
     const fixture = writeCitadelHighFixture(repo, sessionDir);
     updateState(sessionDir, { prd_path: fixture.prdPath, start_commit: fixture.startCommit });
+    // R-HRP-1: a High finding is now remediable by default (REMEDIATION_SEVERITY_THRESHOLD).
+    // Stub the remediation spawns so this test measures phase-transition ordering, not a real
+    // `claude` remediator.
+    __setCitadelRemediationDepsForTests({
+      loadSettings: () => ({ cap: 1, remediatorTimeoutMs: 1000 }),
+      spawnGateRemediatorMain: async ({ stdout }) => {
+        const briefPath = path.join(sessionDir, 'citadel-brief.md');
+        fs.writeFileSync(briefPath, 'fix it');
+        stdout(`BRIEF_PATH=${briefPath}`);
+        return 0;
+      },
+      spawnRemediator: () => { /* no-op */ },
+    });
     const expectedChildSteps = ['pickle', 'anatomy-park', 'szechuan-sauce'];
     const childSteps = [];
     __setSpawnRunnerForTests(async () => {
@@ -331,6 +344,20 @@ describe('pipeline phase config dispatch', () => {
     const { repo, sessionDir } = makeSession(['pickle', 'anatomy-park']);
     const fixture = writeCitadelHighFixture(repo, sessionDir);
     updateState(sessionDir, { prd_path: fixture.prdPath, start_commit: fixture.startCommit });
+    // R-HRP-1: a High finding is now remediable by default (REMEDIATION_SEVERITY_THRESHOLD).
+    // Stub the remediation spawns so this test measures dispatch/report-passthrough, not a real
+    // `claude` remediator — the stub never touches the repo, so the audit keeps finding the same
+    // High finding every cycle and the post-cap-exhaustion report is unchanged from cycle 1.
+    __setCitadelRemediationDepsForTests({
+      loadSettings: () => ({ cap: 1, remediatorTimeoutMs: 1000 }),
+      spawnGateRemediatorMain: async ({ stdout }) => {
+        const briefPath = path.join(sessionDir, 'citadel-brief.md');
+        fs.writeFileSync(briefPath, 'fix it');
+        stdout(`BRIEF_PATH=${briefPath}`);
+        return 0;
+      },
+      spawnRemediator: () => { /* no-op */ },
+    });
     const calls = [];
     __setSpawnRunnerForTests(async (cmd, args, env) => {
       calls.push({ cmd, args, env });
