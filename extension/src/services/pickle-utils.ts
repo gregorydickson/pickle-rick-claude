@@ -388,6 +388,23 @@ export function resolveExtensionRoot(requestedRoot: string | undefined): string 
   return CANONICAL_EXTENSION_ROOT;
 }
 
+/**
+ * Resolves the DEPLOYED runtime's package version — reads `extension/package.json`
+ * under `getExtensionRoot()`, never the source tree's manifest. Absent, unreadable, or
+ * malformed manifest (including a missing/non-string `version` field) degrades to `null`,
+ * mirroring `declaresBetweenTicketGateScript` (`src/bin/mux-runner.ts`): never throws.
+ */
+export function getDeployedVersion(): string | null {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(getExtensionRoot(), 'extension', 'package.json'), 'utf8'),
+    ) as { version?: unknown } | null;
+    return typeof pkg?.version === 'string' ? pkg.version : null;
+  } catch {
+    return null;
+  }
+}
+
 function extensionRootSentinelExists(extensionRoot: string): boolean {
   return fs.existsSync(path.join(extensionRoot, EXTENSION_ROOT_SENTINEL)) ||
          fs.existsSync(path.join(extensionRoot, INSTALL_ROOT_SENTINEL));

@@ -19,6 +19,7 @@ import {
     extractFrontmatter,
     getMicroverseSettings,
     getExtensionRoot,
+    getDeployedVersion,
     resolveJudgeBackend,
     _resetExtensionDirFallbackForTests,
     getDataRoot,
@@ -167,6 +168,62 @@ test('getExtensionRoot: defaults to ~/.claude/pickle-rick', () => {
     } finally {
         if (saved !== undefined) process.env.EXTENSION_DIR = saved;
     }
+});
+
+// --- getDeployedVersion ---
+
+test('getDeployedVersion: resolves the deployed manifest version', () => {
+    withCleanExtensionEnv(() => {
+        const extRoot = makeExtensionRootWithSentinel();
+        try {
+            process.env.EXTENSION_DIR = extRoot;
+            fs.writeFileSync(path.join(extRoot, 'extension', 'package.json'), JSON.stringify({ version: '9.9.9' }));
+            assert.equal(getDeployedVersion(), '9.9.9');
+        } finally {
+            fs.rmSync(extRoot, { recursive: true, force: true });
+        }
+    });
+});
+
+test('getDeployedVersion: absent manifest degrades to null, never reads the source tree', () => {
+    withCleanExtensionEnv(() => {
+        const extRoot = makeExtensionRootWithSentinel();
+        try {
+            process.env.EXTENSION_DIR = extRoot;
+            // No package.json under extRoot/extension — deployed manifest absent.
+            // This repo's real source extension/package.json carries version 2.1.1;
+            // returning null (not '2.1.1') proves no fallback reads it.
+            assert.equal(getDeployedVersion(), null);
+        } finally {
+            fs.rmSync(extRoot, { recursive: true, force: true });
+        }
+    });
+});
+
+test('getDeployedVersion: malformed manifest (invalid JSON) degrades to null, never throws', () => {
+    withCleanExtensionEnv(() => {
+        const extRoot = makeExtensionRootWithSentinel();
+        try {
+            process.env.EXTENSION_DIR = extRoot;
+            fs.writeFileSync(path.join(extRoot, 'extension', 'package.json'), '{ not json');
+            assert.equal(getDeployedVersion(), null);
+        } finally {
+            fs.rmSync(extRoot, { recursive: true, force: true });
+        }
+    });
+});
+
+test('getDeployedVersion: non-string version field degrades to null', () => {
+    withCleanExtensionEnv(() => {
+        const extRoot = makeExtensionRootWithSentinel();
+        try {
+            process.env.EXTENSION_DIR = extRoot;
+            fs.writeFileSync(path.join(extRoot, 'extension', 'package.json'), JSON.stringify({ version: 123 }));
+            assert.equal(getDeployedVersion(), null);
+        } finally {
+            fs.rmSync(extRoot, { recursive: true, force: true });
+        }
+    });
 });
 
 // --- getDataRoot ---
