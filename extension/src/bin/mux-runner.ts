@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
-import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDeployedVersion, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type RateLimitProbeVerdict, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState, type PostFinalVerdictDiagnostic } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
@@ -6827,34 +6827,58 @@ function normalizeTrailerInputNewline(message: string): string {
 }
 
 /**
- * Render `message` carrying a parsed `Pickle-Ticket: <ticketId>` trailer.
+ * The `Pickle-Rick: <version>` trailer VALUE — the authoring build's own version, from the
+ * SAME accessor `getDeployedVersion()` (`services/pickle-utils.ts`) every other version-reading
+ * call site uses; this is not a second version source. Degrades to the fixed marker `unknown`
+ * on a `null` read (absent/malformed/non-string deployed manifest) rather than aborting the
+ * commit or omitting the trailer — `interpret-trailers` requires a non-empty value, and
+ * `unknown` is well-formed (a bare trailer value, no whitespace) and non-semver by construction
+ * (fails `\d+\.\d+\.\d+`), satisfying both halves of the ticket's degrade requirement at once.
+ */
+function resolvePickleRickVersionValue(): string {
+  const version = getDeployedVersion();
+  return typeof version === 'string' && version.trim() !== '' ? version.trim() : 'unknown';
+}
+
+/**
+ * Render `message` carrying parsed `Pickle-Ticket: <ticketId>` and `Pickle-Rick: <version>`
+ * trailers.
  *
  * The runner authors some commits IN-PROCESS, so they never see the `prepare-commit-msg`
  * hook that `backend-spawn.ts` wires into worker subprocesses — and `readEvidence`'s only
  * git-log arm is `scanGitLogByTrailer`, an exact match against git's PARSED trailer view.
  * A ticket id in the subject is exactly the signal B-GITATTR WS-3 deleted, so an unstamped
- * runner commit is unattributable.
+ * runner commit is unattributable. The version trailer names which BUILD authored the commit —
+ * neither trailer's absence blocks the other.
  *
  * Written with `git interpret-trailers` — git's own trailer WRITER, symmetric with the
- * `%(trailers:...)` READER the consumer uses. A bare appended `\nPickle-Ticket: …` is NOT
- * equivalent: git parses trailers out of the LAST paragraph only, so an unconditional
- * append opens a NEW paragraph and silently demotes every pre-existing trailer
- * (`Co-Authored-By`, `Signed-off-by`) to body prose — still visible in `%B`, invisible to
- * `%(trailers:…)`. That append survives only as the degraded arm: if `interpret-trailers`
- * cannot run, keep attribution rather than dropping it (same posture as the hook's `printf`
- * fallback in `git-trailer-hooks.ts` and spawn-morty's two-`-m` amend fallback).
+ * `%(trailers:...)` READER the consumer uses — passing BOTH trailers as separate `--trailer`
+ * flags in ONE invocation, so they land as sibling lines in the same parsed trailer block.
+ * A bare appended `\nPickle-Ticket: …\nPickle-Rick: …` is NOT equivalent: git parses trailers
+ * out of the LAST paragraph only, so an unconditional append opens a NEW paragraph and
+ * silently demotes every pre-existing trailer (`Co-Authored-By`, `Signed-off-by`) to body
+ * prose — still visible in `%B`, invisible to `%(trailers:…)`. That append survives only as
+ * the degraded arm: if `interpret-trailers` cannot run, keep attribution rather than dropping
+ * it (same posture as the hook's `printf` fallback in `git-trailer-hooks.ts` and spawn-morty's
+ * two-`-m` amend fallback).
  *
  * The spawn goes through `silentDeathGit` because that helper already carries the finite
  * timeout bin/ subsystem invariant #3 requires; never throws, so the commit is never blocked.
  *
- * An empty or whitespace-only `ticketId` returns `message` UNCHANGED. Both arms would
- * otherwise write a valueless `Pickle-Ticket:` line into history — `interpret-trailers`
- * emits the bare key for `--trailer 'Pickle-Ticket: '`, and the degraded append does the
- * same by construction. That is why the guard sits above the `trailer` literal rather than
- * around the spawn. This is the sibling of the hook's `_pickle_ticket_id_probe` no-op
- * (`git-trailer-hooks.ts`), which records the same valueless line as a shipped defect; like
- * the hook, the probe is a guard INPUT only — a non-empty id is written verbatim, since the
- * consumer trims its own ends and silently rewriting an operator's id is not ours to do.
+ * An empty or whitespace-only `ticketId` returns `message` UNCHANGED — governing BOTH
+ * trailers, not just the ticket one. Both arms would otherwise write a valueless
+ * `Pickle-Ticket:` line into history — `interpret-trailers` emits the bare key for
+ * `--trailer 'Pickle-Ticket: '`, and the degraded append does the same by construction. That
+ * is why the guard sits above the `trailer` literals rather than around the spawn. This is
+ * the sibling of the hook's `_pickle_ticket_id_probe` no-op (`git-trailer-hooks.ts`), which
+ * records the same valueless line as a shipped defect; like the hook, the probe is a guard
+ * INPUT only — a non-empty id is written verbatim, since the consumer trims its own ends and
+ * silently rewriting an operator's id is not ours to do.
+ *
+ * Idempotent: `messageAlreadyCarriesTicketTrailer` gates the whole write on the PARSED
+ * `Pickle-Ticket` trailer's presence, so re-stamping an already-ticket-trailered message
+ * returns it UNCHANGED — including whatever single `Pickle-Rick:` line the first stamp wrote.
+ * No separate idempotence guard is needed for the version trailer; it rides this one.
  */
 export function stampPickleTicketTrailer(workingDir: string, message: string, ticketId: string): string {
   if (ticketId.replace(/\s+/g, '') === '') {
@@ -6864,13 +6888,18 @@ export function stampPickleTicketTrailer(workingDir: string, message: string, ti
   if (messageAlreadyCarriesTicketTrailer(workingDir, normalized)) {
     return message;
   }
-  const trailer = `Pickle-Ticket: ${ticketId}`;
+  const ticketTrailer = `Pickle-Ticket: ${ticketId}`;
+  const versionTrailer = `Pickle-Rick: ${resolvePickleRickVersionValue()}`;
   const rendered = silentDeathGit(
-    ['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', trailer],
+    [
+      'interpret-trailers',
+      '--if-exists', 'addIfDifferentNeighbor', '--trailer', ticketTrailer,
+      '--if-exists', 'addIfDifferentNeighbor', '--trailer', versionTrailer,
+    ],
     workingDir,
     normalized,
   );
-  return rendered ?? `${message}\n\n${trailer}`;
+  return rendered ?? `${message}\n\n${ticketTrailer}\n${versionTrailer}`;
 }
 
 /**

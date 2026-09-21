@@ -413,6 +413,124 @@ test('negative control: a two-value trailer is unreadable to the consumer', asyn
   assert.equal(evidence.kind, 'absent', 'carrying the trailer twice reads as carrying it zero times');
 });
 
+// --- Pickle-Rick version trailer ----------------------------------------------------------------
+//
+// Ticket 4eaf450e: `stampPickleTicketTrailer` also stamps `Pickle-Rick: <version>`, sourced
+// EXCLUSIVELY from `getDeployedVersion()` (`services/pickle-utils.ts`, ticket 7b3c8785) — the
+// ONE accessor; no second version source. `withExtensionRoot` redirects `EXTENSION_DIR` to a
+// hermetic fixture (the save/restore idiom `tests/prune-activity.test.js` already uses for the
+// same env vars) so the asserted version never depends on whatever happens to be deployed at
+// `~/.claude/pickle-rick` on the host running the suite.
+
+function withExtensionRoot(extRoot, fn) {
+  const origExtensionDir = process.env.EXTENSION_DIR;
+  const origNodeEnv = process.env.NODE_ENV;
+  const origTestFlag = process.env.EXTENSION_DIR_TEST;
+  process.env.EXTENSION_DIR_TEST = '1';
+  process.env.NODE_ENV = 'test';
+  process.env.EXTENSION_DIR = extRoot;
+  try {
+    fn();
+  } finally {
+    if (origExtensionDir === undefined) delete process.env.EXTENSION_DIR;
+    else process.env.EXTENSION_DIR = origExtensionDir;
+    if (origNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = origNodeEnv;
+    if (origTestFlag === undefined) delete process.env.EXTENSION_DIR_TEST;
+    else process.env.EXTENSION_DIR_TEST = origTestFlag;
+  }
+}
+
+/** A fixture `EXTENSION_DIR` root whose `extension/package.json` carries `version`, or none at all. */
+function makeDeployedManifest(version) {
+  const extRoot = makeTmp('ratrail-extroot-');
+  fs.mkdirSync(path.join(extRoot, 'extension'), { recursive: true });
+  if (version !== null) {
+    fs.writeFileSync(path.join(extRoot, 'extension', 'package.json'), JSON.stringify({ version }));
+  }
+  return extRoot;
+}
+
+test('version trailer present: Pickle-Rick carries the deployed build version', () => {
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  const extRoot = makeDeployedManifest('9.9.9');
+
+  let stamped;
+  withExtensionRoot(extRoot, () => {
+    stamped = stampPickleTicketTrailer(workingDir, 'fix: work\n', TICKET_ID);
+  });
+
+  assert.match(stamped, /^Pickle-Rick: 9\.9\.9$/m);
+  assert.match(stamped, new RegExp(`^Pickle-Ticket: ${TICKET_ID}$`, 'm'), 'the ticket trailer survives alongside it');
+});
+
+test('idempotent: re-stamping an already-ticket-trailered message leaves exactly one Pickle-Rick line', () => {
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  const extRoot = makeDeployedManifest('9.9.9');
+
+  let first;
+  let second;
+  withExtensionRoot(extRoot, () => {
+    first = stampPickleTicketTrailer(workingDir, 'fix: work\n', TICKET_ID);
+    second = stampPickleTicketTrailer(workingDir, first, TICKET_ID);
+  });
+
+  assert.equal(second, first, 're-stamping an already-attributed message is a full no-op');
+  assert.equal((second.match(/^Pickle-Rick:/gm) || []).length, 1);
+});
+
+test('blank id no-op: a whitespace-only ticket id stamps neither trailer', () => {
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  const extRoot = makeDeployedManifest('9.9.9');
+  const body = 'fix: work authored with no resolvable ticket id\n';
+
+  let stamped;
+  withExtensionRoot(extRoot, () => {
+    stamped = stampPickleTicketTrailer(workingDir, body, '   ');
+  });
+
+  assert.equal(stamped, body, 'the guard governs both trailers, not just the ticket one');
+  assert.doesNotMatch(stamped, /^Pickle-Rick:/m);
+});
+
+test('parsed-view visible, and the motivating READ works: a stamped commit is recoverable via %(trailers:...)', () => {
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  const extRoot = makeDeployedManifest('9.9.9');
+
+  let stamped;
+  withExtensionRoot(extRoot, () => {
+    stamped = stampPickleTicketTrailer(workingDir, 'fix: real work\n', TICKET_ID);
+  });
+  commitMessage(workingDir, stamped);
+
+  assert.equal(parsedTrailer(workingDir, 'Pickle-Rick'), '9.9.9', 'the PARSED trailer view carries it, not just %B');
+  const readBack = git(workingDir, ['log', '-1', '--format=%(trailers:key=Pickle-Rick,valueonly)']).trim();
+  assert.notEqual(readBack, '', 'the motivating READ (git log --format) returns non-empty');
+});
+
+test('degrade is safe: an unresolvable deployed version still yields ONE well-formed non-semver trailer', () => {
+  const workingDir = makeTmp('ratrail-repo-');
+  initGitRepo(workingDir);
+  const extRoot = makeDeployedManifest(null); // no extension/package.json at all
+
+  let stamped;
+  withExtensionRoot(extRoot, () => {
+    stamped = stampPickleTicketTrailer(workingDir, 'fix: work\n', TICKET_ID);
+  });
+
+  const versionLines = stamped.match(/^Pickle-Rick:.*$/gm) || [];
+  assert.equal(versionLines.length, 1, 'exactly one Pickle-Rick line, never valueless, never doubled');
+  assert.doesNotMatch(versionLines[0], /^Pickle-Rick: \d+\.\d+\.\d+$/, 'the degrade marker is non-semver');
+  assert.doesNotMatch(versionLines[0], /^Pickle-Rick:\s*$/, 'never valueless');
+
+  commitMessage(workingDir, stamped);
+  assert.match(git(workingDir, ['log', '-1', '--format=%B']), /fix: work/, 'the commit proceeds');
+});
+
 // --- The catalog anchor is executable, and it agrees with the source --------------------------
 //
 // Every test above asserts BEHAVIOR, so none of them re-runs the count the B-RATRAIL trap door
