@@ -3052,13 +3052,15 @@ export function __setCitadelRemediationDepsForTests(partial: Partial<CitadelReme
   citadelRemediationDeps = partial ? { ...defaultCitadelRemediationDeps, ...partial } : defaultCitadelRemediationDeps;
 }
 
-// R-HRP-1: the citadel-strict flag no longer halts — it now WIDENS which findings are remediated.
-// Strict remediates High+ (Critical + High); non-strict remediates Critical only. The parameter is
-// named `strict` (not the config field name) so the removed halt-threshold ternary is not
-// re-introduced under that name anywhere in this file.
-function remediationSeverityThreshold(strict: boolean): CitadelSeverity {
-  return strict ? 'High' : 'Critical';
-}
+// R-MEASURED ROOT R3: the citadel_strict widen/narrow distinction is REMOVED, not shifted by one
+// severity notch. `citadel-ac-coverage-<AC>-test` findings ship at severity High
+// (services/citadel/ac-coverage-scorecard.ts); absent explicit config `citadel_strict` resolves
+// false, and the prior ternary set the admission threshold one notch above High (Critical) for
+// non-strict runs — excluding the dominant finding class from remediation on every default-config
+// run (25 of 30 findings across three bundles never remediated). The threshold is now fixed at
+// High for both strict and non-strict runs, so citadel_strict can no longer narrow what enters the
+// loop below what default already admits.
+const REMEDIATION_SEVERITY_THRESHOLD: CitadelSeverity = 'High';
 
 function logCitadelFindingsUnremediated(runtime: PipelineRuntime, findings: CitadelFinding[], cap: number): void {
   runtime.log(`citadel: remediation cap (${cap}) exhausted with ${findings.length} finding(s) still open — continuing pipeline (no halt)`);
@@ -3350,7 +3352,7 @@ export async function executeCitadelPhase(runtime: PipelineRuntime): Promise<{ e
   const state = sm.read(runtime.statePath);
   const reportPath = path.join(runtime.sessionDir, 'citadel_report.json');
   const { cap, remediatorTimeoutMs } = citadelRemediationDeps.loadSettings();
-  const threshold = remediationSeverityThreshold(runtime.config.citadel_strict);
+  const threshold = REMEDIATION_SEVERITY_THRESHOLD;
   const mechanicalEnabled = resolveCitadelMechanicalFloorEnabled(runtime, state);
 
   // Outer accumulator tracks what was actually ATTEMPTED (the union), so the cap-exhausted

@@ -2716,6 +2716,14 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
   }
 
   const CRITICAL = [{ id: 'C-1', severity: 'Critical', message: 'boom', file: 'a.ts', line: 7 }];
+  const HIGH_AC_TEST = [{
+    id: 'citadel-ac-coverage-AC-9-test',
+    severity: 'High',
+    message: 'AC-9 has production evidence but no changed test evidence.',
+    file: 'a.ts',
+    line: 3,
+  }];
+  const MEDIUM = [{ id: 'M-1', severity: 'Medium', message: 'medium finding', file: 'a.ts', line: 9 }];
 
   test('citadel_findings_unremediated is registered in VALID_ACTIVITY_EVENTS', () => {
     assert.ok(
@@ -2979,6 +2987,121 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
       /citadel_strict\s*\?\s*['"]High['"]\s*:\s*['"]Critical['"]/,
       "the citadel_strict ? 'High' : 'Critical' halt-threshold expression must be deleted",
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // ROOT R3 — the dominant `citadel-ac-coverage-<AC>-test` finding class (severity
+  // High) must be admitted to remediation under DEFAULT (non-strict) config. Prior
+  // to this fix, the non-strict threshold was Critical — one notch above High — so
+  // this class was silently excluded from remediation on every default-config run.
+  //
+  // Mutation verification (both directions, checked manually against this suite):
+  //   1. Reverting the fix (restoring `strict ? 'High' : 'Critical'`) reds
+  //      "admitted under default config" and leaves "NOT admitted" (the CONTROL)
+  //      green.
+  //   2. Forcing blanket admission (making `findingMeetsThreshold` always true)
+  //      reds "NOT admitted" (the CONTROL).
+  // ---------------------------------------------------------------------------
+  test('a High-severity ac-coverage finding is admitted under default (non-strict) config', async () => {
+    const dir = tmpDir();
+    try {
+      writeCitadelState(path.join(dir, 'state.json'));
+      const runtime = makeRuntime(dir, { strict: false });
+      let auditCalls = 0;
+      let remediatorSpawned = 0;
+      const captured = [];
+      __setCitadelRemediationDepsForTests({
+        loadSettings: () => ({ cap: 1, remediatorTimeoutMs: 1000 }),
+        runCitadelAudit: async () => citadelResult(auditCalls++ === 0 ? HIGH_AC_TEST : []),
+        spawnGateRemediatorMain: async ({ argv, stdout }) => {
+          const idx = argv.indexOf('--gate-result');
+          captured.push(JSON.parse(fs.readFileSync(argv[idx + 1], 'utf-8')));
+          const briefPath = path.join(dir, 'gate', 'brief.md');
+          fs.writeFileSync(briefPath, 'fix it');
+          stdout(`BRIEF_PATH=${briefPath}`);
+          return 0;
+        },
+        spawnRemediator: () => { remediatorSpawned += 1; },
+      });
+
+      const { exitCode } = await executeCitadelPhase(runtime);
+
+      assert.equal(exitCode, 0, 'the phase still returns its non-halting exit code');
+      assert.equal(remediatorSpawned, 1, 'the High-severity finding must reach the remediator');
+      assert.equal(captured.length, 1, 'spawnGateRemediatorMain must be invoked once');
+      assert.equal(
+        captured[0].failures.some(f => f.ruleOrCode === HIGH_AC_TEST[0].id),
+        true,
+        'the GateResult passed to the remediator must carry the High-severity ac-coverage finding',
+      );
+    } finally {
+      __setCitadelRemediationDepsForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('(CONTROL) a below-threshold Medium finding is NOT admitted under default config', async () => {
+    const dir = tmpDir();
+    try {
+      writeCitadelState(path.join(dir, 'state.json'));
+      const runtime = makeRuntime(dir, { strict: false });
+      const logs = [];
+      const rt = { ...runtime, log: (m) => logs.push(m) };
+      let gateSpawned = 0;
+      let remediatorSpawned = 0;
+      __setCitadelRemediationDepsForTests({
+        loadSettings: () => ({ cap: 1, remediatorTimeoutMs: 1000 }),
+        runCitadelAudit: async () => citadelResult(MEDIUM),
+        spawnGateRemediatorMain: async () => { gateSpawned += 1; return 0; },
+        spawnRemediator: () => { remediatorSpawned += 1; },
+      });
+
+      const { exitCode } = await executeCitadelPhase(rt);
+
+      assert.equal(exitCode, 0, 'the phase still returns its non-halting exit code');
+      assert.equal(gateSpawned, 0, 'a Medium finding alone must never reach the gate remediator');
+      assert.equal(remediatorSpawned, 0, 'a Medium finding alone must never reach the worker remediator');
+      assert.ok(
+        logs.some(l => l.includes('no remediable findings — phase complete, continuing pipeline')),
+        `expected the no-remediable-findings completion log; got: ${JSON.stringify(logs)}`,
+      );
+    } finally {
+      __setCitadelRemediationDepsForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('citadel_strict === true admits at least the same High finding as default (not narrower)', async () => {
+    const dir = tmpDir();
+    try {
+      writeCitadelState(path.join(dir, 'state.json'));
+      const runtime = makeRuntime(dir, { strict: true });
+      let auditCalls = 0;
+      let remediatorSpawned = 0;
+      __setCitadelRemediationDepsForTests({
+        loadSettings: () => ({ cap: 1, remediatorTimeoutMs: 1000 }),
+        runCitadelAudit: async () => citadelResult(auditCalls++ === 0 ? HIGH_AC_TEST : []),
+        spawnGateRemediatorMain: async ({ stdout }) => {
+          const briefPath = path.join(dir, 'gate', 'brief.md');
+          fs.writeFileSync(briefPath, 'fix it');
+          stdout(`BRIEF_PATH=${briefPath}`);
+          return 0;
+        },
+        spawnRemediator: () => { remediatorSpawned += 1; },
+      });
+
+      const { exitCode } = await executeCitadelPhase(runtime);
+
+      assert.equal(exitCode, 0, 'the phase still returns its non-halting exit code');
+      assert.equal(
+        remediatorSpawned,
+        1,
+        'citadel_strict === true must admit the High finding, exactly as default config does',
+      );
+    } finally {
+      __setCitadelRemediationDepsForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
