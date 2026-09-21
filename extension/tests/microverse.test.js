@@ -3160,7 +3160,7 @@ function makeDeployedManifest(version) {
 function versionTrailerOf(dir) {
     return execFileSync(
         'git', ['log', '-1', '--format=%(trailers:key=Pickle-Rick,valueonly)'],
-        { cwd: dir, encoding: 'utf-8' },
+        { cwd: dir, encoding: 'utf-8', timeout: 15_000 },
     ).trim();
 }
 
@@ -3222,13 +3222,13 @@ test('materializeTrailerHooks: the generated hook stamps the Pickle-Rick version
         assert.equal(materialized.ok, true);
 
         fs.writeFileSync(path.join(dir, 'two.txt'), 'two');
-        execFileSync('git', ['add', '-A'], { cwd: dir });
+        execFileSync('git', ['add', '-A'], { cwd: dir, timeout: 15_000 });
         const env = hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'a1b2c3d4' });
-        execFileSync('git', ['commit', '-q', '-m', 'fix: hook trailer test'], { cwd: dir, env });
+        execFileSync('git', ['commit', '-q', '-m', 'fix: hook trailer test'], { cwd: dir, env, timeout: 15_000 });
 
         const ticketTrailer = execFileSync(
             'git', ['log', '-1', '--format=%(trailers:key=Pickle-Ticket,valueonly)'],
-            { cwd: dir, encoding: 'utf-8' },
+            { cwd: dir, encoding: 'utf-8', timeout: 15_000 },
         ).trim();
         assert.equal(ticketTrailer, 'a1b2c3d4');
         assert.equal(versionTrailerOf(dir), '7.7.7');
@@ -3250,11 +3250,11 @@ test('materializeTrailerHooks: an unresolvable deployed version degrades to "unk
         assert.equal(materialized.ok, true);
 
         fs.writeFileSync(path.join(dir, 'two.txt'), 'two');
-        execFileSync('git', ['add', '-A'], { cwd: dir });
+        execFileSync('git', ['add', '-A'], { cwd: dir, timeout: 15_000 });
         const env = hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'b2c3d4e5' });
-        execFileSync('git', ['commit', '-q', '-m', 'chore: degraded version'], { cwd: dir, env });
+        execFileSync('git', ['commit', '-q', '-m', 'chore: degraded version'], { cwd: dir, env, timeout: 15_000 });
 
-        const body = execFileSync('git', ['log', '-1', '--format=%B'], { cwd: dir, encoding: 'utf-8' });
+        const body = execFileSync('git', ['log', '-1', '--format=%B'], { cwd: dir, encoding: 'utf-8', timeout: 15_000 });
         const versionLines = body.match(/^Pickle-Rick:.*$/gm) || [];
         assert.equal(versionLines.length, 1, 'exactly one Pickle-Rick line, never doubled, never valueless');
         assert.equal(versionLines[0], 'Pickle-Rick: unknown');
@@ -3285,7 +3285,7 @@ test('materializeTrailerHooks: the hook stays idempotent — invoking it twice o
         execFileSync(scriptPath, [msgPath], { cwd: dir, env, timeout: 10_000 });
 
         const parsedView = execFileSync(
-            'git', ['interpret-trailers', '--parse', msgPath], { cwd: dir, encoding: 'utf-8' },
+            'git', ['interpret-trailers', '--parse', msgPath], { cwd: dir, encoding: 'utf-8', timeout: 15_000 },
         );
         const versionLines = parsedView.match(/^Pickle-Rick:.*$/gm) || [];
         assert.equal(versionLines.length, 1, 'exactly one Pickle-Rick line survives two invocations');
