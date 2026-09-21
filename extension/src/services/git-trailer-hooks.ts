@@ -28,6 +28,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
+import { getDeployedVersion } from './pickle-utils.js';
 
 const GIT_RESOLVE_TIMEOUT_MS = 10_000;
 
@@ -146,6 +147,19 @@ function shellQuote(value: string): string {
 }
 
 /**
+ * The `Pickle-Rick: <version>` trailer VALUE the generated hook stamps, from the SAME accessor
+ * `getDeployedVersion()` (`pickle-utils.ts`) every other version-reading call site uses — not a
+ * second version source. Resolved ONCE in Node at script-generation time (mirrors how
+ * `originalPrepareCommitMsgAbsPath` is already baked into the script as a literal) rather than
+ * re-read per commit in shell. Degrades to the fixed marker `unknown` on a `null` read, matching
+ * `mux-runner.ts`'s `resolvePickleRickVersionValue`.
+ */
+function resolvePickleRickVersionValue(): string {
+  const version = getDeployedVersion();
+  return typeof version === 'string' && version.trim() !== '' ? version.trim() : 'unknown';
+}
+
+/**
  * The trailer is written with `git interpret-trailers`, git's own trailer WRITER —
  * symmetric with the `%(trailers:key=Pickle-Ticket,valueonly)` READER the consumer
  * uses. A bare `printf '\nPickle-Ticket: …' >> "$1"` is NOT equivalent: git parses
@@ -159,10 +173,14 @@ function shellQuote(value: string): string {
  * fallback arm: if `interpret-trailers` cannot run, degrade to the old append rather
  * than to no attribution at all.
  */
-function buildTrailerHookScript(originalPrepareCommitMsgAbsPath: string | null): string {
+function buildTrailerHookScript(
+  originalPrepareCommitMsgAbsPath: string | null,
+  versionTrailerValue: string,
+): string {
   const forward = originalPrepareCommitMsgAbsPath
     ? `exec ${shellQuote(originalPrepareCommitMsgAbsPath)} "$@"`
     : 'exit 0';
+  const versionTrailer = `Pickle-Rick: ${versionTrailerValue}`;
   return [
     '#!/bin/sh',
     // Unset, empty, and whitespace-only must no-op IDENTICALLY. `[ -z ]` alone is false for
@@ -180,13 +198,15 @@ function buildTrailerHookScript(originalPrepareCommitMsgAbsPath: string | null):
     // attribution silently lost with the id sitting in plain sight in `%B` (live: 271587ae).
     // `interpret-trailers --parse` yields exactly the parsed trailer block, so producer guard
     // and consumer reader share one view. If it cannot run, the view degrades to the raw
-    // message: conservative (skip) rather than risking a double stamp.
+    // message: conservative (skip) rather than risking a double stamp. The version trailer
+    // rides this SAME guard — no separate idempotence check, matching `stampPickleTicketTrailer`
+    // (`mux-runner.ts`, ticket 4eaf450e).
     '_pickle_trailer_view=$(git interpret-trailers --parse "$1" 2>/dev/null || cat "$1" 2>/dev/null)',
     'if printf \'%s\\n\' "$_pickle_trailer_view" | grep -q \'^Pickle-Ticket:\'; then',
     `  ${forward}`,
     'fi',
-    'if ! git interpret-trailers --in-place --trailer "Pickle-Ticket: $PICKLE_TICKET_ID" "$1" 2>/dev/null; then',
-    '  printf \'\\nPickle-Ticket: %s\\n\' "$PICKLE_TICKET_ID" >> "$1"',
+    `if ! git interpret-trailers --in-place --trailer "Pickle-Ticket: $PICKLE_TICKET_ID" --trailer ${shellQuote(versionTrailer)} "$1" 2>/dev/null; then`,
+    `  printf '\\nPickle-Ticket: %s\\n%s\\n' "$PICKLE_TICKET_ID" ${shellQuote(versionTrailer)} >> "$1"`,
     'fi',
     forward,
     '',
@@ -223,7 +243,10 @@ export function materializeTrailerHooks(
 
     writeExecutableScript(
       path.join(opts.managedDir, 'prepare-commit-msg'),
-      buildTrailerHookScript(hasOriginalPrepareCommitMsg ? originalPrepareCommitMsg : null),
+      buildTrailerHookScript(
+        hasOriginalPrepareCommitMsg ? originalPrepareCommitMsg : null,
+        resolvePickleRickVersionValue(),
+      ),
     );
 
     for (const hookName of listForwardableHooks(preExistingDir)) {

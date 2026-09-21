@@ -10,6 +10,7 @@ import { execSync, execFileSync, spawnSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { getHeadSha, isWorkingTreeDirty } from '../services/git-utils.js';
+import { materializeTrailerHooks } from '../services/git-trailer-hooks.js';
 import { runIteration } from '../bin/mux-runner.js';
 import {
     compareMetric,
@@ -3113,6 +3114,184 @@ test('auto-rescue: dirty tree gets auto-committed when no commits detected', () 
     } finally {
         fs.rmSync(dir, { recursive: true });
         fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// --- Pickle-Rick version trailer on the two runner-authored auto-commits + the generated hook ---
+//
+// Ticket 5199ea3a: the two raw auto-commit sites (`preflightAutoCommit`, `autoRescueDirtyTree`)
+// and the `prepare-commit-msg` hook `materializeTrailerHooks` generates now all stamp
+// `Pickle-Rick: <version>`, sourced EXCLUSIVELY from `getDeployedVersion()`
+// (`services/pickle-utils.ts`, ticket 7b3c8785) — the SAME accessor `stampPickleTicketTrailer`
+// (`mux-runner.ts`, ticket 4eaf450e) already consumes; not a second version source.
+// `withExtensionRoot`/`makeDeployedManifest` mirror the idiom `runner-authored-trailer.test.js`
+// established for that sibling ticket, so the asserted version never depends on whatever
+// happens to be deployed at `~/.claude/pickle-rick` on the host running the suite.
+
+function withExtensionRoot(extRoot, fn) {
+    const origExtensionDir = process.env.EXTENSION_DIR;
+    const origNodeEnv = process.env.NODE_ENV;
+    const origTestFlag = process.env.EXTENSION_DIR_TEST;
+    process.env.EXTENSION_DIR_TEST = '1';
+    process.env.NODE_ENV = 'test';
+    process.env.EXTENSION_DIR = extRoot;
+    try {
+        fn();
+    } finally {
+        if (origExtensionDir === undefined) delete process.env.EXTENSION_DIR;
+        else process.env.EXTENSION_DIR = origExtensionDir;
+        if (origNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = origNodeEnv;
+        if (origTestFlag === undefined) delete process.env.EXTENSION_DIR_TEST;
+        else process.env.EXTENSION_DIR_TEST = origTestFlag;
+    }
+}
+
+/** A fixture `EXTENSION_DIR` root whose `extension/package.json` carries `version`, or none at all. */
+function makeDeployedManifest(version) {
+    const extRoot = mkFixtureTmpDir('pickle-microverse-extroot-');
+    fs.mkdirSync(path.join(extRoot, 'extension'), { recursive: true });
+    if (version !== null) {
+        fs.writeFileSync(path.join(extRoot, 'extension', 'package.json'), JSON.stringify({ version }));
+    }
+    return extRoot;
+}
+
+function versionTrailerOf(dir) {
+    return execFileSync(
+        'git', ['log', '-1', '--format=%(trailers:key=Pickle-Rick,valueonly)'],
+        { cwd: dir, encoding: 'utf-8' },
+    ).trim();
+}
+
+test('preflightAutoCommit: the auto-commit carries the Pickle-Rick version trailer', () => {
+    const dir = createTempGitRepo();
+    const extRoot = makeDeployedManifest('9.9.9');
+    try {
+        fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'worker changes');
+
+        withExtensionRoot(extRoot, () => {
+            preflightAutoCommit(dir, () => { });
+        });
+
+        assert.equal(versionTrailerOf(dir), '9.9.9');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+test('autoRescueDirtyTree: the auto-commit carries the Pickle-Rick version trailer', () => {
+    const dir = createTempGitRepo();
+    const sessionDir = mkFixtureTmpDir('pickle-microverse-session-');
+    const extRoot = makeDeployedManifest('8.8.8');
+    try {
+        const preSha = getHeadSha(dir);
+        fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'worker changes');
+
+        const ctx = { workingDir: dir, sessionDir, log: () => { }, preIterSha: preSha, postIterSha: preSha };
+        withExtensionRoot(extRoot, () => {
+            autoRescueDirtyTree(ctx);
+        });
+
+        assert.equal(versionTrailerOf(dir), '8.8.8');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+function hooksPathEnv(managedDir, extra) {
+    return {
+        ...process.env,
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.hooksPath',
+        GIT_CONFIG_VALUE_0: managedDir,
+        ...extra,
+    };
+}
+
+test('materializeTrailerHooks: the generated hook stamps the Pickle-Rick version trailer', () => {
+    const dir = createTempGitRepo();
+    const managedDir = path.join(mkFixtureTmpDir('pickle-microverse-managed-'), 'hooks');
+    const extRoot = makeDeployedManifest('7.7.7');
+    try {
+        let materialized;
+        withExtensionRoot(extRoot, () => {
+            materialized = materializeTrailerHooks({ repoRoot: dir, managedDir });
+        });
+        assert.equal(materialized.ok, true);
+
+        fs.writeFileSync(path.join(dir, 'two.txt'), 'two');
+        execFileSync('git', ['add', '-A'], { cwd: dir });
+        const env = hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'a1b2c3d4' });
+        execFileSync('git', ['commit', '-q', '-m', 'fix: hook trailer test'], { cwd: dir, env });
+
+        const ticketTrailer = execFileSync(
+            'git', ['log', '-1', '--format=%(trailers:key=Pickle-Ticket,valueonly)'],
+            { cwd: dir, encoding: 'utf-8' },
+        ).trim();
+        assert.equal(ticketTrailer, 'a1b2c3d4');
+        assert.equal(versionTrailerOf(dir), '7.7.7');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+test('materializeTrailerHooks: an unresolvable deployed version degrades to "unknown", still exactly one trailer line', () => {
+    const dir = createTempGitRepo();
+    const managedDir = path.join(mkFixtureTmpDir('pickle-microverse-managed-degraded-'), 'hooks');
+    // No extension/package.json at all under this root — getDeployedVersion() reads nothing.
+    const extRoot = mkFixtureTmpDir('pickle-microverse-extroot-empty-');
+    try {
+        let materialized;
+        withExtensionRoot(extRoot, () => {
+            materialized = materializeTrailerHooks({ repoRoot: dir, managedDir });
+        });
+        assert.equal(materialized.ok, true);
+
+        fs.writeFileSync(path.join(dir, 'two.txt'), 'two');
+        execFileSync('git', ['add', '-A'], { cwd: dir });
+        const env = hooksPathEnv(managedDir, { PICKLE_TICKET_ID: 'b2c3d4e5' });
+        execFileSync('git', ['commit', '-q', '-m', 'chore: degraded version'], { cwd: dir, env });
+
+        const body = execFileSync('git', ['log', '-1', '--format=%B'], { cwd: dir, encoding: 'utf-8' });
+        const versionLines = body.match(/^Pickle-Rick:.*$/gm) || [];
+        assert.equal(versionLines.length, 1, 'exactly one Pickle-Rick line, never doubled, never valueless');
+        assert.equal(versionLines[0], 'Pickle-Rick: unknown');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+test('materializeTrailerHooks: the hook stays idempotent — invoking it twice over one message leaves exactly one Pickle-Rick line', () => {
+    const dir = createTempGitRepo();
+    const managedDir = path.join(mkFixtureTmpDir('pickle-microverse-managed-idem-'), 'hooks');
+    const extRoot = makeDeployedManifest('6.6.6');
+    try {
+        let materialized;
+        withExtensionRoot(extRoot, () => {
+            materialized = materializeTrailerHooks({ repoRoot: dir, managedDir });
+        });
+        assert.equal(materialized.ok, true);
+
+        const scriptPath = path.join(managedDir, 'prepare-commit-msg');
+        const msgPath = path.join(mkFixtureTmpDir('pickle-microverse-commitmsg-'), 'COMMIT_EDITMSG');
+        fs.writeFileSync(msgPath, 'fix: idempotence check\n');
+
+        const env = { ...process.env, PICKLE_TICKET_ID: 'c3d4e5f6' };
+        // CONTROL (Mutation Verification #2): an unconditional-append hook would double this
+        // line on the second invocation — the guard governing BOTH trailers is what keeps it at one.
+        execFileSync(scriptPath, [msgPath], { cwd: dir, env, timeout: 10_000 });
+        execFileSync(scriptPath, [msgPath], { cwd: dir, env, timeout: 10_000 });
+
+        const parsedView = execFileSync(
+            'git', ['interpret-trailers', '--parse', msgPath], { cwd: dir, encoding: 'utf-8' },
+        );
+        const versionLines = parsedView.match(/^Pickle-Rick:.*$/gm) || [];
+        assert.equal(versionLines.length, 1, 'exactly one Pickle-Rick line survives two invocations');
+        assert.equal(versionLines[0], 'Pickle-Rick: 6.6.6');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
     }
 });
 

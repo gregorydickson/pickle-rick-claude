@@ -44,6 +44,7 @@ import type { CitadelFinding } from '../services/citadel/reporter.js';
 import {
   writeStateFile,
   getExtensionRoot,
+  getDeployedVersion,
   getDataRoot,
   isoCompactStamp,
   sleep,
@@ -4529,6 +4530,58 @@ export function resetStoppedMicroverseState(state: MicroverseState, sessionDir: 
   writeMicroverseState(sessionDir, state);
 }
 
+/**
+ * The `Pickle-Rick: <version>` trailer VALUE for the two auto-commits this runner authors
+ * IN-PROCESS, from the SAME accessor `getDeployedVersion()` (`services/pickle-utils.ts`) every
+ * other version-reading call site uses — not a second version source. Degrades to the fixed
+ * marker `unknown` on a `null` read, mirroring `resolvePickleRickVersionValue` in `mux-runner.ts`
+ * (unexported there, and that file is out of scope for this ticket — hence a local twin here).
+ */
+function resolveAutoCommitVersionTrailer(): string {
+  const version = getDeployedVersion();
+  return `Pickle-Rick: ${typeof version === 'string' && version.trim() !== '' ? version.trim() : 'unknown'}`;
+}
+
+/**
+ * Renders `subject` with a parsed `Pickle-Rick: <version>` trailer via `git interpret-trailers`
+ * — these two commits are authored IN-PROCESS and never see the `prepare-commit-msg` hook, so
+ * they need their own writer (same reasoning as `stampPickleTicketTrailer` in `mux-runner.ts`).
+ * Falls back to a manual two-line append if the spawn cannot run; either way the trailer is
+ * never omitted and never doubled (`addIfDifferentNeighbor`).
+ *
+ * `interpret-trailers` inserts the blank-paragraph separator ONLY when its input already ends
+ * in a newline — a bare `subject` (no trailing `\n`) gets the trailer appended into the SAME
+ * paragraph with no blank line, which `%(trailers:…)` then fails to parse at all (verified: git
+ * 2.39.5 requires a preceding blank line before the trailer block, even for a single-trailer
+ * message). Normalize to exactly one trailing newline first, mirroring `mux-runner.ts`'s
+ * `normalizeTrailerInputNewline`.
+ */
+function stampAutoCommitVersionTrailer(workingDir: string, subject: string): string {
+  const versionTrailer = resolveAutoCommitVersionTrailer();
+  const normalized = subject.replace(/\n*$/, '\n');
+  try {
+    const rendered = execFileSync(
+      'git',
+      ['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', versionTrailer],
+      { cwd: workingDir, input: normalized, encoding: 'utf-8', timeout: 10_000 },
+    );
+    return rendered.replace(/\n+$/, '');
+  } catch {
+    return `${normalized}\n${versionTrailer}`;
+  }
+}
+
+/**
+ * Commits currently staged changes with `subject`, stamped with the version trailer. The single
+ * call site both auto-commit producers route through — never a raw `git commit -m` literal.
+ */
+function commitStagedWithVersionTrailer(workingDir: string, subject: string): void {
+  const message = stampAutoCommitVersionTrailer(workingDir, subject);
+  const args = ['commit'];
+  args.push('-m', message);
+  execFileSync('git', args, { cwd: workingDir, timeout: 30_000 });
+}
+
 export function preflightAutoCommit(workingDir: string, log: (msg: string) => void, allowedPaths?: string[]): void {
   const allDirtyPaths = listWorkingTreeDirtyPaths(workingDir, AUTO_COMMIT_DIRT_EXCLUDES);
   // When scope is specified via allowed_paths, restrict dirtiness evaluation to in-scope files only.
@@ -4549,7 +4602,7 @@ export function preflightAutoCommit(workingDir: string, log: (msg: string) => vo
     // `dirtyPaths` is already excludes-filtered (and scope-filtered when scoped)
     // — stage exactly that set via the shared salvage seam's per-path stager.
     stageOwnedPaths(workingDir, toTopLevelPathspecs(dirtyPaths));
-    execFileSync('git', ['commit', '-m', 'microverse: auto-commit dirty tree before start'], { cwd: workingDir, timeout: 30_000 });
+    commitStagedWithVersionTrailer(workingDir, 'microverse: auto-commit dirty tree before start');
     log(`Auto-committed pre-flight: ${getHeadSha(workingDir)}`);
   } catch (commitErr) {
     const commitMsg = safeErrorMessage(commitErr);
@@ -5649,7 +5702,7 @@ export function autoRescueDirtyTree(ctx: RunContext): void {
   ctx.log('No commits but dirty tree detected — auto-committing worker changes');
   try {
     stageOwnedPaths(ctx.workingDir, toTopLevelPathspecs(plan.stagePaths));
-    execFileSync('git', ['commit', '-m', `microverse: auto-commit (no commits produced — dirty tree detected)`], { cwd: ctx.workingDir, timeout: 30_000 });
+    commitStagedWithVersionTrailer(ctx.workingDir, 'microverse: auto-commit (no commits produced — dirty tree detected)');
     ctx.postIterSha = _deps.getHeadSha(ctx.workingDir);
     ctx.log(`Auto-committed: ${ctx.postIterSha}`);
   } catch (commitErr) {
