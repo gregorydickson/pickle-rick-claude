@@ -52,6 +52,25 @@ absent) so `hasBaseline` becomes a null check and **tsc kills the class at every
 genuinely unmeasured and `0` was the truthful reading. It is in scope because it rots silently and
 indefinitely and no iteration surfaces it.
 
+### Interface Contracts — R1
+
+**Inputs**: `MicroverseState` as persisted in `<session>/microverse.json`.
+**Outputs**: `resetStoppedMicroverseState` mutates `state.status` to `'iterating' | 'gap_analysis'`.
+**Type change (the fix)**: `MicroverseState.baseline_score` becomes `number | null` (or optional), so
+`null`/absent is the ONLY encoding of "never measured" and `0` is an ordinary measured value.
+**Invariant**: for all `s`, `hasBaseline(s) === (s.baseline_score !== null && s.baseline_score !== undefined)`
+— never a comparison against a member of the value domain.
+**Errors**: none added; an unreadable `microverse.json` keeps its existing recovery path.
+
+### Test Expectations — R1
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| measured `0` resumes as measured | `tests/microverse.test.js` | stopped state, `baseline_score: 0`, empty history | `status === 'iterating'` after reset |
+| never-measured still restarts (control) | `tests/microverse.test.js` | stopped state, baseline absent/null, empty history | `status === 'gap_analysis'` after reset |
+| a real zero parses as a measurement | `tests/microverse-helpers.test.js` | `judgeAttemptFromOutput('score: 0')` | `metric.score === 0`, not a `failed` attempt |
+| absent stays absent | `tests/microverse-helpers.test.js` | `judgeAttemptFromOutput('no numerals here')` | `metric === null` |
+
 ### Acceptance criteria — R1
 
 - `grep -c 'baseline_score !== 0' src/bin/microverse-runner.ts` returns `0`
@@ -91,6 +110,26 @@ unconstrained question is a green light wired to nothing.
 **Direction:** constrain the contract at the ask (a required output form the parser can read), rather
 than adding a fifth retry or a prose-scraping fallback. A fallback that mines a number out of prose
 re-introduces the ambiguity this bundle is removing.
+
+### Interface Contracts — R2
+
+**Inputs**: judge stdout, arbitrary text.
+**Outputs**: `JudgeMeasurementAttempt` — either `{ metric: { raw, score } }` or
+`{ metric: null, failureKind: 'failed', message, raw_output_truncated_512 }`.
+**Contract added (the fix)**: the judge INVOCATION declares a required output shape the parser reads;
+refinement names the anchor it adds. `extractScore` keeps returning `number | null` — the parser must
+NOT gain a prose-mining fallback, which would re-introduce the ambiguity this bundle removes.
+**Invariant**: a retry changes the ASK, never merely repeats it.
+**Errors**: exhausted attempts still yield `metric_unmeasurable_unrecoverable`; the phase still degrades
+rather than halting (B-NOSTOP-GATES).
+
+### Test Expectations — R2
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| prose alone yields no metric | `tests/microverse-helpers.test.js` | the real 2026-09-20 prose answer as input | `metric === null`; parser does not guess |
+| well-formed numeric answer parses | `tests/microverse-helpers.test.js` | a conforming judge answer | `metric.score` is the expected number |
+| the ask carries a shape constraint | `tests/microverse-helpers.test.js` | build the judge invocation | the output-shape anchor is present in the prompt |
 
 ### Acceptance criteria — R2
 
@@ -137,6 +176,25 @@ adding a mechanism beside a cap that already exists. Whether the cap of `3` is a
 
 **This root adds NO new gate leg,** so the four gate-leg questions are not triggered. If refinement
 finds itself proposing one, it must answer all four in the ticket first.
+
+### Interface Contracts — R3
+
+**Inputs**: `CitadelFinding[]` with `severity: CitadelSeverity`, plus resolved config.
+**Outputs**: the subset admitted to the remediation loop.
+**Invariant (the fix)**: a finding of severity `High` is admitted under DEFAULT config. The
+strict/non-strict severity distinction is collapsed or its default flipped — not guarded by a new case.
+**Explicitly OUT of contract**: `citadel_max_remediation_cycles` keeps its current default of `3`.
+Changing the cap is a separate, separately-evidenced question and must not ride this root.
+**Errors**: none added; cap exhaustion keeps emitting `citadel_findings_unremediated` and the pipeline
+continues.
+
+### Test Expectations — R3
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| `High` admitted under default config | `tests/pipeline-runner.test.js` | a `citadel-ac-coverage-<AC>-test` finding, non-strict | the finding reaches the remediator |
+| below-threshold still excluded (control) | `tests/pipeline-runner.test.js` | a finding below the new threshold | not admitted — the change is not a blanket admit |
+| cap unchanged | `tests/pipeline-runner.test.js` | resolved settings | `citadel_max_remediation_cycles === 3` |
 
 ### Acceptance criteria — R3
 
@@ -185,6 +243,30 @@ no blank-id guard, held unreachable because the CLI rejects a blank `--ticket-id
 
 **Resolve the version from the DEPLOYED runtime** — the build actually executing — not from the source
 tree under edit, and degrade to a typed unknown rather than throwing or guessing.
+
+### Interface Contracts — R4
+
+**Inputs**: `stampPickleTicketTrailer(workingDir: string, message: string, ticketId: string)`, unchanged
+signature — the B-RATRAIL anchor pins its call-site count at exactly two.
+**Outputs**: the same message, now carrying BOTH `Pickle-Ticket: <id>` and `Pickle-Rick: <version>` as
+PARSED trailers (`git interpret-trailers`, `--if-exists addIfDifferentNeighbor`).
+**New accessor**: resolves the DEPLOYED runtime's version, returning a typed unknown on failure — never
+throwing, never guessing, never silently substituting the source tree's version.
+**Invariants**: idempotent (re-stamping yields exactly one `Pickle-Rick:` line); a blank/whitespace
+`ticketId` returns the message UNCHANGED; a trailer is never emitted valueless or doubled, because
+`scanGitLogByTrailer` reads a doubled value as unattributed.
+**Errors**: an unresolvable version degrades to the typed unknown; it must not abort the commit.
+
+### Test Expectations — R4
+
+| Criterion | Test File | Description | Assertion |
+|:---|:---|:---|:---|
+| version trailer present | `tests/runner-authored-trailer.test.js` | stamp a message | `/^Pickle-Rick: \d+\.\d+\.\d+$/m` matches |
+| ticket trailer survives | `tests/runner-authored-trailer.test.js` | stamp a message | `/^Pickle-Ticket: t1$/m` matches |
+| idempotent | `tests/runner-authored-trailer.test.js` | stamp an already-stamped message | exactly one `Pickle-Rick:` line |
+| blank id is a no-op | `tests/runner-authored-trailer.test.js` | stamp with `'   '` | message returned unchanged |
+| parsed-view visible | `tests/runner-authored-trailer.test.js` | pipe through `interpret-trailers --parse` | `Pickle-Rick:` appears in the parsed view |
+| microverse commits stamp | `tests/microverse.test.js` | the two auto-commit paths | each message carries the version trailer |
 
 ### Acceptance criteria — R4
 
