@@ -1874,7 +1874,7 @@ export interface MicroverseSessionState {
   gap_analysis_path: string;
   judge_context_path?: string;
   failed_approaches: string[];
-  baseline_score: number;
+  baseline_score: number | null;
   convergence_target?: number;
   convergence_mode?: 'metric' | 'worker';
   convergence_file?: string;

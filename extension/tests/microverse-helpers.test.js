@@ -1404,6 +1404,20 @@ test('judgeAttemptFromOutput: the success path carries no raw_output_truncated_5
   assert.deepEqual(passing, { metric: { raw: '7', score: 7 } });
 });
 
+// 4e6644a9 regression guards: extractScore/judgeAttemptFromOutput are untouched by the
+// baseline_score type change, but the ticket's Acceptance Criteria name them as the invariant
+// this fix must not break — a real zero must still parse as a measurement, never as absent.
+test('judgeAttemptFromOutput: a real zero parses as a measurement, not a failure', () => {
+  const result = judgeAttemptFromOutput('0');
+  assert.equal(result.metric && result.metric.score, 0);
+  assert.equal(result.failureKind, undefined);
+});
+
+test('judgeAttemptFromOutput: absent stays absent', () => {
+  const result = judgeAttemptFromOutput('no numerals here');
+  assert.equal(result.metric, null);
+});
+
 // One scripted judge child, shared by both drivers below so the two cannot drift apart.
 // A step with `errorCode` errors the way a failed spawn does (ETIMEDOUT classifies as a timeout);
 // a step with `hang` emits its output and then neither closes nor errors, so the runner's own

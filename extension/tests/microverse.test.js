@@ -557,7 +557,7 @@ test('createMicroverseState returns valid initial state', () => {
     assert.deepEqual(state.convergence.history, []);
     assert.equal(state.convergence.stall_counter, 0);
     assert.equal(state.convergence.stall_limit, 3);
-    assert.equal(state.baseline_score, 0);
+    assert.equal(state.baseline_score, null); // never measured — null is the only encoding of absence
     assert.deepEqual(state.failed_approaches, []);
 });
 
@@ -586,8 +586,17 @@ test('isConverged returns false when stall_counter < stall_limit', () => {
 
 test('isConverged returns true when convergence_target is reached', () => {
     const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 5, convergenceTarget: 0 });
-    // baseline_score=0 matches convergence_target=0, no history
+    // A never-measured baseline (null) must NOT read as having reached the target — that was
+    // the in-band-sentinel bug this fix removes. Set a REAL measured baseline of 0 to test the
+    // target-reached path honestly.
+    state.baseline_score = 0;
     assert.equal(isConverged(state), 'target');
+});
+
+test('isConverged returns null when baseline is never measured, even at a target of 0 (CONTROL)', () => {
+    const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 5, convergenceTarget: 0 });
+    assert.equal(state.baseline_score, null);
+    assert.equal(isConverged(state), null, 'an unmeasured baseline must never read as having reached the target');
 });
 
 test('isConverged uses last accepted score for convergence_target check', () => {
@@ -721,7 +730,7 @@ test('runIteration is exported from mux-runner', () => {
 
 // --- microverse-runner tests ---
 
-import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, handleRateLimitExit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD } from '../bin/microverse-runner.js';
+import { measureMetric, measureLlmMetric, extractScore, parseLlmJudgeOutput, buildJudgePrompt, buildMicroverseHandoff, deactivateRunnerState, handleRateLimit, handleRateLimitExit, main, _deps, readRunnerState, autoRescueDirtyTree, preflightAutoCommit, executeMainLoop, executeGapAnalysis, measureAndClassifyIteration, classifyStall, handleNoCommitStall, runRemediatorForIteration, boundRemediationPrompt, REMEDIATION_PROMPT_MAX_BYTES, applyTestBackendOverrideFromEnv, AMNESIAC_TURN_THRESHOLD, resetStoppedMicroverseState } from '../bin/microverse-runner.js';
 import { resetToSha } from '../services/git-utils.js';
 import { StateManager } from '../services/state-manager.js';
 import { writeStateFile, resolveRateLimitProbeIntervalMs } from '../services/pickle-utils.js';
@@ -3305,16 +3314,7 @@ test('resume recovery: stopped state with no history resets to gap_analysis', ()
         state.exit_reason = 'error';
         writeMicroverseState(dir, state);
 
-        // Simulate runner recovery logic
-        const mvState = readMicroverseState(dir);
-        if (mvState.status === 'stopped') {
-            const hasHistory = mvState.convergence?.history?.length > 0;
-            const hasBaseline = mvState.baseline_score !== 0;
-            const newStatus = (hasHistory || hasBaseline) ? 'iterating' : 'gap_analysis';
-            mvState.status = newStatus;
-            delete mvState.exit_reason;
-            writeMicroverseState(dir, mvState);
-        }
+        resetStoppedMicroverseState(state, dir, () => {});
 
         const recovered = readMicroverseState(dir);
         assert.equal(recovered.status, 'gap_analysis', 'should reset to gap_analysis when no history');
@@ -3342,16 +3342,7 @@ test('resume recovery: stopped state with history resets to iterating', () => {
         });
         writeMicroverseState(dir, state);
 
-        // Simulate runner recovery logic
-        const mvState = readMicroverseState(dir);
-        if (mvState.status === 'stopped') {
-            const hasHistory = mvState.convergence?.history?.length > 0;
-            const hasBaseline = mvState.baseline_score !== 0;
-            const newStatus = (hasHistory || hasBaseline) ? 'iterating' : 'gap_analysis';
-            mvState.status = newStatus;
-            delete mvState.exit_reason;
-            writeMicroverseState(dir, mvState);
-        }
+        resetStoppedMicroverseState(state, dir, () => {});
 
         const recovered = readMicroverseState(dir);
         assert.equal(recovered.status, 'iterating', 'should reset to iterating when history exists');
@@ -3369,17 +3360,73 @@ test('resume recovery: non-failed status is not modified', () => {
         state.status = 'iterating';
         writeMicroverseState(dir, state);
 
-        // Simulate runner recovery logic — should NOT modify
-        const mvState = readMicroverseState(dir);
-        const statusBefore = mvState.status;
-        if (mvState.status === 'stopped') {
-            mvState.status = 'gap_analysis';
-            delete mvState.exit_reason;
-            writeMicroverseState(dir, mvState);
-        }
+        const statusBefore = state.status;
+        resetStoppedMicroverseState(state, dir, () => {}); // no-op: status !== 'stopped'
 
         const recovered = readMicroverseState(dir);
         assert.equal(recovered.status, statusBefore, 'iterating status should not be modified');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+// --- baseline_score absence (4e6644a9): drives the REAL resetStoppedMicroverseState, not a simulation ---
+
+test('resetStoppedMicroverseState: measured baseline of 0 resumes as iterating', () => {
+    const dir = mkFixtureTmpDir('pickle-mv-resume-');
+    try {
+        const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+        state.status = 'stopped';
+        state.exit_reason = 'error';
+        state.baseline_score = 0; // a real measurement — the CONVERGED state for a violation-count metric
+        writeMicroverseState(dir, state);
+
+        resetStoppedMicroverseState(state, dir, () => {});
+
+        const recovered = readMicroverseState(dir);
+        assert.equal(recovered.status, 'iterating', 'a measured score of 0 must read as a baseline, not absent');
+        assert.equal(recovered.exit_reason, undefined, 'exit_reason should be cleared');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+test('resetStoppedMicroverseState: never-measured baseline (null) restarts at gap_analysis (CONTROL)', () => {
+    const dir = mkFixtureTmpDir('pickle-mv-resume-');
+    try {
+        const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+        state.status = 'stopped';
+        state.exit_reason = 'error';
+        assert.equal(state.baseline_score, null, 'a freshly created session must start unmeasured');
+        writeMicroverseState(dir, state);
+
+        resetStoppedMicroverseState(state, dir, () => {});
+
+        const recovered = readMicroverseState(dir);
+        assert.equal(recovered.status, 'gap_analysis', 'a never-measured baseline must restart gap analysis');
+        assert.equal(recovered.exit_reason, undefined, 'exit_reason should be cleared');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+    }
+});
+
+test('resetStoppedMicroverseState: legacy persisted baseline_score of 0 reads as measured (migration)', () => {
+    const dir = mkFixtureTmpDir('pickle-mv-resume-');
+    try {
+        // Simulate a state.json written by a PRE-migration build: baseline_score was the in-band
+        // sentinel `0` for "never measured" under the old contract. This build never re-coerces a
+        // persisted 0 to null on read, so it is deliberately read as measured going forward — the
+        // documented asymmetric migration (see microverse-runner.ts:resetStoppedMicroverseState).
+        const state = createMicroverseState({ prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3 });
+        state.status = 'stopped';
+        state.exit_reason = 'error';
+        state.baseline_score = 0; // legacy on-disk value, indistinguishable from a real zero measurement
+        writeMicroverseState(dir, state);
+
+        resetStoppedMicroverseState(state, dir, () => {});
+
+        const recovered = readMicroverseState(dir);
+        assert.equal(recovered.status, 'iterating', 'legacy persisted 0 must resume as measured, never re-coerced to absent');
     } finally {
         fs.rmSync(dir, { recursive: true });
     }

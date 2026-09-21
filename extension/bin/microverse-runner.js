@@ -2949,7 +2949,7 @@ function buildMetricMicroverseHandoff(mvState, iteration, workingDir, sessionDir
         `- Validation: \`${getKeyMetricField(mvState, 'validation', '(no key metric)')}\``,
         `- Type: ${getKeyMetricField(mvState, 'type', 'none')}`,
         `- Direction: ${dir} (${dir === 'lower' ? 'lower is better' : 'higher is better'})`,
-        `- Baseline score: ${mvState.baseline_score}`,
+        `- Baseline score: ${mvState.baseline_score === null ? 'not yet measured' : mvState.baseline_score}`,
         `- Current stall counter: ${metricConv.stall_counter}/${metricConv.stall_limit}`,
         '',
     ];
@@ -3001,7 +3001,9 @@ export function getBestScore(mvState) {
         .map(h => h.score);
     if (accepted.length === 0)
         return mvState.baseline_score;
-    return bestFn(...accepted, mvState.baseline_score);
+    // A never-measured baseline is absent, not a value to compare against — fold it into the
+    // accepted-history best only when it is a real number.
+    return mvState.baseline_score === null ? bestFn(...accepted) : bestFn(...accepted, mvState.baseline_score);
 }
 function metricDescriptionForFinalReport(mvState) {
     return mvState.key_metric?.description ?? 'Worker-managed convergence';
@@ -3088,7 +3090,7 @@ export function writeFinalReport(sessionDir, mvState, exitReason, iterations, el
         `- **Iteration Executor**: ${describeIterationExecutor()}`,
         `- **Elapsed**: ${formatTime(elapsedSeconds)}`,
         `- **Metric**: ${metricDescriptionForFinalReport(mvState)}`,
-        `- **Baseline Score**: ${mvState.baseline_score}`,
+        `- **Baseline Score**: ${mvState.baseline_score === null ? 'not yet measured' : mvState.baseline_score}`,
         `- **Best Score**: ${bestScore}`,
         `- **Convergence Mode**: ${convergenceMode}`,
         `- **Accepted**: ${accepted}`,
@@ -3444,11 +3446,18 @@ function mapCommandMeasurementFailure(measured) {
             return 'metric_unmeasurable_unrecoverable';
     }
 }
-function resetStoppedMicroverseState(state, sessionDir, log) {
+export function resetStoppedMicroverseState(state, sessionDir, log) {
     if (state.status !== 'stopped')
         return;
     const hasHistory = state.convergence?.history?.length > 0;
-    const hasBaseline = state.baseline_score !== 0;
+    // `null` is the only encoding of "never measured" — a real measured score of 0 (the CONVERGED
+    // state for a violation-count metric) must read as a baseline, never as absent. A state
+    // persisted before this field could be null carries a legacy `0` here; that reads as measured
+    // too (never re-coerced to null), which is the deliberate migration: it preserves a real
+    // convergence measurement rather than discarding it, at the one-time cost of a legacy session
+    // that crashed before ever measuring a baseline resuming as `iterating` instead of
+    // `gap_analysis`.
+    const hasBaseline = state.baseline_score !== null;
     const newStatus = (hasHistory || hasBaseline) ? 'iterating' : 'gap_analysis';
     log(`Resuming from failed state — resetting status to ${newStatus}`);
     state.status = newStatus;
@@ -3644,7 +3653,10 @@ export async function executeGapAnalysis(state, ctx) {
     state.status = 'iterating';
     writeMicroverseState(ctx.sessionDir, state);
     ctx.log('Gap analysis complete — transitioning to iterating');
-    return { baseline: baseline ?? { raw: '', score: state.baseline_score } };
+    // No fresh measurement: fall back to whatever is already recorded, or NaN when the baseline
+    // has never been measured (never `?? 0` — see `getLastAcceptedScore`, whose numeric comparators
+    // already treat a non-finite "previous" as unknown rather than as a real score of zero).
+    return { baseline: baseline ?? { raw: '', score: state.baseline_score ?? NaN } };
 }
 /**
  * The rate-limit wait itself: burn wall until `waitEnd`, but stop the moment any of the four
@@ -3790,7 +3802,9 @@ function emitMicroverseWastedIter(ctx, action) {
 }
 function adoptLateBaseline(state, baseline, metricResult, metricConv, ctx) {
     const lastAccepted = findLastAcceptedEntry(metricConv.history);
-    if (baseline.score === 0 && state.baseline_score === 0 && !lastAccepted) {
+    // `state.baseline_score` is the source of truth for "never measured" — null, never a sentinel
+    // value the caller's cached `baseline` snapshot could also have to agree on.
+    if (state.baseline_score === null && !lastAccepted) {
         state.baseline_score = metricResult.score;
         ctx.log(`Late baseline adopted: ${metricResult.score} (initial measurement failed)`);
         writeMicroverseState(ctx.sessionDir, state);
@@ -4104,7 +4118,9 @@ export async function measureAndClassifyIteration(state, baseline, ctx) {
     const metricConv = assertMetricConvergence(state, 'measureAndClassifyIteration');
     const lastAccepted = findLastAcceptedEntry(metricConv.history);
     adoptLateBaseline(state, baseline, metricResult, metricConv, ctx);
-    const previousScore = lastAccepted ? lastAccepted.score : state.baseline_score;
+    // Never `?? 0`: a never-measured baseline compares as unknown (NaN), not as a real score of
+    // zero — see `getLastAcceptedScore`'s identical fallback.
+    const previousScore = lastAccepted ? lastAccepted.score : state.baseline_score ?? NaN;
     const comparison = applyLedgerPartialProgress(compareMetricWithBasis(metricResult.score, previousScore, state.key_metric.tolerance, state.key_metric.direction, currentLedger, previousLedger), priorLedgerEntries, state.violation_ledger, () => committedPathSet(ctx));
     const classification = comparison.classification;
     ctx.log(`Classification: ${classification} (${formatMetricComparisonFigures(comparison.figures)})`);
@@ -5193,7 +5209,9 @@ export async function handleIterationOutcome(state, baseline, ctx, outcome) {
 }
 export async function executeMainLoop(state, ctx) {
     let exitReason = 'error';
-    let baseline = { raw: '', score: state.baseline_score };
+    // Resuming at `status: 'iterating'` without ever entering `executeGapAnalysis` this run —
+    // never `?? 0`: an unmeasured baseline is unknown, not a real score of zero.
+    let baseline = { raw: '', score: state.baseline_score ?? NaN };
     const passModelOverrides = loadPassModelOverrides(ctx.extensionRoot);
     sm.update(ctx.statePath, s => { s.worker_timeout_seconds = 0; });
     ctx.log('Worker timeout disabled — session time limit is the only gate');

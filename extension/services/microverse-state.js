@@ -109,7 +109,12 @@ export function assertMicroverseStateShape(parsed, commandTemplate) {
     requireRecordArray(convergence.history, 'convergence.history');
     requireString(parsed.gap_analysis_path, 'gap_analysis_path');
     requireStringArray(parsed.failed_approaches, 'failed_approaches');
-    requireFiniteNumber(parsed.baseline_score, 'baseline_score');
+    // `null` is the only encoding of "never measured" (see `types/index.ts:baseline_score`); a
+    // legacy state persisted before this field could be null carries `0` here instead, which reads
+    // as a genuine measured score of zero, not as absence — see `resetStoppedMicroverseState` for
+    // why that is the deliberate, tested migration behaviour rather than a coercion.
+    if (parsed.baseline_score !== null)
+        requireFiniteNumber(parsed.baseline_score, 'baseline_score');
     requireRecordArray(parsed.failure_history, 'failure_history');
     if (typeof parsed.approach_exhaustion_fired !== 'boolean') {
         throw new Error('Invalid microverse state: approach_exhaustion_fired must be a boolean');
@@ -306,7 +311,7 @@ export function createMicroverseState(opts) {
         },
         gap_analysis_path: '',
         failed_approaches: [],
-        baseline_score: 0,
+        baseline_score: null,
         failure_history: [],
         approach_exhaustion_fired: false,
         iteration_regressions: 0,
@@ -395,7 +400,13 @@ export function findLastAcceptedEntry(history) {
 }
 export function getLastAcceptedScore(state) {
     const lastAccepted = findLastAcceptedEntry(state.convergence?.history ?? []);
-    return lastAccepted ? lastAccepted.score : state.baseline_score;
+    if (lastAccepted)
+        return lastAccepted.score;
+    // No accepted iteration yet: fall back to the baseline, or NaN when it has never been
+    // measured. NaN (never `?? 0`) is deliberate — every numeric comparator downstream already
+    // guards `Number.isFinite` and treats a non-finite "previous" as `held`/not-converged, so an
+    // absent baseline compares as "unknown" rather than as a real score of zero.
+    return state.baseline_score ?? NaN;
 }
 function hasOscillatingClassifications(history) {
     if (history.length < 3)
