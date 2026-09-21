@@ -103,13 +103,51 @@ and **four identical retries re-asked the same unconstrained question and got fo
 A whole phase of a 2165-minute run was lost to an output-shape mismatch.
 
 **The loop behaved correctly and this is NOT a halt bug** — `finalize-gate` ran, the phase was marked
-degraded, `Pipeline finished: 3/4 phases`. Output-with-flags, exactly as B-NOSTOP-GATES requires. The
-defect is that nothing constrains the judge's output shape, and that a retry which re-asks an
-unconstrained question is a green light wired to nothing.
+degraded, `Pipeline finished: 3/4 phases`. Output-with-flags, exactly as B-NOSTOP-GATES requires.
 
-**Direction:** constrain the contract at the ask (a required output form the parser can read), rather
-than adding a fifth retry or a prose-scraping fallback. A fallback that mines a number out of prose
-re-introduces the ambiguity this bundle is removing.
+### ⛔ PREMISE CORRECTED BY THE CODEBASE ANALYST, VERIFIED INDEPENDENTLY 2026-09-21
+
+**This root originally read "nothing constrains the judge's output shape". That is FALSE.** The
+constraint exists TWICE, and I verified both at HEAD rather than taking the analyst's word:
+
+```
+microverse-runner.ts:2065  const JUDGE_OUTPUT_JSON_SCHEMA = ...
+microverse-runner.ts:2073  'Your final output MUST be a single JSON object matching this schema, and NOTHING else: ...'
+microverse-runner.ts:2229  'Output a SINGLE JSON object and NOTHING else — no prose, no markdown fences, no trailing commentary:'
+microverse-runner.ts:2230  JUDGE_OUTPUT_JSON_SCHEMA,
+```
+
+The second is deliberately positioned LAST in the prompt, and its own comment records that it was moved
+there in response to **the identical failure mode** (four-attempt runs answering in prose, session
+`2026-09-17-5f3aa6b4`). That fix is `8a64bc5f`, landed **2026-07-27** — nearly two months BEFORE this
+root's motivating incident of 2026-09-19. **The judge produced prose despite an explicit,
+schema-bearing, last-positioned instruction.**
+
+**Two consequences, both binding:**
+
+1. **Do NOT ship a third copy of the same intervention.** That is the enumerated-set addition the
+   PRIME DIRECTIVE forbids, and two prior copies are the evidence it does not work.
+2. **The original AC was a fake-green I authored.** `grep -c . <the new contract anchor>` returning
+   `>= 1` would have passed trivially against the EXISTING anchor text. It is deleted below.
+
+### What actually survives — and it is real
+
+The RETRY half. Verified at HEAD: `runJudgeAttemptLoop`'s `for (let attempt = 0; attempt <=
+ctx.backoffsMs.length; attempt++)` (`microverse-runner.ts:3585`) calls `measureLlmMetricAttempt` with
+**byte-identical arguments every attempt** — `ctx.goal`, `ctx.history`, `ctx.prdPath`,
+`ctx.priorViolations`, `ctx.allowedPaths`. Nothing carries the attempt index, the prior failure reason,
+or any escalation. The only per-attempt variation is `state.attemptBackend`, a backend fallback, not a
+change in the ask.
+
+**So the defect is not an unconstrained ask. It is a recovery strategy that re-asks an identical
+question four times and cannot learn from its own failure** — a retry that carries no signal is a green
+light wired to nothing.
+
+**Direction:** make the retry carry the prior failure (attempt index and/or the rejected output's
+failure reason) so attempt N+1 differs from attempt N. Do NOT add a prose-scraping fallback — mining a
+number out of prose re-introduces the ambiguity this bundle exists to remove. Refinement should ALSO
+investigate why the twice-reinforced contract was violated (prompt length, tool-call interleaving
+displacing the final instruction, or a path that bypasses `buildJudgePrompt`) before designing.
 
 ### Interface Contracts — R2
 
@@ -134,8 +172,10 @@ rather than halting (B-NOSTOP-GATES).
 ### Acceptance criteria — R2
 
 - `node -e "const m=require('./bin/microverse-runner.js'); const a=m.judgeAttemptFromOutput('I found one confirmed DRY violation with confidence >= 80'); process.exit(a.metric===null?0:1)"` exits `0` (prose alone still yields no metric — the parser must not start guessing)
-- the judge invocation carries an explicit output-shape instruction: `grep -c . <the new contract anchor>` returns a value `>= 1` (refinement must name the anchor it adds)
-- a retry test asserts that retries are not four identical unconstrained asks
+- `node -e "const m=require('./bin/microverse-runner.js'); const a=m.buildJudgeAttemptInvocation; const p1=JSON.stringify(a('g','.',null,[],null,null,[],[],undefined)); process.exit(p1.length>0?0:1)"` exits `0` (the invocation builder is reachable for the differentiation test below)
+- a retry test asserts attempt N+1's constructed ask DIFFERS from attempt N's — refinement names the carried signal (attempt index and/or prior failure reason) and asserts the two constructed asks are unequal
+- a malformed-but-shaped judge answer (the required anchor present, non-numeric inside it) is a `failed` attempt, not a crash and not a guessed score
+- **DELETED as a fake-green:** the original `grep -c . <anchor> >= 1` criterion. It would pass against the contract that has existed since `8a64bc5f`.
 - `./node_modules/.bin/tsc --noEmit` exits `0`
 
 **Mutation verification (binding):** remove the output-shape constraint and observe the contract test
@@ -185,6 +225,9 @@ finds itself proposing one, it must answer all four in the ticket first.
 strict/non-strict severity distinction is collapsed or its default flipped — not guarded by a new case.
 **Explicitly OUT of contract**: `citadel_max_remediation_cycles` keeps its current default of `3`.
 Changing the cap is a separate, separately-evidenced question and must not ride this root.
+**`citadel_strict === true` post-fix (was unspecified — analyst P1):** strict mode MUST remain at least
+as wide as default. State the chosen direction explicitly in the ticket and test it; an untested strict
+path is how a collapse silently narrows one arm while widening the other.
 **Errors**: none added; cap exhaustion keeps emitting `citadel_findings_unremediated` and the pipeline
 continues.
 
@@ -204,9 +247,12 @@ continues.
 - `./node_modules/.bin/tsc --noEmit` exits `0`
 - `npx eslint src/ --max-warnings=0` exits `0`
 
-**Mutation verification (binding), and #42's own recorded constraint applies in full:** any test
-written to close an AC-coverage finding must be mutation-verified — break the subject, observe red,
-restore, observe green — or this enhancement manufactures fake-green at loop speed.
+**Mutation verification (binding), now as concrete steps rather than prose (analyst P1):** revert the
+severity change and observe the `High`-admission test RED with the below-threshold control GREEN; then
+force blanket admission regardless of severity and observe the below-threshold control RED. #42's own
+recorded constraint applies in full: any test written to close an AC-coverage finding must be
+mutation-verified — break the subject, observe red, restore, observe green — or this enhancement
+manufactures fake-green at loop speed.
 
 ---
 
@@ -267,6 +313,7 @@ throwing, never guessing, never silently substituting the source tree's version.
 | blank id is a no-op | `tests/runner-authored-trailer.test.js` | stamp with `'   '` | message returned unchanged |
 | parsed-view visible | `tests/runner-authored-trailer.test.js` | pipe through `interpret-trailers --parse` | `Pickle-Rick:` appears in the parsed view |
 | microverse commits stamp | `tests/microverse.test.js` | the two auto-commit paths | each message carries the version trailer |
+| version resolution FAILS safely | `tests/runner-authored-trailer.test.js` | stub the deployed-version resolver to throw/return undefined | the commit still proceeds; the trailer is a well-formed single non-semver marker (refinement names the literal), matched by a SEPARATE regex from the happy path, and never valueless or doubled |
 
 ### Acceptance criteria — R4
 
@@ -276,6 +323,8 @@ throwing, never guessing, never silently substituting the source tree's version.
 - `node -e "const m=require('./bin/mux-runner.js'); const a=m.stampPickleTicketTrailer(process.cwd(),'s','t1'); const b=m.stampPickleTicketTrailer(process.cwd(),a,'t1'); process.exit((b.match(/^Pickle-Rick:/gm)||[]).length===1?0:1)"` exits `0` (idempotent)
 - `node -e "const m=require('./bin/mux-runner.js'); const o=m.stampPickleTicketTrailer(process.cwd(),'s','   '); process.exit(o==='s'?0:1)"` exits `0` (blank-ticket no-op preserved)
 - `grep -c "\['commit', '-m'" src/bin/microverse-runner.ts` returns `0` (both raw commits now stamp)
+- a version-resolution failure still produces a single well-formed `Pickle-Rick:` trailer and does not abort the commit — the degrade branch named in the Errors contract must be falsifiable, not just documented (analyst P0)
+- an engineer can answer the motivating question: a stamped commit is recoverable by trailer, e.g. `git log -1 --format='%(trailers:key=Pickle-Rick,valueonly)'` returns a non-empty value (analyst P1 — the read side, not just the write side)
 - `./node_modules/.bin/tsc --noEmit` exits `0`
 - `npx eslint src/ --max-warnings=0` exits `0`
 
@@ -302,6 +351,7 @@ ignoring the blank-id guard, and observe exactly the no-op pin RED.
 
 - `grep -n 'baseline_score !== 0' src/bin/microverse-runner.ts` returns nothing → R1 already fixed.
 - `grep -rn 'resetStoppedMicroverseState' src` shows no call site → R1 is unreachable; close it.
+- **R2 (this check was MISSING and the analyst caught it):** `grep -n 'JUDGE_OUTPUT_JSON_SCHEMA' src/bin/microverse-runner.ts` returns nothing → the output contract does NOT already exist and R2's original framing was right after all. And `sed -n '3585p' src/bin/microverse-runner.ts` no longer shows the attempt loop → the retry mechanism moved; re-derive before designing.
 - `grep -n "strict ? 'High' : 'Critical'" src/bin/pipeline-runner.ts` returns nothing → R3's mechanism moved.
 - `grep -n "severity: 'High'" src/services/citadel/ac-coverage-scorecard.ts` returns nothing → R3's one-notch claim is wrong.
 - `git log -200 --format='%B' | grep -ciE 'pickle.?rick.*[0-9]+\.[0-9]+\.[0-9]+'` returns non-zero → R4 already satisfied.
