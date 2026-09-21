@@ -441,7 +441,8 @@ test('createMicroverseState with type: none metric sets key_metric.type to none'
     };
     const mv = createMicroverseState({ prdPath: 'prd.md', metric, stallLimit: 3 });
     assert.equal(mv.key_metric.type, 'none');
-    assert.equal(mv.baseline_score, 0);
+    // baseline_score is number|null; a fresh session is never-measured, so null (not 0).
+    assert.equal(mv.baseline_score, null);
 });
 
 test('createMicroverseState with convergenceMode: worker sets convergence_mode', () => {

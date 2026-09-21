@@ -323,7 +323,9 @@ describe('microverse-baseline-classification', () => {
     try {
       const state = readMicroverseState(session.dir);
       state.status = 'iterating';
-      state.baseline_score = 0;
+      // null (not 0) expresses "never measured" under the number|null contract,
+      // so this iteration's success is adopted as the late baseline.
+      state.baseline_score = null;
       state.key_metric = {
         description: 'judge quality gate',
         validation: 'improve code quality',

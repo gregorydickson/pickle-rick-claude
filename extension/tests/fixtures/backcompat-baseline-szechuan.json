@@ -14,7 +14,7 @@
     "history": []
   },
   "failed_approaches": [],
-  "baseline_score": 0,
+  "baseline_score": null,
   "failure_history": [],
   "approach_exhaustion_fired": false,
   "iteration_regressions": 0,
