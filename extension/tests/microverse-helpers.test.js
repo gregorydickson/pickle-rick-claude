@@ -1418,6 +1418,31 @@ test('judgeAttemptFromOutput: absent stays absent', () => {
   assert.equal(result.metric, null);
 });
 
+// Ticket 3a1f0bc0 (R2) AC: prose alone still yields no metric — the parser must not guess.
+test('judgeAttemptFromOutput: prose alone still yields no metric', () => {
+  const result = judgeAttemptFromOutput('I found one confirmed DRY violation with confidence >= 80');
+  assert.equal(result.metric, null);
+  assert.equal(result.failureKind, 'failed');
+});
+
+// Ticket 3a1f0bc0 (R2) AC: a well-formed numeric answer still parses.
+test('judgeAttemptFromOutput: a well-formed numeric JSON answer still parses', () => {
+  const result = judgeAttemptFromOutput('{"score": 7}');
+  assert.ok(result.metric);
+  assert.equal(result.metric.score, 7);
+});
+
+// Ticket 3a1f0bc0 (R2) AC: a malformed-but-shaped answer (the anchor "score" is present, but its
+// value is non-numeric) is a failed attempt, not a crash or a guessed score. `extractScore` must
+// not mine the string "seven" into anything — this is the negative control for R2's carried-failure
+// fix: a retry's carried signal comes from THIS shape of failure, never from a guessed number.
+test('judgeAttemptFromOutput: a malformed-but-shaped answer is a failed attempt, not a crash or a guess', () => {
+  assert.doesNotThrow(() => judgeAttemptFromOutput('{"score": "seven"}'));
+  const result = judgeAttemptFromOutput('{"score": "seven"}');
+  assert.equal(result.metric, null);
+  assert.equal(result.failureKind, 'failed');
+});
+
 // One scripted judge child, shared by both drivers below so the two cannot drift apart.
 // A step with `errorCode` errors the way a failed spawn does (ETIMEDOUT classifies as a timeout);
 // a step with `hang` emits its output and then neither closes nor errors, so the runner's own
@@ -1811,6 +1836,115 @@ test('extractScore: parser is unchanged by the reorder — JSON-first, line-orie
   assert.equal(extractScore('{"score": 7, "violations": []}'), 7);
   assert.equal(extractScore('not json\n5'), 5);
   assert.equal(extractScore('no number anywhere'), null);
+});
+
+// ---------------------------------------------------------------------------
+// Ticket 3a1f0bc0 (R2): the judge retry must carry its prior failure instead of re-asking
+// identically. `runJudgeBackoffRound` (microverse-runner.ts) calls measureLlmMetricAttempt with
+// byte-identical arguments every attempt except for a `retry` field carrying the prior attempt's
+// failure. These tests pin the unit-level contract (buildJudgePrompt renders differently when a
+// retry context is present) and the end-to-end wire (the loop actually threads it through).
+// ---------------------------------------------------------------------------
+
+test('buildJudgePrompt: attempt 1 (no retry) and attempt 2 (with retry) construct UNEQUAL asks', () => {
+  const attempt1 = buildJudgePrompt(minimalJudgePromptInput());
+  const attempt2 = buildJudgePrompt(minimalJudgePromptInput({
+    retry: { attempt: 2, priorFailureKind: 'failed', priorFailureMessage: 'judge output did not contain a numeric score' },
+  }));
+  assert.notEqual(attempt1, attempt2, 'a retry must not re-ask what attempt 1 already asked');
+});
+
+// Mutation direction 2 (BINDING): a fix that makes the ask differ on something that carries NO
+// signal (e.g. a random nonce) must be judged inadequate. Assert on the CARRIED SIGNAL itself —
+// the prior failure's message and the attempt number — not merely on string inequality, so a
+// nonce-only diff cannot satisfy this test.
+test('buildJudgePrompt: the retry block carries the CARRIED FAILURE SIGNAL, not merely a nonce', () => {
+  const priorFailureMessage = 'judge output did not contain a numeric score';
+  const attempt1 = buildJudgePrompt(minimalJudgePromptInput());
+  const attempt2 = buildJudgePrompt(minimalJudgePromptInput({
+    retry: { attempt: 2, priorFailureKind: 'failed', priorFailureMessage },
+  }));
+  assert.ok(
+    attempt2.includes(priorFailureMessage),
+    'attempt 2\'s ask must carry the prior attempt\'s actual failure message',
+  );
+  assert.ok(
+    attempt2.includes('attempt 2'),
+    'attempt 2\'s ask must state which attempt this is',
+  );
+  assert.ok(
+    !attempt1.includes(priorFailureMessage),
+    'attempt 1 (the first attempt of a round) must carry no prior-failure content — there is none yet',
+  );
+});
+
+test('buildJudgePrompt: a retry context with attempt === 1 renders NO retry block (nothing to carry yet)', () => {
+  const withAttempt1Retry = buildJudgePrompt(minimalJudgePromptInput({ retry: { attempt: 1 } }));
+  const withNoRetry = buildJudgePrompt(minimalJudgePromptInput());
+  assert.equal(withAttempt1Retry, withNoRetry);
+  assert.ok(!withAttempt1Retry.includes('## Retry'));
+});
+
+test('buildJudgePrompt: the retry block does not add a third copy of the JSON-only instruction', () => {
+  const withoutRetry = buildJudgePrompt(minimalJudgePromptInput());
+  const withRetry = buildJudgePrompt(minimalJudgePromptInput({
+    retry: { attempt: 2, priorFailureKind: 'failed', priorFailureMessage: 'prose reply' },
+  }));
+  const count = (s) => (s.match(/NOTHING else/g) || []).length;
+  assert.equal(count(withoutRetry), 1, 'precondition: the prompt carries exactly one "NOTHING else" (the system prompt carries the other)');
+  assert.equal(count(withRetry), count(withoutRetry), 'the retry block must not restate the JSON-only contract text');
+});
+
+// End-to-end: drives the REAL runJudgeBackoffRound loop (via measureLlmMetricWithBackoff) and
+// captures the actual prompt argv handed to each spawn, proving the retry context reaches the
+// judge's real ask, not just the buildJudgePrompt unit.
+test('judge backoff: attempt 2\'s constructed ask differs from attempt 1\'s, driven end to end', async () => {
+  const orig = { spawn: _deps.spawn, sleep: _deps.sleep, logActivity: _deps.logActivity };
+  const previousLegacy = process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+  delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+  const prose = 'I found one confirmed DRY violation with confidence >= 80';
+  const prompts = [];
+  let spawnCount = 0;
+  _deps.spawn = (cmd, args) => {
+    spawnCount++;
+    const isProbe = spawnCount === 1;
+    if (!isProbe && Array.isArray(args)) prompts.push(args[args.length - 1]);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdout.setEncoding = () => {};
+    child.stderr = new EventEmitter();
+    child.stderr.setEncoding = () => {};
+    child.kill = () => {};
+    setImmediate(() => {
+      // First two real attempts fail (prose, no score); the third succeeds.
+      if (!isProbe) child.stdout.emit('data', prompts.length <= 2 ? prose : '7');
+      child.emit('close', 0);
+    });
+    return child;
+  };
+  _deps.sleep = async () => {};
+  _deps.logActivity = () => {};
+  try {
+    const result = await measureLlmMetricWithBackoff('fix bugs', 1, os.tmpdir());
+    assert.equal(result.metric && result.metric.score, 7, 'precondition: the round must eventually succeed');
+  } finally {
+    _deps.spawn = orig.spawn;
+    _deps.sleep = orig.sleep;
+    _deps.logActivity = orig.logActivity;
+    if (previousLegacy === undefined) delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+    else process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = previousLegacy;
+  }
+
+  assert.ok(prompts.length >= 2, 'at least two real attempts must have been captured');
+  assert.notEqual(prompts[0], prompts[1], 'attempt 2\'s actual constructed ask must differ from attempt 1\'s');
+  assert.ok(
+    prompts[1].includes('## Retry'),
+    'attempt 2\'s actual constructed ask must carry a retry section',
+  );
+  assert.ok(
+    !prompts[0].includes('## Retry'),
+    'attempt 1\'s actual constructed ask must carry no retry section',
+  );
 });
 
 // ---------------------------------------------------------------------------

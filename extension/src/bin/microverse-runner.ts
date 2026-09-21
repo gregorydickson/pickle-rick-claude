@@ -2074,6 +2074,18 @@ export const JUDGE_SYSTEM_PROMPT = [
 ].join(' ') + '\n\n' + FOM_HONEST_REPORTING_RULES;
 
 /**
+ * R2: what the previous attempt in the current backoff round did, carried forward so a retry's
+ * ask is observably different from the attempt that just failed — never a byte-identical replay
+ * of an ask that already failed. `attempt` is 1-indexed; {@link buildJudgePrompt} only renders a
+ * retry block when `attempt > 1` (the first attempt of a round carries no prior failure).
+ */
+export interface JudgeRetryAttempt {
+  attempt: number;
+  priorFailureKind?: JudgeMeasurementAttempt['failureKind'];
+  priorFailureMessage?: string;
+}
+
+/**
  * Inputs to {@link buildJudgePrompt}, passed as one object rather than positionally.
  *
  * `prdPath` and `judgeContextPath` are adjacent, same-typed (`string | undefined`) and
@@ -2108,6 +2120,12 @@ export interface JudgePromptInput {
    * default.
    */
   extensionRoot?: string;
+  /**
+   * R2: retry-loop signal from {@link JudgeRetryAttempt}. Absent (or `attempt <= 1`) on the
+   * first attempt of a backoff round; present on attempt 2+ so the constructed ask differs from
+   * the attempt that just failed.
+   */
+  retry?: JudgeRetryAttempt;
 }
 
 /**
@@ -2140,6 +2158,24 @@ export function resolveEnforcedSizeCeilingSentence(extensionRoot: string | undef
   return match ? match[0].trim() : undefined;
 }
 
+/**
+ * R2: the retry-loop section of {@link buildJudgePrompt}, extracted so the parent function's
+ * complexity stays under the enforced ceiling. Empty on the first attempt of a round (no prior
+ * failure to carry); on attempt 2+ it names the attempt number and the previous attempt's
+ * failure, so the constructed ask differs from the one that just failed.
+ */
+function buildJudgeRetryLines(retry: JudgeRetryAttempt | undefined): string[] {
+  if (!retry || retry.attempt <= 1) return [];
+  const kind = retry.priorFailureKind ?? 'failed';
+  const detail = retry.priorFailureMessage ? ` — ${retry.priorFailureMessage.slice(0, 300)}` : '';
+  return [
+    '',
+    `## Retry (attempt ${retry.attempt})`,
+    `Your previous attempt (attempt ${retry.attempt - 1}) did not produce a usable measurement: ${kind}${detail}.`,
+    'Answer differently this time: follow the JSON schema stated below exactly.',
+  ];
+}
+
 /** Build the LLM judge prompt. */
 export function buildJudgePrompt(input: JudgePromptInput): string {
   const {
@@ -2151,6 +2187,7 @@ export function buildJudgePrompt(input: JudgePromptInput): string {
     priorViolations = [],
     allowedPaths = [],
     extensionRoot,
+    retry,
   } = input;
   const parts: string[] = [
     `Goal: ${goal}`,
@@ -2204,6 +2241,11 @@ export function buildJudgePrompt(input: JudgePromptInput): string {
       parts.push(`- [${v.id}] ${v.severity} ${v.description} (last seen iter ${v.last_seen_iter})`);
     }
   }
+
+  // R2: a retry must not re-ask what attempt 1 already asked. Carrying the prior failure forward
+  // makes attempt N+1's ask observably different from attempt N's, rather than repeating an
+  // identical prompt into an identical (prose) failure.
+  parts.push(...buildJudgeRetryLines(retry));
 
   parts.push('');
   parts.push(FOM_HONEST_REPORTING_RULES);
@@ -2927,9 +2969,10 @@ function buildJudgeAttemptInvocation(
   priorViolations: ViolationLedger[],
   allowedPaths: string[],
   extensionRoot: string | undefined,
+  retry: JudgeRetryAttempt | undefined,
 ): { cmd: string; args: string[]; model: string } {
   const model = judgeModel || DEFAULT_JUDGE_MODEL;
-  const userPrompt = buildJudgePrompt({ goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot });
+  const userPrompt = buildJudgePrompt({ goal, cwd, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot, retry });
   const { cmd, args } = buildJudgeInvocation('claude', {
     prompt: userPrompt,
     addDirs: [cwd],
@@ -3016,8 +3059,9 @@ async function measureLlmMetricAttempt(
   priorViolations: ViolationLedger[] = [],
   allowedPaths: string[] = [],
   extensionRoot?: string,
+  retry?: JudgeRetryAttempt,
 ): Promise<JudgeMeasurementAttempt> {
-  const { cmd, args, model } = buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot);
+  const { cmd, args, model } = buildJudgeAttemptInvocation(goal, cwd, judgeModel, history, prdPath, judgeContextPath, priorViolations, allowedPaths, extensionRoot, retry);
 
   let output: string;
   try {
@@ -3582,6 +3626,10 @@ async function runJudgeBackoffRound(
   state: JudgeBackoffState,
   cumulativeParkedMs: number,
 ): Promise<JudgeMeasurementResult | null> {
+  // R2: the prior attempt's failure, carried into the NEXT attempt's ask so a retry is
+  // observably different from the attempt that just failed — never a byte-identical replay.
+  // Reset per round (a new round starts a fresh ask, same as attempt 1).
+  let priorFailure: { kind: JudgeMeasurementAttempt['failureKind']; message: string | null } | null = null;
   for (let attempt = 0; attempt <= ctx.backoffsMs.length; attempt++) {
     state.totalAttempts++;
     const startedAt = Date.now();
@@ -3597,6 +3645,9 @@ async function runJudgeBackoffRound(
       ctx.priorViolations,
       ctx.allowedPaths,
       ctx.extensionRoot,
+      priorFailure
+        ? { attempt: state.totalAttempts, priorFailureKind: priorFailure.kind, priorFailureMessage: priorFailure.message ?? undefined }
+        : undefined,
     );
     const elapsedMs = Math.max(0, Date.now() - startedAt);
     emitJudgeAttemptTelemetry(ctx, state, result, elapsedMs);
@@ -3605,6 +3656,7 @@ async function runJudgeBackoffRound(
       return { metric: result.metric, attempts: state.totalAttempts };
     }
     const message = result.message ?? null;
+    priorFailure = { kind: result.failureKind, message };
     maybeActivateWorkerFallback(ctx, state, result);
     if (result.failureKind === 'cli_missing') {
       return judgeCliMissingResult(state.totalAttempts, message);
