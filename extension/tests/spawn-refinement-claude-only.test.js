@@ -17,6 +17,7 @@ const {
     warnIfCodexRequested,
     __resetRefinementBackendWarning,
     resolveRuntime,
+    parseAndValidateArgs,
 } = await import('../bin/spawn-refinement-team.js');
 
 function mkTmp(prefix = 'spawn-refine-claude-') {
@@ -329,5 +330,39 @@ test('B-REFMODEL: --model reaches every analyst spawn through the real orchestra
         }
     } finally {
         fs.rmSync(sandbox.root, { recursive: true, force: true });
+    }
+});
+
+test('parseAndValidateArgs: --model value is trimmed; absent flag yields undefined', () => {
+    const dir = mkTmp('spawn-refine-claude-parse-');
+    try {
+        const prd = path.join(dir, 'prd.md');
+        fs.writeFileSync(prd, '# PRD\n');
+        const base = ['--prd', prd, '--session-dir', dir];
+        assert.strictEqual(parseAndValidateArgs([...base, '--model', '  m-trim  ']).model, 'm-trim');
+        assert.strictEqual(parseAndValidateArgs(base).model, undefined);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('parseAndValidateArgs: --model without a usable value exits 1 naming the flag', () => {
+    const dir = mkTmp('spawn-refine-claude-parse-');
+    try {
+        const prd = path.join(dir, 'prd.md');
+        fs.writeFileSync(prd, '# PRD\n');
+        const base = ['--prd', prd, '--session-dir', dir];
+        const cases = [['--model'], ['--model', '--cycles', '1'], ['--model', '   ']];
+        for (const tail of cases) {
+            const result = spawnSync(process.execPath, [REFINE_BIN, ...base, ...tail], {
+                encoding: 'utf-8',
+                timeout: 60_000,
+            });
+            assert.strictEqual(result.status, 1, `argv tail ${JSON.stringify(tail)} must exit 1`);
+            assert.match(result.stderr, /--model requires a non-empty model id/,
+                `argv tail ${JSON.stringify(tail)} must name the flag`);
+        }
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
     }
 });
