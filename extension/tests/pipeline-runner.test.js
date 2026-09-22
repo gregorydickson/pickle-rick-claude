@@ -43,6 +43,7 @@ import {
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { simulateBinaryAbsent } from './helpers/simulate-binary-absent.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
+import { loadFinalizeGateSettings } from '../bin/finalize-gate.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
@@ -3100,6 +3101,43 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
       );
     } finally {
       __setCitadelRemediationDepsForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // ROOT R3, Test Expectation "cap unchanged": admitting the dominant High class
+  // RAISES how many findings enter the remediation loop, and the blast-radius
+  // argument is only sound while the cap that bounds that loop stays 3. R3's
+  // contract says so explicitly ("Explicitly OUT of contract:
+  // citadel_max_remediation_cycles keeps its current default of 3 ... must not
+  // ride this root"), but every remediation test above stubs
+  // `loadSettings: () => ({ cap: 1, ... })`, so nothing reads the real default —
+  // it could drift green forever. These two arms read it through the REAL
+  // exported resolver rather than re-declaring a copy of
+  // DEFAULT_FINALIZE_GATE_SETTINGS and comparing it to itself.
+  // ---------------------------------------------------------------------------
+  test('cap unchanged: the citadel remediation cap resolves to 3 under default config', () => {
+    const dir = tmpDir(); // no pickle_settings.json here — the default path
+    try {
+      assert.equal(loadFinalizeGateSettings(dir).citadel_max_remediation_cycles, 3);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // (CONTROL) Arm A alone stays green if the resolver is short-circuited to always
+  // return the default — the treat-everything-as-default bug. This arm reds exactly
+  // there, so Arm A cannot pass by the resolver ignoring its input.
+  test('(CONTROL) an explicit citadel cap in config is honoured, not overwritten by the default', () => {
+    const dir = tmpDir();
+    try {
+      fs.writeFileSync(
+        path.join(dir, 'pickle_settings.json'),
+        JSON.stringify({ convergence_gate: { citadel_max_remediation_cycles: 7 } }),
+      );
+      assert.equal(loadFinalizeGateSettings(dir).citadel_max_remediation_cycles, 7);
+    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
