@@ -125,3 +125,41 @@ test('settings-loader: default_refinement_model absent key resolves to undefined
     assert.equal(settings.defaultCycles, 2);
   });
 });
+
+test('settings-loader: default_refinement_model is trimmed before it reaches the resolver output', () => {
+  withExtensionRoot((extensionRoot) => {
+    const settingsPath = path.join(extensionRoot, 'pickle_settings.json');
+    fs.writeFileSync(settingsPath, JSON.stringify({ default_refinement_model: '\t m-padded \n' }));
+
+    assert.equal(loadRefinementSettings(settingsPath).defaultModel, 'm-padded');
+  });
+});
+
+test('settings-loader: non-string default_refinement_model shapes fall back to undefined', () => {
+  withExtensionRoot((extensionRoot) => {
+    const settingsPath = path.join(extensionRoot, 'pickle_settings.json');
+    // An array holding a valid id is the shape most likely to be coerced by a lax resolver.
+    for (const value of [true, false, 0, [], ['m-in-array'], {}, { model: 'm' }]) {
+      fs.writeFileSync(settingsPath, JSON.stringify({
+        default_refinement_model: value,
+        default_refinement_max_turns: 7,
+      }));
+      const settings = loadRefinementSettings(settingsPath);
+      assert.equal(settings.defaultModel, undefined, `value=${JSON.stringify(value)}`);
+      assert.equal(settings.defaultMaxTurns, 7, `value=${JSON.stringify(value)}`);
+    }
+  });
+});
+
+test('settings-loader: unparseable or missing settings file yields no model and hardcoded defaults', () => {
+  withExtensionRoot((extensionRoot) => {
+    const settingsPath = path.join(extensionRoot, 'pickle_settings.json');
+    const baseline = loadRefinementSettings(path.join(extensionRoot, 'absent.json'));
+    assert.equal(baseline.defaultModel, undefined);
+    assert.equal(baseline.defaultCycles, 3);
+
+    fs.writeFileSync(settingsPath, '{ "default_refinement_model": "m-x", ');
+    const settings = loadRefinementSettings(settingsPath);
+    assert.deepEqual(settings, baseline);
+  });
+});
