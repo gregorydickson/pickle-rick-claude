@@ -116,8 +116,11 @@ interface PipelineConfig {
   szechuan_stall_limit: number;
   anatomy_max_iterations: number;
   szechuan_max_iterations: number;
-  // R-HRP-1: citadel no longer halts. This flag now widens which citadel findings are *remediated*
-  // (High+ when true, Critical-only when false) — it no longer gates a halt threshold.
+  // R-HRP-1: citadel no longer halts. R-MEASURED R3 fixed the remediation admission threshold at
+  // High for every run (REMEDIATION_SEVERITY_THRESHOLD, below) — this flag no longer widens or
+  // narrows what gets remediated. It still flows to runCitadelAudit's `strict` option, which
+  // governs only the standalone citadel report's own exit code (services/citadel/reporter.ts
+  // exitCodeFor: High+ fails that report when true, Critical-only when false).
   citadel_strict: boolean;
   backend?: Backend;
   // W1d: path SEGMENTS (e.g. 'prds','docs') exempt from the dirty-tree preflight at any depth.
