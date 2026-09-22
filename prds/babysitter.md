@@ -43,8 +43,9 @@ The prompt as issued carried two stale lines. Both were measured, not assumed:
   anatomy-park phase. The live oracles are `state.json` + `pipeline-runner.log` + artifact mtimes.
 - **Use `--body-file` for every `gh issue comment`.** Inline bodies get their backticks eaten by zsh
   command substitution; a comment was silently published with four blanked spans.
-- **Refinement needs `ANTHROPIC_MODEL=claude-sonnet-5` until #46 lands.** The default model refuses
-  every analyst with `[reasoning_extraction]` — measured 12/12 spawns across 4 runs, 3 PRDs, 2 days.
+- **If the default model refuses refinement analysts, route them with `--model <id>`** on
+  `/pickle-refine-prd` / `/portal-gun`, or `default_refinement_model` in `pickle_settings.json` (#46,
+  shipped 2026-09-22). Measured before the fix: 12/12 spawns refused with `[reasoning_extraction]`.
 - **On `main`, `--scope branch` resolves EMPTY.** Pin `--scope-base <sha-before-the-bundle>` in
   `pipeline.json` or anatomy-park reviews the whole tree (or trips `SCOPE_EMPTY_POST_BUILD`).
 

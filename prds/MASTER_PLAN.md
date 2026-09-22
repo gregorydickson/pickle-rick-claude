@@ -221,18 +221,18 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-22 (babysitter stopped here). **READ THIS FIRST.**
+## 🚢 SESSION HANDOFF — 2026-09-22 (B-REFMODEL shipped; nothing running). **READ THIS FIRST.**
 
 ### ▶ STATE — nothing is running
 
 | | |
 |---|---|
-| branch | **`main`** (development moved here 2026-09-21 after B-GATERED's green gate). `release/v2.2-beta` is historical |
+| branch | **`main`** at **`b017f393`** (gated + pushed 2026-09-22). `release/v2.2-beta` is historical |
 | version | `extension/package.json` = **`2.1.1`**. Newest tag still **`v2.1.0`** — cadence, not oversight |
-| deployed | **in sync** as of 2026-09-22, verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
-| RUNNING | **nothing.** 0 runners. Stale tmux shells linger (`pipeline-*`, `refine-*`) — idle, safe to kill |
+| deployed | **in sync with `b017f393`**, `install.sh` run 2026-09-22 and verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
+| RUNNING | **nothing.** Stale tmux shells linger (`pipeline-*`, `refine-*`) — idle, safe to kill |
 | unpushed | **0** |
-| open issues | **#46** (refinement model override — the next bundle), **#43**, **#5**. **Zero open bugs** |
+| open issues | **#43**, **#5** (both operator-deferred). **Zero open bugs.** #46 closed on measured evidence |
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
 | babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
 
@@ -240,34 +240,32 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 | bundle | outcome |
 |---|---|
-| **B-GATERED + B-INVENTED** | 94 commits, gate green (soak 1803.7s), pushed 2026-09-21. `main` fast-forwarded to the gated tip |
+| **B-GATERED + B-INVENTED** | 94 commits, gate green (soak 1803.7s), pushed 2026-09-21 |
 | **B-MEASURED** | 11 tickets, 18 commits, **4/4 phases** in 611m, gate green (soak 1803.7s), pushed 2026-09-22 |
-| closed on measured evidence | **#40, #41, #32** (2026-09-21) · **#45, #44, #42** (2026-09-22) |
+| **B-REFMODEL (#46)** | 6 tickets, 10 commits `43949be4..b017f393`, **4/4 phases** in 70m, gate `20260922T195321Z-30733` 22/22 green (soak 1803.7s), pushed + deployed 2026-09-22 |
+| closed on measured evidence | **#40, #41, #32** (2026-09-21) · **#45, #44, #42, #46** (2026-09-22) |
 
-### ▶ NEXT — B-REFMODEL (#46), refined and ready to decompose
+### ▶ NEXT — idle; no drainable bug
 
-PRD: **`prds/p1-b-refmodel-the-one-spawn-surface-with-no-model-knob.md`** — refined 2026-09-22
-(9 analyses, 2 cycles), carries a Refinement Record with 4 applied findings. **Not yet decomposed into
-tickets and not launched.** Session `2026-09-22-a88001dd` holds `prd.md` + `prd_refined.md`.
-
-Resume by: decomposing into tickets (Step 7), `setup.js --tmux --resume`, writing `pipeline.json` with
-**`scope: branch` + `scope_base: <HEAD before the bundle>`**, then launching.
-
-**Deliberately a small bundle.** Backlog is at zero bugs; #43/#5 are operator-deferred. Do NOT pad it
-with invented roots.
+Backlog is at zero open bugs; #43/#5 are operator-deferred. **Refinement no longer needs
+`ANTHROPIC_MODEL`** — use `--model <id>` or `default_refinement_model`. The first live refinement using
+the knob is the end-to-end confirmation #46 still lacks; record the outcome here.
 
 ### ⛔ OPEN RESIDUALS — measured, not yet filed
 
-1. **`done_over_unmeasured_worker_gate_tests:35f945c6,5199ea3a`** (B-MEASURED). Two tickets flipped Done
-   over an EMPTY-because-unmeasured `worker_gate_tests_verdict`. Both substantive; the green gate was the
-   corroboration they lacked. This is "an absent result is not a pass" **inside the instrument that
-   grants Done**. One occurrence — earns a root only if it recurs.
-2. **Citadel telemetry disagreed with its own log** on the pre-2026-09-22 build: the event read
-   `cycles: 0, remaining: 57` while the log read `cycle 1/3 — no remediable findings`. That build is
-   superseded; **re-measure on the next run before filing.**
-3. **R3's blast radius is UNMEASURED.** The 5 → 57 advisory jump was mine to retract — R3 was not
-   deployed when that run's citadel phase executed. The threshold went live 2026-09-22; measure it on
-   the next run. The cap-of-3 question stays unfiled until then.
+1. **`done_over_unmeasured_worker_gate_tests` — RECURRED.** B-REFMODEL: `c85866e4` (large-tier data-flow
+   audit) went Done with frontmatter `worker_gate_tests_verdict: "red"`, classified uncorroborated by
+   `reportDoneOverRedTestVerdict` (`pipeline-runner.ts`). The release gate was 22/22 green on the same
+   tree, so the red was noise. **Cause UNMEASURED** — the ticket dir holds no tier output. Earlier
+   occurrence: `35f945c6,5199ea3a` (B-MEASURED, medium implementation tickets). Two bundles, three
+   tickets, mixed tiers; each time the green release gate was the corroboration the tickets lacked.
+   This is "an absent result is not a pass" **inside the instrument that grants Done**. It earns a root
+   once the red's cause is measured — capture the worker's tier output on the next occurrence.
+2. **Citadel telemetry disagreed with its own log** on the pre-2026-09-22 build (event `cycles: 0,
+   remaining: 57` vs log `cycle 1/3 — no remediable findings`). **B-REFMODEL on the new build AGREED:**
+   log `10 finding(s), 0 remediable`, status `citadel_advisory_findings: 10`. One agreeing run — not yet closed.
+3. **R3's blast radius — first point:** 10 advisory findings, 0 remediable, on B-REFMODEL's 8-file diff
+   (R3 live). One point is not a trend; the cap-of-3 question stays unfiled.
 
 ### ⛔ TRAPS THAT CAUGHT ME THIS SESSION
 
