@@ -526,6 +526,12 @@ test('degrade is safe: an unresolvable deployed version still yields ONE well-fo
   assert.equal(versionLines.length, 1, 'exactly one Pickle-Rick line, never valueless, never doubled');
   assert.doesNotMatch(versionLines[0], /^Pickle-Rick: \d+\.\d+\.\d+$/, 'the degrade marker is non-semver');
   assert.doesNotMatch(versionLines[0], /^Pickle-Rick:\s*$/, 'never valueless');
+  // The shape assertions above are satisfied by ANY non-semver value — measured: mutating
+  // `resolvePickleRickVersionValue`'s degrade arm to `String(version)` emits the junk marker
+  // `Pickle-Rick: null` and leaves them GREEN. R4's Test Expectation says refinement NAMES the
+  // literal, and the sibling reader of this same contract (`microverse.test.js`, the generated
+  // hook's degrade test) already pins it. Pin it on both sides so the two cannot disagree.
+  assert.equal(versionLines[0], 'Pickle-Rick: unknown', 'the degrade marker is the NAMED literal');
 
   commitMessage(workingDir, stamped);
   assert.match(git(workingDir, ['log', '-1', '--format=%B']), /fix: work/, 'the commit proceeds');
