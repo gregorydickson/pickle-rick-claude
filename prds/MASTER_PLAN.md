@@ -283,6 +283,41 @@ load-bearing, not less: a defaulting `gh release create` would then tag a moving
 than a stale line, which is a worse failure than [[B-RELTAG]], not a better one. Keep
 `--target "$(git rev-parse HEAD)"` on every tag and verify with `verify-release-tag.sh`.
 
+### ✅ B-MEASURED SHIPPED 2026-09-22 — 4/4 phases, green gate, three issues closed
+
+**11 tickets, 18 commits `ec18cc85..c1fc2281`, pushed to `main`.** Pipeline ran **611m 9s** and
+completed **4/4 phases** (`status: completed`) — contrast B-GATERED's 3/4 degraded. Gate: 22 legs,
+**0 reds**, 0 `not ok`, 0 skips, 0 `SOAK_UNRUN`, `js_ts_drift 0`, soak wall-clock **1803.7s** against
+the 1800 floor, `GATE_END` with matching `RUN_ID=20260922T034730Z-6919`. **Not tagged** — cadence.
+
+Closed on measured evidence: **#45** (R1+R2), **#44** (R4), **#42** (R3). Tracker open: **#46**
+(refinement model override), #43, #5 — all non-bug.
+
+**R3's blast radius, measured not hoped:** citadel advisory findings **5 → 57** on the first run under
+the collapsed threshold; **52 of 57 are `crossfile-behavior-drift`**. The risk analyst's P0 was right.
+The threshold is a true collapse — `const REMEDIATION_SEVERITY_THRESHOLD: CitadelSeverity = 'High'`
+(`pipeline-runner.ts:3066`), the strict/non-strict distinction deleted outright, cap untouched at 3.
+**Whether a cap of 3 is now systematically exhausted is the open question that 57 earns** — file it
+separately with a measured exhaustion rate, do NOT raise the cap on this number alone.
+
+**⚠ RESIDUAL — `done_over_unmeasured_worker_gate_tests:35f945c6,5199ea3a`.** Two tickets flipped Done
+over an EMPTY-because-unmeasured `worker_gate_tests_verdict` ("no corroborating fail"). Both are
+substantive (11 and 8 artifacts, real commits) and the green gate is the corroboration they lacked —
+but this is the "an absent result is not a pass" class **inside the instrument that grants Done**, i.e.
+this bundle's own thesis one layer up. Worth a root if it recurs; one occurrence is not yet a pattern.
+
+### ⚠ AUTHORING LESSON — an executable AC can encode a shape the contract never allowed
+
+My R1 acceptance criterion read `judgeAttemptFromOutput('score: 0')`. **That shape is not valid judge
+output** — the contract is JSON (`JUDGE_OUTPUT_JSON_SCHEMA`, `microverse-runner.ts:2065`), so
+`'score: 0'` is correctly rejected as prose. The criterion would have produced a FALSE RED, and worse,
+could have pressured a worker into adding the prose-parsing fallback the same ticket explicitly forbade.
+Verified after shipping: `{"score": 0}` → `metric.score === 0`, `{"score": 7}` → `7`, bare prose → `null`.
+
+**Executable form is necessary, not sufficient.** Before writing `` `cmd` exits N ``, confirm the INPUT
+shape against the producer's contract — an AC is a measurement instrument and inherits every defect
+class this repo files against its instruments.
+
 ### ▶ IMMEDIATE STATE
 
 | | |
@@ -290,10 +325,10 @@ than a stale line, which is a worse failure than [[B-RELTAG]], not a better one.
 | branch | **`main`** (moved 2026-09-21 after B-GATERED's green gate). **Releases are `v2.1.X`**; next tag `v2.1.1`. `release/v2.2-beta` is historical, do not write to it |
 | version | `extension/package.json` = **`2.1.1`**. Nothing tagged since `v2.1.0` (cadence, not oversight) |
 | `main` | = the `v2.1.0` GA commit `c20a9562`; old main at tag `archive/main-2.0-line` |
-| **RUNNING** | **nothing.** B-GATERED session `2026-09-19-4dbaed57` finished 2026-09-20T21:54Z: `3/4 phases, 2165m 17s`, dispositions `anatomy-park: anatomy_non_convergent` + `szechuan-sauce: metric_unmeasurable_unrecoverable` (see #45). Degraded-but-complete: every phase ran, success withheld |
+| **RUNNING** | **nothing.** B-MEASURED finished 2026-09-22T03:20Z, 4/4 phases, gate green, pushed. Previously: B-GATERED session `2026-09-19-4dbaed57` finished 2026-09-20T21:54Z: `3/4 phases, 2165m 17s`, dispositions `anatomy-park: anatomy_non_convergent` + `szechuan-sauce: metric_unmeasurable_unrecoverable` (see #45). Degraded-but-complete: every phase ran, success withheld |
 | **PARKED** | **nothing.** B-INVENTED's 45 commits shipped with B-GATERED in the `8cc58b73` push. Zero unpushed |
 | deployed | `2.1.1`. **NOT in sync** as of 2026-09-20T15:11Z — deployed tree is from `2026-09-18T03:01Z` and 58 commits have since touched `extension/src`, so 29 built files differ. This is expected build drift, **not** #40; do NOT `install.sh` mid-run. Deploy after the gate |
-| open | bugs **#45** only (szechuan measurement layer; degraded this run's phase 4/4) · enhancements **#42** (next), **#44**, **#43** (deferred), **#5**. #40/#41/#32 closed 2026-09-21 on measured evidence |
+| open | **zero bugs.** #46 (refinement model override — autonomy, filed 2026-09-21), #43, #5 all remain and are non-bug. #40/#41/#32 closed 2026-09-21; #45/#44/#42 closed 2026-09-22, all on measured evidence |
 | closed this session | **#39, #37** (verified fixed), **#29** (already satisfied — my premise was wrong) |
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min, derives audits from root `CLAUDE.md`. Wait for `GATE_END` with a matching `RUN_ID` |
 
