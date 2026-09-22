@@ -13,7 +13,7 @@ This skill is **file-based, not harness-task-based**. The authoritative task lis
 If stale harness tasks exist at handoff (Step 7g), mark them `deleted` before advancing state — orphan tasks pollute downstream `/pickle-tmux --teams` mode.
 
 ## Step 0: Parse Flags
-`$ARGUMENTS`: `--run` → AUTO_RUN. `--resume [PATH]` → RESUME_MODE (reuse existing session). Remainder = `${TASK_ARGS}`.
+`$ARGUMENTS`: `--run` → AUTO_RUN. `--resume [PATH]` → RESUME_MODE (reuse existing session). `--model <id>` → REFINE_MODEL (strip from `${TASK_ARGS}`; overrides `default_refinement_model` for this run). Remainder = `${TASK_ARGS}`.
 
 If `--resume` has a path argument → `RESUME_SESSION = <path>`. If `--resume` with no path → resolve via `node "$HOME/.claude/pickle-rick/extension/bin/get-session.js"` → `RESUME_SESSION`.
 
@@ -125,7 +125,9 @@ No tmux → skip to 4b.
 ```bash
 node "${EXTENSION_ROOT}/extension/bin/spawn-refinement-team.js" --prd "${SESSION_ROOT}/prd.md" --session-dir "${SESSION_ROOT}"
 ```
-Optional: `--timeout <sec>` | `--cycles <n>` (default:3) | `--max-turns <n>` (default:100)
+When `REFINE_MODEL` is set, append `--model "${REFINE_MODEL}"` to the invocation above.
+
+Optional: `--timeout <sec>` | `--cycles <n>` (default:3) | `--max-turns <n>` (default:100) | `--model <id>` (default: inherit the session model — set via `--model` here or `default_refinement_model` in `pickle_settings.json`)
 
 3 workers/cycle: Requirements → `analysis_requirements.md`, Codebase → `analysis_codebase.md`, Risk → `analysis_risk-scope.md`. Cycle 2+ cross-references prior analyses. Wait for `REFINEMENT_DIR=` and `MANIFEST=`.
 

@@ -163,6 +163,8 @@ Four options for polishing the result.
 
 The auto-refine trigger fires on `refine-prd` / `prd refinement`, on `refine`/`refinement`/`decompose` near `prd` or `first` (within 40 chars), or on workflow ordering like `refine then build`. Bare `refine the dropdown UX` won't trigger — use `--refine` to force, `--no-refine` to suppress. Refinement always uses the `claude` backend regardless of `--backend` (refinement is planning, not implementation). Fails fast if no `prd.md` exists in cwd or session — run `/pickle-prd` first.
 
+**Refinement model** — `/pickle-refine-prd --model <id>` or `/portal-gun --model <id>` routes refinement analysts to a specific model for that run; absent, they inherit the session model. Set `default_refinement_model` in `pickle_settings.json` to change the default for every refinement without passing the flag each time.
+
 **Scope auto-inference (Step 0.6)** — naming a branch (`feature/x`, `fix/y`, `on branch <name>`), saying "API-only" / "backend only" / "no cross-repo", or being on a non-default branch with commits ahead all trigger a scope confirmation prompt before the pipeline launches. Scope is **never silently applied** — you are always asked. Use `--scope branch` to bypass the prompt. See `PRD_GUIDE.md § Pipeline Scope` for full details.
 
 **Mid-flight scope recovery (`lock-scope.js`)** — if a pipeline launched without `--scope`, use `lock-scope.js` to patch all three session files atomically without restarting: `node ~/.claude/pickle-rick/extension/bin/lock-scope.js <session-root> --mode branch [--scope-base main]`. Refuses to run while `pipeline-runner.js` is alive. Collapses the 6-step manual state patch to one command. See `PRD_GUIDE.md § Pipeline Scope — Mid-Flight Recovery` for full usage.

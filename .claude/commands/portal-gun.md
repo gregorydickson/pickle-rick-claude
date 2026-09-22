@@ -16,11 +16,12 @@ Scan `$ARGUMENTS`:
 | `--max-passes <N>` | 3 | Auto-continue convergence for N passes before prompting user (0 = always prompt) |
 | `--cycles <N>` | 3 | Number of refinement cycles (ignored if `--no-refine`) |
 | `--max-turns <N>` | 100 | Max turns per refinement worker (ignored if `--no-refine`) |
+| `--model <id>` | inherit session model | Model override for refinement analysts (ignored if `--no-refine`) |
 | `--save-pattern <name>` | — | Save extracted pattern to persistent library for future reuse |
 
 Remaining text = `${EXEMPLAR}` (the portal destination — a GitHub URL, local file/dir path, npm/PyPI package name, or plain-text description of a pattern).
 
-Store: `AUTO_RUN`, `TARGET_DIR`, `DEPTH`, `SKIP_REFINE`, `NO_CONVERGE`, `MAX_PASSES`, `CYCLES`, `MAX_TURNS`, `SAVE_PATTERN`, `EXEMPLAR`.
+Store: `AUTO_RUN`, `TARGET_DIR`, `DEPTH`, `SKIP_REFINE`, `NO_CONVERGE`, `MAX_PASSES`, `CYCLES`, `MAX_TURNS`, `REFINE_MODEL`, `SAVE_PATTERN`, `EXEMPLAR`.
 
 If `EXEMPLAR` is empty → ask user: "Where should I open the portal? Give me a GitHub URL, file path, package name, or describe the pattern you want to steal."
 
@@ -476,7 +477,9 @@ If tmux NOT available: print tip, skip monitor.
 ```bash
 node "${EXTENSION_ROOT}/extension/bin/spawn-refinement-team.js" --prd "${SESSION_ROOT}/prd.md" --session-dir "${SESSION_ROOT}"
 ```
-Optional: `--timeout <sec>` | `--cycles <n>` (default:3) | `--max-turns <n>` (default:100). Pass `CYCLES` and `MAX_TURNS` if user specified them.
+When `REFINE_MODEL` is set, append `--model "${REFINE_MODEL}"` to the invocation above.
+
+Optional: `--timeout <sec>` | `--cycles <n>` (default:3) | `--max-turns <n>` (default:100) | `--model <id>` (default: inherit the session model). Pass `CYCLES`, `MAX_TURNS`, and `REFINE_MODEL` if user specified them.
 
 Wait for `REFINEMENT_DIR=` and `MANIFEST=` output.
 
