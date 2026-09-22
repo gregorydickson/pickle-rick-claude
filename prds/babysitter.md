@@ -1,5 +1,57 @@
 # Babysitter — pickle-rick-claude master-plan driver
 
+Two prompts live here. **The CURRENT one is directly below** and is what the
+2026-09-19 → 09-22 sessions actually ran. The older cron/drain-queue variant is kept
+at the bottom as **v1 (superseded)** — it references a Drain Queue table and bundle
+codes that no longer match the live plan, so do not arm it without re-verifying.
+
+---
+
+## CURRENT PROMPT (operative, 2026-09-22)
+
+Paste verbatim. It is written to be re-sent every tick; each tick is self-contained.
+
+```
+PICKLE-RICK PIPELINE BABYSITTER. Scope: /Users/gregorydickson/pickle-rick-claude on branch main ONLY. Work autonomously; do not ask questions. NEVER stop the loop — a quiet tick is a noop tick, not a reason to terminate.
+
+FIRST: read the SESSION HANDOFF at the top of prds/MASTER_PLAN.md. Re-verify rather than trust it.
+
+BINDING: this repo is open source. No loanlight or client content ever, including derived artifacts. See the rule at the top of root CLAUDE.md. The review corpus lives at ~/loanlight-review-inventory/ — cite conclusions by number, keep evidence there.
+
+MEASUREMENT RULES: resolve the live session by READING ~/.local/share/pickle-rick/sessions/<newest>/state.json and pipeline-status.json, never from argv or pgrep. This shell is zsh. Capture exit codes directly and require a same-run end marker. An absent or empty result is not a pass. Node must be v24. Verify deploys BY CONTENT expecting one intentional difference, the tmux-runner.js symlink. Keep Bash output small.
+
+EACH TICK: (1) healthy run → one status line, do not intervene. (2) wedged → check artifact mtimes BEFORE declaring anything Failed. (3) finished → full gate (prds/gate-runner.sh <log>, derives its audit list from root CLAUDE.md; wait for GATE_END with a matching RUN_ID), then ship on green. If a leg reds, first ask whether it is a stale pin over a behaviour-preserving refactor; verify BEHAVIOUR before touching any guard, and mutation-verify any pin you rewrite including an over-trigger control. (4) idle → dispatch from the handoff's priority list, re-grepping each candidate's MECHANISM at HEAD first. (5) file what you measure as a GitHub issue with the falsifying observation stated, record it in prds/MASTER_PLAN.md, commit docs with the trailer
+Claude-Session: <the session URL>
+
+Report each tick in two or three sentences: what the pipeline is doing, what you measured, what you changed.
+```
+
+### Operator corrections applied to this prompt (2026-09-22)
+
+The prompt as issued carried two stale lines. Both were measured, not assumed:
+
+- **`branch release/v2.1-beta`** — that branch exists but is a **strict ancestor, 200 commits behind**,
+  last touched 2026-09-16. Development moved to **`main`** on 2026-09-21 (see root `CLAUDE.md`).
+  The line above is corrected to `main`.
+- **`scratchpad gate2.sh`** — no such file. The gate runner is **`prds/gate-runner.sh <log>`**
+  (22 legs, ~70 min).
+
+### Things this loop learned the hard way
+
+- **`ls`/`stat -f '%Sm'` print LOCAL time.** Prefix `TZ=UTC` before comparing against anything in Zulu.
+- **`pipeline-status.json` only publishes at phase boundaries.** It sat frozen for a 36-hour
+  anatomy-park phase. The live oracles are `state.json` + `pipeline-runner.log` + artifact mtimes.
+- **Use `--body-file` for every `gh issue comment`.** Inline bodies get their backticks eaten by zsh
+  command substitution; a comment was silently published with four blanked spans.
+- **Refinement needs `ANTHROPIC_MODEL=claude-sonnet-5` until #46 lands.** The default model refuses
+  every analyst with `[reasoning_extraction]` — measured 12/12 spawns across 4 runs, 3 PRDs, 2 days.
+- **On `main`, `--scope branch` resolves EMPTY.** Pin `--scope-base <sha-before-the-bundle>` in
+  `pipeline.json` or anatomy-park reviews the whole tree (or trips `SCOPE_EMPTY_POST_BUILD`).
+
+---
+
+## v1 — cron/drain-queue variant (SUPERSEDED, kept for reference)
+
 Reusable prompt for the **fully autonomous** babysitter loop. Drains the entire
 pickle-rick-claude master plan with **zero operator interaction**: watches active
 pipelines, finalizes AND ships completed bundles (including `git push` +

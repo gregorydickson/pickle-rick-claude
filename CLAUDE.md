@@ -68,6 +68,38 @@ like a member that does not apply.
 correct.** Code that ADDS lines while removing ambiguity (an evidence test, a negative control, a typed
 degrade reason) is subtraction in the sense that matters.
 
+### ⛔ A MEASUREMENT IS ABOUT A BUILD, NOT A COMMIT (operator-set 2026-09-22, BINDING)
+
+**Never attribute a runtime measurement to a source change without first proving that change was
+DEPLOYED — by CONTENT, never by version string or date.** Source and the deployed runtime are isolated;
+a fix is live only after `install.sh`. Grep the deployed binary for the changed symbol before crediting
+any runtime number to it.
+
+Measured: a 5 → 57 jump in citadel advisory findings was credited to a threshold collapse whose commit
+landed **17 hours after** the deployed build was cut, with no deploy in between. The deployed binary
+still carried the old predicate. The number was real; the attribution was fiction.
+
+This is the same defect class the PRIME DIRECTIVE indicts in the product — a claim that outruns its
+observation — reproduced in the person reading the instrument.
+
+### ⛔ AN ACCEPTANCE CRITERION IS A MEASUREMENT INSTRUMENT (operator-set 2026-09-22, BINDING)
+
+**Executable form is necessary and nowhere near sufficient.** Before an AC ships, RUN its predicate
+against HEAD and MEASURE its expected value. A criterion authored from memory inherits every defect
+class this repo files against its instruments.
+
+Measured across two PRDs: **five** executable criteria were wrong at HEAD —
+
+- **fake-green** (passes before the fix): `grep -c "model" <file> >= 1` where the file already
+  returned 3 from prose alone; `grep -c . <anchor> >= 1` against a contract that had existed for months.
+- **false-red** (fails a CORRECT fix): grepping `refine_model` when the convention-following key is
+  `default_refinement_model` — not a substring, so a right answer reads as wrong.
+- **wrong literal**: two counts asserted from memory that HEAD contradicted.
+
+**The check is two commands, not one:** run the predicate now (it must NOT already pass), and confirm
+the expected value is the measured one. A predicate that cannot fail today cannot verify anything
+tomorrow.
+
 ### ⛔ THE RELEASE GATE IS ITSELF AN ENUMERATED SET (operator-set 2026-09-15, BINDING)
 
 **A gate leg is a list member.** Every clause above applies to the gate with full force, and the gate is

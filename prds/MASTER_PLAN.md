@@ -221,6 +221,67 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
+## 🚢 SESSION HANDOFF — 2026-09-22 (babysitter stopped here). **READ THIS FIRST.**
+
+### ▶ STATE — nothing is running
+
+| | |
+|---|---|
+| branch | **`main`** (development moved here 2026-09-21 after B-GATERED's green gate). `release/v2.2-beta` is historical |
+| version | `extension/package.json` = **`2.1.1`**. Newest tag still **`v2.1.0`** — cadence, not oversight |
+| deployed | **in sync** as of 2026-09-22, verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
+| RUNNING | **nothing.** 0 runners. Stale tmux shells linger (`pipeline-*`, `refine-*`) — idle, safe to kill |
+| unpushed | **0** |
+| open issues | **#46** (refinement model override — the next bundle), **#43**, **#5**. **Zero open bugs** |
+| gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
+| babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
+
+### ▶ SHIPPED THIS SESSION
+
+| bundle | outcome |
+|---|---|
+| **B-GATERED + B-INVENTED** | 94 commits, gate green (soak 1803.7s), pushed 2026-09-21. `main` fast-forwarded to the gated tip |
+| **B-MEASURED** | 11 tickets, 18 commits, **4/4 phases** in 611m, gate green (soak 1803.7s), pushed 2026-09-22 |
+| closed on measured evidence | **#40, #41, #32** (2026-09-21) · **#45, #44, #42** (2026-09-22) |
+
+### ▶ NEXT — B-REFMODEL (#46), refined and ready to decompose
+
+PRD: **`prds/p1-b-refmodel-the-one-spawn-surface-with-no-model-knob.md`** — refined 2026-09-22
+(9 analyses, 2 cycles), carries a Refinement Record with 4 applied findings. **Not yet decomposed into
+tickets and not launched.** Session `2026-09-22-a88001dd` holds `prd.md` + `prd_refined.md`.
+
+Resume by: decomposing into tickets (Step 7), `setup.js --tmux --resume`, writing `pipeline.json` with
+**`scope: branch` + `scope_base: <HEAD before the bundle>`**, then launching.
+
+**Deliberately a small bundle.** Backlog is at zero bugs; #43/#5 are operator-deferred. Do NOT pad it
+with invented roots.
+
+### ⛔ OPEN RESIDUALS — measured, not yet filed
+
+1. **`done_over_unmeasured_worker_gate_tests:35f945c6,5199ea3a`** (B-MEASURED). Two tickets flipped Done
+   over an EMPTY-because-unmeasured `worker_gate_tests_verdict`. Both substantive; the green gate was the
+   corroboration they lacked. This is "an absent result is not a pass" **inside the instrument that
+   grants Done**. One occurrence — earns a root only if it recurs.
+2. **Citadel telemetry disagreed with its own log** on the pre-2026-09-22 build: the event read
+   `cycles: 0, remaining: 57` while the log read `cycle 1/3 — no remediable findings`. That build is
+   superseded; **re-measure on the next run before filing.**
+3. **R3's blast radius is UNMEASURED.** The 5 → 57 advisory jump was mine to retract — R3 was not
+   deployed when that run's citadel phase executed. The threshold went live 2026-09-22; measure it on
+   the next run. The cap-of-3 question stays unfiled until then.
+
+### ⛔ TRAPS THAT CAUGHT ME THIS SESSION
+
+1. **`ls`/`stat -f '%Sm'` print LOCAL time.** Prefix `TZ=UTC` before comparing to Zulu.
+2. **`pipeline-status.json` only publishes at phase boundaries** — frozen for a 36-hour phase. Live
+   oracles: `state.json`, `pipeline-runner.log`, artifact mtimes.
+3. **`gh issue comment` inline bodies lose backticks to zsh.** Always `--body-file`.
+4. **On `main`, `--scope branch` resolves EMPTY** (`git diff main HEAD` = 0 files). Pin `scope_base`.
+5. **Refinement needs `ANTHROPIC_MODEL=claude-sonnet-5`** until #46 lands — 12/12 spawns refused across
+   4 runs, 3 PRDs, 2 days, including a control PRD that had refined successfully before.
+6. **A probe that calls `setup.js` to read a path CREATES A SESSION.** I made a stray and had to reap it.
+
+---
+
 ## 🚢 SESSION HANDOFF — 2026-09-20 (context cleared here). **READ THIS FIRST.**
 
 ### ▶ PLAN FOR THE NEXT FEW BUNDLES (operator priority: converge to zero bugs, THEN enhancements)
