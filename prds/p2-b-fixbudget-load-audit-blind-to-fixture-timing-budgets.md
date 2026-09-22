@@ -86,9 +86,11 @@ Splitting that into a later ticket leaves a red audit between them.
    that a timing budget lives only in a spawn `timeout:` literal. The fix removes that premise's
    blindness rather than adding a guard beside it. The 250ms spec budget is correct and stays.
 4. **Subtraction?** The distinction "budget in a spawn literal vs budget in a settings fixture"
-   collapses to one: a numeric timing budget in the file. Beyond that, no subtraction is available. The
-   existing `_evidence` note for `spawn-morty-worker-gate.test.js` stays, because its value is an
-   imported constant the widened source still cannot read.
+   collapses to one: a numeric timing budget in the file. **A second subtraction follows:**
+   `spawn-morty-worker-gate.test.js` is serial today only through a hand-written `_evidence` note ("NOT
+   statically derivable"), but it writes a `*_timeout_ms` literal of 6000 (measured). Under the widened
+   source it becomes DERIVED. Its manifest entry stays (the union regeneration keeps it). The ticket
+   must re-word its `_evidence` note to say the entry is now derived, and must not delete the entry.
 
 **Green-tree precondition:** the release gate was 22/22 green on `b017f393` (run
 `20260922T195321Z-30733`). Every commit since then is docs-only under `prds/`.
@@ -100,7 +102,7 @@ Splitting that into a later ticket leaves a red audit between them.
 - **Do NOT enumerate settings keys** (`worker_test_gate_timeout_ms`, …). The suffix is the formulation.
 - **Do NOT touch the FAIL arm or the `bash`/`sh` narrowing.**
 - **Do NOT hand-edit `tests/.serial-tests.json` entries** — regenerate it with `--emit-fast-manifest`.
-- **Do NOT remove `tests/spawn-morty-worker-gate.test.js`'s `_evidence` note** — leave existing entries alone.
+- **Do NOT remove any existing manifest ENTRY.** Re-wording `spawn-morty-worker-gate.test.js`'s `_evidence` note is in scope (see Simplification Review §4); deleting the entry is not.
 
 ## Interface Contracts
 
