@@ -184,3 +184,14 @@ literal counts. Every one was executable in form. **Executable form is necessary
 sufficient**: the predicate must be run against HEAD before it ships, and its expected value measured
 rather than guessed. An acceptance criterion is a measurement instrument and inherits every defect
 class this repo files against instruments.
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Entry | Exit | Files |
+|---:|---|---|---|---|---|---|
+| 10 | d7225911 | Resolve `default_refinement_model` and `--model`, thread to every analyst spawn | High | clean tree, tsc green | flag/setting reach argv; absent config byte-identical | `extension/src/bin/spawn-refinement-team.ts`, compiled `.js`, `tests/spawn-refinement-claude-only.test.js`, `tests/settings-loader.test.js` |
+| 20 | baddb764 | Give the knob a user-facing entry point and document it | High | d7225911 Done | both command files pass `--model` when supplied; CLAUDE.md + README document it | `.claude/commands/pickle-refine-prd.md`, `.claude/commands/portal-gun.md`, `CLAUDE.md`, `README.md` |
+| 30 | 1f370faa | Harden: code quality review of the B-REFMODEL diff | High | all above | zero P0–P1 | all of the above |
+| 40 | c85866e4 | Audit: data flow integrity for the B-REFMODEL diff | High | all above | zero CRITICAL/HIGH | source + tests |
+| 50 | 89a9299d | Harden: test quality review of the B-REFMODEL diff | High | all above | every AC mapped, zero P0–P1 | test files |
+| 60 | 8d8b64a1 | Audit: cross-reference consistency for the B-REFMODEL diff | High | all above | zero CRITICAL/HIGH mismatches | doc/command files |
