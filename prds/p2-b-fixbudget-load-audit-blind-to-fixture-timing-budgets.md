@@ -208,3 +208,14 @@ against HEAD before being applied.**
 | 6 | requirements, codebase | single-read invariant (`AP-EXT-ITER224/225-01`) and the stale docblock (`:153-160`) | **applied** to Interface Contracts |
 | 7 | requirements | no boundary row at 15000 | **applied** |
 | 8 | (author, pre-refinement) | the widening makes `spawn-morty-worker-gate.test.js` derivable | **applied**: `_evidence` reword AC |
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Entry | Exit | Files |
+|---:|---|---|---|---|---|---|
+| 10 | 2054239a | Teach the audit to read a `*_timeout_ms` fixture budget; regenerate the serial manifest | High | audit green at base | 12/12 census files serialized; audit green | `scripts/audit-subprocess-heavy-tests.sh`, `tests/audit-subprocess-heavy-tests-missing-timeout.test.js`, `tests/.serial-tests.json` |
+| 20 | c0b52935 | Harden: code quality review of the B-FIXBUDGET diff | High | all above | zero P0–P1 | same |
+| 30 | 819040ce | Audit: data flow integrity for the B-FIXBUDGET diff | High | all above | zero CRITICAL/HIGH | same |
+| 40 | e83d9d1e | Harden: test quality review of the B-FIXBUDGET diff | High | all above | every AC mapped | test file |
+
+The cross-reference audit ticket is omitted: the bundle modifies no doc or command files.
