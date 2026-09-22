@@ -46,6 +46,7 @@ export function buildRefinementWorkerInvocation(opts) {
     const invocation = buildWorkerInvocation(opts.backend ?? REFINEMENT_BACKEND, {
         prompt: opts.prompt,
         addDirs: opts.addDirs,
+        model: opts.model,
         settingsBag: opts.settingsBag,
     });
     // buildWorkerInvocation doesn't take max-turns for workers; splice it in
@@ -766,6 +767,7 @@ function startAnalystProcess(opts, logStream) {
         prompt: opts.prompt,
         addDirs: includes,
         maxTurns: opts.maxTurns,
+        model: opts.model,
         backend: REFINEMENT_BACKEND,
         settingsBag: loadPickleSettingsBag() ?? undefined,
     });
@@ -895,8 +897,19 @@ function spawnWorker(opts) {
     });
 }
 function usageAndExit() {
-    console.error(`${Style.RED}❌ Usage: node spawn-refinement-team.js --prd <path> --session-dir <dir> [--timeout <sec>] [--cycles <n>] [--max-turns <n>]${Style.RESET}`);
+    console.error(`${Style.RED}❌ Usage: node spawn-refinement-team.js --prd <path> --session-dir <dir> [--timeout <sec>] [--cycles <n>] [--max-turns <n>] [--model <id>]${Style.RESET}`);
     process.exit(1);
+}
+function parseModelFlag(argv) {
+    const idx = argv.indexOf('--model');
+    if (idx === -1)
+        return undefined;
+    const raw = argv[idx + 1];
+    if (raw === undefined || raw.startsWith('--') || raw.trim() === '') {
+        console.error(`${Style.RED}❌ --model requires a non-empty model id argument${Style.RESET}`);
+        process.exit(1);
+    }
+    return raw.trim();
 }
 function parsePositiveIntegerValue(raw) {
     if (typeof raw === 'number') {
@@ -959,6 +972,7 @@ export function parseAndValidateArgs(argv) {
         timeout: parseTimeoutFlag(argv),
         cycles: parsePositiveFlag(argv, argv.indexOf('--cycles'), '--cycles'),
         maxTurns: parsePositiveFlag(argv, argv.indexOf('--max-turns'), '--max-turns'),
+        model: parseModelFlag(argv),
         skipAcShapeGate,
     };
 }
@@ -977,17 +991,22 @@ export function loadRefinementSettings(settingsPath = path.join(getExtensionRoot
         const cycles = parsePositiveIntegerValue(loaded.default_refinement_cycles);
         const maxTurns = parsePositiveIntegerValue(loaded.default_refinement_max_turns);
         const workerTimeout = parsePositiveIntegerValue(loaded.default_worker_timeout_seconds);
+        const model = typeof loaded.default_refinement_model === 'string' && loaded.default_refinement_model.trim()
+            ? loaded.default_refinement_model.trim()
+            : undefined;
         if (cycles !== undefined)
             settings.defaultCycles = cycles;
         if (maxTurns !== undefined)
             settings.defaultMaxTurns = maxTurns;
         if (workerTimeout !== undefined)
             settings.defaultWorkerTimeout = workerTimeout;
+        if (model !== undefined)
+            settings.defaultModel = model;
     }
     catch { /* use hardcoded defaults */ }
     return settings;
 }
-function resolveRuntime(args, settings) {
+export function resolveRuntime(args, settings) {
     let timeout = args.timeout ?? settings.defaultWorkerTimeout;
     let workingDir = process.cwd();
     let stateBackend = undefined;
@@ -1016,6 +1035,7 @@ function resolveRuntime(args, settings) {
     return {
         cycles: args.cycles ?? settings.defaultCycles,
         maxTurns: args.maxTurns ?? settings.defaultMaxTurns,
+        model: args.model ?? settings.defaultModel,
         timeout,
         workingDir,
         sessionEffort,
@@ -1124,6 +1144,7 @@ async function runCycle(opts) {
                 timeout: opts.timeout,
                 workingDir: opts.workingDir,
                 maxTurns: opts.maxTurns,
+                model: opts.model,
                 cycle: opts.cycle,
                 outputFile,
                 onComplete: (result) => {
@@ -1196,6 +1217,7 @@ export async function orchestrateCycles(args, settings, prd) {
             timeout: runtime.timeout,
             workingDir: runtime.workingDir,
             maxTurns: runtime.maxTurns,
+            model: runtime.model,
             previousAnalyses: loadPreviousAnalyses(refinementDir, cycle),
             portalContext,
             sessionDir: args.sessionDir,

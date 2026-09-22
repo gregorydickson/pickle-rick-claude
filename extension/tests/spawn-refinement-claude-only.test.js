@@ -14,6 +14,7 @@ const {
     buildRefinementEnv,
     warnIfCodexRequested,
     __resetRefinementBackendWarning,
+    resolveRuntime,
 } = await import('../bin/spawn-refinement-team.js');
 
 function mkTmp(prefix = 'spawn-refine-claude-') {
@@ -195,5 +196,97 @@ test('invariant: PICKLE_BACKEND=codex + state.backend=codex still yields cmd=cla
         }
     } finally {
         fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+// B-REFMODEL: resolve default_refinement_model and --model, thread to every analyst spawn.
+
+test('buildRefinementWorkerInvocation: model reaches the argv before -p', () => {
+    const inv = buildRefinementWorkerInvocation({
+        prompt: 'analyze the PRD',
+        addDirs: [],
+        maxTurns: 1,
+        model: 'm-x',
+    });
+    assert.ok(inv.args.includes('--model'), 'args should include --model');
+    const modelIdx = inv.args.indexOf('--model');
+    assert.strictEqual(inv.args[modelIdx + 1], 'm-x');
+    const pIdx = inv.args.lastIndexOf('-p');
+    assert.ok(pIdx > modelIdx, '-p must come after --model');
+});
+
+test('buildRefinementWorkerInvocation: absent model is a no-op (CONTROL)', () => {
+    const withoutKey = buildRefinementWorkerInvocation({
+        prompt: 'analyze the PRD',
+        addDirs: [],
+        maxTurns: 1,
+    });
+    assert.ok(!withoutKey.args.includes('--model'), 'no --model element when model is omitted');
+
+    const withUndefined = buildRefinementWorkerInvocation({
+        prompt: 'analyze the PRD',
+        addDirs: [],
+        maxTurns: 1,
+        model: undefined,
+    });
+    assert.deepStrictEqual(withUndefined.args, withoutKey.args,
+        'an explicit undefined model must produce byte-identical args to an omitted key');
+});
+
+test('resolveRuntime: --model flag beats default_refinement_model setting', () => {
+    const args = {
+        prdPath: '/tmp/does-not-matter.md',
+        sessionDir: fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-refine-claude-runtime-')),
+        model: 'a',
+    };
+    try {
+        const settings = { defaultCycles: 3, defaultMaxTurns: 100, defaultWorkerTimeout: 3600, defaultModel: 'b' };
+        const runtime = resolveRuntime(args, settings);
+        assert.strictEqual(runtime.model, 'a');
+    } finally {
+        fs.rmSync(args.sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('resolveRuntime: falls back to default_refinement_model when --model absent', () => {
+    const args = {
+        prdPath: '/tmp/does-not-matter.md',
+        sessionDir: fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-refine-claude-runtime-')),
+    };
+    try {
+        const settings = { defaultCycles: 3, defaultMaxTurns: 100, defaultWorkerTimeout: 3600, defaultModel: 'b' };
+        const runtime = resolveRuntime(args, settings);
+        assert.strictEqual(runtime.model, 'b');
+    } finally {
+        fs.rmSync(args.sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('resolveRuntime: model is undefined when neither flag nor setting is present', () => {
+    const args = {
+        prdPath: '/tmp/does-not-matter.md',
+        sessionDir: fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-refine-claude-runtime-')),
+    };
+    try {
+        const settings = { defaultCycles: 3, defaultMaxTurns: 100, defaultWorkerTimeout: 3600 };
+        const runtime = resolveRuntime(args, settings);
+        assert.strictEqual(runtime.model, undefined);
+    } finally {
+        fs.rmSync(args.sessionDir, { recursive: true, force: true });
+    }
+});
+
+test('buildRefinementWorkerInvocation: every analyst role prompt carries the same resolved model', () => {
+    const roles = ['requirements', 'codebase', 'risk-scope'];
+    const invocations = roles.map((role) => buildRefinementWorkerInvocation({
+        prompt: `analyze as ${role}`,
+        addDirs: [],
+        maxTurns: 1,
+        model: 'm-shared',
+    }));
+    for (const inv of invocations) {
+        const modelIdx = inv.args.indexOf('--model');
+        assert.ok(modelIdx !== -1, 'every role invocation must carry --model');
+        assert.strictEqual(inv.args[modelIdx + 1], 'm-shared');
     }
 });
