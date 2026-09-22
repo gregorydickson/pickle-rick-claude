@@ -234,6 +234,18 @@ test('buildRefinementWorkerInvocation: absent model is a no-op (CONTROL)', () =>
     });
     assert.deepStrictEqual(withUndefined.args, withoutKey.args,
         'an explicit undefined model must produce byte-identical args to an omitted key');
+
+    // Both shapes above lack a model, so they cannot catch a builder that reorders or rewrites
+    // other flags when one IS supplied. Splicing the pair out must give back the no-model argv.
+    const withModel = buildRefinementWorkerInvocation({
+        prompt: 'analyze the PRD',
+        addDirs: [],
+        maxTurns: 1,
+        model: 'm-x',
+    });
+    const idx = withModel.args.indexOf('--model');
+    const spliced = [...withModel.args.slice(0, idx), ...withModel.args.slice(idx + 2)];
+    assert.deepStrictEqual(spliced, withoutKey.args, 'a model adds exactly the --model pair and nothing else');
 });
 
 test('resolveRuntime: --model flag beats default_refinement_model setting', () => {
