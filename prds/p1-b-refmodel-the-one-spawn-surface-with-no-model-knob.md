@@ -31,30 +31,49 @@ A bare `grep -c "model"` on that file returns **3** — all prose (`:28`, `:216`
 Stated here because the distinction is what separates a real criterion from a fake-green one.
 `grep -cE 'opts\.model' src/services/backend-spawn.ts` → **10**.
 
-## ⛔ WIDEN THE EXISTING CONVENTION — do not invent a parallel one
+## ⛔ WIDEN THE IN-FILE RESOLVER — corrected by refinement, verified independently
 
-The operator convention already ships. `pickle_settings.json` carries a `microverse` block:
+**My first draft said "follow the `getMicroverseSettings` shape exactly". That instruction is WRONG
+and is retracted.** The codebase analyst found a closer precedent living *inside the target file*, and
+I re-verified every claim at HEAD before accepting it:
 
-```json
-"microverse": {
-  "judge_backend": "claude",
-  "judge_backend_fallback": "codex",
-  "judge_model_claude": "claude-sonnet-4-6",
-  "judge_model_codex": "gpt-5.4"
-}
+```
+spawn-refinement-team.ts:295   export interface RefinementSettings
+spawn-refinement-team.ts:1314  export function loadRefinementSettings(settingsPath = ...)
+                                 -> resolves default_refinement_cycles,
+                                    default_refinement_max_turns,
+                                    default_worker_timeout_seconds  (one pass, own fs read)
+spawn-refinement-team.ts:1337  resolveRuntime(args, settings)
 ```
 
-resolved by `getMicroverseSettings` in `src/services/pickle-utils.ts` against
-`DEFAULT_MICROVERSE_SETTINGS` (`:25-31`), with the per-field shape
-`typeof v === 'string' && v.trim() ? v : DEFAULT` (`:72-84`). Its consumer is
-`loadMicroverseSettingsBag`/`getMicroverseSettings` at `microverse-runner.ts:3233`/`:3264`.
+**The two shapes are structurally incompatible.** `getMicroverseSettings` (`pickle-utils.ts:58-81`) is a
+**pure resolver** over an already-loaded bag, with its filesystem read in a *separate* function
+(`loadMicroverseSettingsBag`, `microverse-runner.ts:3233`) — a two-function split.
+`loadRefinementSettings` is a **single function** that reads and resolves in one pass. "Follow
+microverse exactly" therefore forces a worker to either split the existing resolver — churning three
+already-working fields that no acceptance criterion here tests — or disobey the PRD.
 
-**Follow that shape exactly**: a sibling settings block resolved by a sibling function in the same
-module, same per-field fallback idiom, same compiled defaults. Per the gate-leg discipline the repo
-applies to its own instruments, **a widened pattern is a collapse; a new parallel mechanism is an
-addition.** Do not add an env-var channel as the primary surface — `ANTHROPIC_MODEL` worked as an
-undocumented emergency workaround on 2026-09-21 and is exactly the unsanctioned channel this root
-exists to replace.
+**Correct instruction: add the model field to `loadRefinementSettings`, the resolver this file already
+owns.** Borrow from microverse only the per-field fallback *expression*
+(`typeof v === 'string' && v.trim() ? v : DEFAULT`), not its module structure. That is the real
+widening; the earlier instruction would have added a second settings-resolution pattern to a file that
+already has one working end-to-end.
+
+### The threading gap is one field, one function, one call site — verified at HEAD
+
+```
+spawn-refinement-team.ts:62-82   buildRefinementWorkerInvocation(opts: {prompt, addDirs, backend?, settingsBag?})
+                                   -> calls buildWorkerInvocation(...) with NO model field
+spawn-refinement-team.ts:1043    the single production call site (inside the per-role spawn loop)
+services/backend-spawn.ts        opts.model already threaded to --model/-m for every backend (10 sites)
+```
+
+So the wire is: add `model?: string` to `buildRefinementWorkerInvocation`'s opts type, pass it into the
+inner `buildWorkerInvocation` call, and supply the resolved value at `:1043`. **Do not re-derive this
+location** — it is measured, and naming it here is what keeps the ticket from turning into a search.
+
+Do not add an env-var channel as the primary surface — `ANTHROPIC_MODEL` worked as an undocumented
+emergency workaround and is exactly the unsanctioned channel this root exists to replace.
 
 ## Non-goals, stated so they cannot drift in
 
@@ -100,7 +119,7 @@ for **every** analyst role spawn.
   `:28`, `:216`, `:815`) and would pass before any code changed. That is the same fake-green shape
   refinement caught in B-MEASURED's R2 — an AC is a measurement instrument and inherits every defect
   class this repo files against instruments.
-- `grep -c 'judge_model_claude' extension/src/services/pickle-utils.ts` returns `4` (the precedent is widened, not replaced — **measured 4 at HEAD**, not assumed; adding a sibling key leaves this count untouched)
+- `grep -c 'default_refinement_cycles' extension/src/bin/spawn-refinement-team.ts` returns `1` (**measured 1 at HEAD** — the in-file resolver's existing fields are widened, not churned; a worker that split `loadRefinementSettings` apart would move this)
 - `cd extension && ./node_modules/.bin/tsc --noEmit` exits `0`
 - `cd extension && npx eslint src/ --max-warnings=0` exits `0`
 - `cd extension && node --test tests/settings-loader.test.js` exits `0`
@@ -125,7 +144,9 @@ every existing user — the worst possible outcome for a routing option.
   HEAD from prose alone.)
 - `grep -c 'judge_model_claude' pickle_settings.json` returns `0` → the convention this root widens does
   not exist and the naming must be re-derived from whatever replaced it.
-- `grep -n 'getMicroverseSettings' extension/src/services/pickle-utils.ts` returns nothing → the
-  precedent resolver moved; re-locate it before copying its shape.
+- `grep -n 'loadRefinementSettings' extension/src/bin/spawn-refinement-team.ts` returns nothing → the
+  in-file resolver moved; re-locate it before extending it.
+- `sed -n '62,82p' extension/src/bin/spawn-refinement-team.ts | grep -c model` returns non-zero → the
+  threading gap is already closed.
 - A fresh refinement on the default model succeeds → the 2026-09-21 safeguard was transient. **The
   missing-surface half still stands**: the defect is the absence of a route, not the refusal itself.
