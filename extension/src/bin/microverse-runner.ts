@@ -4954,16 +4954,20 @@ function emitMicroverseWastedIter(ctx: RunContext, action: WastedIterAction): vo
   });
 }
 
+/**
+ * `state.baseline_score` is the SOLE source of truth for "never measured" — `null`, never a
+ * sentinel a second value has to agree on. The caller's cached `baseline` snapshot is
+ * deliberately NOT a parameter here: it was one while the condition also required
+ * `baseline.score === 0`, and re-admitting it would restore the two-source agreement this
+ * predicate exists to avoid.
+ */
 function adoptLateBaseline(
   state: MicroverseState,
-  baseline: MetricSnapshot,
   metricResult: MetricSnapshot,
   metricConv: MicroverseSessionState['convergence'],
   ctx: RunContext,
 ): void {
   const lastAccepted = findLastAcceptedEntry(metricConv.history);
-  // `state.baseline_score` is the source of truth for "never measured" — null, never a sentinel
-  // value the caller's cached `baseline` snapshot could also have to agree on.
   if (state.baseline_score === null && !lastAccepted) {
     state.baseline_score = metricResult.score;
     ctx.log(`Late baseline adopted: ${metricResult.score} (initial measurement failed)`);
@@ -5356,7 +5360,7 @@ export async function measureAndClassifyIteration(
   ctx.log(`Metric: ${metricResult.score} (raw: ${metricResult.raw})`);
   const metricConv = assertMetricConvergence(state, 'measureAndClassifyIteration');
   const lastAccepted = findLastAcceptedEntry(metricConv.history);
-  adoptLateBaseline(state, baseline, metricResult, metricConv, ctx);
+  adoptLateBaseline(state, metricResult, metricConv, ctx);
 
   // Never `?? 0`: a never-measured baseline compares as unknown (NaN), not as a real score of
   // zero — see `getLastAcceptedScore`'s identical fallback.
