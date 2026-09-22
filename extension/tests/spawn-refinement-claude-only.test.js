@@ -327,12 +327,14 @@ function makeRefinementSandbox({ settings } = {}) {
     if (settings) {
         fs.writeFileSync(path.join(extensionRoot, 'pickle_settings.json'), JSON.stringify(settings));
     }
-    // Write argv as JSON to stderr (it lands in the per-role analyst log) and refuse, so the run
-    // takes the fast failure branch with no network. JSON keeps token boundaries: the prompt
-    // element contains spaces, so a `$*` echo could not tell `--model x` from prose.
+    // Write argv as JSON to stderr (it lands in the per-role analyst log) and write no analysis,
+    // so the run takes the zero-analyses failure branch with no network. JSON keeps token
+    // boundaries: the prompt element contains spaces, so a `$*` echo cannot tell `--model x` from
+    // prose. Exit 0: a non-zero exit makes runCycle kill the sibling analysts, sometimes before
+    // they have spawned — measured 4/15 runs losing a role that way.
     fs.writeFileSync(
         path.join(stubDir, 'claude'),
-        `#!${process.execPath}\nprocess.stderr.write(${JSON.stringify(MODEL_STUB_SENTINEL)} + JSON.stringify(process.argv.slice(2)) + '\\n');\nprocess.exit(1);\n`,
+        `#!${process.execPath}\nprocess.stderr.write(${JSON.stringify(MODEL_STUB_SENTINEL)} + JSON.stringify(process.argv.slice(2)) + '\\n');\n`,
     );
     fs.chmodSync(path.join(stubDir, 'claude'), 0o755);
     fs.writeFileSync(path.join(sessionDir, 'prd.md'), '# Probe PRD\n\n## Requirements\n\n- R1 do a thing\n');
