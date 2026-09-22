@@ -3723,7 +3723,7 @@ export async function executeGapAnalysis(state, ctx) {
         ctx.log(`Baseline measurement skipped — metric type '${state.key_metric.type}' has no measurement branch`);
     }
     else {
-        ctx.log(`WARNING: Could not measure ${state.key_metric.type === 'llm' ? 'LLM baseline' : 'baseline metric'} — defaulting to 0`);
+        ctx.log(`WARNING: Could not measure ${state.key_metric.type === 'llm' ? 'LLM baseline' : 'baseline metric'} — baseline_score stays null (never measured)`);
     }
     state.status = 'iterating';
     writeMicroverseState(ctx.sessionDir, state);
