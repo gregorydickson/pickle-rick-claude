@@ -93,8 +93,14 @@ emergency workaround and is exactly the unsanctioned channel this root exists to
 `spawn-refinement-team`.
 **Outputs**: a resolved model string (or `undefined`) reaching `backend-spawn`'s existing `opts.model`
 for **every** analyst role spawn.
-**Resolution order**: explicit CLI flag → settings block → compiled default → `undefined` (meaning
+**Resolution order**: explicit CLI flag → settings key → compiled default → `undefined` (meaning
 "inherit the session default", today's behaviour).
+**⚠ The CLI tier has NO user-facing entry point today (requirements-analyst P0).** Measured:
+`.claude/commands/pickle-refine-prd.md:126` and `portal-gun.md:477` invoke
+`spawn-refinement-team.js` with **only** `--prd` and `--session-dir`. A recovery journey written
+faithfully to the CLI tier would describe a path an operator cannot reach. **This bundle therefore
+scopes IN wiring the flag through both command files** — otherwise the settings key is the only real
+tier and the contract lies about the other one.
 **Invariants**: with no configuration present, the resolved value is `undefined` and the spawn argv is
 **byte-identical to today's**. All three roles resolve the same model in one cycle.
 **Errors**: a malformed/empty/non-string setting falls back to the compiled default exactly as
@@ -113,12 +119,16 @@ for **every** analyst role spawn.
 
 ## Acceptance Criteria
 
-- `grep -c 'refine_model' extension/src/bin/spawn-refinement-team.ts` returns a value `>= 1`
-  — **measured `0` at HEAD**, so this criterion can only pass after the fix. Do NOT weaken it to a bare
-  `grep -c "model"`: that already returns **3** at HEAD (two prose comments and a telemetry-table row at
-  `:28`, `:216`, `:815`) and would pass before any code changed. That is the same fake-green shape
-  refinement caught in B-MEASURED's R2 — an AC is a measurement instrument and inherits every defect
-  class this repo files against instruments.
+- **KEY NAME, pinned here so the AC cannot misfire (requirements-analyst P0):** the new settings key is
+  **`default_refinement_model`** — flat, matching this file's live siblings `default_refinement_cycles`
+  and `default_refinement_max_turns`. It is NOT nested and NOT `refine_model`.
+- `grep -c 'default_refinement_model' extension/src/bin/spawn-refinement-team.ts` returns a value `>= 1`
+  — **measured `0` at HEAD**, so it can only pass after the fix. My earlier draft grepped `refine_model`,
+  which is **not a substring of the convention-following key**: `echo -n "default_refinement_model" |
+  grep -c "refine_model"` returns **0**, verified. That AC would have FAILED a correct,
+  convention-following implementation — a false RED, the mirror of the fake-green caught two drafts ago.
+  Do NOT weaken it to a bare `grep -c "model"`, which returns **3** at HEAD from prose alone (`:28`,
+  `:216`, `:815`).
 - `grep -c 'default_refinement_cycles' extension/src/bin/spawn-refinement-team.ts` returns `1` (**measured 1 at HEAD** — the in-file resolver's existing fields are widened, not churned; a worker that split `loadRefinementSettings` apart would move this)
 - `cd extension && ./node_modules/.bin/tsc --noEmit` exits `0`
 - `cd extension && npx eslint src/ --max-warnings=0` exits `0`
@@ -139,9 +149,9 @@ every existing user — the worst possible outcome for a routing option.
 
 ## FALSIFY — take these before building
 
-- `grep -c 'refine_model' extension/src/bin/spawn-refinement-team.ts` returns non-zero → a surface already
-  landed; close as already-satisfied. (Use this predicate, not a bare `model` grep, which reads **3** at
-  HEAD from prose alone.)
+- `grep -c 'default_refinement_model' extension/src/bin/spawn-refinement-team.ts` returns non-zero → a
+  surface already landed; close as already-satisfied. (Use this predicate — not `refine_model`, which
+  does not match the key, and not a bare `model` grep, which reads **3** at HEAD from prose alone.)
 - `grep -c 'judge_model_claude' pickle_settings.json` returns `0` → the convention this root widens does
   not exist and the naming must be re-derived from whatever replaced it.
 - `grep -n 'loadRefinementSettings' extension/src/bin/spawn-refinement-team.ts` returns nothing → the
@@ -150,3 +160,27 @@ every existing user — the worst possible outcome for a routing option.
   threading gap is already closed.
 - A fresh refinement on the default model succeeds → the 2026-09-21 safeguard was transient. **The
   missing-surface half still stands**: the defect is the absence of a route, not the refusal itself.
+
+
+---
+
+# Refinement Record *(refined: requirements + codebase + risk-scope, 2 cycles, 2026-09-22)*
+
+Nine analyses on `claude-sonnet-5` (the default model refused — #46, the root this bundle fixes).
+**Every finding below was re-verified against HEAD before being applied.**
+
+| # | analyst | finding | disposition |
+|---|---|---|---|
+| 1 | codebase | **The mandated precedent was wrong.** `spawn-refinement-team.ts` already owns `loadRefinementSettings` (`:1314`), a SINGLE load+resolve function serving three fields; `getMicroverseSettings` is a TWO-function split (pure resolver + separate bag loader). "Follow microverse exactly" forces a worker to split a working resolver and churn three untested fields | **Fix direction rewritten.** Verified at HEAD. Extend the in-file resolver; borrow only microverse's per-field fallback expression |
+| 2 | codebase | The threading gap is one field, one function, one call site: `buildRefinementWorkerInvocation` (`:62-82`) builds its inner invocation with no `model`; sole production caller `:1043`; `backend-spawn` threads `opts.model` at 10 sites | named in the PRD so no worker re-derives it |
+| 3 | requirements | **The primary AC would have FAILED a correct implementation.** The file's live keys are flat (`default_refinement_cycles`), so the convention key is `default_refinement_model` — and `echo -n "default_refinement_model" \| grep -c "refine_model"` returns **0**, verified | key name pinned; AC re-predicated on `default_refinement_model`, measured 0 at HEAD |
+| 4 | requirements | **The CLI tier of the resolution order has no user-facing entry point.** `pickle-refine-prd.md:126` and `portal-gun.md:477` pass only `--prd`/`--session-dir` | **CLI wiring scoped IN** — otherwise the contract advertises a tier that does not exist |
+
+## Authoring note this bundle earns
+
+Across two PRDs I have now written **five** acceptance criteria that were wrong against HEAD — three
+fake-greens (would pass before the fix) and one false-red (would fail a correct fix), plus two wrong
+literal counts. Every one was executable in form. **Executable form is necessary and nowhere near
+sufficient**: the predicate must be run against HEAD before it ships, and its expected value measured
+rather than guessed. An acceptance criterion is a measurement instrument and inherits every defect
+class this repo files against instruments.
