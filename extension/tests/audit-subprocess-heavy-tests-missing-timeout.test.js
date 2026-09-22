@@ -1041,3 +1041,48 @@ test('settings-budget WARN: a quoted (JSON-shaped) key is evidence', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('settings-budget WARN: a literal one past the 15000ms boundary is not flagged (boundary-adjacent control)', () => {
+  // The 300000 over-trigger row cannot see a band widened to, say, 20000; only the value adjacent to
+  // the boundary pins where the band ends.
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['export const x = { worker_test_gate_timeout_ms: 15001 };']),
+    );
+    const result = runAudit(dir);
+    assert.equal(result.status, 0, `expected exit 0; stderr=${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /settings budget/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: an underscore-separated literal is reported as its numeric value', () => {
+  // The regex admits `[0-9_]*` and the reason prints the PARSED number, so `1_500` must read 1500 --
+  // a reason echoing the raw text, or a parse that stops at the underscore (1), would both fail here.
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['export const x = { worker_test_gate_timeout_ms: 1_500 };']),
+    );
+    assertSettingsWarn(runAudit(dir), 'worker_test_gate_timeout_ms', 1500);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: assignment form (`=`) is evidence, the other half of the [:=] adjacency', () => {
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['const gate_timeout_ms = 250;', 'export const x = gate_timeout_ms;']),
+    );
+    assertSettingsWarn(runAudit(dir), 'gate_timeout_ms', 250);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
