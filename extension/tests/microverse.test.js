@@ -3180,6 +3180,36 @@ test('preflightAutoCommit: the auto-commit carries the Pickle-Rick version trail
     }
 });
 
+// R4 AC: "a version-resolution failure still produces a single well-formed `Pickle-Rick:` trailer
+// and does not abort the commit — the degrade branch ... must be falsifiable, not just documented".
+// Measured before this test existed: replacing `resolveAutoCommitVersionTrailer`'s degrade arm with
+// a `throw` left all 378 tests across the seven files that import these two producers GREEN — the
+// arm was unreachable from any fixture, so the two auto-commit paths were pinned happy-path-only
+// while the sibling paths (stampPickleTicketTrailer, the generated hook) both had degrade coverage.
+test('preflightAutoCommit: an unresolvable deployed version degrades to "unknown" and still commits', () => {
+    const dir = createTempGitRepo();
+    // No extension/package.json under this root — getDeployedVersion() reads nothing, the same
+    // degrade fixture the generated hook's degrade test uses, so the two cannot drift apart.
+    const extRoot = mkFixtureTmpDir('pickle-microverse-extroot-empty-');
+    try {
+        fs.writeFileSync(path.join(dir, 'worker-output.txt'), 'worker changes');
+
+        withExtensionRoot(extRoot, () => {
+            preflightAutoCommit(dir, () => { });
+        });
+
+        // Read through the PARSED trailer view the consumer uses, not %B: one well-formed value,
+        // the NAMED literal, never valueless and never doubled.
+        assert.equal(versionTrailerOf(dir), 'unknown');
+        const body = execFileSync('git', ['log', '-1', '--format=%B'], { cwd: dir, encoding: 'utf-8', timeout: 15_000 });
+        assert.equal((body.match(/^Pickle-Rick:.*$/gm) || []).length, 1, 'exactly one Pickle-Rick line');
+        assert.match(body, /microverse: auto-commit dirty tree before start/, 'the commit still proceeds');
+    } finally {
+        fs.rmSync(dir, { recursive: true });
+        fs.rmSync(extRoot, { recursive: true, force: true });
+    }
+});
+
 test('autoRescueDirtyTree: the auto-commit carries the Pickle-Rick version trailer', () => {
     const dir = createTempGitRepo();
     const sessionDir = mkFixtureTmpDir('pickle-microverse-session-');
