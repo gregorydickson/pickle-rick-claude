@@ -75,6 +75,24 @@ them. The same ticket MUST run `bash scripts/audit-subprocess-heavy-tests.sh --e
 (writes the UNION — never drops an entry) and commit the regenerated `tests/.serial-tests.json`.
 Splitting that into a later ticket leaves a red audit between them.
 
+## Simplification Review
+
+1. **Necessary?** It adds one evidence source (a `*_timeout_ms` literal) to an existing per-file scan,
+   and regenerates a derived manifest. It adds no gate leg, flag, state field, or halt path.
+2. **Reuse instead of add?** It reuses the scan loop, the `SUBPROCESS_HEAVY_WARN_MS` band, the AC-A1a
+   check and `--emit-fast-manifest` unchanged. The alternative (a), a hand-maintained `_evidence` entry,
+   is the "add a member" shape root CLAUDE.md clause 1 names.
+3. **Guarding brittle complexity that should be subtracted?** The brittle part is the audit's premise
+   that a timing budget lives only in a spawn `timeout:` literal. The fix removes that premise's
+   blindness rather than adding a guard beside it. The 250ms spec budget is correct and stays.
+4. **Subtraction?** The distinction "budget in a spawn literal vs budget in a settings fixture"
+   collapses to one: a numeric timing budget in the file. Beyond that, no subtraction is available. The
+   existing `_evidence` note for `spawn-morty-worker-gate.test.js` stays, because its value is an
+   imported constant the widened source still cannot read.
+
+**Green-tree precondition:** the release gate was 22/22 green on `b017f393` (run
+`20260922T195321Z-30733`). Every commit since then is docs-only under `prds/`.
+
 ## Non-goals
 
 - **Do NOT raise the 250ms in the specs.** It would green these two and leave every future
