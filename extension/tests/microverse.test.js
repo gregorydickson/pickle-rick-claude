@@ -3182,7 +3182,7 @@ test('preflightAutoCommit: the auto-commit carries the Pickle-Rick version trail
 
 // R4 AC: "a version-resolution failure still produces a single well-formed `Pickle-Rick:` trailer
 // and does not abort the commit — the degrade branch ... must be falsifiable, not just documented".
-// Measured before this test existed: replacing `resolveAutoCommitVersionTrailer`'s degrade arm with
+// Measured before this test existed: replacing `buildPickleRickVersionTrailer`'s degrade arm with
 // a `throw` left all 378 tests across the seven files that import these two producers GREEN — the
 // arm was unreachable from any fixture, so the two auto-commit paths were pinned happy-path-only
 // while the sibling paths (stampPickleTicketTrailer, the generated hook) both had degrade coverage.

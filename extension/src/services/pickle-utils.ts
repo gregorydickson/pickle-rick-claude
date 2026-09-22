@@ -405,6 +405,27 @@ export function getDeployedVersion(): string | null {
   }
 }
 
+/**
+ * The full `Pickle-Rick: <version>` trailer LINE every producer stamps — the ONE place the
+ * trailer key and its degrade rule live. Three producers write this trailer: the generated
+ * `prepare-commit-msg` hook (`git-trailer-hooks.ts`), the runner-authored ticket stamp
+ * (`stampPickleTicketTrailer`, `bin/mux-runner.ts`), and the microverse auto-commits
+ * (`bin/microverse-runner.ts`). They previously carried three copies of this expression, so the
+ * key literal and the degrade rule had three maintenance sites and no single source of truth.
+ *
+ * Reads {@link getDeployedVersion} — the SAME accessor every other version-reading call site
+ * uses, not a second version source. A `null`/blank/malformed read degrades to the fixed marker
+ * `unknown` rather than aborting the commit or omitting the trailer: `interpret-trailers`
+ * requires a non-empty value, and `unknown` is well-formed (a bare value, no whitespace) and
+ * non-semver by construction (fails `\d+\.\d+\.\d+`), satisfying both halves of the degrade
+ * requirement at once. Never throws.
+ */
+export function buildPickleRickVersionTrailer(): string {
+  const version = getDeployedVersion();
+  const value = typeof version === 'string' && version.trim() !== '' ? version.trim() : 'unknown';
+  return `Pickle-Rick: ${value}`;
+}
+
 function extensionRootSentinelExists(extensionRoot: string): boolean {
   return fs.existsSync(path.join(extensionRoot, EXTENSION_ROOT_SENTINEL)) ||
          fs.existsSync(path.join(extensionRoot, INSTALL_ROOT_SENTINEL));

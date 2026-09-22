@@ -44,7 +44,7 @@ import type { CitadelFinding } from '../services/citadel/reporter.js';
 import {
   writeStateFile,
   getExtensionRoot,
-  getDeployedVersion,
+  buildPickleRickVersionTrailer,
   getDataRoot,
   isoCompactStamp,
   sleep,
@@ -4531,18 +4531,6 @@ export function resetStoppedMicroverseState(state: MicroverseState, sessionDir: 
 }
 
 /**
- * The `Pickle-Rick: <version>` trailer VALUE for the two auto-commits this runner authors
- * IN-PROCESS, from the SAME accessor `getDeployedVersion()` (`services/pickle-utils.ts`) every
- * other version-reading call site uses — not a second version source. Degrades to the fixed
- * marker `unknown` on a `null` read, mirroring `resolvePickleRickVersionValue` in `mux-runner.ts`
- * (unexported there, and that file is out of scope for this ticket — hence a local twin here).
- */
-function resolveAutoCommitVersionTrailer(): string {
-  const version = getDeployedVersion();
-  return `Pickle-Rick: ${typeof version === 'string' && version.trim() !== '' ? version.trim() : 'unknown'}`;
-}
-
-/**
  * Renders `subject` with a parsed `Pickle-Rick: <version>` trailer via `git interpret-trailers`
  * — these two commits are authored IN-PROCESS and never see the `prepare-commit-msg` hook, so
  * they need their own writer (same reasoning as `stampPickleTicketTrailer` in `mux-runner.ts`).
@@ -4557,7 +4545,7 @@ function resolveAutoCommitVersionTrailer(): string {
  * `normalizeTrailerInputNewline`.
  */
 function stampAutoCommitVersionTrailer(workingDir: string, subject: string): string {
-  const versionTrailer = resolveAutoCommitVersionTrailer();
+  const versionTrailer = buildPickleRickVersionTrailer();
   const normalized = subject.replace(/\n*$/, '\n');
   try {
     const rendered = execFileSync(

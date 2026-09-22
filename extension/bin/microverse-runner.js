@@ -14,7 +14,7 @@ import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWork
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { rankFindings } from '../services/citadel/reporter.js';
-import { writeStateFile, getExtensionRoot, getDeployedVersion, getDataRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, loadPickleSettingsBag, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, } from '../services/pickle-utils.js';
+import { writeStateFile, getExtensionRoot, buildPickleRickVersionTrailer, getDataRoot, isoCompactStamp, sleep, Style, formatTime, formatLocalDateKey, printMinimalPanel, safeErrorMessage, displayMacNotification, ensureMonitorWindow, collectTickets, getMicroverseSettings, resolveJudgeBackend, loadPickleSettingsBag, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, } from '../services/pickle-utils.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 const sm = new StateManager();
 import { runIteration, loadRateLimitSettings, classifyIterationExit, computeRateLimitAction, killCurrentChild, wouldResetOrphanCommit, resolveApncMaxPassesWithoutClean, classifyMuxIteration, isParkExhausted, foldParkIntoEpisode, } from './mux-runner.js';
@@ -3494,17 +3494,6 @@ export function resetStoppedMicroverseState(state, sessionDir, log) {
     writeMicroverseState(sessionDir, state);
 }
 /**
- * The `Pickle-Rick: <version>` trailer VALUE for the two auto-commits this runner authors
- * IN-PROCESS, from the SAME accessor `getDeployedVersion()` (`services/pickle-utils.ts`) every
- * other version-reading call site uses — not a second version source. Degrades to the fixed
- * marker `unknown` on a `null` read, mirroring `resolvePickleRickVersionValue` in `mux-runner.ts`
- * (unexported there, and that file is out of scope for this ticket — hence a local twin here).
- */
-function resolveAutoCommitVersionTrailer() {
-    const version = getDeployedVersion();
-    return `Pickle-Rick: ${typeof version === 'string' && version.trim() !== '' ? version.trim() : 'unknown'}`;
-}
-/**
  * Renders `subject` with a parsed `Pickle-Rick: <version>` trailer via `git interpret-trailers`
  * — these two commits are authored IN-PROCESS and never see the `prepare-commit-msg` hook, so
  * they need their own writer (same reasoning as `stampPickleTicketTrailer` in `mux-runner.ts`).
@@ -3519,7 +3508,7 @@ function resolveAutoCommitVersionTrailer() {
  * `normalizeTrailerInputNewline`.
  */
 function stampAutoCommitVersionTrailer(workingDir, subject) {
-    const versionTrailer = resolveAutoCommitVersionTrailer();
+    const versionTrailer = buildPickleRickVersionTrailer();
     const normalized = subject.replace(/\n*$/, '\n');
     try {
         const rendered = execFileSync('git', ['interpret-trailers', '--if-exists', 'addIfDifferentNeighbor', '--trailer', versionTrailer], { cwd: workingDir, input: normalized, encoding: 'utf-8', timeout: 10_000 });

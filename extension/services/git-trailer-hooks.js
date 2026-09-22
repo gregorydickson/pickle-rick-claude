@@ -28,7 +28,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { getDeployedVersion } from './pickle-utils.js';
+import { buildPickleRickVersionTrailer } from './pickle-utils.js';
 const GIT_RESOLVE_TIMEOUT_MS = 10_000;
 function runGitBestEffort(args, cwd) {
     try {
@@ -136,18 +136,6 @@ function shellQuote(value) {
     return `'${value.replace(/'/g, "'\\''")}'`;
 }
 /**
- * The `Pickle-Rick: <version>` trailer VALUE the generated hook stamps, from the SAME accessor
- * `getDeployedVersion()` (`pickle-utils.ts`) every other version-reading call site uses — not a
- * second version source. Resolved ONCE in Node at script-generation time (mirrors how
- * `originalPrepareCommitMsgAbsPath` is already baked into the script as a literal) rather than
- * re-read per commit in shell. Degrades to the fixed marker `unknown` on a `null` read, matching
- * `mux-runner.ts`'s `resolvePickleRickVersionValue`.
- */
-function resolvePickleRickVersionValue() {
-    const version = getDeployedVersion();
-    return typeof version === 'string' && version.trim() !== '' ? version.trim() : 'unknown';
-}
-/**
  * The trailer is written with `git interpret-trailers`, git's own trailer WRITER —
  * symmetric with the `%(trailers:key=Pickle-Ticket,valueonly)` READER the consumer
  * uses. A bare `printf '\nPickle-Ticket: …' >> "$1"` is NOT equivalent: git parses
@@ -160,12 +148,16 @@ function resolvePickleRickVersionValue() {
  * parser; delegating keeps one implementation. The `printf` form survives ONLY as the
  * fallback arm: if `interpret-trailers` cannot run, degrade to the old append rather
  * than to no attribution at all.
+ *
+ * `versionTrailer` is the whole `Pickle-Rick: <version>` LINE, resolved by the caller via
+ * `buildPickleRickVersionTrailer` (`pickle-utils.ts`) ONCE in Node at script-generation time —
+ * mirroring how `originalPrepareCommitMsgAbsPath` is already baked into the script as a literal,
+ * rather than re-read per commit in shell.
  */
-function buildTrailerHookScript(originalPrepareCommitMsgAbsPath, versionTrailerValue) {
+function buildTrailerHookScript(originalPrepareCommitMsgAbsPath, versionTrailer) {
     const forward = originalPrepareCommitMsgAbsPath
         ? `exec ${shellQuote(originalPrepareCommitMsgAbsPath)} "$@"`
         : 'exit 0';
-    const versionTrailer = `Pickle-Rick: ${versionTrailerValue}`;
     return [
         '#!/bin/sh',
         // Unset, empty, and whitespace-only must no-op IDENTICALLY. `[ -z ]` alone is false for
@@ -218,7 +210,7 @@ export function materializeTrailerHooks(opts) {
         fs.mkdirSync(opts.managedDir, { recursive: true });
         const originalPrepareCommitMsg = path.join(preExistingDir, 'prepare-commit-msg');
         const hasOriginalPrepareCommitMsg = isExecutableFile(originalPrepareCommitMsg);
-        writeExecutableScript(path.join(opts.managedDir, 'prepare-commit-msg'), buildTrailerHookScript(hasOriginalPrepareCommitMsg ? originalPrepareCommitMsg : null, resolvePickleRickVersionValue()));
+        writeExecutableScript(path.join(opts.managedDir, 'prepare-commit-msg'), buildTrailerHookScript(hasOriginalPrepareCommitMsg ? originalPrepareCommitMsg : null, buildPickleRickVersionTrailer()));
         for (const hookName of listForwardableHooks(preExistingDir)) {
             writeExecutableScript(path.join(opts.managedDir, hookName), buildForwardingStubScript(path.join(preExistingDir, hookName)));
         }

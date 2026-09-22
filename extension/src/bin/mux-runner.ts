@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
-import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDeployedVersion, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, formatTime, getExtensionRoot, buildPickleRickVersionTrailer, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type RateLimitProbeVerdict, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState, type PostFinalVerdictDiagnostic } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
@@ -6827,20 +6827,6 @@ function normalizeTrailerInputNewline(message: string): string {
 }
 
 /**
- * The `Pickle-Rick: <version>` trailer VALUE — the authoring build's own version, from the
- * SAME accessor `getDeployedVersion()` (`services/pickle-utils.ts`) every other version-reading
- * call site uses; this is not a second version source. Degrades to the fixed marker `unknown`
- * on a `null` read (absent/malformed/non-string deployed manifest) rather than aborting the
- * commit or omitting the trailer — `interpret-trailers` requires a non-empty value, and
- * `unknown` is well-formed (a bare trailer value, no whitespace) and non-semver by construction
- * (fails `\d+\.\d+\.\d+`), satisfying both halves of the ticket's degrade requirement at once.
- */
-function resolvePickleRickVersionValue(): string {
-  const version = getDeployedVersion();
-  return typeof version === 'string' && version.trim() !== '' ? version.trim() : 'unknown';
-}
-
-/**
  * Render `message` carrying parsed `Pickle-Ticket: <ticketId>` and `Pickle-Rick: <version>`
  * trailers.
  *
@@ -6889,7 +6875,7 @@ export function stampPickleTicketTrailer(workingDir: string, message: string, ti
     return message;
   }
   const ticketTrailer = `Pickle-Ticket: ${ticketId}`;
-  const versionTrailer = `Pickle-Rick: ${resolvePickleRickVersionValue()}`;
+  const versionTrailer = buildPickleRickVersionTrailer();
   const rendered = silentDeathGit(
     [
       'interpret-trailers',
