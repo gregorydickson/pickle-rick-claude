@@ -1086,3 +1086,57 @@ test('settings-budget WARN: assignment form (`=`) is evidence, the other half of
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Ticket 2054239a regenerated tests/.serial-tests.json to carry the 12 files the settings-budget
+// source newly derives (the refined PRD's population AC). Membership alone is not enough: the emit
+// writes a UNION and never drops an entry, so a file whose `*_timeout_ms` literal was later removed
+// would stay listed while the audit no longer derives it -- the PRD's recorded residual for
+// worker-gate-offrepo-runs. The farm half therefore re-derives each file against an EMPTY manifest.
+const SETTINGS_BUDGET_CENSUS = [
+  'codegraph-settings', 'codegraph-index-cost', 'codegraph-service', 'mux-runner-between-ticket-gate',
+  'worker-gate-offrepo-runs', 'codegraph-degradation', 'install-script', 'status',
+  'codegraph-context-events-schema-conformance', 'codegraph-context-section', 'codegraph-staleness',
+  'settings-loader',
+];
+
+test('settings-budget census: all 12 derived files are in tests/.serial-tests.json', () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, '.serial-tests.json'), 'utf-8'),
+  );
+  assert.ok(Array.isArray(manifest.entries), 'manifest.entries must be an array');
+  const missing = SETTINGS_BUDGET_CENSUS.filter(
+    (name) => !manifest.entries.includes(`tests/${name}.test.js`),
+  );
+  assert.deepEqual(missing, []);
+});
+
+test('settings-budget census: each of the 12 files is DERIVED by the settings source, not merely listed', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-budget-census-farm-'));
+  try {
+    fs.symlinkSync(path.resolve(__dirname, '../scripts'), path.join(root, 'scripts'));
+    fs.mkdirSync(path.join(root, 'tests'));
+    fs.writeFileSync(path.join(root, 'tests', '.serial-tests.json'), JSON.stringify({ entries: [] }));
+    const scanDir = path.join(root, 'scan');
+    fs.mkdirSync(scanDir);
+    for (const name of SETTINGS_BUDGET_CENSUS) {
+      fs.copyFileSync(path.resolve(__dirname, `${name}.test.js`), path.join(scanDir, `${name}.test.js`));
+    }
+
+    const result = spawnSync(
+      'bash',
+      [path.join(root, 'scripts', 'audit-subprocess-heavy-tests.sh'), '--scan-root', scanDir],
+      { encoding: 'utf-8', timeout: 15000 },
+    );
+
+    const underived = SETTINGS_BUDGET_CENSUS.filter(
+      (name) =>
+        !new RegExp(
+          `^scan/${name}\\.test\\.js: load-sensitive subprocess spawn \\(settings budget \\w+_timeout_ms: \\d+\\) missing from tests/\\.serial-tests\\.json`,
+          'm',
+        ).test(result.stderr),
+    );
+    assert.deepEqual(underived, [], `stderr=${result.stderr}`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
