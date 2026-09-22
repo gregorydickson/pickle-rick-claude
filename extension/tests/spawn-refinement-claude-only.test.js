@@ -436,3 +436,69 @@ test('parseAndValidateArgs: --model without a usable value exits 1 naming the fl
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
+
+// Command-file wiring: `--model` is appended to the analyst invocation ONLY when the operator
+// supplied one. Line-based, so prose mentioning `--model` elsewhere cannot satisfy it.
+const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const CONDITIONAL_MODEL_LINE = 'When `REFINE_MODEL` is set, append `--model "${REFINE_MODEL}"` to the invocation above.';
+const REFINE_INVOCATION_RE = /^node .*\/spawn-refinement-team\.js" --prd /;
+
+function readRepoDoc(relPath) {
+    return fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf-8');
+}
+
+function assertConditionalModelWiring(text, label) {
+    const lines = text.split('\n');
+    const invocations = lines.flatMap((line, i) => (REFINE_INVOCATION_RE.test(line) ? [i] : []));
+    assert.strictEqual(invocations.length, 1, `${label}: exactly one refinement invocation line`);
+    assert.ok(!/--model\b/.test(lines[invocations[0]]), `${label}: the invocation must not pin --model unconditionally`);
+    const conditional = lines.flatMap((line, i) => (line === CONDITIONAL_MODEL_LINE ? [i] : []));
+    assert.strictEqual(conditional.length, 1, `${label}: exactly one conditional --model append line`);
+    const gap = conditional[0] - invocations[0];
+    assert.ok(gap > 0 && gap <= 4, `${label}: the conditional append must directly follow the invocation (gap=${gap})`);
+}
+
+function assertSettingsRowDocumented(text) {
+    const lines = text.split('\n');
+    const start = lines.indexOf('## Settings (pickle_settings.json)');
+    assert.ok(start !== -1, 'root CLAUDE.md must carry the settings section');
+    const nextHeading = lines.findIndex((line, i) => i > start && line.startsWith('## '));
+    const section = lines.slice(start, nextHeading === -1 ? undefined : nextHeading);
+    const rows = section.filter((line) => line.startsWith('| `default_refinement_model` | `string \\| null` | `null` |'));
+    assert.strictEqual(rows.length, 1, 'settings table must document default_refinement_model exactly once');
+}
+
+test('B-REFMODEL docs: both command files pass --model only when supplied', () => {
+    for (const rel of ['.claude/commands/pickle-refine-prd.md', '.claude/commands/portal-gun.md']) {
+        assertConditionalModelWiring(readRepoDoc(rel), rel);
+    }
+});
+
+test('B-REFMODEL docs: both command files parse --model <id> into REFINE_MODEL', () => {
+    const refine = readRepoDoc('.claude/commands/pickle-refine-prd.md').split('\n');
+    assert.ok(refine.some((line) => line.startsWith('`$ARGUMENTS`:') && line.includes('`--model <id>` → REFINE_MODEL')),
+        'pickle-refine-prd Step 0 must map --model <id> to REFINE_MODEL');
+    const portal = readRepoDoc('.claude/commands/portal-gun.md').split('\n');
+    assert.ok(portal.some((line) => line.startsWith('| `--model <id>` |')), 'portal-gun flag table must list --model <id>');
+    assert.ok(portal.some((line) => line.startsWith('Store:') && /`REFINE_MODEL`/.test(line)),
+        'portal-gun must store REFINE_MODEL');
+});
+
+test('B-REFMODEL docs: root CLAUDE.md settings table documents default_refinement_model', () => {
+    assertSettingsRowDocumented(readRepoDoc('CLAUDE.md'));
+});
+
+test('B-REFMODEL docs: the doc checkers red on the defects they exist to catch (negative controls)', () => {
+    const good = readRepoDoc('.claude/commands/pickle-refine-prd.md');
+    const unconditional = good.replace(/(spawn-refinement-team\.js" --prd [^\n]*)/, '$1 --model "${REFINE_MODEL}"');
+    assert.notStrictEqual(unconditional, good);
+    assert.throws(() => assertConditionalModelWiring(unconditional, 'mutant'), /unconditionally/);
+    assert.throws(() => assertConditionalModelWiring(good.replace(CONDITIONAL_MODEL_LINE, ''), 'mutant'),
+        /conditional --model append/);
+
+    const claudeMd = readRepoDoc('CLAUDE.md');
+    const row = claudeMd.split('\n').find((line) => line.startsWith('| `default_refinement_model` |'));
+    assert.ok(row, 'row must exist to build the moved-row mutant');
+    const moved = `${claudeMd.replace(`${row}\n`, '')}\n## Trailing\n\n${row}\n`;
+    assert.throws(() => assertSettingsRowDocumented(moved), /exactly once/);
+});
