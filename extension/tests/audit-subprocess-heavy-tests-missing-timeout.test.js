@@ -992,3 +992,40 @@ test('settings-budget WARN: a non-numeric value (an imported identifier) does no
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('settings-budget WARN: spawn evidence takes precedence over a smaller settings budget in the same file', () => {
+  // The header contract: settings-budget evidence "loses precedence to any spawn-evidence FAIL or WARN
+  // already found in the same file". The settings literal here is SMALLER than the spawn timeout, so a
+  // scanner that ran the minimum-literal pass first would report it instead of the spawn.
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource([
+        "const { spawnSync } = require('child_process');",
+        'const settings = { worker_test_gate_timeout_ms: 300 };',
+        "spawnSync('node', [__filename], { timeout: 8000 });",
+      ]),
+    );
+    const result = runAudit(dir);
+    assert.equal(result.status, 0, `expected advisory exit 0; stderr=${result.stderr}`);
+    assert.match(result.stderr, /spawn\(['"]node['"], script, \{ timeout: 8000 \}\)/);
+    assert.doesNotMatch(result.stderr, /settings budget/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: a quoted (JSON-shaped) key is evidence', () => {
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['export const raw = \'{ "worker_test_gate_timeout_ms": 250 }\';']),
+    );
+    const result = runAudit(dir);
+    assert.match(result.stderr, /settings budget worker_test_gate_timeout_ms: 250/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
