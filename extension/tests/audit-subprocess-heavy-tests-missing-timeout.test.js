@@ -849,3 +849,146 @@ test('AP-EXT-ITER236-01: every child_process entry point node exports is a missi
     }
   }
 });
+
+// Ticket 2054239a. `find_heavy_candidate` classified a file only by a literal `timeout: N` argument
+// inside a child_process spawn call, invisible to a test that instead declares its timing budget by
+// writing a settings fixture -- e.g. `tests/worker-gate-offrepo-runs.test.js:264`/`:284` writing
+// `{ worker_test_gate_timeout_ms: 250 }` to `pickle_settings.json`. These rows drive the new
+// `*_timeout_ms` settings-budget evidence source added alongside the spawn-call one.
+function settingsFixtureSource(bodyLines) {
+  return ['// @tier: fast', ...bodyLines, ''].join('\n');
+}
+
+test('settings-budget WARN: a fixture *_timeout_ms literal is seen and integrates with AC-A1a (non-zero exit)', () => {
+  // AC-A1a only escalates a WARN to a hard exit for a file that is BOTH under EXTENSION_ROOT (so
+  // `file_rel != file` after the prefix strip) and absent from `tests/.serial-tests.json`. A plain
+  // `--scan-root` outside the repo can never satisfy the first half (`is_in_manifest` compares
+  // against the deployed extension/tests manifest, and an absolute tmp path is never a member of
+  // it either way), so this test builds a minimal farm: the real scripts symlinked in (so the
+  // script under test is unmodified) plus a FRESH, empty `tests/.serial-tests.json` so the file
+  // under scan lives inside the farm's own EXTENSION_ROOT and is provably not in that manifest.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-budget-a1a-farm-'));
+  try {
+    const realScripts = path.resolve(__dirname, '../scripts');
+    fs.symlinkSync(realScripts, path.join(root, 'scripts'));
+    fs.mkdirSync(path.join(root, 'tests'));
+    fs.writeFileSync(
+      path.join(root, 'tests', '.serial-tests.json'),
+      JSON.stringify({ entries: [] }, null, 2),
+    );
+    const scanDir = path.join(root, 'scan');
+    fs.mkdirSync(scanDir);
+    fs.writeFileSync(
+      path.join(scanDir, 'fixture.test.js'),
+      settingsFixtureSource([
+        'export function run() {',
+        '  const settings = { worker_test_gate_timeout_ms: 250 };',
+        '  return settings;',
+        '}',
+      ]),
+    );
+
+    const result = spawnSync(
+      'bash',
+      [path.join(root, 'scripts', 'audit-subprocess-heavy-tests.sh'), '--scan-root', scanDir],
+      { encoding: 'utf-8', timeout: 15000 },
+    );
+
+    assert.notEqual(result.status, 0, `expected a non-zero exit (AC-A1a); stderr=${result.stderr}`);
+    assert.match(result.stderr, /fixture\.test\.js/);
+    assert.match(result.stderr, /settings budget worker_test_gate_timeout_ms: 250/);
+    // WARN, never FAIL: the settings-budget evidence source must never produce the hard-FAIL wording,
+    // however small the matched value is.
+    assert.doesNotMatch(result.stderr, /subprocess-heavy candidate not serialized/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: an over-15000ms literal does not trigger (over-trigger control)', () => {
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['export const x = { worker_test_gate_timeout_ms: 300000 };']),
+    );
+    const result = runAudit(dir);
+    assert.equal(result.status, 0, `expected exit 0; stderr=${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /settings budget/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: a literal exactly at the 15000ms boundary is flagged', () => {
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['export const x = { worker_test_gate_timeout_ms: 15000 };']),
+    );
+    const result = runAudit(dir);
+    assert.match(result.stderr, /settings budget worker_test_gate_timeout_ms: 15000/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: the reason names the true MINIMUM literal, not the first match', () => {
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['export const x = { outer_timeout_ms: 9000, inner_timeout_ms: 300 };']),
+    );
+    const result = runAudit(dir);
+    assert.match(result.stderr, /settings budget inner_timeout_ms: 300\b/);
+    assert.doesNotMatch(result.stderr, /settings budget outer_timeout_ms/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: arrow-style prose with no [:=] adjacency stays clean', () => {
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['// worker_test_gate_timeout_ms 250ms -> 6000ms', 'export const x = 1;']),
+    );
+    const result = runAudit(dir);
+    assert.equal(result.status, 0, `expected exit 0; stderr=${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /settings budget/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: colon-form prose (a comment) still counts as evidence', () => {
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['// worker_test_gate_timeout_ms: 9999', 'export const x = 1;']),
+    );
+    const result = runAudit(dir);
+    assert.match(result.stderr, /settings budget worker_test_gate_timeout_ms: 9999/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('settings-budget WARN: a non-numeric value (an imported identifier) does not match', () => {
+  const dir = tmpScanRoot();
+  try {
+    fs.writeFileSync(
+      path.join(dir, 'fixture.test.js'),
+      settingsFixtureSource(['export const x = { worker_test_gate_timeout_ms: SOME_CONST };']),
+    );
+    const result = runAudit(dir);
+    assert.equal(result.status, 0, `expected exit 0; stderr=${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /settings budget/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

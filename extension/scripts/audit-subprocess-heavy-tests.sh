@@ -151,12 +151,22 @@ declared_tier() {
 }
 
 # find_heavy_candidate <file> <fail_threshold_ms> <warn_threshold_ms>
-# Classifies the strongest subprocess-heavy spawn in the file by its timeout N:
+# Classifies the strongest subprocess-heavy timing evidence in the file by timeout/budget N:
 #   N <= FAIL_THRESHOLD            -> prints "FAIL <reason>", exit 0
 #   FAIL_THRESHOLD < N <= WARN     -> prints "WARN <reason>", exit 0
 #   N > WARN                       -> not a candidate, exit 1
 #   file could not be read         -> prints "UNMEASURED <code>", exit 2
 # FAIL takes precedence over WARN when both bands are present in one file.
+#
+# Two evidence sources feed the WARN band, over the SAME single `readFileSync` of the file:
+#   1. A spawn call's literal `timeout: N` argument (the SPAWN evidence, below).
+#   2. A `*_timeout_ms` fixture-budget literal (e.g. a test writing
+#      `{ worker_test_gate_timeout_ms: 250 }` into a settings fixture) -- a test can declare its own
+#      timing budget without ever calling a subprocess spawn function directly, and that budget is
+#      just as load-sensitive at c=8 as a literal spawn timeout. The MINIMUM matched `*_timeout_ms`
+#      literal in the file, if <= WARN_THRESHOLD, is reported as `settings budget <key>: <N>`. This
+#      evidence source is WARN-only -- it never produces FAIL, even when N <= FAIL_THRESHOLD -- and
+#      loses precedence to any spawn-evidence FAIL or WARN already found in the same file.
 #
 # Exit 1 means MEASURED and clean; anything above it means the file has no verdict at all.
 # node exits 1 for an uncaught throw too, so without the split a file this scan could not read
@@ -222,6 +232,28 @@ while ((m = spawnRe.exec(content)) !== null) {
 
 if (warnReason !== null) {
   process.stdout.write(`WARN ${warnReason}\n`);
+  process.exit(0);
+}
+
+// Settings-budget evidence: the MINIMUM matched *_timeout_ms literal <= WARN_THRESHOLD, over the
+// SAME `content` already read above -- no second readFileSync. The `[:=]` adjacency requirement
+// keeps arrow-style prose ("worker_test_gate_timeout_ms 250ms -> 6000ms") clean: there is no ':' or
+// '=' directly between the key and either number, so neither matches.
+const settingsRe = /\b(\w*_timeout_ms)["']?\s*[:=]\s*([0-9][0-9_]*)\b/g;
+let settingsReason = null;
+let minSettingsVal = Infinity;
+let sm;
+while ((sm = settingsRe.exec(content)) !== null) {
+  const key = sm[1];
+  const val = parseInt(sm[2].replace(/_/g, ''), 10);
+  if (val <= WARN_THRESHOLD && val < minSettingsVal) {
+    minSettingsVal = val;
+    settingsReason = `settings budget ${key}: ${val}`;
+  }
+}
+
+if (settingsReason !== null) {
+  process.stdout.write(`WARN ${settingsReason}\n`);
   process.exit(0);
 }
 
