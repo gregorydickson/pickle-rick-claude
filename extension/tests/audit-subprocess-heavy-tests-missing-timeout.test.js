@@ -859,6 +859,18 @@ function settingsFixtureSource(bodyLines) {
   return ['// @tier: fast', ...bodyLines, ''].join('\n');
 }
 
+// A settings-budget verdict for a --scan-root fixture outside the repo is the ADVISORY WARN line
+// (exit 0), and its reason is the parenthesised `settings budget <key>: <value>`. Anchoring on the
+// line start and the closing paren keeps `: 250` from being answered by `: 2500`, and a FAIL-band
+// or A1a line (neither starts with `WARN: `) from being mistaken for it.
+function assertSettingsWarn(result, key, value) {
+  assert.equal(result.status, 0, `expected advisory exit 0; stderr=${result.stderr}`);
+  assert.match(
+    result.stderr,
+    new RegExp(`^WARN: .*fixture\\.test\\.js: load-sensitive subprocess spawn \\(settings budget ${key}: ${value}\\) in `, 'm'),
+  );
+}
+
 test('settings-budget WARN: a fixture *_timeout_ms literal is seen and integrates with AC-A1a (non-zero exit)', () => {
   // AC-A1a only escalates a WARN to a hard exit for a file that is BOTH under EXTENSION_ROOT (so
   // `file_rel != file` after the prefix strip) and absent from `tests/.serial-tests.json`. A plain
@@ -896,7 +908,7 @@ test('settings-budget WARN: a fixture *_timeout_ms literal is seen and integrate
 
     assert.notEqual(result.status, 0, `expected a non-zero exit (AC-A1a); stderr=${result.stderr}`);
     assert.match(result.stderr, /fixture\.test\.js/);
-    assert.match(result.stderr, /settings budget worker_test_gate_timeout_ms: 250/);
+    assert.match(result.stderr, /\(settings budget worker_test_gate_timeout_ms: 250\) missing from tests\/\.serial-tests\.json/);
     // WARN, never FAIL: the settings-budget evidence source must never produce the hard-FAIL wording,
     // however small the matched value is.
     assert.doesNotMatch(result.stderr, /subprocess-heavy candidate not serialized/);
@@ -928,7 +940,7 @@ test('settings-budget WARN: a literal exactly at the 15000ms boundary is flagged
       settingsFixtureSource(['export const x = { worker_test_gate_timeout_ms: 15000 };']),
     );
     const result = runAudit(dir);
-    assert.match(result.stderr, /settings budget worker_test_gate_timeout_ms: 15000/);
+    assertSettingsWarn(result, 'worker_test_gate_timeout_ms', 15000);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -942,7 +954,7 @@ test('settings-budget WARN: the reason names the true MINIMUM literal, not the f
       settingsFixtureSource(['export const x = { outer_timeout_ms: 9000, inner_timeout_ms: 300 };']),
     );
     const result = runAudit(dir);
-    assert.match(result.stderr, /settings budget inner_timeout_ms: 300\b/);
+    assertSettingsWarn(result, 'inner_timeout_ms', 300);
     assert.doesNotMatch(result.stderr, /settings budget outer_timeout_ms/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -972,7 +984,7 @@ test('settings-budget WARN: colon-form prose (a comment) still counts as evidenc
       settingsFixtureSource(['// worker_test_gate_timeout_ms: 9999', 'export const x = 1;']),
     );
     const result = runAudit(dir);
-    assert.match(result.stderr, /settings budget worker_test_gate_timeout_ms: 9999/);
+    assertSettingsWarn(result, 'worker_test_gate_timeout_ms', 9999);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1024,7 +1036,7 @@ test('settings-budget WARN: a quoted (JSON-shaped) key is evidence', () => {
       settingsFixtureSource(['export const raw = \'{ "worker_test_gate_timeout_ms": 250 }\';']),
     );
     const result = runAudit(dir);
-    assert.match(result.stderr, /settings budget worker_test_gate_timeout_ms: 250/);
+    assertSettingsWarn(result, 'worker_test_gate_timeout_ms', 250);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
