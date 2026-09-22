@@ -104,43 +104,107 @@ Splitting that into a later ticket leaves a red audit between them.
 - **Do NOT hand-edit `tests/.serial-tests.json` entries** — regenerate it with `--emit-fast-manifest`.
 - **Do NOT remove any existing manifest ENTRY.** Re-wording `spawn-morty-worker-gate.test.js`'s `_evidence` note is in scope (see Simplification Review §4); deleting the entry is not.
 
-## Interface Contracts
+## Interface Contracts *(refined: requirements + codebase + risk-scope, 3 cycles)*
 
-**Inputs**: every test file under the audit's scan root (default `extension/tests`, or `--scan-root <dir>`).
-**Outputs**: for a `@tier: fast` file whose smallest numeric `*_timeout_ms` literal is
-≤ `SUBPROCESS_HEAVY_WARN_MS`, the same load-sensitive verdict a spawn `timeout:` literal in that band
-produces today — included in the `--emit-fast-manifest` union and subject to AC-A1a.
-**Invariants**: a file with no `*_timeout_ms` literal classifies exactly as today. A `*_timeout_ms` above
-the WARN band is not flagged. The FAIL arm's verdicts are unchanged for every file. The audit exits 0
-on the committed tree after regeneration.
-**Errors**: a non-numeric value (`worker_test_gate_timeout_ms: SOME_CONST`) is not classified — same
-rule as a non-numeric spawn timeout (`:71-73`).
+**Inputs**: every test file under the audit's scan root (default `extension/tests`, or `--scan-root <dir>`),
+read ONCE by the existing single `readFileSync` in `find_heavy_candidate` (`:178`). **Do not add a second
+read path**: the file's read-failure invariant (`AP-EXT-ITER224-01`/`AP-EXT-ITER225-01` in
+`tests/audit-subprocess-heavy-tests-missing-timeout.test.js`) depends on there being one.
+**Match rule (pinned)**: `/\b\w*_timeout_ms["']?\s*[:=]\s*([0-9][0-9_]*)\b/g` over the RAW text, comments
+and strings included. This follows the existing precedent `AP-EXT-ITER92-01`: the scanner strips no
+comments, and prose is fixed by rewording, never by teaching the audit to skip comments. The `[:=]`
+adjacency is what keeps real prose clean. Measured prose that must NOT match:
+- `spawn-morty-worker-gate.test.js:870` (`worker_test_gate_timeout_ms 250ms -> 6000ms`)
+- `worker-gate-offrepo-runs.test.js:248` (key in backticks, no number)
+- `install-script.test.js:387` (`worker_test_gate_timeout_ms: ${…}`, not numeric)
 
-## Test Expectations
+**Regex measured at HEAD `2e8d6860`:** 0 matches on each of the three prose lines above. It flags
+12/12 census files and **13** `@tier: fast` files in total: the 12 plus `spawn-morty-worker-gate.test.js`,
+which is already in the manifest. No file outside the census is newly admitted.
+**Verdict**: a file is load-sensitive when ANY matched value is `<= SUBPROCESS_HEAVY_WARN_MS`, including
+values `<= SUBPROCESS_HEAVY_TIMEOUT_MS`. **A settings budget is ALWAYS reported in the WARN band, never
+FAIL.** The FAIL arm stays spawn-only and `bash`/`sh`-only.
+**Reason text**: the SMALLEST matched value (a true minimum, not the existing first-match
+`warnReason === null` pattern at `:217`), rendered as `settings budget <key>: <N>`. It must NOT reuse the
+`spawn(${program}, …)` template: no spawn exists, and that template would fabricate one. The outer
+AC-A1a line's wording (`load-sensitive subprocess spawn (<reason>) missing from tests/.serial-tests.json`)
+is pinned by a test; leave it as it is.
+**Precedence within a file**: a spawn FAIL still wins. Otherwise the spawn WARN reason is kept if present;
+if not, the settings reason is used.
+**Invariants**: a file with no matching literal classifies exactly as today. A value above the WARN band
+is not flagged. The FAIL arm's verdicts are unchanged for every file. The audit exits 0 on the committed
+tree after regeneration.
+**Errors**: a non-numeric value (`worker_test_gate_timeout_ms: SOME_CONST`, `${…}`) does not match, so it
+is not classified. This is the same rule as a non-numeric spawn timeout (`:71-73`).
+**Docblock**: `find_heavy_candidate`'s contract comment (`:153-160`, "strongest subprocess-heavy
+spawn") must be updated to name both evidence sources.
 
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| fixture budget is seen | `extension/tests/audit-subprocess-heavy-tests-missing-timeout.test.js` | `--scan-root` with one `@tier: fast` file writing `{ worker_test_gate_timeout_ms: 250 }`, no manifest entry | audit exits non-zero and names the file |
-| above-band is NOT seen (OVER-TRIGGER CONTROL) | same | same file with `300000` | audit exits 0 |
-| FAIL arm unchanged | same | the fixture file is reported under the load-sensitive/AC-A1a wording, not the `subprocess-heavy candidate not serialized` FAIL wording | FAIL wording absent |
-| regeneration covers the target | n/a — verify command | the committed manifest | contains `tests/worker-gate-offrepo-runs.test.js` |
+## Test Expectations *(refined)*
 
-## Acceptance Criteria
+All rows are hosted in `extension/tests/audit-subprocess-heavy-tests-missing-timeout.test.js` (an existing
+16-test file; extend it, do not create a new file). Each row runs the audit over a `--scan-root` fixture of
+`@tier: fast` files with no manifest entry.
 
-- `grep -c 'worker-gate-offrepo-runs' extension/tests/.serial-tests.json` returns a value `>= 1` — **measured 0 at HEAD**.
-- `grep -c '_timeout_ms' extension/scripts/audit-subprocess-heavy-tests.sh` returns a value `>= 1` — **measured 0 at HEAD**.
-- `cd extension && bash scripts/audit-subprocess-heavy-tests.sh` exits `0` on the committed tree (measured 0 at HEAD; must STAY 0 after regeneration).
+| Criterion | Fixture | Assertion |
+|:---|:---|:---|
+| fixture budget is seen | writes `{ worker_test_gate_timeout_ms: 250 }` | exits non-zero; names the file; reason contains `settings budget` and `250` |
+| WARN, never FAIL | same 250 fixture | output lacks the `subprocess-heavy candidate not serialized` FAIL wording |
+| above band is NOT seen (OVER-TRIGGER CONTROL) | `worker_test_gate_timeout_ms: 300000` | exits 0 |
+| boundary | exactly `15000` | flagged (`<=`, same as the spawn comparison) |
+| true minimum | `outer_timeout_ms: 9000` then `inner_timeout_ms: 300` | reason names `300`, not `9000` |
+| arrow prose is clean | a `//` comment `worker_test_gate_timeout_ms 250ms -> 6000ms` only | exits 0 |
+| colon prose counts (AP-EXT-ITER92-01 precedent) | `// worker_test_gate_timeout_ms: 9999` only | flagged |
+| non-numeric | `worker_test_gate_timeout_ms: SOME_CONST` | exits 0 |
+
+## Acceptance Criteria *(refined — every predicate run at HEAD `2e8d6860`)*
+
+- `grep -c 'worker-gate-offrepo-runs' extension/tests/.serial-tests.json` returns a value `>= 1` — **measured 0**.
+- **Population, not just the headline file:** from `extension/`, the loop
+  `for f in codegraph-settings codegraph-index-cost codegraph-service mux-runner-between-ticket-gate worker-gate-offrepo-runs codegraph-degradation install-script status codegraph-context-events-schema-conformance codegraph-context-section codegraph-staleness settings-loader; do grep -q "\"tests/$f.test.js\"" tests/.serial-tests.json || echo "$f"; done | wc -l`
+  returns `0` — **measured 12**. An implementation that derives only the headline file fails this.
+- `grep -c '_timeout_ms' extension/scripts/audit-subprocess-heavy-tests.sh` returns a value `>= 1` — **measured 0**.
+- `cd extension && bash scripts/audit-subprocess-heavy-tests.sh` exits `0` on the committed tree (measured 0; must STAY 0 after regeneration).
 - `cd extension && node --test tests/audit-subprocess-heavy-tests-missing-timeout.test.js tests/audit-subprocess-heavy-tests.test.js` exits `0`.
-- a test asserts a fixture-declared 250ms budget is reported (**measured blind at HEAD: exit 0, `OK`**), and an over-trigger control asserts a 300000ms one is not.
 - `cd extension && ./node_modules/.bin/tsc --noEmit && npx eslint src/ --max-warnings=0` exits `0`.
+- `spawn-morty-worker-gate.test.js`'s `_evidence` note in `tests/.serial-tests.json` no longer says `NOT statically derivable`, and its entry is still present.
 
 ## Mutation Verification (BINDING, both directions)
 
 1. Delete the new `*_timeout_ms` evidence source → the fixture-budget test RED, the over-trigger control GREEN.
 2. Drop the band comparison (flag every `*_timeout_ms` literal) → the over-trigger control RED.
+3. Replace the minimum with the existing first-match pattern → the true-minimum row RED.
+4. Relax `[:=]` adjacency to "key then any number nearby" → the arrow-prose row RED.
 
 ## FALSIFY — take these before building
 
 - `grep -c 'worker-gate-offrepo' extension/tests/.serial-tests.json` non-zero → already serialized; close as already-satisfied.
 - The `--scan-root` probe above exits non-zero at HEAD → the audit already sees fixture budgets; re-derive.
 - `sed -n '207,208p' extension/scripts/audit-subprocess-heavy-tests.sh` no longer shows the `timeout:` match → the classifier moved; re-locate before extending.
+
+## Known residual — out of scope, recorded
+
+`makeFakeNpmFixture(behavior, { timeoutMs = 120_000 })` (`tests/worker-gate-offrepo-runs.test.js:1080`)
+writes `worker_test_gate_timeout_ms` at RUNTIME, and `:1150` passes `{ timeoutMs: 1500 }`, an in-band
+live budget. A camelCase `timeoutMs` parameter cannot match the suffix rule. **This file is classified
+correctly today only because the literals at `:264`/`:284` sit beside that call.** Remove them and the
+file silently returns to the parallel pool. An indirected budget is beyond what a static text scan can
+see; the pipeline records this and does not chase it.
+
+---
+
+# Refinement Record *(refined: requirements + codebase + risk-scope, 3 cycles, 2026-09-22)*
+
+Nine analyses on `claude-sonnet-5` routed by **`--model`**. This is the first live use of #46's knob:
+9/9 analyses written, 0 refusals, `ANTHROPIC_MODEL` unset. **Every finding below was re-verified
+against HEAD before being applied.**
+
+| # | analyst | finding | disposition |
+|---|---|---|---|
+| 1 | codebase | "smallest" in the contract vs first-match at `:217`: the census used a true minimum, and the code pattern the PRD pointed at does not compute one | **applied**: minimum pinned; true-minimum test row + mutation 3 |
+| 2 | requirements, codebase | the comment/string semantics were unspecified; precedent `AP-EXT-ITER92-01` (`:665`) already decides this for the existing source: raw text, reword the prose | **applied**: raw text + `[:=]` adjacency; arrow-prose and colon-prose rows |
+| 3 | risk-scope | reusing `spawn(${program}, …)` would fabricate a spawn for 11 of 12 files with 0 spawns | **applied**: separate `settings budget <key>: <N>` reason; outer pinned wording unchanged |
+| 4 | risk-scope, requirements | the ACs checked the headline file only; an implementation deriving 1 of 12 passes | **applied**: population AC, measured 12 absent at HEAD |
+| 5 | requirements | the `makeFakeNpmFixture` indirection is LIVE (`:1150` → 1500), not dormant, and today's coverage is coincidental | **recorded as a residual**; out of scope for a static scan |
+| 6 | requirements, codebase | single-read invariant (`AP-EXT-ITER224/225-01`) and the stale docblock (`:153-160`) | **applied** to Interface Contracts |
+| 7 | requirements | no boundary row at 15000 | **applied** |
+| 8 | (author, pre-refinement) | the widening makes `spawn-morty-worker-gate.test.js` derivable | **applied**: `_evidence` reword AC |
