@@ -368,6 +368,27 @@ function assertEveryRoleCarriesModel(byRole, model) {
 test('B-REFMODEL: --model reaches every analyst spawn through the real orchestration', () => {
     assertEveryRoleCarriesModel(runAndReadAnalystArgv({ extraArgs: ['--model', 'm-e2e-refmodel'] }), 'm-e2e-refmodel');
 });
+
+// NEGATIVE CONTROL at the wire: an unconditional pin (e.g. a hardcoded fallback model) passes
+// every reaches-the-spawn test above; only this one reds it.
+test('B-REFMODEL: no flag and no setting leaves every analyst argv without --model (CONTROL)', () => {
+    for (const [role, argv] of runAndReadAnalystArgv({ settings: { default_refinement_cycles: 1 } })) {
+        assert.ok(!argv.includes('--model'), `${role}: argv must not carry --model: ${JSON.stringify(argv)}`);
+    }
+});
+
+test('B-REFMODEL: default_refinement_model from the settings file reaches every analyst, trimmed', () => {
+    const byRole = runAndReadAnalystArgv({ settings: { default_refinement_model: '  m-from-settings  ' } });
+    assertEveryRoleCarriesModel(byRole, 'm-from-settings');
+});
+
+test('B-REFMODEL: --model beats default_refinement_model at every analyst spawn', () => {
+    const byRole = runAndReadAnalystArgv({
+        settings: { default_refinement_model: 'm-from-settings' },
+        extraArgs: ['--model', 'm-from-flag'],
+    });
+    assertEveryRoleCarriesModel(byRole, 'm-from-flag');
+});
 test('parseAndValidateArgs: --model value is trimmed; absent flag yields undefined', () => {
     const dir = mkTmp('spawn-refine-claude-parse-');
     try {
