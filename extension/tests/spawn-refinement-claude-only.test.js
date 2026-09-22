@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 // PRD refinement is a Claude-only phase. Even if the parent session opted into
 // codex (state.backend === 'codex') or the environment says PICKLE_BACKEND=codex,
@@ -276,17 +278,56 @@ test('resolveRuntime: model is undefined when neither flag nor setting is presen
     }
 });
 
-test('buildRefinementWorkerInvocation: every analyst role prompt carries the same resolved model', () => {
-    const roles = ['requirements', 'codebase', 'risk-scope'];
-    const invocations = roles.map((role) => buildRefinementWorkerInvocation({
-        prompt: `analyze as ${role}`,
-        addDirs: [],
-        maxTurns: 1,
-        model: 'm-shared',
-    }));
-    for (const inv of invocations) {
-        const modelIdx = inv.args.indexOf('--model');
-        assert.ok(modelIdx !== -1, 'every role invocation must carry --model');
-        assert.strictEqual(inv.args[modelIdx + 1], 'm-shared');
+// Driven through the real binary so every hop is observed: --model -> resolveRuntime ->
+// orchestrateCycles -> runCycle -> startAnalystProcess -> argv. Calling the builder directly
+// would leave those hops unpinned — deleting any one of them kept every other test green.
+const REFINE_BIN = fileURLToPath(new URL('../bin/spawn-refinement-team.js', import.meta.url));
+const MODEL_STUB_SENTINEL = 'b-refmodel-stub-argv';
+
+function runRefinementBinary(sandbox, extraArgs) {
+    return spawnSync(
+        process.execPath,
+        [REFINE_BIN, '--prd', path.join(sandbox.sessionDir, 'prd.md'), '--session-dir', sandbox.sessionDir, ...extraArgs],
+        {
+            encoding: 'utf-8',
+            timeout: 120_000,
+            env: { ...process.env, PATH: `${sandbox.stubDir}${path.delimiter}${process.env.PATH ?? ''}` },
+        },
+    );
+}
+
+function makeRefinementSandbox() {
+    const root = mkTmp('spawn-refine-claude-model-e2e-');
+    const stubDir = path.join(root, 'bin');
+    const sessionDir = path.join(root, 'session');
+    fs.mkdirSync(stubDir, { recursive: true });
+    fs.mkdirSync(sessionDir, { recursive: true });
+    // Echo argv to stderr (it lands in the per-role analyst log) and refuse, so the run
+    // takes the fast failure branch with no network.
+    fs.writeFileSync(path.join(stubDir, 'claude'), `#!/bin/sh\necho "${MODEL_STUB_SENTINEL} $*" >&2\nexit 1\n`);
+    fs.chmodSync(path.join(stubDir, 'claude'), 0o755);
+    fs.writeFileSync(path.join(sessionDir, 'prd.md'), '# Probe PRD\n\n## Requirements\n\n- R1 do a thing\n');
+    return { root, stubDir, sessionDir };
+}
+
+test('B-REFMODEL: --model reaches every analyst spawn through the real orchestration', () => {
+    const sandbox = makeRefinementSandbox();
+    const model = 'm-e2e-refmodel';
+    try {
+        const result = runRefinementBinary(sandbox, ['--cycles', '1', '--timeout', '15', '--model', model]);
+        const refinementDir = path.join(sandbox.sessionDir, 'refinement');
+        const stubLines = fs.readdirSync(refinementDir)
+            .filter((entry) => entry.endsWith('.log'))
+            .flatMap((entry) => fs.readFileSync(path.join(refinementDir, entry), 'utf-8').split('\n'))
+            .filter((line) => line.startsWith(MODEL_STUB_SENTINEL));
+        // Without this the row could pass for the wrong reason: a PATH that failed to shadow
+        // `claude` would never write the sentinel, and zero lines would prove nothing.
+        assert.strictEqual(stubLines.length, 3,
+            `the claude stub must run once per analyst role (status=${result.status}, stderr=${result.stderr})`);
+        for (const line of stubLines) {
+            assert.ok(line.includes(`--model ${model}`), `every analyst argv must carry the model: ${line}`);
+        }
+    } finally {
+        fs.rmSync(sandbox.root, { recursive: true, force: true });
     }
 });
