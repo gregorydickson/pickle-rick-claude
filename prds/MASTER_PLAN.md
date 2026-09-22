@@ -293,12 +293,25 @@ the 1800 floor, `GATE_END` with matching `RUN_ID=20260922T034730Z-6919`. **Not t
 Closed on measured evidence: **#45** (R1+R2), **#44** (R4), **#42** (R3). Tracker open: **#46**
 (refinement model override), #43, #5 — all non-bug.
 
-**R3's blast radius, measured not hoped:** citadel advisory findings **5 → 57** on the first run under
-the collapsed threshold; **52 of 57 are `crossfile-behavior-drift`**. The risk analyst's P0 was right.
-The threshold is a true collapse — `const REMEDIATION_SEVERITY_THRESHOLD: CitadelSeverity = 'High'`
-(`pipeline-runner.ts:3066`), the strict/non-strict distinction deleted outright, cap untouched at 3.
-**Whether a cap of 3 is now systematically exhausted is the open question that 57 earns** — file it
-separately with a measured exhaustion rate, do NOT raise the cap on this number alone.
+**⛔ RETRACTED 2026-09-22: the 5 → 57 jump is NOT R3's blast radius.** I attributed a RUNTIME
+measurement to a SOURCE change that was never deployed. The deployed `pipeline-runner.js` was built
+**2026-09-21T01:48:56Z**; R3's commit `8200c734` landed **18:08:09Z**, ~17 hours later, and nothing ran
+`install.sh` in between — so the citadel phase executed the OLD threshold. Proof by content, not by
+version: the deployed binary carried `strict ? 'High' : 'Critical'` (count 1) and zero
+`REMEDIATION_SEVERITY_THRESHOLD`. **R3's blast radius is still UNMEASURED.** 57 is just this bundle's
+diff against the old threshold; 52 of the 57 are `crossfile-behavior-drift`, a diff-size-driven class.
+
+**This is the isolation rule biting the babysitter, not the product.** Root `CLAUDE.md` says a fix is
+live only after `install.sh`, never when its commit lands. Reading a runtime number and crediting it to
+an undeployed source change is the same error class this repo files against its own instruments.
+
+**Standing rule this earns: never attribute a runtime measurement to a source change without first
+proving the change was DEPLOYED — by content (`grep` the deployed binary), never by version or date.**
+
+The threshold change itself is real and is a true collapse — `const REMEDIATION_SEVERITY_THRESHOLD:
+CitadelSeverity = 'High'` (`pipeline-runner.ts:3066`), the strict/non-strict distinction deleted
+outright, cap untouched at 3. It went live at the **2026-09-22 deploy** (verified by content). Its
+blast radius must be measured on the NEXT run, and the cap question stays unfiled until then.
 
 **⚠ RESIDUAL — `done_over_unmeasured_worker_gate_tests:35f945c6,5199ea3a`.** Two tickets flipped Done
 over an EMPTY-because-unmeasured `worker_gate_tests_verdict` ("no corroborating fail"). Both are
