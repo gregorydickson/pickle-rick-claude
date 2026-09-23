@@ -240,7 +240,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 - **Refinement refusals on Opus 5.5 — FIXED (`81e1c2e9`, hand-built at operator direction).** Cause: ONE sentence in the static `ANALYST_PERSONA` (`spawn-refinement-team.ts`), which is why #46's control PRD also failed ("model, not content" was wrong). The sentence was deleted, not reworded. Deployed prompts on `claude-opus-5-5`: 15/15 `end_turn` (6 + 9 across two checks); pre-fix control 3/3 refused. The sentence is refused by Sonnet 5 too, and it is refused wherever it appears. The pipeline attempt died because the manager quoted it into the ticket. **Bisect refusals by `stop_reason` only; never quote the trigger into a PRD, ticket or prompt.**
 - **Linux CI red since 2026-09-16 — FIXED (`d6e036fd`).** Two fast-tier tests the macOS gate cannot see: `AP-EXT-ITER303-01` spawned a real `claude` (missing `PICKLE_JUDGE_LEGACY_SPAWN=1`), and the disposition-map wiring control asserted Node 24's non-TTY reporter output, while Node 22 (CI, `engines.node`) emits TAP. **A local gate run under Node 24 does not cover CI's Node 22 output format.**
-- **Open decision:** v2.1.1's Release workflow is red only because of those tests. Either re-run the release on a new tag `v2.1.2` at `d6e036fd`, or leave it; the runtime code is identical.
+- **v2.1.1 left as-is (operator decision, 2026-09-23).** Its Release workflow stays red on the two test files fixed in `d6e036fd`; the runtime code is identical. No `v2.1.2` for this.
 
 ### ▶ SHIPPED THIS SESSION
 
