@@ -1611,10 +1611,10 @@ function chooseInProgressWinner(inProgress: readonly { id: string | null }[], cu
   return inProgress.find(ticket => !!ticket.id)?.id ?? currentTicket;
 }
 
-export interface TicketDesyncResolution {
-  winner: string | null;
-  action: 'sync' | 'noop';
-}
+/** `sync` always names a winner; with no pointer and nothing In Progress there is nothing to sync. */
+export type TicketDesyncResolution =
+  | { winner: string; action: 'sync' }
+  | { winner: string | null; action: 'noop' };
 
 function collectFrontmatterInProgress(frontmatterStatuses: Map<string, TicketStatus>): { id: string }[] {
   const inProgress: { id: string }[] = [];
@@ -1648,13 +1648,13 @@ function shouldSkipDesyncSync(state: State, inProgress: readonly { id: string }[
   return currentStatus === 'failed' || isTerminalTicketStatus(currentStatus);
 }
 
-export function resolveTicketDesyncWinner(state: State, frontmatterStatuses: Map<string, TicketStatus>, _sessionDir = ''): TicketDesyncResolution {
+export function resolveTicketDesyncWinner(state: State, frontmatterStatuses: Map<string, TicketStatus>): TicketDesyncResolution {
   const currentTicket = typeof state.current_ticket === 'string' && state.current_ticket.length > 0
     ? state.current_ticket
     : null;
   const inProgress = collectFrontmatterInProgress(frontmatterStatuses);
   const winner = chooseInProgressWinner(inProgress, currentTicket);
-  if (frontmatterStatuses.size === 0) {
+  if (frontmatterStatuses.size === 0 || !winner) {
     return { winner: null, action: 'noop' };
   }
   if (alreadyInSync(state, inProgress)) {
@@ -1720,11 +1720,10 @@ function reconcileTicketStateDesync(
   }
   const state = readRunnerState(statePath);
   const frontmatterStatuses = readTicketStatusMap(sessionDir);
-  const resolution = resolveTicketDesyncWinner(state, frontmatterStatuses, sessionDir);
+  const resolution = resolveTicketDesyncWinner(state, frontmatterStatuses);
   if (resolution.action === 'noop') return state;
 
   const winner = resolution.winner;
-  if (!winner) return readRunnerState(statePath);
   const inProgress = reconcileInProgressSet(tickets, frontmatterStatuses);
 
   logActivity({
@@ -1732,12 +1731,12 @@ function reconcileTicketStateDesync(
     source: 'pickle',
     session: path.basename(sessionDir),
     iteration,
-    ticket: winner ?? currentTicket ?? undefined,
-    reason: `current_ticket=${currentTicket ?? 'none'} in_progress=${inProgress.map(t => t.id || '?').join(',') || 'none'}`,
+    ticket: winner,
+    reason: `current_ticket=${currentTicket ?? 'none'} in_progress=${inProgress.map(t => t.id).join(',') || 'none'}`,
   });
   applyTicketDesyncWrites(sessionDir, winner, inProgress);
 
-  if (winner && winner !== currentTicket) {
+  if (winner !== currentTicket) {
     return updateMuxLifecycleState(statePath, {
       currentTicket: winner,
       step: inferTicketLifecycleStep(sessionDir, winner, state.step),

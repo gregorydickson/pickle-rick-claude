@@ -1009,9 +1009,9 @@ function reconcileTicketStateDesyncOnResume(sessionDir: string, statePath: strin
 
   const state = sm.read(statePath);
   const statuses = readTicketStatusMap(sessionDir);
-  const resolution = resolveTicketDesyncWinner(state, statuses, sessionDir);
+  const resolution = resolveTicketDesyncWinner(state, statuses);
+  if (resolution.action === 'noop') return state;
   const winner = resolution.winner;
-  if (resolution.action === 'noop' || !winner) return state;
   const inProgressIds = [...statuses].filter(([, status]) => normalizeTicketStatus(status) === 'in progress').map(([id]) => id);
 
   logActivity({

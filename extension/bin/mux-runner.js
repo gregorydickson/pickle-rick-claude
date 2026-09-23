@@ -1409,13 +1409,13 @@ function shouldSkipDesyncSync(state, inProgress, frontmatterStatuses) {
     const currentStatus = frontmatterStatusForCurrentTicket(state, frontmatterStatuses);
     return currentStatus === 'failed' || isTerminalTicketStatus(currentStatus);
 }
-export function resolveTicketDesyncWinner(state, frontmatterStatuses, _sessionDir = '') {
+export function resolveTicketDesyncWinner(state, frontmatterStatuses) {
     const currentTicket = typeof state.current_ticket === 'string' && state.current_ticket.length > 0
         ? state.current_ticket
         : null;
     const inProgress = collectFrontmatterInProgress(frontmatterStatuses);
     const winner = chooseInProgressWinner(inProgress, currentTicket);
-    if (frontmatterStatuses.size === 0) {
+    if (frontmatterStatuses.size === 0 || !winner) {
         return { winner: null, action: 'noop' };
     }
     if (alreadyInSync(state, inProgress)) {
@@ -1471,23 +1471,21 @@ function reconcileTicketStateDesync(statePath, sessionDir, currentTicket, iterat
     }
     const state = readRunnerState(statePath);
     const frontmatterStatuses = readTicketStatusMap(sessionDir);
-    const resolution = resolveTicketDesyncWinner(state, frontmatterStatuses, sessionDir);
+    const resolution = resolveTicketDesyncWinner(state, frontmatterStatuses);
     if (resolution.action === 'noop')
         return state;
     const winner = resolution.winner;
-    if (!winner)
-        return readRunnerState(statePath);
     const inProgress = reconcileInProgressSet(tickets, frontmatterStatuses);
     logActivity({
         event: 'ticket_state_desync_detected',
         source: 'pickle',
         session: path.basename(sessionDir),
         iteration,
-        ticket: winner ?? currentTicket ?? undefined,
-        reason: `current_ticket=${currentTicket ?? 'none'} in_progress=${inProgress.map(t => t.id || '?').join(',') || 'none'}`,
+        ticket: winner,
+        reason: `current_ticket=${currentTicket ?? 'none'} in_progress=${inProgress.map(t => t.id).join(',') || 'none'}`,
     });
     applyTicketDesyncWrites(sessionDir, winner, inProgress);
-    if (winner && winner !== currentTicket) {
+    if (winner !== currentTicket) {
         return updateMuxLifecycleState(statePath, {
             currentTicket: winner,
             step: inferTicketLifecycleStep(sessionDir, winner, state.step),
