@@ -636,14 +636,14 @@ function wiringFindInnerChildPid(outerPid, timeoutMs) {
   return null;
 }
 
-function spawnRealTestRunner(fixture) {
+function spawnRealTestRunner(fixture, extraArgs = []) {
   // Scrub NODE_TEST_CONTEXT/NODE_TEST_WORKER_ID: this file runs under `node --test` itself,
   // and those two vars leaking into the spawned child change its reporting behavior (mirrors
   // test-runner-timeout.test.js's spawnRunner()).
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   delete env.NODE_TEST_WORKER_ID;
-  const child = spawn(process.execPath, [WIRING_TEST_RUNNER_JS, fixture], {
+  const child = spawn(process.execPath, [WIRING_TEST_RUNNER_JS, ...extraArgs, fixture], {
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 30000,
     env,
@@ -721,9 +721,17 @@ test('wiring: a REAL signal-killed test-runner.js child\'s captured output reach
 });
 
 // d5b5add3 (AC-T1-3, the fail direction end to end): the hand-authored GENUINE_FAILURE_OUTPUT above
-// parses to a TAP name and never reaches the attribution, so it stays GREEN under an always-attribute
-// producer or parser. A REAL failing test-runner child parses as a script failure — the attribution IS
-// reached — so this control reds if either side invents a signal the child never died by.
+// parses to a TAP name and never reaches the signal-attribution path, so it stays GREEN under an
+// always-attribute producer or parser. This control drives the SAME shape through a REAL child so
+// the fixture cannot drift from what test-runner.js actually emits — it reds if either side invents
+// a signal the child never died by, or fails to attribute the real failure by name at all.
+//
+// `node --test`'s default reporter (TAP vs "spec") is TTY-detected and ALSO changed across Node
+// majors — verified: Node 22 (this repo's pinned `engines.node`, and what CI runs) emits TAP for a
+// non-TTY child exactly like production's `npm run test:fast`, while Node 24 emits the unicode
+// "spec" format for the identical non-TTY spawn. `--test-reporter=tap` pins the child to the format
+// `parseBetweenTicketFastGateFailures` actually parses, so this control is deterministic across the
+// Node major running the test file, not just the Node major running the fixture's `assert.fail`.
 test('wiring (control): a REAL genuinely-failing test-runner.js child reaches post_final_verdict.dimensions with no signal attribution', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wiring-fail-'));
   const fixture = path.join(dir, 'fail.test.js');
@@ -737,13 +745,18 @@ test('wiring (control): a REAL genuinely-failing test-runner.js child reaches po
       ].join('\n'),
     );
 
-    const { captured, closed } = spawnRealTestRunner(fixture);
+    const { captured, closed } = spawnRealTestRunner(fixture, ['--test-reporter=tap']);
     const code = await closed;
     assert.equal(code, 1, 'a genuinely failing tier exits 1');
 
     const failures = parseBetweenTicketFastGateFailures(`${captured.stdout}\n${captured.stderr}`, dir);
-    assert.equal(failures.length, 1);
-    assert.equal(failures[0].script_failure, true, 'the real output must reach the attribution, or this control is vacuous');
+    assert.equal(failures.length, 1, 'the real output must reach the attribution, or this control is vacuous');
+    assert.equal(
+      failures[0].script_failure,
+      undefined,
+      'a real TAP failure is never marked script_failure — see the hand-authored GENUINE_FAILURE_OUTPUT case above',
+    );
+    assert.equal(failures[0].name, 'fails', 'the real parser must attribute the REAL captured test name');
 
     const result = classifyPostFinalVerdict({
       gate: { ok: false, failures, timed_out: false, timeout_ms: null, measured: true },

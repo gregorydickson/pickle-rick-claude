@@ -2918,6 +2918,11 @@ test('WIRE: surface -> per-line drop -> ledger -> stall exit -> stall_dispositio
 // ---------------------------------------------------------------------------
 
 test('AP-EXT-ITER303-01: the gap-analysis worker spawn stamps a -worker PICKLE_ROLE', async () => {
+    // R-SJET-1a: without this kill-switch, measureLlmBaseline's judge probe/attempt spawns
+    // route through spawnWithClosedStdin -> _deps.spawn, a seam this test never stubs — so on a
+    // box with no real `claude` binary on PATH (e.g. CI) the probe throws ENOENT before
+    // runIteration is ever reached. Same fixture-shape fix as runGapAnalysisScopedJudge() above.
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     const original = { execFileSync: _deps.execFileSync, runIteration: _deps.runIteration };
     const workingDir = createGapAnalysisTempGitRepo();
     const session = createGapAnalysisScopedSession(workingDir, [GAP_STALE_SNAPSHOT_PATH]);
@@ -2933,6 +2938,7 @@ test('AP-EXT-ITER303-01: the gap-analysis worker spawn stamps a -worker PICKLE_R
     try {
         await executeGapAnalysis(readMicroverseState(session.dir), ctx);
     } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
         _deps.execFileSync = original.execFileSync;
         _deps.runIteration = original.runIteration;
     }
