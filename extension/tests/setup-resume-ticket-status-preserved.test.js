@@ -248,3 +248,22 @@ test('setup-resume-ticket-status-preserved: two In Progress tickets — the poin
         assert.equal(findActivityEvents(dataRoot, 'setup_resume_ticket_status_preserved').length, 0, 'the winner is already In Progress — nothing to preserve');
     });
 });
+
+// B-CURTIX AC5: a null pointer with nothing In Progress is no desync — no frontmatter write and no event, even forced.
+test('setup-resume-ticket-status-preserved: a null pointer with nothing In Progress writes no frontmatter under --force-ticket-status-sync', () => {
+    withDataRoot(dataRoot => {
+        const sp = sessionRoot(run(['--task', 'curtix-ac5-null-pointer'], dataRoot));
+        const statePath = path.join(sp, 'state.json');
+        injectCurrentTicket(statePath, null);
+        const ticketPaths = [makeTicketFile(sp, 'test000i', 'Todo'), makeTicketFile(sp, 'test000j', 'Todo')];
+        const before = ticketPaths.map(p => fs.readFileSync(p, 'utf-8'));
+
+        run(['--resume', sp, '--force-ticket-status-sync'], dataRoot);
+
+        assert.deepEqual(ticketPaths.map(p => fs.readFileSync(p, 'utf-8')), before, 'no ticket file is rewritten');
+        assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf-8')).current_ticket, null, 'resume does not invent a pointer');
+        for (const eventName of ['setup_resume_overrode_ticket_status', 'ticket_state_desync_detected']) {
+            assert.equal(findActivityEvents(dataRoot, eventName).length, 0, `${eventName} must not fire for a null pointer`);
+        }
+    });
+});
