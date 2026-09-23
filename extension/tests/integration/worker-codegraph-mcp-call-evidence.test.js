@@ -10,8 +10,9 @@
 // those suites stop at `tools/list`. Measured on this tree, `initialize` and
 // `tools/list` BOTH succeed against a working directory where every `tools/call`
 // fails — so a green handshake is not evidence the tool works. Worse, the failure
-// arrives as a well-formed `result` carrying populated `content` with `isError: true`
-// riding inside it. That means BOTH cheap assertions are fake-green:
+// arrives as a well-formed `result` carrying populated `content` that never confirms
+// the fixture symbol, sometimes (but not always, across codegraph versions) flagged
+// `isError: true`. That means BOTH cheap assertions are fake-green:
 //   - "no JSON-RPC error came back"  → true on the broken path
 //   - "a result with content came back" → also true on the broken path
 // AC-3's rule ("the absence of an error is not evidence of success") is therefore
@@ -213,7 +214,7 @@ test('AC-3: a worker codegraph MCP tools/call returns a real result', { timeout:
   }
 });
 
-test('AC-3 control: the same call on an UNINDEXED working dir comes back isError', { timeout: TEST_TIMEOUT_MS }, async (t) => {
+test('AC-3 control: the same call on an UNINDEXED working dir never confirms the fixture symbol', { timeout: TEST_TIMEOUT_MS }, async (t) => {
   const { skip } = loadCodeGraphOrSkipReason();
   if (skip) { return t.skip(skip); }
 
@@ -241,8 +242,20 @@ test('AC-3 control: the same call on an UNINDEXED working dir comes back isError
     assert.equal(reply.error, undefined, 'control returns no JSON-RPC error either');
     assert.ok(Array.isArray(reply.result.content) && reply.result.content.length > 0,
       'control still returns populated content');
-    // ...and only the protocol layer tells them apart.
-    assert.equal(reply.result.isError, true, 'control call is flagged as an MCP tool error');
+    // ...and only the semantic content, not the transport shape, tells them apart: the
+    // control's content never confirms the fixture symbol, and is either flagged
+    // isError or carries the "no project loaded" banner (codegraph versions vary on
+    // whether isError is set at all — see the FIXTURE_SYMBOL check above for the
+    // invariant that must hold regardless).
+    const text = reply.result.content.map((c) => c.text || '').join('\n');
+    assert.ok(
+      !text.includes(FIXTURE_SYMBOL),
+      `control never names the indexed fixture symbol; got: ${text.slice(0, 300)}`,
+    );
+    assert.ok(
+      reply.result.isError === true || /no codegraph project is loaded/i.test(text),
+      `control is flagged an MCP tool error or names the missing project; got: ${text.slice(0, 300)}`,
+    );
   } finally {
     rmDir(workingDir);
     if (sessionDir) { rmDir(sessionDir); }
