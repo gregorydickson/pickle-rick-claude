@@ -171,3 +171,27 @@ test('reconcile-desync-refactor parity fixtures', () => {
     }
   }
 });
+
+function resolveOverRoster(pointerStatus, siblingStatus = 'Todo') {
+  const frontmatterStatuses = new Map([
+    ['aaaa1111', pointerStatus],
+    ['bbbb2222', siblingStatus],
+    ['cccc3333', siblingStatus],
+  ]);
+  return resolveTicketDesyncWinner({ current_ticket: 'aaaa1111', session_dir: null }, frontmatterStatuses);
+}
+
+test('B-CURTIX AC1: a Done or Skipped current_ticket with nothing In Progress is not re-stamped', () => {
+  for (const status of ['Done', 'Skipped', '"Done"', 'skipped']) {
+    assert.deepEqual(resolveOverRoster(status), { winner: 'aaaa1111', action: 'noop' }, `${status} pointer`);
+  }
+});
+
+test('B-CURTIX AC1: a Failed current_ticket and an all-terminal roster stay noop', () => {
+  assert.deepEqual(resolveOverRoster('Failed'), { winner: 'aaaa1111', action: 'noop' });
+  assert.deepEqual(resolveOverRoster('Skipped', 'Done'), { winner: 'aaaa1111', action: 'noop' });
+});
+
+test('B-CURTIX AC1 control: a pending current_ticket with nothing In Progress still syncs', () => {
+  assert.deepEqual(resolveOverRoster('Todo'), { winner: 'aaaa1111', action: 'sync' });
+});

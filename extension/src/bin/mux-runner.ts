@@ -1626,12 +1626,6 @@ function collectFrontmatterInProgress(frontmatterStatuses: Map<string, TicketSta
   return inProgress;
 }
 
-function hasManagerHandoffSnapshot(sessionDir: string, currentTicket: string | null): boolean {
-  if (!currentTicket) return false;
-  if (typeof sessionDir !== 'string' || !sessionDir) return false;
-  return readLatestTicketConformanceSnapshot(path.join(sessionDir, currentTicket)).hasManagerHandoff;
-}
-
 function frontmatterStatusForCurrentTicket(state: State, frontmatterStatuses: Map<string, TicketStatus>): string {
   const currentTicket = typeof state.current_ticket === 'string' ? state.current_ticket : null;
   if (!currentTicket) return '';
@@ -1646,15 +1640,15 @@ function alreadyInSync(state: State, inProgress: readonly { id: string }[]): boo
   return !!currentTicket && inProgress.some(ticket => ticket.id === currentTicket);
 }
 
-function shouldSkipDesyncSync(state: State, sessionDir: string, inProgress: readonly { id: string }[], frontmatterStatuses: Map<string, TicketStatus>): boolean {
+// B-CURTIX: with nothing In Progress, a pointer at a finished ticket (Done/Skipped/Failed) is never
+// re-stamped In Progress — the preskip advances it instead.
+function shouldSkipDesyncSync(state: State, inProgress: readonly { id: string }[], frontmatterStatuses: Map<string, TicketStatus>): boolean {
   if (inProgress.length !== 0) return false;
   const currentStatus = frontmatterStatusForCurrentTicket(state, frontmatterStatuses);
-  if (currentStatus !== 'failed' && currentStatus !== 'done') return false;
-  if (currentStatus === 'failed') return true;
-  return hasManagerHandoffSnapshot(sessionDir, typeof state.current_ticket === 'string' ? state.current_ticket : null);
+  return currentStatus === 'failed' || isTerminalTicketStatus(currentStatus);
 }
 
-export function resolveTicketDesyncWinner(state: State, frontmatterStatuses: Map<string, TicketStatus>, sessionDir = ''): TicketDesyncResolution {
+export function resolveTicketDesyncWinner(state: State, frontmatterStatuses: Map<string, TicketStatus>, _sessionDir = ''): TicketDesyncResolution {
   const currentTicket = typeof state.current_ticket === 'string' && state.current_ticket.length > 0
     ? state.current_ticket
     : null;
@@ -1666,10 +1660,7 @@ export function resolveTicketDesyncWinner(state: State, frontmatterStatuses: Map
   if (alreadyInSync(state, inProgress)) {
     return { winner, action: 'noop' };
   }
-  // Prefer the explicit sessionDir argument when callers pass it; fall back to
-  // state.session_dir for legacy callers (tests built around the typed signature).
-  const effectiveSessionDir = sessionDir || (typeof state.session_dir === 'string' ? state.session_dir : '');
-  if (shouldSkipDesyncSync(state, effectiveSessionDir, inProgress, frontmatterStatuses)) {
+  if (shouldSkipDesyncSync(state, inProgress, frontmatterStatuses)) {
     return { winner, action: 'noop' };
   }
   return { winner, action: 'sync' };
@@ -1701,6 +1692,20 @@ function applyTicketDesyncWrites(sessionDir: string, winner: string, inProgress:
   }
 }
 
+/** Frontmatter status of every ticket in the session; an unreadable ticket reads as `''`. */
+export function readTicketStatusMap(sessionDir: string): Map<string, TicketStatus> {
+  const statuses = new Map<string, TicketStatus>();
+  for (const ticket of collectTickets(sessionDir)) {
+    if (!ticket.id) continue;
+    try {
+      statuses.set(ticket.id, getTicketStatus(sessionDir, ticket.id));
+    } catch {
+      statuses.set(ticket.id, '');
+    }
+  }
+  return statuses;
+}
+
 function reconcileTicketStateDesync(
   statePath: string,
   sessionDir: string,
@@ -1714,15 +1719,7 @@ function reconcileTicketStateDesync(
     return readRunnerState(statePath);
   }
   const state = readRunnerState(statePath);
-  const frontmatterStatuses = new Map<string, TicketStatus>();
-  for (const ticket of tickets) {
-    if (!ticket.id) continue;
-    try {
-      frontmatterStatuses.set(ticket.id, getTicketStatus(sessionDir, ticket.id));
-    } catch {
-      frontmatterStatuses.set(ticket.id, '');
-    }
-  }
+  const frontmatterStatuses = readTicketStatusMap(sessionDir);
   const resolution = resolveTicketDesyncWinner(state, frontmatterStatuses, sessionDir);
   if (resolution.action === 'noop') return state;
 
@@ -16834,7 +16831,7 @@ async function runMuxRunnerMain({ runIteration, sleep, exit }: MuxRunnerMainDeps
         },
       });
       // Advance via sanctioned state-write path; state re-read at top of next loop iteration
-      updateMuxLifecycleState(statePath, { currentTicket: nextPending });
+      updateMuxLifecycleState(statePath, { currentTicket: nextPending, step: inferTicketLifecycleStep(sessionDir, nextPending, 'research') });
       continue; // skip runIteration — no manager spawn
     }
 

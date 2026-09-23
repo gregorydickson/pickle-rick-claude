@@ -247,3 +247,53 @@ test('R2b-3: repeated timeouts are a halt-class exit — timeout_repeat is stamp
   assert.equal(last.event, 'session_end');
   assert.equal(last.error, 'timeout_repeat', 'the terminal event names the halt reason');
 });
+
+test('B-CURTIX AC2: a Skipped current_ticket is not re-stamped — preskip advances the pointer with a fresh step', async () => {
+  const session = makeSession({
+    tickets: [
+      { id: 'aaaa1111', status: 'Skipped', order: 1 },
+      { id: 'bbbb2222', status: 'Todo', order: 2 },
+      { id: 'cccc3333', status: 'Todo', order: 3 },
+    ],
+    stateOverrides: { current_ticket: 'aaaa1111', step: 'review', max_iterations: 1 },
+  });
+  const skippedPath = path.join(session.sessionDir, 'aaaa1111', 'rick_ticket_aaaa1111.md');
+  const skippedBytes = fs.readFileSync(skippedPath, 'utf8');
+
+  const { spawnedIterations } = await driveLoop(session, () => {
+    throw new Error('a terminal current_ticket must not spawn a manager');
+  });
+
+  assert.deepEqual(spawnedIterations, []);
+  assert.equal(fs.readFileSync(skippedPath, 'utf8'), skippedBytes, 'the Skipped frontmatter is byte-identical');
+  const state = readState(session.statePath);
+  assert.equal(state.current_ticket, 'bbbb2222');
+  assert.equal(state.step, 'research', 'the new ticket does not inherit the finished ticket\'s step');
+  const activity = readActivity(session.sessionDir);
+  const preskip = activity.filter((entry) => entry.event === 'ticket_preskipped_already_terminal');
+  assert.equal(preskip.length, 1);
+  assert.equal(preskip[0].ticket_id, 'aaaa1111');
+  assert.equal(preskip[0].gate_payload.next_ticket_id, 'bbbb2222');
+  assert.equal(activity.filter((entry) => entry.event === 'ticket_state_desync_detected').length, 0);
+});
+
+test('B-CURTIX AC3: an all-terminal roster with a Skipped pointer completes within two passes without spawning', async () => {
+  const session = makeSession({
+    tickets: [
+      { id: 'aaaa1111', status: 'Skipped', order: 1 },
+      { id: 'bbbb2222', status: 'Done', order: 2, commit: true },
+    ],
+    stateOverrides: { current_ticket: 'aaaa1111', step: 'review' },
+  });
+
+  const { exitCode, spawnedIterations } = await driveLoop(session, () => {
+    throw new Error('an all-terminal roster must not spawn a manager');
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(spawnedIterations, []);
+  const state = readState(session.statePath);
+  assert.equal(state.exit_reason, 'completed');
+  assert.ok(state.iteration <= 2, `completion must land within two passes, got iteration ${state.iteration}`);
+  assert.match(fs.readFileSync(path.join(session.sessionDir, 'aaaa1111', 'rick_ticket_aaaa1111.md'), 'utf8'), /status: "Skipped"/);
+});

@@ -5,10 +5,10 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, markTicketWithStatus as writeTicketStatus, type TicketInfo } from '../services/pickle-utils.js';
+import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, markTicketWithStatus as writeTicketStatus } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGitSafe } from '../services/git-utils.js';
-import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit } from './mux-runner.js';
+import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit, readTicketStatusMap, resolveTicketDesyncWinner } from './mux-runner.js';
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
 import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, PAUSED_ORPHAN_MIN_AGE_MS } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
@@ -965,24 +965,12 @@ function normalizeTicketStatus(status: string | null): string {
   return (status || '').toLowerCase().replace(/["']/g, '').trim();
 }
 
-function isInProgressTicket(sessionDir: string, ticket: TicketInfo): boolean {
-  if (!ticket.id) return false;
-  try {
-    return normalizeTicketStatus(getTicketStatus(sessionDir, ticket.id)) === 'in progress';
-  } catch {
-    return false;
-  }
-}
-
-function chooseInProgressWinner(inProgress: readonly TicketInfo[], currentTicket: string | null): string | null {
-  if (currentTicket && inProgress.some(ticket => ticket.id === currentTicket)) return currentTicket;
-  return inProgress.find(ticket => !!ticket.id)?.id ?? currentTicket;
-}
-
 // R-SRTS-1: gate the "restore In Progress" write behind --force-ticket-status-sync.
-// winner === currentTicket is invariant here (chooseInProgressWinner falls back to
-// currentTicket when inProgress is empty, which is the only case where the winner
-// is not already in inProgress). Telemetry errors must not block resume.
+// winner === currentTicket is invariant here (the shared resolver falls back to
+// currentTicket when nothing is In Progress, the only case where the winner is not
+// already In Progress), and that pointer is never terminal — resolveTicketDesyncWinner
+// answers noop for a Done/Skipped/Failed pointer (B-CURTIX), so this function only
+// ever sees a pending ticket. Telemetry errors must not block resume.
 function applyWinnerStatusSync(sessionDir: string, winner: string, forceSync: boolean): void {
   const observedStatus = (() => {
     try { return getTicketStatus(sessionDir, winner) ?? 'Unknown'; } catch { return 'Unknown'; }
@@ -1019,27 +1007,30 @@ function reconcileTicketStateDesyncOnResume(sessionDir: string, statePath: strin
     return sm.read(statePath);
   }
 
-  const inProgress = tickets.filter(ticket => isInProgressTicket(sessionDir, ticket));
-  const winner = chooseInProgressWinner(inProgress, currentTicket);
-  if (inProgress.length === 1 && winner === currentTicket) return sm.read(statePath);
+  const state = sm.read(statePath);
+  const statuses = readTicketStatusMap(sessionDir);
+  const resolution = resolveTicketDesyncWinner(state, statuses, sessionDir);
+  const winner = resolution.winner;
+  if (resolution.action === 'noop' || !winner) return state;
+  const inProgress = [...statuses].filter(([, status]) => normalizeTicketStatus(status) === 'in progress').map(([id]) => ({ id }));
 
   logActivity({
     event: 'ticket_state_desync_detected',
     source: 'pickle',
     session: path.basename(sessionDir),
-    ticket: winner ?? currentTicket ?? undefined,
-    reason: `current_ticket=${currentTicket ?? 'none'} in_progress=${inProgress.map(t => t.id || '?').join(',') || 'none'}`,
+    ticket: winner,
+    reason: `current_ticket=${currentTicket ?? 'none'} in_progress=${inProgress.map(t => t.id).join(',') || 'none'}`,
   });
 
-  if (winner && !inProgress.some(ticket => ticket.id === winner)) {
+  if (!inProgress.some(ticket => ticket.id === winner)) {
     applyWinnerStatusSync(sessionDir, winner, forceSync);
   }
   for (const ticket of inProgress) {
-    if (!ticket.id || ticket.id === winner) continue;
+    if (ticket.id === winner) continue;
     writeTicketStatus(sessionDir, ticket.id, 'Todo');
   }
 
-  if (winner && winner !== currentTicket) {
+  if (winner !== currentTicket) {
     return sm.update(statePath, s => {
       s.current_ticket = winner;
       // R-CNAR-8: transitioning current_ticket REQUIRES atomic clear of all

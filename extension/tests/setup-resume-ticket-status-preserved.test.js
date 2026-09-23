@@ -94,8 +94,9 @@ function findActivityEvents(dataRoot, eventName) {
     return events;
 }
 
-// AC-SRTS-1.a + AC-SRTS-1.b: default (no --force-ticket-status-sync) preserves operator edit
-test('setup-resume-ticket-status-preserved: default preserves operator-edited Skipped status', () => {
+// AC-SRTS-1.a + AC-SRTS-1.b: default (no --force-ticket-status-sync) preserves operator edit.
+// B-CURTIX: the pointer is a PENDING ticket — a terminal pointer is not a desync at all (see below).
+test('setup-resume-ticket-status-preserved: default preserves operator-edited Todo status', () => {
     withDataRoot(dataRoot => {
         // Create a session
         const initOutput = run(['--task', 'srts1-preserve-test'], dataRoot);
@@ -106,10 +107,10 @@ test('setup-resume-ticket-status-preserved: default preserves operator-edited Sk
         const ticketId = 'test000a';
         injectCurrentTicket(statePath, ticketId);
 
-        // Create the ticket file with operator-edited status "Skipped"
-        const ticketPath = makeTicketFile(sp, ticketId, 'Skipped');
+        // Create the ticket file with operator-edited status "Todo"
+        const ticketPath = makeTicketFile(sp, ticketId, 'Todo');
 
-        assert.equal(readTicketStatus(ticketPath), 'Skipped', 'ticket must start as Skipped');
+        assert.equal(readTicketStatus(ticketPath), 'Todo', 'ticket must start as Todo');
 
         // Resume WITHOUT --force-ticket-status-sync
         run(['--resume', sp], dataRoot, { allowFail: true });
@@ -117,8 +118,8 @@ test('setup-resume-ticket-status-preserved: default preserves operator-edited Sk
         // Assert: ticket frontmatter unchanged
         assert.equal(
             readTicketStatus(ticketPath),
-            'Skipped',
-            'resume without --force-ticket-status-sync must NOT rewrite operator-edited Skipped status',
+            'Todo',
+            'resume without --force-ticket-status-sync must NOT rewrite operator-edited Todo status',
         );
 
         // Assert: setup_resume_ticket_status_preserved event emitted
@@ -127,7 +128,7 @@ test('setup-resume-ticket-status-preserved: default preserves operator-edited Sk
 
         const evt = preserved[0];
         assert.equal(evt.ticket_id, ticketId, 'event.ticket_id must match the operator-edited ticket');
-        assert.equal(evt.observed_status, 'Skipped', 'event.observed_status must be Skipped');
+        assert.equal(evt.observed_status, 'Todo', 'event.observed_status must be Todo');
         assert.equal(evt.expected_status, 'In Progress', 'event.expected_status must be In Progress');
         assert.equal(evt.reason, 'operator_edit', 'event.reason must be operator_edit');
     });
@@ -144,9 +145,9 @@ test('setup-resume-ticket-status-preserved: --force-ticket-status-sync rewrites 
         const ticketId = 'test000b';
         injectCurrentTicket(statePath, ticketId);
 
-        const ticketPath = makeTicketFile(sp, ticketId, 'Skipped');
+        const ticketPath = makeTicketFile(sp, ticketId, 'Todo');
 
-        assert.equal(readTicketStatus(ticketPath), 'Skipped', 'ticket must start as Skipped');
+        assert.equal(readTicketStatus(ticketPath), 'Todo', 'ticket must start as Todo');
 
         // Resume WITH --force-ticket-status-sync
         run(['--resume', sp, '--force-ticket-status-sync'], dataRoot, { allowFail: true });
@@ -155,7 +156,7 @@ test('setup-resume-ticket-status-preserved: --force-ticket-status-sync rewrites 
         assert.equal(
             readTicketStatus(ticketPath),
             'In Progress',
-            '--force-ticket-status-sync must rewrite Skipped → In Progress',
+            '--force-ticket-status-sync must rewrite Todo → In Progress',
         );
 
         // Assert: setup_resume_overrode_ticket_status event emitted
@@ -164,8 +165,31 @@ test('setup-resume-ticket-status-preserved: --force-ticket-status-sync rewrites 
 
         const evt = overrode[0];
         assert.equal(evt.ticket_id, ticketId, 'event.ticket_id must match the overridden ticket');
-        assert.equal(evt.prior_status, 'Skipped', 'event.prior_status must be Skipped');
+        assert.equal(evt.prior_status, 'Todo', 'event.prior_status must be Todo');
         assert.equal(evt.new_status, 'In Progress', 'event.new_status must be In Progress');
         assert.equal(evt.source, 'force_flag', 'event.source must be force_flag');
     });
 });
+
+// B-CURTIX AC4: a TERMINAL pointer is never revived — no write and no event, with or without the flag.
+for (const force of [false, true]) {
+    test(`setup-resume-ticket-status-preserved: a Skipped pointer stays Skipped ${force ? 'under' : 'without'} --force-ticket-status-sync`, () => {
+        withDataRoot(dataRoot => {
+            const sp = sessionRoot(run(['--task', `curtix-ac4-${force}`], dataRoot));
+            const ticketId = force ? 'test000c' : 'test000d';
+            injectCurrentTicket(path.join(sp, 'state.json'), ticketId);
+            const ticketPath = makeTicketFile(sp, ticketId, 'Skipped');
+            const before = fs.readFileSync(ticketPath, 'utf-8');
+
+            run(['--resume', sp, ...(force ? ['--force-ticket-status-sync'] : [])], dataRoot, { allowFail: true });
+
+            assert.equal(fs.readFileSync(ticketPath, 'utf-8'), before, 'the Skipped ticket file is byte-identical');
+            for (const eventName of ['setup_resume_overrode_ticket_status', 'setup_resume_ticket_status_preserved']) {
+                const hits = findActivityEvents(dataRoot, eventName).filter(evt => evt.ticket_id === ticketId);
+                assert.equal(hits.length, 0, `${eventName} must not fire for a terminal pointer`);
+            }
+            const desync = findActivityEvents(dataRoot, 'ticket_state_desync_detected').filter(evt => evt.ticket === ticketId);
+            assert.equal(desync.length, 0, 'a terminal pointer is not a desync');
+        });
+    });
+}
