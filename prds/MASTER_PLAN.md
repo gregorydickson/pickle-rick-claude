@@ -269,6 +269,18 @@ not-Done ticket by `order`). It has two sources of truth that already desync (se
 **Suggested measurement before move 1:** count orientation tokens/turns per ticket from one finished
 bundle's worker logs, and how much of that is `extension/CLAUDE.md`.
 
+**TASK (operator-requested 2026-09-23) — review the refinement prompts against Opus 5.5.**
+Nobody has measured this yet. The 12/12 refusals (2026-09-21) were on `claude-opus-5`. Every refinement
+since has been routed to `claude-sonnet-5` with `--model`. The session default is now `claude-opus-5-5`.
+1. **Measure first:** run one refinement on the default model (no `--model`) against a known-good PRD.
+   Record per-analyst success or refusal from `refinement_manifest.json` and the `worker_*_c1.log` files.
+   If 0 refusals, record that and stop.
+2. **If refusals recur:** review the analyst prompt assembly (`buildWorkerPrompt`,
+   `buildPromptGuidanceSections` in `extension/src/bin/spawn-refinement-team.ts`, plus the persona text
+   in `persona.md`) for wording that could be misread out of context. Change prompt wording, not the
+   routing. Verify each change by re-running step 1.
+3. Keep `--model` / `default_refinement_model` as the fallback either way.
+
 **Refinement model:** `--model <id>` or `default_refinement_model` (#46). Confirmed live **twice** on
 `claude-sonnet-5`: B-FIXBUDGET and B-CGUP, 9/9 analyses each, 0 refusals.
 
