@@ -273,7 +273,7 @@ test('B-CURTIX AC2: a Skipped current_ticket is not re-stamped — preskip advan
   const preskip = activity.filter((entry) => entry.event === 'ticket_preskipped_already_terminal');
   assert.equal(preskip.length, 1);
   assert.equal(preskip[0].ticket_id, 'aaaa1111');
-  assert.equal(preskip[0].gate_payload.next_ticket_id, 'bbbb2222');
+  assert.deepEqual(preskip[0].gate_payload, { frontmatter_status: 'skipped', next_ticket_id: 'bbbb2222' });
   assert.equal(activity.filter((entry) => entry.event === 'ticket_state_desync_detected').length, 0);
 });
 
@@ -285,6 +285,8 @@ test('B-CURTIX AC3: an all-terminal roster with a Skipped pointer completes with
     ],
     stateOverrides: { current_ticket: 'aaaa1111', step: 'review' },
   });
+  const ticketPaths = ['aaaa1111', 'bbbb2222'].map((id) => path.join(session.sessionDir, id, `rick_ticket_${id}.md`));
+  const ticketBytes = ticketPaths.map((p) => fs.readFileSync(p, 'utf8'));
 
   const { exitCode, spawnedIterations } = await driveLoop(session, () => {
     throw new Error('an all-terminal roster must not spawn a manager');
@@ -294,6 +296,7 @@ test('B-CURTIX AC3: an all-terminal roster with a Skipped pointer completes with
   assert.deepEqual(spawnedIterations, []);
   const state = readState(session.statePath);
   assert.equal(state.exit_reason, 'completed');
+  assert.equal(JSON.parse(state.completion_promise).reason, 'all-tickets-done', 'the run completes via applyAllTicketsDoneCompletion');
   assert.ok(state.iteration <= 2, `completion must land within two passes, got iteration ${state.iteration}`);
-  assert.match(fs.readFileSync(path.join(session.sessionDir, 'aaaa1111', 'rick_ticket_aaaa1111.md'), 'utf8'), /status: "Skipped"/);
+  assert.deepEqual(ticketPaths.map((p) => fs.readFileSync(p, 'utf8')), ticketBytes, 'no ticket file bytes change');
 });
