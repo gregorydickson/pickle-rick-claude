@@ -22,7 +22,9 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { buildWorkerMcpConfig, buildWorkerInvocation } from '../services/backend-spawn.js';
+import { CODEGRAPH_SINGLE_WRITER_ENV, runCodegraphQueryBatch } from '../services/codegraph-query-runner.js';
 import { mkTmpDir, rmDir, withEmptyHome } from './__helpers__/empty-home.js';
 
 const require = createRequire(import.meta.url);
@@ -140,9 +142,42 @@ test('buildWorkerMcpConfig: codegraph entry carries CODEGRAPH_NO_WATCH=1 and COD
         const cg = readMcpFile(sessionDir).mcpServers.codegraph;
         assert.equal(cg.env.CODEGRAPH_NO_WATCH, '1', 'serve launches with the auto-sync watcher disabled');
         assert.equal(cg.env.CODEGRAPH_NO_DAEMON, '1', 'serve launches with the 1.6.x background daemon disabled');
+        assert.deepEqual(cg.env, { ...CODEGRAPH_SINGLE_WRITER_ENV }, 'serve env is exactly the shared single-writer env');
     } finally {
         rmDir(sessionDir);
     }
+});
+
+test('CODEGRAPH_SINGLE_WRITER_ENV: disables exactly the watcher and the daemon', () => {
+    assert.deepEqual({ ...CODEGRAPH_SINGLE_WRITER_ENV }, { CODEGRAPH_NO_WATCH: '1', CODEGRAPH_NO_DAEMON: '1' });
+});
+
+test('runCodegraphQueryBatch: child env forces the single-writer vars over caller values, keeps the rest', async () => {
+    let captured = null;
+    const result = await runCodegraphQueryBatch(
+        { searches: [], callers: [] },
+        {
+            timeoutMs: 1000,
+            env: { CODEGRAPH_NO_WATCH: '0', CODEGRAPH_NO_DAEMON: '0', PICKLE_KEEP: 'kept' },
+            spawnFn: (_cmd, _args, opts) => { captured = opts.env; throw new Error('capture only'); },
+        },
+    );
+    assert.deepEqual(result, { status: 'failed', reason: 'spawn-threw' });
+    assert.deepEqual(captured, { CODEGRAPH_NO_WATCH: '1', CODEGRAPH_NO_DAEMON: '1', PICKLE_KEEP: 'kept' });
+});
+
+test('single source: only codegraph-query-runner.ts assigns a CODEGRAPH_NO_* value in src/', () => {
+    // Keys (`X: '1'`) and assignments (`X = '1'`) both count; `X=1` doc prose does not.
+    const srcRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
+    const files = fs.readdirSync(srcRoot, { recursive: true }).filter((f) => f.endsWith('.ts'));
+    assert.ok(files.length > 50, `src walk looks dark: ${files.length} files`);
+    const definitions = files.flatMap((rel) =>
+        [...fs.readFileSync(path.join(srcRoot, rel), 'utf8').matchAll(/\b(CODEGRAPH_NO_[A-Z]+)\s*[:=]\s*['"]/g)]
+            .map((m) => `${path.basename(rel)}:${m[1]}`));
+    assert.deepEqual(definitions.sort(), [
+        'codegraph-query-runner.ts:CODEGRAPH_NO_DAEMON',
+        'codegraph-query-runner.ts:CODEGRAPH_NO_WATCH',
+    ]);
 });
 
 // --- AC3: operator `codegraph` key WINS the spread-last collision ---
