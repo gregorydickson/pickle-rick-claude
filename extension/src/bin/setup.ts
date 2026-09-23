@@ -1012,22 +1012,22 @@ function reconcileTicketStateDesyncOnResume(sessionDir: string, statePath: strin
   const resolution = resolveTicketDesyncWinner(state, statuses, sessionDir);
   const winner = resolution.winner;
   if (resolution.action === 'noop' || !winner) return state;
-  const inProgress = [...statuses].filter(([, status]) => normalizeTicketStatus(status) === 'in progress').map(([id]) => ({ id }));
+  const inProgressIds = [...statuses].filter(([, status]) => normalizeTicketStatus(status) === 'in progress').map(([id]) => id);
 
   logActivity({
     event: 'ticket_state_desync_detected',
     source: 'pickle',
     session: path.basename(sessionDir),
     ticket: winner,
-    reason: `current_ticket=${currentTicket ?? 'none'} in_progress=${inProgress.map(t => t.id).join(',') || 'none'}`,
+    reason: `current_ticket=${currentTicket ?? 'none'} in_progress=${inProgressIds.join(',') || 'none'}`,
   });
 
-  if (!inProgress.some(ticket => ticket.id === winner)) {
+  if (!inProgressIds.includes(winner)) {
     applyWinnerStatusSync(sessionDir, winner, forceSync);
   }
-  for (const ticket of inProgress) {
-    if (ticket.id === winner) continue;
-    writeTicketStatus(sessionDir, ticket.id, 'Todo');
+  for (const id of inProgressIds) {
+    if (id === winner) continue;
+    writeTicketStatus(sessionDir, id, 'Todo');
   }
 
   if (winner !== currentTicket) {
