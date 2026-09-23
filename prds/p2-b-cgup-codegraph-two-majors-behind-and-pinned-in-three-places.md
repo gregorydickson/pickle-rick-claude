@@ -110,7 +110,7 @@ existing self-probe), never fall back to a literal version.
 - `node -p "require('./extension/node_modules/@colbymchenry/codegraph/package.json').version"` prints a `1.6.x` version — **measured `0.9.9`**.
 - `node -p "require('./extension/package-lock.json').packages['node_modules/@colbymchenry/codegraph'].version"` prints a `1.6.x` version — **measured `0.9.9`**.
 - `node -p "require('./extension/data/codegraph-api-inventory.json')._meta.pin"` does not contain `no caret` — **measured `exact (0.9.9, no caret)`**.
-- From `extension/`: `grep -rln '0\.9\.9' src bin tests data scripts ../install.sh | grep -v 'tests/evidence/' | wc -l` returns `0` — **measured `7`**.
+- From `extension/`: `grep -rlE '0\\?\.9\\?\.9' src bin tests data scripts ../install.sh | grep -v 'tests/evidence/' | wc -l` returns `0` — **measured `7` files / 13 lines**. The `\\?` matters: `tests/install-script.test.js:1515` pins the version as the REGEX `0\.9\.9`, which a plain `grep '0\.9\.9'` cannot see, and that assertion goes red the moment `install.sh` changes. It must be rewritten to assert the derived spec, not a version.
 - `grep -rc 'CODEGRAPH_NO_DAEMON' extension/src | grep -v ':0' | wc -l` returns a value `>= 1` — **measured `0`**.
 - `grep -rn "CODEGRAPH_NO_WATCH: '1'" extension/src | wc -l` returns `1`, the single constant — **measured `2`** (`backend-spawn.ts:635`, `codegraph-query-runner.ts:174`; `:235` assigns `process.env` and must use the constant too).
 - `cd extension && ./node_modules/.bin/tsc --noEmit && npx eslint src/ --max-warnings=0` exits `0`.
@@ -156,3 +156,16 @@ Every finding below was re-verified against HEAD before being applied.
 | 4 | requirements | fix §3 (daemon) silently depended on item 1 having landed | **applied**: binding order |
 | 5 | risk-scope | the daemon "measurement" was open-ended investigation in a like-for-like PRD | **applied, as a subtraction**: set `CODEGRAPH_NO_DAEMON=1` unconditionally through one constant that replaces 3 hand-copied `NO_WATCH` sites; the measurement is now a recorded check, not an investigation |
 | 6 | requirements, risk-scope | no rollback path; install size grew | **applied**: Risks section |
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Entry | Exit | Files |
+|---:|---|---|---|---|---|---|
+| 10 | d8e11473 | Upgrade codegraph to `^1.6.0`; re-verify the API inventory | High | clean tree | 1.6.x installed + locked; inventory describes it | `package.json`, `package-lock.json`, `data/codegraph-api-inventory.json` |
+| 20 | 3629050d | One single-writer env constant that also disables the daemon | High | d8e11473 Done | 1 definition, 3 sites; daemon survivor measured | `services/backend-spawn.ts`, `services/codegraph-query-runner.ts` (+ compiled), 2 tests |
+| 30 | 96495ad7 | `install.sh` reads the version from package.json; clear stale literals | High | d8e11473 Done | version lives in package.json only | `install.sh`, `check-update.ts` (+ compiled), 3 tests |
+| 40 | 7c54c91b | Harden: code quality review of the B-CGUP diff | High | all above | zero P0–P1 | all of the above |
+| 50 | 642f1fb0 | Audit: data flow integrity for the B-CGUP diff | High | all above | zero CRITICAL/HIGH | source + install.sh |
+| 60 | f1320133 | Harden: test quality review of the B-CGUP diff | High | all above | every AC mapped | test files |
+
+The cross-reference audit ticket is omitted: no doc or command files are modified.
