@@ -14890,17 +14890,10 @@ function persistFalseEpicRecoveryState(input: {
     sm.update(input.statePath, s => {
       s.false_epic_completed_count = decision.nextCount;
       s.false_epic_completed_ticket = curState.current_ticket || null;
-      const priorTicket = s.current_ticket;
-      if (s.current_ticket !== recoveredCurrentTicket) {
-        s.current_ticket = recoveredCurrentTicket;
-        delete s.current_ticket_tier;
-        delete s.current_ticket_budget;
-        delete s.current_ticket_max_iterations;
-        delete s.current_ticket_worker_timeout_seconds;
-        delete s.current_ticket_budget_start_iteration;
-      }
       const recoveredStep = inferTicketLifecycleStep(sessionDir, recoveredCurrentTicket, s.step);
-      s.step = priorTicket !== recoveredCurrentTicket ? recoveredStep : maxLifecycleStep(s.step, recoveredStep);
+      if (!moveCurrentTicket(s, sessionDir, recoveredCurrentTicket, recoveredStep)) {
+        s.step = maxLifecycleStep(s.step, recoveredStep);
+      }
     });
   } catch (err) { input.log(`WARN: failed to persist false_epic counter: ${safeErrorMessage(err)}`); }
 }
