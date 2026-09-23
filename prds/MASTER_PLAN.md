@@ -227,7 +227,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 | | |
 |---|---|
-| branch | **`main`** at **`c534c59e`** + docs (gated + pushed 2026-09-23). `release/v2.2-beta` is historical |
+| branch | **`main`** at **`c534c59e`** (last gated code) + docs through `b3c4160e` (pushed 2026-09-23). `release/v2.2-beta` is historical |
 | version | `extension/package.json` = **`2.1.1`**. Newest tag still **`v2.1.0`** — cadence, not oversight |
 | deployed | **in sync with `c534c59e`**, `install.sh` run 2026-09-23; deployed codegraph resolves **`1.6.0`** (`^1.6.0`) and verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
 | RUNNING | **nothing.** Stale tmux shells linger (`pipeline-*`, `refine-*`) — idle, safe to kill |
@@ -247,37 +247,65 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | **B-CGUP + B-CGUP-2** | codegraph `0.9.9` → `^1.6.0` (2 majors). One version source (`package.json`; `install.sh` reads it, fail-loud). One single-writer env constant `CODEGRAPH_SINGLE_WRITER_ENV` adds `CODEGRAPH_NO_DAEMON=1`; daemon survivor measured: none. B-CGUP gate 21/22 (one stale protocol-flag pin: `1.6` answers an unindexed call with "No CodeGraph project is loaded" instead of `isError`); B-CGUP-2 re-expressed that control by meaning. Combined gate `20260923T045419Z-88502` 22/22 (soak 1803.7s), pushed + deployed 2026-09-23 |
 | closed on measured evidence | **#40, #41, #32** (2026-09-21) · **#45, #44, #42, #46** (2026-09-22) · **#47** (2026-09-23) |
 
-### ▶ NEXT — idle; no drainable bug
+### ▶ NEXT — idle; no drainable bug. Two operator decisions are open
 
-Backlog is at zero open bugs; #43/#5 are operator-deferred. **Refinement no longer needs
-`ANTHROPIC_MODEL`** — use `--model <id>` or `default_refinement_model`. The first live refinement using
-the knob **confirmed #46 end to end**: B-FIXBUDGET refined 9/9 on `--model claude-sonnet-5`, 0 refusals.
-**Codegraph baseline for the next large run:** every injection so far sat at the 8192-byte
-`context_max_bytes` cap (254–691 hits truncated). Measure whether workers still search for code codegraph
-should have supplied before raising the cap; `1.6` also exposes `isIndexStale`/`getIndexState`, not yet adopted.
-**Model note:** both 2026-09-22 bundles ran on `claude-opus-5-5` (B-MEASURED ran on `claude-opus-5`). Their
-per-ticket times (~11 and ~23 min) are NOT comparable to B-MEASURED's ~48; the bundles were much smaller.
-Compare on the next bundle of similar size before crediting the model.
+**#43 (parallel build with `--teams`)**: unchanged. Its open question is why `--teams` was never
+turned on. The worst measured bundle spent 78% of its time in anatomy-park on ONE subsystem, so the lever
+there is finer subsystem partitioning, not more workers.
+
+**#5 (Genesis architecture ideas)**: re-measured at HEAD 2026-09-23. **Do not treat it as one change.**
+
+| move | status at HEAD |
+|---|---|
+| 3 rate-limit park | **already shipped** (`runMainLoopRateLimitPark`, `rate_limit.max_park_minutes`) |
+| 2 commit trap doors | **already done, overdone**: `extension/CLAUDE.md` is 312 KB (the issue quoted 211 KB) |
+| 1 persist project context | **premise half-false**: workers READ `project-context.md` (`spawn-morty.ts:268`), but `archaeology.js` has **no production caller** and **0/12** sessions on disk contain the file. It is "turn on a never-run feature", with reward unmeasured and codegraph already on |
+| 4 worktree-as-proposal | not started; large, high risk |
+| 5 state from git | not started; `state.json` has 47 fields, schema 5, a 1,910-line `state-manager.ts`. Only a subset is derivable (`start_commit`, `pinned_sha`, `history`, `current_ticket`); process liveness and recovery ledgers are not |
+
+**Suggested low-risk slice of move 5:** derive `current_ticket` from ticket frontmatter (the first
+not-Done ticket by `order`). It has two sources of truth that already desync (see memory
+"Zero-diff Done-flip reverted every tick"). Not authored; operator's call.
+**Suggested measurement before move 1:** count orientation tokens/turns per ticket from one finished
+bundle's worker logs, and how much of that is `extension/CLAUDE.md`.
+
+**Refinement model:** `--model <id>` or `default_refinement_model` (#46). Confirmed live **twice** on
+`claude-sonnet-5`: B-FIXBUDGET and B-CGUP, 9/9 analyses each, 0 refusals.
+
+**Codegraph baseline for the next large run** (deployed `1.6.0`, daemon off):
+- Every injection has sat at the 8192-byte `context_max_bytes` cap: 8,144–8,160 bytes, from 254–691 hits.
+  Measure whether workers still search for code codegraph should have supplied before raising it.
+- `1.6` exposes `isIndexStale` and `getIndexState`; not adopted.
+- **Hypothesis, not filed:** `codegraph_session_summary.tickets` does not track injected tickets:
+  2 vs 3 distinct (B-FIXBUDGET), 4 vs 6 injections (B-CGUP), 0 vs 1 (B-CGUP-2). It probably counts
+  something else. Read its producer before filing anything.
+
+**Model note:** the 2026-09-22/23 bundles ran on `claude-opus-5-5` (B-MEASURED ran on `claude-opus-5`).
+Build-phase minutes per ticket: B-MEASURED ~48 (11 tickets) · B-REFMODEL ~11 (6) · B-FIXBUDGET ~23 (4) ·
+B-CGUP ~13 (6). The newer bundles are far smaller; **do not credit the model** until a bundle of
+B-MEASURED's size runs.
+
 **Residual (B-FIXBUDGET, recorded not filed):** `makeFakeNpmFixture({ timeoutMs })` passes an in-band 1500
 indirectly (`worker-gate-offrepo-runs.test.js:1150`). A static scan cannot see it; the file is serial today
 only because of its `:264`/`:284` literals.
 
 ### ⛔ OPEN RESIDUALS — measured, not yet filed
 
-1. **`done_over_unmeasured_worker_gate_tests` — RECURRED.** B-REFMODEL: `c85866e4` (large-tier data-flow
-   audit) went Done with frontmatter `worker_gate_tests_verdict: "red"`, classified uncorroborated by
-   `reportDoneOverRedTestVerdict` (`pipeline-runner.ts`). The release gate was 22/22 green on the same
-   tree, so the red was noise. **Cause UNMEASURED** — the ticket dir holds no tier output. Earlier
-   occurrence: `35f945c6,5199ea3a` (B-MEASURED, medium implementation tickets). Two bundles, three
-   tickets, mixed tiers; each time the green release gate was the corroboration the tickets lacked.
-   This is "an absent result is not a pass" **inside the instrument that grants Done**. It earns a root
-   once the red's cause is measured — capture the worker's tier output on the next occurrence.
-   B-FIXBUDGET (2026-09-23) did NOT reproduce it: no disposition.
-2. **Citadel telemetry disagreed with its own log** on the pre-2026-09-22 build (event `cycles: 0,
-   remaining: 57` vs log `cycle 1/3 — no remediable findings`). **B-REFMODEL on the new build AGREED:**
-   log `10 finding(s), 0 remediable`, status `citadel_advisory_findings: 10`. One agreeing run — not yet closed.
-3. **R3's blast radius — first point:** 10 advisory findings, 0 remediable, on B-REFMODEL's 8-file diff
-   (R3 live). One point is not a trend; the cap-of-3 question stays unfiled.
+1. **`done_over_unmeasured_worker_gate_tests`** — 2 occurrences (B-MEASURED `35f945c6,5199ea3a`;
+   B-REFMODEL `c85866e4` with frontmatter `worker_gate_tests_verdict: "red"`), each corroborated by a
+   22/22 gate. **Did NOT recur in B-FIXBUDGET, B-CGUP or B-CGUP-2** (no disposition in any). Cause
+   unmeasured; capture the worker's tier output on the next occurrence before filing.
+2. **Citadel telemetry vs its own log** (pre-2026-09-22 build: event `remaining: 57` vs log "no
+   remediable findings"). On the new build, **4 runs agree**: log and status 10/10, 2/2, 11/11, and
+   B-CGUP-2 3 findings = 2 advisory + 1 remediable. Close it once a run with remediable findings is
+   confirmed consistent in the telemetry event itself, not only in `pipeline-status.json`.
+3. **R3 blast radius** — 4 points: 10 advisory on an 8-file diff · 2 on 3 files · 11 on 15 files · 2 on
+   1 file. Remediable ≥ High: 0, 0, 0, 1. No trend is visible at these sizes; the cap-of-3 question stays unfiled.
+4. **NEW — citadel remediator spent its full cap on an unremediable finding (B-CGUP-2).** A test-only
+   bundle (non-goal: no `src/` change) drew Critical `AC-3 has no production implementation evidence in
+   changed files`. The remediator spawned 3 times; the finding stayed open; the phase ended "cap (3)
+   exhausted … continuing pipeline (no halt)". Bounded and non-halting, but 3 wasted spawns. It matches
+   memory "Citadel reds doc-only ACs". **One occurrence** — record only; it earns a root if it recurs.
 
 ### ⛔ TRAPS THAT CAUGHT ME THIS SESSION
 
@@ -286,9 +314,16 @@ only because of its `:264`/`:284` literals.
    oracles: `state.json`, `pipeline-runner.log`, artifact mtimes.
 3. **`gh issue comment` inline bodies lose backticks to zsh.** Always `--body-file`.
 4. **On `main`, `--scope branch` resolves EMPTY** (`git diff main HEAD` = 0 files). Pin `scope_base`.
-5. **Refinement needs `ANTHROPIC_MODEL=claude-sonnet-5`** until #46 lands — 12/12 spawns refused across
-   4 runs, 3 PRDs, 2 days, including a control PRD that had refined successfully before.
+5. **If the default model refuses refinement analysts, route them with `--model <id>`** (#46, shipped).
+   Measured before the fix: 12/12 spawns refused across 4 runs, 3 PRDs, 2 days.
 6. **A probe that calls `setup.js` to read a path CREATES A SESSION.** I made a stray and had to reap it.
+7. **Acceptance predicates that were wrong until RUN at HEAD (2026-09-22/23), all caught before shipping:**
+   `--tier fast` + positional files (runner exits 2) · `$(…)` file list under zsh = ONE argument (exits 1) ·
+   a version pinned as the regex `0\.9\.9`, invisible to a plain grep · a quote-fragile `install.sh` grep
+   that would fail a correct `"…"` fix · `reply.result.isError, true` also matching the success test's
+   `notEqual(…)` line, so it could never reach 0. Run every predicate at HEAD; also check what else it matches.
+8. **The scope seed takes the CURRENT ticket's files only** (`resolveSeedPathsForSetup`,
+   `pipeline-runner.ts:757`). A 3-path `scope.json` at launch is expected; review phases re-derive from the diff.
 
 ---
 
