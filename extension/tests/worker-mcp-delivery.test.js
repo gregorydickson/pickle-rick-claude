@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { buildWorkerMcpConfig, buildWorkerInvocation } from '../services/backend-spawn.js';
 import { resolveSessionWorkerMcpConfig } from '../bin/spawn-morty.js';
+import { CODEGRAPH_SINGLE_WRITER_ENV } from '../services/codegraph-query-runner.js';
 import { mkTmpDir, rmDir, withEmptyHome } from './__helpers__/empty-home.js';
 
 const require = createRequire(import.meta.url);
@@ -57,7 +58,7 @@ function fixtureServeEntry(workingDir) {
     return {
         command: 'node',
         args: ['/fixture/abs/codegraph-bin.js', 'serve', '--mcp'],
-        env: { CODEGRAPH_NO_WATCH: '1', CODEGRAPH_NO_DAEMON: '1' },
+        env: { ...CODEGRAPH_SINGLE_WRITER_ENV },
         cwd: workingDir,
     };
 }
