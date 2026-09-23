@@ -35,24 +35,38 @@ removed member is `resolveReferencesBatched`, which has **0** uses in `src/` or 
 — a second writer, and a process the orphan reaper either kills wrongly or leaks. This PRD requires that
 measurement rather than assuming it.
 
-## The fix
+## The fix *(refined: requirements + codebase + risk-scope, 3 cycles)*
+
+**Order is binding:** item 1 lands and is verified installed before items 2–3 are built or measured.
+A daemon measurement against a still-`0.9.9` tree says nothing about this change.
 
 1. **Range, not pin.** `extension/package.json` → `"@colbymchenry/codegraph": "^1.6.0"`, then
-   `npm install` in `extension/` so `package-lock.json` and `node_modules` resolve `1.6.0`. Git-mode
-   installs stay exact through the lockfile; tarball installs float within `^1` — the operator's
-   "don't hand-pin" direction, bounded by semver.
-2. **One source of truth in `install.sh`.** Replace the hard-coded `@0.9.9` in the tarball-mode
-   `npm install` (`:435-436`) with a version spec READ from the deployed `extension/package.json`
-   (`node -p "require('./package.json').dependencies['@colbymchenry/codegraph']"`), and delete the
-   version from the `:428` comment. After this, the version lives in `package.json` alone.
-3. **Close the daemon question by measurement.** Launch the exact `serve --mcp` entry
-   `resolveCodegraphServeEntry` builds, against a scratch repo, then end its parent; record whether any
-   codegraph process survives. If one does, add `CODEGRAPH_NO_DAEMON: '1'` to that entry's `env`
-   (beside `CODEGRAPH_NO_WATCH`). If none does, add it anyway only if the measurement cannot be made
-   deterministic — and record which in the ticket's conformance artifact.
-4. **Stale literal pins.** Update the test assertion message at `tests/install-script.test.js:1516`
-   and the `check-update.ts:16` comment so neither names `0.9.9`. Leave
-   `tests/evidence/ac3-codegraph-mcp-call.md` alone — it is a dated historical record.
+   `npm install` in `extension/` so `package-lock.json` and `node_modules` resolve `1.6.x`. Git-mode
+   installs stay exact through the lockfile; tarball installs float within `^1`. Update
+   `extension/data/codegraph-api-inventory.json` `_meta.version` to the resolved `1.6.x` and `_meta.pin`
+   to describe the caret range. Today it says `"exact (0.9.9, no caret)"`, which this fix makes false.
+   Its method-surface test (`codegraph-real-index.test.js:308-325`) skips `_meta`, so nothing else catches it.
+2. **One single-writer env, not three copies — and it disables the daemon.** `CODEGRAPH_NO_WATCH: '1'` is
+   set in three places today: the serve entry (`services/backend-spawn.ts:635`) and
+   `services/codegraph-query-runner.ts:174` and `:235`. Collapse them into ONE exported constant
+   carrying both `CODEGRAPH_NO_WATCH: '1'` and **`CODEGRAPH_NO_DAEMON: '1'`**, and use it at all three
+   sites. Disabling the daemon unconditionally keeps the upgrade like-for-like: `0.9.9` had no daemon, and
+   C4's runtime `sync` stays the sole index writer. **Measurement (recorded, not open-ended):** launch the
+   exact serve entry against a scratch repo with the constant applied, end its parent, and record the
+   codegraph process list before and after in the conformance artifact. A survivor is a finding to
+   record and park; it is not a reason to halt.
+3. **One version source in `install.sh`, fail-loud.** Replace the hard-coded `@0.9.9` in the tarball-mode
+   `npm install` (`:435-436`) with the spec read from the deployed `extension/package.json`, and drop the
+   version from the `:428` comment. The read must be GUARDED in the same posture as the self-probe at
+   `:440-445`: on an unreadable file or a missing key, print a `❌ FATAL:` line naming the file, then
+   `exit 1`. A bare `node -p` under `set -euo pipefail` dies with a raw stack trace, and it must never fall
+   back to a literal version.
+4. **Every stale literal, not two.** Measured at HEAD, **7** files outside `tests/evidence/` name `0.9.9`:
+   `install.sh`, `src/bin/check-update.ts`, its COMPILED and executed copy `bin/check-update.js` (spawned by
+   `stop-hook.ts:673`), `tests/check-update.test.js`, `tests/install-script.test.js`,
+   `tests/integration/codegraph-real-index.test.js`, and `data/codegraph-api-inventory.json`. Regenerate
+   compiled JS with a full `./node_modules/.bin/tsc` (not `--noEmit`). Leave
+   `tests/evidence/ac3-codegraph-mcp-call.md` alone: it is a dated record.
 
 ## Simplification Review
 
@@ -85,24 +99,60 @@ every commit since is docs-only.
 spec read from `package.json`; the serve MCP entry's `env` carries `CODEGRAPH_NO_WATCH: '1'` and, if the
 daemon measurement requires it, `CODEGRAPH_NO_DAEMON: '1'`.
 **Invariants**: every existing codegraph test passes unchanged in intent; the service's six-member call
-surface is unchanged; `install.sh`'s codegraph self-probe still passes in git mode.
+surface is unchanged; `install.sh`'s codegraph self-probe still passes in git mode; exactly ONE source
+defines the codegraph child env, and it carries both `CODEGRAPH_NO_WATCH` and `CODEGRAPH_NO_DAEMON`.
 **Errors**: an unreadable `package.json` in tarball mode must fail the install loudly (same posture as the
 existing self-probe), never fall back to a literal version.
 
-## Acceptance Criteria
+## Acceptance Criteria *(refined — every predicate run at HEAD `445df646`)*
 
-- `node -p "require('./extension/package.json').dependencies['@colbymchenry/codegraph']"` prints `^1.6.0` — **measured `0.9.9` at HEAD**.
+- `node -p "require('./extension/package.json').dependencies['@colbymchenry/codegraph']"` prints `^1.6.0` — **measured `0.9.9`**.
 - `node -p "require('./extension/node_modules/@colbymchenry/codegraph/package.json').version"` prints a `1.6.x` version — **measured `0.9.9`**.
 - `node -p "require('./extension/package-lock.json').packages['node_modules/@colbymchenry/codegraph'].version"` prints a `1.6.x` version — **measured `0.9.9`**.
-- `grep -c '0\.9\.9' install.sh` returns `0` — **measured `3`**.
-- `grep -rn '0\.9\.9' extension/src extension/tests/install-script.test.js | wc -l` returns `0` — **measured `2`** (`check-update.ts:16`, `install-script.test.js:1516`).
+- `node -p "require('./extension/data/codegraph-api-inventory.json')._meta.pin"` does not contain `no caret` — **measured `exact (0.9.9, no caret)`**.
+- From `extension/`: `grep -rln '0\.9\.9' src bin tests data scripts ../install.sh | grep -v 'tests/evidence/' | wc -l` returns `0` — **measured `7`**.
+- `grep -rc 'CODEGRAPH_NO_DAEMON' extension/src | grep -v ':0' | wc -l` returns a value `>= 1` — **measured `0`**.
+- `grep -rn "CODEGRAPH_NO_WATCH: '1'" extension/src | wc -l` returns `1`, the single constant — **measured `2`** (`backend-spawn.ts:635`, `codegraph-query-runner.ts:174`; `:235` assigns `process.env` and must use the constant too).
 - `cd extension && ./node_modules/.bin/tsc --noEmit && npx eslint src/ --max-warnings=0` exits `0`.
-- `cd extension && grep -l codegraph tests/*.test.js | xargs grep -l '@tier: fast' | xargs node bin/test-runner.js` exits `0` against `1.6.0`. **This is a REGRESSION GUARD, not a falsifier:** measured at HEAD it already exits `0` (1750 tests, 0 fail, 105s, 34 files). Two authoring traps were measured and avoided: `--tier fast` cannot be combined with positional files (the runner exits `2`), and `$(…)` expansion under zsh passes the list as ONE argument (the runner exits `1`, `Could not find`).
-- The daemon measurement (fix §3) is recorded in the ticket's conformance artifact with the observed process list before and after the parent exits.
-- `[manager]` `RUN_EXPENSIVE_TESTS=1 node --test tests/integration/codegraph-real-index.test.js` exits `0` on `1.6.0` (this is also covered by the release gate's `test_expensive` leg).
+- `cd extension && grep -l codegraph tests/*.test.js | xargs grep -l '@tier: fast' | xargs node bin/test-runner.js` exits `0` against `1.6.x`. **This is a REGRESSION GUARD, not a falsifier:** it already exits `0` at HEAD (1750 tests, 0 fail, 105s, 34 files). Two measured traps: `--tier fast` cannot be combined with positional files (the runner exits `2`), and a `$(…)` list under zsh arrives as ONE argument (the runner exits `1`).
+- The daemon measurement (fix §2) is in the ticket's conformance artifact: the process list before and after the parent exits.
+- `[manager]` `RUN_EXPENSIVE_TESTS=1 node --test tests/integration/codegraph-real-index.test.js` exits `0` on `1.6.x` (also covered by the release gate's `test_expensive` leg).
 
-## FALSIFY — take these before building
+## Risks
 
-- `npm view @colbymchenry/codegraph version` no longer prints `1.6.0` → retarget the range to the current latest and re-diff the six-member surface.
-- Any of the six members' signatures differ in the installed `1.6.x` `.d.ts` → stop; this is no longer like-for-like.
-- `grep -c 'CODEGRAPH_NO_WATCH' extension/node_modules/@colbymchenry/codegraph/dist/sync/watch-policy.d.ts` returns `0` after install → the watcher opt-out moved; the single-writer invariant must be re-derived before shipping.
+- **Install size.** Measured unpacked: `1.6.0` is about 54% larger than `0.9.9` (analyst figures: 289.5 MB vs 188.2 MB).
+  `check-update.ts`'s `INSTALL_SCRIPT_TIMEOUT_MS = 600_000` was tuned against a ~95s `0.9.9` tarball
+  install. It likely still fits, but the release gate's soak and tarball tests are the check.
+- **Rollback.** Git mode: revert the bundle's commits and re-run `install.sh`; the lockfile restores
+  `0.9.9` exactly. A caret range cannot float BELOW `1.6.0`, so rollback is only by revert.
+- **Upstream float in tarball mode.** A future `1.x` reaches tarball users without a source change. This
+  is accepted by operator direction; the lockfile keeps git-mode measurements attributable.
+
+## FALSIFY
+
+**Before building** (pre-build, on the current tree):
+- `npm view @colbymchenry/codegraph version` no longer prints `1.6.0` → retarget the range to the current
+  latest and re-diff the six-member surface before continuing.
+
+**After fix item 1 installs** (mid-ticket, against the installed `1.6.x`):
+- Any of the six members' signatures differ in the installed `.d.ts` → the upgrade is no longer
+  like-for-like. **Record it in the conformance artifact, do NOT flip the ticket Done, and continue.**
+  This is a parked finding, never a halt (root CLAUDE.md: a measurement verdict is never a crash floor).
+- `grep -c 'CODEGRAPH_NO_WATCH' extension/node_modules/@colbymchenry/codegraph/dist/sync/watch-policy.d.ts`
+  returns `0` → the watcher opt-out moved. Park the same way; the single-writer invariant must be
+  re-derived before this ships.
+
+---
+
+# Refinement Record *(3 roles × 3 cycles on `--model claude-sonnet-5`, 9/9 written, 0 refusals, 2026-09-23)*
+
+Every finding below was re-verified against HEAD before being applied.
+
+| # | analyst | finding | disposition |
+|---|---|---|---|
+| 1 | codebase, risk-scope | the stale-pin surface is **7** files, not 2, including the compiled, executed `bin/check-update.js` and `data/codegraph-api-inventory.json` (`_meta.pin` would read "no caret" after the fix) | **applied**: fix §4 lists all 7; the AC greps all of them; measured 7 |
+| 2 | requirements, risk-scope | FALSIFY's "stop" contradicts the no-halt rule, and its header claimed pre-build for a post-install check | **applied**: split into pre-build and post-install; the disposition is park-and-continue |
+| 3 | requirements | the Errors invariant (fail loud) was not implemented by a bare `node -p` under `set -euo pipefail` | **applied**: guarded `❌ FATAL:` read, same posture as the `:440-445` self-probe |
+| 4 | requirements | fix §3 (daemon) silently depended on item 1 having landed | **applied**: binding order |
+| 5 | risk-scope | the daemon "measurement" was open-ended investigation in a like-for-like PRD | **applied, as a subtraction**: set `CODEGRAPH_NO_DAEMON=1` unconditionally through one constant that replaces 3 hand-copied `NO_WATCH` sites; the measurement is now a recorded check, not an investigation |
+| 6 | requirements, risk-scope | no rollback path; install size grew | **applied**: Risks section |
