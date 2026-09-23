@@ -1538,6 +1538,27 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
     );
   });
 
+  test('codegraph spec read: the real jq filter yields the spec, or empty so the FATAL fires', (t) => {
+    // Executes install.sh's OWN filter (extracted, not restated) so a filter that
+    // silently emits "null" or the wrong key reds here rather than at deploy time.
+    const src = readFileSync(INSTALL_SH, 'utf8');
+    const m = src.match(/_codegraph_spec="\$\(jq -r '([^']+)' "\$_codegraph_pkg_json"/);
+    assert.ok(m, 'install.sh must read the codegraph spec with jq, the script\'s established JSON idiom');
+    assert.doesNotMatch(src, /_codegraph_spec="\$\(node /, 'the bespoke node -p spec read must be gone');
+    const dir = mkdtempSync(path.join(tmpdir(), 'pickle-cg-spec-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const run = (pkg) => {
+      const file = path.join(dir, 'package.json');
+      writeFileSync(file, JSON.stringify(pkg));
+      const r = spawnSync('jq', ['-r', m[1], file], { encoding: 'utf8', timeout: 10000 });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    assert.equal(run({ dependencies: { '@colbymchenry/codegraph': '^1.6.0' } }), '^1.6.0');
+    assert.equal(run({ dependencies: { other: '1.0.0' } }), '', 'absent key must read empty, not "null"');
+    assert.equal(run({ name: 'x' }), '', 'absent dependencies must read empty, not "null"');
+  });
+
   test('flat-name symlink loop does NOT mention @colbymchenry (AC-4)', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
     const lines = src.split('\n');

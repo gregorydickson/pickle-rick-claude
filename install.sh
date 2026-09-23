@@ -419,7 +419,7 @@ done
 # there; lockfile staying rsync-excluded is intentional, NOT a bug to "fix").
 _codegraph_scope="$EXTENSION_ROOT/extension/node_modules/@colbymchenry"
 _codegraph_pkg_json="$EXTENSION_ROOT/extension/package.json"
-_codegraph_spec="$(node -p "(() => { try { const p = require(process.argv[1]); const v = p.dependencies && p.dependencies['@colbymchenry/codegraph']; return v || ''; } catch (e) { return ''; } })()" -- "$_codegraph_pkg_json" 2>/dev/null || true)"
+_codegraph_spec="$(jq -r '.dependencies["@colbymchenry/codegraph"] // empty' "$_codegraph_pkg_json" || true)"
 if [ -z "$_codegraph_spec" ]; then
   echo "❌ FATAL: could not read dependencies['@colbymchenry/codegraph'] from $_codegraph_pkg_json." >&2
   echo "   The deploy cannot determine which codegraph version to install; aborting." >&2
