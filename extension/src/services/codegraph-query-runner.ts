@@ -12,9 +12,10 @@
  * group and we signal the WHOLE group.
  *
  * The child imports the SDK in-process (init()/open() do NOT auto-watch per the
- * inventory), defensively sets `CODEGRAPH_NO_WATCH=1`, executes every query in ONE
- * invocation, and returns JSON preserving the `SearchResult={node,score}` shape the
- * consumer (`collectCodegraphHits`) expects.
+ * inventory), defensively sets `CODEGRAPH_NO_WATCH=1` and `CODEGRAPH_NO_DAEMON=1`
+ * (`CODEGRAPH_SINGLE_WRITER_ENV`), executes every query in ONE invocation, and
+ * returns JSON preserving the `SearchResult={node,score}` shape the consumer
+ * (`collectCodegraphHits`) expects.
  *
  * This file is BOTH the parent runner API and the child entry — the CLI guard at the
  * bottom runs the child when the module is spawned as `node codegraph-query-runner.js`.
@@ -23,6 +24,17 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { killProcessGroup } from './orphan-reaper.js';
+
+/**
+ * Single source of truth for the codegraph single-writer env: `CODEGRAPH_NO_WATCH`
+ * keeps the runtime `sync()` (codegraph-service.ts) the sole writer to
+ * `.codegraph/codegraph.db` (C7); `CODEGRAPH_NO_DAEMON` disables the 1.6.x background
+ * daemon the same way for the same reason. Spread this into every codegraph child env.
+ */
+export const CODEGRAPH_SINGLE_WRITER_ENV = {
+  CODEGRAPH_NO_WATCH: '1',
+  CODEGRAPH_NO_DAEMON: '1',
+} as const;
 
 /** One FTS hit, `{node,score}` shape preserved from `SearchResult`. */
 export interface CodegraphSearchHit {
@@ -171,7 +183,7 @@ export async function runCodegraphQueryBatch(
     child = spawnFn(process.execPath, [childPath], {
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...(opts.env ?? process.env), CODEGRAPH_NO_WATCH: '1' },
+      env: { ...(opts.env ?? process.env), ...CODEGRAPH_SINGLE_WRITER_ENV },
     });
   } catch {
     return { status: 'failed', reason: 'spawn-threw' };
@@ -232,7 +244,7 @@ interface ChildGraph {
 }
 
 async function runChild(): Promise<void> {
-  process.env.CODEGRAPH_NO_WATCH = '1';
+  Object.assign(process.env, CODEGRAPH_SINGLE_WRITER_ENV);
   const raw = await readStdin();
   const input = JSON.parse(raw) as CodegraphQueryBatchInput;
 

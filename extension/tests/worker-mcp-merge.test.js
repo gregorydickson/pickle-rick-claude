@@ -8,7 +8,7 @@
 //   - enabled merge: codegraph entry shape + ABSOLUTE bin         (AC2)
 //   - operator `codegraph` collision wins (spread-last)           (AC3)
 //   - operator non-codegraph servers survive alongside codegraph  (AC4)
-//   - single-writer env CODEGRAPH_NO_WATCH=1                       (AC5 / C7)
+//   - single-writer env CODEGRAPH_NO_WATCH=1, CODEGRAPH_NO_DAEMON=1 (AC5 / C7)
 //   - codex spawn excludes --mcp-config; claude includes it
 //   - session_merged precedence_layer emitted truthfully
 //
@@ -123,13 +123,14 @@ test('buildWorkerMcpConfig: enabled with NO operator codegraph entry materialize
     }
 });
 
-// --- AC5 / C7: single-writer — serve watcher OFF via CODEGRAPH_NO_WATCH=1 ---
+// --- AC5 / C7: single-writer — serve watcher + daemon OFF via CODEGRAPH_SINGLE_WRITER_ENV ---
 
-test('buildWorkerMcpConfig: codegraph entry carries CODEGRAPH_NO_WATCH=1 (single-writer / C7)', (t) => {
+test('buildWorkerMcpConfig: codegraph entry carries CODEGRAPH_NO_WATCH=1 and CODEGRAPH_NO_DAEMON=1 (single-writer / C7)', (t) => {
     // C7 writer-ownership: codegraph-api-inventory.json records serve.watcher_disableable=true
-    // and CODEGRAPH_NO_WATCH=1 as the authoritative opt-out. We launch serve with the watcher
-    // OFF so C4's runtime sync stays the SOLE writer to .codegraph/codegraph.db — exactly one
-    // writer authority for the index.
+    // and CODEGRAPH_NO_WATCH=1 as the authoritative opt-out; CODEGRAPH_NO_DAEMON=1 disables the
+    // 1.6.x background daemon the same way. We launch serve with both OFF so C4's runtime sync
+    // stays the SOLE writer to .codegraph/codegraph.db — exactly one writer authority for the
+    // index.
     const binAbs = resolveRealCodegraphBinOrNull();
     if (!binAbs) return t.skip('@colbymchenry/codegraph bin not resolvable in this env');
 
@@ -138,6 +139,7 @@ test('buildWorkerMcpConfig: codegraph entry carries CODEGRAPH_NO_WATCH=1 (single
         buildWorkerMcpConfig(sessionDir, '/tmp/work', { expose_mcp_to_workers: true }, null);
         const cg = readMcpFile(sessionDir).mcpServers.codegraph;
         assert.equal(cg.env.CODEGRAPH_NO_WATCH, '1', 'serve launches with the auto-sync watcher disabled');
+        assert.equal(cg.env.CODEGRAPH_NO_DAEMON, '1', 'serve launches with the 1.6.x background daemon disabled');
     } finally {
         rmDir(sessionDir);
     }

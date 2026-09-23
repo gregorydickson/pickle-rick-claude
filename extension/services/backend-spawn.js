@@ -8,6 +8,7 @@ import { StateManager } from './state-manager.js';
 import { logActivity } from './activity-logger.js';
 import { materializeTrailerHooks } from './git-trailer-hooks.js';
 import { GIT_CONFIG_COUNT_ENV_VAR, PICKLE_TICKET_ID_ENV_VAR } from './pickle-utils.js';
+import { CODEGRAPH_SINGLE_WRITER_ENV } from './codegraph-query-runner.js';
 /**
  * R-WSRC-4 — Test-harness sandbox assertion.
  *
@@ -473,8 +474,9 @@ function resolveSpawnMcpConfig(opts) {
  *
  * Writer-ownership (C7): the inventory records `serve.watcher_disableable: true`
  * and that `CODEGRAPH_NO_WATCH=1` is the empirically-verified authoritative opt-out
- * that silences the serve auto-sync watcher. We launch serve with the watcher OFF so
- * C4's runtime `sync` remains the SOLE writer to `.codegraph/codegraph.db` — exactly
+ * that silences the serve auto-sync watcher; `CODEGRAPH_NO_DAEMON=1` disables the
+ * 1.6.x background daemon the same way. We launch serve with both OFF so C4's
+ * runtime `sync` remains the SOLE writer to `.codegraph/codegraph.db` — exactly
  * one writer authority for the index.
  *
  * Returns `null` on any resolution failure (package/platform-bundle absent) so the
@@ -490,8 +492,8 @@ function resolveCodegraphServeEntry(workingDir) {
         return {
             command: 'node',
             args: [binAbs, 'serve', '--mcp'],
-            // C7 single-writer: watcher OFF (see fn doc) — codegraph-api-inventory.json serve finding.
-            env: { CODEGRAPH_NO_WATCH: '1' },
+            // C7 single-writer: watcher + daemon OFF (see fn doc) — codegraph-api-inventory.json serve finding.
+            env: { ...CODEGRAPH_SINGLE_WRITER_ENV },
             cwd: workingDir,
         };
     }

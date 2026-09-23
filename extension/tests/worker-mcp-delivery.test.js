@@ -57,7 +57,7 @@ function fixtureServeEntry(workingDir) {
     return {
         command: 'node',
         args: ['/fixture/abs/codegraph-bin.js', 'serve', '--mcp'],
-        env: { CODEGRAPH_NO_WATCH: '1' },
+        env: { CODEGRAPH_NO_WATCH: '1', CODEGRAPH_NO_DAEMON: '1' },
         cwd: workingDir,
     };
 }
