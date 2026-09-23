@@ -418,13 +418,6 @@ done
 # deploy root (no lockfile reaches the deploy tree by design — npm ci impossible
 # there; lockfile staying rsync-excluded is intentional, NOT a bug to "fix").
 _codegraph_scope="$EXTENSION_ROOT/extension/node_modules/@colbymchenry"
-_codegraph_pkg_json="$EXTENSION_ROOT/extension/package.json"
-_codegraph_spec="$(jq -r '.dependencies["@colbymchenry/codegraph"] // empty' "$_codegraph_pkg_json" || true)"
-if [ -z "$_codegraph_spec" ]; then
-  echo "❌ FATAL: could not read dependencies['@colbymchenry/codegraph'] from $_codegraph_pkg_json." >&2
-  echo "   The deploy cannot determine which codegraph version to install; aborting." >&2
-  exit 1
-fi
 if [ "$INSTALL_MODE" = "git" ]; then
   mkdir -p "$_codegraph_scope"
   _cg_src="$SCRIPT_DIR/extension/node_modules/@colbymchenry/codegraph"
@@ -439,6 +432,13 @@ if [ "$INSTALL_MODE" = "git" ]; then
     ln -sfn "$_cg_plat" "$_codegraph_scope/$(basename "$_cg_plat")"
   done
 else
+  _codegraph_pkg_json="$EXTENSION_ROOT/extension/package.json"
+  _codegraph_spec="$(jq -r '.dependencies["@colbymchenry/codegraph"] // empty' "$_codegraph_pkg_json" || true)"
+  if [ -z "$_codegraph_spec" ]; then
+    echo "❌ FATAL: could not read dependencies['@colbymchenry/codegraph'] from $_codegraph_pkg_json." >&2
+    echo "   The deploy cannot determine which codegraph version to install; aborting." >&2
+    exit 1
+  fi
   echo "📦 Installing @colbymchenry/codegraph@$_codegraph_spec at deploy root (tarball mode)…"
   (cd "$EXTENSION_ROOT/extension" && npm install --omit=dev --no-save "@colbymchenry/codegraph@$_codegraph_spec" --no-fund --no-audit)
 fi

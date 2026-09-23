@@ -1559,6 +1559,22 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
     assert.equal(run({ name: 'x' }), '', 'absent dependencies must read empty, not "null"');
   });
 
+  test('codegraph spec read + FATAL live only in the tarball branch (git mode never consumes it)', () => {
+    const src = readFileSync(INSTALL_SH, 'utf8');
+    const gitIf = src.indexOf('if [ "$INSTALL_MODE" = "git" ]; then\n  mkdir -p "$_codegraph_scope"');
+    assert.ok(gitIf !== -1, 'codegraph per-mode git branch must exist');
+    const elseIdx = src.indexOf('\nelse\n', gitIf);
+    const fiIdx = src.indexOf('\nfi\n', elseIdx);
+    assert.ok(elseIdx > gitIf && fiIdx > elseIdx, 'codegraph per-mode block must have an else (tarball) arm');
+    const tarballArm = src.slice(elseIdx, fiIdx);
+    assert.match(tarballArm, /_codegraph_spec="\$\(jq /, 'the spec read must sit in the tarball arm');
+    assert.match(tarballArm, /could not read dependencies/, 'the spec FATAL must sit in the tarball arm');
+    assert.equal(
+      src.indexOf('_codegraph_spec='), src.indexOf('_codegraph_spec=', elseIdx),
+      'no spec read may run before the mode split — git mode would abort on a value it never uses',
+    );
+  });
+
   test('flat-name symlink loop does NOT mention @colbymchenry (AC-4)', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
     const lines = src.split('\n');
