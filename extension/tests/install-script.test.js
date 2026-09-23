@@ -1538,31 +1538,6 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
     );
   });
 
-  test('codegraph spec read: the real jq filter yields the spec, or empty so the FATAL fires', (t) => {
-    // Executes install.sh's OWN filter (extracted, not restated) so a filter that
-    // silently emits "null" or the wrong key reds here rather than at deploy time.
-    const src = readFileSync(INSTALL_SH, 'utf8');
-    const m = src.match(/_codegraph_spec="\$\(jq -r '([^']+)' "\$_codegraph_pkg_json"/);
-    assert.ok(m, 'install.sh must read the codegraph spec with jq, the script\'s established JSON idiom');
-    assert.doesNotMatch(src, /_codegraph_spec="\$\(node /, 'the bespoke node -p spec read must be gone');
-    // PROVISIONED-OK: guarded by the presence probe below; install.sh itself exits without jq.
-    const probe = spawnSync('jq', ['--version'], { encoding: 'utf8', timeout: 10000 });
-    if (probe.status !== 0) return t.skip('jq not on PATH — install.sh hard-requires it, so the filter cannot run here either');
-    const dir = mkdtempSync(path.join(tmpdir(), 'pickle-cg-spec-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
-    const run = (pkg) => {
-      const file = path.join(dir, 'package.json');
-      writeFileSync(file, JSON.stringify(pkg));
-      // PROVISIONED-OK: reached only after the jq presence probe above succeeded.
-      const r = spawnSync('jq', ['-r', m[1], file], { encoding: 'utf8', timeout: 10000 });
-      assert.equal(r.status, 0, r.stderr);
-      return r.stdout.trim();
-    };
-    assert.equal(run({ dependencies: { '@colbymchenry/codegraph': '^1.6.0' } }), '^1.6.0');
-    assert.equal(run({ dependencies: { other: '1.0.0' } }), '', 'absent key must read empty, not "null"');
-    assert.equal(run({ name: 'x' }), '', 'absent dependencies must read empty, not "null"');
-  });
-
   test('codegraph spec guard: the real read+FATAL block aborts on every unreadable input, passes a valid spec', (t) => {
     // Runs install.sh's OWN read line + `-z` guard (extracted verbatim, under the script's
     // `set -euo pipefail`) so the `|| true` + FATAL pairing is exercised, not just grepped.
@@ -1589,6 +1564,7 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
       'missing file': ['absent.json', undefined],
       'malformed JSON': ['malformed.json', '{ "dependencies": '],
       'absent key': ['nokey.json', JSON.stringify({ dependencies: { other: '1.0.0' } })],
+      'absent dependencies': ['nodeps.json', JSON.stringify({ name: 'x' })],
       'null value': ['null.json', JSON.stringify({ dependencies: { '@colbymchenry/codegraph': null } })],
       'empty string': ['empty.json', JSON.stringify({ dependencies: { '@colbymchenry/codegraph': '' } })],
     };
