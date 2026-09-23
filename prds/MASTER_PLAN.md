@@ -221,20 +221,26 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-23 (B-REFMODEL, B-FIXBUDGET, B-CGUP(+2) shipped; nothing running). **READ THIS FIRST.**
+## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
 ### ▶ STATE — nothing is running
 
 | | |
 |---|---|
-| branch | **`main`** at **`c534c59e`** (last gated code) + docs through `b3c4160e` (pushed 2026-09-23). `release/v2.2-beta` is historical |
-| version | `extension/package.json` = **`2.1.1`**. Newest tag still **`v2.1.0`** — cadence, not oversight |
-| deployed | **in sync with `c534c59e`**, `install.sh` run 2026-09-23; deployed codegraph resolves **`1.6.0`** (`^1.6.0`) and verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
+| branch | **`main`** at **`d6e036fd`**, pushed 2026-09-23. `release/v2.2-beta` is historical |
+| version | `extension/package.json` = **`2.1.1`**. Tag **`v2.1.1`** at **`81e1c2e9`** (gate `20260923T143852Z-82646` 22/22 green, soak 1803.8s). Its Release workflow went RED on the two CI-only tests fixed in `d6e036fd` (test files only); CI on `d6e036fd` is **green**, the first green since 2026-09-16 (`392bd817`) |
+| deployed | **`81e1c2e9`** (B-REFUSAL fix; `d6e036fd` changes tests only). Previously in sync with `c534c59e`, `install.sh` run 2026-09-23; deployed codegraph resolves **`1.6.0`** (`^1.6.0`) and verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
 | RUNNING | **nothing.** Stale tmux shells linger (`pipeline-*`, `refine-*`) — idle, safe to kill |
 | unpushed | **0** |
 | open issues | **#43**, **#5** (both operator-deferred). **Zero open bugs.** #46, #47 closed on measured evidence |
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
 | babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
+
+### ▶ B-REFUSAL + CI repair (2026-09-23)
+
+- **Refinement refusals on Opus 5.5 — FIXED (`81e1c2e9`, hand-built at operator direction).** Cause: ONE sentence in the static `ANALYST_PERSONA` (`spawn-refinement-team.ts`), which is why #46's control PRD also failed ("model, not content" was wrong). The sentence was deleted, not reworded. Deployed prompts on `claude-opus-5-5`: 15/15 `end_turn` (6 + 9 across two checks); pre-fix control 3/3 refused. The sentence is refused by Sonnet 5 too, and it is refused wherever it appears. The pipeline attempt died because the manager quoted it into the ticket. **Bisect refusals by `stop_reason` only; never quote the trigger into a PRD, ticket or prompt.**
+- **Linux CI red since 2026-09-16 — FIXED (`d6e036fd`).** Two fast-tier tests the macOS gate cannot see: `AP-EXT-ITER303-01` spawned a real `claude` (missing `PICKLE_JUDGE_LEGACY_SPAWN=1`), and the disposition-map wiring control asserted Node 24's non-TTY reporter output, while Node 22 (CI, `engines.node`) emits TAP. **A local gate run under Node 24 does not cover CI's Node 22 output format.**
+- **Open decision:** v2.1.1's Release workflow is red only because of those tests. Either re-run the release on a new tag `v2.1.2` at `d6e036fd`, or leave it; the runtime code is identical.
 
 ### ▶ SHIPPED THIS SESSION
 
