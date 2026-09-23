@@ -172,26 +172,32 @@ test('setup-resume-ticket-status-preserved: --force-ticket-status-sync rewrites 
 });
 
 // B-CURTIX AC4: a TERMINAL pointer is never revived — no write and no event, with or without the flag.
-for (const force of [false, true]) {
-    test(`setup-resume-ticket-status-preserved: a Skipped pointer stays Skipped ${force ? 'under' : 'without'} --force-ticket-status-sync`, () => {
-        withDataRoot(dataRoot => {
-            const sp = sessionRoot(run(['--task', `curtix-ac4-${force}`], dataRoot));
-            const ticketId = force ? 'test000c' : 'test000d';
-            injectCurrentTicket(path.join(sp, 'state.json'), ticketId);
-            const ticketPath = makeTicketFile(sp, ticketId, 'Skipped');
-            const before = fs.readFileSync(ticketPath, 'utf-8');
+// PRD fixture: three tickets, pointer terminal, two Todo siblings. The resume must exit 0 — a crash before the
+// reconciler would leave every file untouched and read as a pass.
+for (const status of ['Skipped', 'Done', 'Failed']) {
+    for (const force of [false, true]) {
+        test(`setup-resume-ticket-status-preserved: a ${status} pointer stays ${status} ${force ? 'under' : 'without'} --force-ticket-status-sync`, () => {
+            withDataRoot(dataRoot => {
+                const sp = sessionRoot(run(['--task', `curtix-ac4-${status}-${force}`], dataRoot));
+                const statePath = path.join(sp, 'state.json');
+                injectCurrentTicket(statePath, 'aaaa1111');
+                const ticketPaths = [
+                    makeTicketFile(sp, 'aaaa1111', status),
+                    makeTicketFile(sp, 'bbbb2222', 'Todo'),
+                    makeTicketFile(sp, 'cccc3333', 'Todo'),
+                ];
+                const before = ticketPaths.map(p => fs.readFileSync(p, 'utf-8'));
 
-            run(['--resume', sp, ...(force ? ['--force-ticket-status-sync'] : [])], dataRoot, { allowFail: true });
+                run(['--resume', sp, ...(force ? ['--force-ticket-status-sync'] : [])], dataRoot);
 
-            assert.equal(fs.readFileSync(ticketPath, 'utf-8'), before, 'the Skipped ticket file is byte-identical');
-            for (const eventName of ['setup_resume_overrode_ticket_status', 'setup_resume_ticket_status_preserved']) {
-                const hits = findActivityEvents(dataRoot, eventName).filter(evt => evt.ticket_id === ticketId);
-                assert.equal(hits.length, 0, `${eventName} must not fire for a terminal pointer`);
-            }
-            const desync = findActivityEvents(dataRoot, 'ticket_state_desync_detected').filter(evt => evt.ticket === ticketId);
-            assert.equal(desync.length, 0, 'a terminal pointer is not a desync');
+                assert.deepEqual(ticketPaths.map(p => fs.readFileSync(p, 'utf-8')), before, 'every ticket file is byte-identical');
+                assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf-8')).current_ticket, 'aaaa1111', 'resume does not move a terminal pointer');
+                for (const eventName of ['setup_resume_overrode_ticket_status', 'setup_resume_ticket_status_preserved', 'ticket_state_desync_detected']) {
+                    assert.equal(findActivityEvents(dataRoot, eventName).length, 0, `${eventName} must not fire for a terminal pointer`);
+                }
+            });
         });
-    });
+    }
 }
 
 // c9d78d84: a resume that MOVES the pointer to the In Progress ticket re-infers the step for it. The first iteration
