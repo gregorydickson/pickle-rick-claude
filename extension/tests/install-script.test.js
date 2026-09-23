@@ -1545,11 +1545,15 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
     const m = src.match(/_codegraph_spec="\$\(jq -r '([^']+)' "\$_codegraph_pkg_json"/);
     assert.ok(m, 'install.sh must read the codegraph spec with jq, the script\'s established JSON idiom');
     assert.doesNotMatch(src, /_codegraph_spec="\$\(node /, 'the bespoke node -p spec read must be gone');
+    // PROVISIONED-OK: guarded by the presence probe below; install.sh itself exits without jq.
+    const probe = spawnSync('jq', ['--version'], { encoding: 'utf8', timeout: 10000 });
+    if (probe.status !== 0) return t.skip('jq not on PATH — install.sh hard-requires it, so the filter cannot run here either');
     const dir = mkdtempSync(path.join(tmpdir(), 'pickle-cg-spec-'));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const run = (pkg) => {
       const file = path.join(dir, 'package.json');
       writeFileSync(file, JSON.stringify(pkg));
+      // PROVISIONED-OK: reached only after the jq presence probe above succeeded.
       const r = spawnSync('jq', ['-r', m[1], file], { encoding: 'utf8', timeout: 10000 });
       assert.equal(r.status, 0, r.stderr);
       return r.stdout.trim();
