@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, markTicketWithStatus as writeTicketStatus } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGitSafe } from '../services/git-utils.js';
-import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit, collectFrontmatterInProgress, readTicketStatusMap, resolveTicketDesyncWinner } from './mux-runner.js';
+import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit, collectFrontmatterInProgress, readTicketStatusMap, resolveTicketDesyncWinner, moveCurrentTicket } from './mux-runner.js';
 import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
 import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, PAUSED_ORPHAN_MIN_AGE_MS } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
@@ -1027,18 +1027,8 @@ function reconcileTicketStateDesyncOnResume(sessionDir: string, statePath: strin
   }
 
   if (winner !== currentTicket) {
-    return sm.update(statePath, s => {
-      s.current_ticket = winner;
-      // R-CNAR-8: transitioning current_ticket REQUIRES atomic clear of all
-      // 5 cache fields, not just tier/budget. Pre-fix the other 3 fields
-      // survived from the prior ticket and distorted ticketBudgetIterationCount
-      // on the new ticket's first iteration.
-      delete s.current_ticket_tier;
-      delete s.current_ticket_budget;
-      delete s.current_ticket_max_iterations;
-      delete s.current_ticket_worker_timeout_seconds;
-      delete s.current_ticket_budget_start_iteration;
-    });
+    // R-CNAR-8 + c9d78d84: the shared move clears the per-ticket cache and re-infers the step for the winner.
+    return sm.update(statePath, s => { moveCurrentTicket(s, sessionDir, winner); });
   }
   return sm.read(statePath);
 }

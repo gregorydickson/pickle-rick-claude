@@ -2536,24 +2536,33 @@ function maxLifecycleStep(current: Step, next: MuxLifecycleStep): MuxLifecycleSt
   return next;
 }
 
+/**
+ * The one pointer move: clears the R-CNAR-8 per-ticket cache and re-infers `step` for the new ticket, so no writer
+ * leaves the old ticket's step for the next head's maxLifecycleStep to keep (c9d78d84). A move to null keeps the step
+ * unless one is given — the next head re-selects and infers. Returns whether the pointer moved.
+ */
+export function moveCurrentTicket(s: State, sessionDir: string, ticket: string | null, step?: Step): boolean {
+  if (s.current_ticket === ticket) return false;
+  s.current_ticket = ticket;
+  delete s.current_ticket_tier;
+  delete s.current_ticket_budget;
+  delete s.current_ticket_max_iterations;
+  delete s.current_ticket_worker_timeout_seconds;
+  delete s.current_ticket_budget_start_iteration;
+  const nextStep = step ?? (ticket ? inferTicketLifecycleStep(sessionDir, ticket, 'research') : undefined);
+  if (nextStep !== undefined) s.step = nextStep;
+  return true;
+}
+
 function updateMuxLifecycleState(
   statePath: string,
   patch: { iteration?: number; currentTicket?: string | null; step?: MuxLifecycleStep },
 ): State {
   return sm.update(statePath, s => {
     if (patch.iteration !== undefined) s.iteration = patch.iteration;
-    const ticketChanged = patch.currentTicket !== undefined && s.current_ticket !== patch.currentTicket;
-    if (patch.currentTicket !== undefined && s.current_ticket !== patch.currentTicket) {
-      s.current_ticket = patch.currentTicket;
-      delete s.current_ticket_tier;
-      delete s.current_ticket_budget;
-      delete s.current_ticket_max_iterations;
-      delete s.current_ticket_worker_timeout_seconds;
-      delete s.current_ticket_budget_start_iteration;
-    }
-    if (patch.step !== undefined) {
-      s.step = ticketChanged ? patch.step : maxLifecycleStep(s.step, patch.step);
-    }
+    const ticketChanged = patch.currentTicket !== undefined
+      && moveCurrentTicket(s, path.dirname(statePath), patch.currentTicket, patch.step);
+    if (patch.step !== undefined && !ticketChanged) s.step = maxLifecycleStep(s.step, patch.step);
   });
 }
 

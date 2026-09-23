@@ -193,3 +193,31 @@ for (const force of [false, true]) {
         });
     });
 }
+
+// c9d78d84: a resume that MOVES the pointer to the In Progress ticket re-infers the step for it. The first iteration
+// head keeps max(step, inferred) while the pointer is unchanged, so a step carried over from the old ticket survives there.
+test('setup-resume-ticket-status-preserved: a resume pointer move re-infers the step and clears the per-ticket cache', () => {
+    withDataRoot(dataRoot => {
+        const sp = sessionRoot(run(['--task', 'c9d78d84-resume-step'], dataRoot));
+        const statePath = path.join(sp, 'state.json');
+        makeTicketFile(sp, 'test000e', 'Todo');
+        makeTicketFile(sp, 'test000f', 'In Progress');
+        fs.writeFileSync(path.join(sp, 'test000f', 'research_2026-09-23.md'), '# research\n');
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        Object.assign(state, {
+            current_ticket: 'test000e',
+            step: 'review',
+            current_ticket_tier: 'large',
+            current_ticket_budget_start_iteration: 3,
+        });
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+        run(['--resume', sp], dataRoot, { allowFail: true });
+
+        const resumed = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.equal(resumed.current_ticket, 'test000f', 'the pointer moves to the In Progress ticket');
+        assert.equal(resumed.step, 'plan', 'the step is inferred from test000f\'s artifacts, not carried over from test000e');
+        assert.equal(resumed.current_ticket_tier, undefined, 'the old ticket\'s tier cache is cleared');
+        assert.equal(resumed.current_ticket_budget_start_iteration, undefined, 'the old ticket\'s budget baseline is cleared');
+    });
+});
