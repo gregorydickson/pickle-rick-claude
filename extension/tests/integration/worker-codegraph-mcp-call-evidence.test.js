@@ -242,11 +242,10 @@ test('AC-3 control: the same call on an UNINDEXED working dir never confirms the
     assert.equal(reply.error, undefined, 'control returns no JSON-RPC error either');
     assert.ok(Array.isArray(reply.result.content) && reply.result.content.length > 0,
       'control still returns populated content');
-    // ...and only the semantic content, not the transport shape, tells them apart: the
-    // control's content never confirms the fixture symbol, and is either flagged
-    // isError or carries the "no project loaded" banner (codegraph versions vary on
-    // whether isError is set at all — see the FIXTURE_SYMBOL check above for the
-    // invariant that must hold regardless).
+    // ...and only the payload tells them apart. The first check is the invariant: the
+    // control never confirms the fixture symbol. The second pins why — codegraph versions
+    // vary on whether they set isError at all, so either the flag or the "no project
+    // loaded" banner is accepted.
     const text = reply.result.content.map((c) => c.text || '').join('\n');
     assert.ok(
       !text.includes(FIXTURE_SYMBOL),
