@@ -157,7 +157,7 @@ Operator workflow to skip or re-classify a ticket mid-session without abandoning
 
 1. Stop the pipeline (Ctrl-C or tmux detach).
 2. Edit the ticket's frontmatter: set `status: "Skipped"` (or `"Done"`), add `skipped_reason: "<reason>"` and `completion_commit: "<sha>"`.
-3. Run `setup.js --resume <SESSION_ROOT>`. A terminal edit (Done/Skipped/Failed) on the `state.current_ticket` ticket is not a desync: the resume writes nothing and emits nothing, and the loop's R-AISLOW preskip advances the pointer to the next pending ticket with a fresh `step`. `--force-ticket-status-sync` never revives a terminal ticket.
+3. Run `setup.js --resume <SESSION_ROOT>`. A terminal edit (Done/Skipped/Failed) on the `state.current_ticket` ticket is not a desync: the resume writes nothing and emits nothing. For Done/Skipped the loop's R-AISLOW preskip then advances the pointer to the next pending ticket with a fresh `step`; a Failed pointer is left as is (revive it with `/pickle-retry`). `--force-ticket-status-sync` never revives a terminal ticket.
 
 For a PENDING pointer (e.g. an In Progress ticket edited back to `Todo`), the resume honors the edit and emits `setup_resume_ticket_status_preserved`; add `--force-ticket-status-sync` to restore it to In Progress instead (emits `setup_resume_overrode_ticket_status`) when `state.current_ticket` is authoritative.
 
