@@ -615,7 +615,7 @@ describe('extractAndInstall', () => {
 //
 // `runReleaseInstallScript` caps `bash install.sh` with spawnSync's `timeout`. The upgrade
 // payload carries no `.git`, so the installer takes its TARBALL branch, whose mandatory step
-// is a NETWORKED `npm install @colbymchenry/codegraph@0.9.9` at the deploy root — 46 MB
+// is a NETWORKED `npm install` of @colbymchenry/codegraph (the 0.9.x era) at the deploy root — 46 MB
 // fetched, 181 MB unpacked, on EVERY upgrade, because the rsync above it runs
 // `--delete-excluded` and rebuilds `node_modules` each run. At the former 30s that needed
 // >12 Mbps sustained before a single local step ran.

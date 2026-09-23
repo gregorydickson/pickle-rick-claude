@@ -3,7 +3,7 @@
 // expensive-tier case (60s hang-guard timeout); under expensive-tier concurrency it flakes
 // (B-V2RG P3 / E9a), so it is listed in tests/integration/.serial-tests.json to run serialized.
 //
-// C0 spike (ticket 46097c46): real-surface validation of @colbymchenry/codegraph@0.9.9.
+// C0 spike (ticket 46097c46): real-surface validation of @colbymchenry/codegraph (0.9.x era).
 //
 // Exercises the REAL library against tiny tmp fixture repos and asserts result
 // shapes against the PRD API contracts recorded in

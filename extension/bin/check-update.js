@@ -10,7 +10,7 @@ const SETTINGS_FILE = 'pickle_settings.json';
 const DEBUG_LOG = 'debug.log';
 // AP-EXT-ITER94-01: a RUNAWAY BACKSTOP for the installer spawn below, not a schedule.
 // The upgrade payload has no `.git`, so `install.sh` takes its TARBALL branch, whose
-// mandatory step is a NETWORKED `npm install @colbymchenry/codegraph@0.9.9` at the deploy
+// mandatory step is a NETWORKED `npm install` of @colbymchenry/codegraph (the 0.9.x era) at the deploy
 // root — measured 46 MB fetched, unpacking to 181 MB, on EVERY upgrade (the rsync above it
 // runs `--delete-excluded`, so `node_modules` is rebuilt each run). The former 30s needed
 // >12 Mbps sustained before a single local step, and this repo's own harness for the same

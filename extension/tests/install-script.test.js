@@ -1509,11 +1509,22 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
       /codegraph-darwin-arm64/,
       'install.sh must NOT hardcode the darwin-arm64 platform binding',
     );
-    // Tarball mode: deploy-root npm install at the pinned version.
+    // Tarball mode: deploy-root npm install using the spec read from package.json.
     assert.match(
       src,
-      /npm install --omit=dev --no-save @colbymchenry\/codegraph@0\.9\.9/,
-      'install.sh must npm install codegraph@0.9.9 at the deploy root in tarball mode',
+      /npm install --omit=dev --no-save "@colbymchenry\/codegraph@\$_codegraph_spec"/,
+      'install.sh must npm install codegraph using the spec variable read from package.json in tarball mode',
+    );
+    assert.doesNotMatch(
+      src,
+      /@colbymchenry\/codegraph@\d/,
+      'install.sh must NOT hardcode a codegraph version literal',
+    );
+    // The spec read is followed by a loud guard, not a silent fallback.
+    assert.match(
+      src,
+      /could not read dependencies\['@colbymchenry\/codegraph'\][\s\S]{0,200}exit 1/,
+      'install.sh must abort loudly if the codegraph spec cannot be read from package.json',
     );
     // Self-probe (both modes).
     assert.match(

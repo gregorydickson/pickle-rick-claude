@@ -418,6 +418,13 @@ done
 # deploy root (no lockfile reaches the deploy tree by design — npm ci impossible
 # there; lockfile staying rsync-excluded is intentional, NOT a bug to "fix").
 _codegraph_scope="$EXTENSION_ROOT/extension/node_modules/@colbymchenry"
+_codegraph_pkg_json="$EXTENSION_ROOT/extension/package.json"
+_codegraph_spec="$(node -p "(() => { try { const p = require(process.argv[1]); const v = p.dependencies && p.dependencies['@colbymchenry/codegraph']; return v || ''; } catch (e) { return ''; } })()" -- "$_codegraph_pkg_json" 2>/dev/null || true)"
+if [ -z "$_codegraph_spec" ]; then
+  echo "❌ FATAL: could not read dependencies['@colbymchenry/codegraph'] from $_codegraph_pkg_json." >&2
+  echo "   The deploy cannot determine which codegraph version to install; aborting." >&2
+  exit 1
+fi
 if [ "$INSTALL_MODE" = "git" ]; then
   mkdir -p "$_codegraph_scope"
   _cg_src="$SCRIPT_DIR/extension/node_modules/@colbymchenry/codegraph"
@@ -425,15 +432,15 @@ if [ "$INSTALL_MODE" = "git" ]; then
     ln -sfn "$_cg_src" "$_codegraph_scope/codegraph"
   fi
   # Resolve the ONE platform binding present in source node_modules generically
-  # (0.9.9 ships six platform optionalDependencies; npm installs only the
-  # host-matching one — do not hardcode darwin-arm64).
+  # (each codegraph release ships one optionalDependency per supported platform;
+  # npm installs only the host-matching one — do not hardcode darwin-arm64).
   for _cg_plat in "$SCRIPT_DIR"/extension/node_modules/@colbymchenry/codegraph-*-*; do
     [ -d "$_cg_plat" ] || continue
     ln -sfn "$_cg_plat" "$_codegraph_scope/$(basename "$_cg_plat")"
   done
 else
-  echo "📦 Installing @colbymchenry/codegraph@0.9.9 at deploy root (tarball mode)…"
-  (cd "$EXTENSION_ROOT/extension" && npm install --omit=dev --no-save @colbymchenry/codegraph@0.9.9 --no-fund --no-audit)
+  echo "📦 Installing @colbymchenry/codegraph@$_codegraph_spec at deploy root (tarball mode)…"
+  (cd "$EXTENSION_ROOT/extension" && npm install --omit=dev --no-save "@colbymchenry/codegraph@$_codegraph_spec" --no-fund --no-audit)
 fi
 
 # Self-probe (both modes): the deployed tree MUST resolve the scoped package, or
