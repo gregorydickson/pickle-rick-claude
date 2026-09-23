@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDataRoot, withRetryLock, pruneOldSessions, safeErrorMessage, findSessionPathForCwd, formatLocalDateKey, collectTickets, getTicketStatus, readFrontmatterField, loadPickleSettingsBag, resolveCodegraphSettings, markTicketWithStatus as writeTicketStatus } from '../services/pickle-utils.js';
 import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGitSafe } from '../services/git-utils.js';
-import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit, readTicketStatusMap, resolveTicketDesyncWinner } from './mux-runner.js';
+import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit, collectFrontmatterInProgress, readTicketStatusMap, resolveTicketDesyncWinner } from './mux-runner.js';
 import { LockError, BACKENDS, STATE_MANAGER_DEFAULTS } from '../types/index.js';
 import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, PAUSED_ORPHAN_MIN_AGE_MS } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
@@ -843,9 +843,6 @@ function validateResumeCompatibility(preState, config, sessionRoot) {
         die(`--teams is incompatible with --backend ${willHaveBackend} (claude backend only). Resume would create a conflicting state — refusing to continue.`);
     }
 }
-function normalizeTicketStatus(status) {
-    return (status || '').toLowerCase().replace(/["']/g, '').trim();
-}
 // R-SRTS-1: gate the "restore In Progress" write behind --force-ticket-status-sync.
 // winner === currentTicket is invariant here (the shared resolver falls back to
 // currentTicket when nothing is In Progress, the only case where the winner is not
@@ -900,7 +897,7 @@ function reconcileTicketStateDesyncOnResume(sessionDir, statePath, currentTicket
     if (resolution.action === 'noop')
         return state;
     const winner = resolution.winner;
-    const inProgressIds = [...statuses].filter(([, status]) => normalizeTicketStatus(status) === 'in progress').map(([id]) => id);
+    const inProgressIds = collectFrontmatterInProgress(statuses).map(({ id }) => id);
     logActivity({
         event: 'ticket_state_desync_detected',
         source: 'pickle',

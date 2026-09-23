@@ -1378,7 +1378,7 @@ function chooseInProgressWinner(inProgress, currentTicket) {
         return currentTicket;
     return inProgress.find(ticket => !!ticket.id)?.id ?? currentTicket;
 }
-function collectFrontmatterInProgress(frontmatterStatuses) {
+export function collectFrontmatterInProgress(frontmatterStatuses) {
     const inProgress = [];
     for (const [ticketId, status] of frontmatterStatuses.entries()) {
         if (normalizedStatus(status) === 'in progress') {
@@ -1426,18 +1426,6 @@ export function resolveTicketDesyncWinner(state, frontmatterStatuses) {
     }
     return { winner, action: 'sync' };
 }
-function reconcileInProgressSet(tickets, frontmatterStatuses) {
-    const inProgress = [];
-    for (const ticket of tickets) {
-        if (!ticket.id)
-            continue;
-        const status = normalizedStatus(frontmatterStatuses.get(ticket.id) ?? '');
-        if (status === 'in progress') {
-            inProgress.push({ id: ticket.id, status });
-        }
-    }
-    return inProgress;
-}
 function applyTicketDesyncWrites(sessionDir, winner, inProgress) {
     if (!inProgress.some((ticket) => ticket.id === winner)) {
         writeTicketStatus(sessionDir, winner, 'In Progress');
@@ -1475,7 +1463,7 @@ function reconcileTicketStateDesync(statePath, sessionDir, currentTicket, iterat
     if (resolution.action === 'noop')
         return state;
     const winner = resolution.winner;
-    const inProgress = reconcileInProgressSet(tickets, frontmatterStatuses);
+    const inProgress = collectFrontmatterInProgress(frontmatterStatuses);
     logActivity({
         event: 'ticket_state_desync_detected',
         source: 'pickle',

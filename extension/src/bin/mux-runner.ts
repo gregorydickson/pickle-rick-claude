@@ -1616,7 +1616,7 @@ export type TicketDesyncResolution =
   | { winner: string; action: 'sync' }
   | { winner: string | null; action: 'noop' };
 
-function collectFrontmatterInProgress(frontmatterStatuses: Map<string, TicketStatus>): { id: string }[] {
+export function collectFrontmatterInProgress(frontmatterStatuses: Map<string, TicketStatus>): { id: string }[] {
   const inProgress: { id: string }[] = [];
   for (const [ticketId, status] of frontmatterStatuses.entries()) {
     if (normalizedStatus(status) === 'in progress') {
@@ -1666,22 +1666,6 @@ export function resolveTicketDesyncWinner(state: State, frontmatterStatuses: Map
   return { winner, action: 'sync' };
 }
 
-function reconcileInProgressSet(
-  tickets: readonly { id: string | null }[],
-  frontmatterStatuses: Map<string, TicketStatus>,
-): { id: string; status: string }[] {
-  const inProgress: { id: string; status: string }[] = [];
-  for (const ticket of tickets) {
-    if (!ticket.id) continue;
-    const status = normalizedStatus(frontmatterStatuses.get(ticket.id) ?? '');
-    if (status === 'in progress') {
-      inProgress.push({ id: ticket.id, status });
-    }
-  }
-
-  return inProgress;
-}
-
 function applyTicketDesyncWrites(sessionDir: string, winner: string, inProgress: readonly { id: string }[]) {
   if (!inProgress.some((ticket) => ticket.id === winner)) {
     writeTicketStatus(sessionDir, winner, 'In Progress');
@@ -1724,7 +1708,7 @@ function reconcileTicketStateDesync(
   if (resolution.action === 'noop') return state;
 
   const winner = resolution.winner;
-  const inProgress = reconcileInProgressSet(tickets, frontmatterStatuses);
+  const inProgress = collectFrontmatterInProgress(frontmatterStatuses);
 
   logActivity({
     event: 'ticket_state_desync_detected',
