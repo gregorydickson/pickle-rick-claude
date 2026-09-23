@@ -1563,6 +1563,43 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
     assert.equal(run({ name: 'x' }), '', 'absent dependencies must read empty, not "null"');
   });
 
+  test('codegraph spec guard: the real read+FATAL block aborts on every unreadable input, passes a valid spec', (t) => {
+    // Runs install.sh's OWN read line + `-z` guard (extracted verbatim, under the script's
+    // `set -euo pipefail`) so the `|| true` + FATAL pairing is exercised, not just grepped.
+    const src = readFileSync(INSTALL_SH, 'utf8');
+    const block = src.match(/^[ \t]*_codegraph_spec="\$\(jq [^\n]*\n[\s\S]*?^[ \t]*fi$/m);
+    assert.ok(block, 'install.sh must follow the jq spec read with an if … fi guard');
+    assert.match(block[0], /^\s*exit 1$/m, 'the guard must exit 1');
+    // PROVISIONED-OK: guarded by the presence probe below; install.sh itself exits without jq.
+    const probe = spawnSync('jq', ['--version'], { encoding: 'utf8', timeout: 10000 });
+    if (probe.status !== 0) return t.skip('jq not on PATH — install.sh hard-requires it, so the guard cannot run here either');
+    const dir = mkdtempSync(path.join(tmpdir(), 'pickle-cg-guard-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const script = `set -euo pipefail\n_codegraph_pkg_json="$1"\n${block[0]}\nprintf 'SPEC=%s\\n' "$_codegraph_spec"\n`;
+    const run = (name, content) => {
+      const file = path.join(dir, name);
+      if (content !== undefined) writeFileSync(file, content);
+      // PROVISIONED-OK: the jq inside the block is reached only after the presence probe above.
+      return spawnSync('bash', ['-c', script, 'bash', file], { encoding: 'utf8', timeout: 10000 });
+    };
+    const ok = run('valid.json', JSON.stringify({ dependencies: { '@colbymchenry/codegraph': '^1.6.0' } }));
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.deepEqual(ok.stdout.split('\n').filter(Boolean), ['SPEC=^1.6.0']);
+    const cases = {
+      'missing file': ['absent.json', undefined],
+      'malformed JSON': ['malformed.json', '{ "dependencies": '],
+      'absent key': ['nokey.json', JSON.stringify({ dependencies: { other: '1.0.0' } })],
+      'null value': ['null.json', JSON.stringify({ dependencies: { '@colbymchenry/codegraph': null } })],
+      'empty string': ['empty.json', JSON.stringify({ dependencies: { '@colbymchenry/codegraph': '' } })],
+    };
+    for (const [label, [name, content]] of Object.entries(cases)) {
+      const r = run(name, content);
+      assert.equal(r.status, 1, `${label}: guard must exit 1 (stderr: ${r.stderr})`);
+      assert.match(r.stderr, /^❌ FATAL: could not read dependencies\['@colbymchenry\/codegraph'\]/m, `${label}: FATAL line`);
+      assert.doesNotMatch(r.stdout, /^SPEC=/m, `${label}: nothing after the guard may run`);
+    }
+  });
+
   test('codegraph spec read + FATAL live only in the tarball branch (git mode never consumes it)', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
     const gitIf = src.indexOf('if [ "$INSTALL_MODE" = "git" ]; then\n  mkdir -p "$_codegraph_scope"');
