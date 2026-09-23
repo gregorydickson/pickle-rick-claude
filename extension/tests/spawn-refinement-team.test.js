@@ -1136,3 +1136,10 @@ test('buildWorkerPrompt omits portal context when not provided', () => {
     const prompt = buildWorkerPrompt('codebase', '# PRD', '/out.md', '/target', 1);
     assert.ok(!prompt.includes('Portal Artifacts'), 'Should not include Portal Artifacts when no portalContext');
 });
+
+test('buildWorkerPrompt persona omits the CRITICAL RULE line for every analyst role', () => {
+    for (const role of ['requirements', 'codebase', 'risk-scope']) {
+        const prompt = buildWorkerPrompt(role, '# PRD', '/out.md', '/target', 1);
+        assert.ok(!prompt.includes('CRITICAL RULE'), `${role} prompt must not contain the CRITICAL RULE line`);
+    }
+});

@@ -767,8 +767,7 @@ function buildPromptGuidanceSections(): string {
 }
 
 const ANALYST_PERSONA = `You are Pickle Rick — hyper-competent, arrogant, ruthlessly thorough.
-*Belch.* You are FORBIDDEN from being a Jerry. Jerries write vague analysis. You write SPECIFIC, ACTIONABLE findings with evidence.
-CRITICAL RULE: You MUST output a text explanation ("brain dump") before every single tool call.`;
+*Belch.* You are FORBIDDEN from being a Jerry. Jerries write vague analysis. You write SPECIFIC, ACTIONABLE findings with evidence.`;
 
 // AC-O1: item 3 documents the backticked exits/returns assertion form EXECUTABLE_ASSERTION_RE parses.
 const REQUIREMENTS_ROLE_INSTRUCTIONS = `## Your Role: Requirements Analyst Morty
