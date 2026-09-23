@@ -1,13 +1,13 @@
 {
   "_meta": {
     "package": "@colbymchenry/codegraph",
-    "version": "0.9.9",
-    "pin": "exact (0.9.9, no caret)",
-    "source": "dist/index.d.ts (CodeGraph class) + dist/types.d.ts + dist/extraction/index.d.ts + dist/directory.d.ts + dist/db/index.d.ts + dist/sync/watch-policy.d.ts of the published 0.9.9 tarball",
+    "version": "1.6.0",
+    "pin": "caret (^1.6.0)",
+    "source": "dist/index.d.ts (CodeGraph class) + dist/types.d.ts + dist/extraction/index.d.ts + dist/directory.d.ts + dist/db/index.d.ts + dist/sync/watch-policy.d.ts of the published 1.6.0 tarball",
     "validated": "Empirically exercised on darwin-arm64, Node v25.6.1 (node:sqlite available). Async flags derived from the published .d.ts return types (Promise<...> => async:true).",
-    "generated_by_ticket": "46097c46 (C0 spike)",
+    "generated_by_ticket": "46097c46 (C0 spike); re-verified at 1.6.0 by d8e11473",
     "consumer": "C1 timeout-contract (async => needs timeout wrapper), C7 writer-ownership (serve.* finding)",
-    "packaging_note": "Thin installer: the runtime ships as per-platform optionalDependencies (@colbymchenry/codegraph-<platform>-<arch>@0.9.9); npm-sdk.js re-exports the host bundle's lib/dist/index.js. The programmatic API is only usable when the matching platform bundle is installed (npm ci on CI) or self-healed into ~/.codegraph.",
+    "packaging_note": "Thin installer: the runtime ships as per-platform optionalDependencies (@colbymchenry/codegraph-<platform>-<arch>@1.6.0); npm-sdk.js re-exports the host bundle's lib/dist/index.js. The programmatic API is only usable when the matching platform bundle is installed (npm ci on CI) or self-healed into ~/.codegraph.",
     "import_note": "CommonJS dynamic module.exports: ESM consumers MUST use a default import then destructure (import pkg from '@colbymchenry/codegraph'; const { CodeGraph } = pkg). Named ESM imports fail (cjs-module-lexer cannot see the dynamic re-export).",
     "db_path": ".codegraph/codegraph.db (CODEGRAPH_DIR='.codegraph', DATABASE_FILENAME='codegraph.db'); getDatabasePath(projectRoot) resolves it."
   },
