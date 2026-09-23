@@ -221,3 +221,24 @@ test('setup-resume-ticket-status-preserved: a resume pointer move re-infers the 
         assert.equal(resumed.current_ticket_budget_start_iteration, undefined, 'the old ticket\'s budget baseline is cleared');
     });
 });
+
+// B-CURTIX AC5: two tickets In Progress — the pointer's ticket keeps In Progress and the other is demoted to Todo.
+test('setup-resume-ticket-status-preserved: two In Progress tickets — the pointer wins and the other becomes Todo', () => {
+    withDataRoot(dataRoot => {
+        const sp = sessionRoot(run(['--task', 'curtix-ac5-two-in-progress'], dataRoot));
+        const statePath = path.join(sp, 'state.json');
+        // The pointer sorts SECOND, so a chooser that ignored it would pick test000g.
+        injectCurrentTicket(statePath, 'test000h');
+        const loserPath = makeTicketFile(sp, 'test000g', 'In Progress');
+        const winnerPath = makeTicketFile(sp, 'test000h', 'In Progress');
+
+        run(['--resume', sp], dataRoot);
+
+        assert.equal(readTicketStatus(winnerPath), 'In Progress', 'the pointer\'s ticket stays In Progress');
+        assert.equal(readTicketStatus(loserPath), 'Todo', 'the other In Progress ticket is demoted to Todo');
+        assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf-8')).current_ticket, 'test000h', 'the pointer does not move');
+        const desync = findActivityEvents(dataRoot, 'ticket_state_desync_detected');
+        assert.deepEqual(desync.map(evt => evt.ticket), ['test000h'], 'one desync event naming the winner');
+        assert.equal(findActivityEvents(dataRoot, 'setup_resume_ticket_status_preserved').length, 0, 'the winner is already In Progress — nothing to preserve');
+    });
+});

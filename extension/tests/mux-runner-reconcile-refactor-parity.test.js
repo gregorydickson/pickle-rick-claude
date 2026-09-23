@@ -55,3 +55,11 @@ test('B-CURTIX AC1: a Failed current_ticket and an all-terminal roster stay noop
 test('B-CURTIX AC1 control: a pending current_ticket with nothing In Progress still syncs', () => {
   assert.deepEqual(resolveOverRoster('Todo'), { winner: 'aaaa1111', action: 'sync' });
 });
+
+test('B-CURTIX AC5: two tickets In Progress — the pointer\'s ticket wins, else the first In Progress', () => {
+  // The pointer is NOT first in roster order, so a chooser ignoring the pointer would name aaaa1111.
+  const pointerSecond = new Map([['aaaa1111', 'In Progress'], ['bbbb2222', 'In Progress'], ['cccc3333', 'Todo']]);
+  assert.deepEqual(resolveTicketDesyncWinner({ current_ticket: 'bbbb2222' }, pointerSecond), { winner: 'bbbb2222', action: 'sync' });
+  const pointerPending = new Map([['aaaa1111', 'Todo'], ['bbbb2222', 'In Progress'], ['cccc3333', 'In Progress']]);
+  assert.deepEqual(resolveTicketDesyncWinner({ current_ticket: 'aaaa1111' }, pointerPending), { winner: 'bbbb2222', action: 'sync' });
+});
