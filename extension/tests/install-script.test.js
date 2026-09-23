@@ -1600,6 +1600,44 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
     }
   });
 
+  test('codegraph version agrees across package.json, lockfile, platform bindings, node_modules and the API inventory', (t) => {
+    // Derived, not pinned: the ONLY literal is the 1.6.0 floor (the B-CGUP upgrade target),
+    // which a later upgrade still satisfies. Each surface is checked against the one before it.
+    const ext = path.join(REPO_ROOT, 'extension');
+    const readJson = (rel) => JSON.parse(readFileSync(path.join(ext, rel), 'utf8'));
+    const PKG = '@colbymchenry/codegraph';
+    const semver = (v) => {
+      const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
+      assert.ok(m, `not a plain x.y.z version: ${JSON.stringify(v)}`);
+      return m.slice(1).map(Number);
+    };
+    const gte = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+    const spec = readJson('package.json').dependencies[PKG];
+    assert.match(spec, /^\^\d+\.\d+\.\d+$/, 'package.json must declare codegraph as a caret range');
+    const floor = semver(spec.slice(1));
+    assert.ok(gte(floor, [1, 6, 0]) >= 0, `caret floor ${spec} must be at least ^1.6.0`);
+
+    const lock = readJson('package-lock.json');
+    assert.equal(lock.packages[''].dependencies[PKG], spec, 'lockfile root must record the package.json spec');
+    const locked = lock.packages[`node_modules/${PKG}`].version;
+    const lockedV = semver(locked);
+    assert.equal(lockedV[0], floor[0], `locked ${locked} must share ${spec}'s major`);
+    assert.ok(gte(lockedV, floor) >= 0, `locked ${locked} must satisfy ${spec}`);
+    const bindings = Object.entries(lock.packages).filter(([k]) => k.startsWith(`node_modules/${PKG}-`));
+    assert.ok(bindings.length > 0, 'lockfile must carry the per-platform codegraph bindings');
+    for (const [k, v] of bindings) assert.equal(v.version, locked, `${k} must match the main package version`);
+
+    const meta = readJson('data/codegraph-api-inventory.json')._meta;
+    assert.equal(meta.version, locked, 'the API inventory must describe the locked version');
+    assert.ok(meta.pin.includes(spec), `inventory _meta.pin must name the caret range ${spec}: ${meta.pin}`);
+    assert.doesNotMatch(meta.pin, /no caret/, 'inventory _meta.pin must not describe an exact pin');
+
+    const installed = path.join(ext, 'node_modules', PKG, 'package.json');
+    if (!existsSync(installed)) return t.skip('codegraph not installed in extension/node_modules');
+    assert.equal(JSON.parse(readFileSync(installed, 'utf8')).version, locked, 'installed codegraph must be the locked version');
+  });
+
   test('codegraph spec read + FATAL live only in the tarball branch (git mode never consumes it)', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
     const gitIf = src.indexOf('if [ "$INSTALL_MODE" = "git" ]; then\n  mkdir -p "$_codegraph_scope"');
