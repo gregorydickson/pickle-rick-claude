@@ -1638,6 +1638,26 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
     assert.equal(JSON.parse(readFileSync(installed, 'utf8')).version, locked, 'installed codegraph must be the locked version');
   });
 
+  test('no stale pre-upgrade codegraph version literal (plain or regex-escaped) outside tests/evidence', () => {
+    // Mirrors the PRD's `grep -rlE '0\\?\.9\\?\.9'` predicate. The needle is assembled at
+    // runtime so this file cannot spell — and so match — its own token.
+    const needle = new RegExp(['0', '9', '9'].join(String.raw`\\?\.`));
+    assert.match(['0', '9', '9'].join('.'), needle, 'control: plain spelling must match');
+    assert.match(['0', '9', '9'].join('\\.'), needle, 'control: regex-escaped spelling must match');
+    assert.doesNotMatch('0.9.10', needle, 'control: a different version must not match');
+    const ext = path.join(REPO_ROOT, 'extension');
+    const skip = new Set(['node_modules', 'evidence']);
+    const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) return skip.has(e.name) ? [] : walk(p);
+      return e.isFile() ? [p] : [];
+    });
+    const files = [...['src', 'bin', 'tests', 'data', 'scripts'].flatMap((d) => walk(path.join(ext, d))), INSTALL_SH];
+    assert.ok(files.length > 100, `scan root looks dark: only ${files.length} files`);
+    const offenders = files.filter((f) => needle.test(readFileSync(f, 'utf8'))).map((f) => path.relative(REPO_ROOT, f));
+    assert.deepEqual(offenders, [], 'stale codegraph version literal — derive from package.json instead');
+  });
+
   test('codegraph spec read + FATAL live only in the tarball branch (git mode never consumes it)', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
     const gitIf = src.indexOf('if [ "$INSTALL_MODE" = "git" ]; then\n  mkdir -p "$_codegraph_scope"');
