@@ -1697,13 +1697,12 @@ function reconcileTicketStateDesync(
   iteration: number | undefined,
   log: (msg: string) => void,
 ): State {
-  const tickets = collectTickets(sessionDir);
-  if (tickets.length === 0) {
+  const frontmatterStatuses = readTicketStatusMap(sessionDir);
+  if (frontmatterStatuses.size === 0) {
     log('WARN: ticket_state_desync check found no ticket directories');
     return readRunnerState(statePath);
   }
   const state = readRunnerState(statePath);
-  const frontmatterStatuses = readTicketStatusMap(sessionDir);
   const resolution = resolveTicketDesyncWinner(state, frontmatterStatuses);
   if (resolution.action === 'noop') return state;
 

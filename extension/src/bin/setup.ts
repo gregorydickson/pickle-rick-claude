@@ -997,14 +997,13 @@ function applyWinnerStatusSync(sessionDir: string, winner: string, forceSync: bo
 }
 
 function reconcileTicketStateDesyncOnResume(sessionDir: string, statePath: string, currentTicket: string | null, forceSync: boolean): State {
-  const tickets = collectTickets(sessionDir);
-  if (tickets.length === 0) {
+  const statuses = readTicketStatusMap(sessionDir);
+  if (statuses.size === 0) {
     process.stderr.write(`WARN: ticket_state_desync check found no ticket directories in ${sessionDir}\n`);
     return sm.read(statePath);
   }
 
   const state = sm.read(statePath);
-  const statuses = readTicketStatusMap(sessionDir);
   const resolution = resolveTicketDesyncWinner(state, statuses);
   if (resolution.action === 'noop') return state;
   const winner = resolution.winner;
