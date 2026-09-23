@@ -221,15 +221,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 "iteration cap", so two policy revisions went into this file about iteration caps. Neither author
 (both me) opened `state.json`. **Read the state, not the sentence about the state.**
 
-## 🚢 SESSION HANDOFF — 2026-09-23 (B-REFMODEL + B-FIXBUDGET shipped; nothing running). **READ THIS FIRST.**
+## 🚢 SESSION HANDOFF — 2026-09-23 (B-REFMODEL, B-FIXBUDGET, B-CGUP(+2) shipped; nothing running). **READ THIS FIRST.**
 
 ### ▶ STATE — nothing is running
 
 | | |
 |---|---|
-| branch | **`main`** at **`170485f5`** + docs (gated + pushed 2026-09-23). `release/v2.2-beta` is historical |
+| branch | **`main`** at **`c534c59e`** + docs (gated + pushed 2026-09-23). `release/v2.2-beta` is historical |
 | version | `extension/package.json` = **`2.1.1`**. Newest tag still **`v2.1.0`** — cadence, not oversight |
-| deployed | **in sync with `170485f5`**, `install.sh` run 2026-09-23 and verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
+| deployed | **in sync with `c534c59e`**, `install.sh` run 2026-09-23; deployed codegraph resolves **`1.6.0`** (`^1.6.0`) and verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
 | RUNNING | **nothing.** Stale tmux shells linger (`pipeline-*`, `refine-*`) — idle, safe to kill |
 | unpushed | **0** |
 | open issues | **#43**, **#5** (both operator-deferred). **Zero open bugs.** #46, #47 closed on measured evidence |
@@ -244,6 +244,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | **B-MEASURED** | 11 tickets, 18 commits, **4/4 phases** in 611m, gate green (soak 1803.7s), pushed 2026-09-22 |
 | **B-REFMODEL (#46)** | 6 tickets, 10 commits `43949be4..b017f393`, **4/4 phases** in 70m, gate `20260922T195321Z-30733` 22/22 green (soak 1803.7s), pushed + deployed 2026-09-22 |
 | **B-FIXBUDGET (#47)** | 4 tickets, 5 commits `43f8b2be..170485f5`, **4/4 phases** in 103m, gate `20260922T235419Z-47982` 22/22 green (soak 1803.7s), pushed + deployed 2026-09-23. The load audit now reads `*_timeout_ms` fixture budgets; 12 files newly serialized |
+| **B-CGUP + B-CGUP-2** | codegraph `0.9.9` → `^1.6.0` (2 majors). One version source (`package.json`; `install.sh` reads it, fail-loud). One single-writer env constant `CODEGRAPH_SINGLE_WRITER_ENV` adds `CODEGRAPH_NO_DAEMON=1`; daemon survivor measured: none. B-CGUP gate 21/22 (one stale protocol-flag pin: `1.6` answers an unindexed call with "No CodeGraph project is loaded" instead of `isError`); B-CGUP-2 re-expressed that control by meaning. Combined gate `20260923T045419Z-88502` 22/22 (soak 1803.7s), pushed + deployed 2026-09-23 |
 | closed on measured evidence | **#40, #41, #32** (2026-09-21) · **#45, #44, #42, #46** (2026-09-22) · **#47** (2026-09-23) |
 
 ### ▶ NEXT — idle; no drainable bug
@@ -251,6 +252,9 @@ NO measured basis. Large PRDs are not constrained by the cap.
 Backlog is at zero open bugs; #43/#5 are operator-deferred. **Refinement no longer needs
 `ANTHROPIC_MODEL`** — use `--model <id>` or `default_refinement_model`. The first live refinement using
 the knob **confirmed #46 end to end**: B-FIXBUDGET refined 9/9 on `--model claude-sonnet-5`, 0 refusals.
+**Codegraph baseline for the next large run:** every injection so far sat at the 8192-byte
+`context_max_bytes` cap (254–691 hits truncated). Measure whether workers still search for code codegraph
+should have supplied before raising the cap; `1.6` also exposes `isIndexStale`/`getIndexState`, not yet adopted.
 **Model note:** both 2026-09-22 bundles ran on `claude-opus-5-5` (B-MEASURED ran on `claude-opus-5`). Their
 per-ticket times (~11 and ~23 min) are NOT comparable to B-MEASURED's ~48; the bundles were much smaller.
 Compare on the next bundle of similar size before crediting the model.
