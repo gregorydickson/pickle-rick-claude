@@ -270,15 +270,17 @@ not-Done ticket by `order`). It has two sources of truth that already desync (se
 bundle's worker logs, and how much of that is `extension/CLAUDE.md`.
 
 **TASK (operator-requested 2026-09-23) — review the refinement prompts against Opus 5.5.**
-Nobody has measured this yet. The 12/12 refusals (2026-09-21) were on `claude-opus-5`. Every refinement
-since has been routed to `claude-sonnet-5` with `--model`. The session default is now `claude-opus-5-5`.
-1. **Measure first:** run one refinement on the default model (no `--model`) against a known-good PRD.
-   Record per-analyst success or refusal from `refinement_manifest.json` and the `worker_*_c1.log` files.
-   If 0 refusals, record that and stop.
-2. **If refusals recur:** review the analyst prompt assembly (`buildWorkerPrompt`,
+**The operator reports the refusals occur on Opus 5.5.** The 5 refusal lines still on disk
+(`sessions/*/refinement/worker_*.log`) read `API Error: Opus 5 (1M context)'s safeguards`, so either the
+label in that error string does not distinguish 5 from 5.5, or the 5.5 refusals were seen outside the
+retained logs. Every refinement in this repo since 2026-09-22 was routed to `claude-sonnet-5` with `--model`.
+1. **Reproduce on 5.5:** run one refinement with `--model claude-opus-5-5` against a known-good PRD. Record
+   per-analyst success or refusal from `refinement_manifest.json` and the `worker_*_c1.log` files, including
+   the `"model"` field those logs report, so the refusal is tied to a model id, not an error label.
+2. **Review the prompts:** review the analyst prompt assembly (`buildWorkerPrompt`,
    `buildPromptGuidanceSections` in `extension/src/bin/spawn-refinement-team.ts`, plus the persona text
    in `persona.md`) for wording that could be misread out of context. Change prompt wording, not the
-   routing. Verify each change by re-running step 1.
+   routing. Verify each change by re-running step 1 until 5.5 refines with 0 refusals.
 3. Keep `--model` / `default_refinement_model` as the fallback either way.
 
 **Refinement model:** `--model <id>` or `default_refinement_model` (#46). Confirmed live **twice** on
