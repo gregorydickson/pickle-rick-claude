@@ -1,0 +1,22 @@
+[
+ {"id":"B1","part":"bin","file":"extension/src/bin/microverse-runner.ts","line":957,"orig":"!fs.existsSync(baselinePath) && readRecoverableJsonObject(baselinePath) === null","mut":"!fs.existsSync(baselinePath) || readRecoverableJsonObject(baselinePath) === null","kind":"&& -> ||"},
+ {"id":"B2","part":"bin","file":"extension/src/bin/pipeline-runner.ts","line":2134,"orig":"discovered.filter((n) => !keptSet.has(n))","mut":"discovered.filter((n) => keptSet.has(n))","kind":"drop negation"},
+ {"id":"B3","part":"bin","file":"extension/src/bin/pipeline-runner.ts","line":3099,"orig":"if (briefCode !== 0) {","mut":"if (briefCode === 0) {","kind":"flip comparison"},
+ {"id":"B4","part":"bin","file":"extension/src/bin/pipeline-runner.ts","line":4787,"orig":"counters.nonConvergent > 0","mut":"counters.nonConvergent > 1","kind":"off-by-one threshold"},
+ {"id":"B5","part":"bin","file":"extension/src/bin/setup.ts","line":399,"orig":"filter(ticket => !!ticket.id)","mut":"filter(ticket => !ticket.id)","kind":"drop negation"},
+ {"id":"S1","part":"services","file":"extension/src/services/citadel/ac-coverage-scorecard.ts","line":172,"orig":"token.length >= 4 && !COMMON_WORDS.has(token.toLowerCase())","mut":"token.length >= 4 && COMMON_WORDS.has(token.toLowerCase())","kind":"drop negation"},
+ {"id":"S2","part":"services","file":"extension/src/services/citadel/audit-runner.ts","line":82,"orig":"if (persistError !== null) {","mut":"if (persistError === null) {","kind":"flip comparison"},
+ {"id":"S3","part":"services","file":"extension/src/services/citadel/audit-runner.ts","line":129,"orig":"    await withLock(lockKey, {}, async () => {","mut":"    withLock(lockKey, {}, async () => {","kind":"remove await"},
+ {"id":"S4","part":"services","file":"extension/src/services/recoverable-json.ts","line":138,"orig":"if (shouldSkipLiveTmp(tmpPid, tmpPath)) continue;","mut":"if (!shouldSkipLiveTmp(tmpPid, tmpPath)) continue;","kind":"add negation"},
+ {"id":"S5","part":"services","file":"extension/src/lib/reconcile-ticket-truth.ts","line":69,"orig":"probeTreeDirty(cwd) ?? true","mut":"probeTreeDirty(cwd) ?? false","kind":"change default/return value"},
+ {"id":"H1","part":"hooks","file":"extension/src/hooks/handlers/config-protection.ts","line":1325,"orig":"gitConfigValueNamesProhibitedOp(value.slice(1))","mut":"gitConfigValueNamesProhibitedOp(value.slice(2))","kind":"off-by-one"},
+ {"id":"H2","part":"hooks","file":"extension/src/hooks/handlers/tsc-gate.ts","line":214,"orig":"if (segmentDefinesGitAlias(tokens)) return true;","mut":"if (segmentDefinesGitAlias(tokens)) return false;","kind":"change return value"},
+ {"id":"H3","part":"hooks","file":"extension/src/hooks/shell-exec.ts","line":561,"orig":"? afterEnv + 1 : afterEnv;","mut":"? afterEnv : afterEnv + 1;","kind":"swap branches"},
+ {"id":"H4","part":"hooks","file":"extension/src/hooks/shell-exec.ts","line":1685,"orig":"if (budget < 0) return command;","mut":"if (budget > 0) return command;","kind":"flip comparison"},
+ {"id":"H5","part":"hooks","file":"extension/src/hooks/shell-exec.ts","line":1757,"orig":"if (value.length > 0) values.push(value);","mut":"if (value.length > 1) values.push(value);","kind":"off-by-one"},
+ {"id":"T1","part":"tests","file":"extension/tests/pipeline-runner.test.js","line":2900,"orig":"assert.equal(r.remediatorSpawned, 0,","mut":"assert.ok(r.remediatorSpawned >= 0,","kind":"vacuous assertion"},
+ {"id":"T2","part":"tests","file":"extension/tests/salvage-backfilled-done.test.js","line":325,"orig":"assert.equal(truth.dirty, false,","mut":"assert.notEqual(truth.dirty, true,","kind":"weakened assertion (admits null)"},
+ {"id":"T3","part":"tests","file":"extension/tests/szechuan-sauce.test.js","line":277,"orig":"assert.ok(files.length > 3,","mut":"assert.ok(files.length >= 0,","kind":"vacuous guard"},
+ {"id":"T4","part":"tests","file":"extension/tests/hermes-smoke.test.js","line":55,"orig":"for (let i = 0; i < count; i++) {","mut":"for (let i = 0; i <= count; i++) {","kind":"off-by-one fixture"},
+ {"id":"T5","part":"tests","file":"extension/tests/tsc-gate.test.js","line":2313,"orig":"for (const command of positives) {","mut":"for (const command of positives.slice(1)) {","kind":"skip first case"}
+]

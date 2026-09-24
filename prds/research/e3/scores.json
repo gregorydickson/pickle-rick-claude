@@ -1,0 +1,534 @@
+{
+ "rows": {
+  "a": [
+   {
+    "k": 20,
+    "found": 14,
+    "recall": 0.7,
+    "nfind": 14,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B3",
+     "B4",
+     "B5",
+     "H1",
+     "H2",
+     "H3",
+     "H4",
+     "S1",
+     "S2",
+     "S3",
+     "S4",
+     "S5"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 1.7852506000000001,
+      "duration_ms": 59938,
+      "usage_in": 210945
+     }
+    ]
+   },
+   {
+    "k": 20,
+    "found": 19,
+    "recall": 0.95,
+    "nfind": 19,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B3",
+     "B4",
+     "B5",
+     "H1",
+     "H2",
+     "H3",
+     "H4",
+     "H5",
+     "S1",
+     "S2",
+     "S3",
+     "S4",
+     "S5",
+     "T1",
+     "T3",
+     "T4",
+     "T5"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 1.8374906000000002,
+      "duration_ms": 82070,
+      "usage_in": 210945
+     }
+    ]
+   },
+   {
+    "k": 20,
+    "found": 15,
+    "recall": 0.75,
+    "nfind": 15,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B3",
+     "B4",
+     "B5",
+     "H1",
+     "H2",
+     "H3",
+     "H4",
+     "H5",
+     "S1",
+     "S2",
+     "S3",
+     "S4",
+     "S5"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.2105166,
+      "duration_ms": 73363,
+      "usage_in": 210945
+     }
+    ]
+   }
+  ],
+  "b": [
+   {
+    "k": 20,
+    "found": 18,
+    "recall": 0.9,
+    "nfind": 18,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B3",
+     "B4",
+     "B5",
+     "H1",
+     "H2",
+     "H3",
+     "H4",
+     "S1",
+     "S2",
+     "S3",
+     "S4",
+     "S5",
+     "T1",
+     "T3",
+     "T4",
+     "T5"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.45375059999999995,
+      "duration_ms": 27616,
+      "usage_in": 53505
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.437912,
+      "duration_ms": 34683,
+      "usage_in": 48389
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.4826146,
+      "duration_ms": 36568,
+      "usage_in": 54748
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 1.1932986,
+      "duration_ms": 26864,
+      "usage_in": 147086
+     }
+    ]
+   },
+   {
+    "k": 20,
+    "found": 18,
+    "recall": 0.9,
+    "nfind": 18,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B3",
+     "B4",
+     "B5",
+     "H1",
+     "H2",
+     "H3",
+     "H4",
+     "S1",
+     "S2",
+     "S3",
+     "S4",
+     "S5",
+     "T1",
+     "T3",
+     "T4",
+     "T5"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.0655686,
+      "duration_ms": 24662,
+      "usage_in": 53505
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.08868540000000001,
+      "duration_ms": 36344,
+      "usage_in": 48389
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.0845572,
+      "duration_ms": 33401,
+      "usage_in": 54748
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.08760480000000001,
+      "duration_ms": 27372,
+      "usage_in": 147086
+     }
+    ]
+   },
+   {
+    "k": 20,
+    "found": 18,
+    "recall": 0.9,
+    "nfind": 18,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B3",
+     "B4",
+     "B5",
+     "H1",
+     "H2",
+     "H3",
+     "H4",
+     "S1",
+     "S2",
+     "S3",
+     "S4",
+     "S5",
+     "T1",
+     "T3",
+     "T4",
+     "T5"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.0757486,
+      "duration_ms": 28065,
+      "usage_in": 53505
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.07928539999999999,
+      "duration_ms": 31636,
+      "usage_in": 48389
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.0926772,
+      "duration_ms": 38051,
+      "usage_in": 54748
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 1.2028582,
+      "duration_ms": 27583,
+      "usage_in": 143661
+     }
+    ]
+   }
+  ],
+  "c": [
+   {
+    "k": 5,
+    "found": 5,
+    "recall": 1.0,
+    "nfind": 5,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B5",
+     "H4",
+     "T3"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 1.7366426,
+      "duration_ms": 41622,
+      "usage_in": 210939
+     }
+    ]
+   },
+   {
+    "k": 5,
+    "found": 5,
+    "recall": 1.0,
+    "nfind": 5,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B5",
+     "H4",
+     "T3"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.12327540000000001,
+      "duration_ms": 41307,
+      "usage_in": 210939
+     }
+    ]
+   },
+   {
+    "k": 5,
+    "found": 5,
+    "recall": 1.0,
+    "nfind": 5,
+    "fp": 0,
+    "ids": [
+     "B1",
+     "B2",
+     "B5",
+     "H4",
+     "T3"
+    ],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.1148554,
+      "duration_ms": 35744,
+      "usage_in": 210939
+     }
+    ]
+   }
+  ]
+ },
+ "detail": {
+  "a_r1": {
+   "found": [
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5"
+   ],
+   "fps": []
+  },
+  "a_r2": {
+   "found": [
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "T1",
+    "T3",
+    "T4",
+    "T5"
+   ],
+   "fps": []
+  },
+  "a_r3": {
+   "found": [
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5"
+   ],
+   "fps": []
+  },
+  "b_r1": {
+   "found": [
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "T1",
+    "T3",
+    "T4",
+    "T5"
+   ],
+   "fps": []
+  },
+  "b_r2": {
+   "found": [
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "T1",
+    "T3",
+    "T4",
+    "T5"
+   ],
+   "fps": []
+  },
+  "b_r3": {
+   "found": [
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "S5",
+    "T1",
+    "T3",
+    "T4",
+    "T5"
+   ],
+   "fps": []
+  },
+  "c_r1": {
+   "found": [
+    "B1",
+    "B2",
+    "B5",
+    "H4",
+    "T3"
+   ],
+   "fps": []
+  },
+  "c_r2": {
+   "found": [
+    "B1",
+    "B2",
+    "B5",
+    "H4",
+    "T3"
+   ],
+   "fps": []
+  },
+  "c_r3": {
+   "found": [
+    "B1",
+    "B2",
+    "B5",
+    "H4",
+    "T3"
+   ],
+   "fps": []
+  }
+ }
+}

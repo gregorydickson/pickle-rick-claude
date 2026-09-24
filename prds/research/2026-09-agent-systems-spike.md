@@ -101,6 +101,13 @@ The five single-ticket sessions score 1.0 trivially, and one session had only ha
 
 ## 4. Experiments (measurement only; no implementation in this spike)
 
+**E3 result (run 2026-09-24): INCONCLUSIVE, instrument saturated** [M, this repo; details and reproduction in `prds/research/e3/E3-results.md`].
+- **Setup.** B-INVENTED diff `f36ea11e..3ae1d57a` (`extension/src` + `extension/tests`, 7,083 diff lines); the real anatomy-park Phase-1 prompt; `claude-opus-5-5`; 20 hand-written single-line mutations; 3 repeats per arm; 18 calls, 0 refusals.
+- **Recall.** (a) whole diff: 0.80 (0.70 / 0.95 / 0.75). (b) four partitions: 0.90 (0.90 ×3). (c) whole diff at k=5: 1.00 (×3). Zero false positives in every call.
+- **Read-out.** b/a = 1.125×, below the 1.5× bar. Found-per-pass tracked k (16 at k=20, 5 at k=5), not the flat SWR-Bench shape. A single pass found 14–19 of 20, so the planted defects were too easy for either hypothesis to bind.
+- **The one signal: tests.** The whole-diff pass reported nothing in `extension/tests` in 2 of 3 repeats (4/15 hits), while its own partition recovered them (12/15). On source files, partitioning did slightly worse. This supports keeping tests as their own reviewed lane (B-LANES constraint 2), not the broader recall claim.
+- **Next probe (E3b).** Re-introduce REAL past defects by reverting historical fix commits, not synthetic mutations. The no-mutation control call surfaced findings that no mutated run reported, so planted defects crowd out real ones and the zero-false-positive count says nothing about precision.
+
 **E3. Offline review-recall probe (cheapest; run first).**
 - **Setup.** Take a past bundle's accumulated `extension/` diff and inject known mutations with the existing mutation tooling.
 - **Arms.** (a) whole diff, k=20; (b) the same diff split into four directory partitions, k=20 in total; (c) whole diff, k=5. Three repeats each, using the anatomy-park review prompt.
@@ -156,3 +163,4 @@ Pages were read through a summarising fetch tool. Every exact figure was checked
 ## Changelog
 
 - 2026-09-24 — Added §6 from the report's caveats. Measured in this repo: agent-team tools absent under `claude -p` and the Teams block sequential, so `--teams` is neither parallel nor runnable as built; a best-case build-wave speedup of median 2.0× / pooled 1.86× over 7 bundles (differs from the brief's figures in 3 sessions). Closed the diff-size gap from primary sources: the 0.657→0.043 figure is confounded with synthetic vs real samples and is withdrawn as evidence; SWR-Bench (recall 38%→9% as issues per PR rise, precision flat) and Sense and Sensitivity replace it. E3 redesigned to separate unit size from defect count; E2 marked blocked.
+- 2026-09-24 — E3 run: inconclusive (saturated); b/a recall 1.125×; whole-diff review skipped test files in 2/3 repeats, partitioning recovered them. E3b (reverted real fixes) proposed.
