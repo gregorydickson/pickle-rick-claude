@@ -236,6 +236,12 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
 | babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
 
+### ▶ B-CURTIX shipped (2026-09-24)
+
+- **A finished `current_ticket` is no longer re-stamped In Progress.** `resolveTicketDesyncWinner` returns `noop` on a Done/Skipped/Failed pointer, and the existing R-AISLOW preskip advances it (now with a fresh `step`). Resume shares the resolver; the duplicate `chooseInProgressWinner` in `setup.ts` is gone. `--force-ticket-status-sync` no longer revives a terminal pointer (`/pickle-retry` does).
+- Refinement ran on `claude-opus-5-5`: **9/9 analyses, 0 refusals.** First full live refinement since the persona fix. The analysts replaced the PRD's design with a smaller one (reuse preskip; add no rule).
+- Pipeline session `2026-09-23-578ae1b1`, 4/4 phases, 12 commits `9bba6984..75283fbe`, net −42 lines. Degraded flag `done_over_unmeasured_worker_gate_tests:3bc0ab23`, covered by the full gate `20260923T234116Z-50277` (22/22 green, soak 1803.8s). Touched tests green on Node 22. Pushed and deployed, verified by content.
+
 ### ▶ B-REFUSAL + CI repair (2026-09-23)
 
 - **Refinement refusals on Opus 5.5 — FIXED (`81e1c2e9`, hand-built at operator direction).** Cause: ONE sentence in the static `ANALYST_PERSONA` (`spawn-refinement-team.ts`), which is why #46's control PRD also failed ("model, not content" was wrong). The sentence was deleted, not reworded. Deployed prompts on `claude-opus-5-5`: 15/15 `end_turn` (6 + 9 across two checks); pre-fix control 3/3 refused. The sentence is refused by Sonnet 5 too, and it is refused wherever it appears. The pipeline attempt died because the manager quoted it into the ticket. **Bisect refusals by `stop_reason` only; never quote the trigger into a PRD, ticket or prompt.**
