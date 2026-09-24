@@ -82,8 +82,6 @@ Rick prints a `tmux attach` command — open a second terminal to watch the live
 
 Sit back. Rick handles the rest.
 
-> **Worker-spawn mechanism** — `/pickle-tmux --teams` swaps the per-ticket `claude -p` subprocess for a harness-native subagent on a team (`TeamCreate` + `Agent` + `TaskUpdate`), running under tmux. Same 8-phase lifecycle, same artifact contract, no token-sniffing log heuristics — cleaner completion signals and stricter artifact validation. Claude backend only (codex+teams rejected at setup); the default subprocess path remains for `/pickle-tmux` without `--teams`, `/pickle-zellij`, `/pickle-microverse`, and `/pickle-pipeline`. See [Agent Teams Mode](#agent-teams) below.
-
 > **Worker command discipline** — `send-to-morty.md` (the worker prompt) forbids the worker from backgrounding its OWN long-running commands (test tiers, gates, builds): no `run_in_background`, trailing `&`, `nohup`, `setsid`, or `disown`. Reusing the same R-MWBG discipline the manager prompt already applies to `spawn-morty.js`, a backgrounded command doesn't survive the worker's turn ending — it's killed at turn-end with zero output. Workers run these commands in the foreground with an explicit large timeout instead. Workers also bracket each long command with an `R-MWBG-LONGCMD` start/done marker, so a command cut mid-flight leaves a `start` with no matching `done` in `worker_session_<pid>.log` — `grep R-MWBG-LONGCMD worker_session_*.log` tells a stalled spawn apart from a worker that did nothing in one read, rather than leaving `exit:0` + `validation: failed` + a clean tree to be inferred from an empty diff.
 
 > **Backend choice** — append `--backend codex`, `--backend hermes`, or `--backend deepseek` (or export `PICKLE_BACKEND=codex` / `PICKLE_BACKEND=hermes` / `PICKLE_BACKEND=deepseek`) to route worker/manager spawns through another backend instead of `claude`. DeepSeek requires `DEEPSEEK_API_KEY` in the environment (setup exits 1 before creating any session directory if it is missing). See [Backends](#backends) below for precedence and examples.
@@ -107,7 +105,7 @@ If you can define a measurable goal — test coverage, response time, bundle siz
 /pickle-microverse --goal "error messages are user-friendly and actionable" --task "improve UX"
 ```
 
-<a id="backends"></a>**Backends** — `/pickle-tmux`, `/szechuan-sauce`, `/anatomy-park`, and `/pickle-microverse` accept `--backend codex` to route spawns through `codex exec`, `--backend hermes` to route spawns through `hermes chat -q ... -Q --ignore-rules --ignore-user-config`, or `--backend deepseek` to route spawns through the DeepSeek API (requires `DEEPSEEK_API_KEY`; uses `ANTHROPIC_MODEL` if set, else defaults to `deepseek-v4-pro`). The choice is persisted in `state.json` and survives resume; omit the flag to keep the default `claude` backend. Set `PICKLE_BACKEND=codex`, `PICKLE_BACKEND=hermes`, or `PICKLE_BACKEND=deepseek` for a session-independent alternative that persists across commands. Precedence: CLI flag > env var > session state > default `claude`. **Incompatible with `--teams`** — agent-teams mode is claude-harness-native; setup rejects non-claude backends (codex, hermes, deepseek) at session creation and on `--resume`.
+<a id="backends"></a>**Backends** — `/pickle-tmux`, `/szechuan-sauce`, `/anatomy-park`, and `/pickle-microverse` accept `--backend codex` to route spawns through `codex exec`, `--backend hermes` to route spawns through `hermes chat -q ... -Q --ignore-rules --ignore-user-config`, or `--backend deepseek` to route spawns through the DeepSeek API (requires `DEEPSEEK_API_KEY`; uses `ANTHROPIC_MODEL` if set, else defaults to `deepseek-v4-pro`). The choice is persisted in `state.json` and survives resume; omit the flag to keep the default `claude` backend. Set `PICKLE_BACKEND=codex`, `PICKLE_BACKEND=hermes`, or `PICKLE_BACKEND=deepseek` for a session-independent alternative that persists across commands. Precedence: CLI flag > env var > session state > default `claude`.
 
 For codex-backed runs, prefer tmux-direct: the shell/tmux pane owns `mux-runner`, and `codex exec` is only a child spawned by mux-runner. Avoid the risky arrangement where a long-lived codex session becomes the parent of mux-runner and supervises the whole pipeline.
 
@@ -126,18 +124,6 @@ PICKLE_BACKEND=codex /pickle-tmux "refactor the auth middleware"
 ```bash
 /pickle-tmux --backend codex --effort high "build the caching layer"
 ```
-
-<a id="agent-teams"></a>**Agent Teams mode** *(claude backend only)* — `/pickle-tmux --teams` switches Phase 3 from spawning per-ticket `claude -p` subprocesses to spawning subagents on a harness-native team, **under tmux** (true `/clear` between iterations). `--teams` is passed together with `--tmux`, so the session is created with `tmux_mode: true` and `teams_mode: true`; the bare in-session `/pickle --teams` path was removed (R-PNTR-4). Each ticket dispatches the six `morty-phase-*` subagents (`Agent` tool with `team_name` + `subagent_type`); the final phase signals completion via `TaskUpdate(status="completed")` instead of the legacy `<promise>I AM DONE</promise>` token + log-size check. Manager-side validation is a strict all-of artifact check (`validate-teams-ticket.js`): every required prefix (`research_*.md`, `plan_*.md`, `conformance_*.md`, `code_review_*.md`) must have a matching file or the ticket is marked Failed. The flag is persisted in `state.json` and survives resume.
-
-```bash
-/pickle-tmux --teams "add a /healthz endpoint"
-/pickle-tmux --teams --max-parallel 10 "build the caching layer"   # plumbed; v1 sequential
-/pickle-tmux --resume                                              # teams_mode survives resume
-```
-
-Subagent definitions live at `~/.claude/agents/morty-implementer.md` (8-phase implementation lifecycle), `~/.claude/agents/morty-reviewer.md` (4-phase review lifecycle), and the six `~/.claude/agents/morty-phase-*.md` phase teammates. All are deployed by `install.sh`. See the [PRD](prds/archive/design-notes/pickle-agent-teams.md) for the v1 boundary. The default subprocess path is untouched — passing no `--teams` flag preserves the legacy `mux-runner` spawn loop.
-
-When NOT to use: codex/hermes backend (codex+teams rejected at setup); `/pickle-zellij` / `/pickle-microverse` / `/pickle-pipeline` (legacy spawn only). When to use: epics where you want clean bidirectional comms with the worker, native completion notifications, and the strictest artifact gate available.
 
 ### Step 5 (Optional): Cleanup
 
@@ -796,7 +782,7 @@ Both modes honor `--backend claude|codex`. On `--backend codex`, `/death-crystal
 
 ## 🚀 Command & Flag Reference
 
-Every slash command and flag — including command-scoped families and the `†`/Codex/Teams notes — lives in **[COMMANDS.md](COMMANDS.md)**.
+Every slash command and flag — including command-scoped families and the `†`/Codex notes — lives in **[COMMANDS.md](COMMANDS.md)**.
 
 ---
 

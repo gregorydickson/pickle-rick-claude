@@ -84,6 +84,42 @@ test('install-agent-overlay: real install targets .pickle-managed managed agents
   assert.match(src, /Legacy agent conflict preserved/);
 });
 
+// The agents rsync has no --delete, so the two removed teams-mode agents persist in the
+// deployed managed dir. install.sh's own `rm -f` lines are extracted and run against a
+// sandbox HOME so the assertion measures the shipped text, not a copy of it.
+test('install-agent-overlay: deployed teams-mode agent residue is removed AFTER the agents rsync', () => {
+  const src = readFileSync(INSTALL_SH, 'utf8');
+  const rsyncIdx = src.indexOf('rsync -a "$SCRIPT_DIR/.claude/agents/" "$MANAGED_AGENTS_DIR/"');
+  const residueLines = src.split('\n').filter((l) => /^\s*rm -f .*\$MANAGED_AGENTS_DIR\//.test(l));
+  assert.ok(rsyncIdx > 0, 'agents rsync line not found in install.sh');
+  assert.ok(residueLines.length > 0, 'install.sh has no rm -f of managed-agent residue');
+  for (const line of residueLines) {
+    assert.ok(src.indexOf(line) > rsyncIdx, `residue removal must follow the agents rsync: ${line}`);
+  }
+
+  const dir = path.join(tmpdir(), `install-agent-residue-${process.pid}-${Date.now()}`);
+  const homeDir = path.join(dir, 'home');
+  const managedDir = path.join(homeDir, '.claude', 'agents', '.pickle-managed');
+  try {
+    mkdirSync(managedDir, { recursive: true });
+    const removed = ['morty-implementer.md', 'morty-reviewer.md'];
+    for (const f of [...removed, 'morty-phase-planner.md']) writeFileSync(path.join(managedDir, f), 'deployed\n');
+
+    const result = spawnSync('bash', ['-c', residueLines.join('\n')], {
+      cwd: dir,
+      env: { ...process.env, HOME: homeDir, MANAGED_AGENTS_DIR: managedDir },
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    for (const f of removed) assert.throws(() => statSync(path.join(managedDir, f)), `${f} should be gone`);
+    assert.equal(readFileSync(path.join(managedDir, 'morty-phase-planner.md'), 'utf8'), 'deployed\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('install-agent-overlay: matching legacy canonical agent migrates to .pickle-managed', () => {
   const { dir, scriptDir, homeDir, scriptPath } = makeFixture();
   try {

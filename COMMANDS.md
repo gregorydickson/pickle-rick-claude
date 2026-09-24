@@ -37,7 +37,7 @@ All Pickle Rick slash commands and their flags. For workflow narrative and tool 
 | `/meeseeks` | **Deprecated** — superseded by `/anatomy-park` and `/szechuan-sauce` |
 | `lock-scope.js <session-root> --mode branch` | Mid-flight scope recovery for `/pickle-pipeline` sessions that launched without `--scope`. Patches `pipeline.json`, `state.json`, and `pipeline-status.json` in one command. Refuses to run while `pipeline-runner.js` is alive. See `PRD_GUIDE.md § Pipeline Scope` for full usage. |
 
-† accepts `--backend <claude\|codex>` to swap the worker/manager spawn backend (or set `PICKLE_BACKEND=codex`). `/council-of-ricks` has a separate Codex integration (Phase C adversarial reviewer, `--no-codex` / `--codex-timeout`). `/pickle` additionally accepts `--teams` (claude only) to spawn workers via harness team primitives — see [Agent Teams](README.md#agent-teams).
+† accepts `--backend <claude\|codex>` to swap the worker/manager spawn backend (or set `PICKLE_BACKEND=codex`). `/council-of-ricks` has a separate Codex integration (Phase C adversarial reviewer, `--no-codex` / `--codex-timeout`).
 
 ## Flags
 
@@ -53,8 +53,6 @@ Most flags are command-scoped. The table groups them by command family — flags
 | `--reset` | General | Reset iteration counter and start time (use with `--resume`) |
 | `--paused` | General | Start in paused mode (PRD only) |
 | `--backend <claude\|codex>` | `/pickle`, `/pickle-tmux`, `/pickle-microverse`, `/anatomy-park`, `/szechuan-sauce`, `/pickle-pipeline` | Route worker/manager spawns through `codex exec` instead of `claude`. Persisted in `state.json`. Env var alternative: `PICKLE_BACKEND=codex`. Precedence: CLI flag > env var > session state > default `claude` |
-| `--teams` | `/pickle` | Phase 3 spawns workers via harness team primitives (`TeamCreate` + `Agent` + `TaskUpdate`) instead of `spawn-morty.js` subprocesses. Persisted in `state.json`. Claude backend only — incompatible with `--backend codex`. Spec: [`prds/archive/design-notes/pickle-agent-teams.md`](prds/archive/design-notes/pickle-agent-teams.md) |
-| `--max-parallel <N>` | `/pickle` (with `--teams`) | Concurrency cap for parallel `morty-implementer` teammates (default: 5). v1 ships sequential; this is plumbed for the parallel-fan-out follow-up. Requires `--teams`. Must be a positive integer |
 | `--run` | `/pickle-refine-prd`, `/portal-gun` | Auto-launch tmux |
 | `--interactive` | `/pickle-microverse` | Run inline instead of tmux |
 | `--metric "<CMD>"` | `/pickle-microverse` | Shell command outputting a numeric score |

@@ -646,7 +646,7 @@ if [ -f "$SCRIPT_DIR/extension/templates/_pickle-manager-prompt.md" ]; then
 fi
 
 # --- AGENTS ---
-# Subagent definitions for /pickle --teams.
+# Subagent definitions (phase personas, debate/design agents).
 # Canonical Pickle agents install under .pickle-managed so top-level files remain user overrides.
 # No --delete: preserve locally-added managed agents from newer/experimental installs.
 AGENTS_DIR="$HOME/.claude/agents"
@@ -688,6 +688,10 @@ if [ -d "$SCRIPT_DIR/.claude/agents" ]; then
   rsync -a "$SCRIPT_DIR/.claude/agents/" "$MANAGED_AGENTS_DIR/"
   echo "✅ Agent definitions installed to $MANAGED_AGENTS_DIR/"
 fi
+
+# Clean up removed agents AFTER the rsync above (which has no --delete, so deployed copies persist).
+# B-LANES: teams mode was removed; these two agents no longer ship.
+rm -f "$MANAGED_AGENTS_DIR/morty-implementer.md" "$MANAGED_AGENTS_DIR/morty-reviewer.md"
 
 # --- COMMANDS ---
 # rsync all commands from .claude/commands/; no --delete to preserve user commands.

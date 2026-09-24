@@ -39,32 +39,8 @@ No flags: `setup.js --tmux --task "$ARGUMENTS"`.
 Resume example: `setup.js --tmux --resume /sessions/057f0263` (no --task needed).
 Flags+task example: `setup.js --tmux --max-iterations 10 --task "refactor auth"`
 Backend example: `setup.js --tmux --backend codex --task "refactor auth"` routes worker/manager spawns through `codex exec`; `setup.js --tmux --backend hermes --task "scaffold CLI smoke tests"` routes through `hermes chat -q`; `setup.js --tmux --backend deepseek --task "refactor auth"` routes through the DeepSeek API (requires `DEEPSEEK_API_KEY`; uses `ANTHROPIC_MODEL` if set, else defaults to `deepseek-v4-pro`). Backend persists in `state.json` and survives resume.
-Teams example: `setup.js --tmux --teams --max-parallel 5 --task "refactor auth"` runs **Teams Mode under tmux** (see below). `--teams` is always passed together with `--tmux`; the in-session `/pickle --teams` build loop was removed.
 
 Extract `SESSION_ROOT=<path>` and `working_dir` from output.
-
-## Teams Mode (--teams)
-
-`--teams` runs the build loop with harness-native subagents on a team instead of per-ticket `claude -p`
-subprocesses. It now runs **under tmux** — `/pickle-tmux --teams` passes `--tmux --teams` to `setup.js`
-jointly, so the session is created with `tmux_mode: true` **and** `teams_mode: true`. The bare
-`/pickle --teams` (in-session) path was removed in R-PNTR-4; `setup.js` rejects a `--teams` invocation that
-lacks `--tmux` with a migration hint.
-
-- **Claude backend only.** `setup.js` rejects `--teams --backend codex` / `--backend hermes` / `--backend deepseek` (all non-claude backends incompatible with teams). The codex/hermes/deepseek safe path is the default `mux-runner` subprocess loop.
-- **`--max-parallel <N>`** (requires `--teams`) caps worker concurrency; defaults to 5.
-- **Orchestration.** Under tmux, `mux-runner` spawns the manager with the manager-lifecycle template
-  (`_pickle-manager-prompt.md`), whose **Phase 3.B — Teams Mode** block fires when `state.teams_mode === true`.
-  The manager drives the team via the harness primitives `TeamCreate` → `TaskCreate` (one per ticket) →
-  `Agent` (one call per phase) → `TaskUpdate(status="completed")`.
-- **`morty-phase-*` subagents preserved.** Each ticket dispatches the six phase teammates —
-  `morty-phase-researcher`, `morty-phase-planner`, `morty-phase-implementer`, `morty-phase-verifier`,
-  `morty-phase-reviewer`, `morty-phase-simplifier` — each producing its phase artifact, with
-  `validate-teams-ticket.js` gating completion. Same 8-phase lifecycle and artifact contract as the
-  subprocess path.
-
-To launch: include `--teams` in `$ARGUMENTS`; Step 2 forwards it alongside `--tmux`. Everything else
-(tmux session, runner pane, monitor) is identical to a non-teams `/pickle-tmux` launch.
 
 ## Skip-flag overrides
 

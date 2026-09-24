@@ -495,8 +495,6 @@ The system reliably adds guards and reliably fails to subtract them. This rule f
 - INVARIANT: `backend` is the manager backend and worker fallback backend. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `worker_backend` is the optional worker-spawn backend override; worker spawns prefer it over `backend` when present, while refinement spawns ignore it because `PICKLE_REFINEMENT_LOCK=1` still forces claude. ENFORCE: extension/tests/state-field-invariants.test.js, extension/tests/backend-spawn.test.js.
 - INVARIANT: `judge_backend_resolved` is the optional sticky-fallback judge backend resolved by R-SJET-4 after a typed measurement failure; clears on session reset. ENFORCE: extension/tests/state-field-invariants.test.js.
-- INVARIANT: `teams_mode` gates harness-team spawning and defaults off. ENFORCE: extension/tests/state-field-invariants.test.js.
-- INVARIANT: `max_parallel` is the optional positive worker concurrency cap. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `false_epic_completed_count` tracks repeated false completion claims for one ticket. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `false_epic_completed_ticket` ties false completion counts to the ticket that produced them. ENFORCE: extension/tests/state-field-invariants.test.js.
 - INVARIANT: `effort` is the optional codex reasoning-effort value. ENFORCE: extension/tests/state-field-invariants.test.js.
