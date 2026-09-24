@@ -259,7 +259,20 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | **B-CGUP + B-CGUP-2** | codegraph `0.9.9` → `^1.6.0` (2 majors). One version source (`package.json`; `install.sh` reads it, fail-loud). One single-writer env constant `CODEGRAPH_SINGLE_WRITER_ENV` adds `CODEGRAPH_NO_DAEMON=1`; daemon survivor measured: none. B-CGUP gate 21/22 (one stale protocol-flag pin: `1.6` answers an unindexed call with "No CodeGraph project is loaded" instead of `isError`); B-CGUP-2 re-expressed that control by meaning. Combined gate `20260923T045419Z-88502` 22/22 (soak 1803.7s), pushed + deployed 2026-09-23 |
 | closed on measured evidence | **#40, #41, #32** (2026-09-21) · **#45, #44, #42, #46** (2026-09-22) · **#47** (2026-09-23) |
 
-### ▶ NEXT — idle; no drainable bug. Two operator decisions are open
+### ▶ NEXT — PARALLELISM PLAN (operator-approved 2026-09-24): parallelise REVIEW, not build
+
+Evidence: `prds/research/2026-09-agent-systems-spike.md`. Measured in this repo 2026-09-24:
+- `--teams` is neither parallel (the manager prompt says "treat as 1") nor runnable (`claude -p` exposes no TeamCreate/TaskCreate/Agent, even with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`).
+- A file-disjoint build caps at a median of ~1.5–2× on the build share only (≤3× per bundle), which is 4% of the worst run.
+- `discoverSubsystems` yields 2 review lanes for this repo, `bin` (3 files) and `extension` (1268).
+
+**Operator decision on #43:** answered. Parallelise review lanes, not build tickets; a worktree-per-ticket parallel build is deferred.
+
+1. **E3, offline review-recall probe** (measurement, no code). Seeded mutations in a past bundle's `extension/` diff; arms: whole diff k=20 / 4 directory partitions k=20 / whole diff k=5; 3 repeats. Decides whether smaller lanes raise per-pass recall or only enable concurrency. Result → the spike report.
+2. **Bundle B-LANES:** (a) delete the dead teams mode (manager Phase 3.B, `--teams`/`--max-parallel`, the `morty-implementer`/`morty-reviewer` agents, docs) and close #43 on evidence; (b) `discoverSubsystems` partitions one level deeper; rotation stays sequential. One bundle, because both land in the single `extension` review lane. Then read E1 off this and later bundles: passes and wall-clock per lane vs the B-INVENTED baseline of 34 passes / 995 min.
+3. **Only if E3 or E1 shows a gain:** concurrent anatomy-park lanes (disjoint directories; worktree or per-lane lock; merge step). PRD written after the measurements, so its ACs are measured.
+
+### ▶ Previously open operator decisions
 
 **#43 (parallel build with `--teams`)**: unchanged. Its open question is why `--teams` was never
 turned on. The worst measured bundle spent 78% of its time in anatomy-park on ONE subsystem, so the lever
