@@ -167,6 +167,10 @@ function die(message) {
     console.error(`${Style.RED}❌ Error: ${message}${Style.RESET}`);
     process.exit(1);
 }
+/** B-LANES: teams mode was removed; the flags stay as ARG_HANDLERS tombstones so they fail loudly instead of parsing as unknown. */
+function removedFlagMessage(flag) {
+    return `${flag} was removed (B-LANES): teams mode never ran under claude -p. Run /pickle-tmux without it.`;
+}
 function resolveWorkingDirOrNull(value) {
     if (typeof value !== 'string')
         return null;
@@ -206,8 +210,6 @@ function createSetupConfig() {
         commandTemplate: '_pickle-manager-prompt.md',
         backend: undefined,
         workerBackend: undefined,
-        teamsMode: false,
-        maxParallel: 5,
         effort: undefined,
         prdPath: undefined,
         task: undefined,
@@ -657,22 +659,8 @@ const ARG_HANDLERS = {
         config.explicitFlags.add('worker-backend');
         return index + 1;
     },
-    '--teams': (config, _args, index) => {
-        config.teamsMode = true;
-        config.explicitFlags.add('teams');
-        return index;
-    },
-    '--max-parallel': (config, args, index) => {
-        const raw = args[index + 1];
-        if (!raw || raw.startsWith('--'))
-            die('--max-parallel requires a positive integer value (>= 1)');
-        const value = Number(raw);
-        if (!Number.isInteger(value) || value < 1)
-            die('--max-parallel requires a positive integer (>= 1)');
-        config.maxParallel = value;
-        config.explicitFlags.add('max-parallel');
-        return index + 1;
-    },
+    '--teams': () => die(removedFlagMessage('--teams')),
+    '--max-parallel': () => die(removedFlagMessage('--max-parallel')),
     '--effort': (config, args, index) => {
         const value = requireFlagValue(args, index, `--effort requires a value (${VALID_EFFORTS.join('|')})`);
         if (!VALID_EFFORTS.includes(value)) {
@@ -787,13 +775,7 @@ function isInsideGitRepo(cwd) {
     return runGitSafe(['rev-parse', '--git-dir'], cwd).trim().length > 0;
 }
 function validateCommandLine(config) {
-    if (config.explicitFlags.has('max-parallel') && !config.teamsMode) {
-        die('--max-parallel requires --teams');
-    }
     const backend = config.backend || 'claude';
-    if (config.teamsMode && backend !== 'claude') {
-        die(`--teams is incompatible with --backend ${backend} (claude backend only)`);
-    }
     if (backend === 'deepseek' && !process.env.DEEPSEEK_API_KEY) {
         console.error('Error: --backend deepseek requires DEEPSEEK_API_KEY environment variable.');
         console.error('Get a key at https://platform.deepseek.com/api_keys.');
@@ -836,11 +818,6 @@ function validateResumeCompatibility(preState, config, sessionRoot) {
             });
         }
         catch { /* best-effort */ }
-    }
-    const willHaveTeams = config.explicitFlags.has('teams') ? config.teamsMode : preState.teams_mode === true;
-    const willHaveBackend = (config.explicitFlags.has('backend') ? config.backend : preState.backend) || 'claude';
-    if (willHaveTeams && willHaveBackend !== 'claude') {
-        die(`--teams is incompatible with --backend ${willHaveBackend} (claude backend only). Resume would create a conflicting state — refusing to continue.`);
     }
 }
 // R-SRTS-1: gate the "restore In Progress" write behind --force-ticket-status-sync.
@@ -1072,10 +1049,6 @@ function applyResumeModeConfig(s, config) {
         s.backend = config.backend;
     if (config.explicitFlags.has('worker-backend'))
         s.worker_backend = config.workerBackend;
-    if (config.explicitFlags.has('teams'))
-        s.teams_mode = config.teamsMode;
-    if (config.explicitFlags.has('max-parallel'))
-        s.max_parallel = config.maxParallel;
     if (config.explicitFlags.has('effort'))
         s.effort = config.effort;
 }
@@ -1091,11 +1064,6 @@ function syncConfigFromState(config, state) {
     config.commandTemplate = state.command_template;
     if (state.backend && BACKENDS.includes(state.backend))
         config.backend = state.backend;
-    config.teamsMode = state.teams_mode === true;
-    const rawMaxParallel = Number(state.max_parallel);
-    config.maxParallel = Number.isFinite(rawMaxParallel) && Number.isInteger(rawMaxParallel) && rawMaxParallel >= 1
-        ? rawMaxParallel
-        : config.maxParallel;
     if (typeof state.effort === 'string' && VALID_EFFORTS.includes(state.effort)) {
         config.effort = state.effort;
     }
@@ -1491,8 +1459,6 @@ function createInitialState(config, sessionPath, taskStr) {
         backend: config.backend,
         worker_backend: config.workerBackend,
         pipeline_continue_on_phase_fail: config.pipelineContinueOnPhaseFail,
-        teams_mode: config.teamsMode || undefined,
-        max_parallel: config.teamsMode ? config.maxParallel : undefined,
         effort: config.effort,
         archaeology: null,
         tickets_version: 0,
@@ -1614,7 +1580,6 @@ function printActivationPanel(paths, config, fullSessionPath, currentIteration) 
         ...(config.commandTemplate ? { Template: config.commandTemplate } : {}),
         Backend: config.backend || 'claude',
         ...(config.effort ? { Effort: config.effort } : {}),
-        ...(config.teamsMode ? { Teams: `Yes (parallel: ${config.maxParallel})` } : {}),
         Extension: paths.rootDir,
         Data: paths.dataDir,
         Path: fullSessionPath,
@@ -1640,15 +1605,10 @@ export function handleResumeSession(args) {
  * under tmux (`/pickle-tmux`, true per-iteration isolation). `--paused` prep
  * sessions (pickle-prd / pickle-refine-prd / portal-gun) and `--resume` are exempt
  * — they are inactive or re-enter an existing session, not a fresh in-session loop.
- * In-session Teams Mode (`/pickle --teams`) migrates to `/pickle-tmux --teams`.
  */
 function assertTmuxBuildLoopRequired(config) {
     if (config.tmuxMode || config.pausedMode)
         return;
-    if (config.teamsMode) {
-        die('/pickle --teams (in-session Teams Mode) was removed. ' +
-            'Use /pickle-tmux --teams to run Teams Mode under tmux (morty-phase-* subagents preserved).');
-    }
     die('The in-session /pickle build loop was removed (no /clear between iterations). ' +
         'Use /pickle-tmux <args> for the build loop, /pickle-refine-prd for refinement, ' +
         'or /pickle-pipeline for the full pipeline.');

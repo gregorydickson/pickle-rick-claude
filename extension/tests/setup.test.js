@@ -13,6 +13,7 @@ import { StateManager } from '../services/state-manager.js';
 import { LATEST_SCHEMA_VERSION } from '../types/index.js';
 import { compatibleCodexVersion, codexVersionLine } from './__helpers__/codex-shim.js';
 import { findResiduals } from './__helpers__/activity-sink.js';
+import { describeEach } from './helpers/describe-each.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SETUP = path.resolve(__dirname, '../bin/setup.js');
@@ -47,7 +48,7 @@ function sleepSync(ms) {
 // concerns (budgets, effort, backends, resume, pruning), so default them onto
 // `--tmux` unless the call already selects a session mode (`--tmux`/`--paused`/
 // `--resume`). The removed bare-`/pickle` rejection itself is covered explicitly by
-// the dedicated rejection tests below and by tests/integration/pntr-teams-tmux.test.js.
+// the dedicated rejection test below.
 function withTmuxDefault(args) {
     const hasMode = args.some(a => a === '--tmux' || a === '--paused' || a === '--resume');
     return hasMode ? args : ['--tmux', ...args];
@@ -88,8 +89,8 @@ function execSetup(args, extraEnv) {
     }
 }
 
-function runSetup(args) {
-    const output = execSetup(args);
+function runSetup(args, extraEnv) {
+    const output = execSetup(args, extraEnv);
     const match = output.match(/SESSION_ROOT=(.+)/);
     if (!match) throw new Error(`SESSION_ROOT not found in output:\n${output}`);
     return match[1].trim();
@@ -152,9 +153,6 @@ test('setup initializeNewSession: state field set matches schema fixture', () =>
             'claude',
             '--worker-backend',
             'codex',
-            '--teams',
-            '--max-parallel',
-            '5',
             '--task',
             'schema fixture parity',
         ]);
@@ -277,17 +275,33 @@ test('setup rejects deepseek without API key', () => {
     }
 });
 
-test('setup rejects --teams + deepseek', () => {
-    assert.throws(
-        () => runSetupWithEnv(['--tmux', '--teams', '--backend', 'deepseek', '--task', 'teams deepseek conflict'], {
-            DEEPSEEK_API_KEY: 'dummy-key-for-teams-test',
-        }),
-        error => {
-            assert.equal(error.status, 1);
-            assert.match(String(error.stderr), /--teams is incompatible with --backend deepseek/i);
-            return true;
-        },
-    );
+// B-LANES: teams mode was removed. The flags survive only as ARG_HANDLERS tombstones that die
+// naming the flag + B-LANES BEFORE any session dir is created. `--max-parallel 3` alone already
+// died at HEAD (it required --teams), so the `B-LANES` token is what discriminates.
+describeEach([
+    ['--teams', ['--tmux', '--teams', '--task', 'x']],
+    ['--max-parallel', ['--tmux', '--max-parallel', '3', '--task', 'x']],
+])('setup tombstone %s: exits 1 naming the flag + B-LANES, creates no session dir', (flag, argv) => {
+    test('dies before session creation', () => {
+        const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-tombstone-data-'));
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-tombstone-home-'));
+        try {
+            const result = spawnSync(process.execPath, [SETUP, ...argv], {
+                encoding: 'utf-8',
+                env: { ...process.env, FORCE_COLOR: '0', HOME: home, PICKLE_DATA_ROOT: dataRoot },
+                timeout: 30_000,
+            });
+            assert.equal(result.status, 1);
+            assert.ok(result.stderr.includes(flag), `stderr must name ${flag}: ${result.stderr}`);
+            assert.match(result.stderr, /B-LANES/);
+            const sessionsRoot = path.join(dataRoot, 'sessions');
+            const entries = fs.existsSync(sessionsRoot) ? fs.readdirSync(sessionsRoot) : [];
+            assert.equal(entries.length, 0, 'tombstone must not create a session dir');
+        } finally {
+            fs.rmSync(dataRoot, { recursive: true, force: true });
+            fs.rmSync(home, { recursive: true, force: true });
+        }
+    });
 });
 
 test('worker-backend: --resume with explicit --worker-backend overrides stored worker_backend', () => {
@@ -892,54 +906,44 @@ test('setup: --resume with --tmux propagates tmux_mode to state.json', () => {
     }
 });
 
-test('setup: --resume rejects codex teams conflict from recovered tmp state', () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-conflict-data-'));
-    const sessionPath = path.join(dataRoot, 'sessions', 'resume-conflict');
-    fs.mkdirSync(sessionPath, { recursive: true });
-    const statePath = path.join(sessionPath, 'state.json');
-    const workingDir = process.cwd();
-
-    // Use "now" so pruneOldSessions (7-day cutoff at setup.ts entry) cannot
-    // delete the fixture before resumeSession reads it.
-    const now = new Date();
-    const commonState = {
-        session_dir: sessionPath,
-        working_dir: workingDir,
-        step: 'implement',
-        original_prompt: 'resume conflict test',
-        started_at: now.toISOString(),
-        max_iterations: 50,
-        max_time_minutes: 0,
-        worker_timeout_seconds: 1200,
-        start_time_epoch: Math.floor(now.getTime() / 1000),
-        history: [],
-        completion_promise: null,
+// B-LANES: `teams_mode`/`max_parallel` are inert legacy keys. A session that carries them
+// must resume exactly like an identical control without them — including on codex, where the
+// old teams+codex conflict check used to refuse the resume.
+function makeCodexShimEnv() {
+    const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-legacy-codex-bin-'));
+    const shimPath = path.join(shimDir, 'codex');
+    fs.writeFileSync(shimPath, `#!/bin/sh\necho "${codexVersionLine(compatibleCodexVersion())}"\n`);
+    fs.chmodSync(shimPath, 0o755);
+    return {
+        env: { EXTENSION_DIR: REPO_ROOT, PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}` },
+        cleanup: () => fs.rmSync(shimDir, { recursive: true, force: true }),
     };
-    fs.writeFileSync(statePath, JSON.stringify({
-        ...commonState,
-        schema_version: 1,
-        active: false,
-        backend: 'claude',
-        teams_mode: false,
-        iteration: 1,
-    }, null, 2));
-    fs.writeFileSync(`${statePath}.tmp.99999999`, JSON.stringify({
-        ...commonState,
-        schema_version: 1,
-        active: false,
-        backend: 'codex',
-        teams_mode: true,
-        iteration: 2,
-    }, null, 2));
+}
 
-    try {
-        assert.throws(
-            () => runSetupWithEnv(['--resume', sessionPath], { PICKLE_DATA_ROOT: dataRoot }),
-            /--teams is incompatible with --backend codex/i,
-        );
-    } finally {
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+describeEach(['claude', 'codex'])('setup legacy resume (%s backend): teams_mode key is inert', (backend) => {
+    test('resumes to the same step as the control twin', () => {
+        const shim = backend === 'codex' ? makeCodexShimEnv() : { env: {}, cleanup: () => {} };
+        const control = runSetup(['--tmux', '--backend', backend, '--task', `legacy-control-${backend}`], shim.env);
+        const legacy = runSetup(['--tmux', '--backend', backend, '--task', `legacy-teams-${backend}`], shim.env);
+        try {
+            const legacyStatePath = path.join(legacy, 'state.json');
+            const legacyState = JSON.parse(fs.readFileSync(legacyStatePath, 'utf-8'));
+            fs.writeFileSync(legacyStatePath, JSON.stringify({ ...legacyState, teams_mode: true, max_parallel: 5 }, null, 2));
+
+            runSetup(['--resume', control], shim.env);
+            runSetup(['--resume', legacy], shim.env);
+
+            const controlAfter = JSON.parse(fs.readFileSync(path.join(control, 'state.json'), 'utf-8'));
+            const legacyAfter = JSON.parse(fs.readFileSync(legacyStatePath, 'utf-8'));
+            assert.equal(controlAfter.backend, backend);
+            assert.equal(legacyAfter.backend, backend);
+            assert.equal(legacyAfter.step, controlAfter.step);
+        } finally {
+            shim.cleanup();
+            cleanup(control);
+            cleanup(legacy);
+        }
+    });
 });
 
 test('setup: --resume keeps the resolved session path authoritative over stale state.session_dir', () => {
@@ -2483,4 +2487,54 @@ test('AC-1 claude_version_seen: a recorded value survives a read/normalise round
         // The normaliser must hydrate a MISSING value without clobbering a present one.
         assert.equal(sm.read(statePath).claude_version_seen, '2.1.260 (Claude Code)');
     });
+});
+
+// B-LANES AC-9: every teams-mode artifact is gone.
+const EXTENSION_ROOT = path.resolve(__dirname, '..');
+describeEach([
+    'src/bin/validate-teams-ticket.ts',
+    'bin/validate-teams-ticket.js',
+    'tests/setup-teams.test.js',
+    'tests/validate-teams-ticket.test.js',
+    'tests/pickle-md-teams-branch.test.js',
+    'tests/integration/pntr-teams-tmux.test.js',
+])('teams-mode artifact %s is deleted', (rel) => {
+    test('does not exist', () => {
+        assert.equal(fs.existsSync(path.join(EXTENSION_ROOT, rel)), false);
+    });
+});
+
+function walkTsFiles(dir) {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) return walkTsFiles(full);
+        return entry.name.endsWith('.ts') ? [full] : [];
+    });
+}
+
+test('teams-mode symbols are gone from src (state-manager legacy-shape markers excepted)', () => {
+    const offenders = walkTsFiles(path.join(EXTENSION_ROOT, 'src'))
+        .filter(file => path.basename(file) !== 'state-manager.ts')
+        .filter(file => /teams_mode|teamsMode|maxParallel/.test(fs.readFileSync(file, 'utf-8')));
+    assert.deepEqual(offenders, []);
+});
+
+test('manager template carries no Phase 3.B / teams worker references', () => {
+    const template = fs.readFileSync(path.join(EXTENSION_ROOT, 'templates', '_pickle-manager-prompt.md'), 'utf-8');
+    assert.equal(/Phase 3\.B|morty-implementer|morty-reviewer/.test(template), false);
+});
+
+// R-PTSB-1 (moved from the deleted setup-teams.test.js): setup.js writes into the sandboxed
+// PICKLE_DATA_ROOT, not into the operator's production session dir.
+test('runSetup sandbox: session written to tmp PICKLE_DATA_ROOT, not default data root', () => {
+    const defaultDataRoot = path.join(os.homedir(), '.local', 'share', 'pickle-rick');
+    const sessionPath = runSetup(['--tmux', '--task', 'ptsb1-sandbox-regression']);
+    try {
+        assert.ok(!sessionPath.startsWith(defaultDataRoot), `Session landed in production data root: ${sessionPath}`);
+        assert.ok(sessionPath.startsWith(os.tmpdir()) || sessionPath.startsWith(fs.realpathSync(os.tmpdir())), `Session not under os.tmpdir(): ${sessionPath}`);
+        const state = JSON.parse(fs.readFileSync(path.join(sessionPath, 'state.json'), 'utf-8'));
+        assert.equal(state.original_prompt, 'ptsb1-sandbox-regression');
+    } finally {
+        cleanup(sessionPath);
+    }
 });

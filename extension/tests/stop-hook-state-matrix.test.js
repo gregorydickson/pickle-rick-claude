@@ -55,7 +55,6 @@ function buildState({ pid, active, iteration }) {
     pid,
     activity: [],
     backend: 'claude',
-    teams_mode: false,
     consecutive_short_responses: 0,
     false_epic_completed_count: 0,
   };

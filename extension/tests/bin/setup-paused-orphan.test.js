@@ -55,8 +55,6 @@ function makeSession(sessionsRoot, sessionId, stateOverrides) {
         command_template: null,
         chain_meeseeks: false,
         backend: null,
-        teams_mode: false,
-        max_parallel: null,
         archaeology: null,
         tickets_version: 0,
         last_course_correction: null,

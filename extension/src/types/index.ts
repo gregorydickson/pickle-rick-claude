@@ -56,10 +56,6 @@ export interface State {
   judge_backend_resolved?: Extract<Backend, 'claude' | 'codex'>;
   /** When false, pipeline-runner halts on any non-zero non-citadel phase exit instead of continuing on recoverable failures. */
   pipeline_continue_on_phase_fail?: boolean;
-  /** When true, /pickle Phase 3 spawns workers via harness team primitives (TeamCreate + Agent + TaskUpdate) instead of `claude -p` subprocesses. claude backend only. */
-  teams_mode?: boolean;
-  /** Concurrency cap for parallel `morty-implementer` teammates when teams_mode is true. Default 5. v1 ships sequential; this field is plumbed for the parallel-fan-out follow-up. */
-  max_parallel?: number;
   /**
    * Count of consecutive false EPIC_COMPLETED emissions on the same `current_ticket`.
    * Reset to 0 whenever the manager genuinely advances to a new ticket OR succeeds.
