@@ -251,6 +251,135 @@ metric, because finer lanes raise it by construction. A session counts only if t
 - **Semver.** Removing `--teams` / `--max-parallel` is a CLI change. The flags never had a working path
   (0 sessions used them); the operator decides patch vs major at release time.
 
+## Refinement round 3 — BINDING decisions (override any earlier text they contradict)
+
+*(refined: requirements, codebase and risk-scope analysts, cycle 3; the roster was measured by running the rule)*
+
+### WS-2 split rule and roster
+- **Rule:** a lane splits when it has **≥ 2 child directories each holding ≥ `MIN_LANE_FILES` = 20**
+  non-generated `SOURCE_EXTS` files at any depth. Qualifying children become lanes (recursively). Everything else
+  under the lane becomes its remainder `D/.` with `excludes` = the qualifying children. There is no "½" threshold:
+  measured, a ½ trigger never splits `extension/src` (15% of source).
+- **Roster pinned at `57beb52c`** (1,108 non-generated source files; `git ls-files` equals the disk walk):
+  `bin` (3), `extension/src/bin` (62), `extension/src/services` (79), `extension/src/.` (26),
+  `extension/tests/__fixtures__` (22), `extension/tests/citadel` (25), `extension/tests/integration` (127),
+  `extension/tests/services` (36), `extension/tests/.` (709), `extension/.` (15). **AC-1 = exactly this set.**
+  `extension/tests/.` (709, mostly 659 flat top-level test files) is an accepted residual: no directory rule can
+  split it.
+- Fixture-corpus lanes (`__fixtures__`) are accepted review surface; no name-based exclusion.
+- Lane names map to session paths by **sibling directories**, never by joining the name into a path
+  (`extension/.` must not normalise into `extension`).
+
+### WS-3 design (replaces Design §1–§6 where they differ)
+1. **Placement and identity.** Each lane session is a sibling `<data>/sessions/<session>--lane-<n>/` holding
+   `state.json`, a one-lane `anatomy-park.json`, `microverse.json`, `scope.json`, logs, and its worktree at
+   `<lane session>/wt`. **No worktree is ever created under the target repo.** Seeding, by the phase runner
+   only: copy the parent `state.json`, set `working_dir = <lane session>/wt`,
+   `resetStateForPhase(lane, 'anatomy-park.md', anatomy_max_iterations)` (`pipeline-runner.ts:1720`), then
+   `claimPipelineRunnerActive`. The lane `scope.json` has `allowed_paths` = lane `dir` minus `excludes`.
+   `setupAnatomyPark` gains an optional `lanes` parameter that bypasses discovery (today it always re-discovers,
+   `:2685`). Lane runners and their workers get `PICKLE_STATE_FILE=<lane session>/state.json`, so the R-WSRC
+   hooks resolve (today they approve on unresolved state, `config-protection.ts:1887-1891`). Worktrees are created with
+   `git worktree add -b pickle-lane/<session>/<n> <lane>/wt <phaseStartSha>`, `node_modules` is symlinked
+   (pattern: `did-we-count-replay.ts:398`), and lanes commit with `-c gc.auto=0`.
+2. **Concurrency.** `anatomy_max_parallel_lanes` is read from `pipeline.json` via `parsePositiveInteger`; values
+   {absent, 0, −1, 1.5, "x"} resolve to the default. **Default 1**, which runs today's path unchanged in the main
+   checkout. Raise it only with a committed measurement of fast-tier red rate at 1 vs 3 (the gate lock does not
+   serialise tiers: it guards only the baseline write, `convergence-gate.ts:1839-1855`). A value above the lane
+   count spawns only the lane count. Lane processes are tracked in a `Map<lane, ChildProcess>` (today there is
+   one module-level `activeChild`, `:1381`), spawned detached through `runSpawnRunner`.
+3. **Cancel.** `/eat-pickle` flips only the parent `state.active` (`cancel.ts:102`), and each runner stops on
+   its OWN state (`microverse-runner.ts:6180`). While lanes run, the orchestrator polls parent `active` at the
+   heartbeat cadence. On `false` it mirrors `active=false` into every lane `state.json`, then SIGTERMs, then
+   SIGKILLs, every lane process group after a 2 s grace.
+4. **Verdict.** After the last lane ends, the orchestrator writes ONE parent `state.json.exit_reason`:
+   `converged` iff every lane's own `exit_reason` classifies `success` (`classifyMicroverseDisposition`),
+   otherwise the first non-success lane reason in roster order, with `integration_red` counting as non-success.
+   It returns exit 0 iff `converged`. `finalizePhaseSuccess` (`:5776`) stays the single verdict site and is
+   unchanged. Without this write, non-convergent lanes would report the phase as `completed`.
+5. **Integration never touches main until the end.** After ALL lanes end, the runner creates one integration
+   worktree on `pickle-lane/<session>/integration` from the phase-start HEAD, and cherry-picks each lane's
+   commits there in roster order. On a conflict it runs `cherry-pick --abort` and records `conflict`. After each
+   lane it runs the target's typecheck (this repo: `tsc --noEmit`; none configured → log
+   `integration_check: unavailable` and accept). If red, it resets the **integration worktree only** (via
+   `resetToSha`) and records `integration_red`. Finally main advances once by `git merge --ff-only`. If that fails
+   (e.g. main is dirty), it records `integration_ff_failed` and keeps the branch. **Main is never reset, cleaned
+   or left mid-pick; no outcome halts the phase.** The catalog-conflict policy (trap doors from many lanes landing
+   in `extension/CLAUDE.md`) is decided in this ticket's research by replaying a bundle, and recorded in the
+   ticket.
+6. **Retention.** Worktree directories are always removed, followed by `git worktree prune`. A lane branch is
+   deleted with `git branch -d` only (never `-D`), i.e. only once reachable from main. Branches of `conflict`,
+   `integration_red`, `non_convergent` and `integration_ff_failed` lanes are retained and named. At phase start,
+   retained `pickle-lane/*` branches older than 14 days are deleted, with a report. On relaunch after a crash,
+   the runner reports unintegrated branches, prunes stale worktrees, and never auto-integrates.
+7. **`archive/lanes.json`:** `[{name, dir, excludes, branch, worktree, started_at, ended_at, passes, exit_reason,
+   outcome: integrated|conflict|integration_red|integration_ff_failed|non_convergent|cancelled|retained,
+   commits:[sha]}]`. Any new activity event is registered in `VALID_ACTIVITY_EVENTS` and
+   `activity-events.schema.json` in the ticket that emits it.
+8. **Monitor.** Lane runners suppress their own monitor window (today `ensureMicroverseMonitor` runs per
+   runner). The parent subsystem watcher lists active lanes from `archive/lanes.json` and lane state files.
+9. **Per-lane semantics, stated (existing code, no change):** `anatomy_max_iterations`, rate-limit parks, APNC and
+   `runnerStallLimit` (10 × 1) are all per lane.
+
+### WS-1 additions
+- Phase 3.B's `Agent`-based phase dispatch goes with it; `claude -p` exposes no `Agent`. Persona text survives
+  only via spawn-morty's `## Active Persona` injection. `phase_personas_disabled_seen` stays;
+  `phase_dispatch_preflight_failed` disappears (it has no code producer). The Mode Selection block
+  (`_pickle-manager-prompt.md:134-136`) and the 3.A heading are updated.
+- Tombstones are `ARG_HANDLERS` entries, so `tests/ac6-operator-surface-guard.test.js` `CLI_FLAGS` stays
+  unchanged. `--strict-teams` is a different flag and is untouched.
+
+### Acceptance-criteria corrections
+- **AC-1:** exactly the 10-lane roster above.
+- **AC-3:** relational: the generated count equals the count of tracked `extension/<p>.js` with an
+  `extension/src/<p>.ts` twin (167 at `57beb52c`).
+- **AC-4:** fixture subpackages hold ≥ 20 files each.
+- **AC-8** (fake-green at HEAD) is replaced by: `buildAnatomyPrd` for lane `extension/tests/integration` names
+  `extension/CLAUDE.md` as its trap-door catalog.
+- **AC-10:** discriminates on the `B-LANES` stderr token (`--max-parallel` alone already dies at HEAD). Also: a
+  `teams_mode: true` resume reaches the same step as a control twin without it, for both the claude and codex
+  backends.
+- **AC-15:** `node extension/bin/resolve-scope.js --print-subsystems --target .` prints a JSON array of
+  `{name,dir,excludes}` of length ≥ 5, and exits 0 on degraded discovery.
+- **New WS-3 ACs:** cancel (13b), crash-resume report (13c), non-convergent lane reported as
+  `anatomy_non_convergent` by `finalizePhaseSuccess` (13d/13g), resolver domain (13e), hook identity with a
+  mutation control (13f), target untracked files unchanged by lane spawn (13h), integration red (14b), an
+  untracked `scratch.txt` in main surviving an integration red (14c).
+
+### WS-3 risks (stated)
+- There is no cross-lane test-tier serialisation, which is why concurrency defaults to 1.
+- Lane workers must not run `npm ci` or install; dependencies are symlinked from main.
+- Non-JS targets get no dependency provisioning in lanes.
+- Deploying `install.sh` from `exp/b-lanes` changes the runtime for the whole box. Rollback is
+  `git checkout main && bash install.sh`.
+- An unscoped run rotates all 10 lanes (at least 20 passes).
+
+### Merge rule (replaces the earlier criterion)
+At least 3 sessions per arm, with `anatomy_max_parallel_lanes` ≥ 2. Merge to `main` if median anatomy-park
+**phase** wall-clock is at least 25% lower and median findings fixed is not lower; report median tokens. Exclude
+sessions launched across a redeploy. The operator decides.
+
 ## Out of scope
 
-Concurrent anatomy-park lanes (plan step 3); a parallel build; changing szechuan-sauce partitioning.
+A parallel *build* (pickle phase); szechuan-sauce partitioning; concurrency for the standalone `/anatomy-park`
+command (it stays serial and gains only `--print-subsystems`). Concurrent anatomy-park lanes ARE in scope
+(WS-3).
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Tier |
+|---|---|---|---|
+| 10 | 26894aa8 | All teams-mode code paths are removed and --teams/--max-parallel fail with a B-LANES tombstone | medium |
+| 20 | 9eb9478d | Teams-mode docs and agents are gone and install.sh removes the deployed agent residue | medium |
+| 30 | 3ad68afd | Every tracked file maps to at most one review lane under one membership function; lanes split by the MIN_LANE_FILES rule | large |
+| 40 | e05849d8 | Changed code that no lane admits is reported in files_unmapped, never silently green | medium |
+| 50 | 28356098 | The standalone /anatomy-park uses the compiled lane rule via resolve-scope --print-subsystems | medium |
+| 60 | 262d3580 | Each lane session is a sibling dir with its own worktree, seeded state and resolvable hook identity | large |
+| 70 | b870ab5f | Lanes run concurrently up to anatomy_max_parallel_lanes, cancel reaches every lane, and one verdict is written | large |
+| 80 | fa8ad251 | Finished lanes integrate on a disposable integration worktree; the working branch only fast-forwards; unmerged lane branches are kept | large |
+| 90 | 4b184896 | The subsystem watcher shows every active lane | medium |
+| 100 | 4ea779d7 | Wire: lane discovery, lane sessions, concurrent spawn, integration and watcher into one working anatomy-park phase | large |
+| 110 | 70b49349 | Harden: code quality review of B-LANES | large |
+| 120 | 8512be3a | Audit: data flow integrity for B-LANES | large |
+| 130 | e5524d3f | Harden: test quality review of B-LANES | large |
+| 140 | d96b228a | Audit: cross-reference consistency for B-LANES | medium |
