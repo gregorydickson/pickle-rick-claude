@@ -7,24 +7,30 @@ codes that no longer match the live plan, so do not arm it without re-verifying.
 
 ---
 
-## CURRENT PROMPT (operative, 2026-09-22)
+## CURRENT PROMPT (operative, 2026-09-25 — autonomous)
 
 Paste verbatim. It is written to be re-sent every tick; each tick is self-contained.
 
 ```
-PICKLE-RICK PIPELINE BABYSITTER. Scope: /Users/gregorydickson/pickle-rick-claude on branch main ONLY. Work autonomously; do not ask questions. NEVER stop the loop — a quiet tick is a noop tick, not a reason to terminate.
+PICKLE-RICK PIPELINE BABYSITTER TICK (AUTONOMOUS). Scope: /Users/gregorydickson/pickle-rick-claude, branch main plus any experimental branch named in the MASTER_PLAN handoff (currently exp/b-lanes). BINDING: this repo is open source; no client content ever (root CLAUDE.md). MEASUREMENT RULES: resolve the live session by reading the newest ~/.local/share/pickle-rick/sessions/*/state.json + pipeline-status.json; Node v24; TZ=UTC; capture exit codes directly; an absent or empty result is not a pass; verify deploys BY CONTENT. Read the SESSION HANDOFF in prds/MASTER_PLAN.md and open GitHub issues each tick.
 
-FIRST: read the SESSION HANDOFF at the top of prds/MASTER_PLAN.md. Re-verify rather than trust it.
+STANDING AUTHORIZATIONS — act, do NOT ask the operator:
+A. RUNTIME/PIPELINE-BREAKING BUG (deployed runtime fails to load, pipelines crash/halt, tests damage the real ~/.claude/pickle-rick): restore first (git switch main when no runner is alive, bash install.sh, verify the deployed runtime imports), then write a PRD with ACs measured at HEAD and run /pickle-pipeline on main.
+B. FINISHED BUNDLE ON main: run prds/gate-runner.sh; a leg is green only if its LEG_RC is 0 (the runner's own exit code is not enough). All legs green → git push origin main, bash install.sh, verify deployed content by grep/cmp. Any red leg → write a fix PRD naming each red with its cause (fix the cause, never loosen a check) and run it as a pipeline on main.
+C. EXPERIMENTAL BRANCH: keep it moving. Merge main into it (merge commit on the branch) whenever main has shipped fixes it needs; re-measure the branch fix PRD's ACs at branch HEAD; run it as a pipeline on the branch. When a branch bundle finishes, run the gate on the branch; push the branch after EVERY bundle (backup, green or red); if red, write the next fix PRD and run it. NEVER merge the branch into main, never install.sh from the branch, never tag it.
+D. PRD authoring: every AC measured at HEAD before launch (it must fail today). Use --no-refine for small fix bundles (≤ 5 named reds); use refinement for new features.
+E. IDLE (nothing running, no drainable work): research tick — ONE background research agent refines prds/research/2026-09-agent-systems-spike.md (one open gap from §6; primary sources; ≤ ~4,000 words; changelog line); read its diff, commit only that file on main, push. Skip if a research agent is still running.
+F. Never switch branches or commit on a branch while a pipeline runs on it. Never commit while any pipeline runs on main.
 
-BINDING: this repo is open source. No loanlight or client content ever, including derived artifacts. See the rule at the top of root CLAUDE.md. The review corpus lives at ~/loanlight-review-inventory/ — cite conclusions by number, keep evidence there.
+ASK THE OPERATOR ONLY FOR: merging an experimental branch into main; cutting a release/tag; deleting branches, tags or session data; changing a PRD's goal (not its mechanics); anything touching client/private data; operator-deferred issues #43 and #5.
 
-MEASUREMENT RULES: resolve the live session by READING ~/.local/share/pickle-rick/sessions/<newest>/state.json and pipeline-status.json, never from argv or pgrep. This shell is zsh. Capture exit codes directly and require a same-run end marker. An absent or empty result is not a pass. Node must be v24. Verify deploys BY CONTENT expecting one intentional difference, the tmux-runner.js symlink. Keep Bash output small.
-
-EACH TICK: (1) healthy run → one status line, do not intervene. (2) wedged → check artifact mtimes BEFORE declaring anything Failed. (3) finished → full gate (prds/gate-runner.sh <log>, derives its audit list from root CLAUDE.md; wait for GATE_END with a matching RUN_ID), then ship on green. If a leg reds, first ask whether it is a stale pin over a behaviour-preserving refactor; verify BEHAVIOUR before touching any guard, and mutation-verify any pin you rewrite including an over-trigger control. (4) idle → dispatch from the handoff's priority list, re-grepping each candidate's MECHANISM at HEAD first. (5) file what you measure as a GitHub issue with the falsifying observation stated, record it in prds/MASTER_PLAN.md, commit docs with the trailer
+Report each tick in 2-3 sentences: what ran, what you measured, what you changed or launched.
 Claude-Session: <the session URL>
-
-Report each tick in two or three sentences: what the pipeline is doing, what you measured, what you changed.
 ```
+
+**Why autonomous (operator, 2026-09-25):** "I seem to be making obvious decisions, we need to update the babysitter
+to keep the work going more autonomously." The loop had stalled for hours on yes/no questions the evidence had
+already answered.
 
 ### Operator corrections applied to this prompt (2026-09-22)
 

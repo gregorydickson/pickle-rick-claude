@@ -236,6 +236,21 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
 | babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
 
+### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
+
+- **B-UPGRADE-ISO (P0, shipped, deployed).** `check-update.test.js` made 7 REAL `gh` calls, including
+  `gh release download <empty tag>`, which fetched the latest real release (`v2.1.1`) and ran its `install.sh`
+  over the real `~/.claude/pickle-rick`, emptying the deployed `node_modules`. Every pipeline launch then died
+  (`Cannot find package 'typescript'`) while the integration tier reported green. Fixed: `downloadRelease`
+  refuses an empty tag, and the file runs in a sandbox `HOME`/`PICKLE_INSTALL_ROOT` with a refusing `gh` (0 real
+  calls). Gate `20260925T154209Z-93418` 22/22 green, soak 1803.7s. Pushed, deployed, and verified by content
+  (`downloadRelease("")` → `null`).
+- **B-LANES (experimental, `exp/b-lanes`, pushed as an unverified backup):** 14 tickets built. The branch gate is
+  red on 2 legs (5 defects); fix PRD `prds/p1-b-lanes-fix-gate-reds.md` is on the branch. Next: merge `main`
+  into the branch, then run B-LANES-FIX there.
+- **Babysitter is autonomous** (`prds/babysitter.md` CURRENT PROMPT): it asks only about merging to main,
+  releases, deletions, goal changes, client data, and #43/#5.
+
 ### ▶ B-CURTIX shipped (2026-09-24)
 
 - **A finished `current_ticket` is no longer re-stamped In Progress.** `resolveTicketDesyncWinner` returns `noop` on a Done/Skipped/Failed pointer, and the existing R-AISLOW preskip advances it (now with a fresh `step`). Resume shares the resolver; the duplicate `chooseInProgressWinner` in `setup.ts` is gone. `--force-ticket-status-sync` no longer revives a terminal pointer (`/pickle-retry` does).
