@@ -2498,6 +2498,8 @@ describeEach([
     'tests/validate-teams-ticket.test.js',
     'tests/pickle-md-teams-branch.test.js',
     'tests/integration/pntr-teams-tmux.test.js',
+    '../.claude/agents/morty-implementer.md',
+    '../.claude/agents/morty-reviewer.md',
 ])('teams-mode artifact %s is deleted', (rel) => {
     test('does not exist', () => {
         assert.equal(fs.existsSync(path.join(EXTENSION_ROOT, rel)), false);
