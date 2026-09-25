@@ -5473,6 +5473,23 @@ describe('B-LANES WS-3: lane integration', () => {
       fx.cleanup();
     }
   });
+
+  test('harden: every lane git op anchors on the TARGET repo, even when runtime.repoRoot is another repo', async () => {
+    const fx = makeFixture();
+    const other = fs.realpathSync(tmpDir());
+    try {
+      git(other, 'init', '-q', '-b', 'main');
+      git(other, '-c', 'user.email=o@o', '-c', 'user.name=o', 'commit', '-q', '--allow-empty', '-m', 'unrelated');
+      __setSpawnRunnerForTests(committingRunner([{ 'alpha/b.ts': 'export const b = 2;\n' }, {}]));
+      const code = await runAnatomyLanes({ ...fx.runtime, repoRoot: other }, LANES.slice(0, 2), 2);
+      assert.equal(code, 0, `lanes converge on the target repo\n${fx.logs.join('\n')}`);
+      assert.equal(read(path.join(fx.repo, 'alpha/b.ts')), 'export const b = 2;\n', 'the lane fix reached the target');
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+      fx.cleanup();
+    }
+  });
+
 });
 
 // ---------------------------------------------------------------------------

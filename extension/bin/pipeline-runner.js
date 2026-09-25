@@ -1720,15 +1720,17 @@ async function reapCancelledLanes(run) {
  * verdict through the same field it always has. Returns the phase exit code.
  */
 export async function runAnatomyLanes(runtime, lanes, cap) {
+    const repoRoot = gitRepoRoot(runtime.target);
     const run = {
         runtime,
-        sha: runGitString(['rev-parse', 'HEAD'], runtime.repoRoot) ?? '',
+        repoRoot,
+        sha: runGitString(['rev-parse', 'HEAD'], repoRoot) ?? '',
         cancelledAtMs: null,
         statePaths: [],
         spawned: [],
         worktrees: [],
     };
-    reportLaneRecovery(runtime);
+    reportLaneRecovery(run);
     const ends = lanes.map(() => notStarted('stopped'));
     const workers = Math.min(cap, lanes.length);
     runtime.log(`anatomy lanes: ${lanes.length} lane(s), up to ${workers} at once`);
@@ -1753,7 +1755,7 @@ export async function runAnatomyLanes(runtime, lanes, cap) {
         clearInterval(poll);
     }
     await reapCancelledLanes(run);
-    const stuck = removeLaneWorktrees(gitRepoRoot(runtime.target), run.worktrees);
+    const stuck = removeLaneWorktrees(repoRoot, run.worktrees);
     if (stuck.length > 0)
         runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
     const outcomes = integrateLaneRun(run, lanes, ends);
@@ -1772,8 +1774,8 @@ function emitLaneEvent(event, sessionDir, gatePayload) {
     catch { /* best-effort telemetry */ }
 }
 /** Phase start: prune a crashed run's worktrees, report its unintegrated branches — never integrate them. */
-function reportLaneRecovery(runtime) {
-    const report = recoverLaneBranches(gitRepoRoot(runtime.target), runtime.sessionDir);
+function reportLaneRecovery({ runtime, repoRoot }) {
+    const report = recoverLaneBranches(repoRoot, runtime.sessionDir);
     if (report.staleWorktrees.length > 0)
         runtime.log(`anatomy lanes: pruned stale worktree(s): ${report.staleWorktrees.join(', ')}`);
     if (report.unintegrated.length > 0) {
@@ -1792,8 +1794,7 @@ function reportLaneRecovery(runtime) {
  * `archive/lanes.json`. Returns one row per lane in roster order.
  */
 function integrateLaneRun(run, lanes, ends) {
-    const { runtime } = run;
-    const repoRoot = gitRepoRoot(runtime.target);
+    const { runtime, repoRoot } = run;
     const branches = lanes.map((_, i) => laneBranchName(runtime.sessionDir, i + 1));
     const integration = integrateLanes({
         repoRoot, target: runtime.target, sessionDir: runtime.sessionDir, phaseStartSha: run.sha, log: runtime.log,

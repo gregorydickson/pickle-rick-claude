@@ -1973,6 +1973,8 @@ function readAnatomyLanes(sessionDir: string): LaneRecord[] {
 /** Book-keeping for one concurrent lane run: what a cancel must reach, and what must be torn down. */
 interface LaneRun {
   runtime: PipelineRuntime;
+  /** The target's git toplevel — the ONE anchor every lane git op (sha, worktrees, integration) uses. */
+  repoRoot: string;
   sha: string;
   cancelledAtMs: number | null;
   statePaths: string[];
@@ -2091,15 +2093,17 @@ async function reapCancelledLanes(run: LaneRun): Promise<void> {
  * verdict through the same field it always has. Returns the phase exit code.
  */
 export async function runAnatomyLanes(runtime: PipelineRuntime, lanes: readonly LaneRecord[], cap: number): Promise<number> {
+  const repoRoot = gitRepoRoot(runtime.target);
   const run: LaneRun = {
     runtime,
-    sha: runGitString(['rev-parse', 'HEAD'], runtime.repoRoot) ?? '',
+    repoRoot,
+    sha: runGitString(['rev-parse', 'HEAD'], repoRoot) ?? '',
     cancelledAtMs: null,
     statePaths: [],
     spawned: [],
     worktrees: [],
   };
-  reportLaneRecovery(runtime);
+  reportLaneRecovery(run);
   const ends: LaneEnd[] = lanes.map(() => notStarted('stopped'));
   const workers = Math.min(cap, lanes.length);
   runtime.log(`anatomy lanes: ${lanes.length} lane(s), up to ${workers} at once`);
@@ -2121,7 +2125,7 @@ export async function runAnatomyLanes(runtime: PipelineRuntime, lanes: readonly 
     clearInterval(poll);
   }
   await reapCancelledLanes(run);
-  const stuck = removeLaneWorktrees(gitRepoRoot(runtime.target), run.worktrees);
+  const stuck = removeLaneWorktrees(repoRoot, run.worktrees);
   if (stuck.length > 0) runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
   const outcomes = integrateLaneRun(run, lanes, ends);
   // A lane that converged but did not reach main reports WHY; every other lane reports its own reason.
@@ -2145,8 +2149,8 @@ function emitLaneEvent(
 }
 
 /** Phase start: prune a crashed run's worktrees, report its unintegrated branches — never integrate them. */
-function reportLaneRecovery(runtime: PipelineRuntime): void {
-  const report = recoverLaneBranches(gitRepoRoot(runtime.target), runtime.sessionDir);
+function reportLaneRecovery({ runtime, repoRoot }: LaneRun): void {
+  const report = recoverLaneBranches(repoRoot, runtime.sessionDir);
   if (report.staleWorktrees.length > 0) runtime.log(`anatomy lanes: pruned stale worktree(s): ${report.staleWorktrees.join(', ')}`);
   if (report.unintegrated.length > 0) {
     runtime.log(`anatomy lanes: unintegrated lane branch(es) from a previous run, NOT integrated: ${report.unintegrated.join(', ')}`);
@@ -2164,8 +2168,7 @@ function reportLaneRecovery(runtime: PipelineRuntime): void {
  * `archive/lanes.json`. Returns one row per lane in roster order.
  */
 function integrateLaneRun(run: LaneRun, lanes: readonly LaneRecord[], ends: readonly LaneEnd[]): LaneOutcome[] {
-  const { runtime } = run;
-  const repoRoot = gitRepoRoot(runtime.target);
+  const { runtime, repoRoot } = run;
   const branches = lanes.map((_, i) => laneBranchName(runtime.sessionDir, i + 1));
   const integration = integrateLanes({
     repoRoot, target: runtime.target, sessionDir: runtime.sessionDir, phaseStartSha: run.sha, log: runtime.log,
