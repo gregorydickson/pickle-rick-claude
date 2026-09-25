@@ -297,7 +297,9 @@ export interface IntegrateLanesResult {
 type PickOutcome = 'integrated' | 'conflict' | 'integration_red';
 
 /** Pick one lane onto the integration worktree; anything short of green leaves it where it was. */
-function pickLane(worktree: string, targetDir: string, commits: string[], preserve: string[], log: (msg: string) => void): PickOutcome {
+function pickLane(
+  worktree: string, sessionDir: string, targetDir: string, commits: string[], preserve: string[], log: (msg: string) => void,
+): PickOutcome {
   const before = laneGit(worktree, ['rev-parse', 'HEAD']);
   const picked = commits.every((sha) => laneGitOk(worktree, ['-c', 'gc.auto=0', '-c', 'commit.gpgsign=false', 'cherry-pick', sha]));
   if (!picked) laneGitOk(worktree, ['cherry-pick', '--abort']);
@@ -305,7 +307,7 @@ function pickLane(worktree: string, targetDir: string, commits: string[], preser
   if (picked && check === 'unavailable') log('anatomy lanes: integration_check: unavailable — accepting the lane');
   if (picked && check !== 'red') return 'integrated';
   // A partial pick (commit k+1 of n conflicted) or a red check: undo the whole lane — here only.
-  resetToSha(before, worktree, preserve);
+  resetToSha(before, worktree, preserve, { cwd: worktree, sessionDir, ticketDir: null, reason: 'pre_reset' });
   return picked ? 'integration_red' : 'conflict';
 }
 
@@ -331,7 +333,7 @@ export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult
     const preserve = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
     const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
     commits.forEach((laneCommitList, i) => {
-      if (laneCommitList.length > 0) outcomes[i] = pickLane(worktree, targetDir, laneCommitList, preserve, log);
+      if (laneCommitList.length > 0) outcomes[i] = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, log);
     });
     if (outcomes.some((_, i) => carried(i)) && !laneGitOk(repoRoot, ['merge', '--ff-only', '-q', branch])) {
       log(`anatomy lanes: main checkout could not fast-forward to ${branch} — lane branches kept`);

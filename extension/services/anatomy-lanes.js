@@ -238,7 +238,7 @@ function laneCommits(repoRoot, phaseStartSha, branch) {
     }
 }
 /** Pick one lane onto the integration worktree; anything short of green leaves it where it was. */
-function pickLane(worktree, targetDir, commits, preserve, log) {
+function pickLane(worktree, sessionDir, targetDir, commits, preserve, log) {
     const before = laneGit(worktree, ['rev-parse', 'HEAD']);
     const picked = commits.every((sha) => laneGitOk(worktree, ['-c', 'gc.auto=0', '-c', 'commit.gpgsign=false', 'cherry-pick', sha]));
     if (!picked)
@@ -249,7 +249,7 @@ function pickLane(worktree, targetDir, commits, preserve, log) {
     if (picked && check !== 'red')
         return 'integrated';
     // A partial pick (commit k+1 of n conflicted) or a red check: undo the whole lane — here only.
-    resetToSha(before, worktree, preserve);
+    resetToSha(before, worktree, preserve, { cwd: worktree, sessionDir, ticketDir: null, reason: 'pre_reset' });
     return picked ? 'integration_red' : 'conflict';
 }
 /**
@@ -275,7 +275,7 @@ export function integrateLanes(input) {
         const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
         commits.forEach((laneCommitList, i) => {
             if (laneCommitList.length > 0)
-                outcomes[i] = pickLane(worktree, targetDir, laneCommitList, preserve, log);
+                outcomes[i] = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, log);
         });
         if (outcomes.some((_, i) => carried(i)) && !laneGitOk(repoRoot, ['merge', '--ff-only', '-q', branch])) {
             log(`anatomy lanes: main checkout could not fast-forward to ${branch} — lane branches kept`);
