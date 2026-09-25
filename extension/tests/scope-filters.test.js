@@ -359,4 +359,9 @@ test('B-LANES AC-2: every tracked non-generated file in v2.1.0..5fdd4262 maps to
     });
     const unmapped = diffFiles.filter((f) => !ratioReapplied.some((l) => laneAdmits(l, f, generated)));
     assert.ok(unmapped.length > 0, 'the ratio filter must only ever apply to unsplit roots');
+    // AC-3b names BOTH test populations; each must be one the re-applied filter drops.
+    const dropped = lanes.filter((l) => !ratioReapplied.includes(l)).map((l) => l.name);
+    assert.ok(dropped.includes('extension/tests/integration') && dropped.includes('extension/tests/.'), `dropped: ${dropped}`);
+    assert.ok(unmapped.some((f) => /^extension\/tests\/integration\/[^/]+\.test\.js$/.test(f)), 'integration tests would be dropped');
+    assert.ok(unmapped.some((f) => /^extension\/tests\/[^/]+\.test\.js$/.test(f)), 'loose top-level tests would be dropped');
 });
