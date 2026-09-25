@@ -8,7 +8,7 @@ import { Defaults, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, normalizeMic
 import { resolveBackend, resolveWorkerBackendFromState, buildJudgeInvocation, buildWorkerInvocation, backendEnvOverrides, } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, isNestedClaude, buildJudgeEnv, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js'; // R-SJET-3
 import { FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
-import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetricWithBasis, classifyFailure, findLastAcceptedEntry, updateViolationLedger, deriveStallCause, } from '../services/microverse-state.js';
+import { readMicroverseState, readRecoverableJsonObject, writeMicroverseState, recordIteration as stateRecordIteration, recordStall, recordAmnesiacExit, clearAmnesiacExits, recordFailedApproach, isConverged, compareMetricWithBasis, classifyFailure, findLastAcceptedEntry, updateViolationLedger, deriveStallCause, recordCapUnmeasured, } from '../services/microverse-state.js';
 import { removeRecoverableJsonObject } from '../services/recoverable-json.js';
 import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
@@ -1179,6 +1179,10 @@ export const _deps = {
     displayMacNotification: displayMacNotification,
     runIteration: runIteration,
     runWorkerManagedIteration: handleWorkerManagedIteration,
+    // #48: the R-APXG-3 cap gate is reached only through `handleIterationOutcome`, so a test cannot
+    // hand it a `runGate` argument. This seam lets one swap in a wrapper over the REAL gate (forcing a
+    // genuine GATE_CHECK_TIMEOUT via `_timeouts`) or a throwing double.
+    runGate: runGate,
     getHeadSha: getHeadSha,
     resetToSha: resetToSha,
     isWorkingTreeDirty: isWorkingTreeDirty,
@@ -4494,11 +4498,56 @@ export function autoRescueDirtyTree(ctx) {
         catch { /* best effort */ }
     }
 }
+// #48: the checks the cap re-measures. `unmeasured` names every one of them whose status is not
+// `ran` — a total-deadline `break` leaves the LATER checks `skipped`, and a skipped check is as
+// unmeasured as one that timed out. No "has a configured command" filter: `gate-commands.json`
+// configures both for every project type the gate can run, so that filter would be a list that
+// never subtracts anything.
+const CAP_GATE_CHECKS = ['typecheck', 'lint'];
+// #48: the cap judges the tree with the SAME instrument the per-iteration gate uses — baseline
+// mode against `gate/baseline.json`, scoped by `allowed_paths`. It passes NO `since`:
+// `isSelfIntroducedFailure` is file-axis, so a phase-wide `since` would keep every pre-existing
+// failure in a file the phase edited and re-create the very symptom this fixes. Self-introduced
+// breaks are already caught per iteration (`since: preIterSha`, sticky `postConvergenceSelfRedOpen`).
+// `baselinePath` rides ONLY in baseline mode: passed to a session with no baseline the gate would
+// CAPTURE one and return green, i.e. fake a clean tree and write the file the cap must never create.
+// A measurement failure (a thrown gate, or a red made only of GATE_CHECK_TIMEOUT rows) is not a
+// verdict on the tree: it is reported as `unmeasured`, never as red.
+async function runCapGate(ctx, state, runGateFn) {
+    const baselinePath = path.join(ctx.sessionDir, 'gate', 'baseline.json');
+    const hasBaseline = await pathExists(baselinePath);
+    if (!hasBaseline) {
+        ctx.log(`[R-APXG-3] no baseline at ${baselinePath} — strict cap gate`);
+    }
+    let capGate;
+    try {
+        capGate = await runGateFn({
+            workingDir: ctx.workingDir,
+            mode: hasBaseline ? 'baseline' : 'strict',
+            scope: 'full',
+            baselinePath: hasBaseline ? baselinePath : undefined,
+            allowedPaths: state.allowed_paths,
+            checks: [...CAP_GATE_CHECKS],
+        });
+    }
+    catch (err) {
+        ctx.log(`[R-APXG-3] cap gate threw: ${safeErrorMessage(err)} — no check was measured`);
+        return { kind: 'unmeasured', checks: [...CAP_GATE_CHECKS] };
+    }
+    if (capGate.status !== 'red')
+        return { kind: 'green' };
+    if (capGate.failures.length > 0 && capGate.failures.every((f) => f.ruleOrCode === 'GATE_CHECK_TIMEOUT')) {
+        return { kind: 'unmeasured', checks: CAP_GATE_CHECKS.filter((check) => isCheckUnmeasured(capGate.check_status ?? {}, check)) };
+    }
+    return { kind: 'red' };
+}
 // R-APXG-3: convergence was signaled but the gate deferred it — trust the worker after
 // POST_CONVERGENCE_GATE_DEFERRAL_LIMIT consecutive deferrals to prevent an infinite loop.
 // Extracted from handleWorkerMode (R-APXG-3 closer fix-forward) to keep that function's
-// cyclomatic complexity under the eslint ceiling. At the cap, re-runs the gate: returns
-// 'converged' only when the tree is GREEN (trust-the-worker preserved for flaky gates);
+// cyclomatic complexity under the eslint ceiling. At the cap, re-runs the gate (`runCapGate`):
+// returns 'converged' when the tree is GREEN over everything NEW against the session baseline
+// (trust-the-worker preserved for flaky gates) or when the gate could not MEASURE (disclosed on
+// `state` as `cap_unmeasured_checks`, reported as `converged_with_unmeasured:` by the pipeline);
 // returns 'error' when the tree is RED (AC-RPGT-7 / B-RPGT gate-on-cap). Returns null to
 // keep iterating; resets the counter on any iteration that did not withhold convergence.
 //
@@ -4512,7 +4561,7 @@ export function autoRescueDirtyTree(ctx) {
 // 0 and no terminal exit, against a control that exited `converged` at 3 — a permanently
 // unmeasurable sweep (any target whose typecheck the gate cannot run) withholds forever and the
 // run burns to its iteration/time budget instead of converging.
-async function handlePostConvergenceGateDeferral(workerResult, ctx, runGateFn = runGate) {
+async function handlePostConvergenceGateDeferral(workerResult, ctx, state, runGateFn = _deps.runGate) {
     if (workerResult.reason !== POST_CONVERGENCE_WITHHELD_REASON) {
         ctx.postConvergenceDeferralCount = 0;
         ctx.postConvergenceSelfRedOpen = false;
@@ -4533,21 +4582,12 @@ async function handlePostConvergenceGateDeferral(workerResult, ctx, runGateFn = 
         return null;
     }
     if (ctx.postConvergenceDeferralCount >= POST_CONVERGENCE_GATE_DEFERRAL_LIMIT) {
-        // AC-RPGT-7: re-run the gate at the cap; only return 'converged' when the tree is GREEN.
-        let capGateRed = false;
-        try {
-            const capGate = await runGateFn({
-                workingDir: ctx.workingDir,
-                mode: 'strict',
-                scope: 'full',
-                checks: ['typecheck', 'lint'],
-            });
-            capGateRed = capGate.status === 'red';
-        }
-        catch { /* best-effort — gate error falls through to trust-the-worker */ }
-        if (capGateRed) {
-            ctx.log(`[R-APXG-3] Post-convergence gate deferred ${ctx.postConvergenceDeferralCount} consecutive time(s) ` +
-                `(limit=${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT}); re-ran gate at cap — RED tree, refusing converge`);
+        // AC-RPGT-7: re-run the gate at the cap; only return 'error' when the tree is RED.
+        const capPrefix = `[R-APXG-3] Post-convergence gate deferred ${ctx.postConvergenceDeferralCount} consecutive time(s) ` +
+            `(limit=${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT})`;
+        const verdict = await runCapGate(ctx, state, runGateFn);
+        if (verdict.kind === 'red') {
+            ctx.log(`${capPrefix}; re-ran gate at cap — RED tree, refusing converge`);
             try {
                 _deps.logActivity({
                     event: 'tsc_gate_failed',
@@ -4559,8 +4599,12 @@ async function handlePostConvergenceGateDeferral(workerResult, ctx, runGateFn = 
             catch { /* swallow emit failure */ }
             return 'error';
         }
-        ctx.log(`[R-APXG-3] Post-convergence gate deferred ${ctx.postConvergenceDeferralCount} consecutive time(s) ` +
-            `(limit=${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT}); convergence signal trusted — exiting cleanly`);
+        if (verdict.kind === 'unmeasured') {
+            replaceMicroverseState(state, recordCapUnmeasured(state, verdict.checks));
+            ctx.log(`${capPrefix}; cap gate could not measure ${verdict.checks.join(', ')} — converging with an unmeasured caveat`);
+            return 'converged';
+        }
+        ctx.log(`${capPrefix}; convergence signal trusted — exiting cleanly`);
         return 'converged';
     }
     ctx.log(`[R-APXG-3] Post-convergence gate deferral ${ctx.postConvergenceDeferralCount}/${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT} — retrying`);
@@ -4902,7 +4946,7 @@ async function handleWorkerMode(state, ctx) {
         ctx.log(`Converged (worker-managed: ${workerResult.reason})`);
         return 'converged';
     }
-    const deferralExit = await handlePostConvergenceGateDeferral(workerResult, ctx);
+    const deferralExit = await handlePostConvergenceGateDeferral(workerResult, ctx, state);
     if (deferralExit) {
         return deferralExit;
     }

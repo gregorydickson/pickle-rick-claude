@@ -389,7 +389,7 @@ test('runGate: a workspace package without the gate lint script is skipped, not 
     assert.deepEqual(
       result.failures.filter(f => f.file === pkgA || f.file.startsWith(`${pkgA}${path.sep}`)),
       [],
-      'no spawn (and so no failure row) in the package that lacks the script',
+      'nothing is spawned in the package that lacks the script, so it leaves no failure row',
     );
     assert.equal(result.status, 'green');
     assert.equal(result.check_status?.lint, 'ran');
