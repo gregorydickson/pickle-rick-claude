@@ -1,7 +1,7 @@
 // @tier: fast
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
@@ -42,6 +42,7 @@ import {
   main,
   gitRepoRoot,
   createLaneSession,
+  runAnatomyLanes,
 } from '../bin/pipeline-runner.js';
 import { createLaneWorktree } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
@@ -5043,6 +5044,208 @@ describe('B-LANES 13h lane session placement', () => {
     } finally {
       fs.rmSync(target, { recursive: true, force: true });
       fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-LANES WS-3 (b870ab5f): concurrent lanes, cancel mirroring, resolver domain
+// ---------------------------------------------------------------------------
+
+describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
+  const EXTENSION_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..');
+  const LANE_NAMES = ['alpha', 'beta', 'gamma'];
+  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+    cwd, encoding: 'utf-8', timeout: 60_000,
+  }).trim();
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
+  const writeLaneReason = (laneDir, reason) => {
+    const statePath = path.join(laneDir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: reason }));
+  };
+
+  /** A target with three lane roots, and a follow-up commit touching all three. */
+  function makeLaneFixture({ pipeline = {}, parentActive = false } = {}) {
+    const repo = fs.realpathSync(tmpDir());
+    git(repo, 'init', '-q', '-b', 'main');
+    git(repo, 'config', 'user.email', 'lanes@test.local');
+    git(repo, 'config', 'user.name', 'Lanes');
+    for (const name of LANE_NAMES) {
+      fs.mkdirSync(path.join(repo, name));
+      for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
+    }
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'seed');
+    const startCommit = git(repo, 'rev-parse', 'HEAD');
+    for (const name of LANE_NAMES) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = 2;\n');
+    git(repo, 'commit', '-q', '-am', 'followup');
+    const dataRoot = fs.realpathSync(tmpDir());
+    const sessionDir = path.join(dataRoot, 'sessions', '2026-09-24-lanes');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    writeBaseState(path.join(sessionDir, 'state.json'), {
+      // A live parent is claimed by its runner's pid; unclaimed it reads as a phantom and is demoted.
+      active: parentActive, ...(parentActive ? { pid: process.pid } : {}), working_dir: repo, step: 'implement', iteration: 0, current_ticket: null,
+      tmux_mode: false, schema_version: 3, start_commit: startCommit, exit_reason: null, activity: [],
+    });
+    const config = {
+      phases: ['anatomy-park'], target: repo, anatomy_stall_limit: 3, szechuan_stall_limit: 5,
+      anatomy_max_iterations: 5, szechuan_max_iterations: 5, dirty_exempt_segments: ['prds', 'docs'], ...pipeline,
+    };
+    fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify(config));
+    const cleanup = () => {
+      for (const dir of fs.readdirSync(path.dirname(sessionDir))) {
+        fs.rmSync(path.join(path.dirname(sessionDir), dir), { recursive: true, force: true });
+      }
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    };
+    return { repo, dataRoot, sessionDir, config, cleanup };
+  }
+
+  async function runMain(sessionDir, dataRoot) {
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+    delete process.env.TMUX;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    process.exit = (code) => { throw Object.assign(new Error('exit'), { exitCode: code ?? 0 }); };
+    try {
+      await main(sessionDir);
+      return null;
+    } catch (err) {
+      if (err && typeof err.exitCode === 'number') return err.exitCode;
+      throw err;
+    } finally {
+      process.exit = originalExit;
+      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
+      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    }
+  }
+
+  /** Stub runner: records each call's interval and stamps the lane `converged`. */
+  function recordingRunner(calls, holdMs) {
+    return async (_cmd, args, env, opts) => {
+      const call = { sessionArg: args[1], env, opts, start: Date.now(), end: 0 };
+      calls.push(call);
+      await sleep(holdMs);
+      if (/--lane-\d+$/.test(args[1])) writeLaneReason(args[1], 'converged');
+      call.end = Date.now();
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+  }
+
+  test('13: anatomy_max_parallel_lanes 3 runs three lane sessions with overlapping intervals', async () => {
+    const fx = makeLaneFixture({ pipeline: { anatomy_max_parallel_lanes: 3 } });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(recordingRunner(calls, 1500));
+      const code = await runMain(fx.sessionDir, fx.dataRoot);
+      assert.equal(code, 0, 'three converged lanes finalize the pipeline clean');
+      assert.deepEqual(calls.map((c) => c.sessionArg).sort(), [1, 2, 3].map((n) => `${fx.sessionDir}--lane-${n}`));
+      const latestStart = Math.max(...calls.map((c) => c.start));
+      const earliestEnd = Math.min(...calls.map((c) => c.end));
+      assert.ok(latestStart < earliestEnd, `every lane was alive at once (last start ${latestStart} < first end ${earliestEnd})`);
+      for (const c of calls) {
+        assert.equal(c.opts?.detached, process.platform !== 'win32', 'lane runners lead their own process group');
+        assert.equal(c.env.PICKLE_STATE_FILE, path.join(c.sessionArg, 'state.json'), 'hooks resolve the LANE state');
+      }
+      assert.equal(readJson(path.join(fx.sessionDir, 'state.json')).exit_reason === 'converged'
+        || readJson(path.join(fx.sessionDir, 'pipeline-status.json')).status === 'completed', true);
+      assert.equal(readJson(path.join(fx.sessionDir, 'pipeline-status.json')).completed_phases, 1);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('13: anatomy_max_parallel_lanes absent runs ONE runner, serially, in the main checkout', async () => {
+    const fx = makeLaneFixture();
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(recordingRunner(calls, 10));
+      const code = await runMain(fx.sessionDir, fx.dataRoot);
+      assert.equal(code, 0);
+      assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
+      assert.equal(calls[0].opts, undefined, 'the default path passes no lane spawn options');
+      assert.equal(readJson(path.join(fx.sessionDir, 'state.json')).working_dir, fx.repo, 'the main checkout');
+      assert.deepEqual(readJson(path.join(fx.sessionDir, 'anatomy-park.json')).subsystems, LANE_NAMES,
+        'all three lanes are rotated by the one runner');
+      assert.equal(fs.existsSync(`${fx.sessionDir}--lane-1`), false, 'no lane session is created');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('13e: anatomy_max_parallel_lanes outside the positive integers resolves to the default without throwing', () => {
+    for (const value of [undefined, 0, -1, 1.5, 'x', null, {}, []]) {
+      const raw = value === undefined ? {} : { anatomy_max_parallel_lanes: value };
+      assert.equal(parsePipelineConfig(raw).anatomy_max_parallel_lanes, 1, `value ${JSON.stringify(value)}`);
+    }
+    assert.equal(parsePipelineConfig({ anatomy_max_parallel_lanes: 4 }).anatomy_max_parallel_lanes, 4);
+  });
+
+  test('13e: a cap above the lane count spawns only the lane count', async () => {
+    const fx = makeLaneFixture({ pipeline: { anatomy_max_parallel_lanes: 10 } });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(recordingRunner(calls, 10));
+      assert.equal(await runMain(fx.sessionDir, fx.dataRoot), 0);
+      assert.equal(calls.length, 3);
+      assert.equal(fs.existsSync(`${fx.sessionDir}--lane-4`), false);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('13b: parent active=false reaches every lane — state mirrored, groups dead, worktrees gone', async () => {
+    const heartbeatMs = 200;
+    const fx = makeLaneFixture({ parentActive: true, pipeline: { child_mux_runner_heartbeat_ms: heartbeatMs } });
+    const children = [];
+    const logs = [];
+    const lanes = LANE_NAMES.map((name) => ({ name, dir: name, excludes: [], testRatioApplies: false, fileCount: 3 }));
+    const runtime = {
+      sessionDir: fx.sessionDir, extensionRoot: EXTENSION_ROOT, statePath: path.join(fx.sessionDir, 'state.json'),
+      config: parsePipelineConfig(fx.config), target: fx.repo, workingDir: fx.repo, repoRoot: fx.repo,
+      backend: 'claude', phaseEnv: { ...process.env }, log: (m) => logs.push(m), designSafe: false,
+    };
+    // A lane that loops forever, owning a grandchild in its own process group.
+    const looper = "require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});setInterval(()=>{},1000)";
+    try {
+      __setSpawnRunnerForTests((_cmd, _args, env, opts) => new Promise((resolve) => {
+        const child = spawn(process.execPath, ['-e', looper], {
+          detached: opts?.detached ?? false, stdio: 'ignore', env, timeout: 60_000,
+        });
+        children.push(child);
+        opts?.onSpawn?.(child);
+        child.on('exit', (code) => resolve({ exitCode: code ?? 1, stdout: '', stderr: '' }));
+      }));
+      const done = runAnatomyLanes(runtime, lanes, 3);
+      for (let waited = 0; children.length < 3 && waited < 60_000; waited += 50) await sleep(50);
+      assert.equal(children.length, 3, `all three lanes are running\n${logs.join('\n')}`);
+      const statePath = path.join(fx.sessionDir, 'state.json');
+      const cancelledAt = Date.now();
+      fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), active: false }));
+      const budgetMs = heartbeatMs + 10_000;
+      const code = await Promise.race([done, sleep(budgetMs).then(() => 'timeout')]);
+      assert.notEqual(code, 'timeout', `lanes did not stop within one heartbeat + 10 s`);
+      assert.ok(Date.now() - cancelledAt <= budgetMs);
+      assert.equal(code, 1, 'a cancelled lane run does not report converged');
+      for (let n = 1; n <= 3; n++) {
+        assert.equal(readJson(path.join(`${fx.sessionDir}--lane-${n}`, 'state.json')).active, false, `lane ${n} state`);
+      }
+      for (const child of children) {
+        assert.throws(() => process.kill(-child.pid, 0), { code: 'ESRCH' }, `lane group ${child.pid} is gone`);
+      }
+      const worktrees = git(fx.repo, 'worktree', 'list', '--porcelain').split('\n').filter((l) => l.startsWith('worktree '));
+      assert.deepEqual(worktrees, [`worktree ${fx.repo}`], 'only the main checkout remains');
+      assert.equal(readJson(statePath).exit_reason, 'stopped');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      for (const child of children) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } }
+      fx.cleanup();
     }
   });
 });

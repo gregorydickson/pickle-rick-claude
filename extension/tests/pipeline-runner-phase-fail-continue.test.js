@@ -5,16 +5,19 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   __setSpawnRunnerForTests,
   applyStrictPhasesOverride,
   buildCloserReleasePlan,
   computePipelineVerdict,
   executeCloserReleasePlan,
+  finalizePhaseSuccess,
   isFatalPhaseFailure,
   logPhaseContinueReason,
   main,
   recordRecoverablePhaseFailure,
+  runAnatomyLanes,
   shouldHaltAfterPhase,
   writeSkippedByScope,
 } from '../bin/pipeline-runner.js';
@@ -1082,3 +1085,103 @@ test('AP-EXT-ITER291-01: an unwritable scope.json degrades the seed — the run 
 // is pre-existing, deliberate behaviour (`throwOnEmptyScope`) and not this fix's to pin.
 // The seam-level control asserts the healthy seed LANDS and logs no degrade, so
 // degrading unconditionally still reds.
+
+// ---------------------------------------------------------------------------
+// B-LANES 13d/13g (b870ab5f): N lanes produce ONE verdict. Each lane runner stops on
+// its own state, so a non-convergent lane is invisible to `finalizePhaseSuccess` —
+// which reads only the PARENT exit_reason — unless the lane pool aggregates the lane
+// reasons into that one field. `finalizePhaseSuccess` is unchanged; the aggregation
+// write is what makes it see the lanes.
+// ---------------------------------------------------------------------------
+
+const LANE_VERDICT_NAMES = ['alpha', 'beta', 'gamma'];
+
+function makeLaneVerdictRuntime() {
+  const repo = fs.realpathSync(tmpDir('pipeline-lane-verdict-repo-'));
+  git(['init', '-q', '-b', 'main'], repo);
+  git(['config', 'user.email', 'test@example.com'], repo);
+  git(['config', 'user.name', 'Test User'], repo);
+  git(['config', 'commit.gpgsign', 'false'], repo);
+  for (const name of LANE_VERDICT_NAMES) {
+    fs.mkdirSync(path.join(repo, name));
+    for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
+  }
+  git(['add', '.'], repo);
+  git(['commit', '-q', '-m', 'seed'], repo);
+  const sessionDir = fs.realpathSync(tmpDir('pipeline-lane-verdict-session-'));
+  for (let n = 1; n <= LANE_VERDICT_NAMES.length; n++) TMP_DIRS.add(`${sessionDir}--lane-${n}`);
+  // A live parent is claimed by its runner's pid; unclaimed it reads as a phantom and is demoted.
+  const statePath = writeState(sessionDir, repo, { active: true, pid: process.pid, exit_reason: null });
+  const { runtime } = makeRuntime();
+  return {
+    repo,
+    runtime: {
+      ...runtime, sessionDir, statePath, target: repo, workingDir: repo, repoRoot: repo, designSafe: false,
+      // Lane setup resolves `<extensionRoot>/extension/bin/*.js`: the repo root, not extension/.
+      extensionRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..'),
+    },
+    lanes: LANE_VERDICT_NAMES.map((name) => ({ name, dir: name, excludes: [], testRatioApplies: false, fileCount: 3 })),
+  };
+}
+
+/** Stub lane runner: stamps each lane's own exit_reason, as a microverse runner would. */
+function stampLaneReasons(reasonFor) {
+  return async (_cmd, args) => {
+    const laneDir = args[1];
+    const statePath = path.join(laneDir, 'state.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    const n = Number(/--lane-(\d+)$/.exec(laneDir)[1]);
+    fs.writeFileSync(statePath, JSON.stringify({ ...state, exit_reason: reasonFor(n), active: false }));
+    return { exitCode: 0, stdout: '', stderr: '' };
+  };
+}
+
+const freshCounters = () => ({ completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} });
+const noCancelMarker = (runtime) => path.join(runtime.sessionDir, 'pipeline-cancel');
+
+test('B-LANES 13d/13g: one non-convergent lane of three makes the phase non-convergent', async () => {
+  const { runtime, lanes } = makeLaneVerdictRuntime();
+  __setSpawnRunnerForTests(stampLaneReasons((n) => (n === 2 ? 'anatomy_non_convergent' : 'converged')));
+
+  const exitCode = await runAnatomyLanes(runtime, lanes, 3);
+
+  assert.equal(exitCode, 1, 'a non-convergent lane does not report a clean lane run');
+  const parent = JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8'));
+  assert.equal(parent.exit_reason, 'anatomy_non_convergent', 'ONE parent verdict carries the lane that failed');
+  const counters = freshCounters();
+  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode, () => {});
+  assert.equal(counters.nonConvergent, 1);
+  assert.equal(counters.completed, 0);
+  assert.equal(counters.phaseDispositions['anatomy-park'], 'anatomy_non_convergent');
+});
+
+test('B-LANES 13d/13g control: all lanes converged — the phase completes', async () => {
+  const { runtime, lanes } = makeLaneVerdictRuntime();
+  __setSpawnRunnerForTests(stampLaneReasons(() => 'converged'));
+
+  const exitCode = await runAnatomyLanes(runtime, lanes, 3);
+
+  assert.equal(exitCode, 0);
+  assert.equal(JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8')).exit_reason, 'converged');
+  const counters = freshCounters();
+  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode, () => {});
+  assert.equal(counters.completed, 1);
+  assert.equal(counters.nonConvergent, 0);
+});
+
+test('B-LANES 13g falsifying control: without the aggregation write the same lanes read as completed', async () => {
+  const { runtime, lanes } = makeLaneVerdictRuntime();
+  __setSpawnRunnerForTests(stampLaneReasons((n) => (n === 2 ? 'anatomy_non_convergent' : 'converged')));
+  await runAnatomyLanes(runtime, lanes, 3);
+  const lane2 = JSON.parse(fs.readFileSync(path.join(`${runtime.sessionDir}--lane-2`, 'state.json'), 'utf-8'));
+  assert.equal(lane2.exit_reason, 'anatomy_non_convergent', 'the lane itself still holds its non-convergent reason');
+
+  // Remove only the parent write the lane pool made: finalizePhaseSuccess reads the parent
+  // alone, so the lane's reason is invisible and the phase is miscounted as completed.
+  const parent = JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8'));
+  fs.writeFileSync(runtime.statePath, JSON.stringify({ ...parent, exit_reason: null }));
+  const counters = freshCounters();
+  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', 0, () => {});
+  assert.equal(counters.completed, 1, 'no aggregation → the non-convergent lane is reported as completed');
+  assert.equal(counters.nonConvergent, 0);
+});
