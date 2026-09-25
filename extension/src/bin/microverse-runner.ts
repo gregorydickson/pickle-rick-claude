@@ -97,6 +97,7 @@ import {
   isCheckUnmeasured,
   getChangedExportedSymbols,
   getChangedFilesSince,
+  GATE_CHECK_TIMEOUT_CODE,
 } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 
@@ -5754,7 +5755,7 @@ async function runCapGate(
     return { kind: 'unmeasured', checks: [...CAP_GATE_CHECKS] };
   }
   if (capGate.status !== 'red') return { kind: 'green' };
-  if (capGate.failures.length > 0 && capGate.failures.every((f) => f.ruleOrCode === 'GATE_CHECK_TIMEOUT')) {
+  if (capGate.failures.length > 0 && capGate.failures.every((f) => f.ruleOrCode === GATE_CHECK_TIMEOUT_CODE)) {
     return { kind: 'unmeasured', checks: CAP_GATE_CHECKS.filter((check) => isCheckUnmeasured(capGate.check_status ?? {}, check)) };
   }
   return { kind: 'red' };

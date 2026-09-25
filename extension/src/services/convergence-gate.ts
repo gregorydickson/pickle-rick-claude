@@ -22,11 +22,14 @@ export class GateError extends Error {
   }
 }
 
+/** `ruleOrCode` of every timeout pseudo-failure, and the `kind` of `GateTimeoutError`. */
+export const GATE_CHECK_TIMEOUT_CODE = 'GATE_CHECK_TIMEOUT';
+
 export class GateTimeoutError extends GateError {
   readonly check: string;
   readonly timeout_ms: number;
   constructor(check: string, timeout_ms: number) {
-    super('GATE_CHECK_TIMEOUT', `${check} timed out after ${timeout_ms}ms`);
+    super(GATE_CHECK_TIMEOUT_CODE, `${check} timed out after ${timeout_ms}ms`);
     this.name = 'GateTimeoutError';
     this.check = check;
     this.timeout_ms = timeout_ms;
@@ -1728,7 +1731,7 @@ async function runGateCheck(
         check,
         file: '<timeout>',
         line: 0,
-        ruleOrCode: 'GATE_CHECK_TIMEOUT',
+        ruleOrCode: GATE_CHECK_TIMEOUT_CODE,
         message: `${check} timed out after ${effectiveMs}ms`,
         severity: 'error',
         occurrence_index: 0,
@@ -1794,7 +1797,7 @@ function timeoutFailure(check: GateCheck): GateFailure {
     check,
     file: '<timeout>',
     line: 0,
-    ruleOrCode: 'GATE_CHECK_TIMEOUT',
+    ruleOrCode: GATE_CHECK_TIMEOUT_CODE,
     message: `cumulative gate timeout exceeded`,
     severity: 'error',
     occurrence_index: 0,
