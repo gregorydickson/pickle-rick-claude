@@ -5473,3 +5473,161 @@ describe('B-LANES WS-3: lane integration', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// B-LANES wiring (4ea779d7): discovery → lane sessions → concurrent spawn → integration →
+// archive/lanes.json → verdict, driven through main() with lane workers that COMMIT fixes.
+// ---------------------------------------------------------------------------
+
+describe('B-LANES wiring: end to end through main()', () => {
+  const LANE_NAMES = ['alpha', 'beta', 'gamma'];
+  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+    cwd, encoding: 'utf-8', timeout: 60_000,
+  }).trim();
+  const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const FIXED = 'export const a = 1; // fixed\n';
+
+  /** A target with three lane roots, each holding one seeded defect in `<lane>/a.ts`. */
+  function makeFixture(pipeline = {}) {
+    const repo = fs.realpathSync(tmpDir());
+    git(repo, 'init', '-q', '-b', 'work');
+    git(repo, 'config', 'user.email', 'lanes@test.local');
+    git(repo, 'config', 'user.name', 'Lanes');
+    for (const name of LANE_NAMES) {
+      fs.mkdirSync(path.join(repo, name));
+      for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
+    }
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'seed');
+    const startCommit = git(repo, 'rev-parse', 'HEAD');
+    // The branch under review introduces one defect per lane.
+    for (const name of LANE_NAMES) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = BUG;\n');
+    git(repo, 'commit', '-q', '-am', 'introduce defects');
+    const dataRoot = fs.realpathSync(tmpDir());
+    const sessionDir = path.join(dataRoot, 'sessions', '2026-09-24-wire');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    writeBaseState(path.join(sessionDir, 'state.json'), {
+      active: true, pid: process.pid, working_dir: repo, step: 'implement', iteration: 0, current_ticket: null,
+      tmux_mode: false, schema_version: 3, start_commit: startCommit, exit_reason: null, activity: [],
+    });
+    fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+      phases: ['anatomy-park'], target: repo, anatomy_stall_limit: 3, szechuan_stall_limit: 5,
+      anatomy_max_iterations: 5, szechuan_max_iterations: 5, dirty_exempt_segments: ['prds', 'docs'], ...pipeline,
+    }));
+    const cleanup = () => {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    };
+    return { repo, dataRoot, sessionDir, cleanup };
+  }
+
+  async function runMain(sessionDir, dataRoot) {
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+    delete process.env.TMUX;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    process.exit = (code) => { throw Object.assign(new Error('exit'), { exitCode: code ?? 0 }); };
+    try {
+      await main(sessionDir);
+      return null;
+    } catch (err) {
+      if (err && typeof err.exitCode === 'number') return err.exitCode;
+      throw err;
+    } finally {
+      process.exit = originalExit;
+      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
+      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    }
+  }
+
+  const commit = (cwd, msg) => git(cwd, '-c', 'user.email=l@l', '-c', 'user.name=l', 'commit', '-q', '-am', msg);
+  const stampConverged = (sessionDir) => {
+    const statePath = path.join(sessionDir, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: 'converged' }));
+  };
+
+  /**
+   * Stub anatomy runner. A lane session fixes the defect under its own lane root in its
+   * worktree; the parent session (default path) fixes every lane serially in the main checkout.
+   */
+  function fixingRunner(calls) {
+    return async (_cmd, args) => {
+      const sessionArg = args[1];
+      const call = { sessionArg, start: Date.now(), end: 0 };
+      calls.push(call);
+      const lane = /--lane-(\d+)$/.exec(sessionArg);
+      if (lane) {
+        await sleep(500);
+        const name = LANE_NAMES[Number(lane[1]) - 1];
+        const wt = path.join(sessionArg, 'wt');
+        fs.writeFileSync(path.join(wt, name, 'a.ts'), FIXED);
+        commit(wt, `fix ${name}`);
+      } else {
+        const repo = readJson(path.join(sessionArg, 'state.json')).working_dir;
+        for (const name of LANE_NAMES) {
+          fs.writeFileSync(path.join(repo, name, 'a.ts'), FIXED);
+          commit(repo, `fix ${name}`);
+        }
+      }
+      stampConverged(sessionArg);
+      call.end = Date.now();
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+  }
+
+  const worktrees = (repo) => git(repo, 'worktree', 'list', '--porcelain').split('\n').filter((l) => l.startsWith('worktree '));
+  const assertAllFixed = (repo) => {
+    for (const name of LANE_NAMES) {
+      assert.equal(git(repo, 'show', `HEAD:${name}/a.ts`), FIXED.trimEnd(), `${name} fix is on the working branch`);
+    }
+    assert.equal(git(repo, 'rev-parse', '--abbrev-ref', 'HEAD'), 'work', 'still on the working branch');
+    assert.equal(git(repo, 'status', '--porcelain'), '', 'the main checkout is clean');
+  };
+
+  test('AC 1: anatomy_max_parallel_lanes 3 → three concurrent lanes each fix+commit, all integrated, verdict converged', async () => {
+    const fx = makeFixture({ anatomy_max_parallel_lanes: 3 });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(fixingRunner(calls));
+      const code = await runMain(fx.sessionDir, fx.dataRoot);
+      const log = fs.existsSync(path.join(fx.sessionDir, 'pipeline-runner.log'))
+        ? fs.readFileSync(path.join(fx.sessionDir, 'pipeline-runner.log'), 'utf-8') : '';
+      assert.equal(code, 0, `the phase finalizes clean\n${log}`);
+      assert.deepEqual(calls.map((c) => c.sessionArg).sort(), [1, 2, 3].map((n) => `${fx.sessionDir}--lane-${n}`));
+      assert.ok(Math.max(...calls.map((c) => c.start)) < Math.min(...calls.map((c) => c.end)), 'lanes ran concurrently');
+      assertAllFixed(fx.repo);
+      const rows = readJson(path.join(fx.sessionDir, 'archive', 'lanes.json'));
+      assert.deepEqual(rows.map((r) => [r.name, r.outcome, r.commits.length]),
+        LANE_NAMES.map((n) => [n, 'integrated', 1]), 'archive/lanes.json shows three integrated lanes');
+      assert.deepEqual(worktrees(fx.repo), [`worktree ${fx.repo}`], 'no lane or integration worktree remains');
+      assert.equal(git(fx.repo, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/pickle-lane/'), '', 'no lane branch remains');
+      // The pipeline overwrites the parent exit_reason at finalize; the phase verdict lives in the log.
+      assert.match(log, /anatomy lanes: verdict converged \(converged, converged, converged\)/, 'the phase verdict');
+      assert.match(log, /Phase anatomy-park completed successfully/);
+      const status = readJson(path.join(fx.sessionDir, 'pipeline-status.json'));
+      assert.deepEqual([status.status, status.completed_phases], ['completed', 1]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('AC 2: the same fixture with the key absent runs one serial runner in the main checkout', async () => {
+    const fx = makeFixture();
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(fixingRunner(calls));
+      assert.equal(await runMain(fx.sessionDir, fx.dataRoot), 0);
+      assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
+      assert.equal(fs.existsSync(`${fx.sessionDir}--lane-1`), false, 'no lane session');
+      assert.equal(fs.existsSync(path.join(fx.sessionDir, 'archive', 'lanes.json')), false, 'no lane archive');
+      assertAllFixed(fx.repo);
+      assert.deepEqual(worktrees(fx.repo), [`worktree ${fx.repo}`]);
+      assert.equal(readJson(path.join(fx.sessionDir, 'pipeline-status.json')).status, 'completed');
+    } finally {
+      fx.cleanup();
+    }
+  });
+});
