@@ -209,6 +209,9 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'anatomy_park_empty_scope_skip',
         'anatomy_park_non_convergent_halt',
         'anatomy_park_complexity_regression',
+        // B-LANES WS-3: lane integration outcome counts and a previous run's reported lane branches.
+        'anatomy_lanes_integrated',
+        'anatomy_lane_branches_reported',
         'szechuan_sauce_empty_scope_skip',
         // AC-V4 (dc205237): pickle exhausted its iteration cap with tickets unbuilt.
         'phase_cap_dropped_tickets',
