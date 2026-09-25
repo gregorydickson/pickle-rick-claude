@@ -5,7 +5,7 @@
 // race, R-TSPF), the real `gh` resolves, and its network call hangs to the 15s
 // timeout. This file is in tests/integration/.serial-tests.json so it runs
 // serialized — no concurrent PATH mutation.
-import { test, describe, beforeEach, afterEach } from 'node:test';
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -48,6 +48,59 @@ ${scriptBody}
 `, { mode: 0o755 });
     return binDir;
 }
+
+// Runs `fn` with a per-test `gh` stub first on PATH; it shadows the file-level refuser below.
+function withGhStub(scriptBody, fn) {
+    const binDir = makeGhFixture(scriptBody);
+    const origPath = process.env.PATH;
+    try {
+        process.env.PATH = `${binDir}:${origPath}`;
+        return fn();
+    } finally {
+        process.env.PATH = origPath;
+        fs.rmSync(binDir, { recursive: true, force: true });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File-level sandbox (B-UPGRADE-ISO): no case may reach the real `gh`, the real
+// HOME or the real install root (deploy-audit.log). HOME and PICKLE_INSTALL_ROOT
+// point into a tmp dir, and a REFUSING, recording `gh` sits first on PATH. A
+// per-test stub prepends its own dir and wins; a call that reaches this refuser
+// escaped every per-test stub, which the `after` hook turns into a failure.
+// ---------------------------------------------------------------------------
+
+const sandbox = { root: '', callsFile: '', env: {} };
+
+before(() => {
+    sandbox.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'check-update-sandbox-')));
+    sandbox.callsFile = path.join(sandbox.root, 'gh-calls.txt');
+    const binDir = path.join(sandbox.root, 'bin');
+    fs.mkdirSync(binDir);
+    fs.writeFileSync(
+        path.join(binDir, 'gh'),
+        `#!/bin/sh\necho "$*" >> ${JSON.stringify(sandbox.callsFile)}\nexit 1\n`,
+        { mode: 0o755 },
+    );
+    sandbox.env = {
+        HOME: process.env.HOME,
+        PICKLE_INSTALL_ROOT: process.env.PICKLE_INSTALL_ROOT,
+        PATH: process.env.PATH,
+    };
+    process.env.HOME = path.join(sandbox.root, 'home');
+    process.env.PICKLE_INSTALL_ROOT = path.join(sandbox.root, 'install-root');
+    process.env.PATH = `${binDir}:${sandbox.env.PATH}`;
+});
+
+after(() => {
+    const calls = fs.existsSync(sandbox.callsFile) ? fs.readFileSync(sandbox.callsFile, 'utf-8') : '';
+    for (const [key, value] of Object.entries(sandbox.env)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+    }
+    fs.rmSync(sandbox.root, { recursive: true, force: true });
+    assert.equal(calls, '', `a gh call escaped every per-test stub and reached the sandbox refuser:\n${calls}`);
+});
 
 // ---------------------------------------------------------------------------
 // parseVersion
@@ -480,15 +533,15 @@ describe('checkForUpdate', () => {
             path.join(tmpDir, 'pickle_settings.json'),
             JSON.stringify({ auto_update_enabled: false }),
         );
-        // Force will try to call gh api which may fail, but should not crash
-        const result = checkForUpdate({ force: true });
-        // Either error (no gh/no network) or a valid result — never throws
+        // Force will try to call gh api, which fails here, but should not crash
+        const result = withGhStub('exit 1', () => checkForUpdate({ force: true }));
+        // Either error (gh failed) or a valid result — never throws
         assert.ok(['up-to-date', 'update-available', 'error'].includes(result.status));
     });
 
     test('returns error status on API failure, never throws', () => {
-        // Stale cache forces API call — may succeed or fail depending on env
-        const result = checkForUpdate();
+        // Stale cache forces the API call, which the stub fails
+        const result = withGhStub('exit 1', () => checkForUpdate());
         assert.ok(['up-to-date', 'update-available', 'error'].includes(result.status));
         assert.ok(typeof result.currentVersion === 'string', 'currentVersion should be a string');
     });
@@ -515,7 +568,7 @@ describe('downloadRelease', () => {
     });
 
     test('returns null on invalid tag, never throws', () => {
-        const result = downloadRelease('v999.999.999-nonexistent');
+        const result = withGhStub('exit 1', () => downloadRelease('v999.999.999-nonexistent'));
         assert.equal(result, null);
     });
 
@@ -866,7 +919,7 @@ ${tarballs.map((tarball) => `cp ${JSON.stringify(tarball)} "$dest/$(basename ${J
     }
 
     test('fails gracefully when download fails', () => {
-        const result = performUpgrade('1.0.0', '999.0.0', 'v999.0.0');
+        const result = withGhStub('exit 1', () => performUpgrade('1.0.0', '999.0.0', 'v999.0.0'));
         assert.equal(result.success, false);
         assert.ok(result.error);
     });
@@ -889,7 +942,7 @@ ${tarballs.map((tarball) => `cp ${JSON.stringify(tarball)} "$dest/$(basename ${J
 
     test('never throws', () => {
         assert.doesNotThrow(() => {
-            performUpgrade('1.0.0', '999.0.0', 'v999.0.0');
+            withGhStub('exit 1', () => performUpgrade('1.0.0', '999.0.0', 'v999.0.0'));
         });
     });
 
@@ -1067,11 +1120,13 @@ ${tarballs.map((tarball) => `cp ${JSON.stringify(tarball)} "$dest/$(basename ${J
 
 describe('getLatestRelease', () => {
     test('returns null or valid ReleaseInfo, never throws', () => {
-        const result = getLatestRelease();
-        if (result !== null) {
-            assert.ok(typeof result.tagName === 'string');
-            assert.ok(Array.isArray(result.assets));
-        }
+        assert.equal(withGhStub('exit 1', () => getLatestRelease()), null);
+        const result = withGhStub(
+            'echo \'{"tag_name":"v2.0.0","assets":[]}\'',
+            () => getLatestRelease(),
+        );
+        assert.equal(result?.tagName, 'v2.0.0');
+        assert.ok(Array.isArray(result.assets));
     });
 });
 
