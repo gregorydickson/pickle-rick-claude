@@ -94,6 +94,7 @@ import {
   integrateLanes,
   releaseLaneBranches,
   recoverLaneBranches,
+  RETAINED_BRANCH_MAX_AGE_DAYS,
   type LaneOutcome,
 } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
@@ -2155,7 +2156,7 @@ function reportLaneRecovery({ runtime, repoRoot }: LaneRun): void {
   if (report.unintegrated.length > 0) {
     runtime.log(`anatomy lanes: unintegrated lane branch(es) from a previous run, NOT integrated: ${report.unintegrated.join(', ')}`);
   }
-  if (report.expired.length > 0) runtime.log(`anatomy lanes: deleted retained lane branch(es) older than 14 days: ${report.expired.join(', ')}`);
+  if (report.expired.length > 0) runtime.log(`anatomy lanes: deleted retained lane branch(es) older than ${RETAINED_BRANCH_MAX_AGE_DAYS} days: ${report.expired.join(', ')}`);
   if (report.unintegrated.length + report.expired.length + report.staleWorktrees.length > 0) {
     emitLaneEvent('anatomy_lane_branches_reported', runtime.sessionDir, {
       unintegrated: report.unintegrated, expired: report.expired, stale_worktrees: report.staleWorktrees,

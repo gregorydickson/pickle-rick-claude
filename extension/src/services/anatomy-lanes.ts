@@ -178,7 +178,9 @@ export function aggregateLaneExitReason(
 // ---------------------------------------------------------------------------
 
 const LANE_TYPECHECK_TIMEOUT_MS = 300_000;
-const RETAINED_BRANCH_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/** How long a kept `pickle-lane/*` branch survives before phase-start recovery deletes it. */
+export const RETAINED_BRANCH_MAX_AGE_DAYS = 14;
+const RETAINED_BRANCH_MAX_AGE_MS = RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 const UNINTEGRATED_PREFIX = 'unintegrated-';
 
 export type LaneIntegrationOutcome =
@@ -400,7 +402,7 @@ function registeredWorktrees(repoRoot: string): string[] {
 export interface LaneRecoveryReport {
   /** This session's lane branches a previous run left unintegrated — reported, never integrated. */
   unintegrated: string[];
-  /** Retained `pickle-lane/*` branches past the 14-day retention, deleted. */
+  /** Retained `pickle-lane/*` branches past RETAINED_BRANCH_MAX_AGE_DAYS, deleted. */
   expired: string[];
   /** Worktrees of this session's lane/integration dirs a previous run left registered. */
   staleWorktrees: string[];
@@ -411,7 +413,7 @@ export interface LaneRecoveryReport {
  * behind; the relaunch would collide with both. Stale worktrees are removed and pruned. A
  * surviving lane branch main already reaches goes by `-d`; any other is renamed aside to
  * `pickle-lane/<session>/unintegrated-<ms>-<leaf>` and reported. Retained branches older than
- * 14 days (tip commit) are deleted, with a report.
+ * RETAINED_BRANCH_MAX_AGE_DAYS (tip commit) are deleted, with a report.
  */
 export function recoverLaneBranches(repoRoot: string, sessionDir: string, nowMs: number = Date.now()): LaneRecoveryReport {
   const ownDirPrefix = `${realpathOrResolve(sessionDir)}--`;

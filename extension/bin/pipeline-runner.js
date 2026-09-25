@@ -43,7 +43,7 @@ import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -1782,7 +1782,7 @@ function reportLaneRecovery({ runtime, repoRoot }) {
         runtime.log(`anatomy lanes: unintegrated lane branch(es) from a previous run, NOT integrated: ${report.unintegrated.join(', ')}`);
     }
     if (report.expired.length > 0)
-        runtime.log(`anatomy lanes: deleted retained lane branch(es) older than 14 days: ${report.expired.join(', ')}`);
+        runtime.log(`anatomy lanes: deleted retained lane branch(es) older than ${RETAINED_BRANCH_MAX_AGE_DAYS} days: ${report.expired.join(', ')}`);
     if (report.unintegrated.length + report.expired.length + report.staleWorktrees.length > 0) {
         emitLaneEvent('anatomy_lane_branches_reported', runtime.sessionDir, {
             unintegrated: report.unintegrated, expired: report.expired, stale_worktrees: report.staleWorktrees,

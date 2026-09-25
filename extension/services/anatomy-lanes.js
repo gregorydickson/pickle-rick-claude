@@ -164,7 +164,9 @@ export function aggregateLaneExitReason(laneReasons, isSuccess) {
 // checkout only ever fast-forwards to it.
 // ---------------------------------------------------------------------------
 const LANE_TYPECHECK_TIMEOUT_MS = 300_000;
-const RETAINED_BRANCH_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+/** How long a kept `pickle-lane/*` branch survives before phase-start recovery deletes it. */
+export const RETAINED_BRANCH_MAX_AGE_DAYS = 14;
+const RETAINED_BRANCH_MAX_AGE_MS = RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 const UNINTEGRATED_PREFIX = 'unintegrated-';
 function laneGit(cwd, args) {
     return execFileSync('git', ['-C', cwd, ...args], {
@@ -353,7 +355,7 @@ function registeredWorktrees(repoRoot) {
  * behind; the relaunch would collide with both. Stale worktrees are removed and pruned. A
  * surviving lane branch main already reaches goes by `-d`; any other is renamed aside to
  * `pickle-lane/<session>/unintegrated-<ms>-<leaf>` and reported. Retained branches older than
- * 14 days (tip commit) are deleted, with a report.
+ * RETAINED_BRANCH_MAX_AGE_DAYS (tip commit) are deleted, with a report.
  */
 export function recoverLaneBranches(repoRoot, sessionDir, nowMs = Date.now()) {
     const ownDirPrefix = `${realpathOrResolve(sessionDir)}--`;

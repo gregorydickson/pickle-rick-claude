@@ -44,7 +44,7 @@ import {
   createLaneSession,
   runAnatomyLanes,
 } from '../bin/pipeline-runner.js';
-import { createLaneWorktree } from '../services/anatomy-lanes.js';
+import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
@@ -5490,6 +5490,24 @@ describe('B-LANES WS-3: lane integration', () => {
     }
   });
 
+
+  test('harden: a retained lane branch past RETAINED_BRANCH_MAX_AGE_DAYS is deleted and reported; a young one is kept', () => {
+    const fx = makeFixture();
+    try {
+      const retained = 'pickle-lane/older-session/1';
+      git(fx.repo, 'branch', retained);
+      const tipMs = Number(git(fx.repo, 'log', '-1', '--format=%ct', retained)) * 1000;
+      const dayMs = 24 * 60 * 60 * 1000;
+      const young = recoverLaneBranches(fx.repo, fx.sessionDir, tipMs + (RETAINED_BRANCH_MAX_AGE_DAYS - 1) * dayMs);
+      assert.deepEqual(young.expired, []);
+      assert.ok(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${retained}`), 'a young branch is kept');
+      const old = recoverLaneBranches(fx.repo, fx.sessionDir, tipMs + (RETAINED_BRANCH_MAX_AGE_DAYS + 1) * dayMs);
+      assert.deepEqual(old.expired, [retained]);
+      assert.equal(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${retained}`), false, 'an expired branch is deleted');
+    } finally {
+      fx.cleanup();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
