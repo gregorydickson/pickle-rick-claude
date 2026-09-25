@@ -3,7 +3,7 @@
 **EXPERIMENTAL BRANCH `exp/b-lanes` ONLY.** Never touch `main`, never run `install.sh`, never tag.
 
 The B-LANES pipeline (session `2026-09-24-7287b60e`) finished with `post_final_tier_degraded:red`. The full gate
-on `exp/b-lanes` at `c2f92b63` (run `20260925T051520Z-26736`) is **red on 2 of 22 legs**. Every failure below is
+on `exp/b-lanes` at `c2f92b63` (run `20260925T051520Z-26736`) is **red on 2 of 22 legs**. **Re-measured at `8f64b5b2` (after merging `main`, incl. B-UPGRADE-ISO): all five still red** (ac6 file: 2 failing cases). Every failure below is
 deterministic (identical in all flake-budget runs) and caused by code this bundle added. Measured 2026-09-25.
 
 ## The reds and the intended fix (fix the cause; do not loosen the checks)
