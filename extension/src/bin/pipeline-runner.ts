@@ -78,6 +78,7 @@ import {
   computeReviewBase,
   parseScope,
   ScopeError,
+  type LaneRecord,
   type ScopeJson,
 } from '../services/scope-resolver.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
@@ -379,20 +380,24 @@ export function isTestFile(name: string): boolean {
   return TEST_PATTERNS.some(p => lower.includes(p));
 }
 
-interface SourceFileTally { sourceCount: number; testCount: number }
+/**
+ * B-LANES: a lane splits when at least two child directories each hold this
+ * many non-generated source files. Qualifying children become lanes
+ * (recursively) and the rest becomes the remainder lane `<dir>/.`.
+ */
+export const MIN_LANE_FILES = 20;
 
-function tallySourceEntry(child: fs.Dirent, tally: SourceFileTally): void {
-  if (!child.isFile() || !SOURCE_EXTS.has(path.extname(child.name))) return;
-  tally.sourceCount++;
-  if (isTestFile(child.name)) tally.testCount++;
-}
+interface TreeListing { files: string[]; tsconfigDirs: string[] }
 
-function countSourceFiles(dir: string): SourceFileTally {
-  const tally: SourceFileTally = { sourceCount: 0, testCount: 0 };
+/**
+ * Every file under `dir`, as a POSIX path relative to `target`, plus the
+ * directories holding a `tsconfig.json`. Unreadable directories contribute
+ * nothing; symlinked entries are never followed, and the realpath guard keeps
+ * a looping tree finite.
+ */
+function listTree(target: string, dir: string, listing: TreeListing): void {
   const visited = new Set<string>();
-
   const walk = (p: string) => {
-    // Resolve real path to detect symlink loops
     let realP: string;
     try { realP = fs.realpathSync(p); } catch { return; }
     if (visited.has(realP)) return;
@@ -401,13 +406,115 @@ function countSourceFiles(dir: string): SourceFileTally {
     let children: fs.Dirent[];
     try { children = fs.readdirSync(p, { withFileTypes: true }); } catch { return; }
     for (const child of children) {
-      if (child.isDirectory() && !EXCLUDED_DIRS.has(child.name)) walk(path.join(p, child.name));
-      else tallySourceEntry(child, tally);
+      const childPath = path.join(p, child.name);
+      if (child.isDirectory()) {
+        if (!EXCLUDED_DIRS.has(child.name)) walk(childPath);
+      } else if (child.isFile()) {
+        listing.files.push(toTargetRelative(target, childPath));
+        if (child.name === 'tsconfig.json') listing.tsconfigDirs.push(toTargetRelative(target, p));
+      }
     }
   };
   walk(dir);
+}
 
-  return tally;
+function toTargetRelative(target: string, p: string): string {
+  return path.relative(target, p).replace(/\\/g, '/');
+}
+
+/** Drop `//` and block comments and trailing commas outside strings (tsconfig is JSONC). */
+function stripJsonc(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      const start = i++;
+      while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+      out += text.slice(start, ++i);
+    } else if (ch === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+    } else if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end < 0 ? text.length : end + 2;
+    } else if (ch === ',' && /^\s*[}\]]/.test(text.slice(i + 1))) {
+      i++;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+
+/** `compilerOptions.outDir` / `rootDir` of one tsconfig, or null on ANY read or parse failure. */
+function readTsEmitDirs(tsconfigPath: string): { outDir: string; rootDir: string } | null {
+  try {
+    const parsed = JSON.parse(stripJsonc(fs.readFileSync(tsconfigPath, 'utf-8'))) as unknown;
+    const options = (parsed as { compilerOptions?: Record<string, unknown> } | null)?.compilerOptions;
+    const outDir = options?.outDir;
+    const rootDir = options?.rootDir;
+    return typeof outDir === 'string' && typeof rootDir === 'string' ? { outDir, rootDir } : null;
+  } catch { return null; }
+}
+
+/**
+ * Generated output is decided PER FILE, never per directory: `R/<outDir>/<p>.js`
+ * is generated iff `R/<rootDir>/<p>.ts` is present, for each `R` holding a
+ * readable `tsconfig.json`. A hand-written `.js` beside compiled output stays
+ * reviewable. Paths are target-relative POSIX.
+ */
+function collectGenerated(target: string, listing: TreeListing): Set<string> {
+  const present = new Set(listing.files);
+  const generated = new Set<string>();
+  for (const tsconfigDir of new Set(listing.tsconfigDirs)) {
+    const emit = readTsEmitDirs(path.join(target, tsconfigDir, 'tsconfig.json'));
+    if (!emit) continue;
+    const outRel = toTargetRelative(target, path.resolve(target, tsconfigDir, emit.outDir));
+    const rootRel = toTargetRelative(target, path.resolve(target, tsconfigDir, emit.rootDir));
+    if (outRel.startsWith('..') || rootRel.startsWith('..')) continue;
+    const outPrefix = outRel === '' ? '' : `${outRel}/`;
+    for (const file of listing.files) {
+      if (!file.endsWith('.js') || !file.startsWith(outPrefix)) continue;
+      const stem = file.slice(outPrefix.length, -'.js'.length);
+      if (present.has(path.posix.join(rootRel, `${stem}.ts`))) generated.add(file);
+    }
+  }
+  return generated;
+}
+
+/**
+ * Split `dir` by the MIN_LANE_FILES rule over its non-generated source files
+ * (target-relative). An unsplit lane carries `testRatioApplies: isRoot`; every
+ * split product carries false. The remainder is emitted only when it holds a
+ * source file.
+ */
+function splitLane(dir: string, sourceFiles: string[], isRoot: boolean): LaneRecord[] {
+  const byChild = new Map<string, string[]>();
+  for (const file of sourceFiles) {
+    const rest = file.slice(dir.length + 1);
+    const slash = rest.indexOf('/');
+    if (slash < 0) continue;
+    const child = `${dir}/${rest.slice(0, slash)}`;
+    const bucket = byChild.get(child);
+    if (bucket) bucket.push(file);
+    else byChild.set(child, [file]);
+  }
+  const qualifying = [...byChild.keys()].filter((child) => byChild.get(child)!.length >= MIN_LANE_FILES).sort();
+  if (qualifying.length < 2) {
+    return [{ name: dir, dir, excludes: [], testRatioApplies: isRoot, fileCount: sourceFiles.length }];
+  }
+  const splitCount = qualifying.reduce((sum, child) => sum + byChild.get(child)!.length, 0);
+  const remainder: LaneRecord[] = sourceFiles.length > splitCount
+    ? [{ name: `${dir}/.`, dir, excludes: qualifying, testRatioApplies: false, fileCount: sourceFiles.length - splitCount }]
+    : [];
+  return [...qualifying.flatMap((child) => splitLane(child, byChild.get(child)!, false)), ...remainder];
+}
+
+/** The pre-split admission rule, applied ONLY to an unsplit discovery root. */
+function clearsRootFloor(sourceFiles: string[]): boolean {
+  const testCount = sourceFiles.filter((file) => isTestFile(path.posix.basename(file))).length;
+  return sourceFiles.length >= 3 && testCount / sourceFiles.length <= 0.8;
 }
 
 /**
@@ -468,27 +575,34 @@ function targetTreeWasListed(target: string): boolean {
   } catch { return false; }
 }
 
-export function discoverSubsystems(target: string): { name: string; fileCount: number }[] {
-  const subsystems: { name: string; fileCount: number }[] = [];
+/**
+ * B-LANES: the review-lane roster for `target`, plus the generated files that
+ * belong to no lane. Order: generated output is removed first, then each root
+ * splits by the MIN_LANE_FILES rule, and only an UNSPLIT root takes the 3-file
+ * floor and the >80% test-only filter — re-applying that filter per split child
+ * would drop nearly every test lane. Lane paths are relative to `target`, POSIX,
+ * never empty (subsystemRoots drops any root equal to target), so persisted
+ * keys are stable across platforms.
+ */
+export function discoverLanes(target: string): { lanes: LaneRecord[]; generated: Set<string> } {
+  const roots = subsystemRoots(target).map((dir) => toTargetRelative(target, dir));
+  const listing: TreeListing = { files: [], tsconfigDirs: [] };
+  if (fs.existsSync(path.join(target, 'tsconfig.json'))) listing.tsconfigDirs.push('');
+  for (const root of roots) listTree(target, path.join(target, root), listing);
+  const generated = collectGenerated(target, listing);
 
-  for (const dir of subsystemRoots(target)) {
-    const { sourceCount, testCount } = countSourceFiles(dir);
-
-    // Exclude test-only directories (>80% test files) per anatomy-park spec
-    if (sourceCount >= 3 && testCount / sourceCount <= 0.8) {
-      // Name by the path RELATIVE to target, never the basename: filterBySubsystem
-      // resolves a name back through path.resolve(target, name), so a nested
-      // package named "a" would resolve to a directory that does not exist and be
-      // dropped by every scope filter. POSIX separators keep the persisted keys
-      // stable across platforms. The name is never empty: subsystemRoots already
-      // drops any root that resolves equal to target, so that invariant has ONE
-      // home rather than a second check here.
-      const name = path.relative(target, dir).replace(/\\/g, '/');
-      subsystems.push({ name, fileCount: sourceCount });
-    }
+  const lanes: LaneRecord[] = [];
+  for (const root of roots) {
+    const sourceFiles = listing.files.filter((file) => file.startsWith(`${root}/`)
+      && SOURCE_EXTS.has(path.posix.extname(file)) && !generated.has(file));
+    const rootLanes = splitLane(root, sourceFiles, true);
+    if (rootLanes.length > 1 || clearsRootFloor(sourceFiles)) lanes.push(...rootLanes);
   }
+  return { lanes: lanes.sort((a, b) => a.name.localeCompare(b.name)), generated };
+}
 
-  return subsystems.sort((a, b) => a.name.localeCompare(b.name));
+export function discoverSubsystems(target: string): LaneRecord[] {
+  return discoverLanes(target).lanes;
 }
 
 // ---------------------------------------------------------------------------
@@ -2174,7 +2288,7 @@ export function setupScope(args: SetupScopeArgs): ScopeJson | null {
  * The frame is HERE, at the function that claims to be observability, not at its one production
  * call site: the contract "an audit record never ends your run" belongs to the artifact's own
  * writer, so a future second caller inherits it instead of re-forking the guard. It also covers
- * `discoverSubsystems` / `filterBySubsystem` below, which read the target tree, by construction.
+ * `discoverLanes` / `filterBySubsystem` below, which read the target tree, by construction.
  *
  * Deliberately NOT a `DEGRADED_PHASE_SKIP_REASONS` member, and success is deliberately NOT
  * withheld: unlike a failed setup, NO WORK IS LOST — the phase runs in full, and this artifact
@@ -2196,8 +2310,9 @@ export function writeSkippedByScope(
     fs.mkdirSync(archiveDir, { recursive: true });
     let payload: Record<string, unknown>;
     if (scopePhase === 'anatomy-park') {
-      const discovered = discoverSubsystems(target).map((s) => s.name);
-      const kept = filterBySubsystem(discovered, scope.allowed_paths, target, workingDir);
+      const { lanes, generated } = discoverLanes(target);
+      const discovered = lanes.map((s) => s.name);
+      const kept = filterBySubsystem(lanes, scope.allowed_paths, target, workingDir, generated).map((s) => s.name);
       const keptSet = new Set(kept);
       const skipped = discovered.filter((n) => !keptSet.has(n));
       payload = {
@@ -2274,9 +2389,16 @@ function readWorkingDirFromState(sessionDir: string, fallback: string): string {
 // Phase Setup: Anatomy Park
 // ---------------------------------------------------------------------------
 
+function formatLaneLine(lane: LaneRecord, index: number): string {
+  const excluding = lane.excludes.length > 0
+    ? ` — reviews ${lane.dir}/ EXCLUDING ${lane.excludes.map((dir) => `${dir}/`).join(', ')} (other lanes)`
+    : '';
+  return `${index + 1}. ${lane.name} (${lane.fileCount} files)${excluding}`;
+}
+
 function buildAnatomyPrd(
   target: string,
-  subsystems: Array<{ name: string; fileCount: number }>,
+  subsystems: LaneRecord[],
   stallLimit: number,
   runnerStallLimit: number,
   citadelReport: CitadelJsonReport | null,
@@ -2291,7 +2413,7 @@ function buildAnatomyPrd(
     target,
     '',
     '## Subsystems',
-    ...subsystems.map((s, i) => `${i + 1}. ${s.name} (${s.fileCount} files)`),
+    ...subsystems.map(formatLaneLine),
     '',
     '## Key Metric',
     '- **Type**: none (worker-managed convergence)',
@@ -2516,8 +2638,8 @@ function resolveAnatomySubsystems(
   target: string,
   scope: { allowedPaths: string[]; repoRoot: string } | undefined,
   log: (msg: string) => void,
-): Array<{ name: string; fileCount: number }> | { skipReason: PhaseSkipReason } {
-  const discovered = discoverSubsystems(target);
+): LaneRecord[] | { skipReason: PhaseSkipReason } {
+  const { lanes: discovered, generated } = discoverLanes(target);
   if (discovered.length === 0) {
     // AP-EXT-ITER320-01: an UNLISTABLE target is a failed setup, not a repo with no
     // work in it. `setup_error` is the reason this same function already returns when
@@ -2546,8 +2668,8 @@ function resolveAnatomySubsystems(
     log(`Discovered ${discovered.length} subsystems: ${discovered.map(s => s.name).join(', ')}`);
     return discovered;
   }
-  const kept = new Set(filterBySubsystem(discovered.map(s => s.name), scope.allowedPaths, target, scope.repoRoot));
-  if (kept.size === 0) {
+  const filtered = filterBySubsystem(discovered, scope.allowedPaths, target, scope.repoRoot, generated);
+  if (filtered.length === 0) {
     // R-PSSS-1: the scope filter excluding every subsystem is a real skip the
     // operator must see — not a silent `setup returned false`. Emit the
     // structured WARN plus an `anatomy_park_empty_scope_skip` activity event.
@@ -2563,7 +2685,6 @@ function resolveAnatomySubsystems(
     });
     return { skipReason: 'empty_scope' };
   }
-  const filtered = discovered.filter(s => kept.has(s.name));
   log(`anatomy-park: scope filtered ${discovered.length} → ${filtered.length} subsystems: ${filtered.map(s => s.name).join(', ')}`);
   return filtered;
 }
@@ -2613,20 +2734,23 @@ function readResumableAnatomyProgress(
 
 function writeAnatomyConfig(
   sessionDir: string,
-  subsystems: Array<{ name: string; fileCount: number }>,
+  subsystems: LaneRecord[],
   stallLimit: number,
 ): void {
   const subsystemNames = subsystems.map(s => s.name);
+  // B-LANES: the lane geometry rides beside the name-keyed ledger. A roster change is a
+  // name change, which `readResumableAnatomyProgress` already answers with a fresh ledger.
   const resumable = readResumableAnatomyProgress(
     path.join(sessionDir, 'anatomy-park.json'),
     subsystemNames,
   );
   if (resumable) {
-    writeStateFile(path.join(sessionDir, 'anatomy-park.json'), { ...resumable, stall_limit: stallLimit });
+    writeStateFile(path.join(sessionDir, 'anatomy-park.json'), { ...resumable, stall_limit: stallLimit, lanes: subsystems });
     return;
   }
   const apState = {
     subsystems: subsystemNames,
+    lanes: subsystems,
     current_index: 0,
     pass_counts: Object.fromEntries(subsystemNames.map(name => [name, 0])) as Record<string, number>,
     consecutive_clean: Object.fromEntries(subsystemNames.map(name => [name, 0])) as Record<string, number>,

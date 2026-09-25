@@ -10,6 +10,10 @@ import { setupAnatomyPark, writePipelineStatus } from '../bin/pipeline-runner.js
 import { finalizeGateMain } from '../bin/finalize-gate.js';
 import { filterBySubsystem } from '../services/scope-resolver.js';
 
+// B-LANES: filterBySubsystem takes lane records; these cases name plain one-dir lanes.
+const lane = (name) => ({ name, dir: name, excludes: [], testRatioApplies: true, fileCount: 0 });
+const keptNames = (names, ...rest) => filterBySubsystem(names.map(lane), ...rest).map((l) => l.name);
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // R-CIFB: resolve the extension root from the REPO (not the deployed
 // ~/.claude/pickle-rick), so setupAnatomyPark spawns extension/bin/init-microverse.js
@@ -90,6 +94,40 @@ test('pipeline filter: 4 subsystems, scope covering 2 → anatomy-park.json has 
     assert.deepStrictEqual(ap.consecutive_clean, { alpha: 0, gamma: 0 });
     assert.deepStrictEqual(ap.stall_counts, { alpha: 0, gamma: 0 });
     assert.deepStrictEqual(ap.findings_history, { alpha: [], gamma: [] });
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('B-LANES: a split lane persists its record, prints its excludes, and a generated .js admits no lane', () => {
+  const session = makeSession();
+  const target = makeTarget();
+  try {
+    makeSubsystem(target, 'big/a', 20);
+    makeSubsystem(target, 'big/b', 20);
+    makeSubsystem(target, 'big/loose', 2);
+    fs.mkdirSync(path.join(target, 'big', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(target, 'big', 'src', 'gen.ts'), 'export const g = 1;\n');
+    fs.writeFileSync(path.join(target, 'big', 'gen.js'), 'exports.g = 1;\n');
+    fs.writeFileSync(path.join(target, 'big', 'tsconfig.json'), '{ "compilerOptions": { "outDir": ".", "rootDir": "src" } }');
+
+    // Scope names ONLY the compiled twin of big/src/gen.ts plus one loose remainder file.
+    const onlyGenerated = setupAnatomyPark(makeSession(), target, 3, EXTENSION_ROOT, () => {}, {
+      allowedPaths: ['big/gen.js'], repoRoot: target,
+    });
+    assert.deepStrictEqual(onlyGenerated, { skipReason: 'empty_scope' }, 'a generated file belongs to no lane');
+
+    setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {}, {
+      allowedPaths: ['big/loose/f0.ts', 'big/gen.js'], repoRoot: target,
+    });
+    const ap = readAnatomyPark(session);
+    assert.deepStrictEqual(ap.subsystems, ['big/.']);
+    assert.deepStrictEqual(ap.lanes, [
+      { name: 'big/.', dir: 'big', excludes: ['big/a', 'big/b'], testRatioApplies: false, fileCount: 3 },
+    ]);
+    const prd = fs.readFileSync(path.join(session, 'prd.md'), 'utf-8');
+    assert.match(prd, /1\. big\/\. \(3 files\) — reviews big\/ EXCLUDING big\/a\/, big\/b\/ \(other lanes\)/);
   } finally {
     fs.rmSync(session, { recursive: true, force: true });
     fs.rmSync(target, { recursive: true, force: true });
@@ -386,8 +424,8 @@ test('AP-EXT-ITER321-01: a resume below the git toplevel keeps the SAME subsyste
 
     // FIXTURE PRECONDITION: this fixture genuinely separates the two path spaces. Without
     // it the agreement assertion below could green on a fixture where they coincide.
-    assert.deepStrictEqual(filterBySubsystem(['alpha'], ['alpha/f0.ts'], target, below), []);
-    assert.deepStrictEqual(filterBySubsystem(['alpha'], ['alpha/f0.ts'], target, target), ['alpha']);
+    assert.deepStrictEqual(keptNames(['alpha'], ['alpha/f0.ts'], target, below), []);
+    assert.deepStrictEqual(keptNames(['alpha'], ['alpha/f0.ts'], target, target), ['alpha']);
 
     writeResumeScope(sessionTop, ['alpha/f0.ts']);
     writeState(sessionTop, target);
@@ -462,7 +500,7 @@ test('standalone filter parity: filterBySubsystem same fixture → identical to 
     const repoRoot = target;
     const allNames = ['alpha', 'beta', 'delta', 'gamma']; // sorted
 
-    const result = filterBySubsystem(allNames, allowedPaths, target, repoRoot);
+    const result = keptNames(allNames, allowedPaths, target, repoRoot);
     assert.deepStrictEqual(result, ['alpha', 'gamma']);
   } finally {
     fs.rmSync(target, { recursive: true, force: true });
@@ -752,14 +790,14 @@ test('AP-EXT-ITER310-01: filterBySubsystem itself anchors both sides, not just i
     const allowedPaths = ['pkg/alpha/f0.ts', 'pkg/gamma/f2.ts'];
 
     assert.deepStrictEqual(
-      filterBySubsystem(names, allowedPaths, targetViaLink, repoRoot),
+      keptNames(names, allowedPaths, targetViaLink, repoRoot),
       ['alpha', 'gamma'],
       'a target reached through a symlink must resolve into repoRoot space',
     );
     // A non-existent repoRoot/target pair has no realpath to take: the helper
     // falls back to path.resolve, so the pure-fixture callers keep working.
     assert.deepStrictEqual(
-      filterBySubsystem(names, ['pkg/beta/f0.ts'], '/nowhere-ap310/pkg', '/nowhere-ap310'),
+      keptNames(names, ['pkg/beta/f0.ts'], '/nowhere-ap310/pkg', '/nowhere-ap310'),
       ['beta'],
     );
   } finally {
@@ -779,7 +817,7 @@ test('AP-EXT-ITER310-01: a pair that agreed before anchoring still agrees when o
     assert.ok(fs.existsSync(rawRoot) && !fs.existsSync(missingTarget), 'fixture invalid');
 
     assert.deepStrictEqual(
-      filterBySubsystem(['alpha', 'beta'], ['nope/alpha/f0.ts'], missingTarget, rawRoot),
+      keptNames(['alpha', 'beta'], ['nope/alpha/f0.ts'], missingTarget, rawRoot),
       ['alpha'],
     );
   } finally {

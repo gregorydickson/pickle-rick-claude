@@ -5,8 +5,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { filterBySubsystem, filterByPaths, resolveScope, refreshScope } from '../services/scope-resolver.js';
-import { discoverSubsystems } from '../bin/pipeline-runner.js';
+import { discoverSubsystems, discoverLanes, isTestFile } from '../bin/pipeline-runner.js';
+import { laneAdmits } from '../services/scope-resolver.js';
 
 function git(args, cwd) {
     const res = spawnSync('git', args, {
@@ -22,6 +24,10 @@ function git(args, cwd) {
     return (res.stdout || '').trim();
 }
 
+// B-LANES: filterBySubsystem takes lane records; these cases name plain one-dir lanes.
+const lane = (name) => ({ name, dir: name, excludes: [], testRatioApplies: true, fileCount: 0 });
+const keptNames = (names, ...rest) => filterBySubsystem(names.map(lane), ...rest).map((l) => l.name);
+
 test('filterBySubsystem: 4 subsystems, 2 have files in allowedPaths → returns those 2', () => {
     const repoRoot = '/repo';
     const target = '/repo/pkg';
@@ -31,7 +37,7 @@ test('filterBySubsystem: 4 subsystems, 2 have files in allowedPaths → returns 
         'pkg/gamma/util.ts',
         'pkg/gamma/helper.ts',
     ];
-    const result = filterBySubsystem(subsystems, allowedPaths, target, repoRoot);
+    const result = keptNames(subsystems, allowedPaths, target, repoRoot);
     assert.deepStrictEqual(result, ['alpha', 'gamma']);
 });
 
@@ -95,11 +101,11 @@ test('filterBySubsystem: allowedPaths outside target subtree → returns []', ()
         'other/alpha/index.ts',
         'other/beta/util.ts',
     ];
-    const result = filterBySubsystem(subsystems, allowedPaths, target, repoRoot);
+    const result = keptNames(subsystems, allowedPaths, target, repoRoot);
     assert.deepStrictEqual(result, []);
 });
 
-test('pipeline-mode integration: discoverSubsystems names feed filterBySubsystem correctly', () => {
+test('pipeline-mode integration: discoverSubsystems lanes feed filterBySubsystem correctly', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-pipeline-int-'));
     try {
         // 4 subsystems — only alpha and gamma are in the scope diff
@@ -114,7 +120,7 @@ test('pipeline-mode integration: discoverSubsystems names feed filterBySubsystem
         assert.deepStrictEqual(names, ['alpha', 'beta', 'delta', 'gamma']); // sorted
 
         const allowedPaths = ['alpha/f0.ts', 'gamma/f1.ts'];
-        const kept = filterBySubsystem(names, allowedPaths, root, root);
+        const kept = filterBySubsystem(discovered, allowedPaths, root, root).map((l) => l.name);
         assert.deepStrictEqual(kept, ['alpha', 'gamma']);
 
         // Simulate the pipeline-runner filter: kept set narrows the discovered list
@@ -313,4 +319,44 @@ test('AP-EXT-ITER310-02: the repoRoot half of the anchor carries the mirror dire
     } finally {
         fs.rmSync(base, { recursive: true, force: true });
     }
+});
+
+// ---------------------------------------------------------------------------
+// B-LANES AC-2: every tracked hand-written file the v2.1.0..5fdd4262 diff touches
+// maps to exactly ONE lane under the one membership function.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const LANE_SOURCE_RE = /\.(ts|js|py|go|rs|java|tsx|jsx)$/;
+
+function gitLines(args) {
+    const res = spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 30_000, maxBuffer: 64 * 1024 * 1024 });
+    assert.equal(res.status, 0, `git ${args.join(' ')} failed (a shallow clone lacks v2.1.0/5fdd4262): ${res.stderr}`);
+    return res.stdout.split('\0').filter(Boolean);
+}
+
+test('B-LANES AC-2: every tracked non-generated file in v2.1.0..5fdd4262 maps to exactly one lane', () => {
+    const { lanes, generated } = discoverLanes(REPO_ROOT);
+    const tracked = new Set(gitLines(['ls-files', '-z']));
+    const laneRoots = new Set(lanes.map((l) => l.dir.split('/')[0]));
+    const diffFiles = gitLines(['diff', '--name-only', '--no-renames', '-z', 'v2.1.0..5fdd4262'])
+        .filter((f) => tracked.has(f) && !generated.has(f) && laneRoots.has(f.split('/')[0]));
+
+    assert.ok(diffFiles.some((f) => /^extension\/tests\/integration\/[^/]+\.test\.js$/.test(f)), 'non-vacuous: integration tests present');
+    assert.ok(diffFiles.some((f) => /^extension\/tests\/[^/]+\.test\.js$/.test(f)), 'non-vacuous: loose top-level tests present');
+    for (const f of diffFiles) {
+        const admitting = lanes.filter((l) => laneAdmits(l, f, generated)).map((l) => l.name);
+        assert.equal(admitting.length, 1, `${f} must map to exactly one lane, got [${admitting.join(', ')}]`);
+    }
+
+    // Negative control: re-applying the >80% test-only filter to split products
+    // drops test lanes, so some diff file stops mapping to any lane.
+    const ratioReapplied = lanes.filter((l) => {
+        if (l.testRatioApplies) return true;
+        const src = [...tracked].filter((f) => LANE_SOURCE_RE.test(f) && !generated.has(f) && laneAdmits(l, f, generated));
+        const tests = src.filter((f) => isTestFile(path.posix.basename(f)));
+        return src.length >= 3 && tests.length / src.length <= 0.8;
+    });
+    const unmapped = diffFiles.filter((f) => !ratioReapplied.some((l) => laneAdmits(l, f, generated)));
+    assert.ok(unmapped.length > 0, 'the ratio filter must only ever apply to unsplit roots');
 });

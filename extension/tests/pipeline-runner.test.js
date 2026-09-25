@@ -9,6 +9,8 @@ import * as url from 'node:url';
 import {
   isTestFile,
   discoverSubsystems,
+  discoverLanes,
+  MIN_LANE_FILES,
   cleanPhaseArtifacts,
   resetStateForPhase,
   parsePipelineConfig,
@@ -41,6 +43,8 @@ import {
   gitRepoRoot,
 } from '../bin/pipeline-runner.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { laneAdmits } from '../services/scope-resolver.js';
+import { describeEach } from './helpers/describe-each.js';
 import { simulateBinaryAbsent } from './helpers/simulate-binary-absent.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { loadFinalizeGateSettings } from '../bin/finalize-gate.js';
@@ -705,6 +709,156 @@ describe('discoverSubsystems', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// B-LANES: one membership function, MIN_LANE_FILES split rule
+// ---------------------------------------------------------------------------
+
+describe('B-LANES lane discovery', () => {
+  const REPO_ROOT = path.resolve(url.fileURLToPath(new URL('../..', import.meta.url)));
+  let realDiscovery;
+  const discovered = () => (realDiscovery ??= discoverLanes(REPO_ROOT));
+  const trackedFiles = () => execFileSync('git', ['ls-files', '-z'], {
+    cwd: REPO_ROOT, encoding: 'utf-8', timeout: 30_000, maxBuffer: 64 * 1024 * 1024,
+  }).split('\0').filter(Boolean);
+  const admitting = (lanes, rel, generated) => lanes.filter((l) => laneAdmits(l, rel, generated)).map((l) => l.name);
+  const writeFiles = (dir, count, ext) => {
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < count; i++) fs.writeFileSync(path.join(dir, `m${i}${ext}`), '');
+  };
+
+  test('AC-1: the repo root yields exactly the pinned 10-lane roster (HEAD before: bin, extension)', () => {
+    assert.equal(MIN_LANE_FILES, 20);
+    assert.deepEqual(discovered().lanes.map((l) => l.name).sort(), [
+      'bin', 'extension/.', 'extension/src/.', 'extension/src/bin', 'extension/src/services',
+      'extension/tests/.', 'extension/tests/__fixtures__', 'extension/tests/citadel',
+      'extension/tests/integration', 'extension/tests/services',
+    ]);
+  });
+
+  test('no lane dir is empty and no tracked file is admitted by two lanes', () => {
+    const { lanes, generated } = discovered();
+    for (const lane of lanes) assert.notEqual(lane.dir, '', `${lane.name} has an empty dir`);
+    for (const f of trackedFiles()) {
+      assert.ok(admitting(lanes, f, generated).length <= 1, `${f} is admitted by more than one lane`);
+    }
+  });
+
+  test('AC-3: generated = tracked extension/<p>.js with an extension/src/<p>.ts twin, and no lane admits one', () => {
+    const tracked = new Set(trackedFiles());
+    const twins = [...tracked].filter((f) => f.startsWith('extension/') && f.endsWith('.js')
+      && tracked.has(`extension/src/${f.slice('extension/'.length, -'.js'.length)}.ts`));
+    assert.ok(twins.length > 100, `relational count is non-vacuous (${twins.length})`);
+    const { lanes, generated } = discovered();
+    assert.deepEqual([...generated].filter((f) => tracked.has(f)).sort(), twins.sort());
+    for (const f of twins) assert.deepEqual(admitting(lanes, f, generated), [], `${f} is generated`);
+  });
+
+  describeEach([
+    'bin/parse-coverage-exception.js', 'bin/replay-bundle-iter-stats.js', 'bin/_test-chmod-fixture.js',
+    'types/attractor-schema.js', 'scripts/audit-citadel-wiring.js', 'scripts/census-worker-gate-red-tests.js',
+  ])('AC-3: hand-written extension/%s', (rel) => {
+    test('maps to exactly one lane, where directory-level exclusion would drop it', () => {
+      const file = `extension/${rel}`;
+      assert.ok(fs.existsSync(path.join(REPO_ROOT, file)), `fixture rot: ${file} is gone`);
+      const { lanes, generated } = discovered();
+      assert.equal(admitting(lanes, file, generated).length, 1);
+      const generatedDirs = new Set([...generated].map((f) => path.posix.dirname(f)));
+      assert.ok(generatedDirs.has(path.posix.dirname(file)), 'negative control: its directory holds generated output');
+    });
+  });
+
+  test('AC-4: a Python-shaped repo (no tsconfig, no manifest) splits into subpackage lanes plus a remainder', () => {
+    const root = tmpDir();
+    try {
+      writeFiles(path.join(root, 'mypkg', 'api'), 20, '.py');
+      writeFiles(path.join(root, 'mypkg', 'core'), 20, '.py');
+      writeFiles(path.join(root, 'mypkg'), 2, '.py');
+      const { lanes } = discoverLanes(root);
+      assert.deepEqual(lanes.map((l) => l.name), ['mypkg/.', 'mypkg/api', 'mypkg/core']);
+      const remainder = lanes.find((l) => l.name === 'mypkg/.');
+      assert.deepEqual(remainder, { name: 'mypkg/.', dir: 'mypkg', excludes: ['mypkg/api', 'mypkg/core'], testRatioApplies: false, fileCount: 2 });
+      assert.deepEqual(admitting(lanes, 'mypkg/m0.py', new Set()), ['mypkg/.']);
+      assert.deepEqual(admitting(lanes, 'mypkg/api/m0.py', new Set()), ['mypkg/api']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-4: a Go-shaped repo splits too, and one qualifying child is not enough to split', () => {
+    const root = tmpDir();
+    try {
+      writeFiles(path.join(root, 'internal', 'server'), 20, '.go');
+      writeFiles(path.join(root, 'internal', 'store'), 20, '.go');
+      writeFiles(path.join(root, 'internal'), 3, '.go');
+      writeFiles(path.join(root, 'cmd', 'app'), 20, '.go');
+      writeFiles(path.join(root, 'cmd', 'tool'), 19, '.go');
+      const { lanes } = discoverLanes(root);
+      assert.deepEqual(lanes.map((l) => l.name), ['cmd', 'internal/.', 'internal/server', 'internal/store']);
+      assert.equal(lanes.find((l) => l.name === 'cmd').testRatioApplies, true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('split products skip the test-only filter; an unsplit test-only root still drops', () => {
+    const root = tmpDir();
+    try {
+      writeFiles(path.join(root, 'suite', 'unit'), 20, '.test.ts');
+      writeFiles(path.join(root, 'suite', 'e2e'), 20, '.test.ts');
+      writeFiles(path.join(root, 'tests-only'), 5, '.test.ts');
+      const names = discoverLanes(root).lanes.map((l) => l.name);
+      assert.deepEqual(names, ['suite/e2e', 'suite/unit']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  const seedCompiledPackage = (root) => {
+    writeFiles(path.join(root, 'pkg', 'src'), 3, '.ts');
+    for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(root, 'pkg', `m${i}.js`), '');
+    fs.writeFileSync(path.join(root, 'pkg', 'hand.js'), '');
+  };
+
+  test('tsconfig read as JSONC: comments, trailing commas and // inside strings still mark generated output', () => {
+    const root = tmpDir();
+    try {
+      seedCompiledPackage(root);
+      fs.writeFileSync(path.join(root, 'pkg', 'tsconfig.json'), [
+        '{',
+        '  // line comment',
+        '  "compilerOptions": { /* block */ "outDir": ".", "rootDir": "src", "baseUrl": "http://x//y", },',
+        '}',
+      ].join('\n'));
+      const { lanes, generated } = discoverLanes(root);
+      assert.deepEqual([...generated].sort(), ['pkg/m0.js', 'pkg/m1.js', 'pkg/m2.js']);
+      assert.deepEqual(admitting(lanes, 'pkg/hand.js', generated), ['pkg']);
+      assert.equal(lanes.find((l) => l.name === 'pkg').fileCount, 4);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const [label, seed] of [
+    ['malformed', (dir) => fs.writeFileSync(path.join(dir, 'tsconfig.json'), '{ "compilerOptions": ')],
+    ['missing', () => {}],
+    ['a directory', (dir) => fs.mkdirSync(path.join(dir, 'tsconfig.json'))],
+    ['missing rootDir', (dir) => fs.writeFileSync(path.join(dir, 'tsconfig.json'), '{"compilerOptions":{"outDir":"."}}')],
+  ]) {
+    test(`a ${label} tsconfig degrades to nothing generated, never a throw`, () => {
+      const root = tmpDir();
+      try {
+        seedCompiledPackage(root);
+        seed(path.join(root, 'pkg'));
+        const { lanes, generated } = discoverLanes(root);
+        assert.equal(generated.size, 0);
+        assert.equal(lanes.find((l) => l.name === 'pkg').fileCount, 7);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
