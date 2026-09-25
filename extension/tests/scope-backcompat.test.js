@@ -110,6 +110,7 @@ test('backcompat (b): anatomy-park.json deep-equals baseline fixture when no sco
         const actual = JSON.parse(fs.readFileSync(path.join(session, 'anatomy-park.json'), 'utf-8'));
         const baseline = readFixture('backcompat-baseline-anatomy-park.json');
 
+        // `lanes` is intentionally additive (B-LANES); readers ignore unknown fields.
         assert.deepStrictEqual(actual, baseline);
     } finally {
         cleanup(session, target);
