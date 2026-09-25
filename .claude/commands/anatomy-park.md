@@ -65,16 +65,20 @@ Resolve TARGET to an absolute path. Verify it exists as a directory. If not foun
 
 ### Step 3: Auto-Discover Subsystems
 
-Scan the **immediate subdirectories** of TARGET for subsystems. A subsystem is a direct child directory containing 3+ source files (`*.ts`, `*.js`, `*.py`, `*.go`, `*.rs`, `*.java`, `*.tsx`, `*.jsx`) counted recursively within that directory. Do NOT descend further — `src/services/` is a subsystem, `src/services/auth/` is part of it, not a separate subsystem.
+The lane rule lives in ONE place — the compiled `discoverLanes` that the pipeline's anatomy-park phase uses. Do not restate it here; ask it:
 
-Exclude: `node_modules`, `dist`, `build`, `.next`, `coverage`, `__pycache__`, `.git`, test-only directories (dirs where >80% of files match `*.test.*` or `*.spec.*`).
+```bash
+node "$HOME/.claude/pickle-rick/extension/bin/resolve-scope.js" --print-subsystems --target "${TARGET_ABSOLUTE_PATH}"
+```
 
-Sort subsystems alphabetically. Print discovered list:
+This prints a JSON array of lane records `{name, dir, excludes, testRatioApplies, fileCount}` and exits 0 (an empty `[]` when discovery finds nothing). A lane is a directory of source files; a directory big enough to split becomes several lanes, and the files that stay behind form a **remainder lane** named `<dir>/.` whose `excludes` list the split-off children it does not cover. Standalone `/anatomy-park` reviews the lanes **serially**, one at a time, in the order printed — it never runs lanes concurrently.
+
+Print the discovered list:
 ```
 Anatomy Park — Subsystems Discovered:
   1. src/services (14 files)
   2. src/processors (8 files)
-  3. src/utils (6 files)
+  3. src/utils/. (6 files)
   ...
 Total: N subsystems, M source files
 ```
@@ -131,7 +135,11 @@ Tests are NOT baselined — Step 5 already enforces green tests at session start
 ### Step 7: Create anatomy-park.json and microverse.json
 
 <!-- scope-hook: discovery-filter -->
-If `${SESSION_ROOT}/scope.json` exists (created by Step 6.5 when `--scope` was passed), read `allowed_paths` from it and reduce the discovered subsystems list to those that overlap — this is the same filter `filterBySubsystem(subsystemNames, allowed_paths, TARGET, repoRoot)` that pipeline-runner applies in `setupAnatomyPark`. A subsystem is kept iff at least one entry in `allowed_paths` lies under its directory (relative to `repoRoot`). If the filtered list is empty, print "Scope excludes all subsystems — stopping" and exit. Use the filtered list in the `subsystems` field below.
+If `${SESSION_ROOT}/scope.json` exists (created by Step 6.5 when `--scope` was passed), narrow the lane list with the same compiled filter the pipeline applies in `setupAnatomyPark` rather than reading `allowed_paths` yourself:
+```bash
+node "$HOME/.claude/pickle-rick/extension/bin/resolve-scope.js" --print-subsystems --target "${TARGET_ABSOLUTE_PATH}" --scope "<SCOPE_FLAG>" --scope-base "<SCOPE_BASE>"
+```
+Omit `--scope-base` when SCOPE_BASE was not provided. The output is the lane list restricted to lanes that admit at least one in-scope path; a non-zero exit is a refusal, so print its stderr and stop. If the filtered list is empty, print "Scope excludes all subsystems — stopping" and exit. Use the filtered lane names in the `subsystems` field below.
 
 Write subsystem rotation state to `${SESSION_ROOT}/anatomy-park.json`:
 ```json
@@ -346,7 +354,7 @@ Each iteration consists of three primary phases plus the mandatory Phase 2.5 rep
 Severity and confidence come from `szechuan-sauce-principles.md` (loaded in Override 1.5). Every finding is `[SEVERITY, conf=<score>]`. Drop `conf < 80` before Phase 2.
 
 <!-- scope-invariant: phase-1-reads-all-subsystem-files -->
-For the current subsystem, trace the COMPLETE data flow. Read every file. For each finding:
+For the current subsystem, trace the COMPLETE data flow. Read every file the lane admits — for a remainder lane (`<dir>/.`) that excludes the children listed in its `excludes`, those children belong to their own lanes and are not read here. For each finding:
 
 1. **Trace data path**: input → bug → wrong output. Show exact path: "value X constructed at file.ts:123, passed to file2.ts:456, consumed at file3.ts:789 where it means something different because..."
 2. **Check fix history**: Run `git log --oneline --all -- <file>` for any file with a finding. If the same area was "fixed" before, verify the fix landed correctly, consumers use the fixed version, and it didn't introduce dead code.

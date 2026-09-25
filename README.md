@@ -196,7 +196,16 @@ Citadel writes a versioned JSON report with `schema: "1.0"`. Standalone runs use
 # Slash-command alternative:
 /anatomy-park src/                         # Deep subsystem review
 /anatomy-park --dry-run                    # Review only, no fixes
+```
 
+Standalone `/anatomy-park` discovers its review lanes with the same compiled rule the pipeline uses, and stays serial (one lane at a time). Print the lanes yourself with:
+
+```bash
+node ~/.claude/pickle-rick/extension/bin/resolve-scope.js --print-subsystems --target .                       # all lanes, JSON
+node ~/.claude/pickle-rick/extension/bin/resolve-scope.js --print-subsystems --target . --scope branch        # only lanes touched by the branch
+```
+
+```bash
 # Via pipeline (design-safe applies to both anatomy-park and szechuan-sauce phases):
 /pickle-pipeline --design-safe             # Force design-safe for all cleanup phases
 /pickle-pipeline --no-design-safe          # Force off (override auto-detection)

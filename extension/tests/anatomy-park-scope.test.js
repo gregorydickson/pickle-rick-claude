@@ -982,3 +982,113 @@ test('AP-EXT-ITER310-01: a pair that agreed before anchoring still agrees when o
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// AC-15: the standalone /anatomy-park reads lanes from the compiled rule
+// ---------------------------------------------------------------------------
+
+const RESOLVE_SCOPE_JS = path.resolve(__dirname, '..', 'bin', 'resolve-scope.js');
+
+function printSubsystems(args, cwd) {
+  return spawnSync(process.execPath, [RESOLVE_SCOPE_JS, '--print-subsystems', ...args], {
+    cwd,
+    encoding: 'utf-8',
+    timeout: 60_000,
+  });
+}
+
+function gitFixture(cwd, args) {
+  const res = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf-8',
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+      GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    },
+  });
+  assert.equal(res.status, 0, `git ${args.join(' ')} failed: ${res.stderr}`);
+}
+
+// Two child dirs of `src/` that each clear MIN_LANE_FILES, plus a few loose files
+// so the parent keeps a remainder lane.
+function makeSplitTarget() {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-print-target-'));
+  for (const child of ['alpha', 'beta']) {
+    fs.mkdirSync(path.join(target, 'src', child), { recursive: true });
+    for (let i = 0; i < 20; i++) fs.writeFileSync(path.join(target, 'src', child, `f${i}.ts`), `export const v${i} = ${i};\n`);
+  }
+  for (let i = 0; i < 4; i++) fs.writeFileSync(path.join(target, 'src', `loose${i}.ts`), `export const l${i} = ${i};\n`);
+  return target;
+}
+
+test('AC-15: --print-subsystems prints the compiled lane records for the repo root and exits 0', () => {
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  const res = printSubsystems(['--target', repoRoot], repoRoot);
+  assert.equal(res.status, 0, res.stderr);
+  const lanes = JSON.parse(res.stdout);
+  assert.ok(Array.isArray(lanes) && lanes.length >= 5, `expected >= 5 lanes, got ${lanes.length}`);
+  for (const lane of lanes) {
+    assert.ok(lane.name && lane.dir && Array.isArray(lane.excludes), `malformed lane record: ${JSON.stringify(lane)}`);
+  }
+});
+
+test('AC-15: --print-subsystems splits by the lane rule and a remainder lane lists its excluded children', () => {
+  const target = makeSplitTarget();
+  try {
+    const res = printSubsystems(['--target', target], target);
+    assert.equal(res.status, 0, res.stderr);
+    const lanes = JSON.parse(res.stdout);
+    assert.deepStrictEqual(lanes.map((l) => l.name), ['src/.', 'src/alpha', 'src/beta']);
+    const remainder = lanes.find((l) => l.name === 'src/.');
+    assert.deepStrictEqual(remainder.excludes, ['src/alpha', 'src/beta']);
+    assert.deepStrictEqual(lanes.find((l) => l.name === 'src/alpha').excludes, []);
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-15: --print-subsystems --scope narrows the lanes to those admitting an allowed path, without a session root', () => {
+  const target = makeSplitTarget();
+  try {
+    gitFixture(target, ['init', '-q', '-b', 'main']);
+    gitFixture(target, ['add', '.']);
+    gitFixture(target, ['commit', '-qm', 'seed']);
+    const all = JSON.parse(printSubsystems(['--target', target], target).stdout).map((l) => l.name);
+    assert.deepStrictEqual(all, ['src/.', 'src/alpha', 'src/beta']);
+
+    const res = printSubsystems(['--target', target, '--scope', 'paths:src/beta/*.ts'], target);
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepStrictEqual(JSON.parse(res.stdout).map((l) => l.name), ['src/beta']);
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-15: --print-subsystems exits 0 with an empty array when discovery finds nothing', () => {
+  const missing = path.join(os.tmpdir(), `ap-print-missing-${process.pid}-${Date.now()}`);
+  const res = printSubsystems(['--target', missing], os.tmpdir());
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepStrictEqual(JSON.parse(res.stdout), []);
+});
+
+test('AC-15: --print-subsystems with a malformed --scope is a refusal, never an unfiltered list', () => {
+  const target = makeSplitTarget();
+  try {
+    const res = printSubsystems(['--target', target, '--scope', 'nonsense'], target);
+    assert.notEqual(res.status, 0);
+    assert.equal(res.stdout, '', 'a refused scope must not print lanes');
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-15: anatomy-park.md carries no second copy of the lane rule and defers to --print-subsystems', () => {
+  const content = fs.readFileSync(ANATOMY_PARK_MD, 'utf-8');
+  assert.equal(content.split('Do NOT descend further').length - 1, 0, 'Step 3 prose copy of the rule must be gone');
+  assert.ok(content.includes('resolve-scope.js" --print-subsystems'), 'Steps 3 and 7 must call --print-subsystems');
+  assert.match(content, /remainder lane[^\n]*exclud/i, 'the phase-1 marker must say a remainder lane excludes its listed children');
+  assert.match(content, /standalone[^\n]*serial/i, 'the standalone command must state it stays serial');
+  assert.ok(content.includes('<!-- scope-invariant: phase-1-reads-all-subsystem-files -->'), 'pinned marker must stay intact');
+});
