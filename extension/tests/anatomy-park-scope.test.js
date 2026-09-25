@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createLaneSession, setupAnatomyPark, writePipelineStatus, writeSkippedByScope } from '../bin/pipeline-runner.js';
+import { createLaneSession, discoverLanes, setupAnatomyPark, writePipelineStatus, writeSkippedByScope } from '../bin/pipeline-runner.js';
 import { laneRunnerEnv } from '../services/anatomy-lanes.js';
 import { finalizeGateMain } from '../bin/finalize-gate.js';
 import { filterBySubsystem } from '../services/scope-resolver.js';
@@ -1033,6 +1033,8 @@ test('AC-15: --print-subsystems prints the compiled lane records for the repo ro
   for (const lane of lanes) {
     assert.ok(lane.name && lane.dir && Array.isArray(lane.excludes), `malformed lane record: ${JSON.stringify(lane)}`);
   }
+  // The CLI prints the compiled rule's own records, not a re-derivation of them.
+  assert.deepStrictEqual(lanes, discoverLanes(repoRoot).lanes);
 });
 
 test('AC-15: --print-subsystems splits by the lane rule and a remainder lane lists its excluded children', () => {
