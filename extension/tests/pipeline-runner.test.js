@@ -5150,9 +5150,9 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
         assert.equal(c.opts?.detached, process.platform !== 'win32', 'lane runners lead their own process group');
         assert.equal(c.env.PICKLE_STATE_FILE, path.join(c.sessionArg, 'state.json'), 'hooks resolve the LANE state');
       }
-      assert.equal(readJson(path.join(fx.sessionDir, 'state.json')).exit_reason === 'converged'
-        || readJson(path.join(fx.sessionDir, 'pipeline-status.json')).status === 'completed', true);
-      assert.equal(readJson(path.join(fx.sessionDir, 'pipeline-status.json')).completed_phases, 1);
+      const status = readJson(path.join(fx.sessionDir, 'pipeline-status.json'));
+      assert.equal(status.status, 'completed', 'the one converged verdict finalizes the phase as completed');
+      assert.equal(status.completed_phases, 1);
     } finally {
       __setSpawnRunnerForTests(null);
       fx.cleanup();
