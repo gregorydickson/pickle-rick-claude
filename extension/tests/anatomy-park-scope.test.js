@@ -5,8 +5,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { setupAnatomyPark, writePipelineStatus, writeSkippedByScope } from '../bin/pipeline-runner.js';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createLaneSession, setupAnatomyPark, writePipelineStatus, writeSkippedByScope } from '../bin/pipeline-runner.js';
+import { laneRunnerEnv } from '../services/anatomy-lanes.js';
 import { finalizeGateMain } from '../bin/finalize-gate.js';
 import { filterBySubsystem } from '../services/scope-resolver.js';
 
@@ -1091,4 +1092,101 @@ test('AC-15: anatomy-park.md carries no second copy of the lane rule and defers 
   assert.match(content, /remainder lane[^\n]*exclud/i, 'the phase-1 marker must say a remainder lane excludes its listed children');
   assert.match(content, /standalone[^\n]*serial/i, 'the standalone command must state it stays serial');
   assert.ok(content.includes('<!-- scope-invariant: phase-1-reads-all-subsystem-files -->'), 'pinned marker must stay intact');
+});
+
+// ---------------------------------------------------------------------------
+// B-LANES WS-3: a lane session reviews exactly its own lane
+// ---------------------------------------------------------------------------
+
+test('B-LANES one-lane: setupAnatomyPark with lanes:[lane] writes exactly that roster, no re-discovery', () => {
+  const session = makeSession();
+  const target = makeTarget();
+  try {
+    makeSubsystem(target, 'alpha');
+    makeSubsystem(target, 'beta');
+    writeState(session, target);
+    const alpha = { name: 'alpha', dir: 'alpha', excludes: [], testRatioApplies: false, fileCount: 3 };
+    const result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {}, undefined, undefined, { lanes: [alpha] });
+    assert.equal(result, true);
+    const ap = readAnatomyPark(session);
+    assert.deepStrictEqual(ap.subsystems, ['alpha']);
+    assert.deepStrictEqual(ap.lanes, [alpha]);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+const CONFIG_PROTECTION = path.resolve(__dirname, '..', 'hooks', 'handlers', 'config-protection.js');
+const GIT_TIMEOUT = 30_000;
+
+function git(cwd, ...args) {
+  return execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf-8', timeout: GIT_TIMEOUT }).trim();
+}
+
+/** A committed target repo plus a sandbox data root holding the parent session. */
+function makeLaneFixture() {
+  const target = fs.realpathSync(makeTarget());
+  git(target, 'init', '-q', '-b', 'main');
+  git(target, 'config', 'user.email', 'lane@test.local');
+  git(target, 'config', 'user.name', 'Lane');
+  makeSubsystem(target, 'alpha');
+  makeSubsystem(target, 'beta');
+  git(target, 'add', '-A');
+  git(target, 'commit', '-q', '-m', 'seed');
+  const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ap-lane-data-')));
+  fs.mkdirSync(path.join(dataRoot, 'extension', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(dataRoot, 'extension', 'bin', 'log-watcher.js'), '');
+  const parent = path.join(dataRoot, 'sessions', '2026-09-24-lanetest');
+  fs.mkdirSync(parent, { recursive: true });
+  writeState(parent, target);
+  fs.writeFileSync(path.join(parent, 'pipeline.json'), JSON.stringify({ anatomy_max_iterations: 7 }));
+  return { target, dataRoot, parent, sha: git(target, 'rev-parse', 'HEAD') };
+}
+
+function runConfigProtection({ cwd, dataRoot, env, filePath }) {
+  const out = execFileSync(process.execPath, [CONFIG_PROTECTION], {
+    cwd,
+    input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: filePath } }),
+    encoding: 'utf-8',
+    timeout: GIT_TIMEOUT,
+    env: { ...process.env, EXTENSION_DIR: dataRoot, PICKLE_DATA_ROOT: dataRoot, FORCE_COLOR: '0', ...env },
+  });
+  return JSON.parse(out.trim()).decision;
+}
+
+test('B-LANES 13f: a lane worker write to the lane state.json is blocked; the main-checkout control approves', () => {
+  const { target, dataRoot, parent, sha } = makeLaneFixture();
+  try {
+    const alpha = { name: 'alpha', dir: 'alpha', excludes: [], testRatioApplies: false, fileCount: 3 };
+    const lane = createLaneSession(parent, alpha, 1, sha, target);
+    const env = laneRunnerEnv(lane.statePath, {});
+    assert.equal(
+      runConfigProtection({ cwd: lane.worktree, dataRoot, env, filePath: lane.statePath }),
+      'block',
+      'the lane state resolves for a worker inside the lane worktree',
+    );
+    // Mutation control: the same lane state pointing at the main checkout no longer resolves.
+    const raw = JSON.parse(fs.readFileSync(lane.statePath, 'utf-8'));
+    fs.writeFileSync(lane.statePath, JSON.stringify({ ...raw, working_dir: target }));
+    assert.equal(runConfigProtection({ cwd: lane.worktree, dataRoot, env, filePath: lane.statePath }), 'approve');
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test('B-LANES one-lane: a created lane session reviews exactly its lane from its own worktree', () => {
+  const { target, dataRoot, parent, sha } = makeLaneFixture();
+  try {
+    const beta = { name: 'beta', dir: 'beta', excludes: [], testRatioApplies: false, fileCount: 3 };
+    const lane = createLaneSession(parent, beta, 2, sha, target);
+    const result = setupAnatomyPark(lane.laneDir, lane.worktree, 3, EXTENSION_ROOT, () => {}, undefined, undefined, { lanes: [beta] });
+    assert.equal(result, true);
+    assert.deepStrictEqual(readAnatomyPark(lane.laneDir).subsystems, ['beta']);
+    assert.deepStrictEqual(readMicroverse(lane.laneDir).allowed_paths, ['beta/f0.ts', 'beta/f1.ts', 'beta/f2.ts']);
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
 });

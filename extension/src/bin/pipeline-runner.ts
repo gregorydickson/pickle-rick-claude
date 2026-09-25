@@ -81,6 +81,14 @@ import {
   type LaneRecord,
   type ScopeJson,
 } from '../services/scope-resolver.js';
+import {
+  laneSessionDir,
+  laneBranchName,
+  createLaneWorktree,
+  symlinkLaneNodeModules,
+  laneAllowedPaths,
+  buildLaneScope,
+} from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -1867,6 +1875,51 @@ export function claimPipelineRunnerActive(statePath: string): State {
   });
 }
 
+function readAnatomyMaxIterations(parentSessionDir: string): number {
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = (readRecoverableJsonObject(path.join(parentSessionDir, 'pipeline.json')) as Record<string, unknown> | null) ?? {};
+  } catch { /* unreadable pipeline.json → compiled defaults */ }
+  return parsePipelineConfig(raw).anatomy_max_iterations;
+}
+
+/**
+ * B-LANES WS-3: create lane session `index` as a sibling of `parentSessionDir` — its own
+ * worktree on `pickle-lane/<session>/<index>` at `phaseStartSha`, `node_modules` linked from
+ * the main checkout, a `scope.json` fenced to the lane, and a `state.json` seeded from the
+ * parent whose `working_dir` is the worktree, so hooks run under
+ * `PICKLE_STATE_FILE=<statePath>` resolve the lane. Only this runner writes lane state.
+ * The one-lane `anatomy-park.json` is `setupAnatomyPark(..., { lanes: [lane] })`.
+ */
+export function createLaneSession(
+  parentSessionDir: string,
+  lane: LaneRecord,
+  index: number,
+  phaseStartSha: string,
+  target: string,
+): { laneDir: string; worktree: string; branch: string; statePath: string } {
+  const laneDir = laneSessionDir(parentSessionDir, index);
+  const worktree = path.join(laneDir, 'wt');
+  const branch = laneBranchName(parentSessionDir, index);
+  const repoRoot = gitRepoRoot(target);
+  fs.mkdirSync(laneDir, { recursive: true });
+  createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
+  symlinkLaneNodeModules(repoRoot, worktree);
+
+  const statePath = path.join(laneDir, 'state.json');
+  const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
+  // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing lane state to lock against
+  sm.forceWrite(statePath, { ...sm.read(path.join(parentSessionDir, 'state.json')), working_dir: workingDir, session_dir: laneDir });
+  resetStateForPhase(statePath, 'anatomy-park.md', readAnatomyMaxIterations(parentSessionDir));
+  claimPipelineRunnerActive(statePath);
+
+  writeStateFile(
+    path.join(laneDir, 'scope.json'),
+    buildLaneScope(laneAllowedPaths(repoRoot, target, lane, phaseStartSha), phaseStartSha),
+  );
+  return { laneDir, worktree, branch, statePath };
+}
+
 /**
  * AC-LPB-05: when pipeline-runner re-attaches to a session that already has
  * prior progress (iteration > 0 OR phases_entered non-empty), this is a
@@ -2810,15 +2863,12 @@ function writeAnatomyConfig(
   writeStateFile(path.join(sessionDir, 'anatomy-park.json'), apState);
 }
 
-export function setupAnatomyPark(
+function resolveAnatomyEffectiveScope(
   sessionDir: string,
   target: string,
-  stallLimit: number,
-  extensionRoot: string,
+  scope: { allowedPaths: string[]; repoRoot: string } | undefined,
   log: (msg: string) => void,
-  scope?: { allowedPaths: string[]; repoRoot: string },
-  designSafe?: boolean,
-): PhaseSetupResult {
+): { allowedPaths: string[]; repoRoot: string } | undefined {
   const persistedAllowedPaths = !scope || scope.allowedPaths.length === 0
     ? readPersistedAllowedPaths(sessionDir)
     : undefined;
@@ -2850,8 +2900,22 @@ export function setupAnatomyPark(
   if (!scope && effectiveScope) {
     log(`anatomy-park: reusing persisted scope.json with ${effectiveScope.allowedPaths.length} allowed path(s)`);
   }
+  return effectiveScope;
+}
 
-  const subsystems = resolveAnatomySubsystems(sessionDir, target, effectiveScope, log);
+export function setupAnatomyPark(
+  sessionDir: string,
+  target: string,
+  stallLimit: number,
+  extensionRoot: string,
+  log: (msg: string) => void,
+  scope?: { allowedPaths: string[]; repoRoot: string },
+  designSafe?: boolean,
+  options?: { lanes?: LaneRecord[] },
+): PhaseSetupResult {
+  const effectiveScope = resolveAnatomyEffectiveScope(sessionDir, target, scope, log);
+  // B-LANES WS-3: a lane session reviews the roster it was given; only the parent discovers.
+  const subsystems = options?.lanes ?? resolveAnatomySubsystems(sessionDir, target, effectiveScope, log);
   if (!Array.isArray(subsystems)) return subsystems;
 
   const citadelReport = readCitadelReport(sessionDir);

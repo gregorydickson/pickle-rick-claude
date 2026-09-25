@@ -41,7 +41,9 @@ import {
   runRelaunchSelfHeal,
   main,
   gitRepoRoot,
+  createLaneSession,
 } from '../bin/pipeline-runner.js';
+import { createLaneWorktree } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
@@ -4946,5 +4948,101 @@ describe('AP-EXT-ITER324-01: an unproven repo-root anchor is reported, not silen
     // either would make those citations name a phantom symbol.
     assert.match(src, /function gitRepoRoot\(/, 'gitRepoRoot remains the shared home');
     assert.match(src, /function resolveGitRepoRoot\(/, 'resolveGitRepoRoot remains the citadel entry point');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-LANES WS-3 (13h): lane sessions are siblings under the data root, never inside the target
+// ---------------------------------------------------------------------------
+
+describe('B-LANES 13h lane session placement', () => {
+  const LANE_GIT_TIMEOUT = 30_000;
+  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+    cwd, encoding: 'utf-8', timeout: LANE_GIT_TIMEOUT,
+  }).trim();
+  const isUnder = (child, parent) => {
+    const rel = path.relative(parent, child);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+
+  function makePlacementFixture() {
+    const target = fs.realpathSync(tmpDir());
+    git(target, 'init', '-q', '-b', 'main');
+    git(target, 'config', 'user.email', 'lane@test.local');
+    git(target, 'config', 'user.name', 'Lane');
+    for (const dir of ['alpha', 'beta', 'big/inner']) {
+      fs.mkdirSync(path.join(target, dir), { recursive: true });
+      fs.writeFileSync(path.join(target, dir, 'a.ts'), 'export const a = 1;\n');
+    }
+    fs.writeFileSync(path.join(target, 'big', 'top.ts'), 'export const t = 1;\n');
+    fs.mkdirSync(path.join(target, 'extension'));
+    fs.writeFileSync(path.join(target, 'extension', 'package.json'), '{}\n');
+    fs.writeFileSync(path.join(target, '.gitignore'), 'extension/node_modules\n');
+    git(target, 'add', '-A');
+    git(target, 'commit', '-q', '-m', 'seed');
+    fs.mkdirSync(path.join(target, 'extension', 'node_modules', 'dep'), { recursive: true });
+    fs.writeFileSync(path.join(target, 'scratch.txt'), 'operator scratch\n');
+    const dataRoot = fs.realpathSync(tmpDir());
+    const parent = path.join(dataRoot, 'sessions', '2026-09-24-placement');
+    fs.mkdirSync(parent, { recursive: true });
+    writeBaseState(path.join(parent, 'state.json'), { working_dir: target, session_dir: parent, active: true });
+    fs.writeFileSync(path.join(parent, 'pipeline.json'), JSON.stringify({ anatomy_max_iterations: 7 }));
+    return { target, dataRoot, parent, sha: git(target, 'rev-parse', 'HEAD') };
+  }
+
+  const lanes = [
+    { name: 'alpha', dir: 'alpha', excludes: [], testRatioApplies: false, fileCount: 1 },
+    { name: 'beta', dir: 'beta', excludes: [], testRatioApplies: false, fileCount: 1 },
+    { name: 'big/.', dir: 'big', excludes: ['big/inner'], testRatioApplies: false, fileCount: 1 },
+  ];
+
+  test('three lane sessions leave the target untracked set unchanged and live under the data root', () => {
+    const { target, dataRoot, parent, sha } = makePlacementFixture();
+    try {
+      const untracked = () => git(target, 'ls-files', '--others', '--exclude-standard');
+      const before = untracked();
+      assert.ok(before.includes('scratch.txt'), 'fixture precondition: the target has an untracked file');
+      const created = lanes.map((lane, i) => createLaneSession(parent, lane, i + 1, sha, target));
+      assert.equal(untracked(), before);
+      for (const [i, lane] of created.entries()) {
+        const worktree = fs.realpathSync(lane.worktree);
+        assert.ok(isUnder(worktree, dataRoot), `${worktree} is under the data root`);
+        assert.ok(!isUnder(worktree, target), `${worktree} is not under the target`);
+        assert.equal(lane.laneDir, `${parent}--lane-${i + 1}`);
+        assert.equal(lane.branch, `pickle-lane/2026-09-24-placement/${i + 1}`);
+        assert.equal(git(worktree, 'rev-parse', 'HEAD'), sha);
+        assert.equal(git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD'), lane.branch);
+        assert.ok(fs.lstatSync(path.join(worktree, 'extension', 'node_modules')).isSymbolicLink());
+        const state = JSON.parse(fs.readFileSync(lane.statePath, 'utf-8'));
+        assert.equal(state.working_dir, worktree);
+        assert.equal(state.session_dir, lane.laneDir);
+        assert.equal(state.active, true);
+        assert.equal(state.command_template, 'anatomy-park.md');
+        assert.equal(state.max_iterations, 7);
+        assert.equal(state.iteration, 0);
+      }
+      const remainderScope = JSON.parse(fs.readFileSync(path.join(created[2].laneDir, 'scope.json'), 'utf-8'));
+      assert.deepStrictEqual(remainderScope.allowed_paths, ['big/top.ts'], 'the remainder lane excludes its split child');
+      assert.equal(remainderScope.mode, 'paths');
+      assert.equal(remainderScope.base_sha, sha);
+      const parentState = JSON.parse(fs.readFileSync(path.join(parent, 'state.json'), 'utf-8'));
+      assert.equal(parentState.working_dir, target, 'the parent state is untouched');
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('a worktree path inside the target is refused before git runs', () => {
+    const { target, dataRoot, sha } = makePlacementFixture();
+    try {
+      const inside = path.join(target, '.lanes', 'wt');
+      fs.mkdirSync(path.dirname(inside), { recursive: true });
+      assert.throws(() => createLaneWorktree(target, inside, 'pickle-lane/x/1', sha), /inside the target repository/);
+      assert.equal(fs.existsSync(inside), false);
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 });
