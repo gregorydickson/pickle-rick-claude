@@ -5491,6 +5491,19 @@ describe('B-LANES WS-3: lane integration', () => {
   });
 
 
+  test('harden: a lane whose runner never started does not stay active', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(async () => { throw new Error('spawn ENOENT'); });
+      assert.equal(await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 2), 1);
+      for (const n of [1, 2]) {
+        assert.equal(readJson(path.join(`${fx.sessionDir}--lane-${n}`, 'state.json')).active, false, `lane ${n} state`);
+      }
+    } finally {
+      fx.cleanup();
+    }
+  });
+
   test('harden: a retained lane branch past RETAINED_BRANCH_MAX_AGE_DAYS is deleted and reported; a young one is kept', () => {
     const fx = makeFixture();
     try {

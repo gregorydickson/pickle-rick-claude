@@ -1667,15 +1667,23 @@ async function runOneLane(run, lane, index) {
     }
     run.statePaths.push(session.statePath);
     run.worktrees.push(session.worktree);
+    try {
+        return await runLaneSession(run, lane, session, startedAt);
+    }
+    finally {
+        // createLaneSession claimed the lane active; however the lane ended, it is not running now.
+        deactivateLaneState(session.statePath, runtime.log);
+    }
+}
+async function runLaneSession(run, lane, session, startedAt) {
+    const { runtime } = run;
     const setup = setupAnatomyPark(session.laneDir, session.workingDir, runtime.config.anatomy_stall_limit, runtime.extensionRoot, runtime.log, undefined, runtime.designSafe, { lanes: [lane] });
     if (setup !== true) {
         runtime.log(`anatomy lane ${lane.name}: setup skipped (${setup.skipReason})`);
         return notStarted('error');
     }
-    if (run.cancelledAtMs !== null) {
-        deactivateLaneState(session.statePath, runtime.log);
+    if (run.cancelledAtMs !== null)
         return notStarted('stopped');
-    }
     runtime.log(`anatomy lane ${lane.name}: started in ${session.laneDir}`);
     try {
         await runSpawnRunner('node', [
