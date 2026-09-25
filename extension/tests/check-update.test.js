@@ -519,14 +519,20 @@ describe('downloadRelease', () => {
         assert.equal(result, null);
     });
 
-    test('returns string path on valid release', () => {
-        // Empty tag downloads latest release — gh treats it as "latest"
-        // This validates the happy path when gh is available
-        const result = downloadRelease('');
-        if (result !== null) {
-            assert.ok(result.endsWith('.tar.gz'));
-            // Clean up downloaded file
-            try { fs.rmSync(path.dirname(result), { recursive: true, force: true }); } catch { /* */ }
+    test('refuses an empty or whitespace-only tag without spawning gh', () => {
+        // gh treats an empty tag as "latest" — a refusing, recording stub proves no call is made.
+        const ghDir = makeGhFixture('echo "$*" >> "$(dirname "$0")/calls"\nexit 1');
+        const callsFile = path.join(ghDir, 'calls');
+        const origPath = process.env.PATH;
+        try {
+            process.env.PATH = `${ghDir}:${origPath}`;
+            assert.equal(downloadRelease(''), null);
+            assert.equal(downloadRelease('  '), null);
+            const calls = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf-8') : '';
+            assert.equal(calls, '', `gh must not be invoked; recorded: ${calls}`);
+        } finally {
+            process.env.PATH = origPath;
+            fs.rmSync(ghDir, { recursive: true, force: true });
         }
     });
 

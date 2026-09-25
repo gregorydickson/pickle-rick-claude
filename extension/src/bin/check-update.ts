@@ -210,6 +210,11 @@ export function getCurrentVersion(): string {
 }
 
 export function downloadRelease(tag: string): string | null {
+  // gh resolves an empty tag to "latest"; a missing tag must never mean that.
+  if (tag.trim() === '') {
+    log('downloadRelease refused: empty tag');
+    return null;
+  }
   let tmpDir = '';
   try {
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-update-')));
