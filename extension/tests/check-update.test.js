@@ -64,13 +64,15 @@ function withGhStub(scriptBody, fn) {
 
 // ---------------------------------------------------------------------------
 // File-level sandbox (B-UPGRADE-ISO): no case may reach the real `gh`, the real
-// HOME or the real install root (deploy-audit.log). HOME and PICKLE_INSTALL_ROOT
-// point into a tmp dir, and a REFUSING, recording `gh` sits first on PATH. A
+// HOME or the real install root (deploy-audit.log, debug.log). HOME,
+// PICKLE_INSTALL_ROOT and EXTENSION_DIR point into a tmp dir — EXTENSION_DIR too,
+// because the extension root's HOME default is captured at import, before this
+// hook runs. A REFUSING, recording `gh` sits first on PATH. A
 // per-test stub prepends its own dir and wins; a call that reaches this refuser
 // escaped every per-test stub, which the `after` hook turns into a failure.
 // ---------------------------------------------------------------------------
 
-const sandbox = { root: '', callsFile: '', env: {} };
+const sandbox = { root: '', callsFile: '', extensionDir: '', env: {} };
 
 before(() => {
     sandbox.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'check-update-sandbox-')));
@@ -85,8 +87,13 @@ before(() => {
     sandbox.env = {
         HOME: process.env.HOME,
         PICKLE_INSTALL_ROOT: process.env.PICKLE_INSTALL_ROOT,
+        EXTENSION_DIR: process.env.EXTENSION_DIR,
         PATH: process.env.PATH,
     };
+    sandbox.extensionDir = path.join(sandbox.root, 'extension-root');
+    fs.mkdirSync(path.join(sandbox.extensionDir, 'extension', 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(sandbox.extensionDir, 'extension', 'bin', 'log-watcher.js'), '');
+    process.env.EXTENSION_DIR = sandbox.extensionDir;
     process.env.HOME = path.join(sandbox.root, 'home');
     process.env.PICKLE_INSTALL_ROOT = path.join(sandbox.root, 'install-root');
     process.env.PATH = `${binDir}:${sandbox.env.PATH}`;
@@ -1121,6 +1128,9 @@ ${tarballs.map((tarball) => `cp ${JSON.stringify(tarball)} "$dest/$(basename ${J
 describe('getLatestRelease', () => {
     test('returns null or valid ReleaseInfo, never throws', () => {
         assert.equal(withGhStub('exit 1', () => getLatestRelease()), null);
+        // No per-describe EXTENSION_DIR here: the failure log must land in the sandbox root.
+        const debugLog = fs.readFileSync(path.join(sandbox.extensionDir, 'debug.log'), 'utf-8');
+        assert.match(debugLog, /\[check-update\] gh api failed/);
         const result = withGhStub(
             'echo \'{"tag_name":"v2.0.0","assets":[]}\'',
             () => getLatestRelease(),
@@ -1478,10 +1488,23 @@ describe('edge cases', () => {
     });
 
     test('writeCache handles non-writable dir gracefully', () => {
-        // Point EXTENSION_DIR at a nonexistent nested dir — writeCache should not throw
-        process.env.EXTENSION_DIR = path.join(tmpDir, 'no', 'such', 'deep', 'dir');
-        assert.doesNotThrow(() => {
-            writeCache({ last_check_epoch: 1, latest_version: '1.0.0', current_version: '1.0.0' });
-        });
+        // Point EXTENSION_DIR at a nonexistent nested dir — writeCache should not throw.
+        // Without the test opt-in a sentinel-less root falls back to the REAL install root.
+        const origNodeEnv = process.env.NODE_ENV;
+        const origDirTest = process.env.EXTENSION_DIR_TEST;
+        process.env.NODE_ENV = 'test';
+        process.env.EXTENSION_DIR_TEST = '1';
+        try {
+            process.env.EXTENSION_DIR = path.join(tmpDir, 'no', 'such', 'deep', 'dir');
+            assert.doesNotThrow(() => {
+                writeCache({ last_check_epoch: 1, latest_version: '1.0.0', current_version: '1.0.0' });
+            });
+            assert.equal(readCache().latest_version, '', 'the write must not land in a fallback root');
+        } finally {
+            if (origNodeEnv === undefined) delete process.env.NODE_ENV;
+            else process.env.NODE_ENV = origNodeEnv;
+            if (origDirTest === undefined) delete process.env.EXTENSION_DIR_TEST;
+            else process.env.EXTENSION_DIR_TEST = origDirTest;
+        }
     });
 });
