@@ -1586,18 +1586,22 @@ export type TestScriptSafety =
   | { runnable: true }
   | { runnable: false; script: string; unsafeLeaf: string | null };
 
-export async function classifyTestScriptSafety(projectType: string, dir: string): Promise<TestScriptSafety> {
-  if (!['pnpm', 'npm', 'yarn'].includes(projectType)) return { runnable: true };
-  const pkgJsonPath = path.join(dir, 'package.json');
-  let scriptContent = '';
-  let scripts: Record<string, string> = {};
+const PACKAGE_MANAGER_TYPES = ['pnpm', 'npm', 'yarn'];
+
+/** The package's `package.json` `scripts`, or `null` when the file is absent or unparseable. */
+async function readPackageScripts(dir: string): Promise<Record<string, string> | null> {
   try {
-    const raw = await fs.promises.readFile(pkgJsonPath, 'utf-8');
-    scripts = (JSON.parse(raw) as { scripts?: Record<string, string> }).scripts ?? {};
-    scriptContent = scripts.test ?? '';
+    const raw = await fs.promises.readFile(path.join(dir, 'package.json'), 'utf-8');
+    return (JSON.parse(raw) as { scripts?: Record<string, string> }).scripts ?? {};
   } catch {
-    // file absent or unreadable — leave scriptContent empty
+    return null;
   }
+}
+
+export async function classifyTestScriptSafety(projectType: string, dir: string): Promise<TestScriptSafety> {
+  if (!PACKAGE_MANAGER_TYPES.includes(projectType)) return { runnable: true };
+  const scripts = (await readPackageScripts(dir)) ?? {};
+  const scriptContent = scripts.test ?? '';
 
   const leafCommands = resolveDelegatedScriptLeaves('test', scripts);
   const commandsToInspect = leafCommands.length > 0 ? leafCommands : [scriptContent].filter((value) => value.length > 0);
@@ -1607,8 +1611,25 @@ export async function classifyTestScriptSafety(projectType: string, dir: string)
   return { runnable: false, script: scriptContent, unsafeLeaf: null };
 }
 
-async function canRunTestScript(check: GateCheck, projectType: ProjectType, dir: string, emit: GateEmit): Promise<boolean> {
-  if (check !== 'tests') return true;
+/**
+ * The pre-spawn predicate: a package-manager script the package does not define is never spawned
+ * (spawning it yields only `ERR_PNPM_NO_SCRIPT`, an absolute-path failure row and a `'failed'`
+ * status). An unparseable `package.json` reads as "unknown" and still spawns, so a real breakage is
+ * reported rather than skipped.
+ */
+async function canRunTestScript(
+  check: GateCheck,
+  cmd: string,
+  projectType: ProjectType,
+  dir: string,
+  emit: GateEmit,
+): Promise<boolean> {
+  if (check !== 'tests') {
+    const script = PACKAGE_MANAGER_TYPES.includes(projectType) ? delegatedScriptName(cmd) : null;
+    if (script === null) return true;
+    const scripts = await readPackageScripts(dir);
+    return scripts === null || Object.hasOwn(scripts, script);
+  }
   const safety = await classifyTestScriptSafety(projectType, dir);
   if (safety.runnable) return true;
   if (safety.unsafeLeaf) {
@@ -1750,7 +1771,7 @@ async function collectGateFailures(
         checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
         continue;
       }
-      if (!(await canRunTestScript(check, projectType, dir, emit))) {
+      if (!(await canRunTestScript(check, cmd, projectType, dir, emit))) {
         checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
         continue;
       }
