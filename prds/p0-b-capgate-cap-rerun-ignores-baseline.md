@@ -74,3 +74,101 @@ into adding a script to the target repo's `package.json` so a gate command would
 
 The gate's lint/test time budgets (they are per-machine tunables); new scope-fence machinery (item 4 only
 measures).
+
+## Refinement — BINDING decisions (override earlier text where they differ)
+
+*(refined: requirements, codebase and risk-scope analysts, 3 cycles each on claude-opus-5-5, read at `4a8b0c4c`)*
+
+**Premise, measured.** The cap has THREE withhold producers (AP-EXT-ITER221-01, `extension/src/bin/CLAUDE.md` ~`:351`):
+`deferConvergenceOnGateRegression` (`microverse-runner.ts:1512-1529`); the interface-sweep **unmeasured** withhold
+(`:1446-1458`); the interface-sweep self-introduced withhold (`:1459-1478`, `selfRedOpen`). On a pnpm monorepo a
+package without the gate's script makes the typecheck sweep unmeasurable (`typecheck_unmeasurable`) every iteration,
+which alone burns the three deferrals. The field session is not on this machine, so which producer fired there is a
+hypothesis; the fix covers both routes. `new_failures_vs_baseline: 0` is a strict-mode literal
+(`convergence-gate.ts:1988`), not a measurement.
+
+**Order: T-SCRIPT → T-DISCLOSE → T-CAP.**
+
+1. **T-SCRIPT (prerequisite).** `canRunTestScript` (`convergence-gate.ts:~1610-1622`) returns `true` for every non-`tests`
+   check. Widen it to a script-presence check for every package-manager check: derive the script name from the command
+   via `delegatedScriptName` / `PACKAGE_MANAGER_RUN_RE`, read the package's `package.json` `scripts` (the reader
+   `classifyTestScriptSafety` already exists), and if the name is absent, skip the spawn → `'skipped'` (NOT unmeasured:
+   `extension/src/services/CLAUDE.md:226` keeps `'skipped'` out of the unmeasured set on purpose). This removes the
+   `ERR_PNPM_NO_SCRIPT` row entirely (whose `file` is an absolute `pkgDir`, which `isUnmeasuredFailure` would misread as a
+   real failure) and keeps baseline capture certifiable (`project_type !== null`).
+2. **T-DISCLOSE.** A new microverse-state field carries cap caveats. `pipeline-runner.ts` records disposition
+   `converged_with_unmeasured:<checks>` via `appendPhaseDisposition`, following the
+   `done_over_unmeasured_worker_gate_tests:` precedent (`pipeline-runner.ts:~5683-5687`): reported, NOT counted
+   `nonConvergent`, no new status handling. `<checks>` = every requested cap check whose status is not `'ran'` and that
+   has a configured command (so a total-deadline `break` that leaves `lint` `'skipped'` still names it —
+   `convergence-gate.ts:1742-1767`). Register the field in `extension/src/types/index.ts` in this ticket.
+   `GateCheckStatus` stays exactly three members.
+3. **T-CAP.** In `handlePostConvergenceGateDeferral` (`microverse-runner.ts:~5724-5787`):
+   `baselinePath = path.join(ctx.sessionDir,'gate','baseline.json')`;
+   `mode = await pathExists(baselinePath) ? 'baseline' : 'strict'` (precedent `:833`); pass `baselinePath` ONLY in
+   baseline mode (never create the file); pass `allowedPaths: currentMv.allowed_paths` (parity with capture,
+   `:681-689`; widen the param with `currentMv?`, and update narrow-shape callers in the same ticket). **Do NOT pass
+   `since`**: `isSelfIntroducedFailure` is file-axis (`convergence-gate.ts:316-321`), so a phase-wide `since` keeps every
+   pre-existing failure in a file the phase edited → the #48 symptom. Self-introduced breaks are already caught per
+   iteration (`since: preIterSha`, sticky `postConvergenceSelfRedOpen`). Strict fallback logs
+   `[R-APXG-3] no baseline at <path> — strict cap gate`. When every remaining cap failure has
+   `ruleOrCode === 'GATE_CHECK_TIMEOUT'`, converge and carry the T-DISCLOSE caveat. A thrown cap gate → `'converged'`,
+   log the message, carry the caveat, and NEVER print the bare `convergence signal trusted — exiting cleanly` line.
+   Leave the `tsc_gate_failed` / `compile_error` emission and its pin alone.
+4. **Fence (research inside T-CAP, no new machinery).** Record in T-CAP's research artifact:
+   `SCOPE_FENCE_ANATOMY_PATH_ACTIVE: yes|no` and `SCOPE_FENCE_BLOCKS_COMMIT: yes|no` for an out-of-allowlist target
+   `package.json` edit, with the evidence command. Add a regression case in an existing `check-scope-diff` test file only
+   if both are yes.
+
+### Acceptance criteria (replace the PRD's)
+Hosts (existing files only): `tests/services/convergence-gate-workspaces.test.js` (fast; T-SCRIPT),
+`tests/rpgt-exit-paths.test.js` (integration, real `runGate`; T-CAP), `tests/pipeline-runner.test.js` (T-DISCLOSE).
+No existing `mode: 'strict'` assertion is in scope (`rpgt-exit-paths.test.js:~308,326` pin the ABORT path;
+`convergence-gate-no-disown-wiring.test.js:~1607` bounds the cap and must stay green).
+
+- **AC-S (T-SCRIPT).** Two-package workspace fixture, only package B defines `lint`: `runGate({checks:['lint']})` spawns
+  nothing in A (zero failures whose `file` is A's dir), `check_status.lint === 'ran'`, and a baseline captured over the
+  fixture has `project_type !== null`. Measure the HEAD half first (expected: an absolute-path `missing pnpm script` row,
+  `check_status.lint === 'failed'`); if HEAD already skips, declare `zero_diff_intent: already-satisfied`.
+- **AC-1a.** Baseline F captured via the real `runGate({mode:'baseline',…})`; cap sees exactly F → `'converged'`.
+  Control: `mode:'strict'` at the cap → red.
+- **AC-1c.** The fixture commits an edit to F's file leaving F byte-identical → `'converged'`. Control: adding
+  `since: <pre-edit sha>` → red.
+- **AC-1d.** Workspace fixture with a failing OUT-of-scope package, baseline captured with `allowedPaths` →
+  `'converged'`. Control: dropping `allowedPaths` at the cap → red.
+- **AC-2.** F plus one new in-scope failure → `'error'` (unchanged).
+- **AC-3.** Only `GATE_CHECK_TIMEOUT` rows remain after subtraction → `'converged'` and the disposition contains
+  `converged_with_unmeasured:`; a total-deadline timeout during `typecheck` lists `lint` too. Timeout plus any other
+  remaining failure → `'error'`. Control: replace the timeout predicate with `() => false` → the converge row reds.
+- **AC-6.** No `gate/baseline.json` + red tree → `'error'`, the file is still absent afterwards, and the log contains
+  `[R-APXG-3] no baseline at`. Control: pass `baselinePath` unconditionally → red.
+- **AC-7.** A throwing cap gate → `'converged'`, the log contains the error message, the disposition contains
+  `converged_with_unmeasured`, and the log does NOT contain `convergence signal trusted`.
+- **AC-5.** `./node_modules/.bin/tsc --noEmit` and `./node_modules/.bin/eslint src/ --max-warnings=0` exit 0; touched
+  files pass via `node bin/test-runner.js <file>` (Node 22 is CI-supplied).
+
+### Out of scope (verbatim)
+(1) finalize-gate's strict, baseline-free gate on non-`converged` microverse exits (`run-finalize-gate-incomplete`):
+the same pre-existing debt still yields `finalize_gate_failed:*` on `anatomy_non_convergent`, iteration-cap and budget
+exits — a follow-up. (2) Per-cycle unmeasured semantics (`runChangedPerIterationGate`, the interface-sweep withhold,
+the uncertifiable-baseline defer), governed by `extension/src/services/CLAUDE.md:226` and `:237`. (3) The cap re-checks
+`['typecheck','lint']` only, not `tests`. (4) Convergence files other than `anatomy-park.json` (no baseline by default →
+the strict fallback line is expected). (5) Repos whose baseline is uncertifiable never reach the cap (`selfRedOpen`
+latch); T-SCRIPT shrinks that population. Cite catalog entries by FILE + topic: the id `AP-EXT-ITER6-01` labels five
+unrelated entries.
+
+### Residual risk (stated)
+With the baseline absent, the per-iteration gate also runs strict and bumps `iteration_regressions`, so the cap still
+fires and errors exactly as in #48; the fallback is correct but does not cure that population.
+
+## Implementation Task Breakdown
+
+| Order | ID | Title |
+|---|---|---|
+| 10 | 8b3ed8df | The gate never spawns a package-manager script that the package does not define |
+| 20 | c308e582 | Cap caveats are carried in microverse state and reported as a converged_with_unmeasured phase disposition |
+| 30 | 5941c07c | The anatomy-park deferral cap judges only failures that are new against the session baseline |
+| 40 | e681e2f6 | Harden: code quality review of B-CAPGATE |
+| 50 | 1f2284aa | Audit: data flow integrity for B-CAPGATE |
+| 60 | b74e2a73 | Harden: test quality review of B-CAPGATE |
+| 70 | 41e4ce5c | Audit: cross-reference consistency for B-CAPGATE |
