@@ -1194,16 +1194,21 @@ test('B-LANES 13d: two non-success lanes → the parent carries the roster-first
   const logs = [];
   const stamp = stampLaneReasons((n) => ({ 1: 'converged', 2: 'no_progress', 3: 'anatomy_non_convergent' })[n]);
   const finished = [];
+  // Barrier, not a sleep: lane 2 ends only once lane 3 has, however slow lane 3's setup is.
+  let lane3Done;
+  const lane3Finished = new Promise((resolve) => { lane3Done = resolve; });
   __setSpawnRunnerForTests(async (cmd, args, ...rest) => {
-    if (/--lane-2$/.test(args[1])) await new Promise((resolve) => setTimeout(resolve, 300));
+    const n = Number(/--lane-(\d+)$/.exec(args[1])[1]);
+    if (n === 2) await lane3Finished;
     const result = await stamp(cmd, args, ...rest);
-    finished.push(Number(/--lane-(\d+)$/.exec(args[1])[1]));
+    finished.push(n);
+    if (n === 3) lane3Done();
     return result;
   });
 
   const exitCode = await runAnatomyLanes({ ...runtime, log: (m) => logs.push(m) }, lanes, 3);
 
-  assert.equal(finished.indexOf(2) > finished.indexOf(3), true, `precondition: lane 2 finished after lane 3 (${finished})`);
+  assert.ok(finished.indexOf(2) > finished.indexOf(3), `precondition: lane 2 finished after lane 3 (${finished})`);
   assert.equal(exitCode, 1);
   assert.equal(JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8')).exit_reason, 'no_progress');
   assert.ok(logs.includes('anatomy lanes: verdict no_progress (converged, no_progress, anatomy_non_convergent)'), logs.join('\n'));
