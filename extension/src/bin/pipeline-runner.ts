@@ -541,10 +541,13 @@ function splitLane(dir: string, sourceFiles: string[], isRoot: boolean): LaneRec
   return [...qualifying.flatMap((child) => splitLane(child, byChild.get(child)!, false)), ...remainder];
 }
 
+const MIN_ROOT_SOURCE_FILES = 3;
+const MAX_ROOT_TEST_RATIO = 0.8;
+
 /** The pre-split admission rule, applied ONLY to an unsplit discovery root. */
 function clearsRootFloor(sourceFiles: string[]): boolean {
   const testCount = sourceFiles.filter((file) => isTestFile(path.posix.basename(file))).length;
-  return sourceFiles.length >= 3 && testCount / sourceFiles.length <= 0.8;
+  return sourceFiles.length >= MIN_ROOT_SOURCE_FILES && testCount / sourceFiles.length <= MAX_ROOT_TEST_RATIO;
 }
 
 /**

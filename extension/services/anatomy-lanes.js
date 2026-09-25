@@ -18,8 +18,11 @@ const NO_GENERATED = new Set();
 export function laneSessionDir(parentSessionDir, index) {
     return `${path.resolve(parentSessionDir)}--lane-${index}`;
 }
+function sessionBranchPrefix(sessionDir) {
+    return `pickle-lane/${path.basename(path.resolve(sessionDir))}/`;
+}
 export function laneBranchName(parentSessionDir, index) {
-    return `pickle-lane/${path.basename(path.resolve(parentSessionDir))}/${index}`;
+    return `${sessionBranchPrefix(parentSessionDir)}${index}`;
 }
 function realpathOrResolve(p) {
     try {
@@ -185,9 +188,6 @@ function laneGitOk(cwd, args) {
         return false;
     }
 }
-function sessionBranchPrefix(sessionDir) {
-    return `pickle-lane/${path.basename(path.resolve(sessionDir))}/`;
-}
 export function integrationBranchName(sessionDir) {
     return `${sessionBranchPrefix(sessionDir)}integration`;
 }
@@ -304,7 +304,7 @@ export function integrateLanes(input) {
     }
     catch (err) {
         log(`anatomy lanes: integration failed: ${err instanceof Error ? err.message : String(err)} — lane branches kept`);
-        outcomes.forEach((_, i) => { if (commits[i].length > 0 && outcomes[i] === 'integrated')
+        outcomes.forEach((_, i) => { if (carried(i))
             outcomes[i] = 'integration_ff_failed'; });
     }
     finally {

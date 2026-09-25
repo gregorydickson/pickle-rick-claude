@@ -21,8 +21,12 @@ export function laneSessionDir(parentSessionDir: string, index: number): string 
   return `${path.resolve(parentSessionDir)}--lane-${index}`;
 }
 
+function sessionBranchPrefix(sessionDir: string): string {
+  return `pickle-lane/${path.basename(path.resolve(sessionDir))}/`;
+}
+
 export function laneBranchName(parentSessionDir: string, index: number): string {
-  return `pickle-lane/${path.basename(path.resolve(parentSessionDir))}/${index}`;
+  return `${sessionBranchPrefix(parentSessionDir)}${index}`;
 }
 
 function realpathOrResolve(p: string): string {
@@ -219,10 +223,6 @@ function laneGitOk(cwd: string, args: string[]): boolean {
   }
 }
 
-function sessionBranchPrefix(sessionDir: string): string {
-  return `pickle-lane/${path.basename(path.resolve(sessionDir))}/`;
-}
-
 export function integrationBranchName(sessionDir: string): string {
   return `${sessionBranchPrefix(sessionDir)}integration`;
 }
@@ -350,7 +350,7 @@ export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult
     }
   } catch (err) {
     log(`anatomy lanes: integration failed: ${err instanceof Error ? err.message : String(err)} — lane branches kept`);
-    outcomes.forEach((_, i) => { if (commits[i].length > 0 && outcomes[i] === 'integrated') outcomes[i] = 'integration_ff_failed'; });
+    outcomes.forEach((_, i) => { if (carried(i)) outcomes[i] = 'integration_ff_failed'; });
   } finally {
     removeLaneWorktrees(repoRoot, [worktree]);
   }
