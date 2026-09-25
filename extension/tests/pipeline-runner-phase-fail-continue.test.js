@@ -1185,3 +1185,44 @@ test('B-LANES 13g falsifying control: without the aggregation write the same lan
   assert.equal(counters.completed, 1, 'no aggregation → the non-convergent lane is reported as completed');
   assert.equal(counters.nonConvergent, 0);
 });
+
+// B-LANES data-flow audit (8512be3a) F1: a lane that produced no verdict of its own — its session
+// setup failed, or its runner died before writing exit_reason — used to be recorded as 'error',
+// which classifies `failure` and HALTS the pipeline through isMicroverseArmFatal. The serial path
+// has no such producer, and PRD §5 says no lane outcome halts the phase. The parent must still
+// withhold success (non-convergent), but it must not halt.
+function assertLaneRunDoesNotHalt(runtime, exitCode) {
+  assert.equal(exitCode, 1, 'a lane that measured nothing is not a clean lane run');
+  const reason = JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8')).exit_reason;
+  assert.notEqual(reason, 'converged', 'the parent verdict withholds success');
+  assert.equal(shouldHaltAfterPhase('anatomy-park', exitCode, runtime), false,
+    `a lane-local failure (${reason}) must not halt the pipeline`);
+  const counters = freshCounters();
+  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode, () => {});
+  assert.equal(counters.nonConvergent, 1);
+  assert.equal(counters.completed, 0);
+}
+
+test('B-LANES audit F1: a lane runner that dies without a verdict does not halt the pipeline', async () => {
+  const { runtime, lanes } = makeLaneVerdictRuntime();
+  const stamp = stampLaneReasons(() => 'converged');
+  __setSpawnRunnerForTests(async (cmd, args) => {
+    if (/--lane-2$/.test(args[1])) return { exitCode: 1, stdout: '', stderr: 'runner crashed' };
+    return stamp(cmd, args);
+  });
+
+  assertLaneRunDoesNotHalt(runtime, await runAnatomyLanes(runtime, lanes, 3));
+});
+
+test('B-LANES audit F1: a lane whose session setup fails does not halt the pipeline', async () => {
+  const { runtime, lanes } = makeLaneVerdictRuntime();
+  // `git worktree add` refuses a non-empty destination, so lane 2's createLaneSession throws.
+  fs.mkdirSync(path.join(`${runtime.sessionDir}--lane-2`, 'wt'), { recursive: true });
+  fs.writeFileSync(path.join(`${runtime.sessionDir}--lane-2`, 'wt', 'occupied'), 'x');
+  __setSpawnRunnerForTests(stampLaneReasons(() => 'converged'));
+
+  assertLaneRunDoesNotHalt(runtime, await runAnatomyLanes(runtime, lanes, 3));
+  const rows = JSON.parse(fs.readFileSync(path.join(runtime.sessionDir, 'archive', 'lanes.json'), 'utf-8'));
+  assert.deepEqual(rows.map((r) => r.exit_reason === 'converged'), [true, false, true],
+    'only the lane that could not start lacks a converged verdict');
+});

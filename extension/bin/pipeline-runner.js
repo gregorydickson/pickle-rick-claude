@@ -1638,10 +1638,17 @@ function parentSessionActive(statePath) {
         return true; // an unreadable parent state is not a cancel
     }
 }
+/**
+ * The reason for a lane that produced no verdict of its own: its session never started, or its
+ * runner ended without writing one. Deliberately in NO disposition table — the default
+ * disposition (`non-success`) withholds the phase's success without halting the pipeline, where
+ * `'error'` classifies `failure` and would halt every lane over one lane that measured nothing.
+ */
+const LANE_NO_VERDICT = 'lane_no_verdict';
 /** A lane's own verdict: its `exit_reason`, or — when it never wrote one — why it did not. */
 function readLaneEnd(run, statePath, startedAt) {
     const end = {
-        reason: run.cancelledAtMs === null ? 'error' : 'stopped', passes: 0, started_at: startedAt, ended_at: new Date().toISOString(),
+        reason: run.cancelledAtMs === null ? LANE_NO_VERDICT : 'stopped', passes: 0, started_at: startedAt, ended_at: new Date().toISOString(),
     };
     try {
         const state = sm.read(statePath);
@@ -1665,7 +1672,7 @@ async function runOneLane(run, lane, index) {
     }
     catch (err) {
         runtime.log(`anatomy lane ${lane.name}: session setup failed: ${safeErrorMessage(err)}`);
-        return notStarted('error');
+        return notStarted(LANE_NO_VERDICT);
     }
     run.statePaths.push(session.statePath);
     run.worktrees.push(session.worktree);
@@ -1682,7 +1689,7 @@ async function runLaneSession(run, lane, session, startedAt) {
     const setup = setupAnatomyPark(session.laneDir, session.workingDir, runtime.config.anatomy_stall_limit, runtime.extensionRoot, runtime.log, undefined, runtime.designSafe, { lanes: [lane] });
     if (setup !== true) {
         runtime.log(`anatomy lane ${lane.name}: setup skipped (${setup.skipReason})`);
-        return notStarted('error');
+        return notStarted(LANE_NO_VERDICT);
     }
     if (run.cancelledAtMs !== null)
         return notStarted('stopped');
