@@ -141,7 +141,9 @@ No existing `mode: 'strict'` assertion is in scope (`rpgt-exit-paths.test.js:~30
   `converged_with_unmeasured:`; a total-deadline timeout during `typecheck` lists `lint` too. Timeout plus any other
   remaining failure → `'error'`. Control: replace the timeout predicate with `() => false` → the converge row reds.
 - **AC-6.** No `gate/baseline.json` + red tree → `'error'`, the file is still absent afterwards, and the log contains
-  `[R-APXG-3] no baseline at`. Control: pass `baselinePath` unconditionally → red.
+  `[R-APXG-3] no baseline at`. Control: pass `baselinePath` unconditionally AND force `mode: 'baseline'` → red
+  (the gate then captures a baseline, so the file appears and the verdict is green). `baselinePath` alone stays
+  green — `runGate` reads it only in baseline mode, so that mutation is equivalent (measured).
 - **AC-7.** A throwing cap gate → `'converged'`, the log contains the error message, the disposition contains
   `converged_with_unmeasured`, and the log does NOT contain `convergence signal trusted`.
 - **AC-5.** `./node_modules/.bin/tsc --noEmit` and `./node_modules/.bin/eslint src/ --max-warnings=0` exit 0; touched
