@@ -1953,7 +1953,7 @@ export function createLaneSession(
 
   writeStateFile(
     path.join(laneDir, 'scope.json'),
-    buildLaneScope(laneAllowedPaths(repoRoot, target, lane, phaseStartSha), phaseStartSha),
+    buildLaneScope(laneAllowedPaths(repoRoot, target, lane, phaseStartSha, discoverLanes(target).generated), phaseStartSha),
   );
   // setupAnatomyPark reads the citadel report from the session it is handed — here, the lane.
   const citadelReport = path.join(parentSessionDir, 'citadel_report.json');

@@ -85,10 +85,18 @@ export function symlinkLaneNodeModules(repoRoot: string, worktree: string): stri
 }
 
 /**
- * Repo-relative files at `sha` that `lane` admits: the lane `dir` minus its `excludes`.
- * Generated mirrors stay editable, so no generated set is applied.
+ * Repo-relative files at `sha` a `lane` worker may commit: the lane `dir` minus its
+ * `excludes`, plus every `generated` file (target-relative). Generated output belongs to
+ * no lane, yet the compiler rewrites it from sources that do — a `src/` lane's mirror
+ * lives outside its `dir` and must still ride its commit.
  */
-export function laneAllowedPaths(repoRoot: string, target: string, lane: LaneRecord, sha: string): string[] {
+export function laneAllowedPaths(
+  repoRoot: string,
+  target: string,
+  lane: LaneRecord,
+  sha: string,
+  generated: ReadonlySet<string> = NO_GENERATED,
+): string[] {
   const out = execFileSync('git', ['-C', repoRoot, 'ls-tree', '-r', '-z', '--name-only', sha], {
     timeout: LANE_GIT_TIMEOUT_MS,
     encoding: 'utf-8',
@@ -99,7 +107,7 @@ export function laneAllowedPaths(repoRoot: string, target: string, lane: LaneRec
     .filter((repoRel) => repoRel !== '')
     .filter((repoRel) => {
       const rel = targetRel === '' ? repoRel : path.posix.relative(targetRel, repoRel);
-      return !rel.startsWith('..') && laneAdmits(lane, rel, NO_GENERATED);
+      return !rel.startsWith('..') && (generated.has(rel) || laneAdmits(lane, rel, NO_GENERATED));
     })
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }

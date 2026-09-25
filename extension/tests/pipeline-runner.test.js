@@ -5054,6 +5054,31 @@ describe('B-LANES 13h lane session placement', () => {
     }
   });
 
+  // AP-EXT-LANES-01: a `src/` lane's compiled mirror lives outside its dir. Fenced to the dir
+  // alone, `tsc` output could never ride the lane's commit — every fix stalled on the scope
+  // preflight while the remainder lane was the one allowed to write that mirror.
+  test('AP-EXT-LANES-01: a lane scope admits generated output its sources compile to, not hand-written siblings', () => {
+    const { target, dataRoot, parent } = makePlacementFixture();
+    try {
+      fs.mkdirSync(path.join(target, 'pkg', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(target, 'pkg', 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { outDir: '.', rootDir: 'src' } }));
+      fs.writeFileSync(path.join(target, 'pkg', 'src', 'mod.ts'), 'export const m = 1;\n');
+      fs.writeFileSync(path.join(target, 'pkg', 'mod.js'), 'export const m = 1;\n');
+      fs.writeFileSync(path.join(target, 'pkg', 'hand.js'), 'export const h = 1;\n');
+      git(target, 'add', '-A');
+      git(target, 'commit', '-q', '-m', 'pkg');
+      const sha = git(target, 'rev-parse', 'HEAD');
+      const srcLane = { name: 'pkg/src', dir: 'pkg/src', excludes: [], testRatioApplies: false, fileCount: 1 };
+      const lane = createLaneSession(parent, srcLane, 1, sha, target);
+      const scope = JSON.parse(fs.readFileSync(path.join(lane.laneDir, 'scope.json'), 'utf-8'));
+      assert.deepStrictEqual(scope.allowed_paths, ['pkg/mod.js', 'pkg/src/mod.ts']);
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   test('a worktree path inside the target is refused before git runs', () => {
     const { target, dataRoot, sha } = makePlacementFixture();
     try {
