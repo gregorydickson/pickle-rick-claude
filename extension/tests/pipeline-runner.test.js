@@ -5048,6 +5048,27 @@ describe('B-LANES 13h lane session placement', () => {
   });
 });
 
+/** Drive `main()` outside tmux under `dataRoot`; returns the `process.exit` code, or null. */
+async function runLaneMain(sessionDir, dataRoot) {
+  const originalExit = process.exit;
+  const originalTmux = process.env.TMUX;
+  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  delete process.env.TMUX;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  process.exit = (code) => { throw Object.assign(new Error('exit'), { exitCode: code ?? 0 }); };
+  try {
+    await main(sessionDir);
+    return null;
+  } catch (err) {
+    if (err && typeof err.exitCode === 'number') return err.exitCode;
+    throw err;
+  } finally {
+    process.exit = originalExit;
+    if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
+    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // B-LANES WS-3 (b870ab5f): concurrent lanes, cancel mirroring, resolver domain
 // ---------------------------------------------------------------------------
@@ -5103,26 +5124,6 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
     return { repo, dataRoot, sessionDir, config, cleanup };
   }
 
-  async function runMain(sessionDir, dataRoot) {
-    const originalExit = process.exit;
-    const originalTmux = process.env.TMUX;
-    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-    delete process.env.TMUX;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-    process.exit = (code) => { throw Object.assign(new Error('exit'), { exitCode: code ?? 0 }); };
-    try {
-      await main(sessionDir);
-      return null;
-    } catch (err) {
-      if (err && typeof err.exitCode === 'number') return err.exitCode;
-      throw err;
-    } finally {
-      process.exit = originalExit;
-      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
-      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-    }
-  }
-
   /** Stub runner: records each call's interval and stamps the lane `converged`. */
   function recordingRunner(calls, holdMs) {
     return async (_cmd, args, env, opts) => {
@@ -5140,7 +5141,7 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
     const calls = [];
     try {
       __setSpawnRunnerForTests(recordingRunner(calls, 1500));
-      const code = await runMain(fx.sessionDir, fx.dataRoot);
+      const code = await runLaneMain(fx.sessionDir, fx.dataRoot);
       assert.equal(code, 0, 'three converged lanes finalize the pipeline clean');
       assert.deepEqual(calls.map((c) => c.sessionArg).sort(), [1, 2, 3].map((n) => `${fx.sessionDir}--lane-${n}`));
       const latestStart = Math.max(...calls.map((c) => c.start));
@@ -5164,7 +5165,7 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
     const calls = [];
     try {
       __setSpawnRunnerForTests(recordingRunner(calls, 10));
-      const code = await runMain(fx.sessionDir, fx.dataRoot);
+      const code = await runLaneMain(fx.sessionDir, fx.dataRoot);
       assert.equal(code, 0);
       assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
       assert.equal(calls[0].opts, undefined, 'the default path passes no lane spawn options');
@@ -5191,7 +5192,7 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
     const calls = [];
     try {
       __setSpawnRunnerForTests(recordingRunner(calls, 10));
-      assert.equal(await runMain(fx.sessionDir, fx.dataRoot), 0);
+      assert.equal(await runLaneMain(fx.sessionDir, fx.dataRoot), 0);
       assert.equal(calls.length, 3);
       assert.equal(fs.existsSync(`${fx.sessionDir}--lane-4`), false);
     } finally {
@@ -5523,26 +5524,6 @@ describe('B-LANES wiring: end to end through main()', () => {
     return { repo, dataRoot, sessionDir, cleanup };
   }
 
-  async function runMain(sessionDir, dataRoot) {
-    const originalExit = process.exit;
-    const originalTmux = process.env.TMUX;
-    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-    delete process.env.TMUX;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-    process.exit = (code) => { throw Object.assign(new Error('exit'), { exitCode: code ?? 0 }); };
-    try {
-      await main(sessionDir);
-      return null;
-    } catch (err) {
-      if (err && typeof err.exitCode === 'number') return err.exitCode;
-      throw err;
-    } finally {
-      process.exit = originalExit;
-      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
-      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-    }
-  }
-
   const commit = (cwd, msg) => git(cwd, '-c', 'user.email=l@l', '-c', 'user.name=l', 'commit', '-q', '-am', msg);
   const stampConverged = (sessionDir) => {
     const statePath = path.join(sessionDir, 'state.json');
@@ -5592,7 +5573,7 @@ describe('B-LANES wiring: end to end through main()', () => {
     const calls = [];
     try {
       __setSpawnRunnerForTests(fixingRunner(calls));
-      const code = await runMain(fx.sessionDir, fx.dataRoot);
+      const code = await runLaneMain(fx.sessionDir, fx.dataRoot);
       const log = fs.existsSync(path.join(fx.sessionDir, 'pipeline-runner.log'))
         ? fs.readFileSync(path.join(fx.sessionDir, 'pipeline-runner.log'), 'utf-8') : '';
       assert.equal(code, 0, `the phase finalizes clean\n${log}`);
@@ -5619,7 +5600,7 @@ describe('B-LANES wiring: end to end through main()', () => {
     const calls = [];
     try {
       __setSpawnRunnerForTests(fixingRunner(calls));
-      assert.equal(await runMain(fx.sessionDir, fx.dataRoot), 0);
+      assert.equal(await runLaneMain(fx.sessionDir, fx.dataRoot), 0);
       assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
       assert.equal(fs.existsSync(`${fx.sessionDir}--lane-1`), false, 'no lane session');
       assert.equal(fs.existsSync(path.join(fx.sessionDir, 'archive', 'lanes.json')), false, 'no lane archive');
