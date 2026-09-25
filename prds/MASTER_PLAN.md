@@ -245,9 +245,10 @@ NO measured basis. Large PRDs are not constrained by the cap.
   refuses an empty tag, and the file runs in a sandbox `HOME`/`PICKLE_INSTALL_ROOT` with a refusing `gh` (0 real
   calls). Gate `20260925T154209Z-93418` 22/22 green, soak 1803.7s. Pushed, deployed, and verified by content
   (`downloadRelease("")` → `null`).
-- **B-LANES (experimental, `exp/b-lanes`, pushed as an unverified backup):** 14 tickets built. The branch gate is
-  red on 2 legs (5 defects); fix PRD `prds/p1-b-lanes-fix-gate-reds.md` is on the branch. Next: merge `main`
-  into the branch, then run B-LANES-FIX there.
+- **B-LANES (experimental, `exp/b-lanes` @ `840de48c`): GATE GREEN 22/22** (run `20260925T193049Z-34531`, soak
+  1803.7s) after B-LANES-FIX. It is NOT deployed and NOT merged. Measuring the benefit requires deploying the branch
+  (which changes the runtime for the whole machine) and running bundles with `anatomy_max_parallel_lanes` ≥ 2.
+  Merge decision: operator.
 - **Babysitter is autonomous** (`prds/babysitter.md` CURRENT PROMPT): it asks only about merging to main,
   releases, deletions, goal changes, client data, and #43/#5.
 
