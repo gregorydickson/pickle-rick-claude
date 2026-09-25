@@ -41,6 +41,7 @@ import {
   gitRepoRoot,
 } from '../bin/pipeline-runner.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { createMicroverseState, recordCapUnmeasured, readMicroverseState, writeMicroverseState } from '../services/microverse-state.js';
 import { simulateBinaryAbsent } from './helpers/simulate-binary-absent.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { loadFinalizeGateSettings } from '../bin/finalize-gate.js';
@@ -4792,5 +4793,71 @@ describe('AP-EXT-ITER324-01: an unproven repo-root anchor is reported, not silen
     // either would make those citations name a phantom symbol.
     assert.match(src, /function gitRepoRoot\(/, 'gitRepoRoot remains the shared home');
     assert.match(src, /function resolveGitRepoRoot\(/, 'resolveGitRepoRoot remains the citadel entry point');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-CAPGATE: a converged anatomy-park run over unmeasured cap checks is REPORTED
+// ---------------------------------------------------------------------------
+
+describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
+  function convergedRuntime(dir, capUnmeasured) {
+    const statePath = path.join(dir, 'state.json');
+    writeBaseState(statePath, { exit_reason: 'converged' });
+    let mv = createMicroverseState({
+      prdPath: path.join(dir, 'prd.md'),
+      metric: { description: 'm', validation: 'true', type: 'command', timeout_seconds: 5, tolerance: 0 },
+      stallLimit: 3,
+    });
+    mv = { ...mv, status: 'converged', exit_reason: 'converged' };
+    if (capUnmeasured) mv = recordCapUnmeasured(mv, capUnmeasured);
+    writeMicroverseState(dir, mv);
+    const runtime = { sessionDir: dir, statePath, workingDir: '/tmp', config: { phases: [{}, {}] }, log: () => {} };
+    return { runtime, cancelMarker: path.join(dir, 'pipeline-cancel') };
+  }
+  const freshCounters = () => ({ completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} });
+
+  test('caveats [typecheck, lint] record converged_with_unmeasured:typecheck,lint and leave nonConvergent alone', () => {
+    const dir = tmpDir();
+    try {
+      const { runtime, cancelMarker } = convergedRuntime(dir, ['typecheck', 'lint']);
+      const counters = freshCounters();
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      assert.deepEqual(outcome, { action: 'continue' });
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck,lint');
+      assert.equal(counters.nonConvergent, 0, 'reported, NOT counted non-convergent');
+      assert.equal(counters.completed, 1, 'a converged phase still completes');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a converged run with no caveats records no disposition', () => {
+    const dir = tmpDir();
+    try {
+      const { runtime, cancelMarker } = convergedRuntime(dir, null);
+      const counters = freshCounters();
+      finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      assert.equal(counters.phaseDispositions['anatomy-park'], undefined);
+      assert.equal(counters.nonConvergent, 0);
+      assert.equal(counters.completed, 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('recordCapUnmeasured: empty list carries no field, duplicates collapse, state round-trips through the shape assert', () => {
+    const dir = tmpDir();
+    try {
+      const { runtime } = convergedRuntime(dir, null);
+      const base = readMicroverseState(runtime.sessionDir);
+      assert.equal('cap_unmeasured_checks' in recordCapUnmeasured(base, []), false);
+      const withCaveat = recordCapUnmeasured(base, ['lint', 'lint', 'typecheck']);
+      assert.deepEqual(withCaveat.cap_unmeasured_checks, ['lint', 'typecheck']);
+      writeMicroverseState(dir, withCaveat);
+      assert.deepEqual(readMicroverseState(dir)?.cap_unmeasured_checks, ['lint', 'typecheck']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

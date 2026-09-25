@@ -133,6 +133,8 @@ export function assertMicroverseStateShape(parsed, commandTemplate) {
     assertOptionalBoolean(parsed, 'gate_regression_threshold_warning_emitted');
     if (parsed.allowed_paths !== undefined)
         requireStringArray(parsed.allowed_paths, 'allowed_paths');
+    if (parsed.cap_unmeasured_checks !== undefined)
+        requireStringArray(parsed.cap_unmeasured_checks, 'cap_unmeasured_checks');
     const anatomyParkWorkerMode = commandTemplate === 'anatomy-park.md' && parsed.convergence_mode === 'worker';
     if (parsed.key_metric === undefined) {
         // AP-EXT-ITER42-03: admitted, NEVER filled. An anatomy-park worker session decides
@@ -371,6 +373,16 @@ export function recordStall(state, cause) {
             last_stall_signal: cause,
         },
     };
+}
+/**
+ * B-CAPGATE: carry the post-convergence cap checks that did not measure, so the phase that
+ * converged over them can report it. Pure like its siblings: an empty list returns the state
+ * untouched (no `[]` field — absent already means "all measured"), and duplicates collapse so a
+ * caller unioning several probes cannot inflate the disposition string.
+ */
+export function recordCapUnmeasured(state, checks) {
+    const unique = [...new Set(checks)];
+    return unique.length === 0 ? state : { ...state, cap_unmeasured_checks: unique };
 }
 export function recordAmnesiacExit(state) {
     return {
