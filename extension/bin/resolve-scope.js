@@ -18,7 +18,6 @@ function reportScopeError(err) {
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(JSON.stringify({ code: 'UNKNOWN', message }) + '\n');
     }
-    process.exit(2);
 }
 /**
  * `--print-subsystems`: print the review lanes the anatomy-park PIPELINE would
@@ -66,6 +65,7 @@ async function printSubsystems(args) {
         catch (err) {
             cleanup();
             reportScopeError(err);
+            process.exit(2);
         }
         cleanup();
     }
@@ -80,7 +80,10 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'resolve-scope.js') {
     if (args.includes('--print-subsystems')) {
         // No process.exit on success: stdout may be a pipe, and an explicit exit after a write
         // can drop everything past the pipe buffer. Falling off the event loop flushes it.
-        printSubsystems(args).catch(reportScopeError);
+        printSubsystems(args).catch((err) => {
+            reportScopeError(err);
+            process.exit(2);
+        });
     }
     else {
         runScopeResolution(args);
@@ -113,5 +116,6 @@ function runScopeResolution(args) {
     }
     catch (err) {
         reportScopeError(err);
+        process.exit(2);
     }
 }

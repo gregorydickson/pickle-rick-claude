@@ -12,14 +12,13 @@ function parseFlag(args: string[], flag: string): string | undefined {
   return args[idx + 1];
 }
 
-function reportScopeError(err: unknown): never {
+function reportScopeError(err: unknown): void {
   if (err instanceof Error && err instanceof ScopeError) {
     process.stderr.write(JSON.stringify({ code: err.code, message: err.message }) + '\n');
   } else {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(JSON.stringify({ code: 'UNKNOWN', message }) + '\n');
   }
-  process.exit(2);
 }
 
 /**
@@ -66,6 +65,7 @@ async function printSubsystems(args: string[]): Promise<void> {
     } catch (err) {
       cleanup();
       reportScopeError(err);
+      process.exit(2);
     }
     cleanup();
   }
@@ -83,7 +83,10 @@ if (process.argv[1] && path.basename(process.argv[1]) === 'resolve-scope.js') {
   if (args.includes('--print-subsystems')) {
     // No process.exit on success: stdout may be a pipe, and an explicit exit after a write
     // can drop everything past the pipe buffer. Falling off the event loop flushes it.
-    printSubsystems(args).catch(reportScopeError);
+    printSubsystems(args).catch((err: unknown) => {
+      reportScopeError(err);
+      process.exit(2);
+    });
   } else {
     runScopeResolution(args);
   }
@@ -118,5 +121,6 @@ function runScopeResolution(args: string[]): void {
     });
   } catch (err) {
     reportScopeError(err);
+    process.exit(2);
   }
 }
