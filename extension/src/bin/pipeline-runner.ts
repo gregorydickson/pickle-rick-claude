@@ -2322,6 +2322,7 @@ export function writeSkippedByScope(
         subsystems_discovered: discovered,
         subsystems_kept: kept,
         subsystems_skipped: skipped,
+        files_unmapped: unmappedCodePaths(lanes, scope.allowed_paths, target, workingDir, generated),
       };
     } else {
       payload = {
@@ -2396,6 +2397,20 @@ function formatLaneLine(lane: LaneRecord, index: number): string {
   return `${index + 1}. ${lane.name} (${lane.fileCount} files)${excluding}`;
 }
 
+/**
+ * B-LANES: where a lane writes its trap doors. The audit sweeps only catalogs that already exist
+ * as a directory's CLAUDE.md (`audit-trap-door-enforcement.sh` never sees a new `extension/tests/**`
+ * one), so a lane uses the nearest ancestor-or-self directory that holds one and falls back to its
+ * own only when no ancestor does. Paths are POSIX, relative to `target`.
+ */
+function laneCatalog(target: string, lane: LaneRecord): string {
+  for (let dir = lane.dir; dir !== '.'; dir = path.posix.dirname(dir)) {
+    const candidate = `${dir}/CLAUDE.md`;
+    if (fs.existsSync(path.join(target, candidate))) return candidate;
+  }
+  return `${lane.dir}/CLAUDE.md`;
+}
+
 function buildAnatomyPrd(
   target: string,
   subsystems: LaneRecord[],
@@ -2407,13 +2422,17 @@ function buildAnatomyPrd(
     '# Anatomy Park: Deep Subsystem Review',
     '',
     '## Objective',
-    `Systematically review and fix all subsystems in ${target} through phased review-fix-verify cycles. Catalog structural weaknesses as trap doors in subsystem CLAUDE.md files.`,
+    `Systematically review and fix all subsystems in ${target} through phased review-fix-verify cycles. Catalog structural weaknesses as trap doors in each lane's catalog (see Trap-Door Catalogs).`,
     '',
     '## Target',
     target,
     '',
     '## Subsystems',
     ...subsystems.map(formatLaneLine),
+    '',
+    '## Trap-Door Catalogs',
+    'Write each lane\'s trap doors to the catalog named here. Never create a new CLAUDE.md for a lane whose catalog is an ancestor\'s file.',
+    ...subsystems.map((lane) => `- ${lane.name} → ${laneCatalog(target, lane)}`),
     '',
     '## Key Metric',
     '- **Type**: none (worker-managed convergence)',
@@ -2425,7 +2444,7 @@ function buildAnatomyPrd(
     '2. Phase 1: Read-only review — trace data flows, rate all findings',
     '3. Phase 2: Fix the single highest-severity finding + write regression test',
     '4. Phase 3: Read-only self-review of the diff, revert if broken',
-    '5. Catalog trap doors in subsystem CLAUDE.md',
+    '5. Catalog trap doors in the lane\'s catalog (Trap-Door Catalogs above)',
     '6. Rotate to next subsystem',
     '',
     '## Rules',
@@ -2449,6 +2468,32 @@ const CODE_EXTENSIONS = new Set([
 function isCodePath(p: string): boolean {
   const dot = p.lastIndexOf('.');
   return dot >= 0 && CODE_EXTENSIONS.has(p.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * B-LANES: the in-scope code paths that NO lane admits (repo-root `install.sh` today). Asks the
+ * one membership function, `filterBySubsystem` -> `laneAdmits`, once per path, so it shares that
+ * function's target/repoRoot anchoring instead of restating it. Reporting only: the caller logs
+ * and records this, and neither skips nor halts on it.
+ */
+function unmappedCodePaths(
+  lanes: LaneRecord[],
+  allowedPaths: string[],
+  target: string,
+  repoRoot: string,
+  generated: ReadonlySet<string>,
+): string[] {
+  return Array.from(new Set(allowedPaths))
+    .filter(isCodePath)
+    .filter((allowed) => filterBySubsystem(lanes, [allowed], target, repoRoot, generated).length === 0);
+}
+
+const UNMAPPED_LOG_LIMIT = 20;
+
+function formatUnmappedCodePaths(unmapped: string[]): string {
+  const more = unmapped.length > UNMAPPED_LOG_LIMIT ? `, …(+${unmapped.length - UNMAPPED_LOG_LIMIT} more)` : '';
+  return `anatomy-park: ${unmapped.length} changed code path(s) belong to no lane (files_unmapped): `
+    + `${unmapped.slice(0, UNMAPPED_LOG_LIMIT).join(', ')}${more}`;
 }
 
 /**
@@ -2669,6 +2714,8 @@ function resolveAnatomySubsystems(
     return discovered;
   }
   const filtered = filterBySubsystem(discovered, scope.allowedPaths, target, scope.repoRoot, generated);
+  const unmapped = unmappedCodePaths(discovered, scope.allowedPaths, target, scope.repoRoot, generated);
+  if (unmapped.length > 0) log(formatUnmappedCodePaths(unmapped));
   if (filtered.length === 0) {
     // R-PSSS-1: the scope filter excluding every subsystem is a real skip the
     // operator must see — not a silent `setup returned false`. Emit the

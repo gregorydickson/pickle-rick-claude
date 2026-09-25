@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { setupAnatomyPark, writePipelineStatus } from '../bin/pipeline-runner.js';
+import { setupAnatomyPark, writePipelineStatus, writeSkippedByScope } from '../bin/pipeline-runner.js';
 import { finalizeGateMain } from '../bin/finalize-gate.js';
 import { filterBySubsystem } from '../services/scope-resolver.js';
 
@@ -128,6 +128,164 @@ test('B-LANES: a split lane persists its record, prints its excludes, and a gene
     ]);
     const prd = fs.readFileSync(path.join(session, 'prd.md'), 'utf-8');
     assert.match(prd, /1\. big\/\. \(3 files\) — reviews big\/ EXCLUDING big\/a\/, big\/b\/ \(other lanes\)/);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// B-LANES: lane-less code is REPORTED (files_unmapped), never silently green
+// ---------------------------------------------------------------------------
+
+// Lanes of this fixture: extension/. (loose.ts), extension/src/bin, extension/src/services,
+// extension/tests. Repo-root install.sh and anything outside a source directory belong to no lane.
+function makeExtensionTarget() {
+  const target = makeTarget();
+  makeSubsystem(target, 'extension/src/bin', 20);
+  fs.writeFileSync(path.join(target, 'extension/src/bin/setup.ts'), 'export const s = 1;\n');
+  makeSubsystem(target, 'extension/src/services', 20);
+  makeSubsystem(target, 'extension/tests/unit', 20);
+  fs.writeFileSync(path.join(target, 'extension/loose.ts'), 'export const l = 1;\n');
+  fs.mkdirSync(path.join(target, 'extension/templates'), { recursive: true });
+  fs.writeFileSync(path.join(target, 'extension/templates/_pickle-manager-prompt.md'), '# prompt\n');
+  return target;
+}
+
+function scopeJson(allowedPaths) {
+  return {
+    version: 1, mode: 'branch', strategy: 'strict',
+    base_ref: 'main', base_sha: null, head_sha: 'deadbeef'.repeat(5),
+    allowed_paths: allowedPaths,
+    resolved_at: new Date().toISOString(),
+    refresh_history: [],
+  };
+}
+
+function readSkippedByScope(session) {
+  return JSON.parse(fs.readFileSync(path.join(session, 'archive', 'skipped_by_scope.anatomy-park.json'), 'utf-8'));
+}
+
+// Runs `fn` with activity writes sandboxed to a private data root; returns the recorded event names.
+function withActivityCapture(fn) {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-scope-data-'));
+  const prior = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  try {
+    fn();
+    const dir = path.join(dataRoot, 'activity');
+    const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+    return files
+      .flatMap((f) => fs.readFileSync(path.join(dir, f), 'utf-8').split('\n').filter(Boolean))
+      .map((line) => JSON.parse(line));
+  } finally {
+    if (prior === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prior;
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+}
+
+test('AC-7: a doc-only scope skips as empty_scope, emits its event, and records no unmapped code', () => {
+  const session = makeSession();
+  const target = makeExtensionTarget();
+  try {
+    let result;
+    const events = withActivityCapture(() => {
+      result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {}, {
+        allowedPaths: ['prds/x.md'], repoRoot: target,
+      });
+    });
+    assert.deepStrictEqual(result, { skipReason: 'empty_scope' });
+    assert.ok(
+      events.some((e) => e.event === 'anatomy_park_empty_scope_skip'
+        && JSON.stringify(e.gate_payload.in_scope_paths) === JSON.stringify(['prds/x.md'])),
+      'the skip event must still fire',
+    );
+    writeSkippedByScope(session, 'anatomy-park', scopeJson(['prds/x.md']), target, target);
+    assert.deepStrictEqual(readSkippedByScope(session).files_unmapped, [], 'a .md file is not code, so nothing is unmapped');
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-7: a template under the extension lane is admitted by the remainder lane extension/.', () => {
+  const session = makeSession();
+  const target = makeExtensionTarget();
+  try {
+    const result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {}, {
+      allowedPaths: ['extension/templates/_pickle-manager-prompt.md'], repoRoot: target,
+    });
+    assert.equal(result, true);
+    assert.deepStrictEqual(readAnatomyPark(session).subsystems, ['extension/.']);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-7: repo-root install.sh beside a lane-admitted file is recorded in files_unmapped and logged', () => {
+  const session = makeSession();
+  const target = makeExtensionTarget();
+  try {
+    const logs = [];
+    const allowedPaths = ['install.sh', 'extension/src/bin/setup.ts'];
+    const result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, (m) => logs.push(m), {
+      allowedPaths, repoRoot: target,
+    });
+    assert.equal(result, true, 'reporting must not skip or halt the phase');
+    assert.deepStrictEqual(readAnatomyPark(session).subsystems, ['extension/src/bin']);
+    assert.match(logs.join('\n'), /1 changed code path\(s\) belong to no lane \(files_unmapped\): install\.sh/);
+
+    writeSkippedByScope(session, 'anatomy-park', scopeJson(allowedPaths), target, target);
+    const record = readSkippedByScope(session);
+    assert.deepStrictEqual(record.files_unmapped, ['install.sh']);
+    assert.deepStrictEqual(record.subsystems_kept, ['extension/src/bin']);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-7: a scope of ONLY lane-less code is empty_scope, still non-degraded, and names its unmapped files', () => {
+  const session = makeSession();
+  const target = makeExtensionTarget();
+  try {
+    const logs = [];
+    const result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, (m) => logs.push(m), {
+      allowedPaths: ['install.sh', 'scripts/release.py', 'README.md'], repoRoot: target,
+    });
+    assert.deepStrictEqual(result, { skipReason: 'empty_scope' }, 'no new skip reason');
+    assert.match(logs.join('\n'), /2 changed code path\(s\) belong to no lane \(files_unmapped\): install\.sh, scripts\/release\.py/);
+    writeSkippedByScope(session, 'anatomy-park', scopeJson(['install.sh', 'scripts/release.py', 'README.md']), target, target);
+    assert.deepStrictEqual(readSkippedByScope(session).files_unmapped, ['install.sh', 'scripts/release.py']);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-8: each lane names the nearest existing ancestor CLAUDE.md as its trap-door catalog', () => {
+  const session = makeSession();
+  const target = makeTarget();
+  try {
+    makeSubsystem(target, 'extension/src/core', 20);
+    makeSubsystem(target, 'extension/tests/integration', 20);
+    makeSubsystem(target, 'extension/tests/unit', 20);
+    fs.writeFileSync(path.join(target, 'extension/CLAUDE.md'), '# extension catalog\n');
+    fs.writeFileSync(path.join(target, 'extension/tests/unit/CLAUDE.md'), '# unit catalog\n');
+
+    setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {});
+    assert.deepStrictEqual(
+      readAnatomyPark(session).subsystems,
+      ['extension/src', 'extension/tests/integration', 'extension/tests/unit'],
+    );
+    const prd = fs.readFileSync(path.join(session, 'prd.md'), 'utf-8');
+    assert.match(prd, /extension\/tests\/integration → extension\/CLAUDE\.md/, 'no swept catalog of its own: nearest ancestor');
+    assert.match(prd, /extension\/src → extension\/CLAUDE\.md/);
+    assert.match(prd, /extension\/tests\/unit → extension\/tests\/unit\/CLAUDE\.md/, 'a lane that owns a catalog keeps it');
+    assert.doesNotMatch(prd, /extension\/tests\/integration → extension\/tests\/integration\/CLAUDE\.md/);
+    assert.match(prd, /never create a new CLAUDE\.md/i);
   } finally {
     fs.rmSync(session, { recursive: true, force: true });
     fs.rmSync(target, { recursive: true, force: true });
