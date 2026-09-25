@@ -8,7 +8,7 @@ Pickle Rick is a complete agentic engineering toolbelt built on the [Ralph Wiggu
 
 New to PRDs? See the **[PRD Writing Guide](PRD_GUIDE.md)** for developers or the **[Product Manager's Guide](PM_GUIDE.md)** for PMs defining and refining requirements. For internals, see [Internals](internals.md). For what's coming next, see the [Feature Roadmap](roadmap.md).
 
-> **Recently released** — `/citadel` conformance audit · **v1.58** Convergence Toolchain Gates ([details](#convergence-gate)) · **v1.57** `/cronenberg` meta-router · **v1.56** pipeline resume hardening · **v1.55** Agent Teams mode (`/pickle-tmux --teams`) · **v1.51** Codex backend (`--backend codex`).
+> **Recently released** — `/citadel` conformance audit · **v1.58** Convergence Toolchain Gates ([details](#convergence-gate)) · **v1.57** `/cronenberg` meta-router · **v1.56** pipeline resume hardening · **v1.51** Codex backend (`--backend codex`).
 
 ---
 
