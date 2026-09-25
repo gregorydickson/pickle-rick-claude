@@ -205,6 +205,8 @@ node ~/.claude/pickle-rick/extension/bin/resolve-scope.js --print-subsystems --t
 node ~/.claude/pickle-rick/extension/bin/resolve-scope.js --print-subsystems --target . --scope branch        # only lanes touched by the branch
 ```
 
+**Concurrent lanes** *(pipeline only, experimental)* — the `/pickle-pipeline` anatomy-park phase reviews its lanes serially in the main checkout by default. Set `anatomy_max_parallel_lanes` in the session's `pipeline.json` to run lanes concurrently: `1` (the default, and the fallback for an absent, `0`, negative, fractional or non-numeric value) keeps the serial path; a value above the lane count spawns only the lane count. Each concurrent lane is a sibling session `<session>--lane-<n>` with its own git worktree on branch `pickle-lane/<session>/<n>` (`<session>--lane-<n>/wt`, never inside your repo). After the last lane ends, finished lanes are cherry-picked onto a disposable integration branch, typechecked, and the working branch only fast-forwards to it — it is never reset or left mid-pick. Per-lane results (`outcome`: `integrated`, `conflict`, `integration_red`, `integration_ff_failed`, `non_convergent`, `cancelled`) land in `<session>/archive/lanes.json`. Branches that did not reach the working branch are kept and named in the log; `pickle-lane/*` branches older than 14 days are deleted at the next phase start. Standalone `/anatomy-park` never runs lanes concurrently.
+
 ```bash
 # Via pipeline (design-safe applies to both anatomy-park and szechuan-sauce phases):
 /pickle-pipeline --design-safe             # Force design-safe for all cleanup phases
