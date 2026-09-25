@@ -71,13 +71,23 @@ function definitionFromRow(row) {
         packageKeywords: splitCell(row.package_keywords).map((keyword) => keyword.toLowerCase()),
     };
 }
+// A package dependency is the strongest signal, a named file next, a directory name weakest.
+const FILE_MATCH_WEIGHT = 5;
+const DIRECTORY_MATCH_WEIGHT = 2;
+const PACKAGE_MATCH_WEIGHT = 8;
+// 'high' needs a strong score AND a clear lead over the runner-up; 'medium' needs a strong score alone.
+const HIGH_CONFIDENCE_MIN_SCORE = 30;
+const HIGH_CONFIDENCE_MIN_LEAD = 10;
+const MEDIUM_CONFIDENCE_MIN_SCORE = 15;
 function scoreDefinition(definition, files, packageKeywords) {
     const matchedFiles = unique(files.filter((file) => definition.filePatterns.some((pattern) => matchesPattern(file, pattern))));
     const matchedDirectories = unique(files.flatMap((file) => matchingDirectories(file, definition.directoryPatterns)));
     const matchedPackages = definition.packageKeywords.filter((keyword) => packageKeywords.has(keyword));
     return {
         category: definition.category,
-        score: matchedFiles.length * 5 + matchedDirectories.length * 2 + matchedPackages.length * 8,
+        score: matchedFiles.length * FILE_MATCH_WEIGHT +
+            matchedDirectories.length * DIRECTORY_MATCH_WEIGHT +
+            matchedPackages.length * PACKAGE_MATCH_WEIGHT,
         matchedFiles,
         matchedDirectories,
         matchedPackages,
@@ -141,9 +151,10 @@ function globLikeMatch(file, pattern) {
     return new RegExp(`^${escaped}$`).test(file);
 }
 function confidenceFor(best, runnerUp) {
-    if (best.score >= 30 && (!runnerUp || best.score >= runnerUp.score + 10))
+    const hasClearLead = !runnerUp || best.score >= runnerUp.score + HIGH_CONFIDENCE_MIN_LEAD;
+    if (best.score >= HIGH_CONFIDENCE_MIN_SCORE && hasClearLead)
         return 'high';
-    if (best.score >= 15)
+    if (best.score >= MEDIUM_CONFIDENCE_MIN_SCORE)
         return 'medium';
     return 'low';
 }
