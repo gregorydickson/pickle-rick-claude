@@ -1309,6 +1309,43 @@
         }
       }
     },
+    "anatomy_lanes_integrated": {
+      "type": "object",
+      "required": ["event", "ts", "session", "gate_payload"],
+      "properties": {
+        "event": { "type": "string", "const": "anatomy_lanes_integrated" },
+        "ts": { "type": "string" },
+        "session": { "type": "string" },
+        "source": { "type": "string" },
+        "gate_payload": {
+          "type": "object",
+          "required": ["outcomes", "retained_branches"],
+          "properties": {
+            "outcomes": { "type": "object", "additionalProperties": { "type": "number" } },
+            "retained_branches": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "anatomy_lane_branches_reported": {
+      "type": "object",
+      "required": ["event", "ts", "session", "gate_payload"],
+      "properties": {
+        "event": { "type": "string", "const": "anatomy_lane_branches_reported" },
+        "ts": { "type": "string" },
+        "session": { "type": "string" },
+        "source": { "type": "string" },
+        "gate_payload": {
+          "type": "object",
+          "required": ["unintegrated", "expired", "stale_worktrees"],
+          "properties": {
+            "unintegrated": { "type": "array", "items": { "type": "string" } },
+            "expired": { "type": "array", "items": { "type": "string" } },
+            "stale_worktrees": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
     "anatomy_park_empty_scope_skip": {
       "type": "object",
       "required": ["event", "ts", "session", "gate_payload"],
@@ -2019,6 +2056,8 @@
     { "$ref": "#/definitions/state_write_schema_version_violation" },
     { "$ref": "#/definitions/install_sh_override_used" },
     { "$ref": "#/definitions/anatomy_park_empty_scope_skip" },
+    { "$ref": "#/definitions/anatomy_lanes_integrated" },
+    { "$ref": "#/definitions/anatomy_lane_branches_reported" },
     { "$ref": "#/definitions/szechuan_sauce_empty_scope_skip" },
     { "$ref": "#/definitions/phase_cap_dropped_tickets" },
     { "$ref": "#/definitions/monitor_respawn_session_dir_invalid" },

@@ -416,6 +416,12 @@ export const VALID_ACTIVITY_EVENTS = [
     // complexity-rule count (eslint complexity / max-lines-per-function) over the
     // pass-start baseline — counted as a non-clean (regressing) pass, breadcrumb only.
     'anatomy_park_complexity_regression',
+    // B-LANES WS-3: after the last lane ends, the per-outcome counts of the integration and the
+    // lane branches kept because main does not reach them.
+    'anatomy_lanes_integrated',
+    // B-LANES WS-3: at lane phase start, a previous run's unintegrated lane branches (reported, never
+    // integrated), expired retained branches (deleted), and stale lane worktrees (pruned).
+    'anatomy_lane_branches_reported',
     'monitor_respawn_session_dir_invalid',
     'spawn_morty_invalid_ticket_path',
     'ticket_preskipped_already_terminal',

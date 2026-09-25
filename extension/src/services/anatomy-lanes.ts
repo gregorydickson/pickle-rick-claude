@@ -6,9 +6,11 @@
 // (`createLaneSession` in `bin/pipeline-runner.ts`).
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { laneAdmits, type LaneRecord, type ScopeJson } from './scope-resolver.js';
 import { GIT_CONFIG_COUNT_ENV_VAR } from './pickle-utils.js';
+import { detectProjectType, isUnrunnableCheckResult, loadGateCommands } from './convergence-gate.js';
+import { resetToSha } from './git-utils.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 
 const LANE_GIT_TIMEOUT_MS = 60_000;
@@ -168,4 +170,272 @@ export function aggregateLaneExitReason(
   isSuccess: (reason: string) => boolean,
 ): string {
   return laneReasons.find((reason) => !isSuccess(reason)) ?? 'converged';
+}
+
+// ---------------------------------------------------------------------------
+// Integration: finished lanes land on a disposable integration worktree; the main
+// checkout only ever fast-forwards to it.
+// ---------------------------------------------------------------------------
+
+const LANE_TYPECHECK_TIMEOUT_MS = 300_000;
+const RETAINED_BRANCH_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const UNINTEGRATED_PREFIX = 'unintegrated-';
+
+export type LaneIntegrationOutcome =
+  | 'integrated' | 'conflict' | 'integration_red' | 'integration_ff_failed' | 'non_convergent' | 'cancelled';
+
+/** One `archive/lanes.json` row. */
+export interface LaneOutcome {
+  name: string;
+  dir: string;
+  excludes: string[];
+  branch: string;
+  worktree: string;
+  started_at: string | null;
+  ended_at: string | null;
+  passes: number;
+  exit_reason: string;
+  outcome: LaneIntegrationOutcome;
+  commits: string[];
+}
+
+function laneGit(cwd: string, args: string[]): string {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    timeout: LANE_GIT_TIMEOUT_MS,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+  }).trim();
+}
+
+function laneGitOk(cwd: string, args: string[]): boolean {
+  try {
+    laneGit(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sessionBranchPrefix(sessionDir: string): string {
+  return `pickle-lane/${path.basename(path.resolve(sessionDir))}/`;
+}
+
+export function integrationBranchName(sessionDir: string): string {
+  return `${sessionBranchPrefix(sessionDir)}integration`;
+}
+
+export function integrationWorktreeDir(sessionDir: string): string {
+  return `${path.resolve(sessionDir)}--integration`;
+}
+
+/**
+ * The target's typecheck, from the gate's ONE toolchain table: the target itself when it
+ * is a project, else each immediate child that is one (this repo: `extension/`).
+ */
+function typecheckCommands(dir: string): { cwd: string; command: string }[] {
+  let table: ReturnType<typeof loadGateCommands>;
+  try {
+    table = loadGateCommands();
+  } catch {
+    return [];
+  }
+  const commandFor = (cwd: string): { cwd: string; command: string } | null => {
+    const type = detectProjectType(cwd);
+    const command = type === null ? undefined : table[type]?.typecheck;
+    return command ? { cwd, command } : null;
+  };
+  const own = commandFor(dir);
+  if (own !== null) return [own];
+  let children: fs.Dirent[];
+  try {
+    children = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return children
+    .filter((e) => e.isDirectory() && e.name !== 'node_modules' && !e.name.startsWith('.'))
+    .map((e) => commandFor(path.join(dir, e.name)))
+    .filter((c): c is { cwd: string; command: string } => c !== null);
+}
+
+/**
+ * `red` only on a typecheck that RAN and failed. A command the gate's own classifier calls
+ * unrunnable (missing script, not installed, killed) measured nothing, so it cannot red a lane.
+ */
+export function runIntegrationTypecheck(dir: string): 'green' | 'red' | 'unavailable' {
+  let ran = false;
+  for (const { cwd, command } of typecheckCommands(dir)) {
+    const r = spawnSync('sh', ['-c', command], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: LANE_TYPECHECK_TIMEOUT_MS,
+      maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+    });
+    const result = { stdout: r.stdout ?? '', stderr: r.stderr ?? '', exitCode: r.status };
+    if (isUnrunnableCheckResult(result)) continue;
+    if (result.exitCode !== 0) return 'red';
+    ran = true;
+  }
+  return ran ? 'green' : 'unavailable';
+}
+
+function laneCommits(repoRoot: string, phaseStartSha: string, branch: string): string[] {
+  try {
+    return laneGit(repoRoot, ['rev-list', '--reverse', `${phaseStartSha}..${branch}`]).split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export interface IntegrateLanesInput {
+  repoRoot: string;
+  target: string;
+  sessionDir: string;
+  phaseStartSha: string;
+  /** Roster order. `integrate: false` lanes are neither picked nor given an outcome here. */
+  lanes: readonly { branch: string; integrate: boolean }[];
+  log: (msg: string) => void;
+}
+
+export interface IntegrateLanesResult {
+  outcomes: (LaneIntegrationOutcome | null)[];
+  commits: string[][];
+}
+
+type PickOutcome = 'integrated' | 'conflict' | 'integration_red';
+
+/** Pick one lane onto the integration worktree; anything short of green leaves it where it was. */
+function pickLane(worktree: string, targetDir: string, commits: string[], preserve: string[], log: (msg: string) => void): PickOutcome {
+  const before = laneGit(worktree, ['rev-parse', 'HEAD']);
+  const picked = commits.every((sha) => laneGitOk(worktree, ['-c', 'gc.auto=0', '-c', 'commit.gpgsign=false', 'cherry-pick', sha]));
+  if (!picked) laneGitOk(worktree, ['cherry-pick', '--abort']);
+  const check = picked ? runIntegrationTypecheck(targetDir) : 'unavailable';
+  if (picked && check === 'unavailable') log('anatomy lanes: integration_check: unavailable — accepting the lane');
+  if (picked && check !== 'red') return 'integrated';
+  // A partial pick (commit k+1 of n conflicted) or a red check: undo the whole lane — here only.
+  resetToSha(before, worktree, preserve);
+  return picked ? 'integration_red' : 'conflict';
+}
+
+/**
+ * B-LANES WS-3: cherry-pick every lane that asked to integrate, in roster order, onto
+ * `pickle-lane/<session>/integration` created from `phaseStartSha` in a disposable worktree.
+ * A conflict aborts the pick (`conflict`); a red typecheck resets the INTEGRATION worktree
+ * (`integration_red`). The main checkout moves once, by `merge --ff-only`; if that fails every
+ * lane it would have carried is `integration_ff_failed`. The main checkout is never reset,
+ * cleaned or left mid-pick. Never throws.
+ */
+export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult {
+  const { repoRoot, sessionDir, phaseStartSha, log } = input;
+  const commits = input.lanes.map((lane) => (lane.integrate ? laneCommits(repoRoot, phaseStartSha, lane.branch) : []));
+  const outcomes: (LaneIntegrationOutcome | null)[] = input.lanes.map((lane) => (lane.integrate ? 'integrated' : null));
+  if (!commits.some((c) => c.length > 0)) return { outcomes, commits };
+
+  const worktree = integrationWorktreeDir(sessionDir);
+  const branch = integrationBranchName(sessionDir);
+  const carried = (i: number): boolean => outcomes[i] === 'integrated' && commits[i].length > 0;
+  try {
+    createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
+    const preserve = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
+    const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
+    commits.forEach((laneCommitList, i) => {
+      if (laneCommitList.length > 0) outcomes[i] = pickLane(worktree, targetDir, laneCommitList, preserve, log);
+    });
+    if (outcomes.some((_, i) => carried(i)) && !laneGitOk(repoRoot, ['merge', '--ff-only', '-q', branch])) {
+      log(`anatomy lanes: main checkout could not fast-forward to ${branch} — lane branches kept`);
+      outcomes.forEach((_, i) => { if (carried(i)) outcomes[i] = 'integration_ff_failed'; });
+    }
+  } catch (err) {
+    log(`anatomy lanes: integration failed: ${err instanceof Error ? err.message : String(err)} — lane branches kept`);
+    outcomes.forEach((_, i) => { if (commits[i].length > 0 && outcomes[i] === 'integrated') outcomes[i] = 'integration_ff_failed'; });
+  } finally {
+    removeLaneWorktrees(repoRoot, [worktree]);
+  }
+  return { outcomes, commits };
+}
+
+function branchExists(repoRoot: string, branch: string): boolean {
+  return laneGitOk(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+}
+
+/**
+ * Delete lane branches with `git branch -d` only, so a branch goes only once main reaches it.
+ * A cherry-picked lane's own commits are never ancestors of main, so an `integrated` lane's ref
+ * is first moved to main's HEAD — but only when `git cherry` proves every one of its commits
+ * already has a patch-equivalent there. Returns the branches that survive (retained).
+ */
+export function releaseLaneBranches(
+  repoRoot: string,
+  sessionDir: string,
+  branches: readonly string[],
+  integrated: ReadonlySet<string>,
+): { deleted: string[]; retained: string[] } {
+  const deleted: string[] = [];
+  const retained: string[] = [];
+  for (const branch of [...branches, integrationBranchName(sessionDir)]) {
+    if (!branchExists(repoRoot, branch)) continue;
+    if (integrated.has(branch)) {
+      let landed = false;
+      try {
+        landed = !laneGit(repoRoot, ['cherry', 'HEAD', branch]).split('\n').some((l) => l.startsWith('+'));
+      } catch { /* unprovable → keep the branch where it is */ }
+      if (landed) laneGitOk(repoRoot, ['branch', '-f', branch, 'HEAD']);
+    }
+    (laneGitOk(repoRoot, ['branch', '-d', branch]) ? deleted : retained).push(branch);
+  }
+  return { deleted, retained };
+}
+
+function registeredWorktrees(repoRoot: string): string[] {
+  try {
+    return laneGit(repoRoot, ['worktree', 'list', '--porcelain']).split('\n')
+      .filter((l) => l.startsWith('worktree '))
+      .map((l) => l.slice('worktree '.length));
+  } catch {
+    return [];
+  }
+}
+
+export interface LaneRecoveryReport {
+  /** This session's lane branches a previous run left unintegrated — reported, never integrated. */
+  unintegrated: string[];
+  /** Retained `pickle-lane/*` branches past the 14-day retention, deleted. */
+  expired: string[];
+  /** Worktrees of this session's lane/integration dirs a previous run left registered. */
+  staleWorktrees: string[];
+}
+
+/**
+ * Phase-start recovery. A crashed run leaves lane worktrees registered and lane branches
+ * behind; the relaunch would collide with both. Stale worktrees are removed and pruned. A
+ * surviving lane branch main already reaches goes by `-d`; any other is renamed aside to
+ * `pickle-lane/<session>/unintegrated-<ms>-<leaf>` and reported. Retained branches older than
+ * 14 days (tip commit) are deleted, with a report.
+ */
+export function recoverLaneBranches(repoRoot: string, sessionDir: string, nowMs: number = Date.now()): LaneRecoveryReport {
+  const ownDirPrefix = `${realpathOrResolve(sessionDir)}--`;
+  const staleWorktrees = registeredWorktrees(repoRoot).filter((wt) => realpathOrResolve(wt).startsWith(ownDirPrefix));
+  removeLaneWorktrees(repoRoot, staleWorktrees);
+
+  const report: LaneRecoveryReport = { unintegrated: [], expired: [], staleWorktrees };
+  let refs: string[] = [];
+  try {
+    refs = laneGit(repoRoot, ['for-each-ref', '--format=%(refname:short)%09%(committerdate:unix)', 'refs/heads/pickle-lane/'])
+      .split('\n').filter(Boolean);
+  } catch { /* no refs readable → nothing to recover */ }
+  const prefix = sessionBranchPrefix(sessionDir);
+  for (const ref of refs) {
+    const [branch, unix] = ref.split('\t');
+    if (nowMs - Number(unix) * 1000 > RETAINED_BRANCH_MAX_AGE_MS && laneGitOk(repoRoot, ['branch', '-D', branch])) {
+      report.expired.push(branch);
+      continue;
+    }
+    if (!branch.startsWith(prefix) || laneGitOk(repoRoot, ['branch', '-d', branch])) continue;
+    const leaf = branch.slice(prefix.length);
+    const aside = leaf.startsWith(UNINTEGRATED_PREFIX) ? branch : `${prefix}${UNINTEGRATED_PREFIX}${nowMs}-${leaf}`;
+    if (aside === branch || laneGitOk(repoRoot, ['branch', '-m', branch, aside])) report.unintegrated.push(aside);
+    else report.unintegrated.push(branch);
+  }
+  return report;
 }

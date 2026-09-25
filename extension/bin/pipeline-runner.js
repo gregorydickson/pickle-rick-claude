@@ -43,7 +43,7 @@ import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -1637,37 +1637,44 @@ function parentSessionActive(statePath) {
     }
 }
 /** A lane's own verdict: its `exit_reason`, or — when it never wrote one — why it did not. */
-function readLaneExitReason(run, statePath) {
+function readLaneEnd(run, statePath, startedAt) {
+    const end = {
+        reason: run.cancelledAtMs === null ? 'error' : 'stopped', passes: 0, started_at: startedAt, ended_at: new Date().toISOString(),
+    };
     try {
-        const reason = sm.read(statePath).exit_reason;
-        if (typeof reason === 'string' && reason.length > 0)
-            return reason;
+        const state = sm.read(statePath);
+        if (typeof state.exit_reason === 'string' && state.exit_reason.length > 0)
+            end.reason = state.exit_reason;
+        if (typeof state.iteration === 'number')
+            end.passes = state.iteration;
     }
     catch { /* unreadable lane state → no verdict of its own */ }
-    return run.cancelledAtMs === null ? 'error' : 'stopped';
+    return end;
 }
+const notStarted = (reason) => ({ reason, passes: 0, started_at: null, ended_at: null });
 async function runOneLane(run, lane, index) {
     const { runtime } = run;
     if (run.cancelledAtMs !== null)
-        return 'stopped';
+        return notStarted('stopped');
+    const startedAt = new Date().toISOString();
     let session;
     try {
         session = createLaneSession(runtime.sessionDir, lane, index, run.sha, runtime.target);
     }
     catch (err) {
         runtime.log(`anatomy lane ${lane.name}: session setup failed: ${safeErrorMessage(err)}`);
-        return 'error';
+        return notStarted('error');
     }
     run.statePaths.push(session.statePath);
     run.worktrees.push(session.worktree);
     const setup = setupAnatomyPark(session.laneDir, session.workingDir, runtime.config.anatomy_stall_limit, runtime.extensionRoot, runtime.log, undefined, runtime.designSafe, { lanes: [lane] });
     if (setup !== true) {
         runtime.log(`anatomy lane ${lane.name}: setup skipped (${setup.skipReason})`);
-        return 'error';
+        return notStarted('error');
     }
     if (run.cancelledAtMs !== null) {
         deactivateLaneState(session.statePath, runtime.log);
-        return 'stopped';
+        return notStarted('stopped');
     }
     runtime.log(`anatomy lane ${lane.name}: started in ${session.laneDir}`);
     try {
@@ -1690,9 +1697,9 @@ async function runOneLane(run, lane, index) {
     finally {
         laneChildren.delete(lane.name);
     }
-    const reason = readLaneExitReason(run, session.statePath);
-    runtime.log(`anatomy lane ${lane.name}: ended (${reason})`);
-    return reason;
+    const end = readLaneEnd(run, session.statePath, startedAt);
+    runtime.log(`anatomy lane ${lane.name}: ended (${end.reason})`);
+    return end;
 }
 /** SIGKILL every lane group once the 2 s grace after cancel has elapsed. */
 async function reapCancelledLanes(run) {
@@ -1721,7 +1728,8 @@ export async function runAnatomyLanes(runtime, lanes, cap) {
         spawned: [],
         worktrees: [],
     };
-    const reasons = lanes.map(() => 'stopped');
+    reportLaneRecovery(runtime);
+    const ends = lanes.map(() => notStarted('stopped'));
     const workers = Math.min(cap, lanes.length);
     runtime.log(`anatomy lanes: ${lanes.length} lane(s), up to ${workers} at once`);
     const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
@@ -1735,7 +1743,7 @@ export async function runAnatomyLanes(runtime, lanes, cap) {
             const index = next++;
             if (!parentSessionActive(runtime.statePath))
                 cancelLaneRun(run);
-            reasons[index] = await runOneLane(run, lanes[index], index + 1);
+            ends[index] = await runOneLane(run, lanes[index], index + 1);
         }
     };
     try {
@@ -1748,10 +1756,72 @@ export async function runAnatomyLanes(runtime, lanes, cap) {
     const stuck = removeLaneWorktrees(gitRepoRoot(runtime.target), run.worktrees);
     if (stuck.length > 0)
         runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
-    const reason = aggregateLaneExitReason(reasons, (r) => classifyMicroverseDisposition(r).reportAs === 'success');
+    const outcomes = integrateLaneRun(run, lanes, ends);
+    // A lane that converged but did not reach main reports WHY; every other lane reports its own reason.
+    const reasons = outcomes.map((o) => (isLaneSuccess(o.exit_reason) && o.outcome !== 'integrated' ? o.outcome : o.exit_reason));
+    const reason = aggregateLaneExitReason(reasons, isLaneSuccess);
     recordExitReason(runtime.statePath, reason);
     runtime.log(`anatomy lanes: verdict ${reason} (${reasons.join(', ')})`);
     return reason === 'converged' ? 0 : 1;
+}
+const isLaneSuccess = (reason) => classifyMicroverseDisposition(reason).reportAs === 'success';
+function emitLaneEvent(event, sessionDir, gatePayload) {
+    try {
+        logActivity({ event, source: 'pickle', session: path.basename(sessionDir), gate_payload: gatePayload });
+    }
+    catch { /* best-effort telemetry */ }
+}
+/** Phase start: prune a crashed run's worktrees, report its unintegrated branches — never integrate them. */
+function reportLaneRecovery(runtime) {
+    const report = recoverLaneBranches(gitRepoRoot(runtime.target), runtime.sessionDir);
+    if (report.staleWorktrees.length > 0)
+        runtime.log(`anatomy lanes: pruned stale worktree(s): ${report.staleWorktrees.join(', ')}`);
+    if (report.unintegrated.length > 0) {
+        runtime.log(`anatomy lanes: unintegrated lane branch(es) from a previous run, NOT integrated: ${report.unintegrated.join(', ')}`);
+    }
+    if (report.expired.length > 0)
+        runtime.log(`anatomy lanes: deleted retained lane branch(es) older than 14 days: ${report.expired.join(', ')}`);
+    if (report.unintegrated.length + report.expired.length + report.staleWorktrees.length > 0) {
+        emitLaneEvent('anatomy_lane_branches_reported', runtime.sessionDir, {
+            unintegrated: report.unintegrated, expired: report.expired, stale_worktrees: report.staleWorktrees,
+        });
+    }
+}
+/**
+ * Integrate the converged lanes, release every branch main now reaches, and write
+ * `archive/lanes.json`. Returns one row per lane in roster order.
+ */
+function integrateLaneRun(run, lanes, ends) {
+    const { runtime } = run;
+    const repoRoot = gitRepoRoot(runtime.target);
+    const branches = lanes.map((_, i) => laneBranchName(runtime.sessionDir, i + 1));
+    const integration = integrateLanes({
+        repoRoot, target: runtime.target, sessionDir: runtime.sessionDir, phaseStartSha: run.sha, log: runtime.log,
+        lanes: branches.map((branch, i) => ({ branch, integrate: isLaneSuccess(ends[i].reason) })),
+    });
+    const outcomes = lanes.map((lane, i) => ({
+        name: lane.name, dir: lane.dir, excludes: [...lane.excludes], branch: branches[i],
+        worktree: path.join(laneSessionDir(runtime.sessionDir, i + 1), 'wt'),
+        started_at: ends[i].started_at, ended_at: ends[i].ended_at, passes: ends[i].passes, exit_reason: ends[i].reason,
+        outcome: integration.outcomes[i] ?? (run.cancelledAtMs === null ? 'non_convergent' : 'cancelled'),
+        commits: integration.commits[i],
+    }));
+    const integrated = new Set(outcomes.filter((o) => o.outcome === 'integrated').map((o) => o.branch));
+    const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, integrated);
+    if (retained.length > 0)
+        runtime.log(`anatomy lanes: kept lane branch(es): ${retained.join(', ')}`);
+    try {
+        fs.mkdirSync(path.join(runtime.sessionDir, 'archive'), { recursive: true });
+        writeStateFile(path.join(runtime.sessionDir, 'archive', 'lanes.json'), outcomes);
+    }
+    catch (err) {
+        runtime.log(`anatomy lanes: could not write archive/lanes.json: ${safeErrorMessage(err)}`);
+    }
+    const counts = {};
+    for (const o of outcomes)
+        counts[o.outcome] = (counts[o.outcome] ?? 0) + 1;
+    emitLaneEvent('anatomy_lanes_integrated', runtime.sessionDir, { outcomes: counts, retained_branches: retained });
+    return outcomes;
 }
 /**
  * AC-LPB-05: when pipeline-runner re-attaches to a session that already has
