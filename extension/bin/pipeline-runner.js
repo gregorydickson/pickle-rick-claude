@@ -43,7 +43,7 @@ import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -121,6 +121,7 @@ export function parsePipelineConfig(raw) {
         // keys, and they used to disagree with that launch path. Raise them together or not at all.
         anatomy_max_iterations: parsePositiveInteger(raw.anatomy_max_iterations, 500),
         szechuan_max_iterations: parsePositiveInteger(raw.szechuan_max_iterations, 500),
+        anatomy_max_parallel_lanes: parsePositiveInteger(raw.anatomy_max_parallel_lanes, 1),
         citadel_strict: raw.citadel_strict === true || raw.strict === true,
         backend,
         dirty_exempt_segments,
@@ -1229,6 +1230,9 @@ let activeChild = null;
 // R-OMTD: true when activeChild was spawned `detached:true` (leads its own
 // process group), so teardown must signal the whole group, not just the PID.
 let activeChildLeadsGroup = false;
+// B-LANES WS-3: concurrent anatomy-park lane runners, keyed by lane name. Each leads its own
+// process group, so every teardown path signals the group.
+const laneChildren = new Map();
 let spawnRunnerOverride = null;
 let _closerReleaseActionsForTests = null;
 let phaseRunnerContext = null;
@@ -1365,15 +1369,18 @@ export function armChildMuxRunnerHeartbeat(opts, deps = {}) {
  * into each handler is how the jar-runner's three settle copies drifted, one of them
  * silently ceasing to clear its timers (root CLAUDE.md § Complexity rule 2).
  */
-function makePhaseChildSettler(heartbeat) {
+function makePhaseChildSettler(child, heartbeat) {
     let settled = false;
     return (finish) => {
         if (settled)
             return;
         settled = true;
         heartbeat?.stop();
-        activeChild = null;
-        activeChildLeadsGroup = false;
+        // A lane ending must not clear the tracking of a sibling that spawned after it.
+        if (activeChild === child) {
+            activeChild = null;
+            activeChildLeadsGroup = false;
+        }
         finish();
     };
 }
@@ -1393,14 +1400,14 @@ function armPhaseChildMuxRunnerHeartbeat(child, args) {
         stallSeconds: phaseRunnerContext.childMuxRunnerStallSeconds,
     });
 }
-function spawnRunner(cmd, args, env) {
+function spawnRunner(cmd, args, env, opts) {
     return new Promise((resolve, reject) => {
         let stdout = '';
         let stderr = '';
         // R-OMTD: spawn the mux-runner child in its OWN process group so a SIGTERM
         // to pipeline-runner can reap the whole subtree (mux-runner + its workers)
         // via the negative-PID group signal in handleShutdown / the heartbeat.
-        const leadsGroup = isMuxRunnerInvocation(args);
+        const leadsGroup = opts?.detached ?? isMuxRunnerInvocation(args);
         const child = spawn(cmd, args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: env ?? process.env,
@@ -1408,6 +1415,7 @@ function spawnRunner(cmd, args, env) {
         });
         activeChild = child;
         activeChildLeadsGroup = leadsGroup;
+        opts?.onSpawn?.(child);
         const heartbeat = armPhaseChildMuxRunnerHeartbeat(child, args);
         // `setEncoding` before the first read, NOT a per-chunk `toString()`: an OS pipe boundary
         // is a BYTE offset, so a multi-byte UTF-8 character straddles it and each half decodes to
@@ -1427,13 +1435,13 @@ function spawnRunner(cmd, args, env) {
             stderr += text;
             process.stderr.write(text);
         });
-        const settle = makePhaseChildSettler(heartbeat);
+        const settle = makePhaseChildSettler(child, heartbeat);
         child.on('exit', (code) => settle(() => resolve({ exitCode: code ?? 1, stdout, stderr })));
         child.on('error', (err) => settle(() => reject(err)));
     });
 }
-async function runSpawnRunner(cmd, args, env) {
-    const result = await (spawnRunnerOverride ?? spawnRunner)(cmd, args, env);
+async function runSpawnRunner(cmd, args, env, opts) {
+    const result = await (spawnRunnerOverride ?? spawnRunner)(cmd, args, env, opts);
     if (typeof result === 'number') {
         return { exitCode: result, stdout: '', stderr: '' };
     }
@@ -1583,7 +1591,167 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     resetStateForPhase(statePath, 'anatomy-park.md', readAnatomyMaxIterations(parentSessionDir));
     claimPipelineRunnerActive(statePath);
     writeStateFile(path.join(laneDir, 'scope.json'), buildLaneScope(laneAllowedPaths(repoRoot, target, lane, phaseStartSha), phaseStartSha));
-    return { laneDir, worktree, branch, statePath };
+    return { laneDir, worktree, branch, statePath, workingDir };
+}
+const LANE_KILL_GRACE_MS = 2_000;
+const LANE_POLL_FALLBACK_MS = 60_000;
+/** The lane roster `setupAnatomyPark` persisted into the parent `anatomy-park.json`. */
+function readAnatomyLanes(sessionDir) {
+    let raw;
+    try {
+        raw = readRecoverableJsonObject(path.join(sessionDir, 'anatomy-park.json'))?.lanes;
+    }
+    catch {
+        return [];
+    }
+    if (!Array.isArray(raw))
+        return [];
+    return raw.filter((lane) => typeof lane?.name === 'string'
+        && typeof lane?.dir === 'string' && Array.isArray(lane?.excludes));
+}
+function deactivateLaneState(statePath, log) {
+    try {
+        sm.update(statePath, (s) => { s.active = false; });
+    }
+    catch (err) {
+        log(`anatomy lanes: could not mirror active=false into ${statePath}: ${safeErrorMessage(err)}`);
+    }
+}
+/** Cancel reaches every lane: mirror `active=false` into each lane state, then SIGTERM each group. */
+function cancelLaneRun(run) {
+    if (run.cancelledAtMs !== null)
+        return;
+    run.cancelledAtMs = Date.now();
+    run.runtime.log(`anatomy lanes: parent session inactive — cancelling ${run.statePaths.length} lane(s)`);
+    for (const statePath of run.statePaths)
+        deactivateLaneState(statePath, run.runtime.log);
+    for (const child of run.spawned)
+        reapChildSubtree(child, true, 'SIGTERM');
+}
+function parentSessionActive(statePath) {
+    try {
+        return sm.read(statePath).active === true;
+    }
+    catch {
+        return true; // an unreadable parent state is not a cancel
+    }
+}
+/** A lane's own verdict: its `exit_reason`, or — when it never wrote one — why it did not. */
+function readLaneExitReason(run, statePath) {
+    try {
+        const reason = sm.read(statePath).exit_reason;
+        if (typeof reason === 'string' && reason.length > 0)
+            return reason;
+    }
+    catch { /* unreadable lane state → no verdict of its own */ }
+    return run.cancelledAtMs === null ? 'error' : 'stopped';
+}
+async function runOneLane(run, lane, index) {
+    const { runtime } = run;
+    if (run.cancelledAtMs !== null)
+        return 'stopped';
+    let session;
+    try {
+        session = createLaneSession(runtime.sessionDir, lane, index, run.sha, runtime.target);
+    }
+    catch (err) {
+        runtime.log(`anatomy lane ${lane.name}: session setup failed: ${safeErrorMessage(err)}`);
+        return 'error';
+    }
+    run.statePaths.push(session.statePath);
+    run.worktrees.push(session.worktree);
+    const setup = setupAnatomyPark(session.laneDir, session.workingDir, runtime.config.anatomy_stall_limit, runtime.extensionRoot, runtime.log, undefined, runtime.designSafe, { lanes: [lane] });
+    if (setup !== true) {
+        runtime.log(`anatomy lane ${lane.name}: setup skipped (${setup.skipReason})`);
+        return 'error';
+    }
+    if (run.cancelledAtMs !== null) {
+        deactivateLaneState(session.statePath, runtime.log);
+        return 'stopped';
+    }
+    runtime.log(`anatomy lane ${lane.name}: started in ${session.laneDir}`);
+    try {
+        await runSpawnRunner('node', [
+            path.join(runtime.extensionRoot, 'extension', 'bin', 'microverse-runner.js'),
+            session.laneDir,
+        ], { ...runtime.phaseEnv, ...laneRunnerEnv(session.statePath, runtime.phaseEnv) }, {
+            detached: process.platform !== 'win32',
+            onSpawn: (child) => {
+                run.spawned.push(child);
+                laneChildren.set(lane.name, child);
+                if (run.cancelledAtMs !== null)
+                    reapChildSubtree(child, true, 'SIGTERM');
+            },
+        });
+    }
+    catch (err) {
+        runtime.log(`anatomy lane ${lane.name}: runner failed to start: ${safeErrorMessage(err)}`);
+    }
+    finally {
+        laneChildren.delete(lane.name);
+    }
+    const reason = readLaneExitReason(run, session.statePath);
+    runtime.log(`anatomy lane ${lane.name}: ended (${reason})`);
+    return reason;
+}
+/** SIGKILL every lane group once the 2 s grace after cancel has elapsed. */
+async function reapCancelledLanes(run) {
+    if (run.cancelledAtMs === null)
+        return;
+    const remainingMs = run.cancelledAtMs + LANE_KILL_GRACE_MS - Date.now();
+    if (remainingMs > 0)
+        await new Promise((resolve) => setTimeout(resolve, remainingMs));
+    for (const child of run.spawned)
+        reapChildSubtree(child, true, 'SIGKILL');
+}
+/**
+ * B-LANES WS-3: run the anatomy-park lane roster concurrently, at most `cap` lanes alive at
+ * once, starting the next lane as one ends. The parent `active` flag is polled at the
+ * heartbeat cadence and a cancel reaches every lane. After the last lane ends, ONE parent
+ * `exit_reason` is written — `converged` iff every lane converged, else the first
+ * non-success lane reason in roster order — so `finalizePhaseSuccess` reads the lanes'
+ * verdict through the same field it always has. Returns the phase exit code.
+ */
+export async function runAnatomyLanes(runtime, lanes, cap) {
+    const run = {
+        runtime,
+        sha: runGitString(['rev-parse', 'HEAD'], runtime.repoRoot) ?? '',
+        cancelledAtMs: null,
+        statePaths: [],
+        spawned: [],
+        worktrees: [],
+    };
+    const reasons = lanes.map(() => 'stopped');
+    const workers = Math.min(cap, lanes.length);
+    runtime.log(`anatomy lanes: ${lanes.length} lane(s), up to ${workers} at once`);
+    const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
+    const poll = setInterval(() => {
+        if (!parentSessionActive(runtime.statePath))
+            cancelLaneRun(run);
+    }, heartbeatMs > 0 ? heartbeatMs : LANE_POLL_FALLBACK_MS);
+    let next = 0;
+    const worker = async () => {
+        while (next < lanes.length) {
+            const index = next++;
+            if (!parentSessionActive(runtime.statePath))
+                cancelLaneRun(run);
+            reasons[index] = await runOneLane(run, lanes[index], index + 1);
+        }
+    };
+    try {
+        await Promise.all(Array.from({ length: workers }, worker));
+    }
+    finally {
+        clearInterval(poll);
+    }
+    await reapCancelledLanes(run);
+    const stuck = removeLaneWorktrees(gitRepoRoot(runtime.target), run.worktrees);
+    if (stuck.length > 0)
+        runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
+    const reason = aggregateLaneExitReason(reasons, (r) => classifyMicroverseDisposition(r).reportAs === 'success');
+    recordExitReason(runtime.statePath, reason);
+    runtime.log(`anatomy lanes: verdict ${reason} (${reasons.join(', ')})`);
+    return reason === 'converged' ? 0 : 1;
 }
 /**
  * AC-LPB-05: when pipeline-runner re-attaches to a session that already has
@@ -3450,6 +3618,10 @@ async function runConfiguredPhase(runtime, phaseConfig, counters) {
         return { skipped: true, skipReason: setupResult.skipReason, exitCode: null };
     if (phaseConfig.name === 'citadel')
         return { skipped: false, exitCode: (await executeCitadelPhase(runtime)).exitCode };
+    const cap = runtime.config.anatomy_max_parallel_lanes;
+    const lanes = phaseConfig.name === 'anatomy-park' && cap >= 2 ? readAnatomyLanes(runtime.sessionDir) : [];
+    if (lanes.length >= 2)
+        return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
     const result = await executePhaseRunner(phaseConfig, runtime.phaseEnv);
     return { skipped: false, exitCode: result.exitCode, stderr: result.stderr };
 }
@@ -3648,6 +3820,8 @@ export function installShutdownHandlers(runtime, counters, cancelMarker) {
         catch { /* best effort */ }
         if (activeChild && !activeChild.killed)
             reapChildSubtree(activeChild, activeChildLeadsGroup, 'SIGTERM');
+        for (const lane of laneChildren.values())
+            reapChildSubtree(lane, true, 'SIGTERM');
         recordExitReason(runtime.statePath, `signal:${signal}`);
         safeDeactivate(runtime.statePath);
         logActivity({ event: 'session_end', source: 'pickle', session: path.basename(runtime.sessionDir), mode: 'tmux', backend: runtime.backend });

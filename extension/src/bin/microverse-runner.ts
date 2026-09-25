@@ -66,6 +66,7 @@ import {
   RATE_LIMIT_PROBE_PROMPT,
   DEFAULT_MAX_PARK_MINUTES,
 } from '../services/pickle-utils.js';
+import { isLaneSessionDir } from '../services/anatomy-lanes.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 
 const sm = new StateManager();
@@ -6676,7 +6677,9 @@ function initializeMicroverseRun(sessionDir: string): RunStartup {
   const statePath = path.join(sessionDir, 'state.json');
   const log = createRunnerLogger(sessionDir);
   log('microverse-runner started');
-  ensureMicroverseMonitor(sessionDir, extensionRoot, log);
+  // B-LANES WS-3: a lane runner is one of several concurrent runners under one parent
+  // session; the parent's monitor window is the one the operator watches.
+  if (!isLaneSessionDir(sessionDir)) ensureMicroverseMonitor(sessionDir, extensionRoot, log);
 
   const enableFailureClassification = loadFailureClassificationFlag(extensionRoot);
   const cgSettings = loadConvergenceGateSettings(extensionRoot);

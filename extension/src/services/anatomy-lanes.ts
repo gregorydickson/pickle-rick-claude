@@ -127,3 +127,45 @@ export function laneRunnerEnv(statePath: string, inherited: NodeJS.ProcessEnv = 
     [`GIT_CONFIG_VALUE_${n}`]: '0',
   };
 }
+
+/** The inverse of `laneSessionDir`: a lane session is named `<parent>--lane-<n>`. */
+export function isLaneSessionDir(sessionDir: string): boolean {
+  return /--lane-\d+$/.test(path.basename(path.resolve(sessionDir)));
+}
+
+/**
+ * Remove every lane worktree directory, then `git worktree prune`. Best-effort: the lane
+ * BRANCH keeps any committed work, so a directory that will not go away costs a stale
+ * checkout, never a lost commit. Returns the worktrees that could not be removed.
+ */
+export function removeLaneWorktrees(repoRoot: string, worktrees: readonly string[]): string[] {
+  const failed: string[] = [];
+  for (const worktree of worktrees) {
+    try {
+      execFileSync('git', ['-C', repoRoot, 'worktree', 'remove', '--force', worktree], {
+        timeout: LANE_GIT_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      failed.push(worktree);
+    }
+  }
+  try {
+    execFileSync('git', ['-C', repoRoot, 'worktree', 'prune'], {
+      timeout: LANE_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch { /* best-effort: a later prune catches it */ }
+  return failed;
+}
+
+/**
+ * The ONE parent verdict over a lane roster: `converged` iff every lane's own reason is a
+ * success, otherwise the first non-success reason in roster order.
+ */
+export function aggregateLaneExitReason(
+  laneReasons: readonly string[],
+  isSuccess: (reason: string) => boolean,
+): string {
+  return laneReasons.find((reason) => !isSuccess(reason)) ?? 'converged';
+}
