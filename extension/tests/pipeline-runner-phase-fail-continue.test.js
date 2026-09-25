@@ -1186,6 +1186,29 @@ test('B-LANES 13g falsifying control: without the aggregation write the same lan
   assert.equal(counters.nonConvergent, 0);
 });
 
+// WS-3 §4: the ONE parent verdict is the first non-success lane reason in ROSTER order. With a
+// single failing lane, "first", "last" and "first to finish" all agree, so two failing lanes are
+// needed — and the roster-earlier one finishes LAST, so completion order picks the other.
+test('B-LANES 13d: two non-success lanes → the parent carries the roster-first reason, not the first to finish', async () => {
+  const { runtime, lanes } = makeLaneVerdictRuntime();
+  const logs = [];
+  const stamp = stampLaneReasons((n) => ({ 1: 'converged', 2: 'no_progress', 3: 'anatomy_non_convergent' })[n]);
+  const finished = [];
+  __setSpawnRunnerForTests(async (cmd, args, ...rest) => {
+    if (/--lane-2$/.test(args[1])) await new Promise((resolve) => setTimeout(resolve, 300));
+    const result = await stamp(cmd, args, ...rest);
+    finished.push(Number(/--lane-(\d+)$/.exec(args[1])[1]));
+    return result;
+  });
+
+  const exitCode = await runAnatomyLanes({ ...runtime, log: (m) => logs.push(m) }, lanes, 3);
+
+  assert.equal(finished.indexOf(2) > finished.indexOf(3), true, `precondition: lane 2 finished after lane 3 (${finished})`);
+  assert.equal(exitCode, 1);
+  assert.equal(JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8')).exit_reason, 'no_progress');
+  assert.ok(logs.includes('anatomy lanes: verdict no_progress (converged, no_progress, anatomy_non_convergent)'), logs.join('\n'));
+});
+
 // B-LANES data-flow audit (8512be3a) F1: a lane that produced no verdict of its own — its session
 // setup failed, or its runner died before writing exit_reason — used to be recorded as 'error',
 // which classifies `failure` and HALTS the pipeline through isMicroverseArmFatal. The serial path
