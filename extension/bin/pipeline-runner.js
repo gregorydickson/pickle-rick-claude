@@ -1593,6 +1593,10 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     resetStateForPhase(statePath, 'anatomy-park.md', readAnatomyMaxIterations(parentSessionDir));
     claimPipelineRunnerActive(statePath);
     writeStateFile(path.join(laneDir, 'scope.json'), buildLaneScope(laneAllowedPaths(repoRoot, target, lane, phaseStartSha), phaseStartSha));
+    // setupAnatomyPark reads the citadel report from the session it is handed — here, the lane.
+    const citadelReport = path.join(parentSessionDir, 'citadel_report.json');
+    if (fs.existsSync(citadelReport))
+        fs.copyFileSync(citadelReport, path.join(laneDir, 'citadel_report.json'));
     return { laneDir, worktree, branch, statePath, workingDir };
 }
 const LANE_KILL_GRACE_MS = 2_000;

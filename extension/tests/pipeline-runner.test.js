@@ -5034,6 +5034,22 @@ describe('B-LANES 13h lane session placement', () => {
     }
   });
 
+  // B-LANES data-flow audit (8512be3a) F2: setupAnatomyPark reads citadel_report.json from the
+  // session it is given — for a lane, the LANE dir — so a lane PRD silently lost every citadel
+  // finding the serial phase would have carried.
+  test('a lane session carries the parent citadel report', () => {
+    const { target, dataRoot, parent, sha } = makePlacementFixture();
+    try {
+      const report = JSON.stringify({ findings: [{ severity: 'High', title: 'parent finding' }] });
+      fs.writeFileSync(path.join(parent, 'citadel_report.json'), report);
+      const lane = createLaneSession(parent, lanes[0], 1, sha, target);
+      assert.equal(fs.readFileSync(path.join(lane.laneDir, 'citadel_report.json'), 'utf-8'), report);
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   test('a worktree path inside the target is refused before git runs', () => {
     const { target, dataRoot, sha } = makePlacementFixture();
     try {
