@@ -559,7 +559,7 @@ describe('convergence-exit: baseline-aware cap (#48)', () => {
         const dir = makeFailingFixture();
         try {
             let baselineBefore;
-            const { exitReasons, gateFailedEvents, logs, inspected } = await driveConvergenceDeferral(dir, 3, {
+            const { exitReasons, gateFailedEvents, logs, state, inspected } = await driveConvergenceDeferral(dir, 3, {
                 prepareSession: async (sessionDir) => {
                     baselineBefore = fs.readFileSync(await captureBaseline(dir, sessionDir), 'utf-8');
                 },
@@ -571,6 +571,9 @@ describe('convergence-exit: baseline-aware cap (#48)', () => {
             assert.equal(gateFailedEvents.length, 0, 'no tsc_gate_failed for a tree with no NEW failure');
             assert.equal(inspected, baselineBefore, 'the cap never rewrites the session baseline');
             assert.ok(!logs.some((l) => l.includes(CAP_LOG_NO_BASELINE)), 'a present baseline takes the baseline path, not the strict fallback');
+            // A MEASURED green is the one verdict that carries no caveat and claims the trusted exit.
+            assert.equal(state.cap_unmeasured_checks, undefined, 'a green cap records no unmeasured caveat');
+            assert.ok(logs.some((l) => l.includes(TRUSTED_LINE)), 'a green cap logs the trusted-exit line');
         } finally { rm(dir); }
     });
 
