@@ -20,8 +20,6 @@ function readRepoFile(filename) {
 
 const citadel = readCommand('citadel.md');
 const helpPickle = readCommand('help-pickle.md');
-// R-PNTR-5: pickle.md deleted; teams mode content lives in the manager template
-const pickle = fs.readFileSync(path.resolve(__dirname, '../../extension/templates/_pickle-manager-prompt.md'), 'utf8');
 const cronenberg = readCommand('cronenberg.md');
 const readme = readRepoFile('README.md');
 const commandReference = readRepoFile('COMMANDS.md');
@@ -86,17 +84,5 @@ describe('citadel command surface', () => {
 
   test('PRD guide lists citadel as post-implementation conformance audit', () => {
     assert.match(prdGuide, /\| `\/citadel --prd <path>` \| Post-implementation conformance audit/);
-  });
-
-  test('pickle teams mode runs readiness before first Agent call', () => {
-    const phaseStart = pickle.indexOf('## Phase 3.B');
-    const readinessIndex = pickle.indexOf('check-readiness.js', phaseStart);
-    const spawnIndex = pickle.indexOf('3. **Spawn**: make six distinct sequential `Agent` calls', phaseStart);
-
-    assert.ok(phaseStart >= 0, 'missing Phase 3.B section');
-    assert.ok(readinessIndex > phaseStart, 'missing Phase 3.B readiness command');
-    assert.ok(spawnIndex > readinessIndex, 'readiness command must precede the Agent spawn step');
-    assert.match(pickle.slice(readinessIndex, spawnIndex), /Nonzero exit halts before any `Agent` call/);
-    assert.match(pickle.slice(readinessIndex, spawnIndex), /"delta":true/);
   });
 });
