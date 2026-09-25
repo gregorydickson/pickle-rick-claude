@@ -4850,13 +4850,8 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
  * malformed microverse state reads as "no caveat", never as a fabricated one.
  */
 function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
-    let raw;
-    try {
-        raw = readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
-    }
-    catch {
-        return; /* best-effort — an unreadable microverse state carries no caveat */
-    }
+    // `readRecoverableJsonObject` never throws: an absent or unparseable file is `null`.
+    const raw = readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
     const checks = Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
     if (checks.length === 0)
         return;

@@ -4860,4 +4860,38 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('unparseable microverse.json reads as no caveat — the phase still completes', () => {
+    const dir = tmpDir();
+    try {
+      const { runtime, cancelMarker } = convergedRuntime(dir, null);
+      fs.writeFileSync(path.join(dir, 'microverse.json'), '{ not json');
+      const counters = freshCounters();
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      assert.deepEqual(outcome, { action: 'continue' });
+      assert.equal(counters.phaseDispositions['anatomy-park'], undefined);
+      assert.equal(counters.completed, 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('malformed cap_unmeasured_checks: a non-array is no caveat, and only non-empty string members are reported', () => {
+    const dir = tmpDir();
+    try {
+      const { runtime, cancelMarker } = convergedRuntime(dir, null);
+      const mvPath = path.join(dir, 'microverse.json');
+      const mv = JSON.parse(fs.readFileSync(mvPath, 'utf-8'));
+      fs.writeFileSync(mvPath, JSON.stringify({ ...mv, cap_unmeasured_checks: 'lint' }));
+      const scalarCounters = freshCounters();
+      finalizePhaseSuccess(runtime, scalarCounters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      assert.equal(scalarCounters.phaseDispositions['anatomy-park'], undefined);
+      fs.writeFileSync(mvPath, JSON.stringify({ ...mv, cap_unmeasured_checks: [1, '', 'lint', null] }));
+      const mixedCounters = freshCounters();
+      finalizePhaseSuccess(runtime, mixedCounters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      assert.equal(mixedCounters.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:lint');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

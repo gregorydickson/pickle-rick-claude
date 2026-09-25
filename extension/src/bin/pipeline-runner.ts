@@ -5665,10 +5665,8 @@ function reportConvergedWithUnmeasured(
   rawPhase: PhaseName,
   log: (msg: string) => void,
 ): void {
-  let raw: unknown;
-  try {
-    raw = (readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json')) as Record<string, unknown> | null)?.cap_unmeasured_checks;
-  } catch { return; /* best-effort — an unreadable microverse state carries no caveat */ }
+  // `readRecoverableJsonObject` never throws: an absent or unparseable file is `null`.
+  const raw = (readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json')) as Record<string, unknown> | null)?.cap_unmeasured_checks;
   const checks = Array.isArray(raw) ? raw.filter((c): c is string => typeof c === 'string' && c !== '') : [];
   if (checks.length === 0) return;
   const marker = `converged_with_unmeasured:${checks.join(',')}`;
