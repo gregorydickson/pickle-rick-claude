@@ -14,6 +14,23 @@ import { resetToSha } from './git-utils.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
 const LANE_GIT_TIMEOUT_MS = 60_000;
 const NO_GENERATED = new Set();
+function laneGit(cwd, args) {
+    return execFileSync('git', ['-C', cwd, ...args], {
+        timeout: LANE_GIT_TIMEOUT_MS,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+    }).trim();
+}
+function laneGitOk(cwd, args) {
+    try {
+        laneGit(cwd, args);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 /** Lanes map to sessions by sibling directory, never by joining the lane NAME into a path. */
 export function laneSessionDir(parentSessionDir, index) {
     return `${path.resolve(parentSessionDir)}--lane-${index}`;
@@ -46,11 +63,7 @@ export function createLaneWorktree(repoRoot, worktree, branch, sha) {
     if (isInside(placement, realpathOrResolve(repoRoot))) {
         throw new Error(`lane worktree ${worktree} is inside the target repository ${repoRoot}`);
     }
-    execFileSync('git', ['-C', repoRoot, 'worktree', 'add', '-q', '-b', branch, worktree, sha], {
-        timeout: LANE_GIT_TIMEOUT_MS,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    laneGit(repoRoot, ['worktree', 'add', '-q', '-b', branch, worktree, sha]);
 }
 function isDirectory(p) {
     try {
@@ -136,25 +149,8 @@ export function isLaneSessionDir(sessionDir) {
  * checkout, never a lost commit. Returns the worktrees that could not be removed.
  */
 export function removeLaneWorktrees(repoRoot, worktrees) {
-    const failed = [];
-    for (const worktree of worktrees) {
-        try {
-            execFileSync('git', ['-C', repoRoot, 'worktree', 'remove', '--force', worktree], {
-                timeout: LANE_GIT_TIMEOUT_MS,
-                stdio: ['ignore', 'pipe', 'pipe'],
-            });
-        }
-        catch {
-            failed.push(worktree);
-        }
-    }
-    try {
-        execFileSync('git', ['-C', repoRoot, 'worktree', 'prune'], {
-            timeout: LANE_GIT_TIMEOUT_MS,
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
-    }
-    catch { /* best-effort: a later prune catches it */ }
+    const failed = worktrees.filter((worktree) => !laneGitOk(repoRoot, ['worktree', 'remove', '--force', worktree]));
+    laneGitOk(repoRoot, ['worktree', 'prune']); // best-effort: a later prune catches it
     return failed;
 }
 /**
@@ -173,23 +169,6 @@ const LANE_TYPECHECK_TIMEOUT_MS = 300_000;
 export const RETAINED_BRANCH_MAX_AGE_DAYS = 14;
 const RETAINED_BRANCH_MAX_AGE_MS = RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 const UNINTEGRATED_PREFIX = 'unintegrated-';
-function laneGit(cwd, args) {
-    return execFileSync('git', ['-C', cwd, ...args], {
-        timeout: LANE_GIT_TIMEOUT_MS,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
-    }).trim();
-}
-function laneGitOk(cwd, args) {
-    try {
-        laneGit(cwd, args);
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
 export function integrationBranchName(sessionDir) {
     return `${sessionBranchPrefix(sessionDir)}integration`;
 }
