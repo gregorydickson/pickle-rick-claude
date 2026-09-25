@@ -5180,42 +5180,27 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
     }
   });
 
-  test('13: anatomy_max_parallel_lanes absent runs ONE runner, serially, in the main checkout', async () => {
-    const fx = makeLaneFixture();
-    const calls = [];
-    try {
-      __setSpawnRunnerForTests(recordingRunner(calls, 10));
-      const code = await runLaneMain(fx.sessionDir, fx.dataRoot);
-      assert.equal(code, 0);
-      assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
-      assert.equal(calls[0].opts, undefined, 'the default path passes no lane spawn options');
-      assert.equal(readJson(path.join(fx.sessionDir, 'state.json')).working_dir, fx.repo, 'the main checkout');
-      assert.deepEqual(readJson(path.join(fx.sessionDir, 'anatomy-park.json')).subsystems, LANE_NAMES,
-        'all three lanes are rotated by the one runner');
-      assert.equal(fs.existsSync(`${fx.sessionDir}--lane-1`), false, 'no lane session is created');
-    } finally {
-      __setSpawnRunnerForTests(null);
-      fx.cleanup();
-    }
-  });
-
-  // AC-13 names the value itself: "With `1`, the same fixture runs lanes serially in the main checkout."
-  test('13: anatomy_max_parallel_lanes set explicitly to 1 runs ONE runner in the main checkout, no lane session', async () => {
-    const fx = makeLaneFixture({ pipeline: { anatomy_max_parallel_lanes: 1 } });
-    const calls = [];
-    try {
-      __setSpawnRunnerForTests(recordingRunner(calls, 10));
-      assert.equal(await runLaneMain(fx.sessionDir, fx.dataRoot), 0);
-      assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
-      assert.equal(calls[0].opts, undefined, 'the serial path passes no lane spawn options');
-      assert.equal(readJson(path.join(fx.sessionDir, 'state.json')).working_dir, fx.repo, 'the main checkout');
-      assert.equal(fs.existsSync(`${fx.sessionDir}--lane-1`), false, 'no lane session is created');
-      assert.equal(fs.existsSync(path.join(fx.sessionDir, 'archive', 'lanes.json')), false, 'no lane archive');
-    } finally {
-      __setSpawnRunnerForTests(null);
-      fx.cleanup();
-    }
-  });
+  // AC-13: "With `1`, the same fixture runs lanes serially in the main checkout" — as does an absent key.
+  for (const [label, pipeline] of [['absent', {}], ['set explicitly to 1', { anatomy_max_parallel_lanes: 1 }]]) {
+    test(`13: anatomy_max_parallel_lanes ${label} runs ONE runner, serially, in the main checkout`, async () => {
+      const fx = makeLaneFixture({ pipeline });
+      const calls = [];
+      try {
+        __setSpawnRunnerForTests(recordingRunner(calls, 10));
+        assert.equal(await runLaneMain(fx.sessionDir, fx.dataRoot), 0);
+        assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
+        assert.equal(calls[0].opts, undefined, 'the serial path passes no lane spawn options');
+        assert.equal(readJson(path.join(fx.sessionDir, 'state.json')).working_dir, fx.repo, 'the main checkout');
+        assert.deepEqual(readJson(path.join(fx.sessionDir, 'anatomy-park.json')).subsystems, LANE_NAMES,
+          'all three lanes are rotated by the one runner');
+        assert.equal(fs.existsSync(`${fx.sessionDir}--lane-1`), false, 'no lane session is created');
+        assert.equal(fs.existsSync(path.join(fx.sessionDir, 'archive', 'lanes.json')), false, 'no lane archive');
+      } finally {
+        __setSpawnRunnerForTests(null);
+        fx.cleanup();
+      }
+    });
+  }
 
   test('13e: anatomy_max_parallel_lanes outside the positive integers resolves to the default without throwing', () => {
     for (const value of [undefined, 0, -1, 1.5, 'x', null, {}, []]) {
