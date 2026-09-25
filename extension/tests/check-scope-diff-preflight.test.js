@@ -753,3 +753,38 @@ test('AP-EXT-ITER314-05: a staged IN-SCOPE path under the reader cwd is not fabr
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// AC-FENCE-REG (B-CAPGATE): on the anatomy-park path a fix may reach for a manifest — the root
+// package.json or a workspace package's — that the session's allow-list never named. The fence has
+// ONE exemption (subsystem CLAUDE.md catalogs); a manifest is scope, not catalog, and must be reported.
+test('check-scope-diff-preflight: AC-FENCE-REG an out-of-allowlist package.json edit is outside_scope → exit 1', () => {
+  const tmp = makeTmp();
+  const git = (...args) => spawnSync('git', args, { cwd: tmp, encoding: 'utf-8', timeout: 30_000 });
+  try {
+    git('init', '-q');
+    git('config', 'user.email', 'test@test.com');
+    git('config', 'user.name', 'Test');
+
+    fs.mkdirSync(path.join(tmp, 'packages', 'a', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({ name: 'root', private: true }));
+    fs.writeFileSync(path.join(tmp, 'packages', 'a', 'package.json'), JSON.stringify({ name: 'a', scripts: { lint: 'eslint .' } }));
+    fs.writeFileSync(path.join(tmp, 'packages', 'a', 'src', 'x.ts'), 'export {};');
+    const add = git('add', 'package.json', 'packages/a/package.json', 'packages/a/src/x.ts');
+    assert.equal(add.status, 0, `git add failed: ${add.stderr}`);
+
+    // Production allow-list shape: the files the bundle touched, not directories.
+    const scopePath = writeScopeJson(tmp, ['packages/a/src/x.ts']);
+    const result = runScript(['--scope-json', scopePath], { cwd: tmp });
+
+    assert.equal(result.status, 1, `expected exit 1, got ${result.status}. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout.trim());
+    assert.equal(output.status, 'outside_scope');
+    assert.deepEqual(
+      [...output.staged_paths_outside_scope].sort(),
+      ['package.json', 'packages/a/package.json'],
+      'both manifests are reported; the allow-listed source file is not',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
