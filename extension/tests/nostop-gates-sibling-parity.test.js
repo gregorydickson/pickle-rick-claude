@@ -4,8 +4,8 @@
  * `PhaseIterationOutcome` producers (`runJudgeTimeoutFinalizeGate`,
  * `runAllBackendsExhaustedFinalizeGate`). Both spawn `finalize-gate.js`
  * and branch on `gateResult.exitCode === 0` — a passing gate must always
- * `continue`, never `break`. Only the failing branch (non-zero exit)
- * legitimately breaks the pipeline; this ticket does not change that.
+ * `continue`, never `break`. A failing gate breaks only under the strict
+ * phase policy on BOTH siblings (B-FINALGATE AC-6).
  */
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -186,5 +186,32 @@ describe('sibling parity — runJudgeTimeoutFinalizeGate vs runAllBackendsExhaus
     assert.equal(allBackendsOutcome.action, judgeOutcome.action);
     assert.equal(judgeCounters.completed, 1);
     assert.equal(allBackendsCounters.completed, 1);
+    // B-FINALGATE AC-6: the pass names the reason it recovered from, as its sibling does.
+    assert.equal(judgeCounters.phaseDispositions['szechuan-sauce'], 'judge_timeout');
   });
+
+  // B-FINALGATE AC-6: a red gate is a measurement verdict on BOTH siblings — it continues the
+  // phase loop, names the disposition and withholds success. Pre-fix judge_timeout broke here.
+  for (const [policy, stateOverrides, action] of [
+    ['continue', { pipeline_continue_on_phase_fail: true }, 'continue'],
+    ['strict', { pipeline_continue_on_phase_fail: false }, 'break'],
+  ]) {
+    test(`both siblings agree on a failing gate under the ${policy} policy`, async () => {
+      const { repo, startCommit } = makeRepo();
+      const outcomes = {};
+      const counters = {};
+      for (const [name, fn] of [['judge', runJudgeTimeoutFinalizeGate], ['allBackends', runAllBackendsExhaustedFinalizeGate]]) {
+        counters[name] = freshCounters();
+        stubGateExit(1);
+        outcomes[name] = await fn(makeRuntime({ repo, startCommit, stateOverrides }), counters[name], 'anatomy-park', () => {});
+      }
+      assert.equal(outcomes.judge.action, action);
+      assert.equal(outcomes.allBackends.action, action);
+      assert.equal(counters.judge.completed, 0);
+      assert.equal(counters.judge.nonConvergent, counters.allBackends.nonConvergent);
+      assert.equal(counters.judge.nonConvergent, 1);
+      assert.equal(counters.judge.phaseDispositions['anatomy-park'], 'finalize_gate_failed:judge_timeout');
+      assert.equal(counters.allBackends.phaseDispositions['anatomy-park'], 'finalize_gate_failed:all_judge_backends_exhausted');
+    });
+  }
 });

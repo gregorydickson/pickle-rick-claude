@@ -32,6 +32,7 @@ import {
   logPhaseHaltReason,
   __setCitadelRemediationDepsForTests,
   __setSpawnRunnerForTests,
+  runAllBackendsExhaustedFinalizeGate,
   setupAnatomyPark,
   readPersistedAllowedPaths,
   finalizePhaseSuccess,
@@ -44,7 +45,7 @@ import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { createMicroverseState, recordCapUnmeasured, readMicroverseState, writeMicroverseState } from '../services/microverse-state.js';
 import { simulateBinaryAbsent } from './helpers/simulate-binary-absent.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
-import { loadFinalizeGateSettings } from '../bin/finalize-gate.js';
+import { loadFinalizeGateSettings, finalizeGateMain } from '../bin/finalize-gate.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
@@ -4891,6 +4892,114 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       finalizePhaseSuccess(runtime, mixedCounters, cancelMarker, 'anatomy-park', 0, runtime.log);
       assert.equal(mixedCounters.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:lint');
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-FINALGATE: the incomplete-exit finalize-gate arm, driven through the REAL finalize-gate
+// ---------------------------------------------------------------------------
+
+describe('B-FINALGATE incomplete-exit arm over the real finalize-gate', () => {
+  const OLD = { check: 'lint', file: '/tmp/src/old.ts', line: 1, ruleOrCode: 'no-any', message: 'no any', severity: 'error', occurrence_index: 0 };
+  const TESTS_TIMEOUT = { check: 'tests', file: '<timeout>', line: 0, ruleOrCode: 'GATE_CHECK_TIMEOUT', message: 'tests timed out', severity: 'error', occurrence_index: 0 };
+  const freshCounters = () => ({ completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} });
+
+  function incompleteRuntime(dir) {
+    const statePath = path.join(dir, 'state.json');
+    writeBaseState(statePath, { exit_reason: 'anatomy_non_convergent' });
+    const mv = createMicroverseState({
+      prdPath: path.join(dir, 'prd.md'),
+      metric: { description: 'm', validation: 'true', type: 'command', timeout_seconds: 5, tolerance: 0 },
+      stallLimit: 3,
+    });
+    writeMicroverseState(dir, { ...mv, status: 'stopped', exit_reason: 'anatomy_non_convergent' });
+    return { sessionDir: dir, statePath, workingDir: '/tmp', extensionRoot: process.cwd(), phaseEnv: {}, config: { phases: [{}, {}] }, log: () => {} };
+  }
+
+  function writeBaseline(dir, failures) {
+    fs.mkdirSync(path.join(dir, 'gate'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'gate', 'baseline.json'), JSON.stringify({
+      schema_version: 1, captured_at: '2026-09-26T00:00:00.000Z', working_dir: '/tmp', project_type: null,
+      checks: ['typecheck', 'lint', 'tests'], failures,
+    }));
+  }
+
+  // The spawn seam runs the real finalizeGateMain in-process; only the gate itself is stubbed.
+  function stubFinalizeGate(runGateFn) {
+    __setSpawnRunnerForTests(async (_cmd, args) => {
+      const [sessionDir, skill] = args.slice(-2);
+      const briefPath = path.join(sessionDir, 'brief.md');
+      fs.writeFileSync(briefPath, 'fix');
+      const exitCode = await finalizeGateMain({
+        argv: [sessionDir, skill],
+        env: {},
+        runGateFn,
+        readStateForWorkingDirFn: () => ({ workingDir: '/tmp', backend: 'claude' }),
+        loadSettingsFn: () => ({ szechuan_max_remediation_cycles: 1, anatomy_park_max_remediation_cycles: 1, remediator_timeout_s: 60 }),
+        logActivityFn: () => {},
+        spawnGateRemediatorMainFn: async (o) => { o.stdout?.(`BRIEF_PATH=${briefPath}`); return 0; },
+        spawnRemediatorFn: () => {},
+        stdout: () => {},
+        stderr: () => {},
+      });
+      return { exitCode, stdout: '', stderr: '' };
+    });
+  }
+
+  const subtracting = (baselineRows, allRows, checkStatus) => async (opts) => {
+    const rows = opts.mode === 'baseline' ? allRows.filter(r => !baselineRows.includes(r)) : allRows;
+    return { status: rows.length ? 'red' : 'green', failures: rows, baseline_used: opts.mode === 'baseline', allowed_paths_used: false, elapsed_ms: 1, total_raw_failure_count: rows.length, new_failures_vs_baseline: 0, check_status: checkStatus };
+  };
+
+  test('AC-1: anatomy_non_convergent over pre-existing debt F is not finalize_gate_failed', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      writeBaseline(dir, [OLD]);
+      stubFinalizeGate(subtracting([OLD], [OLD]));
+      const counters = freshCounters();
+      const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(outcome.action, 'continue');
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'anatomy_non_convergent');
+      assert.equal(counters.completed, 1);
+      assert.equal(counters.nonConvergent, 1, 'the phase still did not converge');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-1 control: the same debt with no baseline is finalize_gate_failed', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      stubFinalizeGate(subtracting([OLD], [OLD]));
+      const counters = freshCounters();
+      await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'finalize_gate_failed:anatomy_non_convergent');
+      assert.equal(counters.completed, 0);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-5: a tests-timeout-only incomplete exit is disclosed, not failed', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      stubFinalizeGate(subtracting([], [TESTS_TIMEOUT], { typecheck: 'ran', lint: 'ran', tests: 'failed' }));
+      const counters = freshCounters();
+      const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(outcome.action, 'continue');
+      assert.ok(readMicroverseState(dir)?.cap_unmeasured_checks?.includes('tests'), 'finalize-gate persisted the unmeasured check');
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'anatomy_non_convergent; converged_with_unmeasured:tests');
+      assert.equal(counters.completed, 1);
+      assert.equal(counters.nonConvergent, 1);
+    } finally {
+      __setSpawnRunnerForTests(null);
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

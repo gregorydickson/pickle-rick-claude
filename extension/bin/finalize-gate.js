@@ -1,9 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { runGate, filterByScope, isCheckUnmeasured, resolveLexicalRepoRoot } from '../services/convergence-gate.js';
+import { runGate, runBaselineAwareGate, filterByScope, isCheckUnmeasured, resolveLexicalRepoRoot } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
-import { readMicroverseState, readRecoverableJsonObject } from '../services/microverse-state.js';
+import { readMicroverseState, readRecoverableJsonObject, recordCapUnmeasured, writeMicroverseState } from '../services/microverse-state.js';
 import { logActivity } from '../services/activity-logger.js';
 import { getExtensionRoot, isoCompactStamp, safeErrorMessage, writeStateFile } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
@@ -113,6 +113,7 @@ function buildFinalizeRuntime(opts) {
         mkdir: opts.mkdirSyncFn ?? ((p) => fs.mkdirSync(p, { recursive: true })),
         writeFile: opts.writeFileFn ?? ((p, data) => fs.writeFileSync(p, data, 'utf-8')),
         runGateFn: opts.runGateFn ?? runGate,
+        writeMicroverseState: opts.writeMicroverseStateFn ?? writeMicroverseState,
         spawnBriefPrep: opts.spawnGateRemediatorMainFn ?? spawnGateRemediatorMain,
         spawnRemediator: opts.spawnRemediatorFn ?? defaultSpawnRemediator,
     };
@@ -155,6 +156,7 @@ function loadFinalizeContext(opts, rt, sessionRoot, skill) {
         workingDir: stateInfo.workingDir,
         backend: stateInfo.backend,
         allowedPaths: mvState.allowed_paths,
+        mvState,
         gateDir: path.join(sessionRoot, 'gate'),
         cap,
         remediatorTimeoutMs: settings.remediator_timeout_s * 1000,
@@ -236,47 +238,79 @@ function isUnmeasuredFailure(result, failure) {
     return isCheckUnmeasured(result.check_status, failure.check) && !path.isAbsolute(failure.file);
 }
 /**
- * The gate never measured what it reports, so a remediation cycle would only rediscover that. Report
- * it and stop with a non-success code — the same disposition as cap exhaustion, reached without
- * spending the cap.
+ * The gate never measured what it reports, so a remediation cycle would only rediscover that.
+ * Disclose it — the checks ride `cap_unmeasured_checks`, which the pipeline reports as
+ * `converged_with_unmeasured:<checks>` — and exit 0: an unmeasured check is a hole to report,
+ * never a failed phase. Only cap exhaustion exits 2.
  */
-function reportUnmeasuredGate(ctx, rt, cycle, unmeasured) {
+function reportUnmeasuredGate(ctx, rt, cycle, checks, rows) {
     const reportPath = path.join(ctx.gateDir, `unmeasured_${rt.iso()}.md`);
-    const lines = unmeasured.map(f => `- [${f.check}] \`${f.file}\` ${f.ruleOrCode}: ${f.message.slice(0, 200)}`);
-    rt.writeFile(reportPath, `# Gate Unmeasured\n\nCycle: ${cycle + 1}\nSkill: ${ctx.skill}\nTimestamp: ${new Date().toISOString()}\n\n${lines.join('\n')}\n`);
-    rt.err(`[finalize-gate] gate UNMEASURED on cycle ${cycle + 1} (${unmeasured.length} non-actionable failure(s)) — no remediation cycle spent, exit 2 (report: ${reportPath})`);
-    return 2;
+    const lines = rows.map(f => `- [${f.check}] \`${f.file}\` ${f.ruleOrCode}: ${f.message.slice(0, 200)}`);
+    rt.writeFile(reportPath, `# Gate Unmeasured\n\nCycle: ${cycle + 1}\nSkill: ${ctx.skill}\nChecks: ${checks.join(', ')}\nTimestamp: ${new Date().toISOString()}\n\n${lines.join('\n')}\n`);
+    rt.writeMicroverseState(ctx.sessionRoot, recordCapUnmeasured(ctx.mvState, checks));
+    rt.err(`[finalize-gate] gate UNMEASURED on cycle ${cycle + 1} (${checks.join(', ')}) — no remediation cycle spent, disclosed, exit 0 (report: ${reportPath})`);
+    return 0;
 }
-async function runStrictGateCycle(ctx, rt, cycle) {
-    rt.out(`[finalize-gate] cycle ${cycle + 1}/${ctx.cap} — running strict gate`);
-    let result;
-    try {
-        result = await rt.runGateFn({
-            workingDir: ctx.workingDir,
-            mode: 'strict',
-            scope: 'full',
-            checks: ['typecheck', 'lint', 'tests'],
-            allowedPaths: ctx.allowedPaths,
-            onEvent: (event, data) => rt.doLogActivity({ event: event, source: 'pickle', gate_payload: data }),
-        });
+const FINALIZE_GATE_CHECKS = ['typecheck', 'lint', 'tests'];
+/**
+ * B-FINALGATE: only anatomy-park is judged against the session baseline. szechuan stays strict —
+ * the baseline was captured by anatomy's run, not szechuan's. An empty path never reads, so the
+ * shared helper chooses strict and never forwards it.
+ */
+function finalizeBaselinePath(ctx) {
+    return ctx.skill === 'anatomy-park' ? path.join(ctx.gateDir, 'baseline.json') : '';
+}
+function logGateMode(ctx, rt, mode, baselinePath) {
+    if (mode === 'baseline') {
+        const capturedAt = readRecoverableJsonObject(baselinePath)?.captured_at;
+        rt.err(`[finalize-gate] baseline mode (captured ${String(capturedAt)})`);
+        return;
     }
-    catch (e) {
-        rt.err(`[finalize-gate] gate threw on cycle ${cycle + 1}: ${safeErrorMessage(e)}`);
+    const why = baselinePath === '' ? `skill ${ctx.skill} is not baseline-scoped` : `no usable baseline at ${baselinePath}`;
+    rt.err(`[finalize-gate] strict (${why})`);
+}
+async function runGateCycle(ctx, rt, cycle) {
+    rt.out(`[finalize-gate] cycle ${cycle + 1}/${ctx.cap} — running gate`);
+    const baselinePath = finalizeBaselinePath(ctx);
+    // The helper owns the rule; this seam keeps the activity events and the full result the brief needs.
+    const seen = {};
+    const outcome = await runBaselineAwareGate({
+        workingDir: ctx.workingDir,
+        baselinePath,
+        allowedPaths: ctx.allowedPaths,
+        checks: [...FINALIZE_GATE_CHECKS],
+        runGateFn: async (gateOpts) => (seen.result = await rt.runGateFn({
+            ...gateOpts,
+            onEvent: (event, data) => rt.doLogActivity({ event: event, source: 'pickle', gate_payload: data }),
+        })),
+    });
+    logGateMode(ctx, rt, outcome.mode, baselinePath);
+    const result = seen.result;
+    if ('threw' in outcome || !result) {
+        rt.err(`[finalize-gate] gate threw on cycle ${cycle + 1}: ${'threw' in outcome ? outcome.threw : 'no gate result'}`);
         return { code: 1 };
     }
-    if (result.status === 'green' || result.status === 'green-with-known-flake-warnings') {
+    // The helper reads a timeout-only red with no check_status as green; a red status is never reported green.
+    if (outcome.verdict === 'green' && result.status !== 'red') {
         rt.out(`[finalize-gate] gate green on cycle ${cycle + 1} — exit 0`);
         return { code: 0, result };
     }
-    const { inScope, outOfScope } = splitByScope(result.failures, ctx.allowedPaths, ctx.workingDir);
+    if (typeof outcome.verdict === 'object') {
+        return { code: reportUnmeasuredGate(ctx, rt, cycle, outcome.verdict.unmeasured, outcome.failures), result };
+    }
+    return remediateRedGate(ctx, rt, cycle, result, outcome.failures);
+}
+async function remediateRedGate(ctx, rt, cycle, result, failures) {
+    const { inScope, outOfScope } = splitByScope(failures, ctx.allowedPaths, ctx.workingDir);
     writeOutOfScopeFailures(ctx, rt, cycle, outOfScope);
     if (inScope.length === 0) {
         rt.out('[finalize-gate] all failures are out-of-scope — exit 0 (closed within scope)');
         return { code: 0, result };
     }
     const remediable = inScope.filter(f => !isUnmeasuredFailure(result, f));
-    if (remediable.length === 0)
-        return { code: reportUnmeasuredGate(ctx, rt, cycle, inScope), result };
+    if (remediable.length === 0) {
+        return { code: reportUnmeasuredGate(ctx, rt, cycle, [...new Set(inScope.map(f => f.check))], inScope), result };
+    }
     const briefPath = await prepareRemediationBrief(ctx, rt, cycle, { ...result, failures: remediable });
     if (!briefPath)
         return { code: null, result };
@@ -344,7 +378,7 @@ export async function finalizeGateMain(opts) {
         return 2;
     let lastResult;
     for (let cycle = 0; cycle < ctx.cap; cycle++) {
-        const cycleResult = await runStrictGateCycle(ctx, rt, cycle);
+        const cycleResult = await runGateCycle(ctx, rt, cycle);
         if (cycleResult.result)
             lastResult = cycleResult.result;
         if (cycleResult.code !== null)

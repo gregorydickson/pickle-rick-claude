@@ -28,9 +28,10 @@ function makeFailure(file = '/tmp/src/foo.ts') {
     return { check: 'lint', file, line: 1, ruleOrCode: 'no-any', message: 'no any', severity: 'error', occurrence_index: 0 };
 }
 
-function baseDeps(sessionRoot) {
+function baseDeps(sessionRoot, mvWrites = []) {
     return {
         readMicroverseStateFn: () => ({ status: 'iterating', allowed_paths: undefined }),
+        writeMicroverseStateFn: (dir, state) => { mvWrites.push({ dir, state }); },
         readStateForWorkingDirFn: () => ({ workingDir: '/tmp/wd', backend: 'claude' }),
         loadSettingsFn: () => ({ szechuan_max_remediation_cycles: 2, anatomy_park_max_remediation_cycles: 2, remediator_timeout_s: 60 }),
         mkdirSyncFn: () => {},
@@ -485,13 +486,13 @@ describe('V3: unmeasured sentinel-only failures', () => {
     const timeoutFailure = { check: 'tests', file: '<timeout>', line: 0, ruleOrCode: 'GATE_CHECK_TIMEOUT', message: 'tests timed out after 300000ms', severity: 'error', occurrence_index: 0 };
 
     function runV3(sessionRoot, gateResult) {
-        const calls = { gate: 0, briefPrep: 0, remediator: 0, briefFailures: [] };
+        const calls = { gate: 0, briefPrep: 0, remediator: 0, briefFailures: [], mvWrites: [] };
         const briefPath = path.join(sessionRoot, 'brief.md');
         fs.writeFileSync(briefPath, 'fix the gate');
         return finalizeGateMain({
             argv: [sessionRoot, 'szechuan'],
             env: {},
-            ...baseDeps(sessionRoot),
+            ...baseDeps(sessionRoot, calls.mvWrites),
             runGateFn: async () => { calls.gate += 1; return gateResult; },
             spawnGateRemediatorMainFn: async (briefOpts) => {
                 calls.briefPrep += 1;
@@ -504,7 +505,7 @@ describe('V3: unmeasured sentinel-only failures', () => {
         }).then(code => ({ code, calls }));
     }
 
-    test('V3-1: a sentinel-only failing list is reported unmeasured and spends no remediation cycle', async () => {
+    test('V3-1: a sentinel-only failing list is disclosed unmeasured (exit 0) and spends no remediation cycle', async () => {
         const sessionRoot = makeTmpDir();
         const gateDir = path.join(sessionRoot, 'gate');
         fs.mkdirSync(gateDir, { recursive: true });
@@ -515,8 +516,10 @@ describe('V3: unmeasured sentinel-only failures', () => {
         assert.equal(calls.gate, 1, 'the gate is not re-run against a check that cannot measure');
         assert.equal(calls.briefPrep, 0, 'no brief is prepared for a pseudo-file');
         assert.equal(calls.remediator, 0, 'no remediator is spawned for a pseudo-file');
-        assert.equal(code, 2, 'unmeasured is not success');
+        // B-FINALGATE: unmeasured is DISCLOSED (exit 0 + cap_unmeasured_checks), never a failed phase.
+        assert.equal(code, 0, 'an unmeasured check is disclosed, not failed');
         assert.ok(fs.readdirSync(gateDir).some(f => f.startsWith('unmeasured_')), 'the unmeasured gate is reported');
+        assert.deepEqual(calls.mvWrites.map(w => w.state.cap_unmeasured_checks), [['tests']]);
         fs.rmSync(sessionRoot, { recursive: true, force: true });
     });
 
@@ -668,5 +671,148 @@ describe('AP-EXT-ITER272-01 scope split path space', () => {
         assert.equal(result.declaredAllOutOfScope, false);
         assert.notEqual(result.code, 0);
         fs.rmSync(repoRoot, { recursive: true, force: true });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// B-FINALGATE: an incomplete anatomy-park exit is judged against the session baseline
+// ---------------------------------------------------------------------------
+
+describe('B-FINALGATE: finalize-gate judges anatomy-park against the session baseline', () => {
+    const OLD = makeFailure('/tmp/wd/src/old.ts');
+    const NEW = makeFailure('/tmp/wd/src/new.ts');
+    const TESTS_TIMEOUT = { check: 'tests', file: '<timeout>', line: 0, ruleOrCode: 'GATE_CHECK_TIMEOUT', message: 'tests timed out after 300000ms', severity: 'error', occurrence_index: 0 };
+
+    function writeBaseline(sessionRoot, failures, raw) {
+        const gateDir = path.join(sessionRoot, 'gate');
+        fs.mkdirSync(gateDir, { recursive: true });
+        const baselinePath = path.join(gateDir, 'baseline.json');
+        fs.writeFileSync(baselinePath, raw ?? JSON.stringify({
+            schema_version: 1,
+            captured_at: '2026-09-26T01:02:03.000Z',
+            working_dir: '/tmp/wd',
+            project_type: null,
+            checks: ['typecheck', 'lint', 'tests'],
+            failures,
+        }));
+        return baselinePath;
+    }
+
+    // Emulates runGate's subtraction: baseline mode drops every row the baseline already holds.
+    function subtractingGate(seen, { baselineRows, allRows, checkStatus }) {
+        return async (opts) => {
+            seen.push({ mode: opts.mode, baselinePath: opts.baselinePath });
+            const rows = opts.mode === 'baseline' ? allRows.filter(r => !baselineRows.includes(r)) : allRows;
+            return { ...makeGateResult(rows.length ? 'red' : 'green', rows), check_status: checkStatus };
+        };
+    }
+
+    async function runFinalize(sessionRoot, skill, runGateFn) {
+        const run = { errs: [], seen: [], briefFailures: [], mvWrites: [], remediator: 0 };
+        const briefPath = path.join(sessionRoot, 'brief.md');
+        fs.writeFileSync(briefPath, 'fix the gate');
+        run.code = await finalizeGateMain({
+            argv: [sessionRoot, skill],
+            env: {},
+            ...baseDeps(sessionRoot, run.mvWrites),
+            mkdirSyncFn: (p) => fs.mkdirSync(p, { recursive: true }),
+            stderr: m => run.errs.push(m),
+            runGateFn,
+            spawnGateRemediatorMainFn: async (briefOpts) => {
+                const resultPath = briefOpts.argv[briefOpts.argv.indexOf('--gate-result') + 1];
+                run.briefFailures.push(JSON.parse(fs.readFileSync(resultPath, 'utf-8')).failures.map(f => f.file));
+                briefOpts.stdout?.(`BRIEF_PATH=${briefPath}`);
+                return 0;
+            },
+            spawnRemediatorFn: () => { run.remediator += 1; },
+        });
+        return run;
+    }
+
+    test('AC-1: anatomy-park with baseline F that sees exactly F passes in baseline mode', async () => {
+        const sessionRoot = makeTmpDir();
+        const baselinePath = writeBaseline(sessionRoot, [OLD]);
+        const seen = [];
+        const run = await runFinalize(sessionRoot, 'anatomy-park', subtractingGate(seen, { baselineRows: [OLD], allRows: [OLD] }));
+        assert.equal(run.code, 0, 'pre-existing debt alone must not fail the phase');
+        assert.deepEqual(seen, [{ mode: 'baseline', baselinePath }]);
+        assert.equal(run.remediator, 0);
+        assert.ok(run.errs.some(l => l === '[finalize-gate] baseline mode (captured 2026-09-26T01:02:03.000Z)'), run.errs.join('\n'));
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+
+    test('AC-1 control: the same debt with NO baseline is judged strict and fails', async () => {
+        const sessionRoot = makeTmpDir();
+        const seen = [];
+        const run = await runFinalize(sessionRoot, 'anatomy-park', subtractingGate(seen, { baselineRows: [OLD], allRows: [OLD] }));
+        assert.equal(run.code, 2);
+        assert.ok(seen.every(s => s.mode === 'strict' && s.baselinePath === undefined), 'strict mode never forwards a baseline path');
+        assert.equal(fs.existsSync(path.join(sessionRoot, 'gate', 'baseline.json')), false, 'strict mode never captures a baseline');
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+
+    test('AC-2: F plus one NEW failure still fails, and the brief names only the new row', async () => {
+        const sessionRoot = makeTmpDir();
+        writeBaseline(sessionRoot, [OLD]);
+        const seen = [];
+        const run = await runFinalize(sessionRoot, 'anatomy-park', subtractingGate(seen, { baselineRows: [OLD], allRows: [OLD, NEW] }));
+        assert.equal(run.code, 2, 'a new failure exhausts the cap');
+        assert.deepEqual(run.briefFailures, [[NEW.file], [NEW.file]]);
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+
+    for (const [label, raw] of [['absent', null], ['unparseable', '{']]) {
+        test(`AC-3: an ${label} baseline falls back to strict and says so`, async () => {
+            const sessionRoot = makeTmpDir();
+            fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
+            if (raw !== null) writeBaseline(sessionRoot, [], raw);
+            const seen = [];
+            const run = await runFinalize(sessionRoot, 'anatomy-park', subtractingGate(seen, { baselineRows: [], allRows: [] }));
+            assert.equal(run.code, 0);
+            assert.deepEqual(seen.map(s => s.mode), ['strict']);
+            assert.ok(run.errs.some(l => l.startsWith('[finalize-gate] strict (no usable baseline at ')), run.errs.join('\n'));
+            if (raw !== null) assert.equal(fs.readFileSync(path.join(sessionRoot, 'gate', 'baseline.json'), 'utf-8'), raw, 'the baseline is never rewritten');
+            fs.rmSync(sessionRoot, { recursive: true, force: true });
+        });
+    }
+
+    test('AC-4: szechuan stays strict even when anatomy left a baseline holding F', async () => {
+        const sessionRoot = makeTmpDir();
+        writeBaseline(sessionRoot, [OLD]);
+        const seen = [];
+        const run = await runFinalize(sessionRoot, 'szechuan', subtractingGate(seen, { baselineRows: [OLD], allRows: [OLD] }));
+        assert.equal(run.code, 2, 'szechuan is judged strict over the same debt');
+        assert.ok(seen.every(s => s.mode === 'strict' && s.baselinePath === undefined));
+        assert.ok(run.errs.some(l => l === '[finalize-gate] strict (skill szechuan is not baseline-scoped)'), run.errs.join('\n'));
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+
+    test('AC-5: an incomplete exit whose only red is a tests timeout is disclosed, exit 0', async () => {
+        const sessionRoot = makeTmpDir();
+        fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
+        const seen = [];
+        const run = await runFinalize(sessionRoot, 'anatomy-park', subtractingGate(seen, {
+            baselineRows: [], allRows: [TESTS_TIMEOUT], checkStatus: { typecheck: 'ran', lint: 'ran', tests: 'failed' },
+        }));
+        assert.equal(run.code, 0, 'unmeasured never exits 2');
+        assert.equal(run.remediator, 0);
+        assert.equal(run.mvWrites.length, 1);
+        assert.ok(run.mvWrites[0].state.cap_unmeasured_checks.includes('tests'));
+        assert.equal(run.mvWrites[0].dir, sessionRoot);
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+
+    test('AC-8: a baseline-subtracted tests timeout reads unmeasured, not a silent green', async () => {
+        const sessionRoot = makeTmpDir();
+        writeBaseline(sessionRoot, [TESTS_TIMEOUT]);
+        const seen = [];
+        // Baseline mode subtracts the timeout row, so `status` alone is green; check_status is not.
+        const run = await runFinalize(sessionRoot, 'anatomy-park', subtractingGate(seen, {
+            baselineRows: [TESTS_TIMEOUT], allRows: [TESTS_TIMEOUT], checkStatus: { typecheck: 'ran', lint: 'ran', tests: 'failed' },
+        }));
+        assert.equal(run.code, 0);
+        assert.deepEqual(seen.map(s => s.mode), ['baseline']);
+        assert.deepEqual(run.mvWrites.map(w => w.state.cap_unmeasured_checks), [['tests']]);
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
     });
 });

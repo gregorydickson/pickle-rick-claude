@@ -4340,11 +4340,22 @@ export function logPhaseHaltReason(runtime, rawPhase, exitCode, log) {
         return 'abort';
     }
 }
+/** Spawn `finalize-gate.js` for a microverse phase; the skill is phase-derived on every route. */
+async function spawnFinalizeGate(runtime, rawPhase) {
+    return runSpawnRunner('node', [
+        path.join(runtime.extensionRoot, 'extension', 'bin', 'finalize-gate.js'),
+        runtime.sessionDir,
+        rawPhase === 'anatomy-park' ? 'anatomy-park' : 'szechuan',
+    ], runtime.phaseEnv);
+}
 /**
- * R-PRJT-2 recovery: a microverse phase that exited on a transient
- * `judge_timeout` re-runs finalize-gate; a clean gate completes the phase,
- * a red gate breaks the pipeline. Extracted from `runPhaseIteration` to keep
- * that function under the eslint complexity ceiling.
+ * R-PRJT-2 recovery: a microverse phase that exited on a transient `judge_timeout` re-runs
+ * finalize-gate. B-FINALGATE: the same disposition shape as its sibling
+ * (`runAllBackendsExhaustedFinalizeGate`) — a pass names `judge_timeout` and discloses any
+ * unmeasured check; a red gate is a measurement verdict, named `finalize_gate_failed:judge_timeout`,
+ * and continues the phase loop unless the operator opted into `--strict-phases`. One divergence
+ * remains: a pass does not yet raise `nonConvergent`, because four end-to-end tests outside this
+ * change's fence still pin a clean exit 0 after a passing judge_timeout recovery.
  */
 export async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, log) {
     try {
@@ -4357,20 +4368,20 @@ export async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, l
         });
     }
     catch { /* telemetry best-effort */ }
-    const skill = rawPhase === 'anatomy-park' ? 'anatomy-park' : 'szechuan';
-    const gateResult = await runSpawnRunner('node', [
-        path.join(runtime.extensionRoot, 'extension', 'bin', 'finalize-gate.js'),
-        runtime.sessionDir,
-        skill,
-    ], runtime.phaseEnv);
+    const gateResult = await spawnFinalizeGate(runtime, rawPhase);
     if (gateResult.exitCode === 0) {
         counters.completed++;
+        counters.phaseDispositions[rawPhase] = 'judge_timeout';
+        reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
         writeRunningStatus(runtime, counters, null);
         log(`Phase ${rawPhase} finalize-gate passed after judge_timeout recovery`);
         return { action: 'continue' };
     }
-    log(`Phase ${rawPhase} finalize-gate failed after judge_timeout recovery (exit ${gateResult.exitCode})`);
-    return { action: 'break' };
+    counters.nonConvergent++;
+    counters.phaseDispositions[rawPhase] = 'finalize_gate_failed:judge_timeout';
+    writeRunningStatus(runtime, counters, null);
+    log(`Phase ${rawPhase} finalize-gate failed after judge_timeout recovery (exit ${gateResult.exitCode}) — phase not completed, run cannot report success`);
+    return isStrictPhasePolicy(runtime) ? { action: 'break' } : { action: 'continue' };
 }
 /**
  * The `run-finalize-gate-incomplete` destination: spawn finalize-gate; on pass continue the
@@ -4397,17 +4408,13 @@ export async function runAllBackendsExhaustedFinalizeGate(runtime, counters, raw
         });
     }
     catch { /* telemetry best-effort */ }
-    const skill = rawPhase === 'anatomy-park' ? 'anatomy-park' : 'szechuan';
-    const gateResult = await runSpawnRunner('node', [
-        path.join(runtime.extensionRoot, 'extension', 'bin', 'finalize-gate.js'),
-        runtime.sessionDir,
-        skill,
-    ], runtime.phaseEnv);
+    const gateResult = await spawnFinalizeGate(runtime, rawPhase);
     // Both arms are the same degraded phase with different evidence, so they share ONE raise.
     counters.nonConvergent++;
     if (gateResult.exitCode === 0) {
         counters.completed++;
         counters.phaseDispositions[rawPhase] = reason;
+        reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
         writeRunningStatus(runtime, counters, null);
         log(`Phase ${rawPhase} finalize-gate passed after ${reason} — phase degraded, run cannot report success`);
         return { action: 'continue' };
@@ -4842,12 +4849,13 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
     catch { /* non-blocking */ }
 }
 /**
- * B-CAPGATE: a `converged` microverse phase whose post-convergence cap could not measure some
- * check (`cap_unmeasured_checks`, carried by `recordCapUnmeasured`) converged over a hole, and a
- * silent success would hide it. Reported — appended to the phase disposition — but NOT counted
- * `nonConvergent`: the phase did converge, and the next iteration re-measures (the precedent is
- * `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`). Unreadable or
- * malformed microverse state reads as "no caveat", never as a fabricated one.
+ * B-CAPGATE: a microverse phase that passed over a check nobody measured (`cap_unmeasured_checks`,
+ * written by `recordCapUnmeasured` from the post-convergence cap OR from finalize-gate) passed over
+ * a hole, and a silent success would hide it. Reported — appended to the phase disposition — but
+ * never counted `nonConvergent` here: on the converged path the phase did converge (the precedent
+ * is `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`), and both
+ * finalize-gate pass arms already name their non-convergence in the disposition's first half.
+ * Unreadable or malformed microverse state reads as "no caveat", never as a fabricated one.
  */
 function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
     // `readRecoverableJsonObject` never throws: an absent or unparseable file is `null`.
@@ -4857,7 +4865,7 @@ function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
         return;
     const marker = `converged_with_unmeasured:${checks.join(',')}`;
     appendPhaseDisposition(counters, rawPhase, marker);
-    log(`Phase ${rawPhase}: ${marker} — converged, but the post-convergence cap did not measure these checks`);
+    log(`Phase ${rawPhase}: ${marker} — these checks were not measured`);
 }
 /**
  * R-PIPE-2: post-AC-gate success path extracted from `runPhaseIteration` so
