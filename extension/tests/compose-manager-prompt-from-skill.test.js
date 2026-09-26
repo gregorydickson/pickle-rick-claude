@@ -336,12 +336,33 @@ function templateExecutedPaths() {
   return executedExtensionPaths(raw, '${EXTENSION_ROOT}');
 }
 
+// The pin is bound to the SOURCE tree under test (the parent of this repo's `extension/`, matching
+// the template's `${EXTENSION_ROOT}/extension/...` shape) through the EXTENSION_DIR seam, never to
+// the deployed install: a path the prompt names must exist in the tree that ships with the prompt,
+// and the verdict must not depend on what install.sh last deployed on this machine.
+const SOURCE_EXTENSION_ROOT = path.resolve(__dirname, '../..');
+
+function composeAgainstSourceTree(backend) {
+  const previous = process.env.EXTENSION_DIR;
+  process.env.EXTENSION_DIR = SOURCE_EXTENSION_ROOT;
+  try {
+    return {
+      root: getExtensionRoot(),
+      result: composeManagerPromptFromSkill(PICKLE_TEMPLATE_PATH, backend, {
+        argumentSubstitution: '--resume /tmp/session',
+      }),
+    };
+  } finally {
+    if (previous === undefined) delete process.env.EXTENSION_DIR;
+    else process.env.EXTENSION_DIR = previous;
+  }
+}
+
 for (const backend of ['claude', 'codex']) {
   test(`AC-3 / R-MPVU: every executable path the composed manager prompt (${backend}) names under the bound extension root exists`, () => {
-    const root = getExtensionRoot();
-    const result = composeManagerPromptFromSkill(PICKLE_TEMPLATE_PATH, backend, {
-      argumentSubstitution: '--resume /tmp/session',
-    });
+    const { root, result } = composeAgainstSourceTree(backend);
+    // A missing sentinel makes getExtensionRoot() fall back to the deployed install silently.
+    assert.equal(root, SOURCE_EXTENSION_ROOT, 'extension root must bind to the source tree, not the deployed install');
     const named = executedExtensionPaths(result, root);
 
     // VACUITY arm: an empty or misdirected substitution yields zero resolved paths and must not
