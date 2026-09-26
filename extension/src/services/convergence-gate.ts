@@ -346,13 +346,21 @@ export function classifyNoDisown(
 // `selfGuard` (R-ORSR-6): a baseline-matching failure is dropped as pre-existing ONLY when it is
 // NOT self-introduced. A failure intersecting the phase's own diff is never subtracted, so a
 // self-introduced break can never be disowned as a coincidental baseline match.
+//
+// `keepFallbackRows` (B-FINALGATE #50): the unparsed fallback row's identity is `check::pkgDir::<exit
+// code>`, which says WHICH check failed and nothing about WHAT failed, so an equal fingerprint is not
+// the same failure — a baselined coarse row would subtract a brand-new coarse one. With the flag set
+// such a row is never matched to the baseline. It is opt-in because the per-iteration microverse gate
+// and the cap gate read the same subtraction and have their own dispositions for a coarse baseline.
 export function subtractBaseline(
   current: GateFailure[],
   baseline: GateBaselineFile,
   selfGuard?: NoDisownContext,
+  keepFallbackRows = false,
 ): GateFailure[] {
   const baselineSet = new Set(baseline.failures.map(buildFingerprint));
   return current.filter(f => {
+    if (keepFallbackRows && isExitStatusToken(f.ruleOrCode)) return true;
     if (!baselineSet.has(buildFingerprint(f))) return true;
     return isSelfIntroducedFailure(f, selfGuard);
   });
@@ -500,6 +508,8 @@ export interface RunGateOpts {
   baselineIteration?: number;
   since?: string;
   allowedPaths?: string[];
+  /** Baseline mode only: never subtract an exit-status fallback row (see `subtractBaseline`). */
+  keepFallbackRows?: boolean;
   /** When true, gate skips (green) if the working tree is dirty. P0.6b. */
   workerMode?: boolean;
   /** Expected HEAD SHA. Gate halts with red if current HEAD differs. P0.6c. */
@@ -1164,10 +1174,21 @@ const FAILURE_PARSERS: Record<GateCheck, FailureParser> = {
  * empty-output failure is what made a signal-killed check silently subtractable every pass
  * (AP-EXT-ITER318-01).
  */
+const NO_EXIT_STATUS_TOKEN = 'no-exit-status';
+
 function describeExitStatus(exitCode: number | null): { token: string; phrase: string } {
   return exitCode === null
-    ? { token: 'no-exit-status', phrase: 'no exit status (terminated by signal)' }
+    ? { token: NO_EXIT_STATUS_TOKEN, phrase: 'no exit status (terminated by signal)' }
     : { token: String(exitCode), phrase: `exit code ${exitCode}` };
+}
+
+/**
+ * True for a `ruleOrCode` that `describeExitStatus` minted — the mark of the unparsed fallback row,
+ * the one row that carries neither a file an edit could change nor an identity a person could look up.
+ * Lives beside its producer so the two cannot drift.
+ */
+export function isExitStatusToken(ruleOrCode: string): boolean {
+  return ruleOrCode === NO_EXIT_STATUS_TOKEN || /^\d+$/.test(ruleOrCode);
 }
 
 export function buildFailures(result: CheckResult, check: GateCheck, pkgDir: string): GateFailure[] {
@@ -1323,6 +1344,8 @@ export interface BaselineAwareGateOpts {
   allowedPaths?: string[];
   /** The caller owns its check list; the verdict is read over exactly these. */
   checks: ('typecheck' | 'lint' | 'tests')[];
+  /** Forwarded to `runGate` in baseline mode; see `subtractBaseline`. Off unless a caller asks. */
+  keepFallbackRows?: boolean;
   /** Injection seam — callers (and their tests) route the real gate through their own `_deps`. */
   runGateFn?: (opts: RunGateOpts) => Promise<GateResult>;
 }
@@ -1353,6 +1376,7 @@ export async function runBaselineAwareGate(opts: BaselineAwareGateOpts): Promise
       baselinePath: mode === 'baseline' ? opts.baselinePath : undefined,
       allowedPaths: opts.allowedPaths,
       checks: [...opts.checks],
+      keepFallbackRows: opts.keepFallbackRows,
     });
   } catch (err) {
     return { threw: err instanceof Error ? err.message : String(err), mode };
@@ -2008,7 +2032,7 @@ async function resolveBaselineResult(
     console.error(`gate: baseline at ${baselinePath} is unusable — reporting failures unsubtracted for this run`);
     return null;
   }
-  const newFailures = subtractBaseline(withIndices, existing, buildNoDisownContext(opts));
+  const newFailures = subtractBaseline(withIndices, existing, buildNoDisownContext(opts), opts.keepFallbackRows);
   return {
     status: newFailures.length === 0 ? 'green' : 'red',
     failures: newFailures,

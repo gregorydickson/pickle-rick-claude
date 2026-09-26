@@ -243,7 +243,7 @@ Machine-maintained export index for the `bin/` subsystem. The audit script treat
 - `correct-course.ts` -> `CorrectCourseArgs`, `CorrectCourseRunOptions`, `CorrectCourseRunResult`, `CourseCorrectionProposalValidationInput`, `CourseCorrectionProposalValidationResult`, `buildCorrectCourseBrief`, `main`, `parseArgs`, `runCorrectCourse`, `validateCourseCorrectionProposal`, `validateDiscovery`
 - `council-publish.ts` -> `CouncilPublishError`, `PrListParse`, `PublishOptions`, `PublishReport`, `PublishResult`, `composeBody`, `parsePrList`
 - `debate.ts` -> `DebateArgs`, `DebateRunOptions`, `DebateRunResult`, `DebateSettings`, `buildDebateBrief`, `main`, `parseArgs`, `runDebate`
-- `finalize-gate.ts` -> `FinalizeGateOpts`, `FinalizeGateSettings`, `finalizeGateMain`, `loadFinalizeGateSettings`, `resolveFinalizeSettingsRoot`
+- `finalize-gate.ts` -> `FinalizeGateOpts`, `FinalizeGateSettings`, `finalizeGateMain`, `loadFinalizeGateSettings`, `namesEditableFile`, `resolveFinalizeSettingsRoot`
 - `generate-debate-personas.ts` -> `DEBATE_PERSONAS`, `DebatePersonaDefinition`, `DebatePersonaName`, `debateAgentFilename`, `generatedDebatePersonas`, `renderDebatePersona`, `writeDebatePersonas`
 - `get-session.ts` -> `getSessionPath`
 - `jar-runner.ts` -> `IntegrityResult`, `RunTaskResult`, `SpawnResult`, `TaskMeta`, `buildJarNotification`, `discoverMarinatingTasks`, `handleTaskEnoent`, `loadJarTaskTimeout`, `skipTaskWithReason`, `validateTaskIntegrity`

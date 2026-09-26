@@ -304,9 +304,17 @@ export function classifyNoDisown(failures, ctx) {
 // `selfGuard` (R-ORSR-6): a baseline-matching failure is dropped as pre-existing ONLY when it is
 // NOT self-introduced. A failure intersecting the phase's own diff is never subtracted, so a
 // self-introduced break can never be disowned as a coincidental baseline match.
-export function subtractBaseline(current, baseline, selfGuard) {
+//
+// `keepFallbackRows` (B-FINALGATE #50): the unparsed fallback row's identity is `check::pkgDir::<exit
+// code>`, which says WHICH check failed and nothing about WHAT failed, so an equal fingerprint is not
+// the same failure — a baselined coarse row would subtract a brand-new coarse one. With the flag set
+// such a row is never matched to the baseline. It is opt-in because the per-iteration microverse gate
+// and the cap gate read the same subtraction and have their own dispositions for a coarse baseline.
+export function subtractBaseline(current, baseline, selfGuard, keepFallbackRows = false) {
     const baselineSet = new Set(baseline.failures.map(buildFingerprint));
     return current.filter(f => {
+        if (keepFallbackRows && isExitStatusToken(f.ruleOrCode))
+            return true;
         if (!baselineSet.has(buildFingerprint(f)))
             return true;
         return isSelfIntroducedFailure(f, selfGuard);
@@ -1033,10 +1041,19 @@ const FAILURE_PARSERS = {
  * empty-output failure is what made a signal-killed check silently subtractable every pass
  * (AP-EXT-ITER318-01).
  */
+const NO_EXIT_STATUS_TOKEN = 'no-exit-status';
 function describeExitStatus(exitCode) {
     return exitCode === null
-        ? { token: 'no-exit-status', phrase: 'no exit status (terminated by signal)' }
+        ? { token: NO_EXIT_STATUS_TOKEN, phrase: 'no exit status (terminated by signal)' }
         : { token: String(exitCode), phrase: `exit code ${exitCode}` };
+}
+/**
+ * True for a `ruleOrCode` that `describeExitStatus` minted — the mark of the unparsed fallback row,
+ * the one row that carries neither a file an edit could change nor an identity a person could look up.
+ * Lives beside its producer so the two cannot drift.
+ */
+export function isExitStatusToken(ruleOrCode) {
+    return ruleOrCode === NO_EXIT_STATUS_TOKEN || /^\d+$/.test(ruleOrCode);
 }
 export function buildFailures(result, check, pkgDir) {
     // R-FGNC-2: the subprocess exit code is the source of truth for "did this
@@ -1184,6 +1201,7 @@ export async function runBaselineAwareGate(opts) {
             baselinePath: mode === 'baseline' ? opts.baselinePath : undefined,
             allowedPaths: opts.allowedPaths,
             checks: [...opts.checks],
+            keepFallbackRows: opts.keepFallbackRows,
         });
     }
     catch (err) {
@@ -1703,7 +1721,7 @@ async function resolveBaselineResult(baselinePath, opts, projectType, withIndice
         console.error(`gate: baseline at ${baselinePath} is unusable — reporting failures unsubtracted for this run`);
         return null;
     }
-    const newFailures = subtractBaseline(withIndices, existing, buildNoDisownContext(opts));
+    const newFailures = subtractBaseline(withIndices, existing, buildNoDisownContext(opts), opts.keepFallbackRows);
     return {
         status: newFailures.length === 0 ? 'green' : 'red',
         failures: newFailures,

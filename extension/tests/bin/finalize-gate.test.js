@@ -5,8 +5,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { finalizeGateMain } from '../../bin/finalize-gate.js';
+import { finalizeGateMain, namesEditableFile } from '../../bin/finalize-gate.js';
 import { AC_PHASE_MANIFEST } from '../../services/ac-phase-gate.js';
+import { assignOccurrenceIndices, buildFailures, subtractBaseline } from '../../services/convergence-gate.js';
 
 function makeTmpDir() {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fg-test-')));
@@ -553,13 +554,18 @@ describe('V3: unmeasured sentinel-only failures', () => {
         const sessionRoot = makeTmpDir();
         fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
         // check_status escalates across target dirs, so one dir's timeout marks the whole check 'failed'.
-        const realTests = { ...timeoutFailure, file: '/tmp/wd/packages/b', ruleOrCode: '1', message: 'not ok 1 - b breaks' };
+        // The sibling's row names a REAL, editable file — a row that names only a directory is #50's
+        // subject and is pinned by the B-FINALGATE #50 block below.
+        const realFile = path.join(sessionRoot, 'packages', 'b', 'b.test.js');
+        fs.mkdirSync(path.dirname(realFile), { recursive: true });
+        fs.writeFileSync(realFile, 'x');
+        const realTests = { ...timeoutFailure, file: realFile, ruleOrCode: 'b breaks', message: 'not ok 1 - b breaks' };
         const result = { ...makeGateResult('red', [timeoutFailure, realTests]), check_status: { typecheck: 'ran', lint: 'ran', tests: 'failed' } };
 
         const { calls } = await runV3(sessionRoot, result);
 
         assert.equal(calls.remediator, 2);
-        assert.ok(calls.briefFailures[0].some(f => f.file === '/tmp/wd/packages/b'), 'the real tests failure reaches the brief');
+        assert.ok(calls.briefFailures[0].some(f => f.file === realFile), 'the real tests failure reaches the brief');
         fs.rmSync(sessionRoot, { recursive: true, force: true });
     });
 });
@@ -814,5 +820,178 @@ describe('B-FINALGATE: finalize-gate judges anatomy-park against the session bas
         assert.deepEqual(seen.map(s => s.mode), ['baseline']);
         assert.deepEqual(run.mvWrites.map(w => w.state.cap_unmeasured_checks), [['tests']]);
         fs.rmSync(sessionRoot, { recursive: true, force: true });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// B-FINALGATE #50: a failure row that names no editable file is never remediated or subtracted
+// ---------------------------------------------------------------------------
+
+describe('B-FINALGATE #50: finalize-gate never remediates or subtracts a row that cannot be attributed', () => {
+    const TIMEOUT_LINT = { check: 'lint', file: '<timeout>', line: 0, ruleOrCode: 'GATE_CHECK_TIMEOUT', message: 'lint timed out after 300000ms', severity: 'error', occurrence_index: 0 };
+    const LINT_TIMED_OUT = { typecheck: 'ran', lint: 'failed', tests: 'ran' };
+    const ALL_RAN = { typecheck: 'ran', lint: 'ran', tests: 'ran' };
+
+    // NESTED package dir: `<root>/packages/app`, so the fallback row's `file` (the package dir) is an
+    // ANCESTOR of every allowed path — the shape `matchesAllowedPath`'s ancestor arm exists for.
+    function makePackage() {
+        const root = makeTmpDir();
+        const pkgDir = path.join(root, 'packages', 'app');
+        const siblingDir = path.join(root, 'packages', 'other');
+        const broken = path.join(pkgDir, 'src', 'broken.ts');
+        const sibling = path.join(siblingDir, 'src', 'sibling.ts');
+        for (const f of [broken, sibling]) {
+            fs.mkdirSync(path.dirname(f), { recursive: true });
+            fs.writeFileSync(f, 'export const x = 1;\n');
+        }
+        fs.mkdirSync(path.join(root, 'gate'), { recursive: true });
+        return { root, pkgDir, broken, sibling, allowed: ['packages/app/src/broken.ts', 'packages/other/src/sibling.ts'] };
+    }
+
+    function writeBaselineFile(root, failures) {
+        fs.writeFileSync(path.join(root, 'gate', 'baseline.json'), JSON.stringify({
+            schema_version: 1,
+            captured_at: '2026-09-26T01:02:03.000Z',
+            working_dir: root,
+            project_type: null,
+            checks: ['typecheck', 'lint', 'tests'],
+            failures: assignOccurrenceIndices(failures),
+        }));
+    }
+
+    // The gate double runs the REAL `subtractBaseline` in baseline mode, honouring the same opts the
+    // real `runGate` reads, so the wiring finalize-gate → helper → subtraction is what is under test.
+    function gateOver({ raw, baseline, checkStatus = ALL_RAN, seen }) {
+        return async (opts) => {
+            seen?.push({ mode: opts.mode, keepFallbackRows: opts.keepFallbackRows });
+            const indexed = assignOccurrenceIndices(raw);
+            const rows = opts.mode === 'baseline'
+                ? subtractBaseline(indexed, { failures: assignOccurrenceIndices(baseline) }, undefined, opts.keepFallbackRows)
+                : indexed;
+            return { ...makeGateResult(rows.length ? 'red' : 'green', rows), check_status: checkStatus };
+        };
+    }
+
+    async function runNested(pkg, { skill = 'anatomy-park', runGateFn, statFn }) {
+        const run = { errs: [], briefFailures: [], mvWrites: [], remediator: 0, briefPrep: 0 };
+        const briefPath = path.join(pkg.root, 'brief.md');
+        fs.writeFileSync(briefPath, 'fix the gate');
+        run.code = await finalizeGateMain({
+            argv: [pkg.root, skill],
+            env: {},
+            ...baseDeps(pkg.root, run.mvWrites),
+            readMicroverseStateFn: () => ({ status: 'iterating', allowed_paths: pkg.allowed }),
+            readStateForWorkingDirFn: () => ({ workingDir: pkg.root, backend: 'claude' }),
+            mkdirSyncFn: (p) => fs.mkdirSync(p, { recursive: true }),
+            stderr: m => run.errs.push(m),
+            statFn,
+            runGateFn,
+            spawnGateRemediatorMainFn: async (briefOpts) => {
+                run.briefPrep += 1;
+                const resultPath = briefOpts.argv[briefOpts.argv.indexOf('--gate-result') + 1];
+                run.briefFailures.push(JSON.parse(fs.readFileSync(resultPath, 'utf-8')).failures.map(f => f.file));
+                briefOpts.stdout?.(`BRIEF_PATH=${briefPath}`);
+                return 0;
+            },
+            spawnRemediatorFn: () => { run.remediator += 1; },
+        });
+        return run;
+    }
+
+    const coarse = (pkgDir, check = 'tests', exitCode = 1) => buildFailures({ stdout: '', stderr: '', exitCode }, check, pkgDir);
+    const named = (pkgDir, name) => buildFailures({ stdout: `not ok 1 - ${name}\n`, stderr: '', exitCode: 1 }, 'tests', pkgDir);
+
+    test('namesEditableFile: relative and existing regular files are editable; directories, pseudo-files and stat errors are not', () => {
+        const pkg = makePackage();
+        const row = (file) => ({ check: 'lint', file, line: 1, ruleOrCode: 'r', message: 'm', severity: 'error', occurrence_index: 0 });
+        const stat = fs.statSync;
+        assert.equal(namesEditableFile(row('src/a.ts'), stat), true, 'relative');
+        assert.equal(namesEditableFile(row(pkg.broken), stat), true, 'absolute regular file');
+        assert.equal(namesEditableFile(row(pkg.pkgDir), stat), false, 'absolute directory');
+        assert.equal(namesEditableFile(row(path.join(pkg.pkgDir, 'missing.ts')), stat), false, 'absolute missing file');
+        assert.equal(namesEditableFile(row('<timeout>'), stat), false, 'pseudo-file');
+        assert.equal(namesEditableFile(row(pkg.broken), () => { throw new Error('EACCES'); }), false, 'stat error');
+        fs.rmSync(pkg.root, { recursive: true, force: true });
+    });
+
+    test('AC-F4: a check that timed out whose only other row names just a package dir spawns nothing and is disclosed unmeasured', async () => {
+        const pkg = makePackage();
+        const rows = [TIMEOUT_LINT, ...coarse(pkg.pkgDir, 'lint')];
+        const run = await runNested(pkg, { skill: 'szechuan', runGateFn: gateOver({ raw: rows, baseline: [], checkStatus: LINT_TIMED_OUT }) });
+        assert.equal(run.remediator, 0, 'no remediator for a row no edit can fix');
+        assert.equal(run.briefPrep, 0);
+        assert.equal(run.code, 0, 'unmeasured is disclosed, never a failed phase');
+        assert.deepEqual(run.mvWrites.map(w => w.state.cap_unmeasured_checks), [['lint']]);
+        fs.rmSync(pkg.root, { recursive: true, force: true });
+    });
+
+    test('AC-F3: a check that timed out in one dir plus a NEW editable row in another is remediated on that row', async () => {
+        const pkg = makePackage();
+        const fresh = { check: 'lint', file: pkg.sibling, line: 3, ruleOrCode: 'no-any', message: 'no any', severity: 'error', occurrence_index: 0 };
+        const rows = [TIMEOUT_LINT, ...coarse(pkg.pkgDir, 'lint'), fresh];
+        const run = await runNested(pkg, { skill: 'szechuan', runGateFn: gateOver({ raw: rows, baseline: [], checkStatus: LINT_TIMED_OUT }) });
+        assert.equal(run.code, 2, 'the editable row is never fixed by the fake remediator, so the cap is exhausted');
+        assert.equal(run.remediator, 2);
+        assert.deepEqual(run.briefFailures, [[pkg.sibling], [pkg.sibling]], 'the brief names the editable row only');
+        assert.deepEqual(run.mvWrites, [], 'nothing was disclosed as unmeasured while a real failure stands');
+        fs.rmSync(pkg.root, { recursive: true, force: true });
+    });
+
+    test('AC-F1: a coarse (fallback) row present in the baseline AND now is not subtracted — the check is unmeasured, not green', async () => {
+        const pkg = makePackage();
+        writeBaselineFile(pkg.root, coarse(pkg.pkgDir));
+        const seen = [];
+        const run = await runNested(pkg, { runGateFn: gateOver({ raw: coarse(pkg.pkgDir), baseline: coarse(pkg.pkgDir), seen }) });
+        assert.deepEqual(seen.map(s => s.mode), ['baseline']);
+        assert.ok(seen.every(s => s.keepFallbackRows === true), 'finalize-gate asks for fallback rows to be kept');
+        assert.equal(run.remediator, 0);
+        assert.equal(run.code, 0);
+        assert.deepEqual(run.mvWrites.map(w => w.state.cap_unmeasured_checks), [['tests']], 'a silent green would leave this empty');
+        fs.rmSync(pkg.root, { recursive: true, force: true });
+    });
+
+    test('AC-F2: baseline test A plus a NEW test B fails, and the brief names B only', async () => {
+        const pkg = makePackage();
+        const A = named(pkg.pkgDir, 'alpha breaks');
+        const B = named(pkg.pkgDir, 'beta breaks');
+        writeBaselineFile(pkg.root, A);
+        const run = await runNested(pkg, { runGateFn: gateOver({ raw: [...A, ...B], baseline: A }) });
+        assert.equal(run.code, 2, 'a new failing test is remediated, never disclosed away');
+        assert.equal(run.remediator, 2);
+        assert.equal(run.briefFailures.length, 2);
+        const briefed = run.briefFailures[0];
+        assert.deepEqual(briefed, [pkg.pkgDir], 'exactly one row reaches the brief');
+        fs.rmSync(pkg.root, { recursive: true, force: true });
+    });
+
+    test('AC-F2 control: the row that reaches the brief is B, not A', async () => {
+        const pkg = makePackage();
+        const A = named(pkg.pkgDir, 'alpha breaks');
+        const B = named(pkg.pkgDir, 'beta breaks');
+        writeBaselineFile(pkg.root, A);
+        const rows = [];
+        const run = await runNested(pkg, {
+            runGateFn: gateOver({ raw: [...A, ...B], baseline: A }),
+            statFn: fs.statSync,
+        });
+        // Re-read what the brief was handed: the gate-result JSON lists the rows by ruleOrCode.
+        const gateResults = fs.readdirSync(path.join(pkg.root, 'gate')).filter(f => f.startsWith('gate_result_cycle_'));
+        for (const f of gateResults) rows.push(...JSON.parse(fs.readFileSync(path.join(pkg.root, 'gate', f), 'utf-8')).failures.map(r => r.ruleOrCode));
+        assert.ok(rows.length > 0 && rows.every(r => r === 'beta breaks'), `only B is briefed, got ${JSON.stringify(rows)}`);
+        assert.equal(run.code, 2);
+        fs.rmSync(pkg.root, { recursive: true, force: true });
+    });
+
+    test('a stat error on an absolute row makes it non-editable: the seam is honoured', async () => {
+        const pkg = makePackage();
+        const row = { check: 'lint', file: pkg.broken, line: 1, ruleOrCode: '1', message: 'lint failed with exit code 1', severity: 'error', occurrence_index: 0 };
+        const run = await runNested(pkg, {
+            skill: 'szechuan',
+            runGateFn: gateOver({ raw: [row], baseline: [] }),
+            statFn: () => { throw new Error('EACCES'); },
+        });
+        assert.equal(run.remediator, 0, 'an unreadable file is not an editable one');
+        assert.equal(run.code, 0);
+        fs.rmSync(pkg.root, { recursive: true, force: true });
     });
 });

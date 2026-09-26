@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { runGate, runBaselineAwareGate, filterByScope, isCheckUnmeasured, resolveLexicalRepoRoot, type RunGateOpts } from '../services/convergence-gate.js';
+import { runGate, runBaselineAwareGate, filterByScope, isExitStatusToken, resolveLexicalRepoRoot, GATE_CHECK_TIMEOUT_CODE, type RunGateOpts } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 import { readMicroverseState, readRecoverableJsonObject, recordCapUnmeasured, writeMicroverseState } from '../services/microverse-state.js';
 import { logActivity } from '../services/activity-logger.js';
@@ -14,6 +14,9 @@ import {
   resolveBackend,
 } from '../services/backend-spawn.js';
 import type { GateResult, GateFailure, Backend, ActivityEventType, MicroverseSessionState } from '../types/index.js';
+
+/** Answers "is this absolute path a regular file?"; a throw means no. */
+type StatFn = (p: string) => { isFile(): boolean };
 
 const VALID_SKILLS = new Set(['szechuan', 'anatomy-park']);
 const sm = new StateManager();
@@ -126,6 +129,7 @@ export interface FinalizeGateOpts {
   spawnRemediatorFn?: (cmd: string, args: string[], opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }) => void;
   readMicroverseStateFn?: typeof readMicroverseState;
   writeMicroverseStateFn?: typeof writeMicroverseState;
+  statFn?: StatFn;
   readStateForWorkingDirFn?: (sessionRoot: string) => { workingDir: string; backend: string } | null;
   loadSettingsFn?: () => FinalizeGateSettings;
   mkdirSyncFn?: (p: string) => void;
@@ -158,6 +162,7 @@ interface FinalizeRuntime {
   writeFile: (p: string, data: string) => void;
   runGateFn: (opts: RunGateOpts) => Promise<GateResult>;
   writeMicroverseState: typeof writeMicroverseState;
+  stat: StatFn;
   spawnBriefPrep: typeof spawnGateRemediatorMain;
   spawnRemediator: (cmd: string, args: string[], opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }) => void;
 }
@@ -186,6 +191,7 @@ function buildFinalizeRuntime(opts: FinalizeGateOpts): FinalizeRuntime {
     writeFile: opts.writeFileFn ?? ((p: string, data: string) => fs.writeFileSync(p, data, 'utf-8')),
     runGateFn: opts.runGateFn ?? runGate,
     writeMicroverseState: opts.writeMicroverseStateFn ?? writeMicroverseState,
+    stat: opts.statFn ?? ((p: string) => fs.statSync(p)),
     spawnBriefPrep: opts.spawnGateRemediatorMainFn ?? spawnGateRemediatorMain,
     spawnRemediator: opts.spawnRemediatorFn ?? defaultSpawnRemediator,
   };
@@ -309,13 +315,32 @@ function spawnStrictRemediator(ctx: FinalizeContext, rt: FinalizeRuntime, cycle:
 }
 
 /**
- * V3: a failure the remediator cannot act on — its check produced no measurement
- * (`isCheckUnmeasured`, e.g. a timeout) AND it names no editable path (the same non-absolute arm
- * `splitByScope` already forces in-scope). The path conjunct keeps a REAL failure of a check that
- * timed out in a sibling target dir remediable, since check status escalates across dirs.
+ * A row names an editable file iff its `file` is a real path an edit could change: relative (the
+ * gate's own parsers resolve tsc/eslint rows against the package dir), or ABSOLUTE and an existing
+ * REGULAR file. A pseudo-file (`<timeout>`), a directory (the unparsed fallback's `file: pkgDir`) and
+ * anything `stat` cannot answer for are not — a stat error is "cannot prove editable", never "editable".
  */
-function isUnmeasuredFailure(result: GateResult, failure: GateFailure): boolean {
-  return isCheckUnmeasured(result.check_status, failure.check) && !path.isAbsolute(failure.file);
+export function namesEditableFile(failure: GateFailure, stat: StatFn): boolean {
+  if (/^<[^>]+>$/.test(failure.file)) return false;
+  if (!path.isAbsolute(failure.file)) return true;
+  try {
+    return stat(failure.file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A row can be acted on only if it is ATTRIBUTABLE: it names an editable file, or it carries an
+ * identity a person can look up (a parsed rule id or test name). The unparsed exit-status fallback
+ * and the timeout pseudo-failure carry neither — a remediation cycle over them only rediscovers that
+ * the check failed, which is what the `<timeout>` sentinel already taught and `file: pkgDir` (an
+ * absolute DIRECTORY, so `!path.isAbsolute` called it editable) hid. A parsed `tests` row also
+ * carries `file: pkgDir`, so the file alone must not decide: a NEW failing test is remediable by name.
+ */
+function isAttributable(failure: GateFailure, stat: StatFn): boolean {
+  if (namesEditableFile(failure, stat)) return true;
+  return !isExitStatusToken(failure.ruleOrCode) && failure.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE;
 }
 
 /**
@@ -367,6 +392,8 @@ async function runGateCycle(ctx: FinalizeContext, rt: FinalizeRuntime, cycle: nu
     baselinePath,
     allowedPaths: ctx.allowedPaths,
     checks: [...FINALIZE_GATE_CHECKS],
+    // A coarse row's fingerprint names the check, not the failure: never let a baselined one absorb a new one.
+    keepFallbackRows: true,
     runGateFn: async (gateOpts) => (seen.result = await rt.runGateFn({
       ...gateOpts,
       onEvent: (event, data) => rt.doLogActivity({ event: event as ActivityEventType, source: 'pickle', gate_payload: data }),
@@ -402,7 +429,9 @@ async function remediateRedGate(
     rt.out('[finalize-gate] all failures are out-of-scope — exit 0 (closed within scope)');
     return { code: 0, result };
   }
-  const remediable = inScope.filter(f => !isUnmeasuredFailure(result, f));
+  // An unattributable row makes its check unmeasured UNLESS the same cycle holds a new attributable
+  // row: then the phase fails on that row, and only that row reaches the brief.
+  const remediable = inScope.filter(f => isAttributable(f, rt.stat));
   if (remediable.length === 0) {
     return { code: reportUnmeasuredGate(ctx, rt, cycle, [...new Set(inScope.map(f => f.check))], inScope), result };
   }
