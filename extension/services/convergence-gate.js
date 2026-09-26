@@ -1000,7 +1000,9 @@ function parseTestOutput(output, pkgDir) {
             // `check::file::ruleOrCode`, so putting it here is what lets baseline subtraction tell one
             // failing test from another (see that function's comment). All three render sites print
             // `ruleOrCode`, so this also surfaces the name with no render-site change.
-            ruleOrCode: name.slice(0, 500),
+            // A name that SPELLS an exit status (a nameless `not ok 3`, a test titled `42`) takes its
+            // marked line instead, so a parsed row can never read as the unparsed fallback row.
+            ruleOrCode: (isExitStatusToken(name) ? line.replace(TEST_DURATION_SUFFIX_RE, '') : name).slice(0, 500),
             message: line.slice(0, 500),
             severity: 'error',
             occurrence_index: 0,
