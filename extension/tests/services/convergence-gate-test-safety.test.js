@@ -102,6 +102,8 @@ test('runGate test-safety: recognized runner (vitest) is allowed through safety 
     assert.ok(!blocked, 'Should NOT emit gate_unsafe_test_command_blocked for recognized runner');
     // status may be green or red depending on whether node --test finds tests — either is fine
     assert.ok(['green', 'red'].includes(result.status), `Unexpected status: ${result.status}`);
+    // No event + green is also what a SILENT skip produces; only check_status proves it ran.
+    assert.equal(result.check_status?.tests, 'ran', `allowed runner must actually run: ${JSON.stringify(result.check_status)}`);
   });
 });
 
@@ -152,6 +154,7 @@ test('runGate test-safety: delegated integration-named scripts that bottom out a
     const blocked = events.find(e => e.event === 'gate_unsafe_test_command_blocked');
     assert.ok(!blocked, `delegated safe test chain must not be blocked: ${JSON.stringify(events)}`);
     assert.equal(result.status, 'green');
+    assert.equal(result.check_status?.tests, 'ran', `allowed chain must actually run: ${JSON.stringify(result.check_status)}`);
   });
 });
 
@@ -177,6 +180,7 @@ test('runGate test-safety: env-prefixed delegated safe leaf is allowed through',
     const blocked = events.find(e => e.event === 'gate_unsafe_test_command_blocked');
     assert.ok(!blocked, `env-prefixed safe leaf must not be blocked: ${JSON.stringify(events)}`);
     assert.equal(result.status, 'green');
+    assert.equal(result.check_status?.tests, 'ran', `allowed chain must actually run: ${JSON.stringify(result.check_status)}`);
   });
 });
 
