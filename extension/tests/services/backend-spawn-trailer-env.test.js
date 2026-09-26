@@ -4,7 +4,7 @@
 // `backendEnvOverrides` extends the existing spawn-env seam (does not add a parallel one) to
 // emit the `core.hooksPath` + `PICKLE_TICKET_ID` env fragment, all-or-nothing, composing with
 // any inherited `GIT_CONFIG_COUNT` without ever hardcoding index 0.
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -21,6 +21,32 @@ import { buildWorkerSpawnEnv } from '../../bin/spawn-morty.js';
 import { createIterationSpawnEnv, buildRemediatorWorkerInvocation } from '../../bin/mux-runner.js';
 
 const GIT_TIMEOUT_MS = 10_000;
+
+// Every claude-arm builder call emits a `worker_mcp_config_resolved` activity event. Without a
+// file-scoped data root it lands in the operator's real ~/.local/share/pickle-rick activity log.
+let fileDataRoot;
+let prevFileDataRoot;
+before(() => {
+  prevFileDataRoot = process.env.PICKLE_DATA_ROOT;
+  fileDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trailer-env-data-root-'));
+  process.env.PICKLE_DATA_ROOT = fileDataRoot;
+});
+after(() => {
+  if (prevFileDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+  else process.env.PICKLE_DATA_ROOT = prevFileDataRoot;
+  fs.rmSync(fileDataRoot, { recursive: true, force: true });
+});
+
+test('isolation: an unscoped builder call writes its activity event into the file-scoped data root', () => {
+  assert.equal(process.env.PICKLE_DATA_ROOT, fileDataRoot);
+  const activityDir = path.join(fileDataRoot, 'activity');
+  const count = () => (fs.existsSync(activityDir)
+    ? fs.readdirSync(activityDir).flatMap((f) => fs.readFileSync(path.join(activityDir, f), 'utf8').split('\n').filter(Boolean)).length
+    : 0);
+  const prior = count();
+  buildManagerInvocation('claude', { prompt: 'p', addDirs: [], mcpConfig: '/tmp/x.json' });
+  assert.ok(count() > prior, 'builder event must land in the file-scoped root');
+});
 
 function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
