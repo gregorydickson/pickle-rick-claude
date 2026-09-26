@@ -19,9 +19,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { StateManager } from '../../services/state-manager.js';
 import { writeStateFile } from '../../services/pickle-utils.js';
 import { canExecute } from '../../services/circuit-breaker.js';
+import { execFileSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,6 +31,7 @@ const {
   computeRateLimitAction,
   loadRateLimitSettings,
   detectRateLimitInText,
+  processIterationOutcome,
 } = await import(path.resolve(__dirname, '../../bin/mux-runner.js'));
 
 function tmpDir(prefix = 'pickle-ml-') {
@@ -248,25 +249,66 @@ test('ML-15: CB HALF_OPEN state — canExecute returns true (probe allowed)', ()
   assert.equal(canExecute(halfOpenState), true);
 });
 
-test('ML-16: CB open → safeDeactivate sets active=false (session deactivated)', () => {
+// ML-16 drives processIterationOutcome's circuit-breaker trip with NO `deactivate`
+// seam, so production ctxDeactivate → safeDeactivate must write active=false itself.
+// A write the test performs and then reads back proves nothing about that wire.
+async function runCircuitBreakerTrip(consecutiveNoProgress) {
   const dir = tmpDir();
+  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = path.join(dir, 'data');
   try {
-    const statePath = path.join(dir, 'state.json');
-    const sm = new StateManager();
-    writeStateFile(statePath, makeState({ active: true, iteration: 5 }));
-
-    // Simulate safeDeactivate: sm.update sets active=false
-    sm.update(statePath, s => { s.active = false; });
-
-    const state = sm.read(statePath);
-    assert.equal(state.active, false, 'state.active must be false after CB open deactivation');
-
-    // Verify persisted
-    const onDisk = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    assert.equal(onDisk.active, false, 'deactivation must be written to disk');
+    const repoDir = path.join(dir, 'repo');
+    const sessionDir = path.join(dir, 'session');
+    fs.mkdirSync(repoDir, { recursive: true });
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const git = (...args) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf-8', timeout: 30000 }).trim();
+    git('init', '--quiet');
+    git('config', 'user.email', 'test@example.local');
+    git('config', 'user.name', 'Test User');
+    fs.writeFileSync(path.join(repoDir, 'README.md'), 'baseline\n');
+    git('add', '.');
+    git('commit', '-m', 'baseline', '--quiet');
+    const head = git('rev-parse', 'HEAD');
+    const statePath = path.join(sessionDir, 'state.json');
+    const state = makeState({ active: true, working_dir: repoDir, session_dir: sessionDir, current_ticket: null });
+    writeStateFile(statePath, state);
+    const action = await processIterationOutcome(state, {
+      completion: 'continue', timedOut: false, exitCode: 0, wallSeconds: 1,
+    }, {
+      sessionDir,
+      statePath,
+      extensionRoot: dir,
+      iteration: consecutiveNoProgress + 1,
+      iterLogFile: path.join(sessionDir, 'tmux_iteration_1.log'),
+      log: () => {},
+      cbEnabled: true,
+      cbState: {
+        state: 'CLOSED', last_change: new Date(0).toISOString(), consecutive_no_progress: consecutiveNoProgress,
+        consecutive_same_error: 0, last_error_signature: null, last_known_head: head, last_known_step: 'implement',
+        last_known_ticket: null, last_progress_iteration: 0, total_opens: 0, reason: '', opened_at: null, history: [],
+      },
+      cbSettings: { enabled: true, noProgressThreshold: 99, sameErrorThreshold: 50, halfOpenAfter: 2 },
+      cbPath: path.join(sessionDir, 'circuit_breaker.json'),
+    });
+    return { action, onDisk: JSON.parse(fs.readFileSync(statePath, 'utf-8')) };
   } finally {
+    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prevDataRoot;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+test('ML-16: CB trip → production safeDeactivate sets active=false on disk (session deactivated)', async () => {
+  // No current_ticket → medium budget 5: 4 prior no-progress iterations + this one trips.
+  const tripped = await runCircuitBreakerTrip(4);
+  assert.equal(tripped.action.kind, 'break', 'tripping iteration must break the loop');
+  assert.equal(tripped.action.reason, 'circuit_open');
+  assert.equal(tripped.onDisk.active, false, 'CB trip must persist active=false via safeDeactivate');
+
+  // Negative control: a below-budget iteration does not trip and must NOT deactivate.
+  const below = await runCircuitBreakerTrip(2);
+  assert.notEqual(below.action.kind, 'break');
+  assert.equal(below.onDisk.active, true, 'a non-tripping iteration must leave the session active');
 });
 
 // ---------------------------------------------------------------------------
