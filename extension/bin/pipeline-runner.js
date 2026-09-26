@@ -4377,9 +4377,11 @@ async function spawnFinalizeGate(runtime, rawPhase) {
  * finalize-gate. B-FINALGATE: the same disposition shape as its sibling
  * (`runAllBackendsExhaustedFinalizeGate`) — a pass names `judge_timeout` and discloses any
  * unmeasured check; a red gate is a measurement verdict, named `finalize_gate_failed:judge_timeout`,
- * and continues the phase loop unless the operator opted into `--strict-phases`. One divergence
- * remains: a pass does not yet raise `nonConvergent`, because four end-to-end tests outside this
- * change's fence still pin a clean exit 0 after a passing judge_timeout recovery.
+ * and continues the phase loop unless the operator opted into `--strict-phases`. A pass that
+ * discloses an unmeasured check raises `nonConvergent`: the judge never confirmed convergence and
+ * the gate never measured that check, so nothing confirmed the phase. One divergence remains: a
+ * CLEAN pass does not yet raise it, because four end-to-end tests outside this change's fence
+ * still pin a clean exit 0 after a passing judge_timeout recovery.
  */
 export async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, log) {
     try {
@@ -4396,7 +4398,8 @@ export async function runJudgeTimeoutFinalizeGate(runtime, counters, rawPhase, l
     if (gateResult.exitCode === 0) {
         counters.completed++;
         counters.phaseDispositions[rawPhase] = 'judge_timeout';
-        reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
+        if (reportConvergedWithUnmeasured(runtime, counters, rawPhase, log))
+            counters.nonConvergent++;
         writeRunningStatus(runtime, counters, null);
         log(`Phase ${rawPhase} finalize-gate passed after judge_timeout recovery`);
         return { action: 'continue' };
@@ -4877,8 +4880,8 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
  * written by `recordCapUnmeasured` from the post-convergence cap OR from finalize-gate) passed over
  * a hole, and a silent success would hide it. Reported — appended to the phase disposition — but
  * never counted `nonConvergent` here: on the converged path the phase did converge (the precedent
- * is `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`), and both
- * finalize-gate pass arms already name their non-convergence in the disposition's first half.
+ * is `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`). Returns whether
+ * it disclosed, so a caller whose phase nothing else confirmed can withhold success on it.
  * Unreadable or malformed microverse state reads as "no caveat", never as a fabricated one.
  */
 function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
@@ -4886,10 +4889,11 @@ function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
     const raw = readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
     const checks = Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
     if (checks.length === 0)
-        return;
+        return false;
     const marker = `converged_with_unmeasured:${checks.join(',')}`;
     appendPhaseDisposition(counters, rawPhase, marker);
     log(`Phase ${rawPhase}: ${marker} — these checks were not measured`);
+    return true;
 }
 /**
  * R-PIPE-2: post-AC-gate success path extracted from `runPhaseIteration` so

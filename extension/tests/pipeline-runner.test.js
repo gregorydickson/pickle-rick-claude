@@ -33,6 +33,7 @@ import {
   __setCitadelRemediationDepsForTests,
   __setSpawnRunnerForTests,
   runAllBackendsExhaustedFinalizeGate,
+  runJudgeTimeoutFinalizeGate,
   setupAnatomyPark,
   readPersistedAllowedPaths,
   finalizePhaseSuccess,
@@ -4998,6 +4999,43 @@ describe('B-FINALGATE incomplete-exit arm over the real finalize-gate', () => {
       assert.equal(counters.phaseDispositions['anatomy-park'], 'anatomy_non_convergent; converged_with_unmeasured:tests');
       assert.equal(counters.completed, 1);
       assert.equal(counters.nonConvergent, 1);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // 653a114f: the judge never confirmed convergence and finalize-gate did not measure a check, so
+  // nothing confirmed the phase. Since #50 that arm also carries an UNATTRIBUTABLE red — a check
+  // that exited non-zero with output no parser could read — so a plain pass here reported success.
+  test('judge_timeout pass over an unmeasured check withholds success', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      const EXITED = { check: 'typecheck', file: '/tmp', line: 0, ruleOrCode: '2', message: 'exit code 2', severity: 'error', occurrence_index: 0 };
+      stubFinalizeGate(subtracting([], [EXITED], { typecheck: 'ran', lint: 'ran', tests: 'ran' }));
+      const counters = freshCounters();
+      const outcome = await runJudgeTimeoutFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(outcome.action, 'continue');
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'judge_timeout; converged_with_unmeasured:typecheck');
+      assert.equal(counters.completed, 1);
+      assert.equal(counters.nonConvergent, 1, 'a pass nothing measured is not a success');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('judge_timeout pass over a measured green gate stays a clean pass (control)', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      stubFinalizeGate(subtracting([], [], { typecheck: 'ran', lint: 'ran', tests: 'ran' }));
+      const counters = freshCounters();
+      await runJudgeTimeoutFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'judge_timeout');
+      assert.equal(counters.completed, 1);
+      assert.equal(counters.nonConvergent, 0);
     } finally {
       __setSpawnRunnerForTests(null);
       fs.rmSync(dir, { recursive: true, force: true });
