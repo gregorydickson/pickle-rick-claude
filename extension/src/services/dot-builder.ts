@@ -310,7 +310,7 @@ function preflightStartIncoming(phases: PhaseSpec[]): Diagnostic[] {
   return diags;
 }
 
-function preflightGoalGateEdges(phases: PhaseSpec[]): Diagnostic[] {
+function autoCorrectGoalGateRetryTargets(phases: PhaseSpec[]): Diagnostic[] {
   const diags: Diagnostic[] = [];
   for (const phase of phases) {
     if (phase.goalGate && !phase.specFirst && !phase.retryTarget) {
@@ -341,7 +341,7 @@ function preflightFanOutScope(phases: PhaseSpec[]): Diagnostic[] {
   return diags;
 }
 
-function preflightWorkspaceHttps(workspace: string | undefined, workspaceOpts: WorkspaceOptsType | undefined): Diagnostic[] {
+function autoCorrectWorkspaceHttps(workspace: string | undefined, workspaceOpts: WorkspaceOptsType | undefined): Diagnostic[] {
   if (workspace !== 'isolated') return [];
   if (!workspaceOpts?.repoUrl) return [];
   const repoUrl = workspaceOpts.repoUrl;
@@ -392,7 +392,7 @@ function preflightPromptPaths(phases: PhaseSpec[]): Diagnostic[] {
   return diags;
 }
 
-function preflightAutoMapAC(phases: PhaseSpec[], acceptanceCriteria: Record<string, unknown>): Diagnostic[] {
+function autoMapAcceptanceCriteria(phases: PhaseSpec[], acceptanceCriteria: Record<string, unknown>): Diagnostic[] {
   const acKeys = Object.keys(acceptanceCriteria);
   if (acKeys.length === 0) return [];
   const tier2 = new Set(Object.keys(TIER_2_AUTO_KEYS));
@@ -438,7 +438,7 @@ function preflightAutoMapAC(phases: PhaseSpec[], acceptanceCriteria: Record<stri
   return diags;
 }
 
-function preflightMissingAllowedPaths(phases: PhaseSpec[]): Diagnostic[] {
+function autoCorrectMissingAllowedPaths(phases: PhaseSpec[]): Diagnostic[] {
   const diags: Diagnostic[] = [];
   for (const phase of phases) {
     if (phase.securityScan || phase.docOnly) continue;
@@ -1238,6 +1238,8 @@ export class DotBuilder {
   private _validatePreflightSpecs(): Diagnostic[] {
     const phases = this._phases;
 
+    // preflight* entries are pure checks; autoCorrect*/autoMap* entries repair the spec
+    // in place and report the repair, so their position in this list is load-bearing.
     return [
       ...preflightReservedIds(phases),
       ...preflightDanglingDeps(phases),
@@ -1245,13 +1247,13 @@ export class DotBuilder {
       ...preflightAllowedPaths(phases),
       ...preflightCircularDeps(phases),
       ...preflightStartIncoming(phases),
-      ...preflightGoalGateEdges(phases),
+      ...autoCorrectGoalGateRetryTargets(phases),
       ...preflightFanOutScope(phases),
-      ...preflightWorkspaceHttps(this._spec.workspace, this._spec.workspaceOpts),
+      ...autoCorrectWorkspaceHttps(this._spec.workspace, this._spec.workspaceOpts),
       ...preflightWorkspacePush(this._spec.workspace, phases),
       ...preflightPlanDeadlock(phases),
-      ...preflightMissingAllowedPaths(phases),
-      ...preflightAutoMapAC(phases, this._spec.acceptanceCriteria ?? {}),
+      ...autoCorrectMissingAllowedPaths(phases),
+      ...autoMapAcceptanceCriteria(phases, this._spec.acceptanceCriteria ?? {}),
       ...preflightPromptPaths(phases),  // must run after allowedPaths auto-correction
     ];
   }

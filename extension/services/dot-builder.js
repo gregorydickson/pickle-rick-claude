@@ -235,7 +235,7 @@ function preflightStartIncoming(phases) {
     }
     return diags;
 }
-function preflightGoalGateEdges(phases) {
+function autoCorrectGoalGateRetryTargets(phases) {
     const diags = [];
     for (const phase of phases) {
         if (phase.goalGate && !phase.specFirst && !phase.retryTarget) {
@@ -266,7 +266,7 @@ function preflightFanOutScope(phases) {
     }
     return diags;
 }
-function preflightWorkspaceHttps(workspace, workspaceOpts) {
+function autoCorrectWorkspaceHttps(workspace, workspaceOpts) {
     if (workspace !== 'isolated')
         return [];
     if (!workspaceOpts?.repoUrl)
@@ -317,7 +317,7 @@ function preflightPromptPaths(phases) {
     }
     return diags;
 }
-function preflightAutoMapAC(phases, acceptanceCriteria) {
+function autoMapAcceptanceCriteria(phases, acceptanceCriteria) {
     const acKeys = Object.keys(acceptanceCriteria);
     if (acKeys.length === 0)
         return [];
@@ -364,7 +364,7 @@ function preflightAutoMapAC(phases, acceptanceCriteria) {
     }
     return diags;
 }
-function preflightMissingAllowedPaths(phases) {
+function autoCorrectMissingAllowedPaths(phases) {
     const diags = [];
     for (const phase of phases) {
         if (phase.securityScan || phase.docOnly)
@@ -1129,6 +1129,8 @@ export class DotBuilder {
     }
     _validatePreflightSpecs() {
         const phases = this._phases;
+        // preflight* entries are pure checks; autoCorrect*/autoMap* entries repair the spec
+        // in place and report the repair, so their position in this list is load-bearing.
         return [
             ...preflightReservedIds(phases),
             ...preflightDanglingDeps(phases),
@@ -1136,13 +1138,13 @@ export class DotBuilder {
             ...preflightAllowedPaths(phases),
             ...preflightCircularDeps(phases),
             ...preflightStartIncoming(phases),
-            ...preflightGoalGateEdges(phases),
+            ...autoCorrectGoalGateRetryTargets(phases),
             ...preflightFanOutScope(phases),
-            ...preflightWorkspaceHttps(this._spec.workspace, this._spec.workspaceOpts),
+            ...autoCorrectWorkspaceHttps(this._spec.workspace, this._spec.workspaceOpts),
             ...preflightWorkspacePush(this._spec.workspace, phases),
             ...preflightPlanDeadlock(phases),
-            ...preflightMissingAllowedPaths(phases),
-            ...preflightAutoMapAC(phases, this._spec.acceptanceCriteria ?? {}),
+            ...autoCorrectMissingAllowedPaths(phases),
+            ...autoMapAcceptanceCriteria(phases, this._spec.acceptanceCriteria ?? {}),
             ...preflightPromptPaths(phases), // must run after allowedPaths auto-correction
         ];
     }
