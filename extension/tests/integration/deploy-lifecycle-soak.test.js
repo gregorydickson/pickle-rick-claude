@@ -25,6 +25,71 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_SH = path.resolve(__dirname, '..', '..', '..', 'install.sh');
 
+/**
+ * Samples the deployed package.json every intervalMs until deadline and returns the trailing
+ * run of divergent reads. A read and a parse are ONE sample: an unreadable file and an
+ * unparsable one are the same inconclusive observation, so they share one counter and one
+ * reset. Resetting between the two steps made a persistently torn file look conclusive on
+ * every sample, and the soak went green without ever reading a version.
+ */
+async function watchDeployedVersion({ pkgjsonPath, expectedVersion, deadline, intervalMs }) {
+    let inconclusiveCount = 0;
+    const divergentEvents = [];
+
+    while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, intervalMs));
+
+        let parsed;
+        try { parsed = JSON.parse(fs.readFileSync(pkgjsonPath, 'utf8')); } catch (err) {
+            inconclusiveCount++;
+            if (inconclusiveCount >= 3) {
+                const msg = err instanceof Error ? err.message : String(err);
+                throw new Error(`INCONCLUSIVE_READS_TIMEOUT: 3+ consecutive read/parse failures (last: ${msg})`);
+            }
+            continue;
+        }
+        inconclusiveCount = 0;
+
+        if (parsed.version !== expectedVersion) {
+            divergentEvents.push({ ts: Date.now(), observed: parsed.version, expected: expectedVersion });
+            if (divergentEvents.length >= 3) {
+                const first = divergentEvents[0].ts;
+                const last = divergentEvents[divergentEvents.length - 1].ts;
+                if (last - first > 25 * 60 * 1000) {
+                    throw new Error(
+                        `VERSION_DRIFT_OBSERVED: ${divergentEvents.length} reads returned ` +
+                        `${divergentEvents[0].observed} instead of ${expectedVersion}, ` +
+                        `spread over ${Math.round((last - first) / 60000)} min`,
+                    );
+                }
+            }
+        } else {
+            divergentEvents.length = 0;
+        }
+    }
+    return divergentEvents;
+}
+
+// Runs without RUN_EXPENSIVE_TESTS: it drives the sampler, not a soak, and takes milliseconds.
+test('deploy-lifecycle soak sampler: a persistently unparsable package.json is inconclusive, not green', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-soak-sampler-')));
+    try {
+        const pkgjsonPath = path.join(dir, 'package.json');
+        fs.writeFileSync(pkgjsonPath, '{"version": "1.2.3"');
+        await assert.rejects(
+            watchDeployedVersion({ pkgjsonPath, expectedVersion: '1.2.3', deadline: Date.now() + 2000, intervalMs: 5 }),
+            /INCONCLUSIVE_READS_TIMEOUT/,
+        );
+
+        // Negative control: the same sampler over a readable, matching file completes clean.
+        fs.writeFileSync(pkgjsonPath, '{"version": "1.2.3"}');
+        const events = await watchDeployedVersion({ pkgjsonPath, expectedVersion: '1.2.3', deadline: Date.now() + 50, intervalMs: 5 });
+        assert.deepEqual(events, []);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 * 3600 * 1000 }, async (t) => {
     if (!process.env.RUN_EXPENSIVE_TESTS) {
         t.skip('set RUN_EXPENSIVE_TESTS=1 to run soak canary');
@@ -140,49 +205,7 @@ test('deploy-lifecycle soak: package.json version remains stable', { timeout: 2 
     const startedAt = Date.now();
     const deadline = startedAt + soakMs;
 
-    let inconclusiveCount = 0;
-    const divergentEvents = [];
-
-    while (Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, intervalMs));
-
-        let raw;
-        try { raw = fs.readFileSync(pkgjsonPath, 'utf8'); } catch {
-            inconclusiveCount++;
-            if (inconclusiveCount >= 3) {
-                throw new Error('INCONCLUSIVE_READS_TIMEOUT: 3+ consecutive read failures');
-            }
-            continue;
-        }
-        inconclusiveCount = 0;
-
-        let parsed;
-        try { parsed = JSON.parse(raw); } catch {
-            inconclusiveCount++;
-            if (inconclusiveCount >= 3) {
-                throw new Error('INCONCLUSIVE_READS_TIMEOUT: 3+ consecutive JSON parse failures');
-            }
-            continue;
-        }
-        inconclusiveCount = 0;
-
-        if (parsed.version !== expectedVersion) {
-            divergentEvents.push({ ts: Date.now(), observed: parsed.version, expected: expectedVersion });
-            if (divergentEvents.length >= 3) {
-                const first = divergentEvents[0].ts;
-                const last = divergentEvents[divergentEvents.length - 1].ts;
-                if (last - first > 25 * 60 * 1000) {
-                    throw new Error(
-                        `VERSION_DRIFT_OBSERVED: ${divergentEvents.length} reads returned ` +
-                        `${divergentEvents[0].observed} instead of ${expectedVersion}, ` +
-                        `spread over ${Math.round((last - first) / 60000)} min`,
-                    );
-                }
-            }
-        } else {
-            divergentEvents.length = 0;
-        }
-    }
+    const divergentEvents = await watchDeployedVersion({ pkgjsonPath, expectedVersion, deadline, intervalMs });
 
     // Wall-clock oracle: a soak that returns far below SOAK_SECONDS did not soak. The loop
     // above already implies this structurally, but asserting it is the negative control that
