@@ -17,7 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync } from 'child_process';
-import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason } from '../types/index.js';
+import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, } from '../services/pickle-utils.js';
@@ -3979,10 +3979,25 @@ function readHandoffExitReason(statePath) {
         return null;
     }
 }
+/**
+ * #49: a success-class reason (`converged`, `success`) — derived from the two existing
+ * classifiers, no list of its own. A later phase's clean finalize writes one onto a pipeline that
+ * an earlier phase already failed or degraded, so a terminal stamp must never mistake it for the
+ * run's own verdict.
+ */
+export function isSuccessClassExitReason(reason) {
+    return classifyMicroverseDisposition(reason).reportAs === 'success'
+        || classifyExitReason(reason).verdict === 'success';
+}
 // AC-MWMO-D2-10: any non-empty exit_reason already recorded on this failure
 // (e.g. done_without_commit_evidence) — read so finalizePipeline can preserve
-// it instead of overwriting with the generic 'failed'.
+// it instead of overwriting with the generic 'failed'. A success-class reason is
+// never a recorded failure (#49), so it reads as "none recorded".
 function readExistingExitReason(statePath) {
+    const reason = readRawExitReason(statePath);
+    return reason !== null && !isSuccessClassExitReason(reason) ? reason : null;
+}
+function readRawExitReason(statePath) {
     try {
         const reason = sm.read(statePath).exit_reason;
         return typeof reason === 'string' && reason.trim() ? reason : null;
@@ -3994,7 +4009,8 @@ function readExistingExitReason(statePath) {
 // Same precedent as the phaseIncomplete/handoffStop branch in
 // finalizePipeline: a specific reason already stamped on this failure (e.g.
 // done_without_commit_evidence) is preserved rather than overwritten by the
-// generic 'failed'. Only stamp 'failed' when no reason was recorded.
+// generic 'failed'. Only stamp 'failed' when no reason was recorded — and a
+// success-class reason is not a recorded reason (#49).
 function finalizeFailedPipeline(statePath) {
     finalizeTerminalState(statePath, readExistingExitReason(statePath) ? { step: 'completed' } : { step: 'completed', exitReason: 'failed' });
 }
@@ -4086,9 +4102,17 @@ function buildPipelineTerminalBanner(effectiveFailed) {
  * can clobber it before this runs.
  */
 function finalizeNonSuccessTerminal(statePath, phaseIncomplete, phaseIncompleteReason) {
-    finalizeTerminalState(statePath, phaseIncomplete && phaseIncompleteReason
-        ? { step: 'completed', exitReason: phaseIncompleteReason }
-        : { step: 'completed' });
+    finalizeTerminalState(statePath, nonSuccessTerminalOpts(statePath, phaseIncomplete, phaseIncompleteReason));
+}
+// #49: with no captured reason the on-disk one is preserved (a handoff reason must survive), except
+// a success-class or `completed` stamp a later phase left behind — that is never this arm's verdict.
+function nonSuccessTerminalOpts(statePath, phaseIncomplete, phaseIncompleteReason) {
+    if (phaseIncomplete && phaseIncompleteReason)
+        return { step: 'completed', exitReason: phaseIncompleteReason };
+    const onDisk = readRawExitReason(statePath);
+    return onDisk !== null && (onDisk === 'completed' || isSuccessClassExitReason(onDisk))
+        ? { step: 'completed', exitReason: 'failed' }
+        : { step: 'completed' };
 }
 /**
  * The three verdict terms every downstream reader shares, derived once.
