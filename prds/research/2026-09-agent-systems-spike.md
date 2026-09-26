@@ -2,6 +2,8 @@
 
 Date: 2026-09-24 · Scope: ~75 min desk research + refinement ticks · Informs: GitHub #43 (`--teams` / review partitioning), GitHub #5 (persistent knowledge, worktree-as-proposal, state-from-git)
 
+**⚠ Corpus bias (operator, 2026-09-26): every [M, this repo] TIMING in this report comes from Pickle Rick building ITSELF — small tickets, a local test suite, short runs. Field runs on other repos last HOURS in the pickle phase alone and are not represented. Treat all phase/lifecycle durations here as self-hosted only; decisions about build or review time need field measurements (`prds/research/tools/field-timing.py`).**
+
 **Evidence labels:** **[M]** measured in a paper or independent benchmark · **[M, this repo]** measured here, command given · **[Mv]** measured by the vendor on its own system · **[C]** claim without published method · **[D]** design description only.
 
 ## 1. Summary
