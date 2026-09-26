@@ -1385,6 +1385,10 @@ export function writePipelineStatus(sessionDir, status, details = {}) {
     if (typeof advisoryFindings === 'number') {
         payload.citadel_advisory_findings = advisoryFindings;
     }
+    const nonConvergent = carry('non_convergent');
+    if (typeof nonConvergent === 'number') {
+        payload.non_convergent = nonConvergent;
+    }
     const tmpPath = `${statusPath}.tmp.${process.pid}`;
     fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2));
     fs.renameSync(tmpPath, statusPath);
@@ -3494,6 +3498,7 @@ function writeRunningStatus(runtime, counters, currentPhase) {
         total_phases: runtime.config.phases.length,
         phase_skips: counters.phaseSkips,
         phase_dispositions: counters.phaseDispositions,
+        non_convergent: counters.nonConvergent,
     });
 }
 /** Non-negative integer or 0 — a malformed count must never seed a counter. */
@@ -3544,14 +3549,13 @@ export function readResumePhasePlan(runtime) {
             completed: resumeCount(prior.completed_phases),
             skipped: resumeCount(prior.skipped_phases),
             phaseSkips: resumeStringRecord(prior.phase_skips),
-            // Every `nonConvergent` raise writes a `phaseDispositions[phase]` entry beside it — all
-            // four sites do (the microverse non-convergent branch, the judge-exhausted gate, the
-            // Done-over-red withholding, the post-final-degraded withholding) and nothing writes a
-            // disposition WITHOUT raising the count — so the persisted map is the faithful record of
-            // the term and needs no second persisted field. Only `> 0` is ever tested by the verdict;
-            // a phase that raised the count several times under one disposition key reads as one here
-            // rather than as zero, which is the half that matters.
-            nonConvergent: Object.keys(phaseDispositions).length,
+            // AP-BIN-ITER2-01: the persisted count, not the disposition count — a disposition is
+            // written WITHOUT a raise on the converged-with-unmeasured and judge_timeout pass arms, so
+            // counting keys withheld a success the live run reported. Only a status from an older
+            // build (no `non_convergent`) falls back to counting keys, the safe direction.
+            nonConvergent: typeof prior.non_convergent === 'number'
+                ? resumeCount(prior.non_convergent)
+                : Object.keys(phaseDispositions).length,
             phaseDispositions,
         },
     };
