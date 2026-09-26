@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(__dirname, '../../bin/pipeline-runner.js');
+const CLI_TIMEOUT_MS = 60_000;
 
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -86,6 +87,7 @@ test('dirty-tree guard ignores tracked dirty files that match .gitignore', () =>
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     assert.equal(result.status, 0, result.stderr);
@@ -106,6 +108,7 @@ test('dirty-tree guard fatal stderr lists each blocking file on its own line', (
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     assert.equal(result.status, 1);
@@ -138,6 +141,7 @@ test('dirty-tree guard exits 0 for dirty files listed in extension/.pipeline-run
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     assert.equal(result.status, 0, result.stderr);
@@ -164,6 +168,7 @@ test('dirty-tree guard ignores nested docs/ path at any depth (AC-PFNP-8-1)', ()
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     assert.equal(result.status, 0, `expected exit 0 but got ${result.status}:\n${result.stderr}`);
@@ -186,6 +191,7 @@ test('dirty-tree guard blocks nested non-docs dirty file (AC-PFNP-8-2)', () => {
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     assert.equal(result.status, 1, `expected exit 1 but got ${result.status}`);

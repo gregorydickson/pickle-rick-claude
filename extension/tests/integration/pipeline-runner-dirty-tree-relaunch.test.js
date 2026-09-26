@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(__dirname, '../../bin/pipeline-runner.js');
+const CLI_TIMEOUT_MS = 60_000;
 
 function tmpDir(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
@@ -98,6 +99,7 @@ test('relaunch boundary: dirty tracked file is reset, pipeline-runner starts cle
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     // Pipeline-runner must NOT fatal on dirty-tree
@@ -144,6 +146,7 @@ test('relaunch boundary: unrelated exempt tracked changes in docs/ are preserved
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     // No dirty-tree fatal
@@ -182,6 +185,7 @@ test('relaunch boundary: new untracked file from worker is removed', () => {
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     // No dirty-tree fatal
@@ -210,6 +214,7 @@ test('relaunch boundary: interrupted ticket remains retryable (current_ticket pr
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     assert.doesNotMatch(result.stderr, /Working tree at .* is dirty/);
@@ -237,6 +242,7 @@ test('non-relaunch: dirty tree still blocks startup when manager_relaunch_count 
       cwd: repo,
       encoding: 'utf8',
       env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+      timeout: CLI_TIMEOUT_MS,
     });
 
     // Guard still applies at first launch
