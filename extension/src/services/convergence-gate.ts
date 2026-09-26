@@ -22,11 +22,14 @@ export class GateError extends Error {
   }
 }
 
+/** `ruleOrCode` of every timeout pseudo-failure, and the `kind` of `GateTimeoutError`. */
+export const GATE_CHECK_TIMEOUT_CODE = 'GATE_CHECK_TIMEOUT';
+
 export class GateTimeoutError extends GateError {
   readonly check: string;
   readonly timeout_ms: number;
   constructor(check: string, timeout_ms: number) {
-    super('GATE_CHECK_TIMEOUT', `${check} timed out after ${timeout_ms}ms`);
+    super(GATE_CHECK_TIMEOUT_CODE, `${check} timed out after ${timeout_ms}ms`);
     this.name = 'GateTimeoutError';
     this.check = check;
     this.timeout_ms = timeout_ms;
@@ -1265,8 +1268,8 @@ function escalateCheckStatus(prev: GateCheckStatus | undefined, next: GateCheckS
  * never downgrade it — the old signal is a subset of this one by construction.
  *
  * `'skipped'` is excluded ON PURPOSE. It means the check was never applicable (no command in the
- * project-type map, or a test script `canRunTestScript` refuses to spawn), which is a decision,
- * not a failed measurement. Folding it in here would defer every iteration of any repo whose
+ * project-type map, or a package script `canRunCheckScript` refuses to spawn — absent, or an
+ * unsafe `test` script), which is a decision, not a failed measurement. Folding it in here would defer every iteration of any repo whose
  * `test` script the gate declines — a new abort condition, not a closed hole.
  *
  * AP-EXT-ITER7-01 exports it: `runInterfaceChangeSweep` needs the SAME fact about the in-memory
@@ -1586,18 +1589,22 @@ export type TestScriptSafety =
   | { runnable: true }
   | { runnable: false; script: string; unsafeLeaf: string | null };
 
-export async function classifyTestScriptSafety(projectType: string, dir: string): Promise<TestScriptSafety> {
-  if (!['pnpm', 'npm', 'yarn'].includes(projectType)) return { runnable: true };
-  const pkgJsonPath = path.join(dir, 'package.json');
-  let scriptContent = '';
-  let scripts: Record<string, string> = {};
+const PACKAGE_MANAGER_TYPES = ['pnpm', 'npm', 'yarn'];
+
+/** The package's `package.json` `scripts`, or `null` when the file is absent or unparseable. */
+async function readPackageScripts(dir: string): Promise<Record<string, string> | null> {
   try {
-    const raw = await fs.promises.readFile(pkgJsonPath, 'utf-8');
-    scripts = (JSON.parse(raw) as { scripts?: Record<string, string> }).scripts ?? {};
-    scriptContent = scripts.test ?? '';
+    const raw = await fs.promises.readFile(path.join(dir, 'package.json'), 'utf-8');
+    return (JSON.parse(raw) as { scripts?: Record<string, string> }).scripts ?? {};
   } catch {
-    // file absent or unreadable — leave scriptContent empty
+    return null;
   }
+}
+
+export async function classifyTestScriptSafety(projectType: string, dir: string): Promise<TestScriptSafety> {
+  if (!PACKAGE_MANAGER_TYPES.includes(projectType)) return { runnable: true };
+  const scripts = (await readPackageScripts(dir)) ?? {};
+  const scriptContent = scripts.test ?? '';
 
   const leafCommands = resolveDelegatedScriptLeaves('test', scripts);
   const commandsToInspect = leafCommands.length > 0 ? leafCommands : [scriptContent].filter((value) => value.length > 0);
@@ -1607,8 +1614,25 @@ export async function classifyTestScriptSafety(projectType: string, dir: string)
   return { runnable: false, script: scriptContent, unsafeLeaf: null };
 }
 
-async function canRunTestScript(check: GateCheck, projectType: ProjectType, dir: string, emit: GateEmit): Promise<boolean> {
-  if (check !== 'tests') return true;
+/**
+ * The pre-spawn predicate: a package-manager script the package does not define is never spawned
+ * (spawning it yields only `ERR_PNPM_NO_SCRIPT`, an absolute-path failure row and a `'failed'`
+ * status). An unparseable `package.json` reads as "unknown" and still spawns, so a real breakage is
+ * reported rather than skipped. `tests` is additionally screened by `classifyTestScriptSafety`.
+ */
+async function canRunCheckScript(
+  check: GateCheck,
+  cmd: string,
+  projectType: ProjectType,
+  dir: string,
+  emit: GateEmit,
+): Promise<boolean> {
+  if (check !== 'tests') {
+    const script = PACKAGE_MANAGER_TYPES.includes(projectType) ? delegatedScriptName(cmd) : null;
+    if (script === null) return true;
+    const scripts = await readPackageScripts(dir);
+    return scripts === null || Object.hasOwn(scripts, script);
+  }
   const safety = await classifyTestScriptSafety(projectType, dir);
   if (safety.runnable) return true;
   if (safety.unsafeLeaf) {
@@ -1707,7 +1731,7 @@ async function runGateCheck(
         check,
         file: '<timeout>',
         line: 0,
-        ruleOrCode: 'GATE_CHECK_TIMEOUT',
+        ruleOrCode: GATE_CHECK_TIMEOUT_CODE,
         message: `${check} timed out after ${effectiveMs}ms`,
         severity: 'error',
         occurrence_index: 0,
@@ -1750,7 +1774,7 @@ async function collectGateFailures(
         checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
         continue;
       }
-      if (!(await canRunTestScript(check, projectType, dir, emit))) {
+      if (!(await canRunCheckScript(check, cmd, projectType, dir, emit))) {
         checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
         continue;
       }
@@ -1773,7 +1797,7 @@ function timeoutFailure(check: GateCheck): GateFailure {
     check,
     file: '<timeout>',
     line: 0,
-    ruleOrCode: 'GATE_CHECK_TIMEOUT',
+    ruleOrCode: GATE_CHECK_TIMEOUT_CODE,
     message: `cumulative gate timeout exceeded`,
     severity: 'error',
     occurrence_index: 0,

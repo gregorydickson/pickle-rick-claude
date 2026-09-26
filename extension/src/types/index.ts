@@ -1902,6 +1902,14 @@ export interface MicroverseSessionState {
    * predating this field.
    */
   stall_disposition?: StallDisposition;
+  /**
+   * B-CAPGATE: the post-convergence cap checks that did NOT measure (timeout, thrown gate, or a
+   * check the total deadline skipped) on the run that converged anyway. Set by
+   * `recordCapUnmeasured`; read at phase finalize, which reports it as a
+   * `converged_with_unmeasured:<checks>` disposition. Additive/optional — absent means "every cap
+   * check measured" and on sessions predating this field.
+   */
+  cap_unmeasured_checks?: string[];
 }
 
 // ---------------------------------------------------------------------------

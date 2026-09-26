@@ -431,6 +431,9 @@ test('AC-CF-17: no new microverse-state field, exit reason, or counter', () => {
     // written once at the stalled_below_target exit only — a sanctioned addition for a new
     // mechanism, not the drift this pin exists to catch.
     'stall_disposition',
+    // B-CAPGATE (c308e582): the cap checks that did not measure, additive/optional, read once at
+    // phase finalize — a sanctioned addition for a new mechanism, not the drift this pin exists to catch.
+    'cap_unmeasured_checks',
   ], 'the fix reuses shipped state — a new field here means a new mechanism was added');
 
   const runner = readSrc('bin/microverse-runner.ts');

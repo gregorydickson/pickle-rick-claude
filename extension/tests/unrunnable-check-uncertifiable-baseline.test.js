@@ -95,17 +95,22 @@ function makeMv(overrides = {}) {
   };
 }
 
-// R-SZGB-D-A fixture: a real npm project whose 'typecheck' script is ABSENT (so
-// `npm run typecheck` fails with `npm error Missing script`), while 'lint' and 'test' both
-// run and exit 0 — proving the uncertifiable classification is driven by the missing
-// typecheck check specifically, not by a wholesale unrunnable project.
-function writeMissingTypecheckScriptFixtureRepo(dir) {
+// R-SZGB-D-A fixture: a real npm project whose 'typecheck' script EXISTS but whose command is a
+// binary that is not installed (`npm run typecheck` -> `sh: ...: command not found`, exit 127),
+// while 'lint' and 'test' both run and exit 0 — proving the uncertifiable classification is driven
+// by the unrunnable typecheck check specifically, not by a wholesale unrunnable project. The script
+// must be PRESENT: an ABSENT script is never spawned (`canRunCheckScript`) and records `'skipped'`,
+// a decision rather than a failed measurement.
+const UNINSTALLED_BINARY_COMMAND = 'szgbd-uninstalled-binary-xyz';
+
+function writeUnrunnableTypecheckFixtureRepo(dir) {
   fs.writeFileSync(
     path.join(dir, 'package.json'),
     JSON.stringify({
       name: 'szgbd-gate-fixture',
       private: true,
       scripts: {
+        typecheck: UNINSTALLED_BINARY_COMMAND,
         lint: 'node -e "process.exit(0)"',
         test: 'node -e "process.exit(0)"',
       },
@@ -121,17 +126,17 @@ const BASE_OPTS = {
 };
 
 // ===========================================================================
-// AC-SZGBD-01 (headline): a missing npm typecheck script marks the baseline
+// AC-SZGBD-01 (headline): an unrunnable npm typecheck command marks the baseline
 // uncertifiable; the certification consumer refuses to certify convergence even on a
 // clean/no-new-regression iteration.
 // ===========================================================================
 
-test('AC-SZGBD-01: a missing npm typecheck script marks the baseline uncertifiable and refuses to certify a clean iteration', async () => {
+test('AC-SZGBD-01: an unrunnable npm typecheck command marks the baseline uncertifiable and refuses to certify a clean iteration', async () => {
   const workingDir = makeGitRepo('szgbd-uncert-repo-');
   const sessionDir = mkTmp('szgbd-uncert-session-');
 
   try {
-    writeMissingTypecheckScriptFixtureRepo(workingDir);
+    writeUnrunnableTypecheckFixtureRepo(workingDir);
     commitAll(workingDir, 'initial clean state');
 
     await ensurePerIterationGateBaseline({
@@ -147,7 +152,7 @@ test('AC-SZGBD-01: a missing npm typecheck script marks the baseline uncertifiab
     assert.deepEqual(
       baseline.check_status,
       { typecheck: 'failed', lint: 'ran', tests: 'ran' },
-      'check_status must be populated from what ACTUALLY ran (typecheck spawned but classified unrunnable => failed; ' +
+      'check_status must be populated from what ACTUALLY ran (typecheck spawned, command not found, classified unrunnable => failed; ' +
         'lint/tests spawned and completed => ran), never copied wholesale from the requested opts.checks set',
     );
 
@@ -195,7 +200,7 @@ test('AC-SZGBD-02: a tsc-RED change under an unrunnable typecheck check never fo
   fs.writeFileSync(statePath, JSON.stringify({ backend: 'claude', active: true }));
 
   try {
-    writeMissingTypecheckScriptFixtureRepo(workingDir);
+    writeUnrunnableTypecheckFixtureRepo(workingDir);
     commitAll(workingDir, 'initial clean state');
 
     await ensurePerIterationGateBaseline({
@@ -506,7 +511,7 @@ test('AP-EXT-ITER6-01 control: the same fixture under a realistic budget stays C
 });
 
 // `'skipped'` must stay OUT of the predicate. This repo's own `test` script is refused by
-// canRunTestScript, so folding 'skipped' in would defer every anatomy-park iteration — a new
+// canRunCheckScript, so folding 'skipped' in would defer every anatomy-park iteration — a new
 // abort condition rather than a closed hole.
 test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused test script stays certifiable', async () => {
   const workingDir = makeGitRepo('apext6-skipped-repo-');
@@ -521,7 +526,7 @@ test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused te
         scripts: {
           typecheck: 'node -e "process.exit(0)"',
           lint: 'node -e "process.exit(0)"',
-          // `integration` is in UNSAFE_TEST_SCRIPT_REGEX, so canRunTestScript refuses to spawn it.
+          // `integration` is in UNSAFE_TEST_SCRIPT_REGEX, so canRunCheckScript refuses to spawn it.
           test: 'node -e "process.exit(0)" --integration',
         },
       }, null, 2),
@@ -562,12 +567,12 @@ test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused te
 // data/gate-commands.json, so past the deadline they still SPAWN with
 // `Math.min(perCheckMs, remaining)` — negative, which fires the settle timer immediately — and
 // land on `'failed'` regardless. `tests` is the ONE check whose fall-through is `'skipped'`
-// (`canRunTestScript` refuses a package with no `test` script), which is why the cumulative-cap
+// (`canRunCheckScript` refuses a package with no `test` script), which is why the cumulative-cap
 // case in convergence-gate-hang-guard.test.js — three slow scripts, all spawnable — cannot
 // distinguish the arm from its absence.
 // ===========================================================================
 
-// A real npm project with NO `test` script (so `canRunTestScript` refuses it) and a `lint` that
+// A real npm project with NO `test` script (so `canRunCheckScript` refuses it) and a `lint` that
 // completes immediately — the control proves both facts, so `'skipped'`/`'ran'` in the headline
 // rows are the deadline's doing and not the fixture's.
 function writeNoTestScriptFixtureRepo(dir) {
@@ -578,7 +583,7 @@ function writeNoTestScriptFixtureRepo(dir) {
       private: true,
       scripts: {
         // `typecheck` completes immediately so the ONLY uncertifiable signal available to the
-        // headline row is the cutoff itself — a fixture with no typecheck script makes the
+        // headline row is the cutoff itself — a fixture whose typecheck cannot run makes the
         // per-iteration gate inside `handleWorkerManagedIteration` uncertifiable on its own and
         // the convergence assertion would pass with the cutoff arm deleted.
         typecheck: 'node -e "process.exit(0)"',
@@ -746,12 +751,12 @@ test('AP-EXT-ITER127-02 control: the same fixture under a realistic total budget
 //
 // Measured on the shipped compiled module: with the merge reduced to `return next`, this
 // exact fixture persists `project_type: "npm"` and `check_status: {typecheck: "ran"}` —
-// a CERTIFIABLE baseline claiming a typecheck ran in a package that has no typecheck
-// script — while the operator-facing "baseline uncertifiable" line still prints, because
+// a CERTIFIABLE baseline claiming a typecheck ran in a package whose typecheck command
+// cannot run — while the operator-facing "baseline uncertifiable" line still prints, because
 // that log rides the separate `unrunnableCheck` field. The whole 160-case convergence-gate
 // suite stays green through it.
 //
-// The missing-script package sits in the MIDDLE of the workspace so the pin is order-
+// The unrunnable-command package sits in the MIDDLE of the workspace so the pin is order-
 // INDEPENDENT: under a last-write-wins merge the surviving status is a clean sibling's
 // `'ran'` whichever direction `targetDirs` is walked.
 // ===========================================================================
@@ -776,10 +781,13 @@ function writeWorkspaceTypecheckFixtureRepo(dir, markerPath, missingPackage) {
   for (const name of WORKSPACE_TYPECHECK_PACKAGES) {
     const pkgDir = path.join(dir, 'packages', name);
     fs.mkdirSync(pkgDir, { recursive: true });
-    const scripts = {};
-    if (name !== missingPackage) {
-      scripts.typecheck = `node -e "require('fs').appendFileSync('${markerPath}', '${name}\\n')"`;
-    }
+    // The package under test carries a typecheck script that EXISTS but cannot run; an absent
+    // script would never be spawned and would record `'skipped'`, not an unmeasured check.
+    const scripts = {
+      typecheck: name === missingPackage
+        ? UNINSTALLED_BINARY_COMMAND
+        : `node -e "require('fs').appendFileSync('${markerPath}', '${name}\\n')"`,
+    };
     fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name, scripts }, null, 2));
   }
 }
@@ -823,7 +831,7 @@ test('AP-EXT-ITER127-01: a sibling package running the check clean must not eras
       baseline.check_status.typecheck,
       'failed',
       'the merge across target dirs is escalate-only: a clean sibling package is not evidence ' +
-        'that the check ran in the package that has no such script',
+        'that the check ran in the package whose typecheck command cannot run',
     );
     assert.equal(
       baseline.project_type,

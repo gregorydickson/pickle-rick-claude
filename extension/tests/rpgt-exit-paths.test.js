@@ -34,9 +34,10 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import * as microverse from '../bin/microverse-runner.js';
-import { logPhaseHaltReason } from '../bin/pipeline-runner.js';
+import { logPhaseHaltReason, finalizePhaseSuccess } from '../bin/pipeline-runner.js';
 import { runGate } from '../services/convergence-gate.js';
 import { finalizeGateMain } from '../bin/finalize-gate.js';
 
@@ -110,33 +111,48 @@ after(() => {
 
 const GATE_DEFERRED_REASON = 'per-iteration gate left unresolved regressions';
 
-function buildDeferralMv() {
+function buildDeferralMv(overrides = {}) {
     return {
         status: 'iterating',
         convergence_mode: 'worker',
         convergence_file: 'anatomy-park.json',
         convergence: { history: [], stall_counter: 0, stall_limit: 50 },
         iteration_regressions: 0,
+        ...overrides,
     };
 }
 
 // Drive the R-APXG-3 deferral cap through the exported handleIterationOutcome
-// boundary. Returns { exitReasons, gateFailedEvents } after `iterations` passes.
-async function driveConvergenceDeferral(workingDir, iterations) {
+// boundary. Returns { exitReasons, gateFailedEvents, deferralCount, logs, state, inspected }
+// after `iterations` passes.
+//
+// `opts` (all optional):
+//   prepareSession(sessionDir) — runs before the first pass (e.g. capture a gate baseline);
+//   mv                         — extra fields for the microverse state (e.g. allowed_paths);
+//   runGate                    — replaces the runner's `_deps.runGate` (a wrapper over the REAL gate
+//                                that forces a timeout, or a throwing double);
+//   inspect({sessionDir,state,logs}) — runs after the last pass, BEFORE the session dir is removed.
+async function driveConvergenceDeferral(workingDir, iterations, opts = {}) {
     const sessionDir = mkTmp('rpgt-conv-session-');
     const statePath = path.join(sessionDir, 'state.json');
     fs.writeFileSync(statePath, JSON.stringify({ backend: 'claude', active: true }));
+    // A prepareSession that returns `{ preIterSha, startCommit }` hands real shas to the cap's context,
+    // so a `since` sourced from either would resolve to a real commit instead of failing silently.
+    const setup = opts.prepareSession ? await opts.prepareSession(sessionDir) : undefined;
 
     const savedDeps = {
         runWorkerManagedIteration: microverse._deps.runWorkerManagedIteration,
         logActivity: microverse._deps.logActivity,
         getHeadSha: microverse._deps.getHeadSha,
         sleep: microverse._deps.sleep,
+        runGate: microverse._deps.runGate,
     };
 
     const gateFailedEvents = [];
+    const logs = [];
+    if (opts.runGate) { microverse._deps.runGate = opts.runGate; }
     microverse._deps.runWorkerManagedIteration = async () => ({
-        currentMv: buildDeferralMv(),
+        currentMv: buildDeferralMv(opts.mv),
         converged: false,
         reason: GATE_DEFERRED_REASON,
         selfRedOpen: false,
@@ -152,31 +168,34 @@ async function driveConvergenceDeferral(workingDir, iterations) {
         statePath,
         workingDir,
         iteration: 1,
-        preIterSha: 'a'.repeat(40),
+        preIterSha: setup?.preIterSha ?? 'a'.repeat(40),
         postIterSha: 'a'.repeat(40),
         consecutiveRateLimits: 0,
-        currentRunnerState: { backend: 'claude', min_iterations: 1 },
+        currentRunnerState: { backend: 'claude', min_iterations: 1, start_commit: setup?.startCommit },
         cgSettings: {
             enabled_convergence_files: ['anatomy-park.json'],
             regression_warning_threshold: 5,
             remediator_timeout_s: 60,
         },
-        log: () => {},
+        log: (line) => { logs.push(String(line)); },
     };
 
     const outcome = { completion: 'task_completed', timedOut: false };
     const exitReasons = [];
+    let state;
+    let inspected;
     try {
         for (let i = 0; i < iterations; i++) {
-            const state = buildDeferralMv();
+            state = buildDeferralMv(opts.mv);
             const result = await microverse.handleIterationOutcome(state, { raw: '', score: null }, ctx, outcome);
             exitReasons.push(result);
         }
+        if (opts.inspect) { inspected = await opts.inspect({ sessionDir, state, logs }); }
     } finally {
         Object.assign(microverse._deps, savedDeps);
         rm(sessionDir);
     }
-    return { exitReasons, gateFailedEvents, deferralCount: ctx.postConvergenceDeferralCount };
+    return { exitReasons, gateFailedEvents, deferralCount: ctx.postConvergenceDeferralCount, logs, state, inspected };
 }
 
 // ---------------------------------------------------------------------------
@@ -432,3 +451,282 @@ for (const exitPath of PATHS) {
     });
 }
 
+
+// ===========================================================================
+// #48 — the R-APXG-3 cap judges only failures that are NEW against the session baseline.
+//
+// Every row drives the REAL `runGate` over a real npm fixture through the exported
+// `handleIterationOutcome` boundary. Rows that need a measurement failure (a timeout, a throw)
+// swap the runner's `_deps.runGate` for a wrapper over the real gate (`_timeouts` forces a
+// genuine GATE_CHECK_TIMEOUT) or a throwing double.
+//
+// Each row that asserts a FIX also asserts its fixture is SENSITIVE — the same tree under the
+// pre-fix (strict) or widened (`since`, no `allowedPaths`) call goes RED — so no row can pass
+// vacuously against a fixture that could never fail.
+// ===========================================================================
+
+const CAP_CHECKS = ['typecheck', 'lint'];
+const CAP_LOG_NO_BASELINE = '[R-APXG-3] no baseline at';
+
+function gitIn(dir, ...args) {
+    return execFileSync(
+        'git',
+        ['-c', 'user.email=rpgt@example.invalid', '-c', 'user.name=rpgt', '-c', 'commit.gpgsign=false', ...args],
+        { cwd: dir, encoding: 'utf-8', timeout: 30_000 },
+    ).trim();
+}
+
+// A `typecheck` script that prints tsc-format failure lines and exits non-zero. The output is
+// static, so the SAME failures F reproduce on every run regardless of what the tree contains.
+function failingTypecheck(lines) {
+    return `node -e "console.log('${lines.join('\\n')}');process.exit(2)"`;
+}
+
+const PRE_EXISTING = 'src/a.ts(1,1): error TS2322: pre-existing';
+const INTRODUCED = 'src/b.ts(2,1): error TS2322: introduced';
+const OK_SCRIPT = 'node -e "process.exit(0)"';
+
+function writePackage(dir, scripts) {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        name: 'rpgt-baseline-fixture', version: '0.0.0', private: true, scripts,
+    }));
+}
+
+// npm fixture whose typecheck fails with F = [PRE_EXISTING]; optionally a real git repo (AC-1c).
+function makeFailingFixture({ git = false, typecheck = [PRE_EXISTING], lint = OK_SCRIPT } = {}) {
+    const dir = mkTmp('rpgt-f-');
+    writePackage(dir, { typecheck: failingTypecheck(typecheck), lint });
+    fs.mkdirSync(path.join(dir, 'src'));
+    fs.writeFileSync(path.join(dir, 'src', 'a.ts'), 'export const a = 1;\n');
+    if (git) {
+        gitIn(dir, 'init', '-q');
+        gitIn(dir, 'add', '-A');
+        gitIn(dir, 'commit', '-q', '-m', 'seed');
+    }
+    return dir;
+}
+
+// Two-package npm workspace: `a` (in scope) is clean, `b` (OUT of scope) fails its typecheck.
+function makeWorkspaceFixture() {
+    const dir = mkTmp('rpgt-ws-');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        name: 'rpgt-ws-root', version: '0.0.0', private: true, workspaces: ['packages/*'],
+    }));
+    for (const [name, typecheck] of [['a', OK_SCRIPT], ['b', failingTypecheck(['src/b.ts(1,1): error TS2322: out-of-scope'])]]) {
+        const pkg = path.join(dir, 'packages', name);
+        fs.mkdirSync(pkg, { recursive: true });
+        fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({
+            name: `pkg-${name}`, version: '0.0.0', scripts: { typecheck, lint: OK_SCRIPT },
+        }));
+    }
+    return dir;
+}
+
+// The REAL baseline capture the per-iteration gate performs (`capturePerIterationGateBaseline`).
+async function captureBaseline(dir, sessionDir, allowedPaths, timeouts) {
+    const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+    fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+    const captured = await runGate({
+        workingDir: dir, mode: 'baseline', scope: 'full', baselinePath, allowedPaths, checks: CAP_CHECKS, _timeouts: timeouts,
+    });
+    assert.equal(captured.status, 'green', 'baseline capture returns green');
+    assert.ok(fs.existsSync(baselinePath), 'baseline file written');
+    return baselinePath;
+}
+
+const realGate = (timeouts) => (gateOpts) => runGate({ ...gateOpts, _timeouts: timeouts });
+
+// After the cap converged, hand the in-memory state to the pipeline the way the runner's finalize
+// does (microverse.json + state.json) and return the counters `finalizePhaseSuccess` reports.
+function phaseCountersAfterConverge(sessionDir, state) {
+    fs.writeFileSync(path.join(sessionDir, 'microverse.json'), JSON.stringify({ ...state, status: 'converged', exit_reason: 'converged' }));
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
+        active: false, working_dir: '/tmp', step: 'anatomy-park', iteration: 1, max_iterations: 10,
+        max_time_minutes: 0, worker_timeout_seconds: 0, start_time_epoch: 1, completion_promise: null,
+        original_prompt: 't', current_ticket: null, history: [], started_at: new Date().toISOString(),
+        session_dir: sessionDir, tmux_mode: true, backend: 'claude', exit_reason: 'converged',
+    }));
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const runtime = { sessionDir, statePath: path.join(sessionDir, 'state.json'), workingDir: '/tmp', config: { phases: [{}, {}] }, log: () => {} };
+    finalizePhaseSuccess(runtime, counters, path.join(sessionDir, 'pipeline-cancel'), 'anatomy-park', 0, () => {});
+    return counters;
+}
+
+const TRUSTED_LINE = 'convergence signal trusted';
+
+describe('convergence-exit: baseline-aware cap (#48)', () => {
+    test('AC-1a: the cap sees exactly the baselined failures F => converged (strict at the cap would go RED)', async () => {
+        const dir = makeFailingFixture();
+        try {
+            let baselineBefore;
+            const { exitReasons, gateFailedEvents, logs, state, inspected } = await driveConvergenceDeferral(dir, 3, {
+                prepareSession: async (sessionDir) => {
+                    baselineBefore = fs.readFileSync(await captureBaseline(dir, sessionDir), 'utf-8');
+                },
+                inspect: ({ sessionDir }) => fs.readFileSync(path.join(sessionDir, 'gate', 'baseline.json'), 'utf-8'),
+            });
+            const strict = await runGate({ workingDir: dir, mode: 'strict', scope: 'full', checks: CAP_CHECKS });
+            assert.equal(strict.status, 'red', 'fixture control: the pre-fix strict cap gate IS red over F');
+            assert.equal(exitReasons[2], 'converged', 'pre-existing failures F must not end the phase in error');
+            assert.equal(gateFailedEvents.length, 0, 'no tsc_gate_failed for a tree with no NEW failure');
+            assert.equal(inspected, baselineBefore, 'the cap never rewrites the session baseline');
+            assert.ok(!logs.some((l) => l.includes(CAP_LOG_NO_BASELINE)), 'a present baseline takes the baseline path, not the strict fallback');
+            // A MEASURED green is the one verdict that carries no caveat and claims the trusted exit.
+            assert.equal(state.cap_unmeasured_checks, undefined, 'a green cap records no unmeasured caveat');
+            assert.ok(logs.some((l) => l.includes(TRUSTED_LINE)), 'a green cap logs the trusted-exit line');
+        } finally { rm(dir); }
+    });
+
+    test('AC-1c: an edit committed to F\'s own file that leaves F identical => converged (NO `since` at the cap)', async () => {
+        const dir = makeFailingFixture({ git: true });
+        try {
+            let preEdit;
+            let baselinePath;
+            const { exitReasons, inspected } = await driveConvergenceDeferral(dir, 3, {
+                prepareSession: async (sessionDir) => {
+                    baselinePath = await captureBaseline(dir, sessionDir);
+                    preEdit = gitIn(dir, 'rev-parse', 'HEAD');
+                    fs.appendFileSync(path.join(dir, 'src', 'a.ts'), '// touched by the phase; failure F is unchanged\n');
+                    gitIn(dir, 'add', '-A');
+                    gitIn(dir, 'commit', '-q', '-m', 'phase edit to the failing file');
+                    return { preIterSha: preEdit, startCommit: preEdit };
+                },
+                // The phase-wide `since` is file-axis: it keeps every failure in a file the phase edited.
+                inspect: () => runGate({
+                    workingDir: dir, mode: 'baseline', scope: 'full', baselinePath, since: preEdit, checks: CAP_CHECKS,
+                }),
+            });
+            assert.equal(inspected.status, 'red', 'fixture control: adding `since` makes F self-introduced, i.e. RED');
+            assert.equal(exitReasons[2], 'converged', 'the cap must not pass `since`');
+        } finally { rm(dir); }
+    });
+
+    test('AC-1d: a failing OUT-of-scope workspace package with a baseline captured under allowedPaths => converged', async () => {
+        const dir = makeWorkspaceFixture();
+        const allowedPaths = ['packages/a/src/x.ts'];
+        try {
+            let baselinePath;
+            const { exitReasons, inspected } = await driveConvergenceDeferral(dir, 3, {
+                mv: { allowed_paths: allowedPaths },
+                prepareSession: async (sessionDir) => { baselinePath = await captureBaseline(dir, sessionDir, allowedPaths); },
+                // Dropping allowedPaths widens the gate to package b, whose failure is not in the baseline.
+                inspect: () => runGate({ workingDir: dir, mode: 'baseline', scope: 'full', baselinePath, checks: CAP_CHECKS }),
+            });
+            assert.equal(inspected.status, 'red', 'fixture control: without allowedPaths the out-of-scope package is RED');
+            assert.equal(exitReasons[2], 'converged', 'the cap must scope itself with the same allowed_paths the baseline used');
+        } finally { rm(dir); }
+    });
+
+    test('AC-2: F plus one NEW failure at the cap => error + tsc_gate_failed (a new failure still blocks)', async () => {
+        const dir = makeFailingFixture();
+        try {
+            const { exitReasons, gateFailedEvents } = await driveConvergenceDeferral(dir, 3, {
+                prepareSession: async (sessionDir) => {
+                    await captureBaseline(dir, sessionDir);
+                    writePackage(dir, { typecheck: failingTypecheck([PRE_EXISTING, INTRODUCED]), lint: OK_SCRIPT });
+                },
+            });
+            assert.equal(exitReasons[2], 'error');
+            assert.equal(gateFailedEvents.length, 1);
+        } finally { rm(dir); }
+    });
+
+    test('AC-6: no baseline + RED tree => error, the baseline file is STILL absent, the strict fallback is logged', async () => {
+        const dir = makeRedWorkingDir();
+        try {
+            const { exitReasons, inspected } = await driveConvergenceDeferral(dir, 3, {
+                inspect: ({ sessionDir, logs }) => ({
+                    baselineExists: fs.existsSync(path.join(sessionDir, 'gate', 'baseline.json')),
+                    logged: logs.some((l) => l.includes(CAP_LOG_NO_BASELINE) && l.includes(path.join(sessionDir, 'gate', 'baseline.json'))),
+                }),
+            });
+            assert.equal(exitReasons[2], 'error');
+            assert.equal(inspected.baselineExists, false, 'the cap never creates gate/baseline.json');
+            assert.equal(inspected.logged, true, 'the strict fallback names the missing baseline path');
+        } finally { rm(dir); }
+    });
+
+    test('AC-3: only GATE_CHECK_TIMEOUT rows remain => converged, disclosed as converged_with_unmeasured (not a failure)', async () => {
+        const dir = makeFailingFixture();
+        try {
+            const { exitReasons, gateFailedEvents, logs, state, inspected } = await driveConvergenceDeferral(dir, 3, {
+                prepareSession: (sessionDir) => captureBaseline(dir, sessionDir),
+                runGate: realGate({ perCheck: { typecheck: 1 } }),
+                inspect: ({ sessionDir, state: st }) => phaseCountersAfterConverge(sessionDir, st),
+            });
+            assert.equal(exitReasons[2], 'converged');
+            assert.equal(gateFailedEvents.length, 0);
+            assert.deepEqual(state.cap_unmeasured_checks, ['typecheck'], 'only the check that timed out is unmeasured; lint ran');
+            assert.ok(!logs.some((l) => l.includes(TRUSTED_LINE)), 'an unmeasured cap must not claim the bare trusted-exit line');
+            assert.equal(inspected.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck');
+            assert.equal(inspected.nonConvergent, 0, 'reported, not counted non-convergent');
+        } finally { rm(dir); }
+    });
+
+    test('AC-3: a baseline captured while typecheck timed out does not subtract the cap\'s own timeout into a bare green', async () => {
+        const dir = makeFailingFixture();
+        const timeouts = { perCheck: { typecheck: 1 } };
+        try {
+            const { exitReasons, logs, state, inspected } = await driveConvergenceDeferral(dir, 3, {
+                prepareSession: async (sessionDir) => {
+                    const baseline = JSON.parse(fs.readFileSync(await captureBaseline(dir, sessionDir, undefined, timeouts), 'utf-8'));
+                    assert.ok(baseline.failures.some((f) => f.ruleOrCode === 'GATE_CHECK_TIMEOUT'), 'fixture control: the baseline holds the timeout row');
+                },
+                runGate: realGate(timeouts),
+                inspect: async ({ sessionDir }) => runGate({
+                    workingDir: dir, mode: 'baseline', scope: 'full', baselinePath: path.join(sessionDir, 'gate', 'baseline.json'), checks: CAP_CHECKS, _timeouts: timeouts,
+                }),
+            });
+            assert.equal(inspected.status, 'green', 'fixture control: subtraction erases the timeout row, so the gate itself reads green');
+            assert.equal(exitReasons[2], 'converged');
+            assert.deepEqual(state.cap_unmeasured_checks, ['typecheck'], 'check_status, not the subtracted rows, decides measurement');
+            assert.ok(!logs.some((l) => l.includes(TRUSTED_LINE)), 'an unmeasured cap must not claim the bare trusted-exit line');
+        } finally { rm(dir); }
+    });
+
+    test('AC-3: a total-deadline timeout during typecheck lists lint too (it was skipped, not measured)', async () => {
+        const dir = makeFailingFixture();
+        try {
+            const { exitReasons, state, inspected } = await driveConvergenceDeferral(dir, 3, {
+                prepareSession: (sessionDir) => captureBaseline(dir, sessionDir),
+                runGate: realGate({ total: -1000 }),
+                inspect: ({ sessionDir, state: st }) => phaseCountersAfterConverge(sessionDir, st),
+            });
+            assert.equal(exitReasons[2], 'converged');
+            assert.deepEqual(state.cap_unmeasured_checks, ['typecheck', 'lint']);
+            assert.equal(inspected.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck,lint');
+        } finally { rm(dir); }
+    });
+
+    test('AC-3: a timeout PLUS any other remaining failure => error (a real failure still blocks)', async () => {
+        const dir = makeFailingFixture();
+        try {
+            const { exitReasons, gateFailedEvents, state } = await driveConvergenceDeferral(dir, 3, {
+                prepareSession: async (sessionDir) => {
+                    await captureBaseline(dir, sessionDir);
+                    writePackage(dir, { typecheck: failingTypecheck([PRE_EXISTING]), lint: 'node -e "console.log(\'lint boom\');process.exit(1)"' });
+                },
+                runGate: realGate({ perCheck: { typecheck: 1 } }),
+            });
+            assert.equal(exitReasons[2], 'error');
+            assert.equal(gateFailedEvents.length, 1);
+            assert.equal(state.cap_unmeasured_checks, undefined, 'a red tree carries no unmeasured caveat');
+        } finally { rm(dir); }
+    });
+
+    test('AC-7: a THROWING cap gate => converged, the message is logged, the caveat is recorded, no bare trusted-exit line', async () => {
+        const dir = makeFailingFixture();
+        try {
+            const { exitReasons, gateFailedEvents, logs, state, inspected } = await driveConvergenceDeferral(dir, 3, {
+                runGate: async () => { throw new Error('gate exploded: rpgt'); },
+                inspect: ({ sessionDir, state: st }) => phaseCountersAfterConverge(sessionDir, st),
+            });
+            assert.equal(exitReasons[2], 'converged');
+            assert.equal(gateFailedEvents.length, 0);
+            assert.ok(logs.some((l) => l.includes('gate exploded: rpgt')), 'the gate error message is logged');
+            assert.ok(!logs.some((l) => l.includes(TRUSTED_LINE)), 'a throw is not a trusted convergence signal');
+            assert.deepEqual(state.cap_unmeasured_checks, ['typecheck', 'lint'], 'nothing was measured, so every requested check is named');
+            assert.equal(inspected.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck,lint');
+        } finally { rm(dir); }
+    });
+});

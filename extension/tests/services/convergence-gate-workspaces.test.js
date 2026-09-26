@@ -356,3 +356,101 @@ test('runGate: changed root workspace control files keep all workspace packages 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A package-manager script the package does not define is never spawned: spawning it only
+// yields ERR_PNPM_NO_SCRIPT, a spurious absolute-path failure row, a 'failed' check_status and an
+// uncertifiable (project_type: null) baseline.
+test('runGate: a workspace package without the gate lint script is skipped, not spawned', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-workspace-noscript-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'workspace-root',
+      private: true,
+    }, null, 2));
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+
+    const pkgA = path.join(dir, 'packages', 'a');
+    const pkgB = path.join(dir, 'packages', 'b');
+    fs.mkdirSync(pkgA, { recursive: true });
+    fs.mkdirSync(pkgB, { recursive: true });
+    fs.writeFileSync(path.join(pkgA, 'package.json'), JSON.stringify({ name: 'a', version: '1.0.0' }, null, 2));
+    fs.writeFileSync(path.join(pkgB, 'package.json'), JSON.stringify({
+      name: 'b',
+      version: '1.0.0',
+      scripts: { 'lint:quiet': 'node -e "process.exit(0)"' },
+    }, null, 2));
+
+    const result = await runGate({
+      workingDir: dir,
+      mode: 'strict',
+      scope: 'full',
+      checks: ['lint'],
+    });
+    assert.deepEqual(
+      result.failures.filter(f => f.file === pkgA || f.file.startsWith(`${pkgA}${path.sep}`)),
+      [],
+      'nothing is spawned in the package that lacks the script, so it leaves no failure row',
+    );
+    assert.equal(result.status, 'green');
+    assert.equal(result.check_status?.lint, 'ran');
+
+    const baselinePath = path.join(dir, 'session', 'gate', 'baseline.json');
+    await runGate({
+      workingDir: dir,
+      mode: 'baseline',
+      scope: 'full',
+      checks: ['lint'],
+      baselinePath,
+      baselineIteration: 1,
+    });
+    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+    assert.notEqual(baseline.project_type, null, 'a script-less package must not make the baseline uncertifiable');
+    assert.equal(baseline.check_status.lint, 'ran');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runGate: a package-manager check whose script no package defines is skipped, not failed', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-workspace-noscript-any-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'solo', version: '1.0.0' }, null, 2));
+    fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), '');
+    const result = await runGate({ workingDir: dir, mode: 'strict', scope: 'full', checks: ['lint'] });
+    assert.equal(result.check_status?.lint, 'skipped');
+    assert.deepEqual(result.failures, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The skip is keyed on a READABLE manifest that lacks the script. An unparseable package.json is
+// "unknown", so the package is still spawned and its breakage reported: reading it as "absent"
+// would drop a broken package from the gate and leave the tree green over it.
+test('runGate: a workspace package whose package.json is unparseable is still spawned, not skipped', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-workspace-badjson-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'workspace-root', private: true }, null, 2));
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+
+    const pkgA = path.join(dir, 'packages', 'a');
+    const pkgB = path.join(dir, 'packages', 'b');
+    fs.mkdirSync(pkgA, { recursive: true });
+    fs.mkdirSync(pkgB, { recursive: true });
+    fs.writeFileSync(path.join(pkgA, 'package.json'), '{ "name": "a", "scripts": { broken');
+    fs.writeFileSync(path.join(pkgB, 'package.json'), JSON.stringify({
+      name: 'b',
+      version: '1.0.0',
+      scripts: { 'lint:quiet': 'node -e "process.exit(0)"' },
+    }, null, 2));
+
+    const result = await runGate({ workingDir: dir, mode: 'strict', scope: 'full', checks: ['lint'] });
+    assert.ok(
+      result.failures.some(f => f.file === pkgA),
+      `the unparseable package must be spawned and reported under its package dir; rows: ${JSON.stringify(result.failures.map(f => f.file))}`,
+    );
+    assert.equal(result.status, 'red');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -5323,6 +5323,24 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
     catch { /* non-blocking */ }
 }
 /**
+ * B-CAPGATE: a `converged` microverse phase whose post-convergence cap could not measure some
+ * check (`cap_unmeasured_checks`, carried by `recordCapUnmeasured`) converged over a hole, and a
+ * silent success would hide it. Reported — appended to the phase disposition — but NOT counted
+ * `nonConvergent`: the phase did converge, and the next iteration re-measures (the precedent is
+ * `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`). Unreadable or
+ * malformed microverse state reads as "no caveat", never as a fabricated one.
+ */
+function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
+    // `readRecoverableJsonObject` never throws: an absent or unparseable file is `null`.
+    const raw = readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
+    const checks = Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
+    if (checks.length === 0)
+        return;
+    const marker = `converged_with_unmeasured:${checks.join(',')}`;
+    appendPhaseDisposition(counters, rawPhase, marker);
+    log(`Phase ${rawPhase}: ${marker} — converged, but the post-convergence cap did not measure these checks`);
+}
+/**
  * R-PIPE-2: post-AC-gate success path extracted from `runPhaseIteration` so
  * the no-progress gate, counter increment, cancel-marker check, and success
  * log do not push `runPhaseIteration` past the cyclomatic-complexity ceiling.
@@ -5446,6 +5464,7 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
             log(`Phase ${rawPhase} did NOT converge (${exitReason}) — reported non-convergent, not counted as completed`);
             return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
         }
+        reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
     }
     counters.completed++;
     writeRunningStatus(runtime, counters, null);

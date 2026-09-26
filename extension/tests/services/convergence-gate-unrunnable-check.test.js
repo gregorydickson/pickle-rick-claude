@@ -82,12 +82,18 @@ function mkFixtureDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
-test('runGate baseline: a missing npm typecheck script marks the persisted baseline uncertifiable (project_type: null)', async () => {
-  const workingDir = mkFixtureDir('cg-szgbd-missing-script-');
+// The typecheck script EXISTS but its command is an uninstalled binary (`command not found`). An
+// ABSENT script is never spawned by the gate and records `'skipped'`, so it cannot trigger this.
+test('runGate baseline: an unrunnable npm typecheck command marks the persisted baseline uncertifiable (project_type: null)', async () => {
+  const workingDir = mkFixtureDir('cg-szgbd-unrunnable-command-');
   try {
     fs.writeFileSync(
       path.join(workingDir, 'package.json'),
-      JSON.stringify({ name: 'szgbd-fixture', private: true, scripts: { lint: 'node -e "process.exit(0)"' } }, null, 2),
+      JSON.stringify({
+        name: 'szgbd-fixture',
+        private: true,
+        scripts: { typecheck: 'szgbd-uninstalled-binary-xyz', lint: 'node -e "process.exit(0)"' },
+      }, null, 2),
     );
     const baselinePath = path.join(workingDir, 'gate', 'baseline.json');
 
