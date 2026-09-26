@@ -495,19 +495,22 @@ describe('V1-4: the nonConvergent raise sites are enumerated', () => {
     return sites;
   }
 
-  test('exactly four raise sites survive, one per named withholding path', () => {
-    const sites = collectRaiseSites();
+  test('exactly five raise sites survive, one per named withholding path', () => {
+    const tally = {};
+    for (const site of collectRaiseSites()) tally[site] = (tally[site] ?? 0) + 1;
     assert.deepEqual(
-      [...new Set(sites)].sort(),
-      [
-        'finalizePhaseSuccess', // the microverse non-convergent arm
-        'runAllBackendsExhaustedFinalizeGate',
-        'withholdForDegradedPostFinalVerdict',
-        'withholdForFailedAcGate',
-      ],
-      'a raise site was added, removed, or relocated — collapse the counter deliberately, not silently',
+      tally,
+      {
+        finalizePhaseSuccess: 1, // the microverse non-convergent arm
+        runAllBackendsExhaustedFinalizeGate: 1,
+        // B-FINALGATE: two mutually exclusive arms — a pass that disclosed an unmeasured check,
+        // and a failed gate — so one call raises at most once.
+        runJudgeTimeoutFinalizeGate: 2,
+        withholdForDegradedPostFinalVerdict: 1,
+        withholdForFailedAcGate: 1,
+      },
+      'a raise site was added, removed, relocated, or duplicated — collapse the counter deliberately, not silently',
     );
-    assert.equal(sites.length, 4, 'one raise per path: a second raise in one function is a new latch');
   });
 
   test('the fifth term is derived at finalize, not raised: the boundary withhold is gone', () => {
