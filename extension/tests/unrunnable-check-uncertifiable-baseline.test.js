@@ -99,7 +99,7 @@ function makeMv(overrides = {}) {
 // binary that is not installed (`npm run typecheck` -> `sh: ...: command not found`, exit 127),
 // while 'lint' and 'test' both run and exit 0 — proving the uncertifiable classification is driven
 // by the unrunnable typecheck check specifically, not by a wholesale unrunnable project. The script
-// must be PRESENT: an ABSENT script is never spawned (`canRunTestScript`) and records `'skipped'`,
+// must be PRESENT: an ABSENT script is never spawned (`canRunCheckScript`) and records `'skipped'`,
 // a decision rather than a failed measurement.
 const UNINSTALLED_BINARY_COMMAND = 'szgbd-uninstalled-binary-xyz';
 
@@ -511,7 +511,7 @@ test('AP-EXT-ITER6-01 control: the same fixture under a realistic budget stays C
 });
 
 // `'skipped'` must stay OUT of the predicate. This repo's own `test` script is refused by
-// canRunTestScript, so folding 'skipped' in would defer every anatomy-park iteration — a new
+// canRunCheckScript, so folding 'skipped' in would defer every anatomy-park iteration — a new
 // abort condition rather than a closed hole.
 test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused test script stays certifiable', async () => {
   const workingDir = makeGitRepo('apext6-skipped-repo-');
@@ -526,7 +526,7 @@ test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused te
         scripts: {
           typecheck: 'node -e "process.exit(0)"',
           lint: 'node -e "process.exit(0)"',
-          // `integration` is in UNSAFE_TEST_SCRIPT_REGEX, so canRunTestScript refuses to spawn it.
+          // `integration` is in UNSAFE_TEST_SCRIPT_REGEX, so canRunCheckScript refuses to spawn it.
           test: 'node -e "process.exit(0)" --integration',
         },
       }, null, 2),
@@ -567,12 +567,12 @@ test('AP-EXT-ITER6-01: a SKIPPED check is not an unmeasured one — a refused te
 // data/gate-commands.json, so past the deadline they still SPAWN with
 // `Math.min(perCheckMs, remaining)` — negative, which fires the settle timer immediately — and
 // land on `'failed'` regardless. `tests` is the ONE check whose fall-through is `'skipped'`
-// (`canRunTestScript` refuses a package with no `test` script), which is why the cumulative-cap
+// (`canRunCheckScript` refuses a package with no `test` script), which is why the cumulative-cap
 // case in convergence-gate-hang-guard.test.js — three slow scripts, all spawnable — cannot
 // distinguish the arm from its absence.
 // ===========================================================================
 
-// A real npm project with NO `test` script (so `canRunTestScript` refuses it) and a `lint` that
+// A real npm project with NO `test` script (so `canRunCheckScript` refuses it) and a `lint` that
 // completes immediately — the control proves both facts, so `'skipped'`/`'ran'` in the headline
 // rows are the deadline's doing and not the fixture's.
 function writeNoTestScriptFixtureRepo(dir) {

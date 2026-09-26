@@ -1124,8 +1124,8 @@ function escalateCheckStatus(prev, next) {
  * never downgrade it — the old signal is a subset of this one by construction.
  *
  * `'skipped'` is excluded ON PURPOSE. It means the check was never applicable (no command in the
- * project-type map, or a test script `canRunTestScript` refuses to spawn), which is a decision,
- * not a failed measurement. Folding it in here would defer every iteration of any repo whose
+ * project-type map, or a package script `canRunCheckScript` refuses to spawn — absent, or an
+ * unsafe `test` script), which is a decision, not a failed measurement. Folding it in here would defer every iteration of any repo whose
  * `test` script the gate declines — a new abort condition, not a closed hole.
  *
  * AP-EXT-ITER7-01 exports it: `runInterfaceChangeSweep` needs the SAME fact about the in-memory
@@ -1412,9 +1412,9 @@ export async function classifyTestScriptSafety(projectType, dir) {
  * The pre-spawn predicate: a package-manager script the package does not define is never spawned
  * (spawning it yields only `ERR_PNPM_NO_SCRIPT`, an absolute-path failure row and a `'failed'`
  * status). An unparseable `package.json` reads as "unknown" and still spawns, so a real breakage is
- * reported rather than skipped.
+ * reported rather than skipped. `tests` is additionally screened by `classifyTestScriptSafety`.
  */
-async function canRunTestScript(check, cmd, projectType, dir, emit) {
+async function canRunCheckScript(check, cmd, projectType, dir, emit) {
     if (check !== 'tests') {
         const script = PACKAGE_MANAGER_TYPES.includes(projectType) ? delegatedScriptName(cmd) : null;
         if (script === null)
@@ -1521,7 +1521,7 @@ async function collectGateFailures(opts, targetDirs, cmdMap, projectType, totalD
                 checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
                 continue;
             }
-            if (!(await canRunTestScript(check, cmd, projectType, dir, emit))) {
+            if (!(await canRunCheckScript(check, cmd, projectType, dir, emit))) {
                 checkStatus[check] = escalateCheckStatus(checkStatus[check], 'skipped');
                 continue;
             }
