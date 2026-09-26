@@ -105,6 +105,15 @@ function writeChildRunner(root) {
     `  }`,
     `  return '';`,
     `};`,
+    `// The default (non-legacy) judge path spawns through _deps.spawn, not execFileSync.`,
+    `const realSpawn = runner._deps.spawn;`,
+    `runner._deps.spawn = (cmd, args, opts) => {`,
+    `  if (cmd === 'claude') {`,
+    `    fs.writeFileSync(path.join(sessionDir, 'captured-judge-argv.json'), JSON.stringify(args, null, 2));`,
+    `    throw new Error('fixture judge unreachable');`,
+    `  }`,
+    `  return realSpawn(cmd, args, opts);`,
+    `};`,
     `runner._deps.runIteration = async (_sessionDir, iteration) => {`,
     `  fs.writeFileSync(path.join(_sessionDir, 'tmux_iteration_' + iteration + '.log'), 'fixture worker success\\\\n');`,
     `  if (iteration >= 1) {`,
@@ -222,7 +231,7 @@ test('microverse-runner codex worker convergence with empty history honors worke
 
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
     assert.equal(result.status, 0, combinedOutput);
-    assert.equal(fs.existsSync(path.join(sessionDir, 'captured-codex-argv.json')), false, 'worker-managed convergence must not invoke judge CLI');
+    assert.equal(fs.existsSync(path.join(sessionDir, 'captured-judge-argv.json')), false, 'worker-managed convergence must not invoke judge CLI');
 
     const finalMv = JSON.parse(fs.readFileSync(path.join(sessionDir, 'microverse.json'), 'utf-8'));
     assert.equal(finalMv.exit_reason, 'converged');
