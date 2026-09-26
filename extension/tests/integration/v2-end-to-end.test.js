@@ -351,24 +351,26 @@ test('v2-E2E-10: applySilentDeathRecoveryPolicy with no evidence → respawn (fi
   };
 
   // No preIterSha → no scoped_commit; no fresh artifacts; no frontmatter sha
-  const decision = applySilentDeathRecoveryPolicy({
+  const decide = (iteration) => applySilentDeathRecoveryPolicy({
     sessionDir,
     ticketId,
     workingDir: sessionDir,
     statePath,
-    iteration: 1,
+    iteration,
     classification: cls,
     settings: { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 },
   });
 
-  assert.ok(
-    decision.action === 'respawn' || decision.action === 'halt',
-    `expected respawn or halt, got ${decision.action}`,
-  );
-  if (decision.action === 'respawn') {
-    assert.equal(decision.attempt, 1, 'first attempt must be 1');
-    assert.equal(decision.cap, 1, 'cap must match settings');
-  }
+  // The ledger starts empty, so the first death MUST respawn; a halt here means the
+  // ledger was miscounted. The second death must then draw the cap down to a halt.
+  const first = decide(1);
+  assert.equal(first.action, 'respawn', `empty ledger must respawn, got ${JSON.stringify(first)}`);
+  assert.equal(first.attempt, 1, 'first attempt must be 1');
+  assert.equal(first.cap, 1, 'cap must match settings');
+
+  const second = decide(2);
+  assert.equal(second.action, 'halt', `cap 1 spent → halt, got ${JSON.stringify(second)}`);
+  assert.equal(second.exitReason, 'recovery_exhausted');
 });
 
 // ── test 11: evaluateFailedFlipSuppression — suppressed on fresh artifacts ───
@@ -410,12 +412,11 @@ test('v2-E2E-11: evaluateFailedFlipSuppression with fresh_artifacts evidence →
     settings: { silent_death_respawn_cap: 1, failed_flip_suppression_cap: 2 },
   });
 
-  // Decision should be 'suppress' (fresh artifact in window) or 'escalate' (cap hit)
-  // 'proceed' with no_evidence would indicate the window-start seam is broken.
-  assert.ok(
-    decision.action === 'suppress' || decision.action === 'escalate',
-    `expected suppress or escalate, got ${decision.action} — windowStartMs seam may not be passing artifact evidence`,
-  );
+  // Empty ledger + cap 2 + a fresh artifact in the window → suppress. 'escalate' here would
+  // mean the cap was miscounted; 'proceed' would mean the windowStartMs seam lost the evidence.
+  assert.equal(decision.action, 'suppress', `expected suppress, got ${JSON.stringify(decision)}`);
+  assert.equal(decision.evidence, 'fresh_artifacts');
+  assert.equal(decision.suppressionCount, 1);
 });
 
 // ── test 12: resolveCodegraphSettings — compiled defaults round-trip ──────────
