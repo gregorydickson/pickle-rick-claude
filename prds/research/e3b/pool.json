@@ -1,0 +1,86 @@
+{
+ "D1": {
+  "sha": "6a85aded9ab51bdcf59ecace749adf6eb37137a0",
+  "file": "extension/src/bin/mux-runner.ts",
+  "pos": 2346,
+  "after_head": true,
+  "subject": "anatomy-park: extension \u2014 CRITICAL the touched-path reader crossed two git contracts but not the PATH SPACE, so below the toplevel a landed Failed ticket became"
+ },
+ "D2": {
+  "sha": "2c0c99c34d0e05964c055b4669d77e7d8b9ccb13",
+  "file": "extension/src/bin/spawn-refinement-team.ts",
+  "pos": 2345,
+  "after_head": true,
+  "subject": "anatomy-park: extension \u2014 HIGH the citation resolver read the tracked set in a cwd-relative pathspec space, so below the git toplevel a real tracked file was re"
+ },
+ "D3": {
+  "sha": "c3296565252a437518c4077ba6fb33ec199554f0",
+  "file": "extension/src/services/orphan-reaper.ts",
+  "pos": 1634,
+  "after_head": false,
+  "subject": "anatomy-park: extension \u2014 HIGH a sweep that never counted is not an empty census, trap door"
+ },
+ "D4": {
+  "sha": "c1248201dd609f9191e6b94e057206be88670eb1",
+  "file": "extension/src/services/convergence-gate.ts",
+  "pos": 1624,
+  "after_head": false,
+  "subject": "anatomy-park: extension \u2014 HIGH key the gate's test-failure dedupe on the line, not the name, trap door"
+ },
+ "D5": {
+  "sha": "58ca7b6bd2a1883a866f5bb5a24b44db918c9613",
+  "file": "extension/src/services/convergence-gate.ts",
+  "pos": 1616,
+  "after_head": false,
+  "subject": "fix(gate): FR-C2 e4e55846 \u2014 match `not ok` at a word boundary, not as a 6-char prefix"
+ },
+ "D6": {
+  "sha": "aae07df69dfe2394fce43e3472d6610e69487238",
+  "file": "extension/src/hooks/shell-exec.ts",
+  "pos": 1511,
+  "after_head": false,
+  "subject": "anatomy-park: hooks \u2014 CRITICAL collapse a star run to one quantifier so the guard returns, trap door"
+ },
+ "D7": {
+  "sha": "a02d847c568a22a198da23c9d2bda6c69a232012",
+  "file": "extension/src/bin/mux-runner.ts",
+  "pos": 1508,
+  "after_head": false,
+  "subject": "anatomy-park: extension \u2014 CRITICAL cap the LLM implement pass capture buffer, trap door"
+ },
+ "D8": {
+  "sha": "11e825a4c6fd8eb5a983c7b9eef512132e036087",
+  "file": "extension/src/types/index.ts",
+  "pos": 1843,
+  "after_head": false,
+  "subject": "ROOT 0 (1428cbe9): fix \u2014 classifyExitReason must check OWN keys, not inherit from Object.prototype"
+ },
+ "D9": {
+  "sha": "281e2c5f0fc0bdf6bbccc50f8109cc6b2ec3f91c",
+  "file": "extension/src/bin/test-runner.ts",
+  "pos": 2173,
+  "after_head": true,
+  "subject": "harden(a811900e): fail-fast cleanup \u2014 reap the test group when the child dies by signal"
+ },
+ "D10": {
+  "sha": "98fc34771fa7bff90ce62bb93aad23541db16f77",
+  "file": "extension/src/bin/mux-runner.ts",
+  "pos": 1456,
+  "after_head": false,
+  "subject": "fix(A4/R-GBANNER): cross-ticket regression attribution ignores script failures"
+ },
+ "D11": {
+  "sha": "0e02ae5cd6187eafd6d0ba2e503a80bdf641ac3f",
+  "file": "extension/src/bin/reap-orphans.ts",
+  "pos": 1635,
+  "after_head": false,
+  "subject": "anatomy-park: extension \u2014 HIGH a census that never counted is not a clean TMPDIR, trap door"
+ },
+ "D12": {
+  "sha": "a2332d3f58775f07bea43f078c8641cb80d9058f",
+  "file": "extension/src/bin/mux-runner.ts",
+  "pos": 1715,
+  "after_head": false,
+  "subject": "fix(053c8442): name the no-exit-status arm honestly \u2014 ETIMEDOUT/ENOBUFS children DID run"
+ }
+}

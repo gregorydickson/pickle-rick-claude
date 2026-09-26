@@ -1,0 +1,1516 @@
+{
+ "a_whole_k12": {
+  "ids": [
+   "D1",
+   "D2",
+   "D3",
+   "D4",
+   "D5",
+   "D6",
+   "D7",
+   "D8",
+   "D9",
+   "D10",
+   "D11",
+   "D12"
+  ],
+  "loc": {
+   "D6": {
+    "file": "extension/src/hooks/shell-exec.ts",
+    "ranges": [
+     [
+      488,
+      488
+     ]
+    ],
+    "defect_lines": [
+     "      regex += '.*';"
+    ],
+    "core": [
+     [
+      488,
+      488
+     ]
+    ]
+   },
+   "D2": {
+    "file": "extension/src/bin/spawn-refinement-team.ts",
+    "ranges": [
+     [
+      636,
+      636
+     ]
+    ],
+    "defect_lines": [
+     "    const result = spawnSyncFn('git', ['ls-files', '-z', '--', `*${token}`], {"
+    ],
+    "core": [
+     [
+      636,
+      636
+     ]
+    ]
+   },
+   "D1": {
+    "file": "extension/src/bin/mux-runner.ts",
+    "ranges": [
+     [
+      10890,
+      10890
+     ],
+     [
+      10895,
+      10895
+     ]
+    ],
+    "defect_lines": [
+     " * Returns `null` when git could not answer \u2014 an unanswered enumeration is NOT an empty",
+     "  const out = silentDeathGit(['diff', '--name-only', '--no-renames', '-z', range], workingDir);"
+    ],
+    "core": [
+     [
+      10895,
+      10895
+     ]
+    ]
+   },
+   "D7": {
+    "file": "extension/src/bin/mux-runner.ts",
+    "ranges": [
+     [
+      7678,
+      7678
+     ],
+     [
+      7679,
+      7679
+     ],
+     [
+      7699,
+      7699
+     ]
+    ],
+    "defect_lines": [
+     " */",
+     "function spawnConvergedPlanImplementPass(opts: {",
+     "    });"
+    ],
+    "core": [
+     [
+      7679,
+      7679
+     ],
+     [
+      7699,
+      7699
+     ]
+    ]
+   },
+   "D10": {
+    "file": "extension/src/bin/mux-runner.ts",
+    "ranges": [
+     [
+      891,
+      891
+     ],
+     [
+      892,
+      892
+     ]
+    ],
+    "defect_lines": [
+     "  const regressedTicketId = input.nextTicketId || input.completedTicketId;",
+     "  const failingTests = result.failures.map(failure => ({ name: failure.name, file: failure.file }));"
+    ],
+    "core": [
+     [
+      891,
+      891
+     ],
+     [
+      892,
+      892
+     ]
+    ]
+   },
+   "D12": {
+    "file": "extension/src/bin/mux-runner.ts",
+    "ranges": [
+     [
+      7093,
+      7099
+     ],
+     [
+      7104,
+      7104
+     ],
+     [
+      7117,
+      7117
+     ],
+     [
+      7118,
+      7118
+     ],
+     [
+      7123,
+      7123
+     ],
+     [
+      7126,
+      7126
+     ],
+     [
+      7159,
+      7160
+     ],
+     [
+      7281,
+      7283
+     ]
+    ],
+    "defect_lines": [
+     " * B-ARGMAX AC-3: what ONE remediator `spawnSync` actually did. `spawnSync` reports a child",
+     " * the kernel NEVER EXECUTED as `status === null` with the reason in `error.code` (`E2BIG`,",
+     " * `ENOENT`, `ENOBUFS`, `ETIMEDOUT`) \u2014 a shape that is neither `0` nor a non-zero exit, and",
+     " * that both seams of this rung previously folded into the same `false` a worker that ran and",
+     " * failed produces. `errorCode` and `stderr` are SEPARATE fields on purpose: a never-exec'd",
+     " * child emits no stderr of its own (measured: `stderr` is `undefined`, not `''`), so a",
+     " * non-empty `stderr` is itself the evidence that the child RAN.",
+     "  | { kind: 'never_executed'; errorCode: string; errorMessage: string; stderr: string };",
+     "  stderr?: string | null;",
+     "  error?: (Error & { code?: string }) | undefined;",
+     "      kind: 'never_executed',",
+     "      stderr,",
+     "    case 'never_executed':",
+     "      return `${where} NEVER EXECUTED (no exit status, so this is not a completed non-remediation): error code=${outcome.errorCode} (${outcome.errorMessage}); stderr: ${describeRemediatorStderr(outcome.stderr)}`;",
+     " * Linux `E2BIG` that made this exec never happen at all was reported to the ladder as a",
+     " * fixer worker that ran and declined to fix anything. The caller maps `ok` back to the",
+     " * boolean the ladder reads, so the DISPOSITION is unchanged."
+    ],
+    "core": [
+     [
+      7104,
+      7104
+     ],
+     [
+      7117,
+      7117
+     ],
+     [
+      7118,
+      7118
+     ],
+     [
+      7123,
+      7123
+     ],
+     [
+      7126,
+      7126
+     ],
+     [
+      7159,
+      7160
+     ]
+    ]
+   },
+   "D4": {
+    "file": "extension/src/services/convergence-gate.ts",
+    "ranges": [
+     [
+      132,
+      135
+     ],
+     [
+      1016,
+      1019
+     ]
+    ],
+    "defect_lines": [
+     " * so it produced it on EVERY red run; `parseTestOutput` now keys each failing test by its",
+     " * own name, so a red suite yields one distinct identity per test and the subtraction can",
+     " * tell a new failure from a baselined one. The `check` component is still load-bearing,",
+     " * because the fallback still fires for any reporter no parser recognises.",
+     "    // Reporters print each failure twice (inline, then again in the summary). Dedupe on the name",
+     "    // so the ordinal grouping in `assignOccurrenceIndices` is not fed phantom repeats.",
+     "    if (seen.has(name)) continue;",
+     "    seen.add(name);"
+    ],
+    "core": [
+     [
+      1016,
+      1019
+     ]
+    ]
+   },
+   "D5": {
+    "file": "extension/src/services/convergence-gate.ts",
+    "ranges": [
+     [
+      996,
+      996
+     ],
+     [
+      1000,
+      1000
+     ]
+    ],
+    "defect_lines": [
+     " * FAILS OPEN by construction: no match anywhere returns `[]`, and `buildFailures` falls through to",
+     "const TEST_FAILURE_LINE_RE = /^(?:not ok(?:\\s+\\d+)?\\s*(?:-\\s*)?|[\\u00D7\\u2715-\\u2718]\\s+)(.+?)\\s*$/;"
+    ],
+    "core": [
+     [
+      1000,
+      1000
+     ]
+    ]
+   },
+   "D8": {
+    "file": "extension/src/types/index.ts",
+    "ranges": [
+     [
+      1629,
+      1629
+     ]
+    ],
+    "defect_lines": [
+     "  return (EXIT_DISPOSITIONS as Record<string, ExitDisposition>)[reason] ?? DEFAULT_EXIT_DISPOSITION;"
+    ],
+    "core": [
+     [
+      1629,
+      1629
+     ]
+    ]
+   },
+   "D9": {
+    "file": "extension/src/bin/test-runner.ts",
+    "ranges": [
+     [
+      374,
+      375
+     ],
+     [
+      377,
+      377
+     ],
+     [
+      379,
+      379
+     ],
+     [
+      431,
+      431
+     ]
+    ],
+    "defect_lines": [
+     " * ETIMEDOUT-only orphan reap: reap the process GROUP `detached` created, falling back to the",
+     " * bare pid on the platforms (and races) where the group kill reports nothing killed.",
+     "function reapTimedOutChild(result: Pick<SpawnSyncReturns<unknown>, 'error' | 'pid'>): void {",
+     "  if (!timedOut || typeof result.pid !== 'number') return;",
+     "  reapTimedOutChild(result);"
+    ],
+    "core": [
+     [
+      377,
+      377
+     ],
+     [
+      379,
+      379
+     ],
+     [
+      431,
+      431
+     ]
+    ]
+   },
+   "D11": {
+    "file": "extension/src/bin/reap-orphans.ts",
+    "ranges": [
+     [
+      18,
+      18
+     ],
+     [
+      32,
+      32
+     ],
+     [
+      33,
+      33
+     ],
+     [
+      34,
+      34
+     ],
+     [
+      54,
+      54
+     ],
+     [
+      78,
+      78
+     ],
+     [
+      110,
+      110
+     ],
+     [
+      112,
+      113
+     ],
+     [
+      116,
+      117
+     ]
+    ],
+    "defect_lines": [
+     "import { reapOrphanedWorkerProcs, FIXTURE_TMPDIR_MAX_AGE_MS, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';",
+     "  scanned: number;",
+     "  removed: number;",
+     "}",
+     "    return { scanned: 0, removed: 0 };",
+     "  return { scanned, removed };",
+     "function runStandaloneFixtureTmpDirSweep(): void {",
+     "    const result = sweepStaleFixtureTmpDirs();",
+     "    if (result.removed > 0) {",
+     "  } catch {",
+     "    // Best-effort session-GC \u2014 never block a test run."
+    ],
+    "core": [
+     [
+      18,
+      18
+     ],
+     [
+      34,
+      34
+     ],
+     [
+      54,
+      54
+     ],
+     [
+      78,
+      78
+     ],
+     [
+      110,
+      110
+     ],
+     [
+      112,
+      113
+     ],
+     [
+      116,
+      117
+     ]
+    ]
+   },
+   "D3": {
+    "file": "extension/src/services/orphan-reaper.ts",
+    "ranges": [
+     [
+      1188,
+      1188
+     ],
+     [
+      1189,
+      1189
+     ],
+     [
+      1240,
+      1240
+     ],
+     [
+      1260,
+      1260
+     ]
+    ],
+    "defect_lines": [
+     "};",
+     "",
+     "    return { scanned: 0, removed: 0, prefixes_used: prefixes };",
+     "  return { scanned, removed, prefixes_used: prefixes };"
+    ],
+    "core": [
+     [
+      1188,
+      1188
+     ],
+     [
+      1189,
+      1189
+     ],
+     [
+      1240,
+      1240
+     ],
+     [
+      1260,
+      1260
+     ]
+    ]
+   }
+  },
+  "maps": {
+   "extension/src/hooks/shell-exec.ts": [
+    [
+     0,
+     487,
+     0,
+     487,
+     "equal"
+    ],
+    [
+     487,
+     502,
+     487,
+     487,
+     "delete"
+    ],
+    [
+     502,
+     1513,
+     487,
+     1498,
+     "equal"
+    ]
+   ],
+   "extension/src/bin/spawn-refinement-team.ts": [
+    [
+     0,
+     635,
+     0,
+     635,
+     "equal"
+    ],
+    [
+     635,
+     646,
+     635,
+     636,
+     "replace"
+    ],
+    [
+     646,
+     2960,
+     636,
+     2950,
+     "equal"
+    ]
+   ],
+   "extension/src/bin/mux-runner.ts": [
+    [
+     0,
+     890,
+     0,
+     890,
+     "equal"
+    ],
+    [
+     890,
+     897,
+     890,
+     890,
+     "delete"
+    ],
+    [
+     897,
+     898,
+     890,
+     891,
+     "equal"
+    ],
+    [
+     898,
+     899,
+     891,
+     892,
+     "replace"
+    ],
+    [
+     899,
+     7099,
+     892,
+     7092,
+     "equal"
+    ],
+    [
+     7099,
+     7117,
+     7092,
+     7099,
+     "replace"
+    ],
+    [
+     7117,
+     7121,
+     7099,
+     7103,
+     "equal"
+    ],
+    [
+     7121,
+     7122,
+     7103,
+     7104,
+     "replace"
+    ],
+    [
+     7122,
+     7134,
+     7104,
+     7116,
+     "equal"
+    ],
+    [
+     7134,
+     7135,
+     7116,
+     7116,
+     "delete"
+    ],
+    [
+     7135,
+     7136,
+     7116,
+     7117,
+     "equal"
+    ],
+    [
+     7136,
+     7137,
+     7117,
+     7118,
+     "replace"
+    ],
+    [
+     7137,
+     7141,
+     7118,
+     7122,
+     "equal"
+    ],
+    [
+     7141,
+     7142,
+     7122,
+     7123,
+     "replace"
+    ],
+    [
+     7142,
+     7144,
+     7123,
+     7125,
+     "equal"
+    ],
+    [
+     7144,
+     7147,
+     7125,
+     7125,
+     "delete"
+    ],
+    [
+     7147,
+     7180,
+     7125,
+     7158,
+     "equal"
+    ],
+    [
+     7180,
+     7182,
+     7158,
+     7160,
+     "replace"
+    ],
+    [
+     7182,
+     7302,
+     7160,
+     7280,
+     "equal"
+    ],
+    [
+     7302,
+     7306,
+     7280,
+     7283,
+     "replace"
+    ],
+    [
+     7306,
+     7700,
+     7283,
+     7677,
+     "equal"
+    ],
+    [
+     7700,
+     7705,
+     7677,
+     7677,
+     "delete"
+    ],
+    [
+     7705,
+     7706,
+     7677,
+     7678,
+     "equal"
+    ],
+    [
+     7706,
+     7707,
+     7678,
+     7679,
+     "replace"
+    ],
+    [
+     7707,
+     7726,
+     7679,
+     7698,
+     "equal"
+    ],
+    [
+     7726,
+     7738,
+     7698,
+     7698,
+     "delete"
+    ],
+    [
+     7738,
+     10929,
+     7698,
+     10889,
+     "equal"
+    ],
+    [
+     10929,
+     10936,
+     10889,
+     10889,
+     "delete"
+    ],
+    [
+     10936,
+     10941,
+     10889,
+     10894,
+     "equal"
+    ],
+    [
+     10941,
+     10942,
+     10894,
+     10895,
+     "replace"
+    ],
+    [
+     10942,
+     14881,
+     10895,
+     14834,
+     "equal"
+    ]
+   ],
+   "extension/src/services/convergence-gate.ts": [
+    [
+     0,
+     131,
+     0,
+     131,
+     "equal"
+    ],
+    [
+     131,
+     141,
+     131,
+     135,
+     "replace"
+    ],
+    [
+     141,
+     1001,
+     135,
+     995,
+     "equal"
+    ],
+    [
+     1001,
+     1006,
+     995,
+     995,
+     "delete"
+    ],
+    [
+     1006,
+     1010,
+     995,
+     999,
+     "equal"
+    ],
+    [
+     1010,
+     1011,
+     999,
+     1000,
+     "replace"
+    ],
+    [
+     1011,
+     1026,
+     1000,
+     1015,
+     "equal"
+    ],
+    [
+     1026,
+     1038,
+     1015,
+     1019,
+     "replace"
+    ],
+    [
+     1038,
+     2057,
+     1019,
+     2038,
+     "equal"
+    ]
+   ],
+   "extension/src/types/index.ts": [
+    [
+     0,
+     1628,
+     0,
+     1628,
+     "equal"
+    ],
+    [
+     1628,
+     1636,
+     1628,
+     1629,
+     "replace"
+    ],
+    [
+     1636,
+     2074,
+     1629,
+     2067,
+     "equal"
+    ]
+   ],
+   "extension/src/bin/test-runner.ts": [
+    [
+     0,
+     373,
+     0,
+     373,
+     "equal"
+    ],
+    [
+     373,
+     377,
+     373,
+     375,
+     "replace"
+    ],
+    [
+     377,
+     378,
+     375,
+     376,
+     "equal"
+    ],
+    [
+     378,
+     379,
+     376,
+     377,
+     "replace"
+    ],
+    [
+     379,
+     380,
+     377,
+     378,
+     "equal"
+    ],
+    [
+     380,
+     381,
+     378,
+     379,
+     "replace"
+    ],
+    [
+     381,
+     432,
+     379,
+     430,
+     "equal"
+    ],
+    [
+     432,
+     433,
+     430,
+     431,
+     "replace"
+    ],
+    [
+     433,
+     444,
+     431,
+     442,
+     "equal"
+    ]
+   ],
+   "extension/src/bin/reap-orphans.ts": [
+    [
+     0,
+     17,
+     0,
+     17,
+     "equal"
+    ],
+    [
+     17,
+     18,
+     17,
+     18,
+     "replace"
+    ],
+    [
+     18,
+     31,
+     18,
+     31,
+     "equal"
+    ],
+    [
+     31,
+     32,
+     31,
+     31,
+     "delete"
+    ],
+    [
+     32,
+     33,
+     31,
+     32,
+     "equal"
+    ],
+    [
+     33,
+     34,
+     32,
+     32,
+     "delete"
+    ],
+    [
+     34,
+     35,
+     32,
+     33,
+     "equal"
+    ],
+    [
+     35,
+     43,
+     33,
+     33,
+     "delete"
+    ],
+    [
+     43,
+     63,
+     33,
+     53,
+     "equal"
+    ],
+    [
+     63,
+     64,
+     53,
+     54,
+     "replace"
+    ],
+    [
+     64,
+     87,
+     54,
+     77,
+     "equal"
+    ],
+    [
+     87,
+     88,
+     77,
+     78,
+     "replace"
+    ],
+    [
+     88,
+     119,
+     78,
+     109,
+     "equal"
+    ],
+    [
+     119,
+     128,
+     109,
+     110,
+     "replace"
+    ],
+    [
+     128,
+     129,
+     110,
+     111,
+     "equal"
+    ],
+    [
+     129,
+     138,
+     111,
+     113,
+     "replace"
+    ],
+    [
+     138,
+     140,
+     113,
+     115,
+     "equal"
+    ],
+    [
+     140,
+     145,
+     115,
+     117,
+     "replace"
+    ],
+    [
+     145,
+     159,
+     117,
+     131,
+     "equal"
+    ]
+   ],
+   "extension/src/services/orphan-reaper.ts": [
+    [
+     0,
+     1187,
+     0,
+     1187,
+     "equal"
+    ],
+    [
+     1187,
+     1189,
+     1187,
+     1187,
+     "delete"
+    ],
+    [
+     1189,
+     1190,
+     1187,
+     1188,
+     "equal"
+    ],
+    [
+     1190,
+     1208,
+     1188,
+     1188,
+     "delete"
+    ],
+    [
+     1208,
+     1259,
+     1188,
+     1239,
+     "equal"
+    ],
+    [
+     1259,
+     1260,
+     1239,
+     1240,
+     "replace"
+    ],
+    [
+     1260,
+     1279,
+     1240,
+     1259,
+     "equal"
+    ],
+    [
+     1279,
+     1280,
+     1259,
+     1260,
+     "replace"
+    ],
+    [
+     1280,
+     1282,
+     1260,
+     1262,
+     "equal"
+    ]
+   ]
+  }
+ },
+ "lanes": {
+  "b_src_root": {
+   "lane": "extension/src/.",
+   "files": [
+    "extension/src/hooks/handlers/config-protection.ts",
+    "extension/src/hooks/handlers/tsc-gate.ts",
+    "extension/src/hooks/shell-exec.ts",
+    "extension/src/lib/process-liveness.ts",
+    "extension/src/types/index.ts"
+   ]
+  },
+  "b_src_bin": {
+   "lane": "extension/src/bin",
+   "files": [
+    "extension/src/bin/check-flake-budget.ts",
+    "extension/src/bin/did-we-count-replay.ts",
+    "extension/src/bin/jar-runner.ts",
+    "extension/src/bin/microverse-runner.ts",
+    "extension/src/bin/monitor.ts",
+    "extension/src/bin/mux-runner.ts",
+    "extension/src/bin/pipeline-runner.ts",
+    "extension/src/bin/reap-orphans.ts",
+    "extension/src/bin/setup.ts",
+    "extension/src/bin/spawn-gate-remediator.ts",
+    "extension/src/bin/spawn-morty.ts",
+    "extension/src/bin/spawn-refinement-team.ts",
+    "extension/src/bin/test-runner.ts",
+    "extension/src/bin/verify-activity-timeline.ts",
+    "extension/src/bin/wasted-iter-replay.ts"
+   ]
+  },
+  "b_src_services": {
+   "lane": "extension/src/services",
+   "files": [
+    "extension/src/services/activity-timeline-verifier.ts",
+    "extension/src/services/backend-spawn.ts",
+    "extension/src/services/circuit-breaker.ts",
+    "extension/src/services/citadel/banned-constructs-audit.ts",
+    "extension/src/services/codegraph-service.ts",
+    "extension/src/services/convergence-gate.ts",
+    "extension/src/services/git-utils.ts",
+    "extension/src/services/judge-spawn-env.ts",
+    "extension/src/services/metrics-utils.ts",
+    "extension/src/services/microverse-state.ts",
+    "extension/src/services/orphan-reaper.ts",
+    "extension/src/services/pickle-utils.ts",
+    "extension/src/services/recovery-controller.ts",
+    "extension/src/services/scope-resolver.ts",
+    "extension/src/services/state-manager.ts",
+    "extension/src/services/ticket-completion-evidence.ts",
+    "extension/src/services/transaction-ticket-ops.ts"
+   ]
+  }
+ },
+ "c_whole_k3": {
+  "ids": [
+   "D1",
+   "D11",
+   "D2"
+  ],
+  "loc": {
+   "D2": {
+    "file": "extension/src/bin/spawn-refinement-team.ts",
+    "ranges": [
+     [
+      636,
+      636
+     ]
+    ],
+    "defect_lines": [
+     "    const result = spawnSyncFn('git', ['ls-files', '-z', '--', `*${token}`], {"
+    ],
+    "core": [
+     [
+      636,
+      636
+     ]
+    ]
+   },
+   "D1": {
+    "file": "extension/src/bin/mux-runner.ts",
+    "ranges": [
+     [
+      10930,
+      10930
+     ],
+     [
+      10935,
+      10935
+     ]
+    ],
+    "defect_lines": [
+     " * Returns `null` when git could not answer \u2014 an unanswered enumeration is NOT an empty",
+     "  const out = silentDeathGit(['diff', '--name-only', '--no-renames', '-z', range], workingDir);"
+    ],
+    "core": [
+     [
+      10935,
+      10935
+     ]
+    ]
+   },
+   "D11": {
+    "file": "extension/src/bin/reap-orphans.ts",
+    "ranges": [
+     [
+      18,
+      18
+     ],
+     [
+      32,
+      32
+     ],
+     [
+      33,
+      33
+     ],
+     [
+      34,
+      34
+     ],
+     [
+      54,
+      54
+     ],
+     [
+      78,
+      78
+     ],
+     [
+      110,
+      110
+     ],
+     [
+      112,
+      113
+     ],
+     [
+      116,
+      117
+     ]
+    ],
+    "defect_lines": [
+     "import { reapOrphanedWorkerProcs, FIXTURE_TMPDIR_MAX_AGE_MS, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';",
+     "  scanned: number;",
+     "  removed: number;",
+     "}",
+     "    return { scanned: 0, removed: 0 };",
+     "  return { scanned, removed };",
+     "function runStandaloneFixtureTmpDirSweep(): void {",
+     "    const result = sweepStaleFixtureTmpDirs();",
+     "    if (result.removed > 0) {",
+     "  } catch {",
+     "    // Best-effort session-GC \u2014 never block a test run."
+    ],
+    "core": [
+     [
+      18,
+      18
+     ],
+     [
+      34,
+      34
+     ],
+     [
+      54,
+      54
+     ],
+     [
+      78,
+      78
+     ],
+     [
+      110,
+      110
+     ],
+     [
+      112,
+      113
+     ],
+     [
+      116,
+      117
+     ]
+    ]
+   }
+  },
+  "maps": {
+   "extension/src/hooks/shell-exec.ts": [
+    [
+     0,
+     1513,
+     0,
+     1513,
+     "equal"
+    ]
+   ],
+   "extension/src/bin/spawn-refinement-team.ts": [
+    [
+     0,
+     635,
+     0,
+     635,
+     "equal"
+    ],
+    [
+     635,
+     646,
+     635,
+     636,
+     "replace"
+    ],
+    [
+     646,
+     2960,
+     636,
+     2950,
+     "equal"
+    ]
+   ],
+   "extension/src/bin/mux-runner.ts": [
+    [
+     0,
+     10929,
+     0,
+     10929,
+     "equal"
+    ],
+    [
+     10929,
+     10936,
+     10929,
+     10929,
+     "delete"
+    ],
+    [
+     10936,
+     10941,
+     10929,
+     10934,
+     "equal"
+    ],
+    [
+     10941,
+     10942,
+     10934,
+     10935,
+     "replace"
+    ],
+    [
+     10942,
+     14881,
+     10935,
+     14874,
+     "equal"
+    ]
+   ],
+   "extension/src/services/convergence-gate.ts": [
+    [
+     0,
+     2057,
+     0,
+     2057,
+     "equal"
+    ]
+   ],
+   "extension/src/types/index.ts": [
+    [
+     0,
+     2074,
+     0,
+     2074,
+     "equal"
+    ]
+   ],
+   "extension/src/bin/test-runner.ts": [
+    [
+     0,
+     444,
+     0,
+     444,
+     "equal"
+    ]
+   ],
+   "extension/src/bin/reap-orphans.ts": [
+    [
+     0,
+     17,
+     0,
+     17,
+     "equal"
+    ],
+    [
+     17,
+     18,
+     17,
+     18,
+     "replace"
+    ],
+    [
+     18,
+     31,
+     18,
+     31,
+     "equal"
+    ],
+    [
+     31,
+     32,
+     31,
+     31,
+     "delete"
+    ],
+    [
+     32,
+     33,
+     31,
+     32,
+     "equal"
+    ],
+    [
+     33,
+     34,
+     32,
+     32,
+     "delete"
+    ],
+    [
+     34,
+     35,
+     32,
+     33,
+     "equal"
+    ],
+    [
+     35,
+     43,
+     33,
+     33,
+     "delete"
+    ],
+    [
+     43,
+     63,
+     33,
+     53,
+     "equal"
+    ],
+    [
+     63,
+     64,
+     53,
+     54,
+     "replace"
+    ],
+    [
+     64,
+     87,
+     54,
+     77,
+     "equal"
+    ],
+    [
+     87,
+     88,
+     77,
+     78,
+     "replace"
+    ],
+    [
+     88,
+     119,
+     78,
+     109,
+     "equal"
+    ],
+    [
+     119,
+     128,
+     109,
+     110,
+     "replace"
+    ],
+    [
+     128,
+     129,
+     110,
+     111,
+     "equal"
+    ],
+    [
+     129,
+     138,
+     111,
+     113,
+     "replace"
+    ],
+    [
+     138,
+     140,
+     113,
+     115,
+     "equal"
+    ],
+    [
+     140,
+     145,
+     115,
+     117,
+     "replace"
+    ],
+    [
+     145,
+     159,
+     117,
+     131,
+     "equal"
+    ]
+   ],
+   "extension/src/services/orphan-reaper.ts": [
+    [
+     0,
+     1282,
+     0,
+     1282,
+     "equal"
+    ]
+   ]
+  }
+ },
+ "x_whole_k0": {
+  "ids": [],
+  "loc": {},
+  "maps": {}
+ }
+}
