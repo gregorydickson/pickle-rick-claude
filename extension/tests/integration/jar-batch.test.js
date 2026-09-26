@@ -15,6 +15,7 @@ import * as crypto from 'node:crypto';
 import { addToJar } from '../../services/jar-utils.js';
 import { writeStateFile } from '../../services/pickle-utils.js';
 import { StateManager } from '../../services/state-manager.js';
+import { discoverMarinatingTasks } from '../../bin/jar-runner.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-jar-'));
@@ -324,8 +325,8 @@ test('JAR-10: crash at task 4 — meta stays marinating, session active cleared,
       'meta statuses must be unchanged after crash recovery',
     );
 
-    // Only tasks 4-6 are eligible (marinating)
-    const eligible = taskIds.filter((id, i) => metaStatuses[i] === 'marinating');
+    // Only tasks 4-6 are eligible — asked of the production discovery, not re-derived here
+    const eligible = discoverMarinatingTasks(path.dirname(jarDir)).map((t) => t.taskId);
     assert.deepEqual(eligible, ['task-04', 'task-05', 'task-06'], 'resume must start from task 4');
   } finally {
     fs.rmSync(rootDir, { recursive: true, force: true });
@@ -348,8 +349,8 @@ test('JAR-11: write fail on task 5 marks it failed, task 6 remains eligible', ()
     // Task 6 must still be marinating (eligible for next run)
     assert.equal(metaStatuses[5], 'marinating', 'task 6 must remain marinating');
 
-    // Simulate what jar-runner does: collect only 'marinating' tasks
-    const eligible = taskIds.filter((id, i) => metaStatuses[i] === 'marinating');
+    // The production discovery must skip the failed entry, not just the consumed ones
+    const eligible = discoverMarinatingTasks(path.dirname(jarDir)).map((t) => t.taskId);
     assert.deepEqual(eligible, ['task-06'], 'only task 6 is eligible — skips task 5 failed entry');
 
     // Tasks 1-4 are not re-run
