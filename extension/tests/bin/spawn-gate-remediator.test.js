@@ -429,7 +429,10 @@ describe('spawn-gate-remediator', () => {
 
   const ISO_51 = '2026-09-26T00-00-00Z';
 
-  /** A target repo at `<tmp>/target` + a session whose state.json names it; no extensionClaudeMdContent seam. */
+  /**
+   * A target repo at `<tmp>/target` + a session whose state.json names it; no extensionClaudeMdContent seam.
+   * `failureFiles` may be a function of the target dir, for the ABSOLUTE rows the production gate emits.
+   */
   function makeTargetBrief(files, failureFiles, { writeState = true } = {}) {
     const tmpDir = makeTmpDir();
     const target = path.join(tmpDir, 'target');
@@ -443,7 +446,7 @@ describe('spawn-gate-remediator', () => {
     if (writeState) fs.writeFileSync(path.join(sessionRoot, 'state.json'), JSON.stringify({ working_dir: target }), 'utf-8');
     const grPath = path.join(tmpDir, 'gate-result.json');
     fs.writeFileSync(grPath, JSON.stringify(makeGateResult({
-      failures: failureFiles.map((f, i) => ({ check: 'lint', file: f, line: 1, ruleOrCode: 'r', message: 'm', severity: 'error', occurrence_index: i })),
+      failures: (typeof failureFiles === 'function' ? failureFiles(target) : failureFiles).map((f, i) => ({ check: 'lint', file: f, line: 1, ruleOrCode: 'r', message: 'm', severity: 'error', occurrence_index: i })),
     })), 'utf-8');
     return { tmpDir, target, sessionRoot, grPath };
   }
@@ -483,6 +486,36 @@ describe('spawn-gate-remediator', () => {
     const { section3 } = await runBrief(t);
     assert.equal(section3.split('PKGMARK').length - 1, 1);
     assert.equal(section3.split('ROOTMARK').length - 1, 1);
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
+
+  // Production rows are ABSOLUTE: a parsed row names the file, the unparsed #50 fallback names the
+  // package DIRECTORY. Both must walk from inside the target, not from `<target>/<absolute path>`.
+  test('AC-51a: absolute rows (a nested file and its package dir) read the package CLAUDE.md, each file once', async () => {
+    const t = makeTargetBrief(
+      { 'CLAUDE.md': 'ROOTMARK\n', 'packages/app/CLAUDE.md': 'APPMARK\n', 'packages/app/src/a.ts': 'x' },
+      (target) => [path.join(target, 'packages', 'app', 'src', 'a.ts'), path.join(target, 'packages', 'app')],
+    );
+    const { brief, section3 } = await runBrief(t);
+    assert.equal(section3.split('APPMARK').length - 1, 1, 'package CLAUDE.md reached from an absolute row');
+    assert.equal(section3.split('ROOTMARK').length - 1, 1);
+    assert.ok(section3.indexOf('APPMARK') < section3.indexOf('ROOTMARK'), 'nearest CLAUDE.md first');
+    assert.equal(brief.split('R-WSRC').length - 1, 0);
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
+
+  test('AC-51a: a row outside the target never pulls in CLAUDE.md above or beside working_dir', async () => {
+    const t = makeTargetBrief(
+      { 'CLAUDE.md': 'ROOTMARK\n' },
+      (target) => [path.join(path.dirname(target), 'outside', 'x.ts')],
+    );
+    fs.mkdirSync(path.join(t.tmpDir, 'outside'), { recursive: true });
+    fs.writeFileSync(path.join(t.tmpDir, 'outside', 'CLAUDE.md'), 'OUTSIDEMARK\n');
+    fs.writeFileSync(path.join(t.tmpDir, 'CLAUDE.md'), 'PARENTMARK\n');
+    const { section3 } = await runBrief(t);
+    assert.ok(section3.includes('ROOTMARK'), 'the walk still reads the target root');
+    assert.ok(!section3.includes('OUTSIDEMARK'), 'a sibling dir of the target is not the target');
+    assert.ok(!section3.includes('PARENTMARK'), 'the walk stops at working_dir inclusive');
     fs.rmSync(t.tmpDir, { recursive: true });
   });
 
