@@ -6,8 +6,9 @@
  *  (a) R-CCPM-1 — Role Framing + scrub: checkIterationLogForCodexSelfBootstrap
  *      is detection-only (returns events array, does not spawn subprocess).
  *      Claude backend short-circuits to []; codex stream-json triggers detection.
- *  (b) R-CCPM-2 — codex_manager_self_bootstrap_attempted event emits via
- *      logActivity into activity dir under PICKLE_DATA_ROOT override.
+ *  (b) R-CCPM-2 — a codex manager iteration whose output invokes setup.js emits
+ *      codex_manager_self_bootstrap_attempted through runIteration's own emitter
+ *      (fake `codex` on PATH); a claude iteration with the same output emits none.
  *  (c) R-CCPM-4 — Colliding session-map write with alive PID is rejected
  *      (spawns real setup.js subprocess).
  *  (d) R-CCPM-3 — Parent's orphans_detected surfaces a spawned-orphan within
@@ -23,8 +24,8 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { checkIterationLogForCodexSelfBootstrap, detectOrphanSessions } from '../../bin/mux-runner.js';
-import { logActivity, _setRetryDelayMs } from '../../services/activity-logger.js';
+import { checkIterationLogForCodexSelfBootstrap, detectOrphanSessions, runIteration } from '../../bin/mux-runner.js';
+import { _setRetryDelayMs } from '../../services/activity-logger.js';
 import { StateManager } from '../../services/state-manager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -83,61 +84,102 @@ function makeMinimalState(sessionDir, workingDir, overrides = {}) {
   };
 }
 
-// ── (a + b) R-CCPM-1 detection-only + R-CCPM-2 event emission ────────────────
+// ── (a) R-CCPM-1 detection-only ──────────────────────────────────────────────
 
-test('ccpm-wh1: (a) R-CCPM-1 + (b) R-CCPM-2 — detection scrubs claude, codex detects + event emits', () => {
-  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpm-wh1-ab-'));
+test('ccpm-wh1: (a) R-CCPM-1 — detection scrubs claude, codex detects', () => {
+  // Synthetic stream-json log carrying a Bash tool_use that invokes setup.js.
+  const setupCmd = `node ${SETUP_JS} --task 'spawned by codex manager'`;
+  const streamJsonLog = JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: setupCmd } }] },
+  });
+
+  // Claude backend returns [] immediately — no detection, no subprocess spawn.
+  const claudeResults = checkIterationLogForCodexSelfBootstrap(streamJsonLog, 'claude', 'T1', 1);
+  assert.equal(claudeResults.length, 0, 'claude backend must return [] (scrubbed)');
+
+  // Codex backend on the same log surfaces the setup.js invocation.
+  const codexResults = checkIterationLogForCodexSelfBootstrap(streamJsonLog, 'codex', 'T1', 1);
+  assert.equal(codexResults.length, 1, 'codex backend must detect 1 setup.js call');
+  assert.ok(Array.isArray(codexResults[0].attempted_argv), 'attempted_argv must be an array');
+  assert.equal(codexResults[0].ticket, 'T1');
+  assert.equal(codexResults[0].iteration, 1);
+});
+
+// ── (b) R-CCPM-2 production emitter via runIteration ─────────────────────────
+
+// Fake manager binary: prints one stream-json line whose Bash tool_use invokes
+// setup.js, then exits 0. Installed as both `codex` and `claude`.
+const FAKE_MANAGER_SOURCE = `#!/usr/bin/env node
+process.stdout.write(process.env.CCPM_FAKE_LINE + '\\n');
+process.exit(0);
+`;
+
+async function runManagerIteration(backend) {
+  const sessionDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `ccpm-wh1-b-${backend}-`)));
+  const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `ccpm-wh1-b-data-${backend}-`)));
+  fs.mkdirSync(path.join(sessionDir, 'templates'), { recursive: true });
+  fs.writeFileSync(path.join(sessionDir, 'templates', '_pickle-manager-prompt.md'), '# Pickle\n\n$ARGUMENTS\n');
+  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(makeMinimalState(sessionDir, sessionDir, {
+    pid: process.pid,
+    backend,
+    current_ticket: 'T1',
+  })));
+  const fakeBin = path.join(sessionDir, 'fake-bin');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  for (const name of ['codex', 'claude']) {
+    fs.writeFileSync(path.join(fakeBin, name), FAKE_MANAGER_SOURCE);
+    fs.chmodSync(path.join(fakeBin, name), 0o755);
+  }
+  const line = JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `node ${SETUP_JS} --task 'spawned by manager'` } }] },
+  });
+
   const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  const prevParentHash = process.env.PICKLE_PARENT_SESSION_HASH;
   process.env.PICKLE_DATA_ROOT = dataRoot;
   _setRetryDelayMs(0);
-
   try {
-    // Synthetic stream-json log carrying a Bash tool_use that invokes setup.js.
-    const setupCmd = `node ${SETUP_JS} --task 'spawned by codex manager'`;
-    const streamJsonLog = [
-      JSON.stringify({
-        type: 'assistant',
-        message: {
-          content: [
-            { type: 'tool_use', name: 'Bash', input: { command: setupCmd } },
-          ],
-        },
-      }),
-    ].join('\n');
-
-    // (a) R-CCPM-1 scrub: claude backend returns [] immediately — no detection,
-    // no subprocess spawn (the function is detection-only).
-    const claudeResults = checkIterationLogForCodexSelfBootstrap(streamJsonLog, 'claude', 'T1', 1);
-    assert.equal(claudeResults.length, 0, 'claude backend must return [] (scrubbed)');
-
-    // (a) Codex backend on the same log surfaces the setup.js invocation.
-    const codexResults = checkIterationLogForCodexSelfBootstrap(streamJsonLog, 'codex', 'T1', 1);
-    assert.equal(codexResults.length, 1, 'codex backend must detect 1 setup.js call');
-    assert.ok(Array.isArray(codexResults[0].attempted_argv), 'attempted_argv must be an array');
-    assert.equal(codexResults[0].ticket, 'T1');
-    assert.equal(codexResults[0].iteration, 1);
-
-    // (b) R-CCPM-2: emit the event through logActivity (caller's responsibility)
-    // and verify it lands in the activity dir under the temp PICKLE_DATA_ROOT.
-    logActivity({
-      event: 'codex_manager_self_bootstrap_attempted',
-      ts: new Date().toISOString(),
-      ticket: 'T1',
-      iteration: 1,
-      attempted_argv: codexResults[0].attempted_argv,
-      action_taken: 'logged',
+    const outcome = await runIteration(sessionDir, 1, sessionDir, '', {
+      envOverrides: {
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
+        PICKLE_BACKEND: backend,
+        PICKLE_DATA_ROOT: dataRoot,
+        CCPM_FAKE_LINE: line,
+      },
+      maxIterationSeconds: 30,
+      outputStallSeconds: 30,
     });
-
-    const events = readActivityEvents(dataRoot, 'codex_manager_self_bootstrap_attempted');
-    assert.equal(events.length, 1, 'exactly one codex_manager_self_bootstrap_attempted event');
-    assert.equal(events[0].action_taken, 'logged', 'action_taken must be "logged" (detection-only)');
-    assert.equal(events[0].ticket, 'T1');
-    assert.equal(events[0].iteration, 1);
+    const log = fs.readFileSync(path.join(sessionDir, 'tmux_iteration_1.log'), 'utf-8');
+    return { outcome, log, events: readActivityEvents(dataRoot, 'codex_manager_self_bootstrap_attempted') };
   } finally {
     if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
     else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    if (prevParentHash === undefined) delete process.env.PICKLE_PARENT_SESSION_HASH;
+    else process.env.PICKLE_PARENT_SESSION_HASH = prevParentHash;
+    fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
+}
+
+test('ccpm-wh1: (b) R-CCPM-2 — codex iteration invoking setup.js emits codex_manager_self_bootstrap_attempted', async () => {
+  const { outcome, log, events } = await runManagerIteration('codex');
+  assert.equal(outcome.timedOut, false, 'fake codex exit must be observed, not timed out');
+  assert.ok(log.includes('setup.js'), `fake codex must have run and written its line; log=${JSON.stringify(log)}`);
+  assert.equal(events.length, 1, 'exactly one codex_manager_self_bootstrap_attempted event from the production emitter');
+  assert.equal(events[0].action_taken, 'logged', 'action_taken must be "logged" (detection-only)');
+  assert.equal(events[0].ticket, 'T1');
+  assert.equal(events[0].iteration, 1);
+  assert.equal(events[0].source, 'pickle');
+  assert.ok(events[0].attempted_argv.some((a) => a.endsWith('setup.js')), 'attempted_argv carries the setup.js path');
+  assert.equal(typeof events[0].ts, 'string');
+});
+
+test('ccpm-wh1: (b) R-CCPM-2 control — claude iteration with the same output emits no bootstrap event', async () => {
+  const { log, events } = await runManagerIteration('claude');
+  assert.ok(log.includes('setup.js'), 'control must have run the fake manager too');
+  assert.equal(events.length, 0, 'claude backend must not emit codex_manager_self_bootstrap_attempted');
 });
 
 // ── (c) R-CCPM-4 alive-PID collision blocks setup.js ─────────────────────────
