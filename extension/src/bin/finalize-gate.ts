@@ -386,8 +386,7 @@ function logGateMode(ctx: FinalizeContext, rt: FinalizeRuntime, mode: 'baseline'
 async function runGateCycle(ctx: FinalizeContext, rt: FinalizeRuntime, cycle: number): Promise<{ code: number | null; result?: GateResult }> {
   rt.out(`[finalize-gate] cycle ${cycle + 1}/${ctx.cap} — running gate`);
   const baselinePath = finalizeBaselinePath(ctx);
-  // The helper owns the rule; this seam keeps the activity events and the full result the brief needs.
-  const seen: { result?: GateResult } = {};
+  // The helper owns the rule; this seam only adds the activity events.
   const outcome = await runBaselineAwareGate({
     workingDir: ctx.workingDir,
     baselinePath,
@@ -395,26 +394,26 @@ async function runGateCycle(ctx: FinalizeContext, rt: FinalizeRuntime, cycle: nu
     checks: [...FINALIZE_GATE_CHECKS],
     // A coarse row's fingerprint names the check, not the failure: never let a baselined one absorb a new one.
     keepFallbackRows: true,
-    runGateFn: async (gateOpts) => (seen.result = await rt.runGateFn({
+    runGateFn: (gateOpts) => rt.runGateFn({
       ...gateOpts,
       onEvent: (event, data) => rt.doLogActivity({ event: event as ActivityEventType, source: 'pickle', gate_payload: data }),
-    })),
+    }),
   });
   logGateMode(ctx, rt, outcome.mode, baselinePath);
-  const result = seen.result;
-  if ('threw' in outcome || !result) {
-    rt.err(`[finalize-gate] gate threw on cycle ${cycle + 1}: ${'threw' in outcome ? outcome.threw : 'no gate result'}`);
+  if ('threw' in outcome) {
+    rt.err(`[finalize-gate] gate threw on cycle ${cycle + 1}: ${outcome.threw}`);
     return { code: 1 };
   }
+  const result = outcome.gate;
   // The helper reads a timeout-only red with no check_status as green; a red status is never reported green.
   if (outcome.verdict === 'green' && result.status !== 'red') {
     rt.out(`[finalize-gate] gate green on cycle ${cycle + 1} — exit 0`);
     return { code: 0, result };
   }
   if (typeof outcome.verdict === 'object') {
-    return { code: reportUnmeasuredGate(ctx, rt, cycle, outcome.verdict.unmeasured, outcome.failures), result };
+    return { code: reportUnmeasuredGate(ctx, rt, cycle, outcome.verdict.unmeasured, result.failures), result };
   }
-  return remediateRedGate(ctx, rt, cycle, result, outcome.failures);
+  return remediateRedGate(ctx, rt, cycle, result);
 }
 
 async function remediateRedGate(
@@ -422,9 +421,8 @@ async function remediateRedGate(
   rt: FinalizeRuntime,
   cycle: number,
   result: GateResult,
-  failures: GateFailure[],
 ): Promise<{ code: number | null; result: GateResult }> {
-  const { inScope, outOfScope } = splitByScope(failures, ctx.allowedPaths, ctx.workingDir);
+  const { inScope, outOfScope } = splitByScope(result.failures, ctx.allowedPaths, ctx.workingDir);
   writeOutOfScopeFailures(ctx, rt, cycle, outOfScope);
   if (inScope.length === 0) {
     rt.out('[finalize-gate] all failures are out-of-scope — exit 0 (closed within scope)');

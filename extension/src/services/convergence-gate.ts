@@ -1332,8 +1332,8 @@ export function isCheckUnmeasured(
 export type BaselineAwareGateResult =
   | {
       verdict: 'green' | 'red' | { unmeasured: string[] };
-      /** Post-subtraction rows: what `runGate` reported after any baseline was applied. */
-      failures: GateFailure[];
+      /** What `runGate` reported, after any baseline was applied — `failures` are post-subtraction. */
+      gate: GateResult;
       mode: 'baseline' | 'strict';
     }
   /** A throw is a measurement failure, but the mode it was chosen in is still known and still owed to a log line. */
@@ -1383,12 +1383,11 @@ export async function runBaselineAwareGate(opts: BaselineAwareGateOpts): Promise
   } catch (err) {
     return { threw: err instanceof Error ? err.message : String(err), mode };
   }
-  const failures = gate.failures;
-  if (gate.status === 'red' && failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
-    return { verdict: 'red', failures, mode };
+  if (gate.status === 'red' && gate.failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
+    return { verdict: 'red', gate, mode };
   }
   const unmeasured = opts.checks.filter((check) => isCheckUnmeasured(gate.check_status, check));
-  return { verdict: unmeasured.length > 0 ? { unmeasured } : 'green', failures, mode };
+  return { verdict: unmeasured.length > 0 ? { unmeasured } : 'green', gate, mode };
 }
 
 export type GateCommandMap = { typecheck?: string; lint?: string; test?: string };

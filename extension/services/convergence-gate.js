@@ -1209,12 +1209,11 @@ export async function runBaselineAwareGate(opts) {
     catch (err) {
         return { threw: err instanceof Error ? err.message : String(err), mode };
     }
-    const failures = gate.failures;
-    if (gate.status === 'red' && failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
-        return { verdict: 'red', failures, mode };
+    if (gate.status === 'red' && gate.failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
+        return { verdict: 'red', gate, mode };
     }
     const unmeasured = opts.checks.filter((check) => isCheckUnmeasured(gate.check_status, check));
-    return { verdict: unmeasured.length > 0 ? { unmeasured } : 'green', failures, mode };
+    return { verdict: unmeasured.length > 0 ? { unmeasured } : 'green', gate, mode };
 }
 /**
  * AP-EXT-ITER7-02: every requested check recorded as `'skipped'` — the check_status a gate exit
