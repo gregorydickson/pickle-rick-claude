@@ -91,3 +91,118 @@ two records of the same run. No new gate leg, env var or exit reason.
 ## Out of scope
 
 Build-phase parallelism (#43, an operator decision); the microverse's own exit reasons; the timing script's gaps (field-timing.py).
+
+## Refinement — BINDING decisions (override earlier text; Fix §2 is DELETED, replaced by #49 below)
+
+*(refined: requirements, codebase and risk-scope analysts, 3 cycles each on claude-opus-5-5, read at `6ed776c2`)*
+
+**Corrections to the cycle-2 consensus (all measured):**
+- The unmeasured reader `reportConvergedWithUnmeasured` (`pipeline-runner.ts:5662`) has ONE call site, `:5811`,
+  on the converged path. Neither finalize-gate pass arm reaches it, so "record and let the existing reader
+  disclose" would have been a write-only channel.
+- `runJudgeTimeoutFinalizeGate` (`:5142-5171`) breaks unconditionally on a fail (`:5170`, no disposition). On a pass
+  it does `completed++` with no `nonConvergent` and no disposition.
+- `skill` is phase-derived on both routes (`:5157`, `:5199`) and already argv[3] to finalize-gate (`finalize-gate.ts:218`).
+- #49 has THREE terminal arms (`stampPipelineTerminalReason` `:4911-4930`): `finalizeNonSuccessTerminal`
+  (`:4842-4853`, which never calls `readExistingExitReason`), `finalizeFailedPipeline` (`:4740-4745`) and
+  `finalizeDegradedCompleteOpts` (`:4751-4755`). Fix §1 moves the field run onto the DEGRADED arm.
+
+### T1a — extract the shared helper (structural, no behaviour change)
+`runBaselineAwareGate` in `extension/src/services/convergence-gate.ts`. It chooses the mode (baseline ONLY after
+`gate/baseline.json` reads AND parses; otherwise strict, never passing `baselinePath` in strict mode, so it never
+captures) and runs the gate. It returns
+`{ verdict: 'green' | 'red' | { unmeasured: string[] }, failures: GateFailure[] /* post-subtraction */, mode }`
+or `{ threw: string }`. The verdict is computed from `check_status` (`isCheckUnmeasured`), never from `status` alone:
+baseline mode can subtract a timeout row and report green. `runCapGate` (`microverse-runner.ts:~5719-5787`) delegates
+to it, and `tests/rpgt-exit-paths.test.js` stays green. The caller owns its check list (cap: `['typecheck','lint']`).
+
+### T1b — finalize-gate adopts it (+ judge_timeout parity)
+- Baseline mode iff `skill === 'anatomy-park'` AND the baseline reads/parses; otherwise strict, logging
+  `[finalize-gate] strict (<why>)`. In baseline mode, log `[finalize-gate] baseline mode (captured <iso|iteration>)`.
+  This is the accepted rolling-baseline residual. szechuan stays strict. Residual: the cap in szechuan already reads
+  anatomy's baseline (#48); not fixed here.
+- Branch on the helper's verdict. `{unmeasured}` → persist the checks with
+  `writeMicroverseState(recordCapUnmeasured(...))` (add a write seam to `FinalizeGateOpts` next to
+  `readMicroverseStateFn`) and exit 0. Never exit 2 for unmeasured; cap exhaustion stays exit 2.
+- BOTH pass arms (`runAllBackendsExhaustedFinalizeGate`, `runJudgeTimeoutFinalizeGate`) call
+  `reportConvergedWithUnmeasured` after setting their disposition, reusing the marker `converged_with_unmeasured:<checks>`
+  unchanged: one string, one reader. The other half of the disposition already says the phase did not converge.
+  `microverse.json` is archived pre-szechuan (`:2854`), so anatomy's checks cannot leak onto szechuan.
+- judge_timeout sibling parity: fail → `finalize_gate_failed:judge_timeout` and
+  `isStrictPhasePolicy(runtime) ? break : continue`; pass → `nonConvergent++` plus disposition `judge_timeout`.
+  `abortSiteCensus` (`tests/nostop-gates-invariant.test.js:~805-815`) stays at 1. Extend
+  `tests/nostop-gates-sibling-parity.test.js` in place (fail row + `nonConvergent` compare), and check
+  `tests/oneabort-termination-matrix.test.js`.
+
+### T2 — #50 editable-file predicate (after T1b)
+A row names an editable file iff `file` is relative, OR it is an absolute path to an existing REGULAR file (stat seam
+on `FinalizeGateOpts`; a stat error means not editable). A non-editable row is never sent to the remediator, and it
+makes its check unmeasured (disclosed, exit 0), UNLESS the same check also has a NEW editable-file row, in which case
+the phase fails on that row. For identity: a row whose `ruleOrCode` is a fallback exit/signal token
+(`buildFailures` fallback `convergence-gate.ts:~1186-1197`, identity `check::<pkgDir>::exit_<n>`) is NEVER subtracted by
+baseline identity. Parsed `tests` rows (which also carry `file: pkgDir`) keep their name identity. Fixtures use a
+NESTED package dir with allowed paths beneath it (`matchesAllowedPath` ancestor arm).
+
+### T3 — #49 three-arm terminal stamp
+`isSuccessClassExitReason(r) = classifyMicroverseDisposition(r).reportAs === 'success' || classifyExitReason(r).verdict === 'success'`
+(no new list, `EXIT_DISPOSITIONS` unchanged). `readExistingExitReason` returns null for a success-class reason, so
+`finalizeFailedPipeline` stamps `failed` and `finalizeDegradedCompleteOpts` stamps `completed` (the R-NOPOSTTIER
+contract). `finalizeNonSuccessTerminal`'s null-reason fallback stamps `failed` over a success-class or `completed`
+on-disk reason. A specific failure reason (`done_without_commit_evidence`, `all_judge_backends_exhausted`) is still
+preserved. Accepted consequence: `claimPipelineRunnerActive` (`:1744-1756`) now clears the degraded `completed` on
+re-attach. The fixture is the REAL sequence: anatomy incomplete → `resetStateForPhase` clears → szechuan `converged` →
+terminal stamp. finalize-gate writes no `exit_reason`.
+
+### T4 — #51 target-repo trap doors
+`working_dir` comes from `<session-root>/state.json` (no new flag; the mux-runner subprocess caller
+`mux-runner.ts:~7767` has a fixed argv). Walk from each failing file's directory up to `working_dir` inclusive, each
+`CLAUDE.md` once, nearest-first, whole file. Per file: `MAX_FILE_BYTES` (50,000) with the existing "Read path
+directly" rendering. Total: 3 × `MAX_FILE_BYTES`, after which files are listed by path. No `CLAUDE.md` → "no
+CLAUDE.md in target", with 0 pickle-rick bytes. No identity branch: a pickle-rick target yields its own files via the
+walk. Callers: finalize-gate, microverse-runner, pipeline-runner (citadel), mux-runner (subprocess). Keep the
+`extensionClaudeMdContent` test seam name.
+
+### Acceptance criteria (replace the PRD's; HEAD values measured by reading at `6ed776c2`)
+| AC | Predicate | HEAD |
+|---|---|---|
+| AC-1 | anatomy `anatomy_non_convergent`, baseline granular lint F, finalize sees F → disposition does not start `finalize_gate_failed`; controls: delete baseline → red; `skill=szechuan` → strict | `finalize_gate_failed:anatomy_non_convergent` |
+| AC-2 | F + 1 new editable lint row → `finalize_gate_failed:*`; brief names only the new row | failed; brief names F+1 |
+| AC-3 | no baseline / baseline `{` → strict; stderr has `[finalize-gate] strict` | no such log |
+| AC-4 | szechuan incomplete + anatomy baseline with F, finalize sees F → strict (`finalize_gate_failed:*`); mutation "drop the skill conjunct" reds | strict |
+| AC-5 | incomplete, only a `tests` timeout → exit 0; `cap_unmeasured_checks` ⊇ `tests`; disposition contains `anatomy_non_convergent` AND `converged_with_unmeasured:tests`; completed 1, nonConvergent 1; mutation "delete the added reader call" reds | exit 2 → failed |
+| AC-6 | judge_timeout: fail + continue policy → `continue`, `finalize_gate_failed:judge_timeout`; strict → `break`; pass → `nonConvergent === 1`; census unchanged | `break`, no disposition; pass nonConvergent 0 |
+| AC-7 | `grep -rEn "export (async )?function runBaselineAwareGate" extension/src \| wc -l` returns 1; callers in `src/bin` = 2 | 0 / 0 |
+| AC-8 | baseline has a tests timeout row and finalize sees it → `cap_unmeasured_checks` has `tests` (not a silent green); mutation "branch on status" reds | n/a |
+| AC-F1..F4 | F1: fallback `tests::<pkg>::exit_1` in baseline and finalize → not green (unmeasured). F2: baseline test A red, finalize A+B → fails; brief names B only. F3: lint timed out in X + new editable lint row in Y → remediator spawned with Y. F4: lint timed out, only a pkgDir row → no spawn, unmeasured. Mutations: subtract fallback → F1 red; `!path.isAbsolute` → F4 red; every unmeasured-check row unmeasured → F3 red; non-editable ⇒ unmeasured regardless of ruleOrCode → F2 red | F1 failed; F4 spawns |
+| AC-49a..d | a: failed arm, anatomy failed + szechuan converged → `failed`; b: same with last `success` → `failed`; c: degraded arm → `completed`, R-NOPOSTTIER block green; d: `done_without_commit_evidence` / `all_judge_backends_exhausted` preserved; mutation "preserve any non-empty" reds a–c | `converged` |
+| AC-51a..d | a: field fixture with `FIELDMARK` → brief has `FIELDMARK`, 0 × `R-WSRC`; b: no CLAUDE.md → absence sentence, 0 × `R-WSRC`; c: 3 nested 60 KB CLAUDE.md → path lines, Section 3 ≤ cap; d: pickle-rick-shaped fixture → root + `extension/` referenced, ≤ cap; mutation "script-relative read" reds a | contains `R-WSRC` |
+| AC-G | `./node_modules/.bin/tsc && ./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/eslint src/ --max-warnings=0` exits 0; named test files pass | — |
+
+Test hosts (existing files only): `tests/bin/finalize-gate.test.js` (rewrite only the unmeasured exit-2 pins; cap
+exhaustion stays 2), `tests/rpgt-exit-paths.test.js`, `tests/nostop-gates-sibling-parity.test.js`,
+`tests/nostop-gates-invariant.test.js`, `tests/oneabort-termination-matrix.test.js`,
+`tests/integration/pipeline-runner-judge-reasons.test.js`, `tests/nostop-gates-phase-loop.test.js`,
+`tests/bin/spawn-gate-remediator.test.js`.
+
+### Risks (stated)
+R1 cross-phase baseline → skill scoping (the cap residual is noted). R2 fallback rows subtract fail-open → never
+subtracted. R3 status-green over an unmeasured check → verdict branching. R4 disclosure without a reader → both pass
+arms call it. R5 judge_timeout red halts → parity. R6 judge_timeout pass on baseline-subtracted debt → counted
+`nonConvergent` (the judge never confirmed). R7 rolling baseline → accepted, logged. R8 stamps drive resume → `failed`
+/ `completed`; auto-resume stops on both. R9 field evidence (`cap reached after`, `tests` timeout rows in the field
+`baseline.json`) → requested from the operator, non-blocking. R10 brief size → total cap.
+"No new exit reason" widens to "no new exit reason or finalize-gate exit code".
+
+## Implementation Task Breakdown
+
+| Order | ID | Title |
+|---|---|---|
+| 10 | ea1a6059 | Extract runBaselineAwareGate; the anatomy-park cap delegates to it with no behaviour change |
+| 20 | 54bb18d6 | finalize-gate judges incomplete anatomy-park exits against the session baseline and discloses unmeasured checks; judge_timeout matches its sibling |
+| 30 | 26d5ecf3 | finalize-gate never remediates or subtracts a failure row that names no editable file (#50) |
+| 40 | a572d2c0 | A failed or degraded pipeline never ends with a success-class exit_reason in state.json (#49) |
+| 50 | 9b6fd4cf | The gate remediation brief carries the target repo's CLAUDE.md trap doors, never pickle-rick's own (#51) |
+| 60 | 810082ee | Harden: code quality review of B-FINALGATE |
+| 70 | 653a114f | Audit: data flow integrity for B-FINALGATE |
+| 80 | 86b6a142 | Harden: test quality review of B-FINALGATE |
+| 90 | 2226e1b9 | Audit: cross-reference consistency for B-FINALGATE |
