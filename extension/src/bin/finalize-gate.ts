@@ -98,7 +98,8 @@ function splitByScope(
   const scopeRoot = resolveLexicalRepoRoot(workingDir);
 
   for (const failure of failures) {
-    if (/^<[^>]+>$/.test(failure.file) || !path.isAbsolute(failure.file)) {
+    // A relative row and a synthetic pseudo-file row (`<timeout>`) are never absolute: both stay in scope.
+    if (!path.isAbsolute(failure.file)) {
       inScope.push(failure);
       continue;
     }
