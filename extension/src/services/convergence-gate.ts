@@ -1306,6 +1306,65 @@ export function isCheckUnmeasured(
   return checkStatus[check] !== 'ran';
 }
 
+export type BaselineAwareGateResult =
+  | {
+      verdict: 'green' | 'red' | { unmeasured: string[] };
+      /** Post-subtraction rows: what `runGate` reported after any baseline was applied. */
+      failures: GateFailure[];
+      mode: 'baseline' | 'strict';
+    }
+  /** A throw is a measurement failure, but the mode it was chosen in is still known and still owed to a log line. */
+  | { threw: string; mode: 'baseline' | 'strict' };
+
+export interface BaselineAwareGateOpts {
+  workingDir: string;
+  /** `gate/baseline.json`. Spent ONLY in baseline mode; strict mode never receives it. */
+  baselinePath: string;
+  allowedPaths?: string[];
+  /** The caller owns its check list; the verdict is read over exactly these. */
+  checks: ('typecheck' | 'lint' | 'tests')[];
+  /** Injection seam — callers (and their tests) route the real gate through their own `_deps`. */
+  runGateFn?: (opts: RunGateOpts) => Promise<GateResult>;
+}
+
+/**
+ * B-CAPGATE, one home: judge the tree against the session baseline, or strictly when there is none.
+ *
+ * Mode: baseline ONLY once `baselinePath` reads AND parses (`readUsableBaseline`, the one such
+ * predicate); otherwise strict. `baselinePath` rides in baseline mode alone — handed to a session
+ * with no usable baseline, `runGate` would CAPTURE one and return green, faking a clean tree and
+ * writing the file this helper must never create. No `since`: `isSelfIntroducedFailure` is
+ * file-axis, so a phase-wide `since` would keep every pre-existing failure in an edited file.
+ *
+ * Verdict is read from `check_status`, never from `status` alone: baseline mode can subtract a
+ * `GATE_CHECK_TIMEOUT` row and report green. A real (non-timeout) failure is red whatever else
+ * happened; otherwise any requested check that did not `ran` makes the verdict `unmeasured`. A
+ * thrown gate is reported as `{ threw }` — a measurement failure, never a verdict on the tree.
+ */
+export async function runBaselineAwareGate(opts: BaselineAwareGateOpts): Promise<BaselineAwareGateResult> {
+  const mode = readUsableBaseline(opts.baselinePath) === null ? 'strict' : 'baseline';
+  const runGateFn = opts.runGateFn ?? runGate;
+  let gate: GateResult;
+  try {
+    gate = await runGateFn({
+      workingDir: opts.workingDir,
+      mode,
+      scope: 'full',
+      baselinePath: mode === 'baseline' ? opts.baselinePath : undefined,
+      allowedPaths: opts.allowedPaths,
+      checks: [...opts.checks],
+    });
+  } catch (err) {
+    return { threw: err instanceof Error ? err.message : String(err), mode };
+  }
+  const failures = gate.failures;
+  if (gate.status === 'red' && failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
+    return { verdict: 'red', failures, mode };
+  }
+  const unmeasured = opts.checks.filter((check) => isCheckUnmeasured(gate.check_status, check));
+  return { verdict: unmeasured.length > 0 ? { unmeasured } : 'green', failures, mode };
+}
+
 export type GateCommandMap = { typecheck?: string; lint?: string; test?: string };
 type GateEmit = (event: string, data: Record<string, unknown>) => void;
 type ProjectType = NonNullable<ReturnType<typeof detectProjectType>>;

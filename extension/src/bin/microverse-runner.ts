@@ -97,7 +97,7 @@ import {
   isCheckUnmeasured,
   getChangedExportedSymbols,
   getChangedFilesSince,
-  GATE_CHECK_TIMEOUT_CODE,
+  runBaselineAwareGate,
 } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 
@@ -5722,43 +5722,29 @@ type CapGateVerdict =
   | { kind: 'unmeasured'; checks: string[] };
 
 // #48: the cap judges the tree with the SAME instrument the per-iteration gate uses — baseline
-// mode against `gate/baseline.json`, scoped by `allowed_paths`. It passes NO `since`:
-// `isSelfIntroducedFailure` is file-axis, so a phase-wide `since` would keep every pre-existing
-// failure in a file the phase edited and re-create the very symptom this fixes. Self-introduced
-// breaks are already caught per iteration (`since: preIterSha`, sticky `postConvergenceSelfRedOpen`).
-// `baselinePath` rides ONLY in baseline mode: passed to a session with no baseline the gate would
-// CAPTURE one and return green, i.e. fake a clean tree and write the file the cap must never create.
-// A measurement failure (a thrown gate, or a check `check_status` does not record `ran`) is not a
-// verdict on the tree: it is reported as `unmeasured`, never as red.
+// mode against `gate/baseline.json`, scoped by `allowed_paths`, strict when there is none. The
+// rule itself (mode choice, no `since`, `baselinePath` only in baseline mode, verdict from
+// `check_status`) lives in `runBaselineAwareGate`; this only maps its answer onto the cap's verdict
+// and keeps the log lines. A thrown gate is a measurement failure, never a verdict on the tree.
 async function runCapGate(ctx: RunContext, state: MicroverseState): Promise<CapGateVerdict> {
   const baselinePath = path.join(ctx.sessionDir, 'gate', 'baseline.json');
-  const hasBaseline = await pathExists(baselinePath);
-  if (!hasBaseline) {
+  const result = await runBaselineAwareGate({
+    workingDir: ctx.workingDir,
+    baselinePath,
+    allowedPaths: state.allowed_paths,
+    checks: [...CAP_GATE_CHECKS],
+    runGateFn: _deps.runGate,
+  });
+  if (result.mode === 'strict') {
     ctx.log(`[R-APXG-3] no baseline at ${baselinePath} — strict cap gate`);
   }
-  let capGate: GateResult;
-  try {
-    capGate = await _deps.runGate({
-      workingDir: ctx.workingDir,
-      mode: hasBaseline ? 'baseline' : 'strict',
-      scope: 'full',
-      baselinePath: hasBaseline ? baselinePath : undefined,
-      allowedPaths: state.allowed_paths,
-      checks: [...CAP_GATE_CHECKS],
-    });
-  } catch (err) {
-    ctx.log(`[R-APXG-3] cap gate threw: ${safeErrorMessage(err)} — no check was measured`);
+  if ('threw' in result) {
+    ctx.log(`[R-APXG-3] cap gate threw: ${result.threw} — no check was measured`);
     return { kind: 'unmeasured', checks: [...CAP_GATE_CHECKS] };
   }
-  // A real (non-timeout) failure is red whatever else happened. Otherwise `check_status` alone
-  // decides measurement: a timeout row is subtracted like any other when the baseline was captured
-  // while the same check timed out (the uncertifiable baseline that drives the deferral to this
-  // cap), so the failure rows cannot be asked whether a check measured.
-  if (capGate.status === 'red' && capGate.failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
-    return { kind: 'red' };
-  }
-  const unmeasured = CAP_GATE_CHECKS.filter((check) => isCheckUnmeasured(capGate.check_status, check));
-  return unmeasured.length > 0 ? { kind: 'unmeasured', checks: unmeasured } : { kind: 'green' };
+  if (result.verdict === 'green') return { kind: 'green' };
+  if (result.verdict === 'red') return { kind: 'red' };
+  return { kind: 'unmeasured', checks: result.verdict.unmeasured };
 }
 
 // R-APXG-3: convergence was signaled but the gate deferred it — trust the worker after

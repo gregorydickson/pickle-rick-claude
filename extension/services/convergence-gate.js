@@ -1159,6 +1159,44 @@ export function isCheckUnmeasured(checkStatus, check) {
     return checkStatus[check] !== 'ran';
 }
 /**
+ * B-CAPGATE, one home: judge the tree against the session baseline, or strictly when there is none.
+ *
+ * Mode: baseline ONLY once `baselinePath` reads AND parses (`readUsableBaseline`, the one such
+ * predicate); otherwise strict. `baselinePath` rides in baseline mode alone — handed to a session
+ * with no usable baseline, `runGate` would CAPTURE one and return green, faking a clean tree and
+ * writing the file this helper must never create. No `since`: `isSelfIntroducedFailure` is
+ * file-axis, so a phase-wide `since` would keep every pre-existing failure in an edited file.
+ *
+ * Verdict is read from `check_status`, never from `status` alone: baseline mode can subtract a
+ * `GATE_CHECK_TIMEOUT` row and report green. A real (non-timeout) failure is red whatever else
+ * happened; otherwise any requested check that did not `ran` makes the verdict `unmeasured`. A
+ * thrown gate is reported as `{ threw }` — a measurement failure, never a verdict on the tree.
+ */
+export async function runBaselineAwareGate(opts) {
+    const mode = readUsableBaseline(opts.baselinePath) === null ? 'strict' : 'baseline';
+    const runGateFn = opts.runGateFn ?? runGate;
+    let gate;
+    try {
+        gate = await runGateFn({
+            workingDir: opts.workingDir,
+            mode,
+            scope: 'full',
+            baselinePath: mode === 'baseline' ? opts.baselinePath : undefined,
+            allowedPaths: opts.allowedPaths,
+            checks: [...opts.checks],
+        });
+    }
+    catch (err) {
+        return { threw: err instanceof Error ? err.message : String(err), mode };
+    }
+    const failures = gate.failures;
+    if (gate.status === 'red' && failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
+        return { verdict: 'red', failures, mode };
+    }
+    const unmeasured = opts.checks.filter((check) => isCheckUnmeasured(gate.check_status, check));
+    return { verdict: unmeasured.length > 0 ? { unmeasured } : 'green', failures, mode };
+}
+/**
  * AP-EXT-ITER7-02: every requested check recorded as `'skipped'` — the check_status a gate exit
  * that ran NOTHING owes. Shared by all four early-skip producers and the drift result so
  * `check_status` is TOTAL over `runGate`'s exits: absent now means "not produced by runGate",
