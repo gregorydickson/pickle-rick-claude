@@ -64,7 +64,7 @@ Date: 2026-09-24 · Scope: ~75 min desk research + refinement ticks · Informs: 
 | 2026-09-22-723eafe4 | 3 | 1 | 3.00 | 3 |
 | 2026-09-22-a88001dd | 2 | 1 | 2.00 | 2 |
 
-Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket and hardening-only sessions excluded). A whole-field parse gives 1.25, 1.00, 3.00, 1.50, 1.50, 3.00, 2.00; a `completion_commit` cross-check gives 2.5, 1.33, 1.5, 3.0, 3.0, 3.0, 2.0. **Every method bounds build parallelism at ≤3×, median ~1.5–2×.** Hardening stays serial, and the build share caps the gain at 1277 → 1031 min (−19%) on #43's worst bundle.
+Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket and hardening-only sessions excluded). Whole-field parsing and a `completion_commit` cross-check agree: **every method bounds build parallelism at ≤3×, median ~1.5–2×.** Hardening stays serial, and the build share caps the gain at 1277 → 1031 min (−19%) on #43's worst bundle.
 
 **Do declared lists predict diffs? Yes, conservatively** [M, this repo, 2026-09-26]. The 16 current sessions (the three 09-17 wave-table sessions no longer exist): 36 non-hardening tickets, 1 skipped (no commit), 27 of the rest declaring paths (8 lack a usable field). Declared = backticked file paths in the whole "Files to modify/create" field; actual = `git show --name-only --format=` over `completion_commit` plus `git log --all --grep=<id>` commits with the id in the *subject*, minus compiled mirrors and session artifacts.
 
@@ -76,7 +76,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket and hardening-only sess
 | Undeclared touch in another same-session ticket's declared set | 1 (a CLAUDE.md catalog) |
 | Same-wave ticket pairs whose actual diffs overlap | 0 of 11 |
 
-Matching message *bodies* too keeps the medians but raises hidden collisions to 8 and same-wave overlaps to 3, every extra from another ticket's commit or a PRD edit merely *mentioning* the id. **Implication:** lists over-declare more than they under-declare, so the wave table errs toward serializing; its 1.5–2× is not inflated by hidden collisions, though on 11 same-wave pairs. A file-disjoint scheduler should still treat CLAUDE.md catalogs and `.claude/**/*.md` as shared.
+Also matching message *bodies* raises hidden collisions to 8 and same-wave overlaps to 3, every extra from a commit merely *mentioning* the id. **Implication:** lists over-declare more than they under-declare, so the wave table errs toward serializing; its 1.5–2× is not inflated by hidden collisions, though on 11 same-wave pairs. A file-disjoint scheduler should still treat CLAUDE.md catalogs and `.claude/**/*.md` as shared.
 
 **How many concurrent units? Independent evidence on the knee** (primary sources read 2026-09-26):
 - **CooperBench (Khatua et al., 2026-01-19)** [M]. Agents building features concurrently in one repo, with messaging, succeed ~30% less than one agent doing both; on 46 tasks, "68.6% with 2 agents to 46.5% with 3 agents and further to 30.0% with 4 agents". The failures are coordination failures, i.e. costs of *coupled* work.
@@ -84,29 +84,30 @@ Matching message *bodies* too keeps the medians but raises hidden collisions to 
 - **Claim Plane (Nikolaev, 2026-08-02)** [M, single author]. On 30 CooperBench pairs × 3 seeds, pre-write admission lifted pair success 23.3% → 50.0% and integration success to 96.7%, but serialized 96.7% of executions: reliability bought with the wall-clock gain.
 - **Passes Alone, Fails Together (Xia, Wu & Park, 2026-09-21)** [M]. Two agents on 417 real Django PR pairs: 1 interference in 834 runs; on constructed tasks sharing helpers, 97%; a message describing the concurrent change recovered 82%.
 - **Destefanis & Aste (2026-08-17)** [M]: messaging grows "close to quadratically" with agent count over 1,902 runs. **Kim et al. (v3 2026-04-08)** [M]: gains from +80.8% (decomposable) to −70.0% (sequential planning). **AgenticFlict (v2 2026-05-12)** [M]: 27.67% of 107K simulated agent-PR merges conflict — a base rate, not a slope in N.
+- **Anthropic research system (2025-06-13)** [Mv; eval method unpublished]. An Opus 4 lead with Sonnet 4 subagents "outperformed single-agent Claude Opus 4 by 90.2% on our internal research eval"; multi-agent systems "use about 15× more tokens than chats"; on BrowseComp "token usage by itself explains 80% of the variance". Research, not coding: domains with "many dependencies between agents are not a good fit", and "most coding tasks involve fewer truly parallelizable tasks than research". Parallel search bought with tokens supports independent review lanes, not writer swarms.
 - **Read-out for lanes.** Every measured 2→3 curve on *coupled* work declines; CAID's second benchmark peaked at 2. None measures **file-disjoint, non-messaging review lanes with cherry-pick integration**; the closest (1/834 on disjoint real PRs) says our N is bounded by cherry-pick collisions and rate limits, not coordination. **2 lanes is the defensible start; go to 3 only on the soak's own conflict and dropped-lane rate.**
 
-**The anatomy-park stall is the C-compiler stall.** `discoverSubsystems` (`extension/src/bin/pipeline-runner.ts:471`) makes each top-level directory one subsystem, so all of `extension/` is one lane on `main`. Anthropic re-partitioned [Mv].
+**The anatomy-park stall is the C-compiler stall.** `discoverSubsystems` (`extension/src/bin/pipeline-runner.ts:471`) makes each top-level directory one subsystem, so all of `extension/` is one lane on `main`.
 
 **Review-size literature** (primary sources re-read 2026-09-24):
 - **Kumar et al. (2026-04-09): confounded.** Synthetic diffs "median 5 lines, max 40"; real PRs 20–500 lines (median 117). The <10-line bin (n=92) is all synthetic, the >50-line bins (n=34, 14) all real; F1 0.847 synthetic vs 0.066 real; one model (Haiku 4.5); the 10–50 bin (n=10) was *best*. **Not used as evidence** [M, confounded].
 - **SWR-Bench (Zeng et al., 2025-09-01; FSE 2026): clean.** Gemini-2.5-Pro PR-Review by ground-truth issue count N: recall 38.35% (N=1, 266 PRs) → 24.46 → 16.07 → 11.76 → **8.88% (N≥5, 22 PRs)**, precision flat at 29.6–44.1% [M]. My arithmetic: ~0.4–0.5 finds per PR at every N. Our accumulated diffs are the many-issue case.
 - **Sense and Sensitivity (Štorek et al., v5 2026-07-10; ACL 2026): mechanism.** Across 10 LLMs, semantic recall of code drops a median 92.73% as the snippet moves to the middle of a long context; lexical recall does not [M; understanding, not review].
-- **Sun et al. (2025-08): weak.** Hunk-level AI comments addressed 43.9% vs 13.9% file-level; "addressed" is not recall [M, confounded].
+- **Sun et al. (2025-08): weak** — "addressed" rate, not recall [M, confounded].
 - **Implication.** Direction supported twice; magnitude does not transfer. If finds per pass are fixed, **passes-to-clean scale with defect count, not partition size**; finer partitions save wall-clock only through concurrency, which the soak measures.
 
 **Strength.** Moderate-to-strong for "partition first, keep N small"; weak for recall gains from finer units. `--teams` adds vendor-documented halt/stall paths (lost on `/resume`, lagging status, teammates stopping on errors).
 
 ### #5 Move 4: worktree-as-proposal
 
-- **Evidence.** Strong design convergence [D]. CAID's **manager-owned merge, conflicting author resolves** is close to #5's accept/reject gate. The C compiler uses git's push conflict *as the lock*; Cursor found optimistic concurrency more robust than locks [Mv].
+- **Evidence.** Strong design convergence [D]. CAID's **manager-owned merge** is close to #5's accept/reject gate. The C compiler uses git's push conflict *as the lock*; Cursor found optimistic concurrency more robust than locks [Mv].
 - **What nobody claims.** No source measures isolation reducing defects versus trunk commits plus scope fences; the benefit is structural (rejection is free). Costs are measured: sequential integration made CAID slower and dearer [M]; conflict-preventing admission serialized nearly everything (Claim Plane) [M].
 - **Strength.** Design consensus plus cost measurements. "It deletes our five enforcement mechanisms" is a hypothesis until prototyped.
 
 ### #5 Move 5: state from git
 
 - **Evidence.** Every durable system surveyed keeps **one** authoritative record and derives the rest [D]; none keeps a 47-field mutable blob duplicating git.
-- **Relevance.** The smallest Move 5 derives current ticket from trailer commits + frontmatter status, removing the two-sources-of-truth bug. E4 measures it.
+- **Relevance.** The smallest Move 5 derives current ticket from trailer commits + frontmatter status; E4 measures it.
 
 ### #5 Moves 1–2: persistent knowledge
 
@@ -116,7 +117,7 @@ Matching message *bodies* too keeps the medians but raises hidden collisions to 
 ### The ~300-minute review toll
 
 - **Separate reviewers work** (Anthropic harness design, Cognition, MAST) [Mv/M]; our separate phases match the field.
-- **Our unit differs.** We review an accumulated subsystem diff in serial loops; the field reviews one PR with a channel to the author. SWR-Bench's fixed finds-per-pass predicts our long tails.
+- **Our unit differs.** We review an accumulated subsystem diff in serial loops, not one PR; SWR-Bench's fixed finds-per-pass predicts our long tails.
 - **Two supported cuts:** concurrent smaller units at small N; explicit per-unit stop conditions (MAST).
 - **Harnesses shrank as models improved** (Anthropic dropped sprints; mini-SWE-agent, Agentless).
 
@@ -126,8 +127,8 @@ Matching message *bodies* too keeps the medians but raises hidden collisions to 
 - **Design.** B-INVENTED diff `f36ea11e..3ae1d57a` (`extension/src` + `extension/tests`, 7,083 diff lines), the real anatomy-park Phase-1 prompt, `claude-opus-5-5`, 20 single-line mutations. Arms: (a) whole diff, k=20; (b) four directory partitions, k=20 total; (c) whole diff, k=5; 3 repeats each; 18 calls, 0 refusals. **Bar:** (b)/(a) recall ≥1.5× at ≤1.25× false positives → unit size matters; (c) ≫ (a) with flat finds-per-pass → SWR-Bench shape.
 - **Recall.** (a) 0.80 (0.70 / 0.95 / 0.75); (b) 0.90 (×3); (c) 1.00 (×3). Zero false positives.
 - **Read-out.** b/a = 1.125×, below the bar. Finds-per-pass tracked k (16 at k=20, 5 at k=5). One pass found 14–19 of 20: too easy for either hypothesis to bind.
-- **The one signal: tests.** The whole-diff pass reported nothing in `extension/tests` in 2 of 3 repeats (4/15 hits); its partition recovered them (12/15). Source files did slightly worse partitioned. This supports tests as their own lane (B-LANES constraint 2), not the broader recall claim.
-- **E3b.** Revert real historical fixes instead of planting mutations: the no-mutation control surfaced findings no mutated run reported, so planted defects crowd out real ones.
+- **The one signal: tests.** The whole-diff pass reported nothing in `extension/tests` in 2 of 3 repeats (4/15 hits); its partition recovered them (12/15). This supports tests as their own lane (B-LANES constraint 2), not the broader recall claim.
+- **E3b.** Revert real historical fixes instead of planting mutations; planted defects crowded out real ones in the control.
 
 **E1. Finer anatomy-park partition.** Roster one level deeper (`extension/src/bin`, `…/services`, `…/hooks`, `extension/tests`, …) on a findings-heavy bundle, against B-INVENTED (34 passes / 995 min, one lane). **Success:** largest lane ≤ 50% of baseline passes, wall-clock −25% or better, findings fixed not lower. **Falsified if** Σ passes ≈ 34+ with no wall-clock drop. The `v2.2.0-beta.1` soak now runs this with 2 concurrent lanes.
 
@@ -141,7 +142,7 @@ Matching message *bodies* too keeps the medians but raises hidden collisions to 
 - Anthropic, "Building a C compiler with a team of parallel Claudes" — https://www.anthropic.com/engineering/building-c-compiler (2026-02-05)
 - Anthropic, "Effective harnesses for long-running agents" — https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents (2025-11-26)
 - Anthropic, "Harness design for long-running application development" — https://www.anthropic.com/engineering/harness-design-long-running-apps (2026-03-24)
-- Anthropic, "How we built our multi-agent research system" — https://www.anthropic.com/engineering/multi-agent-research-system (2025-06; not re-read, see §6)
+- Anthropic, "How we built our multi-agent research system" — https://www.anthropic.com/engineering/multi-agent-research-system (2025-06-13; read from the primary page 2026-09-26)
 - Geng & Neubig, CAID — https://arxiv.org/abs/2603.21489 (v2 2026-07)
 - Khatua et al., "CooperBench" — https://arxiv.org/abs/2601.13295 (2026-01-19; scaling figures from the HTML full text, read 2026-09-26)
 - Cursor, "Scaling long-running autonomous coding" — https://cursor.com/blog/scaling-agents (2026-01-14)
@@ -171,21 +172,21 @@ Matching message *bodies* too keeps the medians but raises hidden collisions to 
 - LangGraph interrupts/persistence docs — https://docs.langchain.com/oss/python/langgraph/interrupts (accessed 2026-09-24)
 - OpenAI Agents SDK, "Agent orchestration" — https://openai.github.io/openai-agents-python/multi_agent/ (accessed 2026-09-24)
 
-Exact figures were checked against primary text except the Anthropic research-system figures (§6).
+Exact figures were checked against primary text.
 
 ## 6. Open research gaps
 
-1. **Systems not covered:** CrewAI, Sweep, AutoGen beyond Magentic-One; SWE-agent's ACI-paper numbers not re-verified.
-2. **Anthropic research-system figures are second-hand** (+90.2% over single-agent, ~15× tokens, tokens explain ~80% of variance); research, not coding; unused in any conclusion.
-3. **(Narrowed 2026-09-26.) The worker-count knee is no longer single-study, but no study measures review lanes.** CAID, CooperBench and Cursor put the knee at 2–4 for *coupled writers*. None measures file-disjoint, non-communicating review lanes integrated by cherry-pick; only the beta soak can.
-4. **Review-unit size vs defect count is unseparated.** No study varies diff size at a fixed real-defect count on real code. SWR-Bench varies count; Kumar et al. confound size with synthetic-vs-real; E3 saturated; E3b is next.
-5. **Single-study [M] results:** subtask-level memory (+4.7), VibeMemBench's 11/12, MetaGPT on older models, Sun et al. (confounded), Claim Plane (single author, 30 pairs), CooperBench's 2/3/4 curve (46 tasks).
-6. **Unmeasured repo claims:** whether each lifecycle phase earns its ~3 min; whether a `-p`-compatible teams path would survive `/resume` and hands-off runs. *(Narrowed 2026-09-26: declared lists vs diffs is measured in #43; open only at larger n.)*
-7. **(New.) Cherry-pick integration cost.** No source reports a conflict or dropped-lane rate for concurrent review lanes; the soak ledger's "lane outcomes" column is the first measurement.
+- **Gap 1.** **Systems not covered:** CrewAI, Sweep, AutoGen beyond Magentic-One; SWE-agent's ACI-paper numbers not re-verified.
+- **Gap 3.** **(Narrowed 2026-09-26.) The worker-count knee is no longer single-study, but no study measures review lanes.** CAID, CooperBench and Cursor put the knee at 2–4 for *coupled writers*. None measures file-disjoint, non-communicating review lanes integrated by cherry-pick; only the beta soak can.
+- **Gap 4.** **Review-unit size vs defect count is unseparated.** No study varies diff size at a fixed real-defect count on real code. SWR-Bench varies count; Kumar et al. confound size with synthetic-vs-real; E3 saturated; E3b is next.
+- **Gap 5.** **Single-study [M] results:** subtask-level memory (+4.7), VibeMemBench's 11/12, MetaGPT on older models, Sun et al. (confounded), Claim Plane (single author, 30 pairs), CooperBench's 2/3/4 curve (46 tasks).
+- **Gap 6.** **Unmeasured repo claims:** whether each lifecycle phase earns its ~3 min; whether a `-p`-compatible teams path would survive `/resume` and hands-off runs. *(Narrowed 2026-09-26: declared lists vs diffs is measured in #43; open only at larger n.)*
+- **Gap 7.** **(New.) Cherry-pick integration cost.** No source reports a conflict or dropped-lane rate for concurrent review lanes; the soak ledger's "lane outcomes" column is the first measurement.
 
 ## Changelog
 
 - 2026-09-24 — Added §6. Measured here: agent-team tools absent under `claude -p` and the Teams block sequential (`--teams` neither parallel nor runnable); build-wave speedup median 2.0× / pooled 1.86× over 7 bundles. Withdrew the confounded 0.657→0.043 figure for SWR-Bench and Sense and Sensitivity. E3 redesigned; E2 blocked.
 - 2026-09-24 — E3 run: inconclusive (saturated); b/a 1.125×; whole-diff review missed test files in 2/3 repeats, partitioning recovered them. E3b proposed.
-- 2026-09-26 — Narrowed gap 3 (worker-count knee) with CooperBench (2→3→4 agents: 68.6→46.5→30.0%), Cursor (20 locked agents ≈ 2–3), Claim Plane, Passes Alone Fails Together (1/834 on disjoint real PRs), Destefanis & Aste, Kim et al., AgenticFlict. Conclusion: start at 2 lanes, move to 3 only on soak conflict data; E2 cap lowered to 3. Added the `v2.2.0-beta.1` soak note to #43 and gap 7; tightened prose to under 4,000 words.
+- 2026-09-26 — Narrowed gap 3 (worker-count knee) with CooperBench, Cursor, Claim Plane, Passes Alone Fails Together, Destefanis & Aste, Kim et al., AgenticFlict. Conclusion: start at 2 lanes, move to 3 only on soak conflict data; E2 cap lowered to 3. Added the soak note and gap 7.
+- 2026-09-26 — Gap 2 closed: Anthropic research-system figures verified on the primary page (2025-06-13), labelled [Mv], added to #43 with its coding caveat.
 - 2026-09-26 — Gap 6 narrowed: declared lists vs diffs over 27 tickets (recall 1.00 median, precision 0.80; 1 hidden collision; 0/11 same-wave overlaps); the wave table's 1.5–2× holds, conservatively.
