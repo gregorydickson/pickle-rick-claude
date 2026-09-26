@@ -423,4 +423,125 @@ describe('spawn-gate-remediator', () => {
 
     fs.rmSync(tmpDir, { recursive: true });
   });
+  // ---------------------------------------------------------------------------
+  // #51 — Section 3 is drawn from the TARGET repo (session working_dir), never pickle-rick's own
+  // ---------------------------------------------------------------------------
+
+  const ISO_51 = '2026-09-26T00-00-00Z';
+
+  /** A target repo at `<tmp>/target` + a session whose state.json names it; no extensionClaudeMdContent seam. */
+  function makeTargetBrief(files, failureFiles, { writeState = true } = {}) {
+    const tmpDir = makeTmpDir();
+    const target = path.join(tmpDir, 'target');
+    for (const [rel, body] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(target, rel)), { recursive: true });
+      fs.writeFileSync(path.join(target, rel), body, 'utf-8');
+    }
+    fs.mkdirSync(target, { recursive: true });
+    const sessionRoot = path.join(tmpDir, 'session');
+    fs.mkdirSync(sessionRoot, { recursive: true });
+    if (writeState) fs.writeFileSync(path.join(sessionRoot, 'state.json'), JSON.stringify({ working_dir: target }), 'utf-8');
+    const grPath = path.join(tmpDir, 'gate-result.json');
+    fs.writeFileSync(grPath, JSON.stringify(makeGateResult({
+      failures: failureFiles.map((f, i) => ({ check: 'lint', file: f, line: 1, ruleOrCode: 'r', message: 'm', severity: 'error', occurrence_index: i })),
+    })), 'utf-8');
+    return { tmpDir, target, sessionRoot, grPath };
+  }
+
+  async function runBrief({ sessionRoot, grPath }) {
+    const code = await spawnGateRemediatorMain({
+      argv: ['--gate-result', grPath, '--session-root', sessionRoot, '--reason', 'strict'],
+      isoOverride: ISO_51,
+      stdout: () => {},
+      stderr: () => {},
+    });
+    assert.equal(code, 0);
+    const brief = fs.readFileSync(path.join(sessionRoot, 'gate', `remediation_${ISO_51}_brief.md`), 'utf-8');
+    const start = brief.indexOf('## Section 3');
+    const end = brief.indexOf('## Section 4');
+    return { brief, section3: brief.slice(start, end) };
+  }
+
+  test('AC-51a: a field repo brief carries the target CLAUDE.md and none of pickle-rick', async () => {
+    const t = makeTargetBrief(
+      { 'CLAUDE.md': '# Field rules\nFIELDMARK trap door\n', 'src/mod/CLAUDE.md': 'NEARMARK nested rule\n', 'src/mod/a.ts': 'x' },
+      [path.join('src', 'mod', 'a.ts')],
+    );
+    const { brief, section3 } = await runBrief(t);
+    assert.equal(brief.split('FIELDMARK').length - 1, 1, 'root CLAUDE.md content present once');
+    assert.ok(section3.includes('NEARMARK'), 'nested CLAUDE.md content present');
+    assert.ok(section3.indexOf('NEARMARK') < section3.indexOf('FIELDMARK'), 'nearest CLAUDE.md first');
+    assert.equal(brief.split('R-WSRC').length - 1, 0, 'no pickle-rick trap-door content');
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
+
+  test('AC-51a: a directory failing row still reads that directory CLAUDE.md, each file once', async () => {
+    const t = makeTargetBrief(
+      { 'CLAUDE.md': 'ROOTMARK\n', 'pkg/CLAUDE.md': 'PKGMARK\n' },
+      [path.join('pkg'), path.join('pkg')],
+    );
+    const { section3 } = await runBrief(t);
+    assert.equal(section3.split('PKGMARK').length - 1, 1);
+    assert.equal(section3.split('ROOTMARK').length - 1, 1);
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
+
+  test('AC-51b: no CLAUDE.md in the target → absence sentence, 0 pickle-rick bytes', async () => {
+    const t = makeTargetBrief({ 'src/a.ts': 'x' }, [path.join('src', 'a.ts')]);
+    const { brief, section3 } = await runBrief(t);
+    assert.ok(section3.includes('No CLAUDE.md in target'), section3);
+    assert.equal(brief.split('R-WSRC').length - 1, 0);
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
+
+  test('AC-51b: unreadable session state.json → absence sentence, 0 pickle-rick bytes', async () => {
+    const t = makeTargetBrief({ 'CLAUDE.md': 'ROOTMARK\n' }, ['src/a.ts'], { writeState: false });
+    const { brief, section3 } = await runBrief(t);
+    assert.ok(section3.includes('No CLAUDE.md in target'), section3);
+    assert.ok(!brief.includes('ROOTMARK'));
+    assert.equal(brief.split('R-WSRC').length - 1, 0);
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
+
+  test('AC-51c: three oversized nested CLAUDE.md files are listed by path and Section 3 stays under the cap', async () => {
+    const big = 'BIGBODY '.repeat(7_500); // 60 KB
+    const t = makeTargetBrief(
+      { 'CLAUDE.md': big, 'a/CLAUDE.md': big, 'a/b/CLAUDE.md': big, 'a/b/f.ts': 'x' },
+      [path.join('a', 'b', 'f.ts')],
+    );
+    const { section3 } = await runBrief(t);
+    assert.ok(!section3.includes('BIGBODY'), 'oversized bodies not inlined');
+    for (const rel of ['CLAUDE.md', path.join('a', 'CLAUDE.md'), path.join('a', 'b', 'CLAUDE.md')]) {
+      assert.ok(section3.includes(path.join(t.target, rel)), `path line for ${rel}`);
+    }
+    assert.ok(section3.length <= 3 * 50_000, `Section 3 is ${section3.length} chars`);
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
+
+  test('AC-51c: files that fit one at a time but not in total: inlined until the 3x cap, then path lines', async () => {
+    const mid = (tag) => `${tag} ` + 'x'.repeat(40_000);
+    const t = makeTargetBrief(
+      { 'CLAUDE.md': mid('ROOTTAG'), 'a/CLAUDE.md': mid('ATAG'), 'a/b/CLAUDE.md': mid('BTAG'), 'a/b/c/CLAUDE.md': mid('CTAG'), 'a/b/c/f.ts': 'x' },
+      [path.join('a', 'b', 'c', 'f.ts')],
+    );
+    const { section3 } = await runBrief(t);
+    assert.ok(section3.includes('CTAG') && section3.includes('BTAG') && section3.includes('ATAG'), 'nearest three inlined');
+    assert.ok(!section3.includes('ROOTTAG'), 'fourth file over the cap is not inlined');
+    assert.ok(section3.includes(path.join(t.target, 'CLAUDE.md')), 'fourth file is listed by path');
+    assert.ok(section3.length <= 3 * 50_000 + 2_000);
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
+
+  test('AC-51d: a pickle-rick-shaped target yields its own root and extension/ files via the walk', async () => {
+    const t = makeTargetBrief(
+      { 'CLAUDE.md': 'x'.repeat(60_000), 'extension/CLAUDE.md': 'y'.repeat(60_000), 'extension/src/bin/CLAUDE.md': 'SUBBIN\n', 'extension/src/bin/a.ts': 'x' },
+      [path.join('extension', 'src', 'bin', 'a.ts')],
+    );
+    const { section3 } = await runBrief(t);
+    assert.ok(section3.includes(path.join(t.target, 'CLAUDE.md')), 'root referenced');
+    assert.ok(section3.includes(path.join(t.target, 'extension', 'CLAUDE.md')), 'extension/ referenced');
+    assert.ok(section3.includes('SUBBIN'));
+    assert.ok(section3.length <= 3 * 50_000);
+    fs.rmSync(t.tmpDir, { recursive: true });
+  });
 });

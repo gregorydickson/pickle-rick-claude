@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
 import { isoCompactStamp, safeErrorMessage } from '../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { isBackend } from '../services/backend-spawn.js';
@@ -299,21 +298,81 @@ function loadFailingFileContents(gateResult: GateResult, readFile: (p: string, e
   return failingFileContents;
 }
 
+const NO_TARGET_CLAUDE_MD = '_No CLAUDE.md in target repo. No trap-door rules are available for this repo — do not assume any from another repository._';
+const TRAP_DOOR_TOTAL_CAP_BYTES = 3 * MAX_FILE_BYTES;
+
+/** The session's target repo. Unreadable state or a non-string `working_dir` is "no target". */
+function readTargetWorkingDir(sessionRoot: string, readFile: (p: string, enc: 'utf-8') => string): string | null {
+  try {
+    const wd = (JSON.parse(readFile(path.join(sessionRoot, 'state.json'), 'utf-8')) as { working_dir?: unknown }).working_dir;
+    return typeof wd === 'string' && wd !== '' ? path.resolve(wd) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Directory a failing row lives in: a directory row (unparsed `pkgDir` fallback) is its own start. */
+function failureStartDir(file: string, workingDir: string): string {
+  const abs = path.resolve(workingDir, file);
+  try {
+    return fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
+  } catch {
+    return path.dirname(abs);
+  }
+}
+
+/** Each CLAUDE.md from every failing path's directory up to `workingDir` inclusive: once each, nearest-first. */
+function collectTargetClaudeMdPaths(gateResult: GateResult, workingDir: string): string[] {
+  const seen = new Set<string>();
+  const startDirs = [...new Set(gateResult.failures.map(f => failureStartDir(f.file, workingDir)))];
+  for (const start of startDirs.length > 0 ? startDirs : [workingDir]) {
+    const inside = path.relative(workingDir, start);
+    let dir = inside.startsWith('..') || path.isAbsolute(inside) ? workingDir : start;
+    for (;;) {
+      seen.add(path.join(dir, 'CLAUDE.md'));
+      if (dir === workingDir || path.dirname(dir) === dir) break;
+      dir = path.dirname(dir);
+    }
+  }
+  return [...seen];
+}
+
+/**
+ * Section 3 is the TARGET repo's own trap doors, never the deployed pickle-rick's. A pickle-rick
+ * target gets its own files through the same walk — there is no identity branch. Files past the
+ * per-file or the total budget are listed by path so the remediator reads them itself.
+ */
 function loadTrapDoorSection(
   extensionClaudeMdContent: string | undefined,
+  gateResult: GateResult,
+  sessionRoot: string,
   readFile: (p: string, enc: 'utf-8') => string,
 ): string {
   if (extensionClaudeMdContent) return extensionClaudeMdContent;
 
-  const claudeMdPath = path.join(
-    path.dirname(path.dirname(fileURLToPath(import.meta.url))),
-    'CLAUDE.md'
-  );
-  try {
-    return readFile(claudeMdPath, 'utf-8');
-  } catch {
-    return '_CLAUDE.md trap-door section not available at brief-prep time. Read extension/CLAUDE.md before editing._';
+  const workingDir = readTargetWorkingDir(sessionRoot, readFile);
+  if (workingDir === null) return NO_TARGET_CLAUDE_MD;
+
+  const parts: string[] = [];
+  let inlinedBytes = 0;
+  for (const claudeMdPath of collectTargetClaudeMdPaths(gateResult, workingDir)) {
+    let raw: string;
+    try {
+      raw = readFile(claudeMdPath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const oversized = raw.length > MAX_FILE_BYTES;
+    const fits = !oversized && inlinedBytes + raw.length <= TRAP_DOOR_TOTAL_CAP_BYTES;
+    if (fits) inlinedBytes += raw.length;
+    parts.push(`### \`${claudeMdPath}\`\n`);
+    parts.push(
+      fits ? raw + '\n'
+        : oversized ? renderFailingFileBody(claudeMdPath, '__OVERSIZED__')
+          : `_Trap-door budget of ${TRAP_DOOR_TOTAL_CAP_BYTES} bytes spent. Read path directly: \`${claudeMdPath}\`_\n`,
+    );
   }
+  return parts.length > 0 ? parts.join('\n') : NO_TARGET_CLAUDE_MD;
 }
 
 function writeBriefFile(
@@ -386,7 +445,7 @@ function produceRemediationBrief(
   deps: SpawnGateRemediatorDeps,
 ): string {
   const failingFileContents = loadFailingFileContents(ctx.gateResult, deps.readFile);
-  const trapDoorSection = loadTrapDoorSection(extensionClaudeMdContent, deps.readFile);
+  const trapDoorSection = loadTrapDoorSection(extensionClaudeMdContent, ctx.gateResult, ctx.sessionRoot, deps.readFile);
 
   const briefContent = buildBriefContent({
     gateResult: ctx.gateResult,
