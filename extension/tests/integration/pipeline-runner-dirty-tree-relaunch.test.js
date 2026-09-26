@@ -97,6 +97,7 @@ test('relaunch boundary: dirty tracked file is reset, pipeline-runner starts cle
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     // Pipeline-runner must NOT fatal on dirty-tree
@@ -142,6 +143,7 @@ test('relaunch boundary: unrelated exempt tracked changes in docs/ are preserved
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     // No dirty-tree fatal
@@ -179,6 +181,7 @@ test('relaunch boundary: new untracked file from worker is removed', () => {
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     // No dirty-tree fatal
@@ -206,6 +209,7 @@ test('relaunch boundary: interrupted ticket remains retryable (current_ticket pr
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     assert.doesNotMatch(result.stderr, /Working tree at .* is dirty/);
@@ -232,6 +236,7 @@ test('non-relaunch: dirty tree still blocks startup when manager_relaunch_count 
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     // Guard still applies at first launch

@@ -85,6 +85,7 @@ test('dirty-tree guard ignores tracked dirty files that match .gitignore', () =>
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     assert.equal(result.status, 0, result.stderr);
@@ -104,6 +105,7 @@ test('dirty-tree guard fatal stderr lists each blocking file on its own line', (
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     assert.equal(result.status, 1);
@@ -135,6 +137,7 @@ test('dirty-tree guard exits 0 for dirty files listed in extension/.pipeline-run
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     assert.equal(result.status, 0, result.stderr);
@@ -160,6 +163,7 @@ test('dirty-tree guard ignores nested docs/ path at any depth (AC-PFNP-8-1)', ()
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     assert.equal(result.status, 0, `expected exit 0 but got ${result.status}:\n${result.stderr}`);
@@ -181,6 +185,7 @@ test('dirty-tree guard blocks nested non-docs dirty file (AC-PFNP-8-2)', () => {
     const result = spawnSync(process.execPath, [CLI, sessionDir], {
       cwd: repo,
       encoding: 'utf8',
+      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
     });
 
     assert.equal(result.status, 1, `expected exit 1 but got ${result.status}`);
