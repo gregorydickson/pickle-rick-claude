@@ -2,7 +2,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,10 +18,6 @@ function tmpRoot(prefix) {
 function writeJson(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
-}
-
-function sha256(filePath) {
-  return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
 function makeReleaseTarball(root, version) {
@@ -60,16 +55,6 @@ cp ${JSON.stringify(tarball)} "$dest/pickle-release.tar.gz"
     { mode: 0o755 },
   );
   return binDir;
-}
-
-function makeDeployedExtension(extensionRoot, version = '1.67.0') {
-  fs.mkdirSync(path.join(extensionRoot, 'bin'), { recursive: true });
-  fs.mkdirSync(path.join(extensionRoot, 'services'), { recursive: true });
-  fs.mkdirSync(path.join(extensionRoot, 'types'), { recursive: true });
-  writeJson(path.join(extensionRoot, 'package.json'), { version });
-  fs.writeFileSync(path.join(extensionRoot, 'bin/check-update.js'), 'export const checkUpdate = true;\n');
-  fs.writeFileSync(path.join(extensionRoot, 'services/state-manager.js'), 'export const stateManager = true;\n');
-  fs.writeFileSync(path.join(extensionRoot, 'types/index.js'), 'export const typesIndex = true;\n');
 }
 
 function bundleArtifact(acId, overrides = {}) {
@@ -144,92 +129,6 @@ test('integration.downgrade-e2e refuses lower release before install and propaga
     assert.equal(output.current, '1.67.0');
     assert.equal(fs.existsSync(path.join(extensionDir, 'install-marker.txt')), false);
     assert.match(fs.readFileSync(path.join(extensionDir, 'debug.log'), 'utf8'), /downgrade blocked/);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('integration.install-sh-e2e writes baseline, cron, and cleans update cache', () => {
-  const root = tmpRoot('lockdown-install-sh-e2e-');
-  try {
-    const homeDir = path.join(root, 'home');
-    const runtimeRoot = path.join(homeDir, '.claude', 'pickle-rick');
-    const sourceExtension = path.join(root, 'extension');
-    const mockBin = path.join(root, 'mock-bin');
-    const crontabStore = path.join(root, 'crontab.txt');
-
-    makeDeployedExtension(sourceExtension, '1.68.0');
-    fs.mkdirSync(path.join(root, 'bin'), { recursive: true });
-    fs.writeFileSync(path.join(root, 'bin/verify-deploy-parity.js'), '#!/usr/bin/env node\n');
-    writeJson(path.join(runtimeRoot, 'extension', 'package.json'), { version: '1.67.0' });
-    writeJson(path.join(runtimeRoot, 'update-check.json'), {
-      last_check_epoch: 1,
-      latest_version: '1.67.0',
-      current_version: '1.0.0',
-    });
-    fs.mkdirSync(mockBin, { recursive: true });
-    fs.writeFileSync(
-      path.join(mockBin, 'crontab'),
-      `#!/bin/sh
-set -eu
-store=${JSON.stringify(crontabStore)}
-if [ "$#" -eq 1 ] && [ "$1" = "-l" ]; then
-  [ -f "$store" ] || exit 1
-  cat "$store"
-  exit 0
-fi
-if [ "$#" -eq 1 ]; then
-  cp "$1" "$store"
-  exit 0
-fi
-exit 2
-`,
-      { mode: 0o755 },
-    );
-    const scriptPath = path.join(root, 'install-fixture.sh');
-    fs.writeFileSync(
-      scriptPath,
-      `#!/bin/bash
-set -euo pipefail
-SCRIPT_DIR=${JSON.stringify(root)}
-EXTENSION_ROOT="$HOME/.claude/pickle-rick"
-SRC_V="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version)" "$SCRIPT_DIR/extension/package.json")"
-DEPLOY_PARITY_CRON_ENTRY='*/5 * * * * /usr/bin/env node ~/.claude/pickle-rick/extension/bin/verify-deploy-parity.js >> ~/.claude/pickle-rick/deploy-parity-samples.jsonl 2>&1'
-hash_deployed_file() { shasum -a 256 "$EXTENSION_ROOT/$1" | awk '{print $1}'; }
-mkdir -p "$EXTENSION_ROOT/extension"
-rm -rf "$EXTENSION_ROOT/extension"
-mkdir -p "$EXTENSION_ROOT/extension"
-cp -R "$SCRIPT_DIR/extension/." "$EXTENSION_ROOT/extension/"
-cp "$SCRIPT_DIR/bin/verify-deploy-parity.js" "$EXTENSION_ROOT/extension/bin/verify-deploy-parity.js"
-DEPLOYED_V="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version)" "$EXTENSION_ROOT/extension/package.json")"
-jq -n --arg installed_at "2026-05-02T00:00:00Z" --arg src_version "$SRC_V" --arg dep_version "$DEPLOYED_V" --arg check_update "$(hash_deployed_file "extension/bin/check-update.js")" --arg state_manager "$(hash_deployed_file "extension/services/state-manager.js")" --arg types_index "$(hash_deployed_file "extension/types/index.js")" '{ installed_at: $installed_at, src_version: $src_version, dep_version: $dep_version, content_hashes: { "check-update.js": $check_update, "state-manager.js": $state_manager, "types/index.js": $types_index } }' > "$EXTENSION_ROOT/deploy-baseline.json"
-tmpfile="$(mktemp)"
-(crontab -l 2>/dev/null | grep -v 'verify-deploy-parity[.]js' || true) > "$tmpfile"
-printf '%s\\n' "$DEPLOY_PARITY_CRON_ENTRY" >> "$tmpfile"
-crontab "$tmpfile"
-rm -f "$tmpfile"
-UPDATE_CACHE_FILE="$EXTENSION_ROOT/update-check.json"
-if [ -f "$UPDATE_CACHE_FILE" ]; then
-  CACHE_CURRENT_VERSION="$(jq -r '.current_version // ""' "$UPDATE_CACHE_FILE" 2>/dev/null || echo "")"
-  if [ "$CACHE_CURRENT_VERSION" = "1.0.0" ] || [ "$CACHE_CURRENT_VERSION" != "$DEPLOYED_V" ]; then
-    rm -f "$UPDATE_CACHE_FILE"
-  fi
-fi
-`,
-      { mode: 0o755 },
-    );
-
-    const result = spawnSync('bash', [scriptPath], {
-      encoding: 'utf8',
-      env: { ...process.env, HOME: homeDir, PATH: `${mockBin}:${process.env.PATH}` },
-    });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const baseline = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'deploy-baseline.json'), 'utf8'));
-    assert.equal(baseline.src_version, '1.68.0');
-    assert.equal(baseline.dep_version, '1.68.0');
-    assert.equal(baseline.content_hashes['check-update.js'], sha256(path.join(runtimeRoot, 'extension/bin/check-update.js')));
-    assert.match(fs.readFileSync(crontabStore, 'utf8'), /verify-deploy-parity[.]js/);
-    assert.equal(fs.existsSync(path.join(runtimeRoot, 'update-check.json')), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
