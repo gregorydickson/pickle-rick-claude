@@ -229,21 +229,25 @@ test('RL-12: detectRateLimitInText — matches "out of usage" in log', () => {
   }
 });
 
-test('RL-13: detectRateLimitInText — ignores rate limit text inside user/tool_result lines', () => {
+test('RL-13: detectRateLimitInText — ignores rate limit text inside user/tool_result/assistant lines', () => {
   const dir = tmpDir();
   try {
     const logFile = path.join(dir, 'iter.log');
-    // rate limit text in a user-typed message — should be filtered
-    const userLine = JSON.stringify({
-      type: 'user',
-      message: { content: 'The rate limit prevents this.' },
-    });
-    const toolLine = JSON.stringify({
-      type: 'tool_result',
-      content: 'rate limit reached error',
-    });
-    fs.writeFileSync(logFile, userLine + '\n' + toolLine + '\n');
-    assert.equal(detectRateLimitInText(logFile), false);
+    // Text that DOES match a production pattern, so only the JSON-line filter can
+    // produce false; a non-matching phrase would pass with the filter deleted.
+    const phrase = 'Your daily usage limit has been reached';
+    const contentLines = [
+      JSON.stringify({ type: 'user', message: { content: phrase } }),
+      JSON.stringify({ type: 'tool_result', content: phrase }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: phrase }] } }),
+    ];
+    // Positive control: the same phrase outside a content line is detected.
+    fs.writeFileSync(logFile, phrase + '\n');
+    assert.equal(detectRateLimitInText(logFile), true, 'phrase must match a production pattern');
+    for (const line of contentLines) {
+      fs.writeFileSync(logFile, line + '\n');
+      assert.equal(detectRateLimitInText(logFile), false, `content line must be filtered: ${line}`);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
