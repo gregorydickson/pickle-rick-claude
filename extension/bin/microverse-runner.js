@@ -4513,7 +4513,7 @@ const CAP_GATE_CHECKS = ['typecheck', 'lint'];
 // CAPTURE one and return green, i.e. fake a clean tree and write the file the cap must never create.
 // A measurement failure (a thrown gate, or a check `check_status` does not record `ran`) is not a
 // verdict on the tree: it is reported as `unmeasured`, never as red.
-async function runCapGate(ctx, state, runGateFn) {
+async function runCapGate(ctx, state) {
     const baselinePath = path.join(ctx.sessionDir, 'gate', 'baseline.json');
     const hasBaseline = await pathExists(baselinePath);
     if (!hasBaseline) {
@@ -4521,7 +4521,7 @@ async function runCapGate(ctx, state, runGateFn) {
     }
     let capGate;
     try {
-        capGate = await runGateFn({
+        capGate = await _deps.runGate({
             workingDir: ctx.workingDir,
             mode: hasBaseline ? 'baseline' : 'strict',
             scope: 'full',
@@ -4564,7 +4564,7 @@ async function runCapGate(ctx, state, runGateFn) {
 // 0 and no terminal exit, against a control that exited `converged` at 3 — a permanently
 // unmeasurable sweep (any target whose typecheck the gate cannot run) withholds forever and the
 // run burns to its iteration/time budget instead of converging.
-async function handlePostConvergenceGateDeferral(workerResult, ctx, state, runGateFn = _deps.runGate) {
+async function handlePostConvergenceGateDeferral(workerResult, ctx, state) {
     if (workerResult.reason !== POST_CONVERGENCE_WITHHELD_REASON) {
         ctx.postConvergenceDeferralCount = 0;
         ctx.postConvergenceSelfRedOpen = false;
@@ -4588,7 +4588,7 @@ async function handlePostConvergenceGateDeferral(workerResult, ctx, state, runGa
         // AC-RPGT-7: re-run the gate at the cap; only return 'error' when the tree is RED.
         const capPrefix = `[R-APXG-3] Post-convergence gate deferred ${ctx.postConvergenceDeferralCount} consecutive time(s) ` +
             `(limit=${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT})`;
-        const verdict = await runCapGate(ctx, state, runGateFn);
+        const verdict = await runCapGate(ctx, state);
         if (verdict.kind === 'red') {
             ctx.log(`${capPrefix}; re-ran gate at cap — RED tree, refusing converge`);
             try {

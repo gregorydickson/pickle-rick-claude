@@ -5730,11 +5730,7 @@ type CapGateVerdict =
 // CAPTURE one and return green, i.e. fake a clean tree and write the file the cap must never create.
 // A measurement failure (a thrown gate, or a check `check_status` does not record `ran`) is not a
 // verdict on the tree: it is reported as `unmeasured`, never as red.
-async function runCapGate(
-  ctx: RunContext,
-  state: MicroverseState,
-  runGateFn: typeof runGate,
-): Promise<CapGateVerdict> {
+async function runCapGate(ctx: RunContext, state: MicroverseState): Promise<CapGateVerdict> {
   const baselinePath = path.join(ctx.sessionDir, 'gate', 'baseline.json');
   const hasBaseline = await pathExists(baselinePath);
   if (!hasBaseline) {
@@ -5742,7 +5738,7 @@ async function runCapGate(
   }
   let capGate: GateResult;
   try {
-    capGate = await runGateFn({
+    capGate = await _deps.runGate({
       workingDir: ctx.workingDir,
       mode: hasBaseline ? 'baseline' : 'strict',
       scope: 'full',
@@ -5789,7 +5785,6 @@ async function handlePostConvergenceGateDeferral(
   workerResult: { reason: string; selfRedOpen?: boolean },
   ctx: RunContext,
   state: MicroverseState,
-  runGateFn: typeof runGate = _deps.runGate,
 ): Promise<ExitReason | null> {
   if (workerResult.reason !== POST_CONVERGENCE_WITHHELD_REASON) {
     ctx.postConvergenceDeferralCount = 0;
@@ -5817,7 +5812,7 @@ async function handlePostConvergenceGateDeferral(
     const capPrefix =
       `[R-APXG-3] Post-convergence gate deferred ${ctx.postConvergenceDeferralCount} consecutive time(s) ` +
       `(limit=${POST_CONVERGENCE_GATE_DEFERRAL_LIMIT})`;
-    const verdict = await runCapGate(ctx, state, runGateFn);
+    const verdict = await runCapGate(ctx, state);
     if (verdict.kind === 'red') {
       ctx.log(`${capPrefix}; re-ran gate at cap — RED tree, refusing converge`);
       try {
