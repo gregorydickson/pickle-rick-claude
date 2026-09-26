@@ -5728,7 +5728,7 @@ type CapGateVerdict =
 // breaks are already caught per iteration (`since: preIterSha`, sticky `postConvergenceSelfRedOpen`).
 // `baselinePath` rides ONLY in baseline mode: passed to a session with no baseline the gate would
 // CAPTURE one and return green, i.e. fake a clean tree and write the file the cap must never create.
-// A measurement failure (a thrown gate, or a red made only of GATE_CHECK_TIMEOUT rows) is not a
+// A measurement failure (a thrown gate, or a check `check_status` does not record `ran`) is not a
 // verdict on the tree: it is reported as `unmeasured`, never as red.
 async function runCapGate(
   ctx: RunContext,
@@ -5754,11 +5754,15 @@ async function runCapGate(
     ctx.log(`[R-APXG-3] cap gate threw: ${safeErrorMessage(err)} — no check was measured`);
     return { kind: 'unmeasured', checks: [...CAP_GATE_CHECKS] };
   }
-  if (capGate.status !== 'red') return { kind: 'green' };
-  if (capGate.failures.length > 0 && capGate.failures.every((f) => f.ruleOrCode === GATE_CHECK_TIMEOUT_CODE)) {
-    return { kind: 'unmeasured', checks: CAP_GATE_CHECKS.filter((check) => isCheckUnmeasured(capGate.check_status ?? {}, check)) };
+  // A real (non-timeout) failure is red whatever else happened. Otherwise `check_status` alone
+  // decides measurement: a timeout row is subtracted like any other when the baseline was captured
+  // while the same check timed out (the uncertifiable baseline that drives the deferral to this
+  // cap), so the failure rows cannot be asked whether a check measured.
+  if (capGate.status === 'red' && capGate.failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
+    return { kind: 'red' };
   }
-  return { kind: 'red' };
+  const unmeasured = CAP_GATE_CHECKS.filter((check) => isCheckUnmeasured(capGate.check_status, check));
+  return unmeasured.length > 0 ? { kind: 'unmeasured', checks: unmeasured } : { kind: 'green' };
 }
 
 // R-APXG-3: convergence was signaled but the gate deferred it — trust the worker after

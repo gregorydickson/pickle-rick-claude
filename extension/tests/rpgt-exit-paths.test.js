@@ -523,11 +523,11 @@ function makeWorkspaceFixture() {
 }
 
 // The REAL baseline capture the per-iteration gate performs (`capturePerIterationGateBaseline`).
-async function captureBaseline(dir, sessionDir, allowedPaths) {
+async function captureBaseline(dir, sessionDir, allowedPaths, timeouts) {
     const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
     fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
     const captured = await runGate({
-        workingDir: dir, mode: 'baseline', scope: 'full', baselinePath, allowedPaths, checks: CAP_CHECKS,
+        workingDir: dir, mode: 'baseline', scope: 'full', baselinePath, allowedPaths, checks: CAP_CHECKS, _timeouts: timeouts,
     });
     assert.equal(captured.status, 'green', 'baseline capture returns green');
     assert.ok(fs.existsSync(baselinePath), 'baseline file written');
@@ -660,6 +660,27 @@ describe('convergence-exit: baseline-aware cap (#48)', () => {
             assert.ok(!logs.some((l) => l.includes(TRUSTED_LINE)), 'an unmeasured cap must not claim the bare trusted-exit line');
             assert.equal(inspected.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck');
             assert.equal(inspected.nonConvergent, 0, 'reported, not counted non-convergent');
+        } finally { rm(dir); }
+    });
+
+    test('AC-3: a baseline captured while typecheck timed out does not subtract the cap\'s own timeout into a bare green', async () => {
+        const dir = makeFailingFixture();
+        const timeouts = { perCheck: { typecheck: 1 } };
+        try {
+            const { exitReasons, logs, state, inspected } = await driveConvergenceDeferral(dir, 3, {
+                prepareSession: async (sessionDir) => {
+                    const baseline = JSON.parse(fs.readFileSync(await captureBaseline(dir, sessionDir, undefined, timeouts), 'utf-8'));
+                    assert.ok(baseline.failures.some((f) => f.ruleOrCode === 'GATE_CHECK_TIMEOUT'), 'fixture control: the baseline holds the timeout row');
+                },
+                runGate: realGate(timeouts),
+                inspect: async ({ sessionDir }) => runGate({
+                    workingDir: dir, mode: 'baseline', scope: 'full', baselinePath: path.join(sessionDir, 'gate', 'baseline.json'), checks: CAP_CHECKS, _timeouts: timeouts,
+                }),
+            });
+            assert.equal(inspected.status, 'green', 'fixture control: subtraction erases the timeout row, so the gate itself reads green');
+            assert.equal(exitReasons[2], 'converged');
+            assert.deepEqual(state.cap_unmeasured_checks, ['typecheck'], 'check_status, not the subtracted rows, decides measurement');
+            assert.ok(!logs.some((l) => l.includes(TRUSTED_LINE)), 'an unmeasured cap must not claim the bare trusted-exit line');
         } finally { rm(dir); }
     });
 
