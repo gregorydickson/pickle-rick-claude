@@ -235,17 +235,16 @@ function preflightStartIncoming(phases) {
     }
     return diags;
 }
-function autoCorrectGoalGateRetryTargets(phases) {
+function withDefaultRetryTargets(phases) {
     const diags = [];
-    for (const phase of phases) {
-        if (phase.goalGate && !phase.specFirst && !phase.retryTarget) {
-            // Auto-correct: default retryTarget to fix_<phaseName>
-            const defaultTarget = `fix_${sanitizeId(phase.name)}`;
-            phase.retryTarget = defaultTarget;
-            diags.push(mkDiag('DIAMOND_MISSING_EDGES', 'warning', `goalGate phase "${phase.name}" missing retryTarget — defaulted to "${defaultTarget}"`, sanitizeId(phase.name)));
-        }
-    }
-    return diags;
+    const repaired = phases.map(phase => {
+        if (!phase.goalGate || phase.specFirst || phase.retryTarget)
+            return phase;
+        const defaultTarget = `fix_${sanitizeId(phase.name)}`;
+        diags.push(mkDiag('DIAMOND_MISSING_EDGES', 'warning', `goalGate phase "${phase.name}" missing retryTarget — defaulted to "${defaultTarget}"`, sanitizeId(phase.name)));
+        return { ...phase, retryTarget: defaultTarget };
+    });
+    return { repaired, diags };
 }
 function preflightFanOutScope(phases) {
     const independent = phases.filter(p => !p.dependsOn || p.dependsOn.length === 0);
@@ -266,23 +265,23 @@ function preflightFanOutScope(phases) {
     }
     return diags;
 }
-function autoCorrectWorkspaceHttps(workspace, workspaceOpts) {
+function withHttpsRepoUrl(workspace, workspaceOpts) {
+    const unchanged = { repaired: workspaceOpts, diags: [] };
     if (workspace !== 'isolated')
-        return [];
-    if (!workspaceOpts?.repoUrl)
-        return [];
-    const repoUrl = workspaceOpts.repoUrl;
-    if (!repoUrl.startsWith('https://')) {
-        // Auto-correct: convert git@host:org/repo.git → https://host/org/repo.git
-        const sshMatch = repoUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
-        if (sshMatch) {
-            const converted = `https://${sshMatch[1]}/${sshMatch[2]}.git`;
-            workspaceOpts.repoUrl = converted;
-            return [mkDiag('WORKSPACE_NO_HTTPS', 'warning', `workspace="isolated" requires HTTPS repo_url — auto-converted "${repoUrl}" → "${converted}"`)];
-        }
-        return [mkDiag('WORKSPACE_NO_HTTPS', 'error', `workspace="isolated" requires HTTPS repo_url; got: "${repoUrl}" (unable to auto-convert)`)];
+        return unchanged;
+    const repoUrl = workspaceOpts?.repoUrl;
+    if (!repoUrl || repoUrl.startsWith('https://'))
+        return unchanged;
+    // Auto-correct: convert git@host:org/repo.git → https://host/org/repo.git
+    const sshMatch = repoUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+    if (!sshMatch) {
+        return { repaired: workspaceOpts, diags: [mkDiag('WORKSPACE_NO_HTTPS', 'error', `workspace="isolated" requires HTTPS repo_url; got: "${repoUrl}" (unable to auto-convert)`)] };
     }
-    return [];
+    const converted = `https://${sshMatch[1]}/${sshMatch[2]}.git`;
+    return {
+        repaired: { ...workspaceOpts, repoUrl: converted },
+        diags: [mkDiag('WORKSPACE_NO_HTTPS', 'warning', `workspace="isolated" requires HTTPS repo_url — auto-converted "${repoUrl}" → "${converted}"`)],
+    };
 }
 function preflightPlanDeadlock(phases) {
     return phases
@@ -317,7 +316,17 @@ function preflightPromptPaths(phases) {
     }
     return diags;
 }
-function autoMapAcceptanceCriteria(phases, acceptanceCriteria) {
+function withMappedAcceptanceCriteria(phases, acceptanceCriteria) {
+    const additions = new Map();
+    const diags = planAcceptanceCriteriaMapping(phases, acceptanceCriteria, additions);
+    const repaired = phases.map(phase => {
+        const added = additions.get(phase);
+        return added ? { ...phase, contextOnSuccess: { ...phase.contextOnSuccess, ...added } } : phase;
+    });
+    return { repaired, diags };
+}
+/** Records each AC key to auto-map into `additions` (phase → key → value); returns the mapping diagnostics. */
+function planAcceptanceCriteriaMapping(phases, acceptanceCriteria, additions) {
     const acKeys = Object.keys(acceptanceCriteria);
     if (acKeys.length === 0)
         return [];
@@ -325,6 +334,11 @@ function autoMapAcceptanceCriteria(phases, acceptanceCriteria) {
     const customKeys = acKeys.filter(k => !tier2.has(k));
     if (customKeys.length === 0)
         return [];
+    const addTo = (phase, k) => {
+        const added = additions.get(phase) ?? {};
+        added[k] = String(acceptanceCriteria[k] ?? 'true');
+        additions.set(phase, added);
+    };
     // Collect already-mapped keys
     const alreadyMapped = new Set();
     for (const p of phases) {
@@ -340,11 +354,8 @@ function autoMapAcceptanceCriteria(phases, acceptanceCriteria) {
     // Single-phase shortcut: all unmapped custom keys → the only phase
     if (implPhases.length === 1) {
         const phase = implPhases[0];
-        if (!phase.contextOnSuccess)
-            phase.contextOnSuccess = {};
-        for (const k of unmapped) {
-            phase.contextOnSuccess[k] = String(acceptanceCriteria[k] ?? 'true');
-        }
+        for (const k of unmapped)
+            addTo(phase, k);
         return [mkDiag('MISSING_AC_MAPPING', 'info', `single-phase pipeline — auto-mapped ${unmapped.length} AC key(s) to phase "${phase.name}": ${unmapped.join(', ')}`)];
     }
     // Multi-phase: try prefix/substring match
@@ -355,27 +366,24 @@ function autoMapAcceptanceCriteria(phases, acceptanceCriteria) {
             return k.includes(id) || id.includes(k.replace(/_/g, ''));
         });
         if (match) {
-            if (!match.contextOnSuccess)
-                match.contextOnSuccess = {};
-            match.contextOnSuccess[k] = String(acceptanceCriteria[k] ?? 'true');
+            addTo(match, k);
             diags.push(mkDiag('MISSING_AC_MAPPING', 'info', `auto-mapped AC key "${k}" to phase "${match.name}" (name match)`));
         }
         // If no match, let grRule6 handle it with better fix hints
     }
     return diags;
 }
-function autoCorrectMissingAllowedPaths(phases) {
+function withDefaultAllowedPaths(phases) {
     const diags = [];
-    for (const phase of phases) {
+    const repaired = phases.map(phase => {
         if (phase.securityScan || phase.docOnly)
-            continue;
-        if (!phase.allowedPaths || phase.allowedPaths.length === 0) {
-            // Auto-correct: default to src/**/tests/** and warn
-            phase.allowedPaths = ['src/**', 'tests/**'];
-            diags.push(mkDiag('MISSING_ALLOWED_PATHS', 'warning', `phase "${phase.name}" missing allowedPaths — defaulted to ["src/**", "tests/**"]`, sanitizeId(phase.name)));
-        }
-    }
-    return diags;
+            return phase;
+        if (phase.allowedPaths && phase.allowedPaths.length > 0)
+            return phase;
+        diags.push(mkDiag('MISSING_ALLOWED_PATHS', 'warning', `phase "${phase.name}" missing allowedPaths — defaulted to ["src/**", "tests/**"]`, sanitizeId(phase.name)));
+        return { ...phase, allowedPaths: ['src/**', 'tests/**'] };
+    });
+    return { repaired, diags };
 }
 function buildPhaseDependencyGraph(phases) {
     const adj = new Map();
@@ -1105,7 +1113,7 @@ export class DotBuilder {
             throw new BuildError('ALREADY_BUILT', 'build() has already been called');
         }
         this._built = true;
-        const preflightDiags = this._validatePreflightSpecs();
+        const preflightDiags = this._repairAndValidatePreflightSpecs();
         const preflightError = preflightDiags.find(d => d.severity === 'error');
         if (preflightError) {
             throw new BuildError(preflightError.rule, preflightError.message, preflightDiags);
@@ -1127,10 +1135,21 @@ export class DotBuilder {
         }
         return { dot, slug: this._slug, patternsApplied, defenseMatrix, diagnostics };
     }
-    _validatePreflightSpecs() {
+    /**
+     * Applies the pure with* spec repairs, stores the repaired phases/workspace, then runs the
+     * preflight* checks against the repaired spec. The checks never see an unrepaired value
+     * (fan-out scope reads defaulted retryTargets; prompt paths read defaulted allowedPaths);
+     * each repair's diagnostics keep their historical position in the returned list.
+     */
+    _repairAndValidatePreflightSpecs() {
+        const retryTargets = withDefaultRetryTargets(this._phases);
+        const allowedPaths = withDefaultAllowedPaths(retryTargets.repaired);
+        const acMapping = withMappedAcceptanceCriteria(allowedPaths.repaired, this._spec.acceptanceCriteria ?? {});
+        const https = withHttpsRepoUrl(this._spec.workspace, this._spec.workspaceOpts);
+        this._phases = acMapping.repaired;
+        if (https.repaired !== this._spec.workspaceOpts)
+            this._spec = { ...this._spec, workspaceOpts: https.repaired };
         const phases = this._phases;
-        // preflight* entries are pure checks; autoCorrect*/autoMap* entries repair the spec
-        // in place and report the repair, so their position in this list is load-bearing.
         return [
             ...preflightReservedIds(phases),
             ...preflightDanglingDeps(phases),
@@ -1138,14 +1157,14 @@ export class DotBuilder {
             ...preflightAllowedPaths(phases),
             ...preflightCircularDeps(phases),
             ...preflightStartIncoming(phases),
-            ...autoCorrectGoalGateRetryTargets(phases),
+            ...retryTargets.diags,
             ...preflightFanOutScope(phases),
-            ...autoCorrectWorkspaceHttps(this._spec.workspace, this._spec.workspaceOpts),
+            ...https.diags,
             ...preflightWorkspacePush(this._spec.workspace, phases),
             ...preflightPlanDeadlock(phases),
-            ...autoCorrectMissingAllowedPaths(phases),
-            ...autoMapAcceptanceCriteria(phases, this._spec.acceptanceCriteria ?? {}),
-            ...preflightPromptPaths(phases), // must run after allowedPaths auto-correction
+            ...allowedPaths.diags,
+            ...acMapping.diags,
+            ...preflightPromptPaths(phases),
         ];
     }
     _validateConvergenceSpec() {
