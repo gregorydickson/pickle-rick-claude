@@ -29,17 +29,34 @@ const PARITY_FILES = [
 ];
 
 let tmpHome = '';
+let plantedFixtures = [];
+
+// The fixture dirs live inside the SOURCE tree, where an operator's real session state and
+// codegraph index may already sit (both gitignored, so git cannot restore them). Cleanup
+// removes only what planting created: the dummy file, plus the topmost directory that
+// mkdirSync reports it made — never a directory that existed before the test.
+function plantFixture(file, content) {
+    const createdDir = fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+    return { file, createdDir };
+}
+
+function removeFixture({ file, createdDir }) {
+    try { fs.rmSync(file, { force: true }); } catch { /* best-effort */ }
+    if (createdDir) {
+        try { fs.rmSync(createdDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+}
 
 before(() => {
-    fs.mkdirSync(PICKLE_RICK_FIXTURE_DIR, { recursive: true });
-    fs.writeFileSync(PICKLE_RICK_FIXTURE_FILE, 'fixture: untracked working-dir state\n');
-    fs.mkdirSync(CODEGRAPH_FIXTURE_DIR, { recursive: true });
-    fs.writeFileSync(CODEGRAPH_FIXTURE_FILE, 'fixture: untracked codegraph index\n');
+    plantedFixtures = [
+        plantFixture(PICKLE_RICK_FIXTURE_FILE, 'fixture: untracked working-dir state\n'),
+        plantFixture(CODEGRAPH_FIXTURE_FILE, 'fixture: untracked codegraph index\n'),
+    ];
 });
 
 after(() => {
-    try { fs.rmSync(path.join(EXTENSION_ROOT_SRC, '.pickle-rick'), { recursive: true, force: true }); } catch { /* best-effort */ }
-    try { fs.rmSync(CODEGRAPH_FIXTURE_DIR, { recursive: true, force: true }); } catch { /* best-effort */ }
+    for (const planted of plantedFixtures) removeFixture(planted);
     if (tmpHome) {
         try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
@@ -112,4 +129,32 @@ test('install-excludes-working-dir-state: deploy tree contains no .pickle-rick o
         fs.existsSync(path.join(deployedExtensionRoot, 'services', 'state-manager.js')),
         'services/state-manager.js missing from deploy tree',
     );
+});
+
+test('install-excludes-working-dir-state: fixture cleanup spares pre-existing operator state', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-excludes-cleanup-'));
+    try {
+        const operatorDb = path.join(root, '.codegraph', 'codegraph.db');
+        const operatorSession = path.join(root, '.pickle-rick', 'sessions', 'real-session', 'state.json');
+        fs.mkdirSync(path.dirname(operatorDb), { recursive: true });
+        fs.writeFileSync(operatorDb, 'operator index');
+        fs.mkdirSync(path.dirname(operatorSession), { recursive: true });
+        fs.writeFileSync(operatorSession, '{}');
+
+        const plantedIntoExisting = [
+            plantFixture(path.join(root, '.codegraph', 'dummy-index.bin'), 'x'),
+            plantFixture(path.join(root, '.pickle-rick', 'sessions', 'dummy-session.txt'), 'x'),
+        ];
+        const plantedFresh = plantFixture(path.join(root, 'fresh', 'nested', 'dummy.txt'), 'x');
+        for (const planted of [...plantedIntoExisting, plantedFresh]) removeFixture(planted);
+
+        assert.ok(fs.existsSync(operatorDb), 'cleanup deleted a pre-existing .codegraph index');
+        assert.ok(fs.existsSync(operatorSession), 'cleanup deleted a pre-existing .pickle-rick session');
+        for (const { file } of plantedIntoExisting) {
+            assert.equal(fs.existsSync(file), false, `planted fixture survived cleanup: ${file}`);
+        }
+        assert.equal(fs.existsSync(path.join(root, 'fresh')), false, 'a directory the fixture created survived cleanup');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
 });
