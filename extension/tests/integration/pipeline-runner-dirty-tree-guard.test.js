@@ -15,6 +15,16 @@ function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+// Runs the pipeline-runner CLI against the session with its activity sandboxed to the session dir.
+function runPipelineCli(sessionDir, repo) {
+  return spawnSync(process.execPath, [CLI, sessionDir], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+    timeout: CLI_TIMEOUT_MS,
+  });
+}
+
 function git(args, cwd) {
   return execFileSync('git', args, { cwd, stdio: 'pipe' }).toString().trim();
 }
@@ -83,12 +93,7 @@ test('dirty-tree guard ignores tracked dirty files that match .gitignore', () =>
     git(['commit', '-q', '-m', 'ignore tracked file'], repo);
     fs.writeFileSync(path.join(repo, 'foo.txt'), 'changed\n');
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stderr, /\[FATAL\]/);
@@ -104,12 +109,7 @@ test('dirty-tree guard fatal stderr lists each blocking file on its own line', (
     fs.writeFileSync(path.join(repo, 'alpha.txt'), 'a\n');
     fs.writeFileSync(path.join(repo, 'beta.txt'), 'b\n');
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /\[FATAL\]/);
@@ -137,12 +137,7 @@ test('dirty-tree guard exits 0 for dirty files listed in extension/.pipeline-run
 
     fs.writeFileSync(path.join(repo, 'allowed.txt'), 'changed\n');
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stderr, /\[FATAL\]/);
@@ -164,12 +159,7 @@ test('dirty-tree guard ignores nested docs/ path at any depth (AC-PFNP-8-1)', ()
     git(['commit', '-q', '-m', 'track nested doc'], repo);
     fs.writeFileSync(docFile, 'changed\n');
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     assert.equal(result.status, 0, `expected exit 0 but got ${result.status}:\n${result.stderr}`);
     assert.doesNotMatch(result.stderr, /\[FATAL\]/);
@@ -187,12 +177,7 @@ test('dirty-tree guard blocks nested non-docs dirty file (AC-PFNP-8-2)', () => {
     fs.mkdirSync(srcDir, { recursive: true });
     fs.writeFileSync(path.join(srcDir, 'foo.ts'), 'dirty\n');
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     assert.equal(result.status, 1, `expected exit 1 but got ${result.status}`);
     assert.match(result.stderr, /\[FATAL\]/);

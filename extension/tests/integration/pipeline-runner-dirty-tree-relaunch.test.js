@@ -16,6 +16,16 @@ function tmpDir(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
+// Runs the pipeline-runner CLI against the session with its activity sandboxed to the session dir.
+function runPipelineCli(sessionDir, repo) {
+  return spawnSync(process.execPath, [CLI, sessionDir], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
+    timeout: CLI_TIMEOUT_MS,
+  });
+}
+
 function git(args, cwd) {
   return execFileSync('git', args, { cwd, stdio: 'pipe' }).toString().trim();
 }
@@ -95,12 +105,7 @@ test('relaunch boundary: dirty tracked file is reset, pipeline-runner starts cle
     const statusBefore = execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf-8' });
     assert.match(statusBefore, /src\.ts/);
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     // Pipeline-runner must NOT fatal on dirty-tree
     assert.doesNotMatch(result.stderr, /Working tree at .* is dirty/,
@@ -142,12 +147,7 @@ test('relaunch boundary: unrelated exempt tracked changes in docs/ are preserved
     // Simulate unrelated docs/ change (exempt via dirty_exempt_segments)
     fs.writeFileSync(path.join(docsDir, 'notes.md'), '# updated by user\n');
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     // No dirty-tree fatal
     assert.doesNotMatch(result.stderr, /Working tree at .* is dirty/);
@@ -181,12 +181,7 @@ test('relaunch boundary: new untracked file from worker is removed', () => {
     const statusBefore = execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf-8' });
     assert.match(statusBefore, /new-feature\.ts/);
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     // No dirty-tree fatal
     assert.doesNotMatch(result.stderr, /Working tree at .* is dirty/);
@@ -210,12 +205,7 @@ test('relaunch boundary: interrupted ticket remains retryable (current_ticket pr
     git(['commit', '-q', '-m', 'add index.ts'], repo);
     fs.writeFileSync(srcFile, 'export const n = 99;\n');
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     assert.doesNotMatch(result.stderr, /Working tree at .* is dirty/);
     assert.doesNotMatch(result.stderr, /\[FATAL\]/);
@@ -238,12 +228,7 @@ test('non-relaunch: dirty tree still blocks startup when manager_relaunch_count 
     // Dirty the tree — should still block when not at a relaunch boundary
     fs.writeFileSync(path.join(repo, 'blocker.ts'), 'let x = 1;\n');
 
-    const result = spawnSync(process.execPath, [CLI, sessionDir], {
-      cwd: repo,
-      encoding: 'utf8',
-      env: { ...process.env, PICKLE_DATA_ROOT: path.join(sessionDir, 'pickle-data') },
-      timeout: CLI_TIMEOUT_MS,
-    });
+    const result = runPipelineCli(sessionDir, repo);
 
     // Guard still applies at first launch
     assert.equal(result.status, 1);
