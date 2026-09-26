@@ -128,10 +128,10 @@ test('AC-WSE-02: all downstream artifacts present → no event', () => {
     writeFileSync(path.join(ticketDir, 'conformance_2026-05-07.md'), 'conformance');
     writeFileSync(path.join(ticketDir, 'code_review_2026-05-07.md'), 'review');
 
-    checkPartialLifecycleExit(sessionDir, statePath, ticketId);
-
-    const events = readActivity(statePath).filter((e) => e.event === 'worker_partial_lifecycle_exit');
-    assert.equal(events.length, 0, 'expected no event when all artifacts present');
+    // No log fixture: were this guard removed, the exit would classify log_empty and emit
+    // worker_silent_death — so assert the null return and an EMPTY activity, not one event name.
+    assert.equal(checkPartialLifecycleExit(sessionDir, statePath, ticketId), null);
+    assert.deepStrictEqual(readActivity(statePath), [], 'expected no event of any kind when all artifacts present');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -145,10 +145,8 @@ test('AC-WSE-02: research review NOT APPROVED → no event even with missing art
     mkdirSync(ticketDir, { recursive: true });
     writeFileSync(path.join(ticketDir, 'research_review.md'), 'REJECTED');
 
-    checkPartialLifecycleExit(sessionDir, statePath, ticketId);
-
-    const events = readActivity(statePath).filter((e) => e.event === 'worker_partial_lifecycle_exit');
-    assert.equal(events.length, 0, 'expected no event when research review is not APPROVED');
+    assert.equal(checkPartialLifecycleExit(sessionDir, statePath, ticketId), null);
+    assert.deepStrictEqual(readActivity(statePath), [], 'expected no event of any kind when research review is not APPROVED');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
