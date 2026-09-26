@@ -159,7 +159,7 @@ describe('anatomy-park scoped final gate', () => {
         fs.rmSync(workingDir, { recursive: true, force: true });
     });
 
-    test('package-level test failure stays in scope when allowed_paths names an exact file under that package', async () => {
+    test('package-level test failure stays in scope when allowed_paths names an exact file under that package, and is disclosed unmeasured', async () => {
         const sessionRoot = makeTmpDir();
         const workingDir = makeTmpDir();
         const gateDir = path.join(sessionRoot, 'gate');
@@ -177,6 +177,7 @@ describe('anatomy-park scoped final gate', () => {
 
         let gateCalls = 0;
         let remediatorCalled = false;
+        const writtenStates = [];
 
         const code = await finalizeGateMain({
             argv: [sessionRoot, 'anatomy-park'],
@@ -191,36 +192,31 @@ describe('anatomy-park scoped final gate', () => {
             writeFileFn: (p, data) => fs.writeFileSync(p, data, 'utf-8'),
             logActivityFn: () => {},
             isoFn: () => `2026-01-01T${String(gateCalls).padStart(2, '0')}-30-00Z`,
-            runGateFn: async () => {
-                const call = gateCalls++;
-                if (call === 0) return makeRedResult([inScopeTestFailure]);
-                return { status: 'green', failures: [], baseline_used: false, allowed_paths_used: false, elapsed_ms: 5, total_raw_failure_count: 0, new_failures_vs_baseline: 0 };
-            },
-            spawnGateRemediatorMainFn: async (briefOpts) => {
-                remediatorCalled = true;
-                const briefPath = path.join(gateDir, 'brief.md');
-                fs.writeFileSync(briefPath, '# Brief', 'utf-8');
-                briefOpts.stdout?.(`BRIEF_PATH=${briefPath}`);
-                return 0;
-            },
+            runGateFn: async () => { gateCalls++; return makeRedResult([inScopeTestFailure]); },
+            writeMicroverseStateFn: (_root, state) => { writtenStates.push(state); },
+            spawnGateRemediatorMainFn: async () => { remediatorCalled = true; return 0; },
             spawnRemediatorFn: () => {},
             stdout: () => {},
             stderr: () => {},
         });
 
-        assert.equal(code, 0, 'package-level in-scope test failures must not be dropped as out-of-scope');
-        assert.equal(remediatorCalled, true, 'remediator should run for the in-scope package-level test failure');
-        assert.equal(
-            fs.readdirSync(gateDir).filter(f => f.startsWith('out_of_scope_failures_')).length,
-            0,
-            'no OOS report should be written for an in-scope package-level test failure',
-        );
+        // #50: the row names no editable file and no rule or test identity, so it is unmeasured —
+        // disclosed and exit 0, never a remediation cycle — and it stays IN scope (no OOS report).
+        assert.equal(code, 0, 'an unmeasured in-scope row is disclosed, never a failed phase');
+        assert.equal(gateCalls, 1, 'no remediation cycle is spent, so the gate runs once');
+        assert.equal(remediatorCalled, false, 'an unattributable row must never reach brief-prep');
+        const gateFiles = fs.readdirSync(gateDir);
+        assert.equal(gateFiles.filter(f => f.startsWith('out_of_scope_failures_')).length, 0, 'the row must not be written as out-of-scope');
+        const unmeasured = gateFiles.filter(f => f.startsWith('unmeasured_'));
+        assert.equal(unmeasured.length, 1, `expected one unmeasured report, got: ${gateFiles.join(', ')}`);
+        assert.ok(fs.readFileSync(path.join(gateDir, unmeasured[0]), 'utf-8').includes(inScopeTestFailure.file), 'the report names the disclosed row');
+        assert.deepEqual(writtenStates.map(s => s.cap_unmeasured_checks), [['tests']], 'the unmeasured check rides cap_unmeasured_checks');
 
         fs.rmSync(sessionRoot, { recursive: true, force: true });
         fs.rmSync(workingDir, { recursive: true, force: true });
     });
 
-    test('synthetic gate timeout failure stays in scope when allowed_paths are present', async () => {
+    test('synthetic gate timeout failure stays in scope when allowed_paths are present, and is disclosed unmeasured', async () => {
         const sessionRoot = makeTmpDir();
         const workingDir = makeTmpDir();
         const gateDir = path.join(sessionRoot, 'gate');
@@ -238,6 +234,7 @@ describe('anatomy-park scoped final gate', () => {
 
         let gateCalls = 0;
         let remediatorCalled = false;
+        const writtenStates = [];
 
         const code = await finalizeGateMain({
             argv: [sessionRoot, 'anatomy-park'],
@@ -252,30 +249,25 @@ describe('anatomy-park scoped final gate', () => {
             writeFileFn: (p, data) => fs.writeFileSync(p, data, 'utf-8'),
             logActivityFn: () => {},
             isoFn: () => `2026-01-01T${String(gateCalls).padStart(2, '0')}-45-00Z`,
-            runGateFn: async () => {
-                const call = gateCalls++;
-                if (call === 0) return makeRedResult([syntheticFailure]);
-                return { status: 'green', failures: [], baseline_used: false, allowed_paths_used: false, elapsed_ms: 5, total_raw_failure_count: 0, new_failures_vs_baseline: 0 };
-            },
-            spawnGateRemediatorMainFn: async (briefOpts) => {
-                remediatorCalled = true;
-                const briefPath = path.join(gateDir, 'brief.md');
-                fs.writeFileSync(briefPath, '# Brief', 'utf-8');
-                briefOpts.stdout?.(`BRIEF_PATH=${briefPath}`);
-                return 0;
-            },
+            runGateFn: async () => { gateCalls++; return makeRedResult([syntheticFailure]); },
+            writeMicroverseStateFn: (_root, state) => { writtenStates.push(state); },
+            spawnGateRemediatorMainFn: async () => { remediatorCalled = true; return 0; },
             spawnRemediatorFn: () => {},
             stdout: () => {},
             stderr: () => {},
         });
 
-        assert.equal(code, 0, 'synthetic gate failures must stay in scope and drive remediation');
-        assert.equal(remediatorCalled, true, 'remediator should run for synthetic gate failures');
-        assert.equal(
-            fs.readdirSync(gateDir).filter(f => f.startsWith('out_of_scope_failures_')).length,
-            0,
-            'synthetic gate failures must not be written as out-of-scope',
-        );
+        // #50: the row names no editable file and no rule or test identity, so it is unmeasured —
+        // disclosed and exit 0, never a remediation cycle — and it stays IN scope (no OOS report).
+        assert.equal(code, 0, 'an unmeasured in-scope row is disclosed, never a failed phase');
+        assert.equal(gateCalls, 1, 'no remediation cycle is spent, so the gate runs once');
+        assert.equal(remediatorCalled, false, 'an unattributable row must never reach brief-prep');
+        const gateFiles = fs.readdirSync(gateDir);
+        assert.equal(gateFiles.filter(f => f.startsWith('out_of_scope_failures_')).length, 0, 'the row must not be written as out-of-scope');
+        const unmeasured = gateFiles.filter(f => f.startsWith('unmeasured_'));
+        assert.equal(unmeasured.length, 1, `expected one unmeasured report, got: ${gateFiles.join(', ')}`);
+        assert.ok(fs.readFileSync(path.join(gateDir, unmeasured[0]), 'utf-8').includes(syntheticFailure.file), 'the report names the disclosed row');
+        assert.deepEqual(writtenStates.map(s => s.cap_unmeasured_checks), [['tests']], 'the unmeasured check rides cap_unmeasured_checks');
 
         fs.rmSync(sessionRoot, { recursive: true, force: true });
         fs.rmSync(workingDir, { recursive: true, force: true });
