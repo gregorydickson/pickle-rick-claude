@@ -360,7 +360,7 @@ function loadTrapDoorSection(
     try {
       raw = readFile(claudeMdPath, 'utf-8');
     } catch {
-      continue;
+      continue; // most walk levels carry no CLAUDE.md; an absent level contributes nothing
     }
     const oversized = raw.length > MAX_FILE_BYTES;
     const fits = !oversized && inlinedBytes + raw.length <= TRAP_DOOR_TOTAL_CAP_BYTES;
