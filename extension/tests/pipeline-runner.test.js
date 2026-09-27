@@ -46,7 +46,7 @@ import {
   createLaneSession,
   runAnatomyLanes,
 } from '../bin/pipeline-runner.js';
-import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS } from '../services/anatomy-lanes.js';
+import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
@@ -5391,6 +5391,39 @@ describe('B-LANES WS-3: lane integration', () => {
       const old = recoverLaneBranches(fx.repo, fx.sessionDir, tipMs + (RETAINED_BRANCH_MAX_AGE_DAYS + 1) * dayMs);
       assert.deepEqual(old.expired, [retained]);
       assert.equal(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${retained}`), false, 'an expired branch is deleted');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('isLaneSessionDir recognizes unit session dirs alongside lane session dirs', () => {
+    assert.equal(isLaneSessionDir('/x/s--lane-3'), true);
+    assert.equal(isLaneSessionDir('/x/s--unit-abc12345'), true);
+    assert.equal(isLaneSessionDir('/x/s'), false);
+    assert.equal(isLaneSessionDir('/x/s--unit-'), false);
+  });
+
+  test('AC-RECOVERY unit session: recoverLaneBranches prunes a unit worktree and renames its unmerged branch as unintegrated', () => {
+    const fx = makeFixture();
+    try {
+      const ticketId = 'abc12345';
+      const wt = path.join(unitSessionDir(fx.sessionDir, ticketId), 'wt');
+      const branch = unitBranchName(fx.sessionDir, ticketId);
+      const sha = git(fx.repo, 'rev-parse', 'HEAD');
+      createLaneWorktree(fx.repo, wt, branch, sha);
+      fs.writeFileSync(path.join(wt, 'unit-work.txt'), 'unit fix\n');
+      git(wt, 'add', 'unit-work.txt');
+      git(wt, '-c', 'user.email=u@u', '-c', 'user.name=u', 'commit', '-q', '-m', 'unit fix');
+      assert.deepEqual(worktreeList(fx.repo).sort(), [`worktree ${fx.repo}`, `worktree ${wt}`].sort(), 'unit worktree registered before recovery');
+
+      const report = recoverLaneBranches(fx.repo, fx.sessionDir);
+      assert.deepEqual(report.staleWorktrees, [wt]);
+      assert.deepEqual(worktreeList(fx.repo), [`worktree ${fx.repo}`], 'the unit worktree is pruned like a lane worktree');
+      assert.equal(report.unintegrated.length, 1, 'the unmerged unit branch is reported unintegrated');
+      const asideBranch = report.unintegrated[0];
+      assert.match(asideBranch, /^pickle-lane\/.+\/unintegrated-\d+-unit-abc12345$/, 'renamed with the unintegrated- prefix, unit- leaf intact');
+      assert.ok(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${asideBranch}`), 'the renamed branch is retained');
+      assert.equal(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`), false, 'the original unit- branch name no longer exists');
     } finally {
       fx.cleanup();
     }

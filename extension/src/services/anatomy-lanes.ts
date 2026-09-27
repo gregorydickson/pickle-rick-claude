@@ -47,6 +47,15 @@ export function laneBranchName(parentSessionDir: string, index: number): string 
   return `${sessionBranchPrefix(parentSessionDir)}${index}`;
 }
 
+/** A unit session is a SIBLING of the parent, named by the ticket it builds — never joined by lane index. */
+export function unitSessionDir(parentSessionDir: string, ticketId: string): string {
+  return `${path.resolve(parentSessionDir)}--unit-${ticketId}`;
+}
+
+export function unitBranchName(parentSessionDir: string, ticketId: string): string {
+  return `${sessionBranchPrefix(parentSessionDir)}unit-${ticketId}`;
+}
+
 function realpathOrResolve(p: string): string {
   try {
     return fs.realpathSync(p);
@@ -156,9 +165,13 @@ export function laneRunnerEnv(statePath: string, inherited: NodeJS.ProcessEnv = 
   };
 }
 
-/** The inverse of `laneSessionDir`: a lane session is named `<parent>--lane-<n>`. */
+/**
+ * The inverse of `laneSessionDir`/`unitSessionDir`: a lane session is named
+ * `<parent>--lane-<n>`, a unit session `<parent>--unit-<ticketId>`. Both are sibling
+ * sessions of a parent pipeline run, never the operator's own monitor window.
+ */
 export function isLaneSessionDir(sessionDir: string): boolean {
-  return /--lane-\d+$/.test(path.basename(path.resolve(sessionDir)));
+  return /--(lane-\d+|unit-[0-9a-f]+)$/.test(path.basename(path.resolve(sessionDir)));
 }
 
 /**

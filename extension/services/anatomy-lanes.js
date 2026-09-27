@@ -41,6 +41,13 @@ function sessionBranchPrefix(sessionDir) {
 export function laneBranchName(parentSessionDir, index) {
     return `${sessionBranchPrefix(parentSessionDir)}${index}`;
 }
+/** A unit session is a SIBLING of the parent, named by the ticket it builds — never joined by lane index. */
+export function unitSessionDir(parentSessionDir, ticketId) {
+    return `${path.resolve(parentSessionDir)}--unit-${ticketId}`;
+}
+export function unitBranchName(parentSessionDir, ticketId) {
+    return `${sessionBranchPrefix(parentSessionDir)}unit-${ticketId}`;
+}
 function realpathOrResolve(p) {
     try {
         return fs.realpathSync(p);
@@ -139,9 +146,13 @@ export function laneRunnerEnv(statePath, inherited = process.env) {
         [`GIT_CONFIG_VALUE_${n}`]: '0',
     };
 }
-/** The inverse of `laneSessionDir`: a lane session is named `<parent>--lane-<n>`. */
+/**
+ * The inverse of `laneSessionDir`/`unitSessionDir`: a lane session is named
+ * `<parent>--lane-<n>`, a unit session `<parent>--unit-<ticketId>`. Both are sibling
+ * sessions of a parent pipeline run, never the operator's own monitor window.
+ */
 export function isLaneSessionDir(sessionDir) {
-    return /--lane-\d+$/.test(path.basename(path.resolve(sessionDir)));
+    return /--(lane-\d+|unit-[0-9a-f]+)$/.test(path.basename(path.resolve(sessionDir)));
 }
 /**
  * Remove every lane worktree directory, then `git worktree prune`. Best-effort: the lane
