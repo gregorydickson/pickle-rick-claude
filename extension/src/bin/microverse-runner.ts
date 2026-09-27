@@ -184,6 +184,15 @@ export interface RunContext {
   // iteration.
   postConvergenceSelfRedOpen?: boolean;
   /**
+   * R-ORSR-6 bound: count of consecutive self-red refusals observed with HEAD unchanged. Reset to 1
+   * whenever HEAD moves (or is first observed); an unreadable HEAD counts as "unchanged" so the bound
+   * still advances rather than resetting on tool flakiness. Deliberately NOT cleared alongside
+   * `postConvergenceSelfRedOpen` on a non-withheld iteration — a worker cannot reset the bound by
+   * merely interleaving one non-withheld turn between refusals on the same HEAD.
+   */
+  postConvergenceSelfRedRefusalCount?: number;
+  postConvergenceSelfRedRefusalHeadSha?: string;
+  /**
    * Ticket 2ed9a852 (H2): the iteration `emitMicroverseWastedIter` last recorded for.
    * Four call sites across three functions emit into one iteration, and until this field
    * existed nothing structural stopped two of them from firing for the same one — the
@@ -5747,6 +5756,51 @@ async function runCapGate(ctx: RunContext, state: MicroverseState): Promise<CapG
   return { kind: 'unmeasured', checks: result.verdict.unmeasured };
 }
 
+// R-ORSR-6: increments the self-red refusal counter when HEAD has not moved since the last
+// refusal, resets to 1 when it has. A HEAD read that throws (unreadable working tree) counts as
+// "unchanged" so the bound still advances on tool flakiness rather than never firing.
+function recordSelfRedRefusal(ctx: RunContext): number {
+  let headSha: string | undefined;
+  try {
+    headSha = _deps.getHeadSha(ctx.workingDir);
+  } catch {
+    headSha = undefined;
+  }
+  if (headSha !== undefined && headSha !== ctx.postConvergenceSelfRedRefusalHeadSha) {
+    ctx.postConvergenceSelfRedRefusalHeadSha = headSha;
+    ctx.postConvergenceSelfRedRefusalCount = 1;
+  } else {
+    ctx.postConvergenceSelfRedRefusalCount = (ctx.postConvergenceSelfRedRefusalCount ?? 0) + 1;
+  }
+  return ctx.postConvergenceSelfRedRefusalCount;
+}
+
+// R-ORSR-6: once the refusal bound is reached, re-run the SAME baseline-aware cap gate R-APXG-3
+// uses (never the worker's own claim) to decide whether the swept breaks pre-date this phase.
+// green/unmeasured converge (trusting the gate, not the worker); red ends the phase
+// non-convergent rather than force-converging over a break the phase itself introduced.
+async function handleSelfRedRefusalBound(
+  ctx: RunContext,
+  state: MicroverseState,
+  refusalCount: number,
+): Promise<ExitReason> {
+  const capPrefix = `[R-ORSR-6] refusal bound reached after ${refusalCount} refusal(s) with HEAD unchanged`;
+  const verdict = await runCapGate(ctx, state);
+  if (verdict.kind === 'red') {
+    ctx.log(`${capPrefix}; cap gate RED — ending non-convergent`);
+    return 'no_progress';
+  }
+  if (verdict.kind === 'unmeasured') {
+    replaceMicroverseState(state, recordCapUnmeasured(state, verdict.checks));
+    ctx.log(
+      `${capPrefix}; cap gate could not measure ${verdict.checks.join(', ')} — converging with an unmeasured caveat`,
+    );
+    return 'converged';
+  }
+  ctx.log(`${capPrefix}; baseline-aware cap gate green — the swept breaks pre-date the phase`);
+  return 'converged';
+}
+
 // R-APXG-3: convergence was signaled but the gate deferred it — trust the worker after
 // POST_CONVERGENCE_GATE_DEFERRAL_LIMIT consecutive deferrals to prevent an infinite loop.
 // Extracted from handleWorkerMode (R-APXG-3 closer fix-forward) to keep that function's
@@ -5775,6 +5829,9 @@ async function handlePostConvergenceGateDeferral(
   if (workerResult.reason !== POST_CONVERGENCE_WITHHELD_REASON) {
     ctx.postConvergenceDeferralCount = 0;
     ctx.postConvergenceSelfRedOpen = false;
+    // R-ORSR-6: the refusal-bound counter is NOT reset here — unlike the deferral count and the
+    // self-red latch, a non-withheld iteration does not disown the refusals a worker already
+    // accumulated with HEAD unchanged.
     return null;
   }
   // R-ORSR-6: once a self-introduced red is observed it stays open until a non-deferred
@@ -5784,6 +5841,10 @@ async function handlePostConvergenceGateDeferral(
     workerResult.selfRedOpen === true || ctx.postConvergenceSelfRedOpen === true;
   ctx.postConvergenceDeferralCount = (ctx.postConvergenceDeferralCount ?? 0) + 1;
   if (ctx.postConvergenceSelfRedOpen) {
+    const refusalCount = recordSelfRedRefusal(ctx);
+    if (refusalCount >= POST_CONVERGENCE_GATE_DEFERRAL_LIMIT) {
+      return handleSelfRedRefusalBound(ctx, state, refusalCount);
+    }
     // INV-NO-SELF-DISOWN / INV-NO-DEFERRAL-FORCE-EXIT-ON-SELF-RED: a phase that turned the
     // whole-repo gate red can NEVER be force-converged by attrition. Keep iterating so the
     // worker must actually fix the break.

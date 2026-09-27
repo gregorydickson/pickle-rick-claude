@@ -1577,15 +1577,18 @@ function makeDeferralLoopSession(prefix) {
   return { sessionDir, workingDir, mv, ctx };
 }
 
-async function driveLoopUntilTerminal(mv, ctx, workerResult, maxCalls) {
+async function driveLoopUntilTerminal(mv, ctx, workerResult, maxCalls, overrides = {}) {
   const orig = {
     runWorkerManagedIteration: _deps.runWorkerManagedIteration,
     getHeadSha: _deps.getHeadSha,
     sleep: _deps.sleep,
+    runGate: _deps.runGate,
   };
   try {
-    _deps.runWorkerManagedIteration = async () => workerResult;
-    _deps.getHeadSha = () => 'abc0000';
+    _deps.runWorkerManagedIteration = async () =>
+      typeof workerResult === 'function' ? workerResult() : workerResult;
+    _deps.getHeadSha = overrides.getHeadShaFn ?? (() => 'abc0000');
+    if (overrides.runGateFn) _deps.runGate = overrides.runGateFn;
     _deps.sleep = async () => {};
     const outcome = { completion: 'task_completed', timedOut: false, exitCode: 0, wallSeconds: 1 };
     const baseline = { raw: '', score: 0 };
@@ -1601,6 +1604,7 @@ async function driveLoopUntilTerminal(mv, ctx, workerResult, maxCalls) {
     _deps.runWorkerManagedIteration = orig.runWorkerManagedIteration;
     _deps.getHeadSha = orig.getHeadSha;
     _deps.sleep = orig.sleep;
+    _deps.runGate = orig.runGate;
   }
 }
 
@@ -1673,6 +1677,128 @@ test('AP-EXT-ITER221-01 control: an ordinary not-converged iteration still does 
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// B-SELFRED (a399450f): the R-ORSR-6 self-red refusal had no bound — a worker alternating
+// between "signals convergence -> self-red sweep blocks it" and "does not signal" looped until
+// its budget ran out, logging `(deferral 1)` every time (field runs hit 296 iterations / 199
+// minutes / 0 commits). These cases drive the REAL runner loop and assert it terminates by
+// re-running the SAME baseline-aware cap gate R-APXG-3 already uses at its own bound, once HEAD
+// has stayed unchanged for POST_CONVERGENCE_GATE_DEFERRAL_LIMIT consecutive refusals.
+// ---------------------------------------------------------------------------
+
+const SELF_RED_WITHHELD_REASON = 'per-iteration gate left unresolved regressions';
+const SELF_RED_DEFERRAL_LIMIT = 3; // mirrors POST_CONVERGENCE_GATE_DEFERRAL_LIMIT
+
+function greenCapGateStub() {
+  return async () => ({
+    status: 'green',
+    failures: [],
+    baseline_used: false,
+    allowed_paths_used: false,
+    elapsed_ms: 0,
+    total_raw_failure_count: 0,
+    new_failures_vs_baseline: 0,
+    check_status: { typecheck: 'ran', lint: 'ran' },
+  });
+}
+
+function redCapGateStub() {
+  return async () => ({
+    status: 'red',
+    failures: [{ ruleOrCode: 'TS0000', message: 'still broken', severity: 'error', occurrence_index: 0 }],
+    baseline_used: false,
+    allowed_paths_used: false,
+    elapsed_ms: 0,
+    total_raw_failure_count: 1,
+    new_failures_vs_baseline: 1,
+    check_status: { typecheck: 'ran', lint: 'ran' },
+  });
+}
+
+function makeAlternatingSelfRedResult(mv) {
+  let call = 0;
+  return () => {
+    call += 1;
+    return call % 2 === 1
+      ? { currentMv: mv, converged: false, reason: SELF_RED_WITHHELD_REASON, selfRedOpen: true }
+      : { currentMv: mv, converged: false, reason: 'no reason' };
+  };
+}
+
+// AC-4 mutation control (manually verified, not re-run by CI): moving the
+// `if (refusalCount >= POST_CONVERGENCE_GATE_DEFERRAL_LIMIT)` check in
+// handlePostConvergenceGateDeferral back BELOW the `ctx.log(...); return null;` early-return of
+// the selfRedOpen branch reds this AC-1 case (the bound never fires, exitReason stays null).
+test('B-SELFRED AC-1: the self-red refusal bound converges when HEAD is unchanged and the cap gate is green', async () => {
+  const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-selfred-green-');
+  try {
+    const { calls, exitReason } = await driveLoopUntilTerminal(
+      mv, ctx, makeAlternatingSelfRedResult(mv), 2 * SELF_RED_DEFERRAL_LIMIT + 2,
+      { getHeadShaFn: () => 'fixed-head-sha', runGateFn: greenCapGateStub() },
+    );
+    assert.equal(
+      exitReason, 'converged',
+      'a green cap gate at the bound must trust the gate, not the worker',
+    );
+    assert.ok(
+      calls <= 2 * SELF_RED_DEFERRAL_LIMIT + 2,
+      `must terminate within 2*limit+2 calls; took ${calls}`,
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('B-SELFRED AC-1: the self-red refusal bound ends non-convergent when HEAD is unchanged and the cap gate is red', async () => {
+  const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-selfred-red-');
+  try {
+    const { calls, exitReason } = await driveLoopUntilTerminal(
+      mv, ctx, makeAlternatingSelfRedResult(mv), 2 * SELF_RED_DEFERRAL_LIMIT + 2,
+      { getHeadShaFn: () => 'fixed-head-sha', runGateFn: redCapGateStub() },
+    );
+    assert.equal(
+      exitReason, 'no_progress',
+      'a red cap gate at the bound must end non-convergent, never force-converge over its own break',
+    );
+    assert.ok(
+      calls <= 2 * SELF_RED_DEFERRAL_LIMIT + 2,
+      `must terminate within 2*limit+2 calls; took ${calls}`,
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('B-SELFRED AC-2 control: a self-red refusal with HEAD advancing every call never converges', async () => {
+  const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-selfred-moving-');
+  try {
+    let headCounter = 0;
+    const { calls, exitReason } = await driveLoopUntilTerminal(
+      mv, ctx,
+      { currentMv: mv, converged: false, reason: SELF_RED_WITHHELD_REASON, selfRedOpen: true },
+      20,
+      { getHeadShaFn: () => `moving-head-${(headCounter += 1)}` },
+    );
+    assert.equal(
+      exitReason, null,
+      'HEAD advancing on every refusal must never let the bound fire',
+    );
+    assert.equal(calls, 20);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('B-SELFRED AC-3: no_progress reports as non-convergent', async () => {
+  const { classifyMicroverseDisposition } = await import(
+    path.resolve(__dirname, '../bin/microverse-runner.js'),
+  );
+  assert.equal(classifyMicroverseDisposition('no_progress').reportAs, 'non-convergent');
 });
 
 // ---------------------------------------------------------------------------
