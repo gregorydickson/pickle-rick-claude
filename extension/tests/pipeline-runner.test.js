@@ -62,27 +62,35 @@ function tmpDir() {
   return mkFixtureTmpDir('pickle-pipeline-');
 }
 
-function writeRelaunchClaimState(statePath, overrides = {}) {
+// Writes a state.json carrying the fields every suite shares; callers pass only
+// the fields that make their scenario distinct.
+function writeStateFile(statePath, fields) {
   const dir = path.dirname(statePath);
   fs.writeFileSync(statePath, JSON.stringify({
     active: false,
     working_dir: dir,
-    step: 'completed',
     iteration: 0,
     max_iterations: 50,
     max_time_minutes: 720,
     worker_timeout_seconds: 1200,
     start_time_epoch: 1000,
     completion_promise: null,
-    original_prompt: 'pipeline relaunch claim test',
     current_ticket: null,
     history: [],
     started_at: new Date().toISOString(),
     session_dir: dir,
+    ...fields,
+  }, null, 2));
+}
+
+function writeRelaunchClaimState(statePath, overrides = {}) {
+  writeStateFile(statePath, {
+    step: 'completed',
+    original_prompt: 'pipeline relaunch claim test',
     schema_version: 3,
     exit_reason: 'failed',
     ...overrides,
-  }, null, 2));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1866,26 +1874,17 @@ describe('phaseEnv propagation', () => {
 // ---------------------------------------------------------------------------
 
 function writeBaseState(statePath, overrides = {}) {
-  const base = {
-    active: false,
+  writeStateFile(statePath, {
     working_dir: '/tmp',
     step: 'implement',
     iteration: 7,
     max_iterations: 100,
-    max_time_minutes: 720,
-    worker_timeout_seconds: 1200,
-    start_time_epoch: 1000,
-    completion_promise: null,
     original_prompt: 'test',
     current_ticket: 'TICKET-7',
-    history: [],
-    started_at: new Date().toISOString(),
-    session_dir: path.dirname(statePath),
     tmux_mode: true,
     backend: 'claude',
     ...overrides,
-  };
-  fs.writeFileSync(statePath, JSON.stringify(base));
+  });
 }
 
 describe('pickle phase entry', () => {
@@ -2031,21 +2030,11 @@ describe('pipeline shutdown', () => {
 
 describe('B1: pipeline-cancel marker is cleared at startup', () => {
   function writeMainState(sessionDir, repo, startCommit) {
-    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
-      active: false,
+    writeStateFile(path.join(sessionDir, 'state.json'), {
       working_dir: repo,
       step: 'implement',
-      iteration: 0,
       max_iterations: 100,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'B1 stale cancel-marker test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: sessionDir,
       schema_version: 3,
       tmux_mode: false,
       chain_meeseeks: false,
@@ -2053,7 +2042,7 @@ describe('B1: pipeline-cancel marker is cleared at startup', () => {
       start_commit: startCommit,
       exit_reason: null,
       activity: [],
-    }, null, 2));
+    });
   }
 
   function writeMainPipeline(sessionDir, repo, phases) {
@@ -2793,22 +2782,11 @@ function makeRuntime(dir, { strict = false } = {}) {
 
 describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', () => {
   function writeCitadelState(statePath, overrides = {}) {
-    const dir = path.dirname(statePath);
-    fs.writeFileSync(statePath, JSON.stringify({
+    writeStateFile(statePath, {
       active: true,
-      working_dir: dir,
       step: 'citadel',
       iteration: 1,
-      max_iterations: 50,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'citadel fix-forward test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: dir,
       schema_version: 3,
       exit_reason: null,
       prd_path: 'prd.md',
@@ -2816,7 +2794,7 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
       backend: 'claude',
       activity: [],
       ...overrides,
-    }, null, 2));
+    });
   }
 
 
@@ -3287,29 +3265,18 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
   }
 
   function writePickleState(statePath, overrides = {}) {
-    const dir = path.dirname(statePath);
-    fs.writeFileSync(statePath, JSON.stringify({
+    writeStateFile(statePath, {
       active: true,
-      working_dir: dir,
       step: 'pickle',
       iteration: 1,
-      max_iterations: 50,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'AC-SCPIN-5 test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: dir,
       schema_version: 3,
       exit_reason: null,
       prd_path: 'prd.md',
       backend: 'claude',
       activity: [],
       ...overrides,
-    }, null, 2));
+    });
   }
 
 
@@ -3525,29 +3492,18 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   }
 
   function writeCfState(statePath, overrides = {}) {
-    const dir = path.dirname(statePath);
-    fs.writeFileSync(statePath, JSON.stringify({
+    writeStateFile(statePath, {
       active: true,
-      working_dir: dir,
       step: 'pickle',
       iteration: 1,
-      max_iterations: 50,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'B-CRASHFLOOR test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: dir,
       schema_version: 3,
       exit_reason: null,
       prd_path: 'prd.md',
       backend: 'claude',
       activity: [],
       ...overrides,
-    }, null, 2));
+    });
   }
 
 
@@ -4034,21 +3990,11 @@ describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
   }
 
   function writeMainState(sessionDir, repo, startCommit, overrides = {}) {
-    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
-      active: false,
+    writeStateFile(path.join(sessionDir, 'state.json'), {
       working_dir: repo,
       step: 'implement',
-      iteration: 0,
       max_iterations: 100,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'B-CRASHFLOOR gate-skip test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: sessionDir,
       schema_version: 3,
       tmux_mode: false,
       chain_meeseeks: false,
@@ -4057,7 +4003,7 @@ describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
       exit_reason: null,
       activity: [],
       ...overrides,
-    }, null, 2));
+    });
   }
 
   function writeMainPipeline(sessionDir, repo, phases) {
