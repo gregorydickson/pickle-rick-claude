@@ -1568,17 +1568,26 @@ describe('armChildMuxRunnerHeartbeat', () => {
 // assertCleanWorkingTree
 // ---------------------------------------------------------------------------
 
-// Init a git repo in `dir`, commit `files` (name → content) as the seed, return the seed sha.
-function initRepo(dir, files = { 'README.md': 'seed' }) {
+// Init a git repo in `dir`, commit `files` (relative path → content) as the seed, return the seed sha.
+function initRepo(dir, files = { 'README.md': 'seed' }, { branch = 'main' } = {}) {
   const run = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf-8', timeout: 10_000 }).trim();
-  run(['init', '-q', '-b', 'main']);
+  run(['init', '-q', '-b', branch]);
   run(['config', 'user.email', 'test@test.local']);
   run(['config', 'user.name', 'Test']);
   run(['config', 'commit.gpgsign', 'false']);
-  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
+  for (const [name, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    fs.writeFileSync(path.join(dir, name), content);
+  }
   run(['add', '.']);
   run(['commit', '-q', '-m', 'seed']);
   return run(['rev-parse', 'HEAD']);
+}
+
+// Seed files for a lane fixture: `<lane>/{a,b,c}.ts`, each exporting its own name.
+function laneSeedFiles(laneNames) {
+  return Object.fromEntries(laneNames.flatMap((name) =>
+    ['a', 'b', 'c'].map((f) => [`${name}/${f}.ts`, `export const ${f} = 1;\n`])));
 }
 
 describe('assertCleanWorkingTree', () => {
@@ -4793,14 +4802,7 @@ describe('AP-EXT-ITER307-01 launch self-heal below the git toplevel', () => {
 describe('AP-EXT-ITER324-01: an unproven repo-root anchor is reported, not silently returned', () => {
   function makeRepoWithSubdir() {
     const dir = tmpDir();
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, timeout: 30_000 });
-    execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: dir, timeout: 30_000 });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, timeout: 30_000 });
-    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir, timeout: 30_000 });
-    fs.mkdirSync(path.join(dir, 'pkg', 'sub'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'pkg', 'sub', 'b1.ts'), 'export const b = 1;\n');
-    execFileSync('git', ['add', '-A'], { cwd: dir, timeout: 30_000 });
-    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir, timeout: 30_000 });
+    initRepo(dir, { 'pkg/sub/b1.ts': 'export const b = 1;\n' });
     // git resolves --show-toplevel through the realpath, so compare against the same space.
     return { dir: fs.realpathSync(dir), sub: fs.realpathSync(path.join(dir, 'pkg', 'sub')) };
   }
@@ -4903,19 +4905,14 @@ describe('B-LANES 13h lane session placement', () => {
 
   function makePlacementFixture() {
     const target = fs.realpathSync(tmpDir());
-    git(target, 'init', '-q', '-b', 'main');
-    git(target, 'config', 'user.email', 'lane@test.local');
-    git(target, 'config', 'user.name', 'Lane');
-    for (const dir of ['alpha', 'beta', 'big/inner']) {
-      fs.mkdirSync(path.join(target, dir), { recursive: true });
-      fs.writeFileSync(path.join(target, dir, 'a.ts'), 'export const a = 1;\n');
-    }
-    fs.writeFileSync(path.join(target, 'big', 'top.ts'), 'export const t = 1;\n');
-    fs.mkdirSync(path.join(target, 'extension'));
-    fs.writeFileSync(path.join(target, 'extension', 'package.json'), '{}\n');
-    fs.writeFileSync(path.join(target, '.gitignore'), 'extension/node_modules\n');
-    git(target, 'add', '-A');
-    git(target, 'commit', '-q', '-m', 'seed');
+    initRepo(target, {
+      'alpha/a.ts': 'export const a = 1;\n',
+      'beta/a.ts': 'export const a = 1;\n',
+      'big/inner/a.ts': 'export const a = 1;\n',
+      'big/top.ts': 'export const t = 1;\n',
+      'extension/package.json': '{}\n',
+      '.gitignore': 'extension/node_modules\n',
+    });
     fs.mkdirSync(path.join(target, 'extension', 'node_modules', 'dep'), { recursive: true });
     fs.writeFileSync(path.join(target, 'scratch.txt'), 'operator scratch\n');
     const dataRoot = fs.realpathSync(tmpDir());
@@ -5065,16 +5062,7 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
   /** A target with three lane roots, and a follow-up commit touching all three. */
   function makeLaneFixture({ pipeline = {}, parentActive = false } = {}) {
     const repo = fs.realpathSync(tmpDir());
-    git(repo, 'init', '-q', '-b', 'main');
-    git(repo, 'config', 'user.email', 'lanes@test.local');
-    git(repo, 'config', 'user.name', 'Lanes');
-    for (const name of LANE_NAMES) {
-      fs.mkdirSync(path.join(repo, name));
-      for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
-    }
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-q', '-m', 'seed');
-    const startCommit = git(repo, 'rev-parse', 'HEAD');
+    const startCommit = initRepo(repo, laneSeedFiles(LANE_NAMES));
     for (const name of LANE_NAMES) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = 2;\n');
     git(repo, 'commit', '-q', '-am', 'followup');
     const dataRoot = fs.realpathSync(tmpDir());
@@ -5251,19 +5239,13 @@ describe('B-LANES WS-3: lane integration', () => {
 
   function makeFixture() {
     const repo = fs.realpathSync(tmpDir());
-    git(repo, 'init', '-q', '-b', 'work');
-    git(repo, 'config', 'user.email', 'lanes@test.local');
-    git(repo, 'config', 'user.name', 'Lanes');
-    for (const { name } of LANES) {
-      fs.mkdirSync(path.join(repo, name));
-      for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
-    }
-    fs.writeFileSync(path.join(repo, 'CLAUDE.md'), '# Trap doors\n- entry one\n- entry two\n');
-    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }));
-    fs.writeFileSync(path.join(repo, 'check.js'), CHECK_JS);
-    fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules/\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-q', '-m', 'seed');
+    initRepo(repo, {
+      ...laneSeedFiles(LANES.map(({ name }) => name)),
+      'CLAUDE.md': '# Trap doors\n- entry one\n- entry two\n',
+      'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
+      'check.js': CHECK_JS,
+      '.gitignore': 'node_modules/\n',
+    }, { branch: 'work' });
     fs.mkdirSync(path.join(repo, 'node_modules'));
     fs.writeFileSync(path.join(repo, 'node_modules', 'marker.txt'), 'x');
     const dataRoot = fs.realpathSync(tmpDir());
@@ -5519,16 +5501,7 @@ describe('B-LANES wiring: end to end through main()', () => {
   /** A target with three lane roots, each holding one seeded defect in `<lane>/a.ts`. */
   function makeFixture(pipeline = {}) {
     const repo = fs.realpathSync(tmpDir());
-    git(repo, 'init', '-q', '-b', 'work');
-    git(repo, 'config', 'user.email', 'lanes@test.local');
-    git(repo, 'config', 'user.name', 'Lanes');
-    for (const name of LANE_NAMES) {
-      fs.mkdirSync(path.join(repo, name));
-      for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
-    }
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-q', '-m', 'seed');
-    const startCommit = git(repo, 'rev-parse', 'HEAD');
+    const startCommit = initRepo(repo, laneSeedFiles(LANE_NAMES), { branch: 'work' });
     // The branch under review introduces one defect per lane.
     for (const name of LANE_NAMES) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = BUG;\n');
     git(repo, 'commit', '-q', '-am', 'introduce defects');
