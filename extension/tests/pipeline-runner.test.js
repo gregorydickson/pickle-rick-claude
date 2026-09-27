@@ -734,9 +734,26 @@ describe('B-LANES lane discovery', () => {
     for (let i = 0; i < count; i++) fs.writeFileSync(path.join(dir, `m${i}${ext}`), '');
   };
 
+  // The roster is pinned to a TREE, not the live checkout: a new source dir anywhere in the
+  // repo would otherwise shift the lane set while the lane rule stays correct.
+  const ROSTER_SHA = '57beb52c5c2e4d749da6869caa1b2ff18c837bfb';
+  const snapshotLaneNames = (sha) => {
+    const dir = tmpDir();
+    try {
+      const tarball = path.join(dir, 'snapshot.tar');
+      const tree = path.join(dir, 'tree');
+      fs.mkdirSync(tree);
+      execFileSync('git', ['archive', '--format=tar', '-o', tarball, sha], { cwd: REPO_ROOT, timeout: 60_000 });
+      execFileSync('tar', ['-xf', tarball, '-C', tree], { timeout: 60_000 });
+      return discoverLanes(tree).lanes.map((l) => l.name).sort();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
   test('AC-1: the repo root yields exactly the pinned 10-lane roster (HEAD before: bin, extension)', () => {
     assert.equal(MIN_LANE_FILES, 20);
-    assert.deepEqual(discovered().lanes.map((l) => l.name).sort(), [
+    assert.deepEqual(snapshotLaneNames(ROSTER_SHA), [
       'bin', 'extension/.', 'extension/src/.', 'extension/src/bin', 'extension/src/services',
       'extension/tests/.', 'extension/tests/__fixtures__', 'extension/tests/citadel',
       'extension/tests/integration', 'extension/tests/services',
