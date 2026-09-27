@@ -39,6 +39,7 @@ import {
   VISUAL_DOMINANCE_THRESHOLD,
   loadPickleSettingsBag,
   resolveScopeSettings,
+  markTicketWithStatus as writeTicketStatus,
   type DiffVisualStat,
 } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
@@ -2418,7 +2419,9 @@ function writeBackWave(runtime: PipelineRuntime, members: readonly string[], sha
   members.forEach((id, i) => {
     const sha = shas.get(i);
     try {
-      updateTicketFrontmatter(id, runtime.sessionDir, sha ? { status: 'Done', completion_commit: sha } : { status: 'Todo' });
+      // completion_commit is written before the status flip, so a Done never exists without its evidence.
+      if (sha) updateTicketFrontmatter(id, runtime.sessionDir, { completion_commit: sha });
+      if (!writeTicketStatus(runtime.sessionDir, id, sha ? 'Done' : 'Todo')) runtime.log(`pickle waves: ${id}: status write-back failed`);
     } catch (err) {
       runtime.log(`pickle waves: ${id}: write-back failed: ${safeErrorMessage(err)}`);
     }
@@ -2471,7 +2474,13 @@ async function runTicketWave(run: LaneRun, members: readonly string[], wave: num
  */
 export async function runPickleWaves(runtime: PipelineRuntime, cap: number): Promise<number> {
   const repoRoot = gitRepoRoot(runtime.target);
-  const run: LaneRun = { runtime, repoRoot, sha: '', cancelledAtMs: null, statePaths: [], spawned: [], worktrees: [] };
+  const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
+  if (headSha === null) {
+    recordExitReason(runtime.statePath, 'pipeline_phase_incomplete');
+    runtime.log('pickle waves: cannot resolve HEAD — no wave can start');
+    return 1;
+  }
+  const run: LaneRun = { runtime, repoRoot, sha: headSha, cancelledAtMs: null, statePaths: [], spawned: [], worktrees: [] };
   const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
   const poll = setInterval(() => {
     if (!parentSessionActive(runtime.statePath)) cancelLaneRun(run);
@@ -2482,7 +2491,12 @@ export async function runPickleWaves(runtime: PipelineRuntime, cap: number): Pro
       const members = run.cancelledAtMs === null ? planTicketWave(pendingWaveCandidates(runtime.sessionDir), cap) : [];
       if (members.length === 0) break;
       reportLaneRecovery(run);
-      run.sha = runGitString(['rev-parse', 'HEAD'], repoRoot) ?? '';
+      const waveSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
+      if (waveSha === null) {
+        runtime.log(`pickle waves: cannot resolve HEAD before wave ${wave} — ending the wave run`);
+        break;
+      }
+      run.sha = waveSha;
       if (await runTicketWave(run, members, wave) === 0) {
         runtime.log(`pickle waves: wave ${wave} integrated nothing — ending the wave run`);
         break;

@@ -20,7 +20,7 @@ import { execFileSync, spawn, spawnSync } from 'child_process';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
-import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, } from '../services/pickle-utils.js';
+import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 // B-NONSTOP WS-2 (AC-NS-6): reuse the T3 disposition map to classify a non-pickle
 // phase's `state.exit_reason` (no re-mapping — single source of truth in microverse-runner).
@@ -1996,7 +1996,11 @@ function writeBackWave(runtime, members, shas) {
     members.forEach((id, i) => {
         const sha = shas.get(i);
         try {
-            updateTicketFrontmatter(id, runtime.sessionDir, sha ? { status: 'Done', completion_commit: sha } : { status: 'Todo' });
+            // completion_commit is written before the status flip, so a Done never exists without its evidence.
+            if (sha)
+                updateTicketFrontmatter(id, runtime.sessionDir, { completion_commit: sha });
+            if (!writeTicketStatus(runtime.sessionDir, id, sha ? 'Done' : 'Todo'))
+                runtime.log(`pickle waves: ${id}: status write-back failed`);
         }
         catch (err) {
             runtime.log(`pickle waves: ${id}: write-back failed: ${safeErrorMessage(err)}`);
@@ -2052,7 +2056,13 @@ async function runTicketWave(run, members, wave) {
  */
 export async function runPickleWaves(runtime, cap) {
     const repoRoot = gitRepoRoot(runtime.target);
-    const run = { runtime, repoRoot, sha: '', cancelledAtMs: null, statePaths: [], spawned: [], worktrees: [] };
+    const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
+    if (headSha === null) {
+        recordExitReason(runtime.statePath, 'pipeline_phase_incomplete');
+        runtime.log('pickle waves: cannot resolve HEAD — no wave can start');
+        return 1;
+    }
+    const run = { runtime, repoRoot, sha: headSha, cancelledAtMs: null, statePaths: [], spawned: [], worktrees: [] };
     const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
     const poll = setInterval(() => {
         if (!parentSessionActive(runtime.statePath))
@@ -2066,7 +2076,12 @@ export async function runPickleWaves(runtime, cap) {
             if (members.length === 0)
                 break;
             reportLaneRecovery(run);
-            run.sha = runGitString(['rev-parse', 'HEAD'], repoRoot) ?? '';
+            const waveSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
+            if (waveSha === null) {
+                runtime.log(`pickle waves: cannot resolve HEAD before wave ${wave} — ending the wave run`);
+                break;
+            }
+            run.sha = waveSha;
             if (await runTicketWave(run, members, wave) === 0) {
                 runtime.log(`pickle waves: wave ${wave} integrated nothing — ending the wave run`);
                 break;
