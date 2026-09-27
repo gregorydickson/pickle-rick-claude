@@ -233,6 +233,8 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 
 Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
+Stamp `parallel_safe: true` only when the ticket needs no other bundle ticket to have landed first and touches no package manifest/lockfile.
+
 ```markdown
 ---
 id: [hash]
@@ -240,6 +242,7 @@ title: "[verb + target]"
 status: Todo
 priority: [High|Medium|Low]
 order: [N]
+parallel_safe: true
 working_dir: [path or omit]
 source_prd: [source PRD path for manifest/bundle decompositions; omit only when not applicable]
 source_section: [source heading/section for mapped requirements; omit only when not applicable]
