@@ -136,6 +136,9 @@ interface PipelineConfig {
   // B-LANES WS-3: how many anatomy-park lanes run at once. 1 (the default) is the serial
   // single-runner path in the main checkout.
   anatomy_max_parallel_lanes: number;
+  // B-PBUILD: how many build tickets may run concurrently. 1 (the default) keeps the serial
+  // single-ticket pickle path. Not yet consumed — a later ticket wires the wave path.
+  max_parallel_tickets: number;
   // R-HRP-1: citadel no longer halts. R-MEASURED R3 fixed the remediation admission threshold at
   // High for every run (REMEDIATION_SEVERITY_THRESHOLD, below) — this flag no longer widens or
   // narrows what gets remediated. It still flows to runCitadelAudit's `strict` option, which
@@ -303,6 +306,7 @@ export function parsePipelineConfig(raw: Record<string, unknown>): PipelineConfi
     anatomy_max_iterations: parsePositiveInteger(raw.anatomy_max_iterations, 500),
     szechuan_max_iterations: parsePositiveInteger(raw.szechuan_max_iterations, 500),
     anatomy_max_parallel_lanes: parsePositiveInteger(raw.anatomy_max_parallel_lanes, 1),
+    max_parallel_tickets: parsePositiveInteger(raw.max_parallel_tickets, 1),
     citadel_strict: raw.citadel_strict === true || raw.strict === true,
     backend,
     dirty_exempt_segments,

@@ -5047,6 +5047,26 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
     assert.equal(parsePipelineConfig({ anatomy_max_parallel_lanes: 4 }).anatomy_max_parallel_lanes, 4);
   });
 
+  test('max_parallel_tickets resolves like anatomy_max_parallel_lanes', () => {
+    // NOTE: parsePositiveInteger coerces via Number(value), so the numeric string '2'
+    // resolves to 2 (Number.isInteger(2) && 2 > 0), matching anatomy_max_parallel_lanes'
+    // own behavior for the identical input shape (see the 13e test above, which reuses
+    // this same helper and never asserts a numeric-string case resolves to the fallback).
+    const table = [
+      [undefined, 1],
+      [1, 1],
+      [0, 1],
+      [-1, 1],
+      ['2', 2],
+      [2.5, 1],
+      [2, 2],
+    ];
+    for (const [value, expected] of table) {
+      const raw = value === undefined ? {} : { max_parallel_tickets: value };
+      assert.equal(parsePipelineConfig(raw).max_parallel_tickets, expected, `value ${JSON.stringify(value)}`);
+    }
+  });
+
   test('13e: a cap above the lane count spawns only the lane count', async () => {
     const fx = makeLaneFixture({ pipeline: { anatomy_max_parallel_lanes: 10 } });
     const calls = [];

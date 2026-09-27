@@ -122,6 +122,7 @@ export function parsePipelineConfig(raw) {
         anatomy_max_iterations: parsePositiveInteger(raw.anatomy_max_iterations, 500),
         szechuan_max_iterations: parsePositiveInteger(raw.szechuan_max_iterations, 500),
         anatomy_max_parallel_lanes: parsePositiveInteger(raw.anatomy_max_parallel_lanes, 1),
+        max_parallel_tickets: parsePositiveInteger(raw.max_parallel_tickets, 1),
         citadel_strict: raw.citadel_strict === true || raw.strict === true,
         backend,
         dirty_exempt_segments,
