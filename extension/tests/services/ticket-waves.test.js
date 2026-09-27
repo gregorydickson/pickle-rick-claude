@@ -50,6 +50,16 @@ test('planTicketWave: an overlapping parallel-safe candidate ends the wave; late
   assert.deepEqual(planTicketWave([C, B], 3), ['B', 'C']);
 });
 
+test('planTicketWave: a candidate overlapping a middle wave member ends the wave', () => {
+  // Negative controls: checking only the first or only the last member yields ['A','B','C','D']
+  // (B and D both editing y.ts in one wave); D overlaps neither A nor C.
+  const A = { id: 'A', order: 1, parallelSafe: true, files: ['extension/src/w.ts'] };
+  const B = { id: 'B', order: 2, parallelSafe: true, files: ['extension/src/y.ts'] };
+  const C = { id: 'C', order: 3, parallelSafe: true, files: ['extension/src/z.ts'] };
+  const D = { id: 'D', order: 4, parallelSafe: true, files: ['extension/src/y.ts'] };
+  assert.deepEqual(planTicketWave([D, C, B, A], 4), ['A', 'B', 'C']);
+});
+
 test('planTicketWave: empty pending returns empty wave', () => {
   assert.deepEqual(planTicketWave([], 2), []);
 });
