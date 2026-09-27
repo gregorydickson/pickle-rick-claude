@@ -1568,14 +1568,17 @@ describe('armChildMuxRunnerHeartbeat', () => {
 // assertCleanWorkingTree
 // ---------------------------------------------------------------------------
 
-function initRepo(dir) {
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'seed');
-  execFileSync('git', ['add', 'README.md'], { cwd: dir });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
+// Init a git repo in `dir`, commit `files` (name → content) as the seed, return the seed sha.
+function initRepo(dir, files = { 'README.md': 'seed' }) {
+  const run = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf-8', timeout: 10_000 }).trim();
+  run(['init', '-q', '-b', 'main']);
+  run(['config', 'user.email', 'test@test.local']);
+  run(['config', 'user.name', 'Test']);
+  run(['config', 'commit.gpgsign', 'false']);
+  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
+  run(['add', '.']);
+  run(['commit', '-q', '-m', 'seed']);
+  return run(['rev-parse', 'HEAD']);
 }
 
 describe('assertCleanWorkingTree', () => {
@@ -2071,21 +2074,6 @@ describe('pipeline shutdown', () => {
 // ---------------------------------------------------------------------------
 
 describe('B1: pipeline-cancel marker is cleared at startup', () => {
-  function git(args, cwd) {
-    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 10_000 }).trim();
-  }
-
-  function initRepo(dir) {
-    git(['init', '-q', '-b', 'main'], dir);
-    git(['config', 'user.email', 'test@test.local'], dir);
-    git(['config', 'user.name', 'Test'], dir);
-    git(['config', 'commit.gpgsign', 'false'], dir);
-    fs.writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
-    git(['add', '.'], dir);
-    git(['commit', '-q', '-m', 'seed'], dir);
-    return git(['rev-parse', 'HEAD'], dir);
-  }
-
   function writeMainState(sessionDir, repo, startCommit) {
     fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
       active: false,
@@ -2162,7 +2150,7 @@ describe('B1: pipeline-cancel marker is cleared at startup', () => {
     process.env.PICKLE_DATA_ROOT = dataRoot;
     let spawnRunnerCalls = 0;
     try {
-      const startCommit = initRepo(repo);
+      const startCommit = initRepo(repo, { 'seed.txt': 'seed\n' });
       writeMainState(sessionDir, repo, startCommit);
       writeMainPipeline(sessionDir, repo, ['pickle', 'pickle']);
 
@@ -3333,14 +3321,7 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
 // ---------------------------------------------------------------------------
 
 function seedGitRepoAndCommit(dir) {
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-  fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
-  execFileSync('git', ['add', '.'], { cwd: dir });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
-  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+  return initRepo(dir, { 'seed.ts': 'export const x = 1;\n' });
 }
 
 describe('AC-SCPIN-5 honest phase-halt reason', () => {
@@ -4129,30 +4110,21 @@ describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
     return mkFixtureTmpDir(prefix);
   }
 
-  function git(args, cwd) {
-    return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
-  }
-
   // A repo whose typecheck/lint scripts always fail — if the abort-path gate
   // runs against it, runGate reports status:'red' and dispatchHaltAction emits
   // tsc_gate_failed. No real tsc/eslint spawn: node -e keeps this fast-tier safe.
   function initRedGateRepo(dir) {
-    git(['init', '-q', '-b', 'main'], dir);
-    git(['config', 'user.email', 'test@test.local'], dir);
-    git(['config', 'user.name', 'Test'], dir);
-    git(['config', 'commit.gpgsign', 'false'], dir);
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
-      name: 'cf-gate-fixture',
-      version: '0.0.0',
-      private: true,
-      scripts: {
-        typecheck: 'node -e "process.exit(1)"',
-        lint: 'node -e "process.exit(1)"',
-      },
-    }, null, 2));
-    git(['add', '.'], dir);
-    git(['commit', '-q', '-m', 'seed'], dir);
-    return git(['rev-parse', 'HEAD'], dir);
+    return initRepo(dir, {
+      'package.json': JSON.stringify({
+        name: 'cf-gate-fixture',
+        version: '0.0.0',
+        private: true,
+        scripts: {
+          typecheck: 'node -e "process.exit(1)"',
+          lint: 'node -e "process.exit(1)"',
+        },
+      }, null, 2),
+    });
   }
 
   function writeMainState(sessionDir, repo, startCommit, overrides = {}) {
