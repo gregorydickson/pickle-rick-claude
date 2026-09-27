@@ -2111,19 +2111,11 @@ function liveUnitRunners(sessionDir) {
         return live ? [{ statePath, pid }] : [];
     });
 }
-/** A unit runner leads its own process group; signal the group, falling back to the pid alone. */
-function signalUnitRunner(pid, signal) {
-    if (killProcessGroup(pid, signal))
-        return;
-    try {
-        process.kill(pid, signal);
-    }
-    catch { /* already gone */ }
-}
 /**
  * Phase entry: a unit spawned detached outlives a SIGKILLed pipeline-runner and would race the new
  * wave on the same ticket. Deactivate each live one, SIGTERM its group, and SIGKILL what outlives
- * `LANE_KILL_GRACE_MS`. Best-effort — it never throws and never halts the phase.
+ * `LANE_KILL_GRACE_MS`. Only the GROUP the recorded pid leads is signalled — a unit runner always
+ * leads one, so a recycled pid that does not is never killed. Best-effort; never throws or halts.
  */
 async function reapPriorUnitRunners(runtime) {
     const live = liveUnitRunners(runtime.sessionDir);
@@ -2132,7 +2124,7 @@ async function reapPriorUnitRunners(runtime) {
     runtime.log(`pickle waves: reaping ${live.length} live unit runner(s) from a previous run: pid ${live.map((u) => u.pid).join(', ')}`);
     for (const unit of live) {
         deactivateLaneState(unit.statePath, runtime.log);
-        signalUnitRunner(unit.pid, 'SIGTERM');
+        killProcessGroup(unit.pid, 'SIGTERM');
     }
     const deadline = Date.now() + LANE_KILL_GRACE_MS;
     while (Date.now() < deadline && live.some((u) => isProcessAlive(u.pid))) {
@@ -2140,7 +2132,7 @@ async function reapPriorUnitRunners(runtime) {
     }
     for (const unit of live)
         if (isProcessAlive(unit.pid))
-            signalUnitRunner(unit.pid, 'SIGKILL');
+            killProcessGroup(unit.pid, 'SIGKILL');
 }
 /**
  * B-PBUILD: run the pickle phase as waves of unit sessions, at most `cap` tickets per wave
