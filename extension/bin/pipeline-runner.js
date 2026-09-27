@@ -43,7 +43,7 @@ import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, unitSessionDir, unitBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -1609,6 +1609,60 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     if (fs.existsSync(citadelReport))
         fs.copyFileSync(citadelReport, path.join(laneDir, 'citadel_report.json'));
     return { laneDir, worktree, branch, statePath, workingDir };
+}
+/** Parent session files a build unit reads as-is; `scope.json` is the PARENT fence, not a lane's. */
+const UNIT_SEED_FILES = ['scope.json', 'prd.md', 'prd_refined.md'];
+/**
+ * B-PBUILD: create the build unit for `ticketId` as a sibling of `parentSessionDir` — its own
+ * worktree on `unitBranchName(...)` at `waveSha`, seeded from the parent state and carried
+ * through the SAME pickle transition the serial path runs. `start_commit` and `pinned_sha` are
+ * the wave sha and `pinned_branch` the unit branch, so `checkHeadPinMismatch` accepts the
+ * worktree and a zero-work `completion_commit` equal to the wave sha is rejected as a baseline.
+ * Only `<ticketId>/` is copied: a unit must not see — or pick — a sibling's ticket.
+ * Throws when the worktree cannot be created; the parent state is never written.
+ */
+export function createTicketUnitSession(parentSessionDir, ticketId, waveSha, target, backend) {
+    const unitDir = unitSessionDir(parentSessionDir, ticketId);
+    const worktree = path.join(unitDir, 'wt');
+    const branch = unitBranchName(parentSessionDir, ticketId);
+    const repoRoot = gitRepoRoot(target);
+    fs.mkdirSync(unitDir, { recursive: true });
+    createLaneWorktree(repoRoot, worktree, branch, waveSha);
+    symlinkLaneNodeModules(repoRoot, worktree);
+    const statePath = path.join(unitDir, 'state.json');
+    const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
+    // Not `sm.read`: that heals and PERSISTS the parent's defaults, and the parent is never written here.
+    const parentRaw = readRecoverableJsonObject(path.join(parentSessionDir, 'state.json'));
+    if (!parentRaw)
+        throw new Error(`unit ${ticketId}: parent state ${parentSessionDir}/state.json is unreadable`);
+    const { 
+    // R-CNAR-8: the parent's per-ticket caches describe a different ticket than this unit's.
+    current_ticket_tier: _tier, current_ticket_budget: _budget, current_ticket_max_iterations: _maxIter, current_ticket_worker_timeout_seconds: _timeout, current_ticket_budget_start_iteration: _budgetStart, ...parentState } = parentRaw;
+    // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing unit state to lock against
+    sm.forceWrite(statePath, {
+        ...parentState,
+        working_dir: workingDir,
+        session_dir: unitDir,
+        start_commit: waveSha,
+        pinned_sha: waveSha,
+        pinned_branch: branch,
+        current_ticket: ticketId,
+        iteration: 0,
+        active: false,
+    });
+    const previousState = sm.read(statePath);
+    enterPicklePhase(unitDir, statePath, backend);
+    persistPhaseTransition({ statePath, sessionDir: unitDir }, { name: 'pickle' }, previousState);
+    claimPipelineRunnerActive(statePath);
+    for (const file of UNIT_SEED_FILES) {
+        const src = path.join(parentSessionDir, file);
+        if (fs.existsSync(src))
+            fs.copyFileSync(src, path.join(unitDir, file));
+    }
+    const ticketDir = path.join(parentSessionDir, ticketId);
+    if (fs.existsSync(ticketDir))
+        fs.cpSync(ticketDir, path.join(unitDir, ticketId), { recursive: true });
+    return { unitDir, worktree, branch, statePath, workingDir };
 }
 const LANE_KILL_GRACE_MS = 2_000;
 const LANE_POLL_FALLBACK_MS = 60_000;
