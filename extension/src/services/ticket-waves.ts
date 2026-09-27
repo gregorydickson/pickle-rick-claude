@@ -5,6 +5,8 @@
  * declarations this module's `WaveCandidate.files` is expected to be populated from).
  */
 
+import { extractFrontmatter } from './pickle-utils.js';
+
 export interface WaveCandidate {
   id: string;
   order: number;
@@ -15,9 +17,10 @@ export interface WaveCandidate {
 /** Matches the sole recognized frontmatter opt-in: `parallel_safe: true`. */
 const PARALLEL_SAFE_RE = /^parallel_safe:\s*true\s*$/m;
 
-/** `parallel_safe: true` in frontmatter is the only accepted opt-in. */
+/** `parallel_safe: true` in frontmatter is the only accepted opt-in — a body line (a quoted template) is not. */
 export function readParallelSafe(content: string): boolean {
-  return PARALLEL_SAFE_RE.test(content);
+  const fm = extractFrontmatter(content);
+  return fm !== null && PARALLEL_SAFE_RE.test(fm.body);
 }
 
 /** `CLAUDE.md`, a nested `CLAUDE.md`, or anything under `.claude/` overlaps everything. */
