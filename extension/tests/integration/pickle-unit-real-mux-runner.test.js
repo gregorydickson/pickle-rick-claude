@@ -103,6 +103,8 @@ function makeFixture() {
     step: 'implement', iteration: 0, max_iterations: 3, worker_timeout_seconds: 600, tmux_mode: false,
     chain_meeseeks: false, backend: 'claude', original_prompt: 'real mux unit', start_commit: startCommit,
     current_ticket: null, exit_reason: null, activity: [], history: [],
+    // As setup.js pins a real session: the unit must NOT inherit this pin, its worktree is on another branch.
+    pinned_branch: 'main', pinned_sha: startCommit,
   }, null, 2));
   fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
     phases: ['pickle'], max_parallel_tickets: 2, target, anatomy_stall_limit: 3, szechuan_stall_limit: 5,
@@ -151,11 +153,13 @@ test('a real mux-runner.js inside a unit: pin holds, the manager never enters Ph
       const exitCode = await runMain(fx);
       const log = fs.readFileSync(path.join(fx.sessionDir, 'pipeline-runner.log'), 'utf-8');
       const unitState = JSON.parse(fs.readFileSync(path.join(fx.unitDir, 'state.json'), 'utf-8'));
-      const manager = readJsonLines(path.join(fx.unitDir, 'fake-manager.jsonl'));
 
       // Pin: the unit worktree sits on the unit branch, which is what the unit was pinned to.
       assert.notEqual(unitState.exit_reason, 'working_tree_modified_externally', `unit exit_reason: ${unitState.exit_reason}`);
       assert.ok(!(unitState.activity ?? []).some((e) => e.event === 'head_mismatch_detected'), 'no head_mismatch_detected');
+
+      const managerLog = path.join(fx.unitDir, 'fake-manager.jsonl');
+      const manager = fs.existsSync(managerLog) ? readJsonLines(managerLog) : [];
 
       // Step: every manager turn was handed a lifecycle step, never the PRD drafter's.
       const starts = manager.filter((r) => r.phase === 'start');
