@@ -63,6 +63,7 @@ import {
   getDiffFiles,
   archiveBeforeDestructive,
   updateTicketStatus,
+  updateTicketFrontmatter,
   ARCHIVE_UNTRACKED_BYTE_CAP,
   type ArchiveResult,
 } from '../services/git-utils.js';
@@ -100,6 +101,7 @@ import {
   type LaneOutcome,
 } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
+import { planTicketWave, readParallelSafe, type WaveCandidate } from '../services/ticket-waves.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
 import type { CitadelFinding, CitadelJsonReport, CitadelSeverity } from '../services/citadel/reporter.js';
@@ -2325,6 +2327,177 @@ function integrateLaneRun(run: LaneRun, lanes: readonly LaneRecord[], ends: read
   return outcomes;
 }
 
+// ---------------------------------------------------------------------------
+// B-PBUILD: pickle as waves of unit sessions
+// ---------------------------------------------------------------------------
+
+const isTerminalTicketStatus = (status: string | null | undefined): boolean => {
+  const s = (status ?? '').toLowerCase();
+  return s === 'done' || s === 'skipped';
+};
+
+/** The parent's non-terminal tickets as wave candidates; `parallel_safe` absent reads `false`. */
+function pendingWaveCandidates(sessionDir: string): WaveCandidate[] {
+  return collectTickets(sessionDir)
+    .filter((t): t is typeof t & { id: string } => typeof t.id === 'string' && !isTerminalTicketStatus(t.status))
+    .map((t) => {
+      let content = '';
+      try {
+        content = fs.readFileSync(path.join(sessionDir, t.id, `rick_ticket_${t.id}.md`), 'utf-8');
+      } catch { /* unreadable → not parallel-safe */ }
+      return { id: t.id, order: t.order, parallelSafe: readParallelSafe(content), files: readDeclaredFilesForTicket(sessionDir, t.id) };
+    });
+}
+
+/** One wave member after the barrier: did its unit mark the ticket Done, and when did it run. */
+interface UnitEnd {
+  id: string;
+  done: boolean;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
+/** Run ticket `ticketId` as a unit session at the wave sha. A unit that cannot be created is not started. */
+async function runTicketUnit(run: LaneRun, ticketId: string): Promise<UnitEnd> {
+  const { runtime } = run;
+  const notRun: UnitEnd = { id: ticketId, done: false, started_at: null, ended_at: null };
+  if (run.cancelledAtMs !== null) return notRun;
+  let unit: ReturnType<typeof createTicketUnitSession>;
+  try {
+    unit = createTicketUnitSession(runtime.sessionDir, ticketId, run.sha, runtime.target, runtime.backend);
+  } catch (err) {
+    runtime.log(`pickle waves: unit ${ticketId}: session setup failed: ${safeErrorMessage(err)}`);
+    return notRun;
+  }
+  run.statePaths.push(unit.statePath);
+  run.worktrees.push(unit.worktree);
+  const startedAt = new Date().toISOString();
+  try {
+    await runSpawnRunner('node', [
+      path.join(runtime.extensionRoot, 'extension', 'bin', 'mux-runner.js'),
+      unit.unitDir,
+    ], { ...runtime.phaseEnv, ...laneRunnerEnv(unit.statePath, runtime.phaseEnv) }, {
+      detached: process.platform !== 'win32',
+      sessionDir: unit.unitDir,
+      onSpawn: (child) => {
+        run.spawned.push(child);
+        laneChildren.set(ticketId, child);
+        if (run.cancelledAtMs !== null) reapChildSubtree(child, true, 'SIGTERM');
+      },
+    });
+  } catch (err) {
+    runtime.log(`pickle waves: unit ${ticketId}: runner failed to start: ${safeErrorMessage(err)}`);
+  } finally {
+    laneChildren.delete(ticketId);
+    deactivateLaneState(unit.statePath, runtime.log);
+  }
+  const unitTicket = collectTickets(unit.unitDir).find((t) => t.id === ticketId);
+  return { id: ticketId, done: (unitTicket?.status ?? '').toLowerCase() === 'done', started_at: startedAt, ended_at: new Date().toISOString() };
+}
+
+/**
+ * Picks land on the working branch in roster order, one run per integrated member, and a
+ * member that conflicted or redded contributes nothing — so `waveSha..HEAD` maps onto the
+ * integrated members positionally. Returns member index → the sha of its LAST picked commit.
+ * A count that does not add up proves nothing: an empty map, so every member writes back Todo.
+ */
+function integratedShas(repoRoot: string, waveSha: string, integrated: readonly boolean[], commits: readonly string[][]): Map<number, string> {
+  const landed = (runGitString(['rev-list', '--reverse', `${waveSha}..HEAD`], repoRoot) ?? '').split('\n').filter(Boolean);
+  const shas = new Map<number, string>();
+  let cursor = 0;
+  integrated.forEach((ok, i) => {
+    if (!ok || commits[i].length === 0) return;
+    cursor += commits[i].length;
+    shas.set(i, landed[cursor - 1]);
+  });
+  return cursor === landed.length ? shas : new Map();
+}
+
+/** Write every member's outcome back onto the PARENT ticket: integrated → Done + its sha, else Todo. */
+function writeBackWave(runtime: PipelineRuntime, members: readonly string[], shas: ReadonlyMap<number, string>): void {
+  members.forEach((id, i) => {
+    const sha = shas.get(i);
+    try {
+      updateTicketFrontmatter(id, runtime.sessionDir, sha ? { status: 'Done', completion_commit: sha } : { status: 'Todo' });
+    } catch (err) {
+      runtime.log(`pickle waves: ${id}: write-back failed: ${safeErrorMessage(err)}`);
+    }
+  });
+}
+
+/** Run one wave to its barrier, integrate the Done members in order, write back. Returns the integrated count. */
+async function runTicketWave(run: LaneRun, members: readonly string[], wave: number): Promise<number> {
+  const { runtime, repoRoot } = run;
+  runtime.log(`pickle waves: wave ${wave} members=${members.join(',')} in_flight=${members.length}`);
+  const ends = await Promise.all(members.map((id) => runTicketUnit(run, id)));
+  await reapCancelledLanes(run);
+  // Every member has ended: the next wave's cancel and reap must reach only ITS runners.
+  run.spawned.length = 0;
+  run.statePaths.length = 0;
+  const stuck = removeLaneWorktrees(repoRoot, run.worktrees.splice(0));
+  if (stuck.length > 0) runtime.log(`pickle waves: could not remove worktree(s): ${stuck.join(', ')}`);
+  const branches = members.map((id) => unitBranchName(runtime.sessionDir, id));
+  const integration = integrateLanes({
+    repoRoot, target: runtime.target, sessionDir: runtime.sessionDir, phaseStartSha: run.sha, log: runtime.log,
+    lanes: branches.map((branch, i) => ({ branch, integrate: ends[i].done })),
+  });
+  const integrated = integration.outcomes.map((o) => o === 'integrated');
+  const shas = integratedShas(repoRoot, run.sha, integrated, integration.commits);
+  writeBackWave(runtime, members, shas);
+  const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, new Set(branches.filter((_, i) => shas.has(i))));
+  if (retained.length > 0) runtime.log(`pickle waves: kept unit branch(es): ${retained.join(', ')}`);
+  const outcomeOf = (i: number): string => {
+    if (shas.has(i)) return 'integrated';
+    if (!ends[i].done) return 'not_done';
+    // Picked, but no landed commit is provably its own (zero commits, or a count that did not add up).
+    return integration.outcomes[i] === 'integrated' ? 'unmapped' : (integration.outcomes[i] ?? 'not_integrated');
+  };
+  const outcomes = members.map((id, i) => {
+    const outcome = outcomeOf(i);
+    runtime.log(`pickle waves: wave ${wave} ${id}: ${outcome}${shas.has(i) ? ` @ ${shas.get(i)}` : ' — written back Todo'}`);
+    return { id, outcome, started_at: ends[i].started_at, ended_at: ends[i].ended_at };
+  });
+  emitLaneEvent('anatomy_lanes_integrated', runtime.sessionDir, { phase: 'pickle', wave, outcomes, retained_branches: retained });
+  return shas.size;
+}
+
+/**
+ * B-PBUILD: run the pickle phase as waves of unit sessions, at most `cap` tickets per wave
+ * (`planTicketWave`). Each wave starts at the working branch's HEAD, runs every member in its
+ * own worktree, waits for all of them, fast-forwards the Done members' commits onto the
+ * working branch, and writes each member's outcome back onto the parent ticket. Ends when no
+ * parent ticket is pending, on cancel, or when a wave integrates nothing. Returns the phase
+ * exit code: 0 iff no parent ticket is left non-terminal.
+ */
+export async function runPickleWaves(runtime: PipelineRuntime, cap: number): Promise<number> {
+  const repoRoot = gitRepoRoot(runtime.target);
+  const run: LaneRun = { runtime, repoRoot, sha: '', cancelledAtMs: null, statePaths: [], spawned: [], worktrees: [] };
+  const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
+  const poll = setInterval(() => {
+    if (!parentSessionActive(runtime.statePath)) cancelLaneRun(run);
+  }, heartbeatMs > 0 ? heartbeatMs : LANE_POLL_FALLBACK_MS);
+  try {
+    for (let wave = 1; ; wave++) {
+      if (!parentSessionActive(runtime.statePath)) cancelLaneRun(run);
+      const members = run.cancelledAtMs === null ? planTicketWave(pendingWaveCandidates(runtime.sessionDir), cap) : [];
+      if (members.length === 0) break;
+      reportLaneRecovery(run);
+      run.sha = runGitString(['rev-parse', 'HEAD'], repoRoot) ?? '';
+      if (await runTicketWave(run, members, wave) === 0) {
+        runtime.log(`pickle waves: wave ${wave} integrated nothing — ending the wave run`);
+        break;
+      }
+    }
+  } finally {
+    clearInterval(poll);
+  }
+  const pending = pendingWaveCandidates(runtime.sessionDir).length;
+  const reason = pending === 0 ? 'success' : 'pipeline_phase_incomplete';
+  recordExitReason(runtime.statePath, reason);
+  runtime.log(`pickle waves: ${reason} (${pending} ticket(s) pending)`);
+  return pending === 0 ? 0 : 1;
+}
+
 /**
  * AC-LPB-05: when pipeline-runner re-attaches to a session that already has
  * prior progress (iteration > 0 OR phases_entered non-empty), this is a
@@ -4509,6 +4682,9 @@ async function runConfiguredPhase(
   const cap = runtime.config.anatomy_max_parallel_lanes;
   const lanes = phaseConfig.name === 'anatomy-park' && cap >= 2 ? readAnatomyLanes(runtime.sessionDir) : [];
   if (lanes.length >= 2) return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+  if (phaseConfig.name === 'pickle' && runtime.config.max_parallel_tickets >= 2) {
+    return { skipped: false, exitCode: await runPickleWaves(runtime, runtime.config.max_parallel_tickets) };
+  }
   const result = await executePhaseRunner(phaseConfig, runtime.phaseEnv);
   return { skipped: false, exitCode: result.exitCode, stderr: result.stderr };
 }
