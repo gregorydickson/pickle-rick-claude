@@ -1,5 +1,5 @@
 // @tier: fast
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as os from 'node:os';
 import * as fs from 'node:fs';
@@ -11,6 +11,21 @@ import {
     __resetBackendWarnings,
 } from '../../services/backend-spawn.js';
 import { withEmptyHome } from '../__helpers__/empty-home.js';
+
+// Every claude-arm builder call emits a `worker_mcp_config_resolved` activity event. Without a
+// file-scoped data root it lands in the operator's real ~/.local/share/pickle-rick activity log.
+let fileDataRoot;
+let prevFileDataRoot;
+before(() => {
+    prevFileDataRoot = process.env.PICKLE_DATA_ROOT;
+    fileDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-data-root-'));
+    process.env.PICKLE_DATA_ROOT = fileDataRoot;
+});
+after(() => {
+    if (prevFileDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prevFileDataRoot;
+    fs.rmSync(fileDataRoot, { recursive: true, force: true });
+});
 
 // Shared fixture helpers
 function mkTmpHome(label) {
@@ -357,6 +372,13 @@ function readActivityEvents(dataRoot) {
     }
     return events;
 }
+
+test('isolation: an unscoped builder call writes its activity event into the file-scoped data root', () => {
+    assert.equal(process.env.PICKLE_DATA_ROOT, fileDataRoot);
+    const prior = readActivityEvents(fileDataRoot).length;
+    buildManagerInvocation('claude', { prompt: 'p', addDirs: [], mcpConfig: '/tmp/x.json' });
+    assert.ok(readActivityEvents(fileDataRoot).length > prior, 'builder event must land in the file-scoped root');
+});
 
 test('AC-MFW-6: buildWorkerInvocation(claude) emits worker_mcp_config_resolved once (settings_override)', () => {
     const tmpDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mfw6-wrk-'));

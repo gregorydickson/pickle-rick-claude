@@ -731,21 +731,19 @@ function walkForClaudeMdFiles(dir) {
   const results = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) results.push(...walkForClaudeMdFiles(full));
-    else if (entry.name === 'CLAUDE.md') results.push(full);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      results.push(...walkForClaudeMdFiles(full));
+    } else if (entry.name === 'CLAUDE.md') results.push(full);
   }
   return results;
 }
 
-// Mirrors collectClaudeMdFiles() in trap-door-coverage-audit.ts: extension/CLAUDE.md plus every
-// extension/src/**/CLAUDE.md -- the same corpus runT6TrapDoorCoverage walks in production.
+// Mirrors collectClaudeMdFiles() in trap-door-coverage-audit.ts: every CLAUDE.md under the
+// project, DISCOVERED (AP-BIN-ITER15-02) -- never a location list, which left repo-root
+// bin/CLAUDE.md out of this replay corpus after production stopped listing locations.
 function collectClaudeMdFilesForTest(repoRoot) {
-  const files = [];
-  const primary = path.join(repoRoot, 'extension', 'CLAUDE.md');
-  if (fs.existsSync(primary)) files.push(primary);
-  const srcDir = path.join(repoRoot, 'extension', 'src');
-  if (fs.existsSync(srcDir)) files.push(...walkForClaudeMdFiles(srcDir));
-  return files;
+  return walkForClaudeMdFiles(repoRoot).sort();
 }
 
 function normalizeRelativePathForTest(filePath) {
@@ -920,6 +918,25 @@ describe('runT6TrapDoorCoverage — full corpus replay against the widened ancho
       remaining.length < 50,
       `expected remaining genuinely-broken anchors to stay well below the pre-fix scale (~145); got ${remaining.length}`,
     );
+  });
+
+  // The two replay oracles in this block are only as wide as the corpus they walk. The git index
+  // is the independent witness: every TRACKED catalog carrying an ENFORCE ref must be walked, or
+  // its anchors silently leave both the exact-set and the citadel/shell agreement checks.
+  test('the replay corpus walks every tracked catalog that carries an ENFORCE ref', async () => {
+    const { ENFORCE_REF_RE } = await importAnalyzer();
+    const tracked = execFileSync('git', ['ls-files', '--', 'CLAUDE.md', '*/CLAUDE.md'], {
+      cwd: REPO_ROOT, encoding: 'utf-8', timeout: 10_000,
+    }).split('\n').filter(Boolean);
+    const withRefs = tracked.filter((rel) => {
+      const content = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8');
+      return new RegExp(ENFORCE_REF_RE.source, ENFORCE_REF_RE.flags).test(content);
+    });
+    assert.ok(withRefs.includes('bin/CLAUDE.md'), 'non-vacuity: repo-root bin/CLAUDE.md carries ENFORCE refs');
+    const walked = new Set(
+      collectClaudeMdFilesForTest(REPO_ROOT).map((f) => normalizeRelativePathForTest(path.relative(REPO_ROOT, f))),
+    );
+    assert.deepEqual(withRefs.filter((rel) => !walked.has(rel)), [], 'catalogs production reads but the replay corpus skips');
   });
 
   test('the re-derived remaining set matches production\'s own live orphan-test-case findings exactly', async () => {

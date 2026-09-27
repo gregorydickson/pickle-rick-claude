@@ -130,11 +130,15 @@ test('paused-orphan: (null,false,stale) does not re-demote already-inactive sess
   const { dataRoot, sessionDir, stateFile } = makeTestSession();
   try {
     fs.writeFileSync(stateFile, JSON.stringify(baseState({ active: false, pid: null })));
+    // Stale + dead mapped PID is the full Cell D demote condition, so only the
+    // active!==true guard can keep this case quiet — without the map it is vacuous.
+    writeSessionsMap(dataRoot, sessionDir, DEAD_PID);
     writeStaleMtime(stateFile);
 
     const state = sm.read(stateFile);
 
     assert.equal(state.active, false);
+    assert.equal(state.exit_reason, undefined, 'already-inactive session must keep its exit_reason');
     assert.ok(
       !Array.isArray(state.activity) ||
         state.activity.every(a => a.kind !== 'paused_session_orphan_demoted'),

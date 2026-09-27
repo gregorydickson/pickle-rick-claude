@@ -16,6 +16,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { buildWorkerInvocation } from '../../services/backend-spawn.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ECHO_MCP_SERVER = path.resolve(__dirname, 'fixtures/echo-mcp-server.js');
@@ -71,19 +72,34 @@ test(
         `After the tool returns, write the exact text it returned (nothing else) to ` +
         `the file at this absolute path: ${probeFile}`;
 
-      const result = spawnSync(
-        'claude',
-        [
-          '--dangerously-skip-permissions',
-          '--mcp-config', mcpConfigPath,
-          '-p', prompt,
-        ],
-        {
-          encoding: 'utf8',
-          timeout: TEST_TIMEOUT_MS,
-          env: { ...process.env },
-        },
+      // Build the argv through the PRODUCTION worker dispatcher, fed the operator
+      // override exactly as spawn-morty does, so the forwarding under test is the
+      // shipped `--mcp-config` push rather than a hand-assembled flag list.
+      const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+      process.env.PICKLE_DATA_ROOT = sessionRoot;
+      let invocation;
+      try {
+        invocation = buildWorkerInvocation('claude', {
+          prompt,
+          addDirs: [sessionRoot],
+          settingsBag: { worker_mcp_config_path: mcpConfigPath },
+        });
+      } finally {
+        if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+      }
+      const mcpFlagAt = invocation.args.indexOf('--mcp-config');
+      assert.ok(
+        mcpFlagAt >= 0 && invocation.args[mcpFlagAt + 1] === mcpConfigPath,
+        `production worker argv must forward --mcp-config ${mcpConfigPath}; got: ${JSON.stringify(invocation.args.slice(0, -1))}`,
       );
+
+      const result = spawnSync(invocation.cmd, invocation.args, {
+        encoding: 'utf8',
+        timeout: TEST_TIMEOUT_MS,
+        cwd: sessionRoot,
+        env: { ...process.env },
+      });
 
       assert.equal(
         result.status,

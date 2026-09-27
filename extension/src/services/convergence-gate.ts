@@ -346,13 +346,21 @@ export function classifyNoDisown(
 // `selfGuard` (R-ORSR-6): a baseline-matching failure is dropped as pre-existing ONLY when it is
 // NOT self-introduced. A failure intersecting the phase's own diff is never subtracted, so a
 // self-introduced break can never be disowned as a coincidental baseline match.
+//
+// `keepFallbackRows` (B-FINALGATE #50): the unparsed fallback row's identity is `check::pkgDir::<exit
+// code>`, which says WHICH check failed and nothing about WHAT failed, so an equal fingerprint is not
+// the same failure — a baselined coarse row would subtract a brand-new coarse one. With the flag set
+// such a row is never matched to the baseline. It is opt-in because the per-iteration microverse gate
+// and the cap gate read the same subtraction and have their own dispositions for a coarse baseline.
 export function subtractBaseline(
   current: GateFailure[],
   baseline: GateBaselineFile,
   selfGuard?: NoDisownContext,
+  keepFallbackRows = false,
 ): GateFailure[] {
   const baselineSet = new Set(baseline.failures.map(buildFingerprint));
   return current.filter(f => {
+    if (keepFallbackRows && isExitStatusToken(f.ruleOrCode)) return true;
     if (!baselineSet.has(buildFingerprint(f))) return true;
     return isSelfIntroducedFailure(f, selfGuard);
   });
@@ -500,6 +508,8 @@ export interface RunGateOpts {
   baselineIteration?: number;
   since?: string;
   allowedPaths?: string[];
+  /** Baseline mode only: never subtract an exit-status fallback row (see `subtractBaseline`). */
+  keepFallbackRows?: boolean;
   /** When true, gate skips (green) if the working tree is dirty. P0.6b. */
   workerMode?: boolean;
   /** Expected HEAD SHA. Gate halts with red if current HEAD differs. P0.6c. */
@@ -1117,7 +1127,9 @@ function parseTestOutput(output: string, pkgDir: string): GateFailure[] {
       // `check::file::ruleOrCode`, so putting it here is what lets baseline subtraction tell one
       // failing test from another (see that function's comment). All three render sites print
       // `ruleOrCode`, so this also surfaces the name with no render-site change.
-      ruleOrCode: name.slice(0, 500),
+      // A name that SPELLS an exit status (a nameless `not ok 3`, a test titled `42`) takes its
+      // marked line instead, so a parsed row can never read as the unparsed fallback row.
+      ruleOrCode: (isExitStatusToken(name) ? line.replace(TEST_DURATION_SUFFIX_RE, '') : name).slice(0, 500),
       message: line.slice(0, 500),
       severity: 'error',
       occurrence_index: 0,
@@ -1164,10 +1176,21 @@ const FAILURE_PARSERS: Record<GateCheck, FailureParser> = {
  * empty-output failure is what made a signal-killed check silently subtractable every pass
  * (AP-EXT-ITER318-01).
  */
+const NO_EXIT_STATUS_TOKEN = 'no-exit-status';
+
 function describeExitStatus(exitCode: number | null): { token: string; phrase: string } {
   return exitCode === null
-    ? { token: 'no-exit-status', phrase: 'no exit status (terminated by signal)' }
+    ? { token: NO_EXIT_STATUS_TOKEN, phrase: 'no exit status (terminated by signal)' }
     : { token: String(exitCode), phrase: `exit code ${exitCode}` };
+}
+
+/**
+ * True for a `ruleOrCode` that `describeExitStatus` minted — the mark of the unparsed fallback row,
+ * the one row that carries neither a file an edit could change nor an identity a person could look up.
+ * Lives beside its producer so the two cannot drift.
+ */
+export function isExitStatusToken(ruleOrCode: string): boolean {
+  return ruleOrCode === NO_EXIT_STATUS_TOKEN || /^\d+$/.test(ruleOrCode);
 }
 
 export function buildFailures(result: CheckResult, check: GateCheck, pkgDir: string): GateFailure[] {
@@ -1304,6 +1327,67 @@ export function isCheckUnmeasured(
 ): boolean {
   if (checkStatus === undefined) return false;
   return checkStatus[check] !== 'ran';
+}
+
+export type BaselineAwareGateResult =
+  | {
+      verdict: 'green' | 'red' | { unmeasured: string[] };
+      /** What `runGate` reported, after any baseline was applied — `failures` are post-subtraction. */
+      gate: GateResult;
+      mode: 'baseline' | 'strict';
+    }
+  /** A throw is a measurement failure, but the mode it was chosen in is still known and still owed to a log line. */
+  | { threw: string; mode: 'baseline' | 'strict' };
+
+export interface BaselineAwareGateOpts {
+  workingDir: string;
+  /** `gate/baseline.json`. Spent ONLY in baseline mode; strict mode never receives it. */
+  baselinePath: string;
+  allowedPaths?: string[];
+  /** The caller owns its check list; the verdict is read over exactly these. */
+  checks: ('typecheck' | 'lint' | 'tests')[];
+  /** Forwarded to `runGate` in baseline mode; see `subtractBaseline`. Off unless a caller asks. */
+  keepFallbackRows?: boolean;
+  /** Injection seam — callers (and their tests) route the real gate through their own `_deps`. */
+  runGateFn?: (opts: RunGateOpts) => Promise<GateResult>;
+}
+
+/**
+ * B-CAPGATE, one home: judge the tree against the session baseline, or strictly when there is none.
+ *
+ * Mode: baseline ONLY once `baselinePath` reads AND parses (`readUsableBaseline`, the one such
+ * predicate); otherwise strict. `baselinePath` rides in baseline mode alone — handed to a session
+ * with no usable baseline, `runGate` would CAPTURE one and return green, faking a clean tree and
+ * writing the file this helper must never create. No `since`: `isSelfIntroducedFailure` is
+ * file-axis, so a phase-wide `since` would keep every pre-existing failure in an edited file.
+ *
+ * Verdict is read from `check_status`, never from `status` alone: baseline mode can subtract a
+ * `GATE_CHECK_TIMEOUT` row and report green. A real (non-timeout) failure is red whatever else
+ * happened; otherwise any requested check that did not `ran` makes the verdict `unmeasured`. A
+ * thrown gate is reported as `{ threw }` — a measurement failure, never a verdict on the tree.
+ */
+export async function runBaselineAwareGate(opts: BaselineAwareGateOpts): Promise<BaselineAwareGateResult> {
+  const mode = readUsableBaseline(opts.baselinePath) === null ? 'strict' : 'baseline';
+  const runGateFn = opts.runGateFn ?? runGate;
+  let gate: GateResult;
+  try {
+    gate = await runGateFn({
+      workingDir: opts.workingDir,
+      mode,
+      scope: 'full',
+      baselinePath: mode === 'baseline' ? opts.baselinePath : undefined,
+      allowedPaths: opts.allowedPaths,
+      checks: [...opts.checks],
+      keepFallbackRows: opts.keepFallbackRows,
+    });
+  } catch (err) {
+    return { threw: err instanceof Error ? err.message : String(err), mode };
+  }
+  if (gate.status === 'red' && gate.failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
+    return { verdict: 'red', gate, mode };
+  }
+  const unmeasured = opts.checks.filter((check) => isCheckUnmeasured(gate.check_status, check));
+  return { verdict: unmeasured.length > 0 ? { unmeasured } : 'green', gate, mode };
 }
 
 export type GateCommandMap = { typecheck?: string; lint?: string; test?: string };
@@ -1949,7 +2033,7 @@ async function resolveBaselineResult(
     console.error(`gate: baseline at ${baselinePath} is unusable — reporting failures unsubtracted for this run`);
     return null;
   }
-  const newFailures = subtractBaseline(withIndices, existing, buildNoDisownContext(opts));
+  const newFailures = subtractBaseline(withIndices, existing, buildNoDisownContext(opts), opts.keepFallbackRows);
   return {
     status: newFailures.length === 0 ? 'green' : 'red',
     failures: newFailures,

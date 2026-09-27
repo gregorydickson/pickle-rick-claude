@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { respawnMonitorWindowForMode } from '../../lib/monitor-respawn.js';
+import { respawnMonitorWindowForMode } from '../../services/pickle-utils.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXTENSION_ROOT = path.resolve(__dirname, '../..');
@@ -279,23 +279,19 @@ test('pipeline state stays coherent across a three-iteration mux-runner fixture'
 
 // ---------------------------------------------------------------------------
 // R-MDS-1: respawnMonitorWindowForMode integration tests
+//
+// These drive the respawnMonitorWindowForMode that pipeline-runner actually
+// calls at every phase boundary (services/monitor-window.ts, re-exported by
+// pickle-utils). The mode argument is a monitor MODE forwarded verbatim to
+// `monitor.js --mode`, and the ambient tmux session must carry this session
+// dir's trailing hash or the call refuses to touch any pane.
 // ---------------------------------------------------------------------------
 
-function readActivityEventsFromDir(dataRoot) {
-    const activityDir = path.join(dataRoot, 'activity');
-    if (!fs.existsSync(activityDir)) return [];
-    return fs.readdirSync(activityDir)
-        .filter((n) => n.endsWith('.jsonl'))
-        .flatMap((n) =>
-            fs.readFileSync(path.join(activityDir, n), 'utf-8')
-                .split(/\r?\n/)
-                .filter(Boolean)
-                .map((l) => JSON.parse(l)),
-        );
-}
+const SESSION_HASH = 'abc12345';
+const OWN_TMUX_SESSION = `pipeline-${SESSION_HASH}`;
 
 function makeSessionDir(tmpRoot) {
-    const sessionDir = path.join(tmpRoot, 'session');
+    const sessionDir = path.join(tmpRoot, `2026-01-01-${SESSION_HASH}`);
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
         active: true, step: 'anatomy-park', iteration: 1, schema_version: 1,
@@ -308,64 +304,71 @@ function makeSessionDir(tmpRoot) {
     return sessionDir;
 }
 
-test('respawnMonitorWindowForMode: emits monitor_respawn_started on success', { timeout: 15000 }, async () => {
-    const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'monitor-respawn-')));
+function readMonitorMode(sessionDir) {
+    return JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8')).monitor_mode;
+}
+
+async function withRespawnSandbox(prefix, fn) {
+    const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
     const prevDataRoot = process.env.PICKLE_DATA_ROOT;
     try {
-        const sessionDir = makeSessionDir(tmpRoot);
-        const dataRoot = path.join(tmpRoot, 'data');
-        process.env.PICKLE_DATA_ROOT = dataRoot;
-
-        const capturedArgs = [];
-        const mockSpawnSync = (_cmd, args, _opts) => {
-            capturedArgs.push([...args]);
-            if (args[0] === 'display-message') return { status: 0, stdout: 'pickle-test\n', stderr: '' };
-            return { status: 0, stdout: '', stderr: '' };
-        };
-
-        await respawnMonitorWindowForMode(sessionDir, 'anatomy-park', mockSpawnSync);
-
-        const events = readActivityEventsFromDir(dataRoot);
-        const started = events.filter((e) => e.event === 'monitor_respawn_started');
-        assert.equal(started.length, 1, 'should emit one monitor_respawn_started event');
-        assert.equal(started[0].gate_payload.mode, 'microverse', 'anatomy-park maps to microverse');
-        assert.equal(started[0].gate_payload.to_phase, 'anatomy-park', 'to_phase is anatomy-park');
-        const respawnCall = capturedArgs.find((a) => a[0] === 'respawn-pane');
-        assert.ok(respawnCall, 'should call tmux respawn-pane');
-        assert.ok(respawnCall.join(' ').includes('--mode microverse'), 'respawn-pane command includes --mode microverse');
+        process.env.PICKLE_DATA_ROOT = path.join(tmpRoot, 'data');
+        await fn(makeSessionDir(tmpRoot));
     } finally {
         if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
         else process.env.PICKLE_DATA_ROOT = prevDataRoot;
         fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
+}
+
+function ownSessionTmuxStub(captured, onRespawn = () => {}) {
+    return (_cmd, args, _opts) => {
+        captured.push([...args]);
+        if (args[0] === 'display-message' && args.includes('#S')) return { status: 0, stdout: `${OWN_TMUX_SESSION}\n`, stderr: '' };
+        // Pane pid unknown: a real-looking pid would become state.monitor_pid and be
+        // signalled by the next respawn call's old-monitor reclaim.
+        if (args[0] === 'display-message') return { status: 1, stdout: '', stderr: '' };
+        if (args[0] === 'respawn-pane') onRespawn(args);
+        return { status: 0, stdout: '', stderr: '' };
+    };
+}
+
+test('respawnMonitorWindowForMode: respawns the monitor pane with the verbatim mode and records it', { timeout: 15000 }, async () => {
+    await withRespawnSandbox('monitor-respawn-', async (sessionDir) => {
+        const captured = [];
+        const logs = [];
+        const result = await respawnMonitorWindowForMode(sessionDir, 'anatomy-park', {
+            inTmux: true, spawnSyncFn: ownSessionTmuxStub(captured), log: (m) => logs.push(m),
+        });
+
+        assert.equal(result, 'respawned');
+        const respawnCalls = captured.filter((a) => a[0] === 'respawn-pane');
+        assert.equal(respawnCalls.length, 1, 'exactly one respawn-pane call');
+        assert.deepEqual(respawnCalls[0].slice(0, 4), ['respawn-pane', '-k', '-t', `${OWN_TMUX_SESSION}:monitor.0`]);
+        assert.ok(respawnCalls[0][4].includes(`--mode anatomy-park ${sessionDir}`),
+            `respawn command forwards the mode verbatim: ${respawnCalls[0][4]}`);
+        assert.equal(readMonitorMode(sessionDir), 'anatomy-park', 'state.monitor_mode records the new mode');
+        assert.ok(logs.includes('monitor: respawned for mode anatomy-park'), `logs: ${logs.join(' | ')}`);
+    });
 });
 
-test('respawnMonitorWindowForMode: emits monitor_respawn_failed and is non-fatal on tmux unavailable', { timeout: 15000 }, async () => {
-    const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'monitor-respawn-')));
-    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-    try {
-        const sessionDir = makeSessionDir(tmpRoot);
-        const dataRoot = path.join(tmpRoot, 'data');
-        process.env.PICKLE_DATA_ROOT = dataRoot;
+test('respawnMonitorWindowForMode: is a non-fatal no-op when tmux is unavailable or respawn-pane fails', { timeout: 15000 }, async () => {
+    await withRespawnSandbox('monitor-respawn-', async (sessionDir) => {
+        const captured = [];
+        const tmuxDown = (_cmd, args, _opts) => { captured.push([...args]); return { status: 1, stdout: '', stderr: 'no server running' }; };
+        const downResult = await respawnMonitorWindowForMode(sessionDir, 'szechuan-sauce', { inTmux: true, spawnSyncFn: tmuxDown });
+        assert.equal(downResult, 'no-op');
+        assert.equal(captured.filter((a) => a[0] === 'respawn-pane').length, 0, 'no pane touched when #S is unresolvable');
+        assert.equal(readMonitorMode(sessionDir) ?? null, null, 'monitor_mode not recorded for a respawn that never ran');
 
-        const mockSpawnSync = (_cmd, _args, _opts) => ({ status: 1, stdout: '', stderr: 'no server running' });
-
-        await assert.doesNotReject(
-            respawnMonitorWindowForMode(sessionDir, 'szechuan-sauce', mockSpawnSync),
-            'respawnMonitorWindowForMode must not throw on tmux unavailable',
-        );
-
-        const events = readActivityEventsFromDir(dataRoot);
-        const failed = events.filter((e) => e.event === 'monitor_respawn_failed');
-        assert.ok(failed.length >= 1, 'should emit monitor_respawn_failed event');
-        assert.equal(failed[0].gate_payload.phase, 'szechuan-sauce', 'failed event carries phase');
-        assert.ok(typeof failed[0].gate_payload.error === 'string' && failed[0].gate_payload.error.length > 0,
-            'failed event carries error message');
-    } finally {
-        if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
-        else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-        fs.rmSync(tmpRoot, { recursive: true, force: true });
-    }
+        const paneFails = (_cmd, args, _opts) => {
+            if (args[0] === 'display-message') return { status: 0, stdout: `${OWN_TMUX_SESSION}\n`, stderr: '' };
+            return { status: 1, stdout: '', stderr: "can't find pane" };
+        };
+        const failResult = await respawnMonitorWindowForMode(sessionDir, 'szechuan-sauce', { inTmux: true, spawnSyncFn: paneFails });
+        assert.equal(failResult, 'no-op');
+        assert.equal(readMonitorMode(sessionDir) ?? null, null, 'a failed respawn-pane must not record the mode');
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -376,13 +379,8 @@ test('R-MDS-6: producer_done true→respawn→false sequence (writer-ownership p
     const { StateManager } = await import('../../services/state-manager.js');
     const sm = new StateManager();
 
-    const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'monitor-mds6-')));
-    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-    try {
-        const sessionDir = makeSessionDir(tmpRoot);
+    await withRespawnSandbox('monitor-mds6-', async (sessionDir) => {
         const statePath = path.join(sessionDir, 'state.json');
-        const dataRoot = path.join(tmpRoot, 'data');
-        process.env.PICKLE_DATA_ROOT = dataRoot;
 
         // Initialize monitor_panes (migration would do this automatically)
         sm.update(statePath, (s) => {
@@ -395,16 +393,13 @@ test('R-MDS-6: producer_done true→respawn→false sequence (writer-ownership p
         });
 
         const sequence = [];
-
-        const mockSpawnSync = (_cmd, args, _opts) => {
-            if (args[0] === 'display-message') return { status: 0, stdout: 'pickle-test\n', stderr: '' };
-            // Capture flag at the moment of respawn-pane call (during respawn)
+        // Capture flag at the moment of respawn-pane call (during respawn)
+        const mockSpawnSync = ownSessionTmuxStub([], () => {
             try {
                 const snap = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
                 sequence.push({ event: 'respawn-pane', producer_done: snap.monitor_panes?.[2]?.producer_done });
             } catch { sequence.push({ event: 'respawn-pane', producer_done: 'error' }); }
-            return { status: 0, stdout: '', stderr: '' };
-        };
+        });
 
         // Simulate the pipeline-runner writer pattern (R-MDS-6):
         // Step 1: flip true BEFORE respawn
@@ -412,7 +407,7 @@ test('R-MDS-6: producer_done true→respawn→false sequence (writer-ownership p
         sequence.push({ event: 'pre-respawn', producer_done: sm.read(statePath).monitor_panes?.[2]?.producer_done });
 
         // Step 2: call respawn (captured by mock)
-        await respawnMonitorWindowForMode(sessionDir, 'anatomy-park', mockSpawnSync);
+        await respawnMonitorWindowForMode(sessionDir, 'anatomy-park', { inTmux: true, spawnSyncFn: mockSpawnSync });
 
         // Step 3: flip false AFTER respawn returns
         sm.update(statePath, (s) => { if (Array.isArray(s.monitor_panes) && s.monitor_panes[2]) s.monitor_panes[2].producer_done = false; });
@@ -430,50 +425,38 @@ test('R-MDS-6: producer_done true→respawn→false sequence (writer-ownership p
         const last = sequence[sequence.length - 1];
         assert.equal(last?.event, 'post-respawn');
         assert.equal(last?.producer_done, false, 'flag must be false AFTER respawn returns');
-    } finally {
-        if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
-        else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-        fs.rmSync(tmpRoot, { recursive: true, force: true });
-    }
+    });
 });
 
-test('respawnMonitorWindowForMode: phase-to-mode mapping covers all phases', { timeout: 15000 }, async () => {
-    const tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'monitor-respawn-')));
-    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-    try {
-        const sessionDir = makeSessionDir(tmpRoot);
-        const dataRoot = path.join(tmpRoot, 'data');
-        process.env.PICKLE_DATA_ROOT = dataRoot;
-
-        const expectedModes = [
-            ['anatomy-park', 'microverse'],
-            ['szechuan-sauce', 'microverse'],
-            ['pickle', 'pickle'],
-            ['exit', 'idle'],
-        ];
-
-        for (const [phase, expectedMode] of expectedModes) {
-            const capturedRespawnArgs = [];
-            const mockSpawnSync = (_cmd, args, _opts) => {
-                if (args[0] === 'display-message') return { status: 0, stdout: 'pickle-test\n', stderr: '' };
-                capturedRespawnArgs.push([...args]);
-                return { status: 0, stdout: '', stderr: '' };
-            };
-            await respawnMonitorWindowForMode(sessionDir, phase, mockSpawnSync);
-            assert.ok(capturedRespawnArgs.length > 0, `should call respawn-pane for phase=${phase}`);
-            // Multiple panes are respawned per call; the dashboard pane (1.0)
-            // carries the --mode flag while other panes (e.g. 1.2 subsystem-
-            // watcher in microverse mode) do not. Look for any captured arg
-            // list containing --mode <expectedMode>.
-            const matched = capturedRespawnArgs.some((args) => args.join(' ').includes(`--mode ${expectedMode}`));
-            assert.ok(
-                matched,
-                `phase=${phase} should map to --mode ${expectedMode} on at least one pane respawn; captured: ${capturedRespawnArgs.map((a) => a.join(' ')).join(' || ')}`,
-            );
+test('respawnMonitorWindowForMode: every phase-boundary mode reaches monitor.js verbatim; a repeat is a no-op', { timeout: 15000 }, async () => {
+    await withRespawnSandbox('monitor-respawn-', async (sessionDir) => {
+        // The modes handlePhaseBoundaryRespawn passes: the next phase, or 'idle' at pipeline end.
+        for (const mode of ['anatomy-park', 'szechuan-sauce', 'idle']) {
+            const captured = [];
+            const result = await respawnMonitorWindowForMode(sessionDir, mode, { inTmux: true, spawnSyncFn: ownSessionTmuxStub(captured) });
+            assert.equal(result, 'respawned', `mode=${mode} respawns`);
+            const respawnCall = captured.find((a) => a[0] === 'respawn-pane');
+            assert.ok(respawnCall && respawnCall[4].includes(`--mode ${mode} `), `mode=${mode} forwarded verbatim; captured: ${captured.map((a) => a.join(' ')).join(' || ')}`);
         }
-    } finally {
-        if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
-        else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-        fs.rmSync(tmpRoot, { recursive: true, force: true });
-    }
+
+        const captured = [];
+        const repeat = await respawnMonitorWindowForMode(sessionDir, 'idle', { inTmux: true, spawnSyncFn: ownSessionTmuxStub(captured) });
+        assert.equal(repeat, 'no-op', 'already in the requested mode');
+        assert.equal(captured.length, 0, 'a same-mode call issues no tmux command');
+    });
+});
+
+test('respawnMonitorWindowForMode: a tmux session not named for this session dir is never respawned', { timeout: 15000 }, async () => {
+    await withRespawnSandbox('monitor-respawn-', async (sessionDir) => {
+        const captured = [];
+        const foreign = (_cmd, args, _opts) => {
+            captured.push([...args]);
+            if (args[0] === 'display-message') return { status: 0, stdout: 'pipeline-ffffffff\n', stderr: '' };
+            return { status: 0, stdout: '', stderr: '' };
+        };
+        const result = await respawnMonitorWindowForMode(sessionDir, 'anatomy-park', { inTmux: true, spawnSyncFn: foreign });
+        assert.equal(result, 'no-op');
+        assert.equal(captured.filter((a) => a[0] === 'respawn-pane').length, 0, 'foreign session pane must not be killed');
+        assert.equal(readMonitorMode(sessionDir) ?? null, null);
+    });
 });

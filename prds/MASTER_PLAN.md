@@ -236,6 +236,24 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
 | babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
 
+### ▶ 2.2 BETA SOAK ACTIVE — `v2.2.0-beta.1` DEPLOYED FROM `exp/b-lanes` (2026-09-26)
+
+- **Tag:** `v2.2.0-beta.1` (pre-release) at `321b0415`. Gate `20260926T024913Z-77014` 22/22 green, soak 1803.8s,
+  verified with `verify-release-tag.sh`. It contains B-LANES (finer and concurrent review lanes; `--teams` removed),
+  B-LANES-FIX, B-UPGRADE-ISO and B-CAPGATE (#48, closed).
+- **Deployed runtime = the branch**, verified by content: version `2.2.0-beta.1`, 10 lanes for this repo, and the
+  removed agents are gone. **Do not `install.sh` from `main` during the soak** (babysitter rule S).
+  Rollback: `git checkout main && bash install.sh`.
+- **Measurement:** soak bundles run with `anatomy_max_parallel_lanes: 2`, and each finished bundle appends a row to the
+  ledger below. The merge criterion (from the B-LANES PRD): ≥ 3 sessions, median anatomy-park **phase** wall-clock
+  ≥ 25% lower than comparable pre-beta runs, and findings fixed not lower. Ending the soak and merging to `main` are
+  the operator's decision.
+
+#### 2.2 beta soak ledger
+
+| session | changed files | lanes kept | anatomy min | passes/lane | findings fixed | lane outcomes | incidents |
+|---|---|---|---|---|---|---|---|
+
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 
 - **B-UPGRADE-ISO (P0, shipped, deployed).** `check-update.test.js` made 7 REAL `gh` calls, including

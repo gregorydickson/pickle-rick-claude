@@ -183,9 +183,11 @@ test('timeout-e2e: session deactivated by subprocess → mux-runner exits cleanl
         const fakeBinDir = path.join(base, 'fakebin');
         fs.mkdirSync(fakeBinDir, { recursive: true });
         const fakeClaude = path.join(fakeBinDir, 'claude');
+        const ranMarker = path.join(base, 'fake-claude-ran');
         // Immediately deactivate and exit — no sleeping
         fs.writeFileSync(fakeClaude, `#!/usr/bin/env node
 import * as fs from 'node:fs';
+fs.writeFileSync(${JSON.stringify(ranMarker)}, 'ran');
 const stateFile = process.env.PICKLE_STATE_FILE;
 if (stateFile) {
     try {
@@ -218,8 +220,13 @@ process.exit(0);
             null,
             `mux-runner must exit before spawnSync timeout (exit: ${result.status}, signal: ${result.signal}), stderr tail: ${String(result.stderr).slice(-500)}`,
         );
+        // mux-runner traps the cap's SIGTERM, deactivates the session itself and exits 0, so
+        // `signal: null` + `active: false` also hold when the fake never ran. The marker proves the
+        // subprocess did the deactivation; a `signal:*` exit_reason proves the cap fired.
+        assert.ok(fs.existsSync(ranMarker), 'fake claude subprocess must have run');
         const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
         assert.equal(finalState.active, false, 'session deactivated');
+        assert.doesNotMatch(String(finalState.exit_reason ?? ''), /^signal:/, 'mux-runner deactivated by a signal, not the subprocess');
     } finally {
         fs.rmSync(base, { recursive: true, force: true });
     }

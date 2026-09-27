@@ -1,0 +1,393 @@
+{
+ "control": [],
+ "rows": {
+  "a": [
+   {
+    "k": 12,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0
+    ],
+    "nfind": 2,
+    "fp": 2,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 3.4983915999999997,
+      "duration_ms": 116301
+     }
+    ]
+   },
+   {
+    "k": 12,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0
+    ],
+    "nfind": 1,
+    "fp": 1,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 3.7330515999999996,
+      "duration_ms": 231125
+     }
+    ]
+   },
+   {
+    "k": 12,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0
+    ],
+    "nfind": 1,
+    "fp": 1,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.4461526,
+      "duration_ms": 187170
+     }
+    ]
+   }
+  ],
+  "b": [
+   {
+    "k": 12,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0,
+     0,
+     0
+    ],
+    "nfind": 3,
+    "fp": 3,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 2.4711116,
+      "duration_ms": 95691
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.8796076,
+      "duration_ms": 71710
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 1.0070956,
+      "duration_ms": 174660
+     }
+    ]
+   },
+   {
+    "k": 12,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0,
+     0,
+     0
+    ],
+    "nfind": 3,
+    "fp": 3,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 2,
+      "total_cost_usd": 2.5818982000000004,
+      "duration_ms": 302071
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.174684,
+      "duration_ms": 79615
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.3207012,
+      "duration_ms": 159084
+     }
+    ]
+   },
+   {
+    "k": 12,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0,
+     0,
+     0
+    ],
+    "nfind": 1,
+    "fp": 1,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.3214346,
+      "duration_ms": 132172
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.171344,
+      "duration_ms": 78412
+     },
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.26678120000000005,
+      "duration_ms": 126992
+     }
+    ]
+   }
+  ],
+  "c": [
+   {
+    "k": 3,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0
+    ],
+    "nfind": 1,
+    "fp": 1,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 3.8216436000000003,
+      "duration_ms": 267551
+     }
+    ]
+   },
+   {
+    "k": 3,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0
+    ],
+    "nfind": 1,
+    "fp": 1,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.33902940000000004,
+      "duration_ms": 130207
+     }
+    ]
+   },
+   {
+    "k": 3,
+    "found": 0,
+    "recall": 0.0,
+    "per_call": [
+     0
+    ],
+    "nfind": 1,
+    "fp": 1,
+    "ctrl": 0,
+    "ids": [],
+    "metas": [
+     {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.7487493999999999,
+      "duration_ms": 331583
+     }
+    ]
+   }
+  ]
+ },
+ "detail": {
+  "a_r1": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/bin/microverse-runner.ts",
+     "line": 4515,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "Iteration score is forced to violations.length for every LLM metric, but the baseline still uses the judge's own score"
+    },
+    {
+     "file": "extension/src/bin/microverse-runner.ts",
+     "line": 5411,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "Microverse cumulative rate-limit park is never reset between episodes, so separate rate limits across a long run eventually force rate_limit_exhausted"
+    }
+   ]
+  },
+  "a_r2": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/bin/microverse-runner.ts",
+     "line": 4515,
+     "severity": "CRITICAL",
+     "conf": 55,
+     "title": "[NEEDS-VERIFICATION] LLM-judge score is always replaced by the violation count, which inverts non-count and higher-is-better metrics"
+    }
+   ]
+  },
+  "a_r3": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/bin/microverse-runner.ts",
+     "line": 2333,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "LLM judge score is forced to violations.length for every metric, which breaks non-count and higher-is-better LLM metrics"
+    }
+   ]
+  },
+  "b_r1": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/bin/microverse-runner.ts",
+     "line": 2333,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "LLM judge score is always replaced by the violation count, including for metrics that are not counts"
+    },
+    {
+     "file": "extension/src/services/backend-spawn.ts",
+     "line": 756,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "Argv truncation is applied on every platform, so macOS prompts that used to work are now cut short"
+    },
+    {
+     "file": "extension/src/hooks/handlers/tsc-gate.ts",
+     "line": 482,
+     "severity": "HIGH",
+     "conf": 85,
+     "title": "resolveProjectPrefix never checks the repository-root tsconfig.json, so a root-project file can be skipped in favour of a later nested project"
+    }
+   ]
+  },
+  "b_r2": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/bin/microverse-runner.ts",
+     "line": 2333,
+     "severity": "CRITICAL",
+     "conf": 55,
+     "title": "[NEEDS-VERIFICATION] Judge score is always overwritten with violations.length, including for non-count metrics"
+    },
+    {
+     "file": "extension/src/services/backend-spawn.ts",
+     "line": 756,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "Argv truncation applies on every platform, including macOS where no per-argument limit exists"
+    },
+    {
+     "file": "extension/src/hooks/handlers/config-protection.ts",
+     "line": 851,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "A globbed git option operand can be read as commit/fetch and hide a prohibited verb that follows it"
+    }
+   ]
+  },
+  "b_r3": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/hooks/handlers/config-protection.ts",
+     "line": 731,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "install.sh ban now blocks read-only commands that pass a `*.sh` glob next to a shell-shaped word"
+    }
+   ]
+  },
+  "c_r1": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/bin/microverse-runner.ts",
+     "line": 2333,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "LLM judge score is always replaced by the violation count, which breaks non-count and 'higher'-direction LLM metrics"
+    }
+   ]
+  },
+  "c_r2": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/bin/microverse-runner.ts",
+     "line": 2333,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "Every full-shape LLM judge score is replaced by the violation count, which inverts non-count and 'higher'-direction metrics"
+    }
+   ]
+  },
+  "c_r3": {
+   "found": [],
+   "fps": [
+    {
+     "file": "extension/src/services/activity-timeline-verifier.ts",
+     "line": 320,
+     "severity": "HIGH",
+     "conf": 80,
+     "title": "A ticket whose gate failed can be reported as a clean completion because every boundary resolution counts as clean"
+    }
+   ]
+  }
+ }
+}

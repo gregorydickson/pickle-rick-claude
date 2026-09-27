@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnGateRemediatorMain } from '../../bin/spawn-gate-remediator.js';
+import { runRemediatorForIteration } from '../../bin/microverse-runner.js';
 
 function makeTmpDir() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sgr-concurrent-')));
@@ -144,46 +145,51 @@ describe('concurrent-gate-remediation', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // result.json schema — round-trip write/read
+  // result.json verdict — the runner's reader, not a write/read of the test's own JSON
   // ---------------------------------------------------------------------------
 
-  test('result.json schema round-trip matches RemediationResult shape', async () => {
-    const tmpDir = makeTmpDir();
-    const sessionRoot = path.join(tmpDir, 'session');
-    fs.mkdirSync(path.join(sessionRoot, 'gate'), { recursive: true });
-    const iso = '2026-04-27T15-00-00Z';
-
-    const result = {
-      iso,
-      failures_in: 3,
-      failures_out: 0,
-      auto_fixes_applied: 2,
-      hand_fixes_applied: 1,
-      aborted: false,
-      abort_reason: null,
-      production_coverage_test_path: 'tests/services/foo.test.js',
-      elapsed_ms: 12345,
-    };
-
-    const resultPath = path.join(sessionRoot, 'gate', `remediation_${iso}_result.json`);
-    fs.writeFileSync(resultPath, JSON.stringify(result), 'utf-8');
-
-    const parsed = JSON.parse(fs.readFileSync(resultPath, 'utf-8'));
-
-    // All required fields present and typed correctly
-    assert.equal(typeof parsed.iso, 'string');
-    assert.equal(typeof parsed.failures_in, 'number');
-    assert.equal(typeof parsed.failures_out, 'number');
-    assert.equal(typeof parsed.auto_fixes_applied, 'number');
-    assert.equal(typeof parsed.hand_fixes_applied, 'number');
-    assert.equal(typeof parsed.aborted, 'boolean');
-    assert.ok(parsed.abort_reason === null || typeof parsed.abort_reason === 'string');
-    assert.ok(parsed.production_coverage_test_path === null || typeof parsed.production_coverage_test_path === 'string');
-    assert.equal(typeof parsed.elapsed_ms, 'number');
-
-    // Values round-trip correctly
-    assert.deepEqual(parsed, result);
-
-    fs.rmSync(tmpDir, { recursive: true });
+  test('runRemediatorForIteration reads result.json: aborted or failures_out>0 is not success', async () => {
+    const cases = [
+      [{ aborted: false, failures_out: 0 }, true],
+      [{ aborted: true, failures_out: 0 }, false],
+      [{ aborted: false, failures_out: 3 }, false],
+    ];
+    for (const [written, expected] of cases) {
+      const tmpDir = makeTmpDir();
+      const sessionDir = path.join(tmpDir, 'session');
+      const workingDir = path.join(tmpDir, 'work');
+      const binDir = path.join(tmpDir, 'bin');
+      const gateDir = path.join(sessionDir, 'gate');
+      fs.mkdirSync(workingDir, { recursive: true });
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(binDir, 'claude'),
+        [
+          '#!/usr/bin/env node',
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          `const gateDir = ${JSON.stringify(gateDir)};`,
+          'fs.mkdirSync(gateDir, { recursive: true });',
+          `fs.writeFileSync(path.join(gateDir, \`remediation_\${Date.now()}_result.json\`), ${JSON.stringify(JSON.stringify(written))}, 'utf-8');`,
+          'process.exit(0);',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const oldPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ''}`;
+      try {
+        const result = await runRemediatorForIteration(makeGateResult(), sessionDir, workingDir, 'claude', 60, {
+          logActivityFn: () => {},
+        });
+        assert.ok(
+          fs.readdirSync(gateDir).some((f) => f.endsWith('_result.json')),
+          'stub remediator must have run and written its result file',
+        );
+        assert.deepEqual(result, { success: expected }, `result ${JSON.stringify(written)}`);
+      } finally {
+        process.env.PATH = oldPath;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }
   });
 });

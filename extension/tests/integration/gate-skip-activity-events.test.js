@@ -179,7 +179,11 @@ test('clean gate pass emits neither readiness_skipped nor ticket_audit_bypassed'
     writeAlignedSession(sessionDir, workingDir, {});
 
     const result = runMuxRunner(sessionDir, dataRoot, stubBinDir);
-    assert.doesNotMatch(result.stderr, /READINESS HALT|TICKET AUDIT HALT/);
+    // Absence alone passes when mux-runner exits before the iteration-0 gate slot,
+    // so first prove both gates executed and passed (their subprocess stdout).
+    assert.match(result.stdout, /"status":"pass"/, `readiness gate never ran:\n${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /\[audit-ticket-bundle\].*exit=0/, `ticket audit gate never ran:\n${result.stdout}`);
+    assert.doesNotMatch(result.stderr, /readiness advisory|ticket audit advisory|gate skipped|gate bypassed/);
 
     const events = readActivityLines(dataRoot);
     assert.ok(!events.some((entry) => entry.event === 'readiness_skipped'));

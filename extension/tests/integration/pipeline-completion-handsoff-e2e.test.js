@@ -1,14 +1,11 @@
 // @tier: integration
 // SERIAL: subprocess-spawn-timing (real git repo + multi-primitive salvage drive)
 //
-// B-PCOMP (#b7b22750) — AC-PCOMP-4 release-gate completion proof.
+// B-PCOMP (#b7b22750) — AC-PCOMP-4 salvage/exit-path proof.
 //
-// The whole reason B-PCOMP exists is "the pipeline can complete a multi-ticket
-// additive bundle hands-off". Each WS-D1/WS-D2 boundary fix is unit-proven in
-// isolation; this e2e is the ONE deterministic, stub-driven (NO live `claude -p`)
-// run that drives a synthetic >=4-ticket additive bundle to 4/4 phases with ZERO
-// operator/babysitter state edits while exercising ALL THREE salvage/exit paths
-// landed by the prior tickets, against a REAL git repo:
+// One deterministic, stub-driven (NO live `claude -p`) run over a synthetic
+// 4-ticket additive bundle in a REAL git repo that exercises ALL THREE
+// salvage/exit paths with ZERO operator/babysitter state edits:
 //
 //   (a) #0a1ce691 — a ticket already-committed-green with NO completion_commit
 //       stamp. The injection FORCES the worker-died-AFTER-commit-BEFORE-Done-flip
@@ -19,18 +16,17 @@
 //   (b) #b736337f — a forced fatal on ticket N with an un-attributable N+1
 //       bystander remainder -> commitGatePassingDeliverableOnExitPath stashes the
 //       remainder to refs/pickle/salvage/<session>; `git show <ref>` recovers it,
-//       and N's commit excludes N+1 (no false Done).
+//       N's commit excludes N+1 and flips N Done with its own sha, and N+1 is
+//       not flipped (no false Done).
 //   (c) #3f6800f3 (shipped at HEAD) — reap-skip on a POSITIVE artifact-delta with
 //       a 0-byte worker log: recordWorkerArtifactProgress keys on the artifact
 //       delta, never log size, so the in-progress worker is NOT reaped.
 //
-// FINAL ASSERTIONS (the hands-off contract):
-//   - every ticket reaches committed-done | backfilled-done;
-//   - 0 archived-todo; 0 done_without_commit_evidence;
-//   - pipeline-status.json shows 4/4 phases;
-//   - state.json is byte-identical to the pre-run snapshot (no operator edit /
-//     no salvage state write -> schema_neutral, hands-off);
-//   - a max_iterations cap-hit halts cleanly (does NOT assume unlimited iterations).
+// Every assertion reads a value a PRODUCTION call wrote. The test never flips a
+// ticket Done or writes pipeline-status itself — an assertion over its own write
+// cannot fail, so it would prove nothing about hands-off completion.
+//   - state.json is byte-identical to the pre-run snapshot through (a)+(b)
+//     (no operator edit / no salvage state write -> schema_neutral, hands-off).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -45,7 +41,6 @@ import {
   recordWorkerArtifactProgress,
   countWorkerArtifacts,
 } from '../../bin/mux-runner.js';
-import { writePipelineStatus } from '../../bin/pipeline-runner.js';
 import { updateTicketFrontmatter } from '../../services/git-utils.js';
 import { getTicketStatus, collectTickets } from '../../services/pickle-utils.js';
 
@@ -235,7 +230,7 @@ const passGate = () => ({ ok: true, failures: [], timed_out: false, timeout_ms: 
 
 // ---------------------------------------------------------------------------
 
-test('AC-PCOMP-4: a synthetic 4-ticket additive bundle completes 4/4 hands-off, exercising all three salvage/exit paths', () => {
+test('AC-PCOMP-4: a synthetic 4-ticket additive bundle drives all three salvage/exit paths hands-off', () => {
   const repo = makeBundleRepo();
   const sessionDir = path.join(repo, 'sessiondata');
   const session = path.basename(sessionDir);
@@ -308,17 +303,15 @@ test('AC-PCOMP-4: a synthetic 4-ticket additive bundle completes 4/4 hands-off, 
     // T3's diff is recoverable at the salvage ref.
     const refDiff = git(['show', '--name-only', '--pretty=format:', stashRef], repo);
     assert.match(refDiff, new RegExp(`plan_${T3}\\.md`), '(b) N+1 bystander diff recoverable at refs/pickle/salvage/<session>');
-    // Drive T2/T3 forward hands-off: T2 is Done-with-commit, T3's stashed work is
-    // re-applied and committed (recovery, not loss), then both flip Done.
-    const t2Sha = git(['rev-parse', '--short', 'HEAD'], repo).trim();
-    updateTicketFrontmatter(T2, sessionDir, { status: 'Done', completion_commit: t2Sha });
-    // The salvage ref is a dangling commit-tree snapshot (not a stash-stack blob),
-    // so recovery restores the bystander path from the ref's tree into the worktree.
-    git(['checkout', stashRef, '--', path.join('sessiondata', T3, `plan_${T3}.md`)], repo);
-    git(['add', '-A'], repo);
-    git(['commit', '-qm', `feat(${T3}): recovered bystander deliverable`], repo);
-    const t3Sha = git(['rev-parse', '--short', 'HEAD'], repo).trim();
-    updateTicketFrontmatter(T3, sessionDir, { status: 'Done', completion_commit: t3Sha });
+    // The exit path itself flips N Done with a completion_commit naming its own
+    // commit (commitAndContinueDoneFlip) — read back, never written by this test.
+    // The stashed bystander N+1 must NOT be claimed Done (no false Done).
+    const t2Sha = git(['rev-parse', 'HEAD'], repo).trim();
+    assert.equal(getTicketStatus(sessionDir, T2), 'Done', '(b) exit-commit flips N Done');
+    const t2Fm = fs.readFileSync(path.join(sessionDir, T2, `rick_ticket_${T2}.md`), 'utf8');
+    const t2Stamp = t2Fm.match(/completion_commit:\s*['"]?([0-9a-f]{7,40})['"]?/);
+    assert.ok(t2Stamp && t2Sha.startsWith(t2Stamp[1]), `(b) N's completion_commit names its exit commit ${t2Sha}, got ${t2Stamp?.[1]}`);
+    assert.equal(getTicketStatus(sessionDir, T3), 'In Progress', '(b) stashed bystander N+1 is not claimed Done');
 
     // Schema-neutral contract for the COMPLETION-CORRECTNESS window: neither the
     // clean-tree back-fill (a) nor the exit-path bystander stash (b) writes
@@ -342,37 +335,6 @@ test('AC-PCOMP-4: a synthetic 4-ticket additive bundle completes 4/4 hands-off, 
     const reap = recordWorkerArtifactProgress(statePath, sessionDir, T4, before, { k: 5, doneGuardFn: NO_DONE_GUARD });
     assert.equal(reap.zeroProgressCount, 0, '(c) positive artifact delta resets zero-progress (log size irrelevant)');
     assert.equal(reap.fired, false, '(c) the in-progress worker is NOT reaped on a positive delta');
-    // The worker then commits its deliverable and flips Done hands-off.
-    fs.writeFileSync(path.join(repo, 'extension', 'synthetic', `${T4}.spec.ts`), 'export const t4 = true;\n');
-    git(['add', '-A'], repo);
-    git(['commit', '-qm', `feat(${T4}): additive deliverable`], repo);
-    const t4Sha = git(['rev-parse', '--short', 'HEAD'], repo).trim();
-    updateTicketFrontmatter(T4, sessionDir, { status: 'Done', completion_commit: t4Sha });
-
-    // ── 4/4 phases: pipeline-status reflects a fully completed additive bundle ──
-    writePipelineStatus(sessionDir, 'completed', {
-      current_phase: null,
-      completed_phases: 4,
-      skipped_phases: 0,
-      total_phases: 4,
-    });
-
-    // ── FINAL hands-off contract assertions ──
-    const allTickets = [T1, T2, T3, T4];
-    for (const id of allTickets) {
-      assert.equal(getTicketStatus(sessionDir, id), 'Done', `ticket ${id} reaches committed-done|backfilled-done`);
-      const fm = fs.readFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`), 'utf8');
-      // 0 done_without_commit_evidence: every Done ticket carries a completion_commit.
-      assert.match(fm, /completion_commit:\s*['"]?[0-9a-f]{7,40}['"]?/, `ticket ${id} has completion_commit (no done_without_commit_evidence)`);
-      // 0 archived-todo: no ticket was reset to Todo / archived.
-      assert.doesNotMatch(fm, /status:\s*['"]?Todo['"]?/, `ticket ${id} was never reset to Todo (0 archived-todo)`);
-    }
-
-    // pipeline-status.json shows 4/4 phases.
-    const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf8'));
-    assert.equal(status.status, 'completed', 'pipeline-status: completed');
-    assert.equal(status.completed_phases, 4, 'pipeline-status: 4 phases completed');
-    assert.equal(status.total_phases, 4, 'pipeline-status: 4 total phases (4/4)');
 
     // Hands-off: no operator/babysitter edit and no completion-evidence hatch.
     // The completion-correctness control fields are exactly as launched — the

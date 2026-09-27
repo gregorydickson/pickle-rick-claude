@@ -43,6 +43,8 @@ import { execFileSync } from 'node:child_process';
 import { extractAndInstall } from '../../bin/check-update.js';
 
 let root;
+let extensionDir;
+let priorExtensionDir;
 
 function tar(args) {
   return execFileSync('tar', args, { encoding: 'utf-8', timeout: 30_000 });
@@ -95,11 +97,20 @@ function stageDotSegmentTarball(escapedName) {
   return { tarball, outside };
 }
 
+// check-update's `log()` appends to `<getExtensionRoot()>/debug.log`, whose default is the REAL
+// install root. Point EXTENSION_DIR at a sentinel-bearing sandbox so no case writes there.
 before(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-containment-')));
+  extensionDir = path.join(root, 'extension-root');
+  fs.mkdirSync(path.join(extensionDir, 'extension', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(extensionDir, 'extension', 'bin', 'log-watcher.js'), '');
+  priorExtensionDir = process.env.EXTENSION_DIR;
+  process.env.EXTENSION_DIR = extensionDir;
 });
 
 after(() => {
+  if (priorExtensionDir === undefined) delete process.env.EXTENSION_DIR;
+  else process.env.EXTENSION_DIR = priorExtensionDir;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -112,6 +123,11 @@ describe('check-update extraction containment', () => {
     assert.equal(result.success, false, 'a dot-segment member must fail the upgrade closed');
     assert.match(result.error, /Extraction failed/);
     assert.equal(fs.existsSync(outside), false, 'nothing may land outside the extract dir');
+    assert.match(
+      fs.readFileSync(path.join(extensionDir, 'debug.log'), 'utf-8'),
+      /\[check-update\] Extracting /,
+      'check-update must log into the sandboxed extension root, never the real install root',
+    );
   });
 
   test('fails closed on a member written through a symlink that escapes the extract dir', () => {

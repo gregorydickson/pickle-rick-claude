@@ -4,7 +4,7 @@
  *
  * Tests the exported rate-limit logic functions from mux-runner.js without
  * requiring a real claude binary. Covers decision paths for wait/bail,
- * log-based detection, and cancellation/time-expiry semantics.
+ * log-based detection, and cancellation semantics.
  */
 
 import { test } from 'node:test';
@@ -229,21 +229,25 @@ test('RL-12: detectRateLimitInText — matches "out of usage" in log', () => {
   }
 });
 
-test('RL-13: detectRateLimitInText — ignores rate limit text inside user/tool_result lines', () => {
+test('RL-13: detectRateLimitInText — ignores rate limit text inside user/tool_result/assistant lines', () => {
   const dir = tmpDir();
   try {
     const logFile = path.join(dir, 'iter.log');
-    // rate limit text in a user-typed message — should be filtered
-    const userLine = JSON.stringify({
-      type: 'user',
-      message: { content: 'The rate limit prevents this.' },
-    });
-    const toolLine = JSON.stringify({
-      type: 'tool_result',
-      content: 'rate limit reached error',
-    });
-    fs.writeFileSync(logFile, userLine + '\n' + toolLine + '\n');
-    assert.equal(detectRateLimitInText(logFile), false);
+    // Text that DOES match a production pattern, so only the JSON-line filter can
+    // produce false; a non-matching phrase would pass with the filter deleted.
+    const phrase = 'Your daily usage limit has been reached';
+    const contentLines = [
+      JSON.stringify({ type: 'user', message: { content: phrase } }),
+      JSON.stringify({ type: 'tool_result', content: phrase }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: phrase }] } }),
+    ];
+    // Positive control: the same phrase outside a content line is detected.
+    fs.writeFileSync(logFile, phrase + '\n');
+    assert.equal(detectRateLimitInText(logFile), true, 'phrase must match a production pattern');
+    for (const line of contentLines) {
+      fs.writeFileSync(logFile, line + '\n');
+      assert.equal(detectRateLimitInText(logFile), false, `content line must be filtered: ${line}`);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -312,12 +316,11 @@ test('RL-18: classifyIterationExit — "continue" with text-only rate limit → 
 });
 
 // ---------------------------------------------------------------------------
-// Cancellation semantics — simulates "wait then user deactivates"
-//
-// The mux-runner wait loop polls state.json every RATE_LIMIT_POLL_MS.
-// If state.active !== true, it breaks with exitReason = 'cancelled'.
-// Here we verify the underlying state operations that enable clean cancellation:
-// deactivation is durable, immediately readable, and no orphan files remain.
+// Cancellation semantics — the mux-runner park polls state.json and breaks with
+// exitReason = 'cancelled' once state.active !== true. These verify the state
+// operations that poll depends on: deactivation is durable and immediately
+// readable. The park flag file's write and liveness contract is pinned against
+// production in tests/rrh-rate-limit-park.test.js (B1 / B3), not here.
 // ---------------------------------------------------------------------------
 
 test('RL-19: user deactivates during wait — active=false is immediately readable (clean break)', () => {
@@ -326,18 +329,7 @@ test('RL-19: user deactivates during wait — active=false is immediately readab
     const statePath = path.join(dir, 'state.json');
     const sm = new StateManager();
 
-    // Session is active (rate limit wait in progress)
     writeStateFile(statePath, makeState({ active: true }));
-
-    // Simulate rate_limit_wait.json being written by the runner
-    const waitFile = path.join(dir, 'rate_limit_wait.json');
-    fs.writeFileSync(waitFile, JSON.stringify({
-      waiting: true,
-      reason: 'API rate limit',
-      started_at: new Date().toISOString(),
-      wait_until: new Date(Date.now() + 3_600_000).toISOString(),
-      consecutive_waits: 1,
-    }));
 
     // User deactivates (simulates /eat-pickle or external cancellation)
     sm.update(statePath, s => { s.active = false; });
@@ -345,10 +337,6 @@ test('RL-19: user deactivates during wait — active=false is immediately readab
     // The runner's poll reads state.json — must see active=false immediately
     const polled = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     assert.equal(polled.active, false, 'deactivation must be durably written');
-
-    // Cleanup: runner would delete rate_limit_wait.json on break (simulate it)
-    fs.unlinkSync(waitFile);
-    assert.equal(fs.existsSync(waitFile), false, 'wait file must be removed on cancellation (no orphans)');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -366,91 +354,6 @@ test('RL-20: user deactivates — StateManager.read() confirms active=false (no 
     // Second reader (simulates another poll) sees the same value
     const state2 = sm.read(statePath);
     assert.equal(state2.active, false, 'second read must not see stale active=true');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Time expiry semantics — simulates "max_time expires during wait"
-//
-// The mux-runner checks elapsed >= max_time_minutes * 60 inside the wait loop.
-// Here we verify the time computation logic that governs the "limit" break.
-// ---------------------------------------------------------------------------
-
-test('RL-21: time expiry — session elapsed >= max_time produces zero remaining time (limit_reached)', () => {
-  const maxTimeMins = 30;
-  const elapsedSecs = 35 * 60; // 35 min elapsed > 30 min max
-  const startEpoch = Math.floor(Date.now() / 1000) - elapsedSecs;
-
-  // Mirrors the mux-runner wait loop time check
-  const elapsed = Math.floor(Date.now() / 1000) - startEpoch;
-  const remaining = maxTimeMins * 60 - elapsed;
-
-  assert.ok(remaining <= 0, `remaining ${remaining}s must be ≤ 0 when session time exceeded`);
-});
-
-test('RL-22: time expiry — actualWaitMs clamped to remaining session time', () => {
-  const configWaitMs = 60 * 60 * 1000; // 60 min
-  const maxTimeMins = 30;
-  const elapsedSecs = 28 * 60; // 28 min elapsed, 2 min remaining
-  const startEpoch = Math.floor(Date.now() / 1000) - elapsedSecs;
-
-  const epoch = startEpoch;
-  const elapsed = Math.floor(Date.now() / 1000) - epoch;
-  const remaining = maxTimeMins * 60 - elapsed;
-
-  // Mirrors: actualWaitMs = Math.min(actualWaitMs, remaining * 1000)
-  const actualWaitMs = Math.min(configWaitMs, remaining * 1000);
-
-  // 2 min remaining < 60 min config → clamped to ~2 min
-  assert.ok(actualWaitMs < 3 * 60 * 1000, `actualWaitMs ${actualWaitMs}ms must be clamped to ~2min`);
-  assert.ok(actualWaitMs > 0, 'actualWaitMs must be positive (not yet expired)');
-});
-
-test('RL-23: time expiry — pre-wait check detects expired session before wait starts', () => {
-  const maxTimeMins = 30;
-  const elapsedSecs = 35 * 60; // already expired
-  const startEpoch = Math.floor(Date.now() / 1000) - elapsedSecs;
-
-  const epoch = startEpoch;
-  const rawMax = maxTimeMins;
-  const maxMins = rawMax;
-  const elapsed2 = Math.floor(Date.now() / 1000) - epoch;
-  const remaining = maxMins * 60 - elapsed2;
-
-  // Mirrors: if (remaining <= 0) { exitReason = 'limit'; safeDeactivate(); break; }
-  assert.ok(remaining <= 0, 'expired session must trigger limit break before wait starts');
-});
-
-test('RL-24: rate limit wait file has expected structure', () => {
-  const dir = tmpDir();
-  try {
-    const waitFile = path.join(dir, 'rate_limit_wait.json');
-    const now = Date.now();
-    const waitMs = 60 * 60 * 1000;
-    const waitUntil = new Date(now + waitMs).toISOString();
-
-    // Mirrors: writeStateFile(path.join(sessionDir, 'rate_limit_wait.json'), { ... })
-    const payload = {
-      waiting: true,
-      reason: 'API rate limit',
-      started_at: new Date().toISOString(),
-      wait_until: waitUntil,
-      consecutive_waits: 1,
-      rate_limit_type: 'hour',
-      resets_at_epoch: 1_700_000_000,
-      wait_source: 'api',
-    };
-    fs.writeFileSync(waitFile, JSON.stringify(payload, null, 2));
-
-    const read = JSON.parse(fs.readFileSync(waitFile, 'utf-8'));
-    assert.equal(read.waiting, true);
-    assert.equal(read.reason, 'API rate limit');
-    assert.equal(typeof read.wait_until, 'string');
-    assert.equal(read.consecutive_waits, 1);
-    assert.equal(read.wait_source, 'api');
-    assert.equal(read.resets_at_epoch, 1_700_000_000);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

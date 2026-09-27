@@ -51,6 +51,27 @@ test('AC-gate glob safety: string criterion with unmatched glob exits per assert
   });
 });
 
+// AP-TSVC-ITER1-02: the unmatched-glob case above cannot discriminate — POSIX sh
+// leaves an unmatched glob literal WITH OR WITHOUT set -f. Only a glob that WOULD
+// match a file in the cwd observes whether expansion was suppressed.
+test('AC-gate glob safety: a glob matching a cwd file stays literal (set -f is live)', () => {
+  withTempSession((sessionDir) => {
+    fs.writeFileSync(path.join(sessionDir, 'probe.glob-probe'), '');
+    writeManifest(sessionDir, [
+      {
+        id: 'test-glob-literal',
+        evaluation_phase: 'bundle-end',
+        command: 'test "$(echo *.glob-probe)" = "*.glob-probe"',
+        expected_exit_code: 0,
+      },
+    ]);
+
+    const result = runAcPhaseGate({ sessionDir, evaluationPhase: 'bundle-end', cwd: sessionDir });
+
+    assert.equal(result.status, 'pass', `glob expanded against cwd: ${JSON.stringify(result.failures)}`);
+  });
+});
+
 test('containsUnquotedGlobHazard: unquoted * is flagged', () => {
   assert.equal(containsUnquotedGlobHazard('cat extension/src/*.ts'), true);
 });

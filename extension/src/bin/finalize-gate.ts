@@ -1,9 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { runGate, filterByScope, isCheckUnmeasured, resolveLexicalRepoRoot, type RunGateOpts } from '../services/convergence-gate.js';
+import { runGate, runBaselineAwareGate, filterByScope, isExitStatusToken, resolveLexicalRepoRoot, GATE_CHECK_TIMEOUT_CODE, type RunGateOpts } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
-import { readMicroverseState, readRecoverableJsonObject } from '../services/microverse-state.js';
+import { readMicroverseState, readRecoverableJsonObject, recordCapUnmeasured, writeMicroverseState } from '../services/microverse-state.js';
 import { logActivity } from '../services/activity-logger.js';
 import { getExtensionRoot, isoCompactStamp, safeErrorMessage, writeStateFile } from '../services/pickle-utils.js';
 import { StateManager } from '../services/state-manager.js';
@@ -13,7 +13,10 @@ import {
   backendEnvOverrides,
   resolveBackend,
 } from '../services/backend-spawn.js';
-import type { GateResult, GateFailure, Backend, ActivityEventType } from '../types/index.js';
+import type { GateResult, GateFailure, Backend, ActivityEventType, MicroverseSessionState } from '../types/index.js';
+
+/** Answers "is this absolute path a regular file?"; a throw means no. */
+type StatFn = (p: string) => { isFile(): boolean };
 
 const VALID_SKILLS = new Set(['szechuan', 'anatomy-park']);
 const sm = new StateManager();
@@ -95,7 +98,8 @@ function splitByScope(
   const scopeRoot = resolveLexicalRepoRoot(workingDir);
 
   for (const failure of failures) {
-    if (/^<[^>]+>$/.test(failure.file) || !path.isAbsolute(failure.file)) {
+    // A relative row and a synthetic pseudo-file row (`<timeout>`) are never absolute: both stay in scope.
+    if (!path.isAbsolute(failure.file)) {
       inScope.push(failure);
       continue;
     }
@@ -125,6 +129,8 @@ export interface FinalizeGateOpts {
   spawnGateRemediatorMainFn?: typeof spawnGateRemediatorMain;
   spawnRemediatorFn?: (cmd: string, args: string[], opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }) => void;
   readMicroverseStateFn?: typeof readMicroverseState;
+  writeMicroverseStateFn?: typeof writeMicroverseState;
+  statFn?: StatFn;
   readStateForWorkingDirFn?: (sessionRoot: string) => { workingDir: string; backend: string } | null;
   loadSettingsFn?: () => FinalizeGateSettings;
   mkdirSyncFn?: (p: string) => void;
@@ -156,6 +162,8 @@ interface FinalizeRuntime {
   mkdir: (p: string) => void;
   writeFile: (p: string, data: string) => void;
   runGateFn: (opts: RunGateOpts) => Promise<GateResult>;
+  writeMicroverseState: typeof writeMicroverseState;
+  stat: StatFn;
   spawnBriefPrep: typeof spawnGateRemediatorMain;
   spawnRemediator: (cmd: string, args: string[], opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }) => void;
 }
@@ -167,6 +175,7 @@ interface FinalizeContext {
   workingDir: string;
   backend: string;
   allowedPaths: string[] | undefined;
+  mvState: MicroverseSessionState;
   gateDir: string;
   cap: number;
   remediatorTimeoutMs: number;
@@ -182,6 +191,8 @@ function buildFinalizeRuntime(opts: FinalizeGateOpts): FinalizeRuntime {
     mkdir: opts.mkdirSyncFn ?? ((p: string) => fs.mkdirSync(p, { recursive: true })),
     writeFile: opts.writeFileFn ?? ((p: string, data: string) => fs.writeFileSync(p, data, 'utf-8')),
     runGateFn: opts.runGateFn ?? runGate,
+    writeMicroverseState: opts.writeMicroverseStateFn ?? writeMicroverseState,
+    stat: opts.statFn ?? ((p: string) => fs.statSync(p)),
     spawnBriefPrep: opts.spawnGateRemediatorMainFn ?? spawnGateRemediatorMain,
     spawnRemediator: opts.spawnRemediatorFn ?? defaultSpawnRemediator,
   };
@@ -226,6 +237,7 @@ function loadFinalizeContext(opts: FinalizeGateOpts, rt: FinalizeRuntime, sessio
     workingDir: stateInfo.workingDir,
     backend: stateInfo.backend,
     allowedPaths: mvState.allowed_paths,
+    mvState,
     gateDir: path.join(sessionRoot, 'gate'),
     cap,
     remediatorTimeoutMs: settings.remediator_timeout_s * 1000,
@@ -304,59 +316,124 @@ function spawnStrictRemediator(ctx: FinalizeContext, rt: FinalizeRuntime, cycle:
 }
 
 /**
- * V3: a failure the remediator cannot act on — its check produced no measurement
- * (`isCheckUnmeasured`, e.g. a timeout) AND it names no editable path (the same non-absolute arm
- * `splitByScope` already forces in-scope). The path conjunct keeps a REAL failure of a check that
- * timed out in a sibling target dir remediable, since check status escalates across dirs.
+ * A row names an editable file iff its `file` is a real path an edit could change: relative (the
+ * gate's own parsers resolve tsc/eslint rows against the package dir), or ABSOLUTE and an existing
+ * REGULAR file. A pseudo-file (`<timeout>`), a directory (the unparsed fallback's `file: pkgDir`) and
+ * anything `stat` cannot answer for are not — a stat error is "cannot prove editable", never "editable".
  */
-function isUnmeasuredFailure(result: GateResult, failure: GateFailure): boolean {
-  return isCheckUnmeasured(result.check_status, failure.check) && !path.isAbsolute(failure.file);
+export function namesEditableFile(failure: GateFailure, stat: StatFn): boolean {
+  if (/^<[^>]+>$/.test(failure.file)) return false;
+  if (!path.isAbsolute(failure.file)) return true;
+  try {
+    return stat(failure.file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
- * The gate never measured what it reports, so a remediation cycle would only rediscover that. Report
- * it and stop with a non-success code — the same disposition as cap exhaustion, reached without
- * spending the cap.
+ * A row can be acted on only if it is ATTRIBUTABLE: it names an editable file, or it carries an
+ * identity a person can look up (a parsed rule id or test name). The unparsed exit-status fallback
+ * and the timeout pseudo-failure carry neither — a remediation cycle over them only rediscovers that
+ * the check failed, which is what the `<timeout>` sentinel already taught and `file: pkgDir` (an
+ * absolute DIRECTORY, so `!path.isAbsolute` called it editable) hid. A parsed `tests` row also
+ * carries `file: pkgDir`, so the file alone must not decide: a NEW failing test is remediable by name.
  */
-function reportUnmeasuredGate(ctx: FinalizeContext, rt: FinalizeRuntime, cycle: number, unmeasured: GateFailure[]): number {
-  const reportPath = path.join(ctx.gateDir, `unmeasured_${rt.iso()}.md`);
-  const lines = unmeasured.map(f => `- [${f.check}] \`${f.file}\` ${f.ruleOrCode}: ${f.message.slice(0, 200)}`);
-  rt.writeFile(
-    reportPath,
-    `# Gate Unmeasured\n\nCycle: ${cycle + 1}\nSkill: ${ctx.skill}\nTimestamp: ${new Date().toISOString()}\n\n${lines.join('\n')}\n`
-  );
-  rt.err(`[finalize-gate] gate UNMEASURED on cycle ${cycle + 1} (${unmeasured.length} non-actionable failure(s)) — no remediation cycle spent, exit 2 (report: ${reportPath})`);
-  return 2;
+function isAttributable(failure: GateFailure, stat: StatFn): boolean {
+  if (namesEditableFile(failure, stat)) return true;
+  return !isExitStatusToken(failure.ruleOrCode) && failure.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE;
 }
 
-async function runStrictGateCycle(ctx: FinalizeContext, rt: FinalizeRuntime, cycle: number): Promise<{ code: number | null; result?: GateResult }> {
-  rt.out(`[finalize-gate] cycle ${cycle + 1}/${ctx.cap} — running strict gate`);
-  let result: GateResult;
-  try {
-    result = await rt.runGateFn({
-      workingDir: ctx.workingDir,
-      mode: 'strict',
-      scope: 'full',
-      checks: ['typecheck', 'lint', 'tests'],
-      allowedPaths: ctx.allowedPaths,
+/**
+ * The gate never measured what it reports, so a remediation cycle would only rediscover that.
+ * Disclose it — the checks ride `cap_unmeasured_checks`, which the pipeline reports as
+ * `converged_with_unmeasured:<checks>` — and exit 0: an unmeasured check is a hole to report,
+ * never a failed phase. Only cap exhaustion exits 2.
+ */
+function reportUnmeasuredGate(ctx: FinalizeContext, rt: FinalizeRuntime, cycle: number, checks: string[], rows: GateFailure[]): number {
+  const reportPath = path.join(ctx.gateDir, `unmeasured_${rt.iso()}.md`);
+  const lines = rows.map(f => `- [${f.check}] \`${f.file}\` ${f.ruleOrCode}: ${f.message.slice(0, 200)}`);
+  rt.writeFile(
+    reportPath,
+    `# Gate Unmeasured\n\nCycle: ${cycle + 1}\nSkill: ${ctx.skill}\nChecks: ${checks.join(', ')}\nTimestamp: ${new Date().toISOString()}\n\n${lines.join('\n')}\n`
+  );
+  rt.writeMicroverseState(ctx.sessionRoot, recordCapUnmeasured(ctx.mvState, checks));
+  rt.err(`[finalize-gate] gate UNMEASURED on cycle ${cycle + 1} (${checks.join(', ')}) — no remediation cycle spent, disclosed, exit 0 (report: ${reportPath})`);
+  return 0;
+}
+
+const FINALIZE_GATE_CHECKS = ['typecheck', 'lint', 'tests'] as const;
+
+/**
+ * B-FINALGATE: only anatomy-park is judged against the session baseline. szechuan stays strict —
+ * the baseline was captured by anatomy's run, not szechuan's. An empty path never reads, so the
+ * shared helper chooses strict and never forwards it.
+ */
+function finalizeBaselinePath(ctx: FinalizeContext): string {
+  return ctx.skill === 'anatomy-park' ? path.join(ctx.gateDir, 'baseline.json') : '';
+}
+
+function logGateMode(ctx: FinalizeContext, rt: FinalizeRuntime, mode: 'baseline' | 'strict', baselinePath: string): void {
+  if (mode === 'baseline') {
+    const capturedAt = (readRecoverableJsonObject(baselinePath) as { captured_at?: unknown } | null)?.captured_at;
+    rt.err(`[finalize-gate] baseline mode (captured ${String(capturedAt)})`);
+    return;
+  }
+  const why = baselinePath === '' ? `skill ${ctx.skill} is not baseline-scoped` : `no usable baseline at ${baselinePath}`;
+  rt.err(`[finalize-gate] strict (${why})`);
+}
+
+async function runGateCycle(ctx: FinalizeContext, rt: FinalizeRuntime, cycle: number): Promise<{ code: number | null; result?: GateResult }> {
+  rt.out(`[finalize-gate] cycle ${cycle + 1}/${ctx.cap} — running gate`);
+  const baselinePath = finalizeBaselinePath(ctx);
+  // The helper owns the rule; this seam only adds the activity events.
+  const outcome = await runBaselineAwareGate({
+    workingDir: ctx.workingDir,
+    baselinePath,
+    allowedPaths: ctx.allowedPaths,
+    checks: [...FINALIZE_GATE_CHECKS],
+    // A coarse row's fingerprint names the check, not the failure: never let a baselined one absorb a new one.
+    keepFallbackRows: true,
+    runGateFn: (gateOpts) => rt.runGateFn({
+      ...gateOpts,
       onEvent: (event, data) => rt.doLogActivity({ event: event as ActivityEventType, source: 'pickle', gate_payload: data }),
-    });
-  } catch (e) {
-    rt.err(`[finalize-gate] gate threw on cycle ${cycle + 1}: ${safeErrorMessage(e)}`);
+    }),
+  });
+  logGateMode(ctx, rt, outcome.mode, baselinePath);
+  if ('threw' in outcome) {
+    rt.err(`[finalize-gate] gate threw on cycle ${cycle + 1}: ${outcome.threw}`);
     return { code: 1 };
   }
-  if (result.status === 'green' || result.status === 'green-with-known-flake-warnings') {
+  const result = outcome.gate;
+  // The helper reads a timeout-only red with no check_status as green; a red status is never reported green.
+  if (outcome.verdict === 'green' && result.status !== 'red') {
     rt.out(`[finalize-gate] gate green on cycle ${cycle + 1} — exit 0`);
     return { code: 0, result };
   }
+  if (typeof outcome.verdict === 'object') {
+    return { code: reportUnmeasuredGate(ctx, rt, cycle, outcome.verdict.unmeasured, result.failures), result };
+  }
+  return remediateRedGate(ctx, rt, cycle, result);
+}
+
+async function remediateRedGate(
+  ctx: FinalizeContext,
+  rt: FinalizeRuntime,
+  cycle: number,
+  result: GateResult,
+): Promise<{ code: number | null; result: GateResult }> {
   const { inScope, outOfScope } = splitByScope(result.failures, ctx.allowedPaths, ctx.workingDir);
   writeOutOfScopeFailures(ctx, rt, cycle, outOfScope);
   if (inScope.length === 0) {
     rt.out('[finalize-gate] all failures are out-of-scope — exit 0 (closed within scope)');
     return { code: 0, result };
   }
-  const remediable = inScope.filter(f => !isUnmeasuredFailure(result, f));
-  if (remediable.length === 0) return { code: reportUnmeasuredGate(ctx, rt, cycle, inScope), result };
+  // An unattributable row makes its check unmeasured UNLESS the same cycle holds a new attributable
+  // row: then the phase fails on that row, and only that row reaches the brief.
+  const remediable = inScope.filter(f => isAttributable(f, rt.stat));
+  if (remediable.length === 0) {
+    return { code: reportUnmeasuredGate(ctx, rt, cycle, [...new Set(inScope.map(f => f.check))], inScope), result };
+  }
   const briefPath = await prepareRemediationBrief(ctx, rt, cycle, { ...result, failures: remediable });
   if (!briefPath) return { code: null, result };
   const briefContent = readBriefContent(briefPath, rt);
@@ -431,7 +508,7 @@ export async function finalizeGateMain(opts: FinalizeGateOpts): Promise<number> 
   let lastResult: GateResult | undefined;
 
   for (let cycle = 0; cycle < ctx.cap; cycle++) {
-    const cycleResult = await runStrictGateCycle(ctx, rt, cycle);
+    const cycleResult = await runGateCycle(ctx, rt, cycle);
     if (cycleResult.result) lastResult = cycleResult.result;
     if (cycleResult.code !== null) return cycleResult.code;
   }

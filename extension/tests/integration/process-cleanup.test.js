@@ -302,11 +302,11 @@ test('PC-1: dispatch EPIPE path-1 (stdin error event) — SIGKILL sent, child de
     const parsed = JSON.parse(stdout.trim());
     assert.equal(parsed.decision, 'approve', 'must fail-open after killing hung child');
 
-    // Verify child is truly dead — not a zombie
-    if (fs.existsSync(pidFile)) {
-      const childPid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-      assert.ok(!isPidAlive(childPid), `child PID ${childPid} must be dead after SIGKILL`);
-    }
+    // Verify child is truly dead — not a zombie. The pid file is REQUIRED: dispatch fails open
+    // with the same approve when the handler is never found, so without it this test is vacuous.
+    assert.ok(fs.existsSync(pidFile), 'handler never ran — dispatch approved without spawning it');
+    const childPid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+    assert.ok(!isPidAlive(childPid), `child PID ${childPid} must be dead after SIGKILL`);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -346,11 +346,10 @@ test('PC-2: dispatch EPIPE path-2 (sync write catch) — child exits cleanly, ap
     const parsed = JSON.parse(stdout.trim());
     assert.equal(parsed.decision, 'approve', 'must fail-open when child exits without decision');
 
-    // Child already exited normally — PID must not be alive
-    if (fs.existsSync(pidFile)) {
-      const childPid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-      assert.ok(!isPidAlive(childPid), `child PID ${childPid} must be dead after normal exit`);
-    }
+    // Child already exited normally — PID must not be alive. Pid file required (see PC-1).
+    assert.ok(fs.existsSync(pidFile), 'handler never ran — dispatch approved without spawning it');
+    const childPid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+    assert.ok(!isPidAlive(childPid), `child PID ${childPid} must be dead after normal exit`);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -367,9 +366,11 @@ test('PC-3: dispatch EPIPE produces exactly one valid approve JSON on stdout', (
   const tmpRoot = makeTmpRoot();
   try {
     const handlersDir = makeHandlersDir(tmpRoot);
+    const pidFile = path.join(tmpRoot, 'child3.pid');
 
     writeHandler(handlersDir, 'pc3-epipe-json', `
-      const { closeSync } = require('fs');
+      const { closeSync, writeFileSync } = require('fs');
+      writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
       try { closeSync(0); } catch {}
       setInterval(() => {}, 500);
     `);
@@ -385,6 +386,7 @@ test('PC-3: dispatch EPIPE produces exactly one valid approve JSON on stdout', (
     assert.equal(lines.length, 1, `expected exactly 1 JSON line, got ${lines.length}: ${stdout}`);
     const parsed = JSON.parse(lines[0]);
     assert.equal(parsed.decision, 'approve');
+    assert.ok(fs.existsSync(pidFile), 'handler never ran — dispatch approved without spawning it');
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
