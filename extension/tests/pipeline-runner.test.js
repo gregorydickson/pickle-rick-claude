@@ -3332,6 +3332,17 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
 // (isFatalPhaseFailure / shouldHaltAfterPhase) is unchanged.
 // ---------------------------------------------------------------------------
 
+function seedGitRepoAndCommit(dir) {
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+  fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
+}
+
 describe('AC-SCPIN-5 honest phase-halt reason', () => {
   function scpinTmpDir() {
     return mkFixtureTmpDir('pickle-scpin5-');
@@ -3361,17 +3372,6 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
       activity: [],
       ...overrides,
     }, null, 2));
-  }
-
-  function seedGitRepoAndCommit(dir) {
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
-    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-    fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
   }
 
   function scpinRuntime(dir) {
@@ -3611,17 +3611,6 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     return mkFixtureTmpDir('pickle-crashfloor-');
   }
 
-  function seedGitRepoAndCommitCF(dir) {
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
-    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-    fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
-  }
-
   function writeCfState(statePath, overrides = {}) {
     const dir = path.dirname(statePath);
     fs.writeFileSync(statePath, JSON.stringify({
@@ -3689,7 +3678,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     for (const reason of CRASH_FLOOR_EXIT_REASONS) {
       const dir = cfTmpDir();
       try {
-        const startCommit = seedGitRepoAndCommitCF(dir);
+        const startCommit = seedGitRepoAndCommit(dir);
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
         const runtime = cfRuntime(dir);
         assert.equal(
@@ -3714,7 +3703,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     for (const reason of nonCrashFloorReasons) {
       const dir = cfTmpDir();
       try {
-        const startCommit = seedGitRepoAndCommitCF(dir);
+        const startCommit = seedGitRepoAndCommit(dir);
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
         const runtime = cfRuntime(dir);
         assert.equal(
@@ -3735,7 +3724,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-03: exactly the 3 crash-floor reasons halt via exit_reason; no other reason does', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       const haltingReasons = new Set();
       for (const reason of EXIT_REASONS) {
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
@@ -3774,7 +3763,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-10: default session (pipeline_continue_on_phase_fail unset) halts on a crash-floor reason', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
@@ -3789,7 +3778,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-11: --strict-phases session (pipeline_continue_on_phase_fail=false) halts on a crash-floor reason', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
@@ -3806,7 +3795,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-12: undefined exit_reason does not halt', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       const statePath = path.join(dir, 'state.json');
       writeCfState(statePath, { start_commit: startCommit });
       const raw = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
@@ -3822,7 +3811,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-12: unrecognised exit_reason string does not halt', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'some_unknown_reason_xyz',
@@ -3840,7 +3829,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-13: a crash-floor reason halts even though it shares the field stale handoff reasons occupy', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
@@ -4066,7 +4055,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-05: zero-commit toolchain_unavailable halt names the crash-floor reason', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       // No commits landed since startCommit -> commitCount === 0.
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
