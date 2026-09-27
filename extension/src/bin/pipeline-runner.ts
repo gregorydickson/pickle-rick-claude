@@ -142,7 +142,7 @@ interface PipelineConfig {
   // single-runner path in the main checkout.
   anatomy_max_parallel_lanes: number;
   // B-PBUILD: how many build tickets may run concurrently. 1 (the default) keeps the serial
-  // single-ticket pickle path. Not yet consumed — a later ticket wires the wave path.
+  // single-ticket pickle path; >= 2 runs pickle as waves (`runPickleWaves`).
   max_parallel_tickets: number;
   // R-HRP-1: citadel no longer halts. R-MEASURED R3 fixed the remediation admission threshold at
   // High for every run (REMEDIATION_SEVERITY_THRESHOLD, below) — this flag no longer widens or
@@ -251,7 +251,7 @@ export interface SpawnRunnerOpts {
   onSpawn?: (child: ChildProcess) => void;
   /** Override which directory's liveness (state.json + tmux_iteration_*.log) the mux-runner
    * stall heartbeat watches. Omitted → falls back to `phaseRunnerContext.sessionDir` (the
-   * parent pipeline session dir), identical to HEAD behavior. A unit runner spawned into
+   * parent pipeline session dir). A unit runner spawned into
    * its own unit session dir passes that dir here so the heartbeat doesn't false-positive
    * on the parent's idle mtimes. */
   sessionDir?: string;
