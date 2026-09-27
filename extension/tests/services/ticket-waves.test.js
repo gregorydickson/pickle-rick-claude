@@ -67,7 +67,10 @@ test('filesOverlap: AC-2 table', () => {
     ['empty list a', [], ['extension/src/x.ts'], true],
     ['empty list b', ['extension/src/x.ts'], [], true],
     ['CLAUDE.md', ['CLAUDE.md'], ['extension/src/x.ts'], true],
-    ['.claude/ nested', ['.claude/commands/a.md'], ['extension/src/x.ts'], true],
+    // Subsystem catalogs are CLAUDE.md files too; neither side names the other's path.
+    ['nested CLAUDE.md', ['extension/src/services/CLAUDE.md'], ['extension/src/x.ts'], true],
+    ['bare .claude', ['.claude'], ['extension/src/x.ts'], true],
+    ['.claude/ nested',['.claude/commands/a.md'], ['extension/src/x.ts'], true],
     [
       'bin/js vs src/bin/ts mirror',
       ['extension/bin/x.js'],
