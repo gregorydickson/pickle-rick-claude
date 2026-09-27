@@ -476,4 +476,74 @@ describe('runPickleWaves via main()', () => {
       fx.cleanup();
     }
   });
+
+  test('a9666495: an empty ticket roster is not a wave success — the serial runner owns it', async () => {
+    const fx = makeWaveFixture({ max_parallel_tickets: 2 }, []);
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(unitRunner(calls, 0));
+      await runMain(fx.sessionDir, fx.dataRoot);
+      const log = pipelineLog(fx.sessionDir);
+
+      assert.match(log, /pickle waves: ticket roster empty or unreadable — handing the phase to the serial runner/);
+      assert.doesNotMatch(log, /pickle waves: success/, 'zero pending over an unread roster is not stamped success');
+      assert.equal(calls.length, 1, 'the serial runner ran once');
+      assert.equal(calls[0].dir, fx.sessionDir, 'over the PARENT session dir');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('a9666495: a ticket never shares a wave with — or runs before — a pending dependency', async () => {
+    const fx = makeWaveFixture({ max_parallel_tickets: 2 });
+    const calls = [];
+    try {
+      // aaaa1111 has the LOWER order but depends on bbbb2222.
+      const ticketPath = path.join(fx.sessionDir, 'aaaa1111', 'rick_ticket_aaaa1111.md');
+      fs.writeFileSync(ticketPath, readTicket(fx.sessionDir, 'aaaa1111').replace('order: 10\n', 'order: 10\ndepends_on: [bbbb2222]\n'));
+      __setSpawnRunnerForTests(unitRunner(calls, 0));
+      await runMain(fx.sessionDir, fx.dataRoot);
+
+      assert.deepEqual(waveLines(pipelineLog(fx.sessionDir)).map((l) => /members=(\S+)/.exec(l)[1]), ['bbbb2222', 'aaaa1111']);
+      for (const id of WAVE_TICKETS) assert.equal(field(readTicket(fx.sessionDir, id), 'status'), 'Done', `${id} written back Done`);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('a9666495: a failed write-back is reported as failed and is not counted as wave progress', async (t) => {
+    if (process.getuid?.() === 0) return t.skip('mode 0444 does not stop uid 0 writing');
+    const fx = makeWaveFixture({ max_parallel_tickets: 2 });
+    const calls = [];
+    let bCalls = 0;
+    try {
+      // The parent bbbb2222 ticket cannot be written: its re-queued Failed never lands.
+      fs.chmodSync(path.join(fx.sessionDir, 'bbbb2222', 'rick_ticket_bbbb2222.md'), 0o444);
+      const collide = unitRunner(calls, 0, { collide: WAVE_TICKETS });
+      __setSpawnRunnerForTests(async (cmd, args, env, opts) => {
+        const unitTicket = path.join(args[1], 'bbbb2222', 'rick_ticket_bbbb2222.md');
+        if (!args[1].endsWith('--unit-bbbb2222')) return collide(cmd, args, env, opts);
+        fs.chmodSync(unitTicket, 0o644);
+        // Bounded even if the loop regresses: after 4 runs the unit stops ending Failed.
+        if (++bCalls === 1 || bCalls > 4) return collide(cmd, args, env, opts);
+        calls.push({ dir: args[1], opts });
+        fs.writeFileSync(unitTicket, fs.readFileSync(unitTicket, 'utf-8').replace(/^status:.*$/m, 'status: Failed'));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+      await runMain(fx.sessionDir, fx.dataRoot);
+      const log = pipelineLog(fx.sessionDir);
+
+      assert.equal(waveLines(log).length, 2, `the unwritten Failed is not progress: ${waveLines(log).join(' | ')}`);
+      assert.match(log, /wave 2 bbbb2222: not_done — write-back FAILED \(wanted Failed\)/);
+      assert.doesNotMatch(log, /bbbb2222: \S+ — written back Failed/, 'no line claims a write that did not happen');
+      assert.match(log, /zero-progress wave — falling back to serial/);
+      assert.equal(field(readTicket(fx.sessionDir, 'bbbb2222'), 'status'), 'Todo', 'the parent ticket kept its prior status');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.chmodSync(path.join(fx.sessionDir, 'bbbb2222', 'rick_ticket_bbbb2222.md'), 0o644);
+      fx.cleanup();
+    }
+  });
 });

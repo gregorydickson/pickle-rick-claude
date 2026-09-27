@@ -1918,17 +1918,23 @@ const isTerminalTicketStatus = (status) => {
     const s = (status ?? '').toLowerCase();
     return s === 'done' || s === 'skipped';
 };
-/** The parent's non-terminal tickets as wave candidates; `parallel_safe` absent reads `false`. */
+/**
+ * The parent's non-terminal tickets as wave candidates; `parallel_safe` absent reads `false`.
+ * `order` is the ticket's position in `collectTickets`' dependency (topo) order, and a ticket
+ * waiting on a PENDING dependency is not parallel-safe — so it never shares a wave with it.
+ */
 function pendingWaveCandidates(sessionDir) {
-    return collectTickets(sessionDir)
-        .filter((t) => typeof t.id === 'string' && !isTerminalTicketStatus(t.status))
-        .map((t) => {
+    const pending = collectTickets(sessionDir)
+        .filter((t) => typeof t.id === 'string' && !isTerminalTicketStatus(t.status));
+    const pendingIds = new Set(pending.map((t) => t.id));
+    return pending.map((t, order) => {
         let content = '';
         try {
             content = fs.readFileSync(path.join(sessionDir, t.id, `rick_ticket_${t.id}.md`), 'utf-8');
         }
         catch { /* unreadable → not parallel-safe */ }
-        return { id: t.id, order: t.order, parallelSafe: readParallelSafe(content), files: readDeclaredFilesForTicket(sessionDir, t.id) };
+        const waitsOnPending = t.depends_on.some((dep) => pendingIds.has(dep));
+        return { id: t.id, order, parallelSafe: !waitsOnPending && readParallelSafe(content), files: readDeclaredFilesForTicket(sessionDir, t.id) };
     });
 }
 /** Run ticket `ticketId` as a unit session at the wave sha. A unit that cannot be created is not started. */
@@ -1993,9 +1999,11 @@ function integratedShas(repoRoot, waveSha, integrated, commits) {
 }
 /**
  * Write every member's chosen status back onto the PARENT ticket; an integrated member also
- * gets its sha. A status the parent already carries is not rewritten.
+ * gets its sha. A status the parent already carries is not rewritten. Returns the ids whose
+ * write-back FAILED — their parent ticket still carries its prior status.
  */
 function writeBackWave(runtime, members, shas, statuses, prior) {
+    const failed = new Set();
     members.forEach((id, i) => {
         const sha = shas.get(i);
         if (!sha && prior.get(id) === statuses[i].toLowerCase())
@@ -2004,13 +2012,16 @@ function writeBackWave(runtime, members, shas, statuses, prior) {
             // completion_commit is written before the status flip, so a Done never exists without its evidence.
             if (sha)
                 updateTicketFrontmatter(id, runtime.sessionDir, { completion_commit: sha });
-            if (!writeTicketStatus(runtime.sessionDir, id, statuses[i]))
-                runtime.log(`pickle waves: ${id}: status write-back failed`);
+            if (writeTicketStatus(runtime.sessionDir, id, statuses[i]))
+                return;
+            runtime.log(`pickle waves: ${id}: status write-back failed`);
         }
         catch (err) {
             runtime.log(`pickle waves: ${id}: write-back failed: ${safeErrorMessage(err)}`);
         }
+        failed.add(id);
     });
+    return failed;
 }
 const REQUEUE_OUTCOMES = new Set(['conflict', 'integration_red']);
 const FINAL_UNIT_STATUSES = new Set(['failed', 'skipped']);
@@ -2063,17 +2074,21 @@ async function runTicketWave(run, members, wave, requeued) {
     const memberOutcomes = members.map((_, i) => outcomeOf(i));
     const wasRequeued = new Set(requeued);
     const statuses = ends.map((end, i) => waveStatusOf(end, memberOutcomes[i], requeued));
-    writeBackWave(runtime, members, shas, statuses, prior);
+    const unwritten = writeBackWave(runtime, members, shas, statuses, prior);
     const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, new Set(branches.filter((_, i) => shas.has(i))));
     if (retained.length > 0)
         runtime.log(`pickle waves: kept unit branch(es): ${retained.join(', ')}`);
     const outcomes = members.map((id, i) => {
-        const note = shas.has(i) ? ` @ ${shas.get(i)}` : ` — written back ${statuses[i]}${requeued.has(id) && !wasRequeued.has(id) ? ' (re-queued)' : ''}`;
+        const requeueNote = requeued.has(id) && !wasRequeued.has(id) ? ' (re-queued)' : '';
+        const writeNote = unwritten.has(id) ? `write-back FAILED (wanted ${statuses[i]})` : `written back ${statuses[i]}`;
+        const note = shas.has(i) ? ` @ ${shas.get(i)}${unwritten.has(id) ? ` — ${writeNote}` : ''}` : ` — ${writeNote}${requeueNote}`;
         runtime.log(`pickle waves: wave ${wave} ${id}: ${memberOutcomes[i]}${note}`);
         return { id, outcome: memberOutcomes[i], started_at: ends[i].started_at, ended_at: ends[i].ended_at };
     });
     emitLaneEvent('anatomy_lanes_integrated', runtime.sessionDir, { phase: 'pickle', wave, outcomes, retained_branches: retained });
-    const terminalised = members.filter((id, i) => FINAL_UNIT_STATUSES.has(statuses[i].toLowerCase()) && prior.get(id) !== statuses[i].toLowerCase());
+    // Only a WRITTEN Failed/Skipped is progress: an unwritten one leaves the ticket pending, to be planned again.
+    const terminalised = members.filter((id, i) => !unwritten.has(id)
+        && FINAL_UNIT_STATUSES.has(statuses[i].toLowerCase()) && prior.get(id) !== statuses[i].toLowerCase());
     return { integrated: shas.size, terminalised: terminalised.length, reasons: members.map((id, i) => `${id}=${memberOutcomes[i]}`) };
 }
 /** A re-queued ticket runs in a wave of ONE: not parallel-safe, it is never appended and plans alone when first. */
@@ -2188,6 +2203,16 @@ export async function runPickleWaves(runtime, cap, phaseConfig) {
     }
     finally {
         clearInterval(poll);
+    }
+    return finishPickleWaves(runtime, phaseConfig, fallBackToSerial);
+}
+/** The wave phase's verdict: the serial runner's exit code after a fallback, else 0 iff nothing is pending. */
+async function finishPickleWaves(runtime, phaseConfig, fallBackToSerial) {
+    // `collectTickets` reads an unreadable dir or a dependency cycle as `[]`: zero pending over a roster
+    // never read is not success — the serial runner owns that case.
+    if (!fallBackToSerial && collectTickets(runtime.sessionDir).length === 0) {
+        runtime.log('pickle waves: ticket roster empty or unreadable — handing the phase to the serial runner');
+        fallBackToSerial = true;
     }
     if (fallBackToSerial)
         return (await executePhaseRunner(phaseConfig, runtime.phaseEnv)).exitCode;

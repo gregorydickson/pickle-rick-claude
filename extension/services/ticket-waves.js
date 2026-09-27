@@ -16,32 +16,32 @@ function isGlobalMarker(token) {
         return true;
     return token === '.claude' || token.startsWith('.claude/');
 }
-/** Compiled/source mirror pairs canonicalize to their `extension/src/...` `.ts` spelling. */
-function normalizeMirror(token) {
-    if (token.startsWith('extension/bin/') && token.endsWith('.js')) {
-        return `extension/src/bin/${token.slice('extension/bin/'.length, -3)}.ts`;
-    }
-    if (token.startsWith('extension/services/') && token.endsWith('.js')) {
-        return `extension/src/services/${token.slice('extension/services/'.length, -3)}.ts`;
-    }
-    return token;
+/**
+ * A compiled `extension/<x>.js` also spells its source `extension/src/<x>.ts` — every compiled
+ * tree (bin, services, hooks, lib, types, scripts, ...) mirrors `src/`, so no directory list.
+ */
+function spellings(token) {
+    if (!token.startsWith('extension/') || token.startsWith('extension/src/') || !token.endsWith('.js'))
+        return [token];
+    return [token, `extension/src/${token.slice('extension/'.length, -3)}.ts`];
 }
 function basename(token) {
     const idx = token.lastIndexOf('/');
     return idx === -1 ? token : token.slice(idx + 1);
 }
+/** `a` names `b` itself, or a directory (trailing slash or not) that contains `b`. */
+function contains(a, b) {
+    return b === a || b.startsWith(a.endsWith('/') ? a : `${a}/`);
+}
+function spellingsOverlap(a, b) {
+    if (contains(a, b) || contains(b, a))
+        return true;
+    return (!a.includes('/') || !b.includes('/')) && basename(a) === basename(b);
+}
 function tokensOverlap(a, b) {
     if (isGlobalMarker(a) || isGlobalMarker(b))
         return true;
-    if (a.endsWith('/') && (b === a || b.startsWith(a)))
-        return true;
-    if (b.endsWith('/') && (a === b || a.startsWith(b)))
-        return true;
-    if (normalizeMirror(a) === normalizeMirror(b))
-        return true;
-    if ((!a.includes('/') || !b.includes('/')) && basename(a) === basename(b))
-        return true;
-    return false;
+    return spellings(a).some(sa => spellings(b).some(sb => spellingsOverlap(sa, sb)));
 }
 /** An empty list overlaps everything (an unknown file set can't be proven disjoint). */
 export function filesOverlap(a, b) {

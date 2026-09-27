@@ -66,6 +66,14 @@ test('filesOverlap: AC-2 table', () => {
     ],
     ['directory token', ['extension/src/'], ['extension/src/a.ts'], true],
     ['slash-less basename', ['a.ts'], ['extension/src/a.ts'], true],
+    // a9666495: every compiled tree mirrors src/, not only bin/ and services/.
+    ['hooks/js vs src/hooks/ts mirror', ['extension/hooks/handlers/h.js'], ['extension/src/hooks/handlers/h.ts'], true],
+    ['lib/js vs src/lib/ts mirror', ['extension/lib/m.js'], ['extension/src/lib/m.ts'], true],
+    ['compiled dir vs its compiled file', ['extension/hooks/'], ['extension/hooks/handlers/h.js'], true],
+    ['different mirrored files', ['extension/hooks/a.js'], ['extension/src/hooks/b.ts'], false],
+    // a9666495: a directory declared without a trailing slash still contains its files.
+    ['slash-less directory token', ['extension/src/services'], ['extension/src/services/a.ts'], true],
+    ['sibling name prefix is not containment', ['extension/src/services'], ['extension/src/services-old/a.ts'], false],
   ];
 
   for (const [label, a, b, expected] of rows) {
