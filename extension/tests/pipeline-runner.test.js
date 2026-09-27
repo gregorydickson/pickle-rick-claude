@@ -2809,6 +2809,32 @@ describe('R-CCR-5 closer-release comment anchor', () => {
   });
 });
 
+function makeRuntime(dir, { strict = false } = {}) {
+  return {
+    sessionDir: dir,
+    statePath: path.join(dir, 'state.json'),
+    repoRoot: dir,
+    workingDir: dir,
+    extensionRoot: dir,
+    backend: 'claude',
+    phaseEnv: { ...process.env },
+    designSafe: false,
+    log: () => {},
+    config: {
+      phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
+      target: dir,
+      child_mux_runner_heartbeat_ms: 1000,
+      child_mux_runner_stall_seconds: 60,
+      anatomy_stall_limit: 3,
+      szechuan_stall_limit: 5,
+      anatomy_max_iterations: 100,
+      szechuan_max_iterations: 50,
+      citadel_strict: strict,
+      dirty_exempt_segments: [],
+    },
+  };
+}
+
 describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', () => {
   function writeCitadelState(statePath, overrides = {}) {
     const dir = path.dirname(statePath);
@@ -2837,31 +2863,6 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
     }, null, 2));
   }
 
-  function makeRuntime(dir, { strict = false } = {}) {
-    return {
-      sessionDir: dir,
-      statePath: path.join(dir, 'state.json'),
-      repoRoot: dir,
-      workingDir: dir,
-      extensionRoot: dir,
-      backend: 'claude',
-      phaseEnv: { ...process.env },
-      designSafe: false,
-      log: () => {},
-      config: {
-        phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
-        target: dir,
-        child_mux_runner_heartbeat_ms: 1000,
-        child_mux_runner_stall_seconds: 60,
-        anatomy_stall_limit: 3,
-        szechuan_stall_limit: 5,
-        anatomy_max_iterations: 100,
-        szechuan_max_iterations: 50,
-        citadel_strict: strict,
-        dirty_exempt_segments: [],
-      },
-    };
-  }
 
   function citadelResult(findings) {
     return {
@@ -3355,38 +3356,13 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
     }, null, 2));
   }
 
-  function scpinRuntime(dir) {
-    return {
-      sessionDir: dir,
-      statePath: path.join(dir, 'state.json'),
-      repoRoot: dir,
-      workingDir: dir,
-      extensionRoot: dir,
-      backend: 'claude',
-      phaseEnv: { ...process.env },
-      designSafe: false,
-      log: () => {},
-      config: {
-        phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
-        target: dir,
-        child_mux_runner_heartbeat_ms: 1000,
-        child_mux_runner_stall_seconds: 60,
-        anatomy_stall_limit: 3,
-        szechuan_stall_limit: 5,
-        anatomy_max_iterations: 100,
-        szechuan_max_iterations: 50,
-        citadel_strict: false,
-        dirty_exempt_segments: [],
-      },
-    };
-  }
 
   test('!startCommit halt says "baseline unmeasurable", never "zero commits"', () => {
     const dir = scpinTmpDir();
     try {
       // No start_commit field at all — the baseline was never captured.
       writePickleState(path.join(dir, 'state.json'));
-      const runtime = scpinRuntime(dir);
+      const runtime = makeRuntime(dir);
 
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
@@ -3428,7 +3404,7 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
       const startCommit = seedGitRepoAndCommit(dir);
 
       writePickleState(path.join(dir, 'state.json'), { start_commit: startCommit });
-      const runtime = scpinRuntime(dir);
+      const runtime = makeRuntime(dir);
 
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
@@ -3473,7 +3449,7 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
         start_commit: startCommit,
         pipeline_continue_on_phase_fail: false,
       });
-      const runtime = scpinRuntime(dir);
+      const runtime = makeRuntime(dir);
 
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
@@ -3618,32 +3594,6 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     }, null, 2));
   }
 
-  function cfRuntime(dir, overrides = {}) {
-    return {
-      sessionDir: dir,
-      statePath: path.join(dir, 'state.json'),
-      repoRoot: dir,
-      workingDir: dir,
-      extensionRoot: dir,
-      backend: 'claude',
-      phaseEnv: { ...process.env },
-      designSafe: false,
-      log: () => {},
-      config: {
-        phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
-        target: dir,
-        child_mux_runner_heartbeat_ms: 1000,
-        child_mux_runner_stall_seconds: 60,
-        anatomy_stall_limit: 3,
-        szechuan_stall_limit: 5,
-        anatomy_max_iterations: 100,
-        szechuan_max_iterations: 50,
-        citadel_strict: false,
-        dirty_exempt_segments: [],
-      },
-      ...overrides,
-    };
-  }
 
   test('CRASH_FLOOR_EXIT_REASONS has exactly 3 members', () => {
     assert.equal(CRASH_FLOOR_EXIT_REASONS.length, 3);
@@ -3661,7 +3611,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
       try {
         const startCommit = seedGitRepoAndCommit(dir);
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
-        const runtime = cfRuntime(dir);
+        const runtime = makeRuntime(dir);
         assert.equal(
           isFatalPhaseFailure('pickle', runtime),
           true,
@@ -3686,7 +3636,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
       try {
         const startCommit = seedGitRepoAndCommit(dir);
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
-        const runtime = cfRuntime(dir);
+        const runtime = makeRuntime(dir);
         assert.equal(
           isFatalPhaseFailure('pickle', runtime),
           false,
@@ -3709,14 +3659,14 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
       const haltingReasons = new Set();
       for (const reason of EXIT_REASONS) {
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
-        const runtime = cfRuntime(dir);
+        const runtime = makeRuntime(dir);
         if (isFatalPhaseFailure('pickle', runtime)) haltingReasons.add(reason);
       }
       assert.deepEqual(haltingReasons, new Set(CRASH_FLOOR_EXIT_REASONS));
 
       // The pre-existing !startCommit guard still halts, independent of exit_reason.
       writeCfState(path.join(dir, 'state.json'));
-      const runtimeNoBaseline = cfRuntime(dir);
+      const runtimeNoBaseline = makeRuntime(dir);
       assert.equal(isFatalPhaseFailure('pickle', runtimeNoBaseline), true, '!startCommit is still fatal');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3728,7 +3678,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     const dir = cfTmpDir();
     try {
       // No state.json written at all — StateManager.read throws StateError('MISSING', ...).
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
         false,
@@ -3749,7 +3699,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3765,7 +3715,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
         exit_reason: 'toolchain_unavailable',
         pipeline_continue_on_phase_fail: false,
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3782,7 +3732,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
       const raw = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
       delete raw.exit_reason;
       fs.writeFileSync(statePath, JSON.stringify(raw, null, 2));
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(isFatalPhaseFailure('pickle', runtime), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3797,7 +3747,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
         start_commit: startCommit,
         exit_reason: 'some_unknown_reason_xyz',
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(isFatalPhaseFailure('pickle', runtime), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3815,7 +3765,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
         true,
@@ -4042,7 +3992,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       const lines = [];
       logPhaseHaltReason(runtime, 'pickle', 1, (msg) => lines.push(msg));
       const joined = lines.join('\n');
