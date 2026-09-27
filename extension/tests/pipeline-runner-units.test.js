@@ -1,7 +1,7 @@
 // @tier: fast
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
@@ -355,6 +355,124 @@ describe('runPickleWaves via main()', () => {
       for (const id of WAVE_TICKETS) assert.equal(fs.existsSync(`${fx.sessionDir}--unit-${id}`), false, 'no unit session is created');
     } finally {
       __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // f9b19b78: a crashed prior run's live units are reaped; cancel reaches every unit
+  // ---------------------------------------------------------------------------
+
+  const isAlive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return err.code !== 'ESRCH';
+    }
+  };
+  /** Poll until `pid` is gone (a killed orphan is reaped asynchronously by init); then `ps` must not list it. */
+  async function assertGone(pid, label) {
+    const deadline = Date.now() + 5000;
+    while (isAlive(pid) && Date.now() < deadline) await sleep(50);
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, `${label} (pid ${pid}) is dead`);
+    let listed = '';
+    try {
+      listed = execFileSync('ps', ['-o', 'pid=', '-p', String(pid)], { encoding: 'utf-8', timeout: 5000 }).trim();
+    } catch { /* ps exits 1 when the pid is absent */ }
+    assert.equal(listed, '', `ps lists no ${label}`);
+  }
+  const readState = (dir) => JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf-8'));
+  const killQuietly = (pid) => {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch { /* already gone */ }
+  };
+
+  test('AC-12: a live detached runner recorded by a prior unit is reaped before wave 1, and its worktree is pruned', async () => {
+    const fx = makeWaveFixture({ max_parallel_tickets: 2 });
+    const priorId = 'ffff6666';
+    const prior = createTicketUnitSession(fx.sessionDir, priorId, fx.startCommit, fx.target, 'claude');
+    const runner = spawn('sleep', ['60'], { detached: true, stdio: 'ignore', timeout: 120_000 });
+    const calls = [];
+    try {
+      fs.writeFileSync(prior.statePath, JSON.stringify({ ...readState(prior.unitDir), active: true, pid: runner.pid }, null, 2));
+      assert.ok(isAlive(runner.pid), 'fixture precondition: the prior unit runner is alive');
+      assert.match(git(fx.target, 'worktree', 'list'), /--unit-ffff6666/, 'fixture precondition: the prior unit worktree is registered');
+
+      let aliveAtFirstSpawn = null;
+      const stub = unitRunner(calls, 0);
+      __setSpawnRunnerForTests(async (...args) => {
+        if (aliveAtFirstSpawn === null) aliveAtFirstSpawn = isAlive(runner.pid);
+        return stub(...args);
+      });
+      await runMain(fx.sessionDir, fx.dataRoot);
+
+      assert.equal(aliveAtFirstSpawn, false, 'the prior runner was dead before wave 1 spawned a unit');
+      await assertGone(runner.pid, 'prior unit runner');
+      assert.equal(readState(prior.unitDir).active, false, 'the prior unit state is deactivated');
+      assert.equal(git(fx.target, 'worktree', 'list').split('\n').length, 1, 'only the main checkout remains');
+      assert.match(pipelineLog(fx.sessionDir), new RegExp(`reaping 1 live unit runner\\(s\\) from a previous run: pid ${runner.pid}`));
+      for (const id of WAVE_TICKETS) assert.equal(field(readTicket(fx.sessionDir, id), 'status'), 'Done', `${id} still built`);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      killQuietly(runner.pid);
+      fx.cleanup();
+    }
+  });
+
+  test('AC-12: a prior unit whose runner is already dead is left alone', async () => {
+    const fx = makeWaveFixture({ max_parallel_tickets: 2 });
+    const prior = createTicketUnitSession(fx.sessionDir, 'ffff6666', fx.startCommit, fx.target, 'claude');
+    const gone = spawn('true', [], { stdio: 'ignore', timeout: 120_000 });
+    try {
+      await new Promise((resolve) => gone.on('exit', resolve));
+      fs.writeFileSync(prior.statePath, JSON.stringify({ ...readState(prior.unitDir), active: true, pid: gone.pid }, null, 2));
+      __setSpawnRunnerForTests(unitRunner([], 0));
+      await runMain(fx.sessionDir, fx.dataRoot);
+
+      assert.doesNotMatch(pipelineLog(fx.sessionDir), /reaping \d+ live unit runner/, 'nothing live to reap');
+      assert.equal(git(fx.target, 'worktree', 'list').split('\n').length, 1, 'the stale worktree is still pruned');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('AC-5: parent active=false mid-wave deactivates every unit, kills every unit group, and writes the tickets back pending', async () => {
+    const fx = makeWaveFixture({ max_parallel_tickets: 2, child_mux_runner_heartbeat_ms: 100 });
+    const pids = [];
+    let registered = 0;
+    try {
+      __setSpawnRunnerForTests(async (_cmd, args, _env, opts) => {
+        if (!/--unit-/.test(args[1])) return { exitCode: 0, stdout: '', stderr: '' };
+        // A unit runner with a DESCENDANT: the shell leads the group, the background sleep is its child.
+        const child = spawn('sh', ['-c', 'sleep 60 & echo $!; wait'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], timeout: 120_000 });
+        const exited = new Promise((resolve) => child.on('exit', resolve));
+        const grandchild = await new Promise((resolve) => child.stdout.once('data', (d) => resolve(Number(String(d).trim()))));
+        pids.push(child.pid, grandchild);
+        opts.onSpawn(child);
+        if (++registered === 2) {
+          const statePath = path.join(fx.sessionDir, 'state.json');
+          fs.writeFileSync(statePath, JSON.stringify({ ...readState(fx.sessionDir), active: false }, null, 2));
+        }
+        await exited;
+        return { exitCode: 143, stdout: '', stderr: '' };
+      });
+      await runMain(fx.sessionDir, fx.dataRoot);
+
+      assert.equal(pids.length, 4, 'both units spawned a runner and a descendant');
+      for (const id of WAVE_TICKETS) {
+        assert.equal(readState(`${fx.sessionDir}--unit-${id}`).active, false, `unit ${id} state reads active: false`);
+      }
+      for (const pid of pids) await assertGone(pid, 'unit process');
+      assert.equal(git(fx.target, 'worktree', 'list').split('\n').length, 1, 'only the main checkout remains');
+      for (const id of WAVE_TICKETS) {
+        assert.ok(['Todo', 'In Progress'].includes(field(readTicket(fx.sessionDir, id), 'status')), `${id} is left pending`);
+      }
+    } finally {
+      __setSpawnRunnerForTests(null);
+      pids.forEach(killQuietly);
       fx.cleanup();
     }
   });

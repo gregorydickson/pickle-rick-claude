@@ -2082,6 +2082,67 @@ function planPickleWave(sessionDir, cap, requeued) {
     return planTicketWave(candidates, cap);
 }
 /**
+ * Units a crashed prior run left CLAIMED and ALIVE: a `<session>--unit-*` sibling whose state reads
+ * `active: true` with a live runner `pid` (stamped by `claimPipelineRunnerActive`, re-stamped by the
+ * unit's own mux-runner). Read without writing — `sm.read` would backfill and rewrite the file.
+ */
+function liveUnitRunners(sessionDir) {
+    const parent = path.resolve(sessionDir);
+    const prefix = `${path.basename(parent)}--unit-`;
+    let entries;
+    try {
+        entries = fs.readdirSync(path.dirname(parent));
+    }
+    catch {
+        return [];
+    }
+    return entries.filter((name) => name.startsWith(prefix)).flatMap((name) => {
+        const statePath = path.join(path.dirname(parent), name, 'state.json');
+        let state;
+        try {
+            state = readRecoverableJsonObject(statePath);
+        }
+        catch {
+            return [];
+        }
+        const pid = state?.pid;
+        const live = state?.active === true && typeof pid === 'number' && Number.isInteger(pid) && pid > 1
+            && pid !== process.pid && isProcessAlive(pid);
+        return live ? [{ statePath, pid }] : [];
+    });
+}
+/** A unit runner leads its own process group; signal the group, falling back to the pid alone. */
+function signalUnitRunner(pid, signal) {
+    if (killProcessGroup(pid, signal))
+        return;
+    try {
+        process.kill(pid, signal);
+    }
+    catch { /* already gone */ }
+}
+/**
+ * Phase entry: a unit spawned detached outlives a SIGKILLed pipeline-runner and would race the new
+ * wave on the same ticket. Deactivate each live one, SIGTERM its group, and SIGKILL what outlives
+ * `LANE_KILL_GRACE_MS`. Best-effort — it never throws and never halts the phase.
+ */
+async function reapPriorUnitRunners(runtime) {
+    const live = liveUnitRunners(runtime.sessionDir);
+    if (live.length === 0)
+        return;
+    runtime.log(`pickle waves: reaping ${live.length} live unit runner(s) from a previous run: pid ${live.map((u) => u.pid).join(', ')}`);
+    for (const unit of live) {
+        deactivateLaneState(unit.statePath, runtime.log);
+        signalUnitRunner(unit.pid, 'SIGTERM');
+    }
+    const deadline = Date.now() + LANE_KILL_GRACE_MS;
+    while (Date.now() < deadline && live.some((u) => isProcessAlive(u.pid))) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    for (const unit of live)
+        if (isProcessAlive(unit.pid))
+            signalUnitRunner(unit.pid, 'SIGKILL');
+}
+/**
  * B-PBUILD: run the pickle phase as waves of unit sessions, at most `cap` tickets per wave
  * (`planTicketWave`). Each wave starts at the working branch's HEAD, runs every member in its
  * own worktree, waits for all of them, fast-forwards the Done members' commits onto the
@@ -2100,6 +2161,9 @@ export async function runPickleWaves(runtime, cap, phaseConfig) {
         return 1;
     }
     const run = { runtime, repoRoot, sha: headSha, cancelledAtMs: null, statePaths: [], spawned: [], worktrees: [] };
+    // A crashed prior run's units are stopped BEFORE its worktrees and branches are recovered.
+    await reapPriorUnitRunners(runtime);
+    reportLaneRecovery(run);
     const requeued = new Set();
     let fallBackToSerial = false;
     const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
@@ -2114,7 +2178,8 @@ export async function runPickleWaves(runtime, cap, phaseConfig) {
             const members = run.cancelledAtMs === null ? planPickleWave(runtime.sessionDir, cap, requeued) : [];
             if (members.length === 0)
                 break;
-            reportLaneRecovery(run);
+            if (wave > 1)
+                reportLaneRecovery(run);
             const waveSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
             if (waveSha === null) {
                 runtime.log(`pickle waves: cannot resolve HEAD before wave ${wave} — ending the wave run`);
