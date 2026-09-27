@@ -267,7 +267,7 @@ never passed gap analysis) are a separate branch PRD on `exp/b-lanes`.
 | `2026-09-26-23989a13` B-FINALGATE | ~15 src/test | 5 (cap 2) | 13.9 | 2/4/3/2/2 | 2 lane commits | 5 integrated, 0 conflicts | pickle final tier red (2 stale test pins → B-FINALGATE-FIX); first REAL concurrent-lane run |
 | `2026-09-26-bcd24b6d` B-FINALGATE-FIX | 2 tests | **11 (UNSCOPED)** | **135** | 2×7, 3, 26, 9, 2 | 32 lane commits | 11 integrated, 0 conflicts | `SCOPE_EMPTY_DIFF` at setup (no-refine bundle) → no session scope → every lane reviewed; a new `prds` lane from research scripts |
 | `2026-09-26-e22412a9` B-LANES-FIX2 | 1 test | 1 (explicit `paths:` scope) | 1.6 | — | — | single lane | explicit path scope avoided the unscoped cost |
-| `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 0/0/0/0/0/0 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) |
+| `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 2/3/2/2/5/2 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 
