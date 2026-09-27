@@ -236,6 +236,17 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
 | babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
 
+### ▶ NEXT BUNDLE — B-SELFRED (#52, general, P0) — queued behind B-PBUILD (2026-09-27)
+
+`prds/p0-b-selfred-bound-the-no-disown-refusal-loop.md`. The R-ORSR-6 refusal branch in
+`handlePostConvergenceGateDeferral` sits above the deferral cap, and a non-withheld iteration resets its latch, so a
+self-red sweep block loops with no bound (field: 296 iterations over 199 min with 0 commits; two more lanes killed by
+hand). It is identical on `main` and `exp/b-lanes`, so rule P applies. Launch on `main` with no refinement and an
+explicit scope of `paths:extension/src/bin/microverse-runner.ts,extension/tests/convergence-gate-no-disown-wiring.test.js,extension/src/bin/CLAUDE.md`
+once B-PBUILD's pipeline and gate finish. Then merge down main → exp/b-lanes (gate, push, redeploy per rule S) →
+exp/b-parallel-build. The lane-only parts of #52 (monorepo `integration_check: unavailable` disclosure; a lane that
+never passed gap analysis) are a separate branch PRD on `exp/b-lanes`.
+
 ### ▶ 2.2 BETA SOAK ACTIVE — `v2.2.0-beta.1` DEPLOYED FROM `exp/b-lanes` (2026-09-26)
 
 - **Tag:** `v2.2.0-beta.1` (pre-release) at `321b0415`. Gate `20260926T024913Z-77014` 22/22 green, soak 1803.8s,
