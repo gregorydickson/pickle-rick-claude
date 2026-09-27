@@ -99,17 +99,31 @@ with `install.sh` from the soak branch. R7 N× iteration budget at cap 2 is acce
 
 ## Acceptance criteria (refinement measures each at branch HEAD before breakdown)
 
+Finer-grained test AC labels (`AC-7`, `AC-11`, `AC-12`, `AC-SEED`, etc.) appearing in the test suite
+trace to the "Refined design (refinement cycle 3)" section's OWN numbered list (items 4/7/8/9 above),
+not to the numbering below — search there, not here, for those labels.
+
 1. **Default unchanged:** with `max_parallel_tickets` absent, a 3-ticket fixture runs serially in the main checkout,
-   and existing mux-runner tests pass.
+   and existing mux-runner tests pass. (verified by: `extension/tests/pipeline-runner-units.test.js`
+   "AC-1b: max_parallel_tickets 1 calls the serial runner with the PARENT session dir")
 2. **Waves:** 3 tickets with disjoint declared files plus 1 overlapping, with cap 2 → waves of {A,B} then {C,…}. The
    overlapping ticket never shares a wave with its overlap; a ticket with no file list runs alone; a ticket declaring a
-   `CLAUDE.md` never shares a wave.
+   `CLAUDE.md` never shares a wave. (verified by: `extension/tests/integration/pickle-waves-e2e.test.js`
+   "max_parallel_tickets 2: waves [a,b], [c], [d] land every ticket Done by fast-forward only")
 3. **Concurrency observed:** in the fixture, wave members' worker intervals overlap, and all commits land on the working
-   branch by fast-forward.
+   branch by fast-forward. (verified by: `extension/tests/pipeline-runner-units.test.js`
+   "AC-3/AC-7: two parallel_safe disjoint tickets at cap 2 run concurrently and land Done by fast-forward")
 4. **Conflict re-queues, never halts:** two tickets whose actual diffs collide despite disjoint declarations → one
-   integrates; the other is reset to `Todo` and completes in a later wave; the run completes.
-5. **Cancel:** parent `active=false` → every unit stops, and no worktree remains.
-6. `tsc --noEmit`, eslint, and the touched tests pass under Node 24 and Node 22.
+   integrates; the other is reset to `Todo` and completes in a later wave; the run completes. (verified by:
+   `extension/tests/pipeline-runner-units.test.js` "AC-4: a colliding member is re-queued once, runs alone from
+   the new HEAD, and integrates" and "AC-4: a re-queued ticket runs in a wave of ONE even when a disjoint
+   parallel_safe ticket is pending")
+5. **Cancel:** parent `active=false` → every unit stops, and no worktree remains. (verified by:
+   `extension/tests/pipeline-runner-units.test.js` "AC-5: parent active=false mid-wave deactivates every unit,
+   kills every unit group, and writes the tickets back pending")
+6. `tsc --noEmit`, eslint, and the touched tests pass under Node 24 and Node 22. (verified by: the release gate's
+   `npx tsc --noEmit && npx eslint src/ --max-warnings=0` commands, run at HEAD; Node 22/24 parity is the
+   two-runtime CI matrix, not a single named test)
 
 ## Merge criterion (experimental) — restated 2026-09-27 (operator decision)
 
