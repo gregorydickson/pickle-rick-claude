@@ -125,6 +125,11 @@ function readRunnerLog(sessionDir) {
 async function expectMainExit(sessionDir, code) {
   const originalExit = process.exit;
   const originalTmux = process.env.TMUX;
+  const originalDataRoot = process.env.PICKLE_DATA_ROOT;
+  // main() logs activity through getDataRoot(); without a sandbox every run appends
+  // fixture session_end/phase_transition rows to the operator's real activity log.
+  const dataRoot = path.join(sessionDir, 'pickle-data');
+  process.env.PICKLE_DATA_ROOT = dataRoot;
   // The phase-boundary monitor respawn is best-effort; with no tmux session name it
   // degrades to a no-op instead of touching a real pane.
   delete process.env.TMUX;
@@ -136,8 +141,17 @@ async function expectMainExit(sessionDir, code) {
       () => main(sessionDir),
       (err) => err instanceof ExitIntercept && err.code === code,
     );
+    assert.ok(
+      fs.readdirSync(path.join(dataRoot, 'activity')).some((f) => f.endsWith('.jsonl')),
+      'main() activity must land in the sandboxed PICKLE_DATA_ROOT',
+    );
   } finally {
     process.exit = originalExit;
+    if (originalDataRoot === undefined) {
+      delete process.env.PICKLE_DATA_ROOT;
+    } else {
+      process.env.PICKLE_DATA_ROOT = originalDataRoot;
+    }
     if (originalTmux === undefined) {
       delete process.env.TMUX;
     } else {

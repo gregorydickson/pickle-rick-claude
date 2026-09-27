@@ -105,6 +105,15 @@ function writeChildRunner(root) {
     `  }`,
     `  return '';`,
     `};`,
+    `// The default (non-legacy) judge path spawns through _deps.spawn, not execFileSync.`,
+    `const realSpawn = runner._deps.spawn;`,
+    `runner._deps.spawn = (cmd, args, opts) => {`,
+    `  if (cmd === 'claude') {`,
+    `    fs.writeFileSync(path.join(sessionDir, 'captured-judge-argv.json'), JSON.stringify(args, null, 2));`,
+    `    throw new Error('fixture judge unreachable');`,
+    `  }`,
+    `  return realSpawn(cmd, args, opts);`,
+    `};`,
     `runner._deps.runIteration = async (_sessionDir, iteration) => {`,
     `  fs.writeFileSync(path.join(_sessionDir, 'tmux_iteration_' + iteration + '.log'), 'fixture worker success\\\\n');`,
     `  if (iteration >= 1) {`,
@@ -222,7 +231,7 @@ test('microverse-runner codex worker convergence with empty history honors worke
 
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
     assert.equal(result.status, 0, combinedOutput);
-    assert.equal(fs.existsSync(path.join(sessionDir, 'captured-codex-argv.json')), false, 'worker-managed convergence must not invoke judge CLI');
+    assert.equal(fs.existsSync(path.join(sessionDir, 'captured-judge-argv.json')), false, 'worker-managed convergence must not invoke judge CLI');
 
     const finalMv = JSON.parse(fs.readFileSync(path.join(sessionDir, 'microverse.json'), 'utf-8'));
     assert.equal(finalMv.exit_reason, 'converged');
@@ -293,10 +302,14 @@ test('convergence guard fires when all history scores are null (R-SCJM-3)', asyn
   }
 });
 
-test('judge failure with Codex ChatGPT error exits judge_unreachable with non-zero status (R-SCJM-4)', () => {
-  // Regression guard for R-SCJM-4: when the judge spawn throws the literal
-  // Codex ChatGPT unsupported-model error twice (pre-seeded as null-score history),
-  // the runner must exit judge_unreachable with a non-zero status code.
+test('judge failure with Codex ChatGPT error exits unmeasurable with non-zero status (R-SCJM-4)', () => {
+  // Regression guard for R-SCJM-4: when the judge CLI REJECTS its configuration with the literal
+  // Codex ChatGPT unsupported-model error (non-zero exit at startup, stderr only, no stdout), the
+  // runner must stop with a failure exit and a non-zero status. Driven through main() and the real
+  // spawn transport: no seeded history and no worker convergence mode, so the exit reason comes from
+  // the production classification of THIS spawn. The backoff loop reports it as judge_unreachable
+  // and B-CLIBRITTLE maps that to metric_unmeasurable_unrecoverable (not transient: waiting does not
+  // clear a rejected configuration).
   const CODEX_CHATGPT_ERROR = 'claude-sonnet-4-6 model is not supported when using Codex with a ChatGPT account';
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mv-judge-chatgpt-error-'));
@@ -307,20 +320,6 @@ test('judge failure with Codex ChatGPT error exits judge_unreachable with non-ze
 
     writeJson(path.join(sessionDir, 'state.json'), makeRunnerState(sessionDir, workingDir));
 
-    execFileSync(process.execPath, [
-      INIT_PATH,
-      sessionDir,
-      workingDir,
-      '--stall-limit',
-      '3',
-      '--convergence-mode',
-      'worker',
-      '--convergence-file',
-      'microverse-result.json',
-    ], { cwd: EXTENSION_ROOT, stdio: 'pipe' });
-
-    // LLM metric + worker mode + 2 null-score history entries representing the
-    // judge having thrown the Codex ChatGPT error twice in prior iterations.
     const mv = createMicroverseState({
       prdPath: 'prd.md',
       metric: {
@@ -331,51 +330,43 @@ test('judge failure with Codex ChatGPT error exits judge_unreachable with non-ze
         tolerance: 0,
       },
       stallLimit: 3,
-      convergenceMode: 'worker',
-      convergenceFile: 'microverse-result.json',
     });
-    mv.status = 'iterating';
-    mv.gap_analysis_path = 'gap.md';
-    mv.baseline_score = 0;
-    mv.convergence.history = [
-      {
-        iteration: 1,
-        metric_value: '',
-        score: null,
-        action: 'accept',
-        description: 'iter1: judge threw Codex ChatGPT error',
-        pre_iteration_sha: 'sha1',
-        timestamp: new Date().toISOString(),
-      },
-      {
-        iteration: 2,
-        metric_value: '',
-        score: null,
-        action: 'accept',
-        description: 'iter2: judge threw Codex ChatGPT error',
-        pre_iteration_sha: 'sha2',
-        timestamp: new Date().toISOString(),
-      },
-    ];
+    // gap_analysis: the runner's first act is the LLM baseline, which is the judge spawn under test.
+    mv.status = 'gap_analysis';
     fs.writeFileSync(path.join(sessionDir, 'microverse.json'), JSON.stringify(mv, null, 2));
 
-    // Worker signals convergence; guard blocks it because all history scores are null.
-    writeJson(path.join(sessionDir, 'microverse-result.json'), { converged: true, reason: 'worker done' });
-
+    const judgeCallsPath = path.join(sessionDir, 'judge-calls.json');
     const childPath = path.join(root, 'run-chatgpt-error.mjs');
     fs.writeFileSync(childPath, [
       `import * as fs from 'node:fs';`,
       `import * as path from 'node:path';`,
+      `import { EventEmitter } from 'node:events';`,
       `const sessionDir = process.argv[2];`,
       `const runner = await import(${JSON.stringify(pathToFileURL(RUNNER_PATH).href)});`,
       `runner._deps.sleep = async () => {};`,
       `runner._deps.getHeadSha = () => 'fixture-sha';`,
-      `// Stub: any claude invocation (probe or measurement) throws the literal Codex ChatGPT error.`,
-      `runner._deps.execFileSync = (cmd, _args) => {`,
-      `  if (cmd === 'claude') {`,
-      `    throw new Error(${JSON.stringify(CODEX_CHATGPT_ERROR)});`,
+      `runner._deps.execFileSync = () => '';`,
+      `const judgeCalls = [];`,
+      `const realSpawn = runner._deps.spawn;`,
+      `function fakeChild() {`,
+      `  const child = new EventEmitter();`,
+      `  for (const k of ['stdout', 'stderr']) { child[k] = new EventEmitter(); child[k].setEncoding = () => {}; }`,
+      `  child.stdin = { end() {}, write() { return true; }, on() {} };`,
+      `  child.kill = () => true;`,
+      `  child.pid = 0;`,
+      `  return child;`,
+      `}`,
+      `runner._deps.spawn = (cmd, args, opts) => {`,
+      `  if (cmd !== 'claude') return realSpawn(cmd, args, opts);`,
+      `  const child = fakeChild();`,
+      `  if (args.includes('--version')) {`,
+      `    queueMicrotask(() => { child.stdout.emit('data', '2.1.260\\n'); child.emit('close', 0); });`,
+      `    return child;`,
       `  }`,
-      `  return '';`,
+      `  judgeCalls.push(args);`,
+      `  fs.writeFileSync(${JSON.stringify(judgeCallsPath)}, JSON.stringify(judgeCalls));`,
+      `  queueMicrotask(() => { child.stderr.emit('data', ${JSON.stringify(CODEX_CHATGPT_ERROR + '\n')}); child.emit('close', 1); });`,
+      `  return child;`,
       `};`,
       `runner._deps.runIteration = async (_sessionDir, iteration) => {`,
       `  fs.writeFileSync(path.join(_sessionDir, 'tmux_iteration_' + iteration + '.log'), 'fixture worker success\\n');`,
@@ -385,34 +376,42 @@ test('judge failure with Codex ChatGPT error exits judge_unreachable with non-ze
       '',
     ].join('\n'));
 
+    // The spawn transport is the production default; the legacy execFileSync one is not under test.
+    const { PICKLE_JUDGE_LEGACY_SPAWN: _legacy, ...inheritedEnv } = process.env;
     const result = spawnSync(process.execPath, [childPath, sessionDir], {
       cwd: EXTENSION_ROOT,
       encoding: 'utf-8',
+      timeout: 60_000,
       env: {
-        ...process.env,
+        ...inheritedEnv,
         PICKLE_DATA_ROOT: path.join(root, 'pickle-data'),
       },
     });
 
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
 
+    // The judge was actually reached, once: a configuration rejection is round-terminal.
+    assert.ok(fs.existsSync(judgeCallsPath), `judge spawn was never reached\n${combinedOutput}`);
+    assert.equal(JSON.parse(fs.readFileSync(judgeCallsPath, 'utf-8')).length, 1, combinedOutput);
+    assert.match(combinedOutput, /not supported when using Codex with a ChatGPT account/, 'the CLI rejection text must reach the report');
+
     // (b) non-zero exit
     assert.notEqual(result.status, 0, `expected non-zero exit; got ${result.status}\n${combinedOutput}`);
 
-    // (a) microverse.json records judge_unreachable
+    // (a) microverse.json records the unrecoverable-unmeasurable terminal state
     const finalMv = JSON.parse(fs.readFileSync(path.join(sessionDir, 'microverse.json'), 'utf-8'));
     assert.equal(
       finalMv.exit_reason,
-      'judge_unreachable',
-      `microverse.json.exit_reason: expected judge_unreachable, got ${finalMv.exit_reason}\n${combinedOutput}`,
+      'metric_unmeasurable_unrecoverable',
+      `microverse.json.exit_reason: expected metric_unmeasurable_unrecoverable, got ${finalMv.exit_reason}\n${combinedOutput}`,
     );
 
-    // (c) state.json reflects the judge_unreachable terminal state
+    // (c) state.json reflects the same terminal state
     const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
     assert.equal(
       finalState.exit_reason,
-      'judge_unreachable',
-      `state.json.exit_reason: expected judge_unreachable, got ${finalState.exit_reason}\n${combinedOutput}`,
+      'metric_unmeasurable_unrecoverable',
+      `state.json.exit_reason: expected metric_unmeasurable_unrecoverable, got ${finalState.exit_reason}\n${combinedOutput}`,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

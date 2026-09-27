@@ -65,9 +65,11 @@ test('stashUnattributableRemainder: anchors the WHOLE dirty tree (tracked + untr
     const ref = stashUnattributableRemainder(workingDir, sessionDir, () => {});
     assert.equal(ref, `refs/pickle/salvage/${path.basename(sessionDir)}`, 'must return the anchored ref name');
 
-    const refTree = git(workingDir, ['ls-tree', '-r', '--name-only', ref]);
-    assert.match(refTree, /tracked\.txt/, 'ref must contain the tracked modification');
-    assert.match(refTree, /brand-new\.txt/, 'ref must contain the untracked file');
+    // AP-TSVC-ITER1-05: assert CONTENT, not names — `tracked.txt` is already in
+    // the baseline commit, so a name match greens over a snapshot that dropped
+    // the tracked modification and kept the baseline blob.
+    assert.equal(git(workingDir, ['show', `${ref}:tracked.txt`]), 'modified', 'ref must carry the tracked MODIFICATION, not the baseline blob');
+    assert.equal(git(workingDir, ['show', `${ref}:brand-new.txt`]), 'untracked', 'ref must carry the untracked file');
     assert.equal(git(workingDir, ['status', '--porcelain']), porcelainBefore, 'worktree must be untouched');
     assert.equal(git(workingDir, ['diff', '--cached', '--name-only']), stagedBefore, 'real index must be untouched');
   } finally {
@@ -93,8 +95,7 @@ test('salvageDirtyTree: foreign > 0 → ref anchored and stagePaths === owned', 
     });
     assert.deepEqual(plan.stagePaths, ['owned.txt'], 'stagePaths must be exactly the owned set');
     assert.equal(plan.salvageRef, `refs/pickle/salvage/${path.basename(sessionDir)}`);
-    const refTree = git(workingDir, ['ls-tree', '-r', '--name-only', plan.salvageRef]);
-    assert.match(refTree, /foreign\.txt/, 'foreign remainder must be recoverable from the ref');
+    assert.equal(git(workingDir, ['show', `${plan.salvageRef}:foreign.txt`]), 'bystander', 'foreign remainder must be recoverable from the ref');
   } finally {
     fs.rmSync(workingDir, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });

@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
 import type { Backend, State } from '../types/index.js';
-import { BACKENDS, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
+import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage, type GraduationCounts, type FinalizeOpts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import {
@@ -200,6 +200,9 @@ interface PipelineStatus {
   // B-CSOR T50: count of by-design-never-remediated citadel findings (sub-threshold AND
   // non-mechanical) surfaced for operator awareness. Additive optional — schema-neutral.
   citadel_advisory_findings?: number;
+  // AP-BIN-ITER2-01: the live `nonConvergent` count, so a crash-resume restores the verdict the
+  // run actually held. Absent on older statuses, where resume falls back to counting dispositions.
+  non_convergent?: number;
   updated_at: string;
 }
 
@@ -1868,6 +1871,10 @@ export function writePipelineStatus(
   const advisoryFindings = carry('citadel_advisory_findings');
   if (typeof advisoryFindings === 'number') {
     payload.citadel_advisory_findings = advisoryFindings;
+  }
+  const nonConvergent = carry('non_convergent');
+  if (typeof nonConvergent === 'number') {
+    payload.non_convergent = nonConvergent;
   }
   const tmpPath = `${statusPath}.tmp.${process.pid}`;
   fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2));
@@ -4707,6 +4714,7 @@ function writeRunningStatus(runtime: PipelineRuntime, counters: PhaseCounters, c
     total_phases: runtime.config.phases.length,
     phase_skips: counters.phaseSkips,
     phase_dispositions: counters.phaseDispositions,
+    non_convergent: counters.nonConvergent,
   });
 }
 
@@ -4797,14 +4805,13 @@ export function readResumePhasePlan(
       completed: resumeCount(prior.completed_phases),
       skipped: resumeCount(prior.skipped_phases),
       phaseSkips: resumeStringRecord(prior.phase_skips) as Record<string, PhaseSkipReason>,
-      // Every `nonConvergent` raise writes a `phaseDispositions[phase]` entry beside it — all
-      // four sites do (the microverse non-convergent branch, the judge-exhausted gate, the
-      // Done-over-red withholding, the post-final-degraded withholding) and nothing writes a
-      // disposition WITHOUT raising the count — so the persisted map is the faithful record of
-      // the term and needs no second persisted field. Only `> 0` is ever tested by the verdict;
-      // a phase that raised the count several times under one disposition key reads as one here
-      // rather than as zero, which is the half that matters.
-      nonConvergent: Object.keys(phaseDispositions).length,
+      // AP-BIN-ITER2-01: the persisted count, not the disposition count — a disposition is
+      // written WITHOUT a raise on the converged-with-unmeasured and judge_timeout pass arms, so
+      // counting keys withheld a success the live run reported. Only a status from an older
+      // build (no `non_convergent`) falls back to counting keys, the safe direction.
+      nonConvergent: typeof prior.non_convergent === 'number'
+        ? resumeCount(prior.non_convergent)
+        : Object.keys(phaseDispositions).length,
       phaseDispositions,
     },
   };
@@ -5261,10 +5268,27 @@ function readHandoffExitReason(statePath: string): string | null {
   }
 }
 
+/**
+ * #49: a success-class reason (`converged`, `success`) — derived from the two existing
+ * classifiers, no list of its own. A later phase's clean finalize writes one onto a pipeline that
+ * an earlier phase already failed or degraded, so a terminal stamp must never mistake it for the
+ * run's own verdict.
+ */
+export function isSuccessClassExitReason(reason: string): boolean {
+  return classifyMicroverseDisposition(reason).reportAs === 'success'
+    || classifyExitReason(reason).verdict === 'success';
+}
+
 // AC-MWMO-D2-10: any non-empty exit_reason already recorded on this failure
 // (e.g. done_without_commit_evidence) — read so finalizePipeline can preserve
-// it instead of overwriting with the generic 'failed'.
+// it instead of overwriting with the generic 'failed'. A success-class reason is
+// never a recorded failure (#49), so it reads as "none recorded".
 function readExistingExitReason(statePath: string): string | null {
+  const reason = readRawExitReason(statePath);
+  return reason !== null && !isSuccessClassExitReason(reason) ? reason : null;
+}
+
+function readRawExitReason(statePath: string): string | null {
   try {
     const reason = sm.read(statePath).exit_reason;
     return typeof reason === 'string' && reason.trim() ? reason : null;
@@ -5276,7 +5300,8 @@ function readExistingExitReason(statePath: string): string | null {
 // Same precedent as the phaseIncomplete/handoffStop branch in
 // finalizePipeline: a specific reason already stamped on this failure (e.g.
 // done_without_commit_evidence) is preserved rather than overwritten by the
-// generic 'failed'. Only stamp 'failed' when no reason was recorded.
+// generic 'failed'. Only stamp 'failed' when no reason was recorded — and a
+// success-class reason is not a recorded reason (#49).
 function finalizeFailedPipeline(statePath: string): void {
   finalizeTerminalState(
     statePath,
@@ -5383,12 +5408,21 @@ function finalizeNonSuccessTerminal(
   phaseIncomplete: boolean,
   phaseIncompleteReason: string | null,
 ): void {
-  finalizeTerminalState(
-    statePath,
-    phaseIncomplete && phaseIncompleteReason
-      ? { step: 'completed', exitReason: phaseIncompleteReason }
-      : { step: 'completed' },
-  );
+  finalizeTerminalState(statePath, nonSuccessTerminalOpts(statePath, phaseIncomplete, phaseIncompleteReason));
+}
+
+// #49: with no captured reason the on-disk one is preserved (a handoff reason must survive), except
+// a success-class or `completed` stamp a later phase left behind — that is never this arm's verdict.
+function nonSuccessTerminalOpts(
+  statePath: string,
+  phaseIncomplete: boolean,
+  phaseIncompleteReason: string | null,
+): FinalizeOpts {
+  if (phaseIncomplete && phaseIncompleteReason) return { step: 'completed', exitReason: phaseIncompleteReason };
+  const onDisk = readRawExitReason(statePath);
+  return onDisk !== null && (onDisk === 'completed' || isSuccessClassExitReason(onDisk))
+    ? { step: 'completed', exitReason: 'failed' }
+    : { step: 'completed' };
 }
 
 /**
@@ -5672,11 +5706,25 @@ export function logPhaseHaltReason(
   }
 }
 
+/** Spawn `finalize-gate.js` for a microverse phase; the skill is phase-derived on every route. */
+async function spawnFinalizeGate(runtime: PipelineRuntime, rawPhase: PhaseName): Promise<SpawnRunnerResult> {
+  return runSpawnRunner('node', [
+    path.join(runtime.extensionRoot, 'extension', 'bin', 'finalize-gate.js'),
+    runtime.sessionDir,
+    rawPhase === 'anatomy-park' ? 'anatomy-park' : 'szechuan',
+  ], runtime.phaseEnv);
+}
+
 /**
- * R-PRJT-2 recovery: a microverse phase that exited on a transient
- * `judge_timeout` re-runs finalize-gate; a clean gate completes the phase,
- * a red gate breaks the pipeline. Extracted from `runPhaseIteration` to keep
- * that function under the eslint complexity ceiling.
+ * R-PRJT-2 recovery: a microverse phase that exited on a transient `judge_timeout` re-runs
+ * finalize-gate. B-FINALGATE: the same disposition shape as its sibling
+ * (`runAllBackendsExhaustedFinalizeGate`) — a pass names `judge_timeout` and discloses any
+ * unmeasured check; a red gate is a measurement verdict, named `finalize_gate_failed:judge_timeout`,
+ * and continues the phase loop unless the operator opted into `--strict-phases`. A pass that
+ * discloses an unmeasured check raises `nonConvergent`: the judge never confirmed convergence and
+ * the gate never measured that check, so nothing confirmed the phase. One divergence remains: a
+ * CLEAN pass does not yet raise it, because four end-to-end tests outside this change's fence
+ * still pin a clean exit 0 after a passing judge_timeout recovery.
  */
 export async function runJudgeTimeoutFinalizeGate(
   runtime: PipelineRuntime,
@@ -5693,20 +5741,20 @@ export async function runJudgeTimeoutFinalizeGate(
       fall_through_to_finalize_gate: true,
     });
   } catch { /* telemetry best-effort */ }
-  const skill = rawPhase === 'anatomy-park' ? 'anatomy-park' : 'szechuan';
-  const gateResult = await runSpawnRunner('node', [
-    path.join(runtime.extensionRoot, 'extension', 'bin', 'finalize-gate.js'),
-    runtime.sessionDir,
-    skill,
-  ], runtime.phaseEnv);
+  const gateResult = await spawnFinalizeGate(runtime, rawPhase);
   if (gateResult.exitCode === 0) {
     counters.completed++;
+    counters.phaseDispositions[rawPhase] = 'judge_timeout';
+    if (reportConvergedWithUnmeasured(runtime, counters, rawPhase, log)) counters.nonConvergent++;
     writeRunningStatus(runtime, counters, null);
     log(`Phase ${rawPhase} finalize-gate passed after judge_timeout recovery`);
     return { action: 'continue' };
   }
-  log(`Phase ${rawPhase} finalize-gate failed after judge_timeout recovery (exit ${gateResult.exitCode})`);
-  return { action: 'break' };
+  counters.nonConvergent++;
+  counters.phaseDispositions[rawPhase] = 'finalize_gate_failed:judge_timeout';
+  writeRunningStatus(runtime, counters, null);
+  log(`Phase ${rawPhase} finalize-gate failed after judge_timeout recovery (exit ${gateResult.exitCode}) — phase not completed, run cannot report success`);
+  return isStrictPhasePolicy(runtime) ? { action: 'break' } : { action: 'continue' };
 }
 
 /**
@@ -5735,17 +5783,13 @@ export async function runAllBackendsExhaustedFinalizeGate(
       fall_through_to_finalize_gate: true,
     });
   } catch { /* telemetry best-effort */ }
-  const skill = rawPhase === 'anatomy-park' ? 'anatomy-park' : 'szechuan';
-  const gateResult = await runSpawnRunner('node', [
-    path.join(runtime.extensionRoot, 'extension', 'bin', 'finalize-gate.js'),
-    runtime.sessionDir,
-    skill,
-  ], runtime.phaseEnv);
+  const gateResult = await spawnFinalizeGate(runtime, rawPhase);
   // Both arms are the same degraded phase with different evidence, so they share ONE raise.
   counters.nonConvergent++;
   if (gateResult.exitCode === 0) {
     counters.completed++;
     counters.phaseDispositions[rawPhase] = reason;
+    reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
     writeRunningStatus(runtime, counters, null);
     log(`Phase ${rawPhase} finalize-gate passed after ${reason} — phase degraded, run cannot report success`);
     return { action: 'continue' };
@@ -6191,26 +6235,28 @@ function withholdForDegradedPostFinalVerdict(
 }
 
 /**
- * B-CAPGATE: a `converged` microverse phase whose post-convergence cap could not measure some
- * check (`cap_unmeasured_checks`, carried by `recordCapUnmeasured`) converged over a hole, and a
- * silent success would hide it. Reported — appended to the phase disposition — but NOT counted
- * `nonConvergent`: the phase did converge, and the next iteration re-measures (the precedent is
- * `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`). Unreadable or
- * malformed microverse state reads as "no caveat", never as a fabricated one.
+ * B-CAPGATE: a microverse phase that passed over a check nobody measured (`cap_unmeasured_checks`,
+ * written by `recordCapUnmeasured` from the post-convergence cap OR from finalize-gate) passed over
+ * a hole, and a silent success would hide it. Reported — appended to the phase disposition — but
+ * never counted `nonConvergent` here: on the converged path the phase did converge (the precedent
+ * is `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`). Returns whether
+ * it disclosed, so a caller whose phase nothing else confirmed can withhold success on it.
+ * Unreadable or malformed microverse state reads as "no caveat", never as a fabricated one.
  */
 function reportConvergedWithUnmeasured(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
   rawPhase: PhaseName,
   log: (msg: string) => void,
-): void {
+): boolean {
   // `readRecoverableJsonObject` never throws: an absent or unparseable file is `null`.
   const raw = (readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json')) as Record<string, unknown> | null)?.cap_unmeasured_checks;
   const checks = Array.isArray(raw) ? raw.filter((c): c is string => typeof c === 'string' && c !== '') : [];
-  if (checks.length === 0) return;
+  if (checks.length === 0) return false;
   const marker = `converged_with_unmeasured:${checks.join(',')}`;
   appendPhaseDisposition(counters, rawPhase, marker);
-  log(`Phase ${rawPhase}: ${marker} — converged, but the post-convergence cap did not measure these checks`);
+  log(`Phase ${rawPhase}: ${marker} — these checks were not measured`);
+  return true;
 }
 
 /**

@@ -34,6 +34,8 @@ import {
   logPhaseHaltReason,
   __setCitadelRemediationDepsForTests,
   __setSpawnRunnerForTests,
+  runAllBackendsExhaustedFinalizeGate,
+  runJudgeTimeoutFinalizeGate,
   setupAnatomyPark,
   readPersistedAllowedPaths,
   finalizePhaseSuccess,
@@ -51,7 +53,7 @@ import { describeEach } from './helpers/describe-each.js';
 import { createMicroverseState, recordCapUnmeasured, readMicroverseState, writeMicroverseState } from '../services/microverse-state.js';
 import { simulateBinaryAbsent } from './helpers/simulate-binary-absent.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
-import { loadFinalizeGateSettings } from '../bin/finalize-gate.js';
+import { loadFinalizeGateSettings, finalizeGateMain } from '../bin/finalize-gate.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
@@ -60,27 +62,35 @@ function tmpDir() {
   return mkFixtureTmpDir('pickle-pipeline-');
 }
 
-function writeRelaunchClaimState(statePath, overrides = {}) {
+// Writes a state.json carrying the fields every suite shares; callers pass only
+// the fields that make their scenario distinct.
+function writeStateFile(statePath, fields) {
   const dir = path.dirname(statePath);
   fs.writeFileSync(statePath, JSON.stringify({
     active: false,
     working_dir: dir,
-    step: 'completed',
     iteration: 0,
     max_iterations: 50,
     max_time_minutes: 720,
     worker_timeout_seconds: 1200,
     start_time_epoch: 1000,
     completion_promise: null,
-    original_prompt: 'pipeline relaunch claim test',
     current_ticket: null,
     history: [],
     started_at: new Date().toISOString(),
     session_dir: dir,
+    ...fields,
+  }, null, 2));
+}
+
+function writeRelaunchClaimState(statePath, overrides = {}) {
+  writeStateFile(statePath, {
+    step: 'completed',
+    original_prompt: 'pipeline relaunch claim test',
     schema_version: 3,
     exit_reason: 'failed',
     ...overrides,
-  }, null, 2));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -732,9 +742,26 @@ describe('B-LANES lane discovery', () => {
     for (let i = 0; i < count; i++) fs.writeFileSync(path.join(dir, `m${i}${ext}`), '');
   };
 
+  // The roster is pinned to a TREE, not the live checkout: a new source dir anywhere in the
+  // repo would otherwise shift the lane set while the lane rule stays correct.
+  const ROSTER_SHA = '57beb52c5c2e4d749da6869caa1b2ff18c837bfb';
+  const snapshotLaneNames = (sha) => {
+    const dir = tmpDir();
+    try {
+      const tarball = path.join(dir, 'snapshot.tar');
+      const tree = path.join(dir, 'tree');
+      fs.mkdirSync(tree);
+      execFileSync('git', ['archive', '--format=tar', '-o', tarball, sha], { cwd: REPO_ROOT, timeout: 60_000 });
+      execFileSync('tar', ['-xf', tarball, '-C', tree], { timeout: 60_000 });
+      return discoverLanes(tree).lanes.map((l) => l.name).sort();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
   test('AC-1: the repo root yields exactly the pinned 10-lane roster (HEAD before: bin, extension)', () => {
     assert.equal(MIN_LANE_FILES, 20);
-    assert.deepEqual(discovered().lanes.map((l) => l.name).sort(), [
+    assert.deepEqual(snapshotLaneNames(ROSTER_SHA), [
       'bin', 'extension/.', 'extension/src/.', 'extension/src/bin', 'extension/src/services',
       'extension/tests/.', 'extension/tests/__fixtures__', 'extension/tests/citadel',
       'extension/tests/integration', 'extension/tests/services',
@@ -1549,14 +1576,26 @@ describe('armChildMuxRunnerHeartbeat', () => {
 // assertCleanWorkingTree
 // ---------------------------------------------------------------------------
 
-function initRepo(dir) {
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-  fs.writeFileSync(path.join(dir, 'README.md'), 'seed');
-  execFileSync('git', ['add', 'README.md'], { cwd: dir });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
+// Init a git repo in `dir`, commit `files` (relative path → content) as the seed, return the seed sha.
+function initRepo(dir, files = { 'README.md': 'seed' }, { branch = 'main' } = {}) {
+  const run = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf-8', timeout: 10_000 }).trim();
+  run(['init', '-q', '-b', branch]);
+  run(['config', 'user.email', 'test@test.local']);
+  run(['config', 'user.name', 'Test']);
+  run(['config', 'commit.gpgsign', 'false']);
+  for (const [name, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    fs.writeFileSync(path.join(dir, name), content);
+  }
+  run(['add', '.']);
+  run(['commit', '-q', '-m', 'seed']);
+  return run(['rev-parse', 'HEAD']);
+}
+
+// Seed files for a lane fixture: `<lane>/{a,b,c}.ts`, each exporting its own name.
+function laneSeedFiles(laneNames) {
+  return Object.fromEntries(laneNames.flatMap((name) =>
+    ['a', 'b', 'c'].map((f) => [`${name}/${f}.ts`, `export const ${f} = 1;\n`])));
 }
 
 describe('assertCleanWorkingTree', () => {
@@ -1830,84 +1869,22 @@ describe('phaseEnv propagation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Restamp guard: phase loop must not re-write state.backend when it matches.
-// We simulate the guard (`if (cur.backend !== backend) update(...)`) directly
-// against a real state.json — if the guard fires incorrectly we'd see an mtime
-// bump. Using a write-counter via fs.watchFile is flaky; instead, we stub the
-// equality predicate and assert call count.
-// ---------------------------------------------------------------------------
-
-describe('restamp guard', () => {
-  test('no write when state.backend already matches target', () => {
-    // Pure logic test — mirrors the guard expression in pipeline-runner.ts.
-    const state = { backend: 'codex' };
-    const target = 'codex';
-    let writes = 0;
-    if (state.backend !== target) { state.backend = target; writes++; }
-    assert.equal(writes, 0);
-  });
-
-  test('single write when state.backend differs from target', () => {
-    const state = { backend: 'claude' };
-    const target = 'codex';
-    let writes = 0;
-    if (state.backend !== target) { state.backend = target; writes++; }
-    assert.equal(writes, 1);
-    assert.equal(state.backend, 'codex');
-  });
-
-  test('single write when state.backend is undefined', () => {
-    const state = {};
-    const target = 'codex';
-    let writes = 0;
-    if (state.backend !== target) { state.backend = target; writes++; }
-    assert.equal(writes, 1);
-  });
-
-  test('phase loop skips sm.update when state.backend equals resolved backend (integration-style)', () => {
-    // Mirrors the anatomy-park/szechuan-sauce branches in pipeline-runner.ts
-    // which read current state then only update on drift. Ensures we don't
-    // regress back to an unconditional sm.update(s.backend = backend) write.
-    const statePath = path.join(tmpDir(), 'state.json');
-    fs.writeFileSync(statePath, JSON.stringify({ backend: 'codex' }));
-    const before = fs.statSync(statePath).mtimeMs;
-    const cur = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    const backend = 'codex';
-    let writes = 0;
-    if (cur.backend !== backend) { writes++; }
-    assert.equal(writes, 0);
-    const after = fs.statSync(statePath).mtimeMs;
-    assert.equal(before, after, 'mtime must not change when guard short-circuits');
-    fs.rmSync(path.dirname(statePath), { recursive: true });
-  });
-});
-
-// ---------------------------------------------------------------------------
 // enterPicklePhase — guards against stale command_template and stale phase
 // config files from a previous run misrouting a resumed pickle worker.
 // ---------------------------------------------------------------------------
 
 function writeBaseState(statePath, overrides = {}) {
-  const base = {
-    active: false,
+  writeStateFile(statePath, {
     working_dir: '/tmp',
     step: 'implement',
     iteration: 7,
     max_iterations: 100,
-    max_time_minutes: 720,
-    worker_timeout_seconds: 1200,
-    start_time_epoch: 1000,
-    completion_promise: null,
     original_prompt: 'test',
     current_ticket: 'TICKET-7',
-    history: [],
-    started_at: new Date().toISOString(),
-    session_dir: path.dirname(statePath),
     tmux_mode: true,
     backend: 'claude',
     ...overrides,
-  };
-  fs.writeFileSync(statePath, JSON.stringify(base));
+  });
 }
 
 describe('pickle phase entry', () => {
@@ -2052,37 +2029,12 @@ describe('pipeline shutdown', () => {
 // ---------------------------------------------------------------------------
 
 describe('B1: pipeline-cancel marker is cleared at startup', () => {
-  function git(args, cwd) {
-    return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 10_000 }).trim();
-  }
-
-  function initRepo(dir) {
-    git(['init', '-q', '-b', 'main'], dir);
-    git(['config', 'user.email', 'test@test.local'], dir);
-    git(['config', 'user.name', 'Test'], dir);
-    git(['config', 'commit.gpgsign', 'false'], dir);
-    fs.writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
-    git(['add', '.'], dir);
-    git(['commit', '-q', '-m', 'seed'], dir);
-    return git(['rev-parse', 'HEAD'], dir);
-  }
-
   function writeMainState(sessionDir, repo, startCommit) {
-    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
-      active: false,
+    writeStateFile(path.join(sessionDir, 'state.json'), {
       working_dir: repo,
       step: 'implement',
-      iteration: 0,
       max_iterations: 100,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'B1 stale cancel-marker test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: sessionDir,
       schema_version: 3,
       tmux_mode: false,
       chain_meeseeks: false,
@@ -2090,7 +2042,7 @@ describe('B1: pipeline-cancel marker is cleared at startup', () => {
       start_commit: startCommit,
       exit_reason: null,
       activity: [],
-    }, null, 2));
+    });
   }
 
   function writeMainPipeline(sessionDir, repo, phases) {
@@ -2143,7 +2095,7 @@ describe('B1: pipeline-cancel marker is cleared at startup', () => {
     process.env.PICKLE_DATA_ROOT = dataRoot;
     let spawnRunnerCalls = 0;
     try {
-      const startCommit = initRepo(repo);
+      const startCommit = initRepo(repo, { 'seed.txt': 'seed\n' });
       writeMainState(sessionDir, repo, startCommit);
       writeMainPipeline(sessionDir, repo, ['pickle', 'pickle']);
 
@@ -2802,24 +2754,39 @@ describe('R-CCR-5 closer-release comment anchor', () => {
   });
 });
 
+function makeRuntime(dir, { strict = false } = {}) {
+  return {
+    sessionDir: dir,
+    statePath: path.join(dir, 'state.json'),
+    repoRoot: dir,
+    workingDir: dir,
+    extensionRoot: dir,
+    backend: 'claude',
+    phaseEnv: { ...process.env },
+    designSafe: false,
+    log: () => {},
+    config: {
+      phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
+      target: dir,
+      child_mux_runner_heartbeat_ms: 1000,
+      child_mux_runner_stall_seconds: 60,
+      anatomy_stall_limit: 3,
+      szechuan_stall_limit: 5,
+      anatomy_max_iterations: 100,
+      szechuan_max_iterations: 50,
+      citadel_strict: strict,
+      dirty_exempt_segments: [],
+    },
+  };
+}
+
 describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', () => {
   function writeCitadelState(statePath, overrides = {}) {
-    const dir = path.dirname(statePath);
-    fs.writeFileSync(statePath, JSON.stringify({
+    writeStateFile(statePath, {
       active: true,
-      working_dir: dir,
       step: 'citadel',
       iteration: 1,
-      max_iterations: 50,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'citadel fix-forward test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: dir,
       schema_version: 3,
       exit_reason: null,
       prd_path: 'prd.md',
@@ -2827,34 +2794,9 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
       backend: 'claude',
       activity: [],
       ...overrides,
-    }, null, 2));
+    });
   }
 
-  function makeRuntime(dir, { strict = false } = {}) {
-    return {
-      sessionDir: dir,
-      statePath: path.join(dir, 'state.json'),
-      repoRoot: dir,
-      workingDir: dir,
-      extensionRoot: dir,
-      backend: 'claude',
-      phaseEnv: { ...process.env },
-      designSafe: false,
-      log: () => {},
-      config: {
-        phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
-        target: dir,
-        child_mux_runner_heartbeat_ms: 1000,
-        child_mux_runner_stall_seconds: 60,
-        anatomy_stall_limit: 3,
-        szechuan_stall_limit: 5,
-        anatomy_max_iterations: 100,
-        szechuan_max_iterations: 50,
-        citadel_strict: strict,
-        dirty_exempt_segments: [],
-      },
-    };
-  }
 
   function citadelResult(findings) {
     return {
@@ -3313,80 +3255,37 @@ describe('R-HRP-1 citadel fix-forward (stops halting; feeds the remediator)', ()
 // (isFatalPhaseFailure / shouldHaltAfterPhase) is unchanged.
 // ---------------------------------------------------------------------------
 
+function seedGitRepoAndCommit(dir) {
+  return initRepo(dir, { 'seed.ts': 'export const x = 1;\n' });
+}
+
 describe('AC-SCPIN-5 honest phase-halt reason', () => {
   function scpinTmpDir() {
     return mkFixtureTmpDir('pickle-scpin5-');
   }
 
   function writePickleState(statePath, overrides = {}) {
-    const dir = path.dirname(statePath);
-    fs.writeFileSync(statePath, JSON.stringify({
+    writeStateFile(statePath, {
       active: true,
-      working_dir: dir,
       step: 'pickle',
       iteration: 1,
-      max_iterations: 50,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'AC-SCPIN-5 test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: dir,
       schema_version: 3,
       exit_reason: null,
       prd_path: 'prd.md',
       backend: 'claude',
       activity: [],
       ...overrides,
-    }, null, 2));
+    });
   }
 
-  function seedGitRepoAndCommit(dir) {
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
-    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-    fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
-  }
-
-  function scpinRuntime(dir) {
-    return {
-      sessionDir: dir,
-      statePath: path.join(dir, 'state.json'),
-      repoRoot: dir,
-      workingDir: dir,
-      extensionRoot: dir,
-      backend: 'claude',
-      phaseEnv: { ...process.env },
-      designSafe: false,
-      log: () => {},
-      config: {
-        phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
-        target: dir,
-        child_mux_runner_heartbeat_ms: 1000,
-        child_mux_runner_stall_seconds: 60,
-        anatomy_stall_limit: 3,
-        szechuan_stall_limit: 5,
-        anatomy_max_iterations: 100,
-        szechuan_max_iterations: 50,
-        citadel_strict: false,
-        dirty_exempt_segments: [],
-      },
-    };
-  }
 
   test('!startCommit halt says "baseline unmeasurable", never "zero commits"', () => {
     const dir = scpinTmpDir();
     try {
       // No start_commit field at all — the baseline was never captured.
       writePickleState(path.join(dir, 'state.json'));
-      const runtime = scpinRuntime(dir);
+      const runtime = makeRuntime(dir);
 
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
@@ -3428,7 +3327,7 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
       const startCommit = seedGitRepoAndCommit(dir);
 
       writePickleState(path.join(dir, 'state.json'), { start_commit: startCommit });
-      const runtime = scpinRuntime(dir);
+      const runtime = makeRuntime(dir);
 
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
@@ -3473,7 +3372,7 @@ describe('AC-SCPIN-5 honest phase-halt reason', () => {
         start_commit: startCommit,
         pipeline_continue_on_phase_fail: false,
       });
-      const runtime = scpinRuntime(dir);
+      const runtime = makeRuntime(dir);
 
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
@@ -3592,69 +3491,21 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     return mkFixtureTmpDir('pickle-crashfloor-');
   }
 
-  function seedGitRepoAndCommitCF(dir) {
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
-    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
-    fs.writeFileSync(path.join(dir, 'seed.ts'), 'export const x = 1;\n');
-    execFileSync('git', ['add', '.'], { cwd: dir });
-    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).trim();
-  }
-
   function writeCfState(statePath, overrides = {}) {
-    const dir = path.dirname(statePath);
-    fs.writeFileSync(statePath, JSON.stringify({
+    writeStateFile(statePath, {
       active: true,
-      working_dir: dir,
       step: 'pickle',
       iteration: 1,
-      max_iterations: 50,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'B-CRASHFLOOR test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: dir,
       schema_version: 3,
       exit_reason: null,
       prd_path: 'prd.md',
       backend: 'claude',
       activity: [],
       ...overrides,
-    }, null, 2));
+    });
   }
 
-  function cfRuntime(dir, overrides = {}) {
-    return {
-      sessionDir: dir,
-      statePath: path.join(dir, 'state.json'),
-      repoRoot: dir,
-      workingDir: dir,
-      extensionRoot: dir,
-      backend: 'claude',
-      phaseEnv: { ...process.env },
-      designSafe: false,
-      log: () => {},
-      config: {
-        phases: ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'],
-        target: dir,
-        child_mux_runner_heartbeat_ms: 1000,
-        child_mux_runner_stall_seconds: 60,
-        anatomy_stall_limit: 3,
-        szechuan_stall_limit: 5,
-        anatomy_max_iterations: 100,
-        szechuan_max_iterations: 50,
-        citadel_strict: false,
-        dirty_exempt_segments: [],
-      },
-      ...overrides,
-    };
-  }
 
   test('CRASH_FLOOR_EXIT_REASONS has exactly 3 members', () => {
     assert.equal(CRASH_FLOOR_EXIT_REASONS.length, 3);
@@ -3670,9 +3521,9 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     for (const reason of CRASH_FLOOR_EXIT_REASONS) {
       const dir = cfTmpDir();
       try {
-        const startCommit = seedGitRepoAndCommitCF(dir);
+        const startCommit = seedGitRepoAndCommit(dir);
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
-        const runtime = cfRuntime(dir);
+        const runtime = makeRuntime(dir);
         assert.equal(
           isFatalPhaseFailure('pickle', runtime),
           true,
@@ -3695,9 +3546,9 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     for (const reason of nonCrashFloorReasons) {
       const dir = cfTmpDir();
       try {
-        const startCommit = seedGitRepoAndCommitCF(dir);
+        const startCommit = seedGitRepoAndCommit(dir);
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
-        const runtime = cfRuntime(dir);
+        const runtime = makeRuntime(dir);
         assert.equal(
           isFatalPhaseFailure('pickle', runtime),
           false,
@@ -3716,18 +3567,18 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-03: exactly the 3 crash-floor reasons halt via exit_reason; no other reason does', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       const haltingReasons = new Set();
       for (const reason of EXIT_REASONS) {
         writeCfState(path.join(dir, 'state.json'), { start_commit: startCommit, exit_reason: reason });
-        const runtime = cfRuntime(dir);
+        const runtime = makeRuntime(dir);
         if (isFatalPhaseFailure('pickle', runtime)) haltingReasons.add(reason);
       }
       assert.deepEqual(haltingReasons, new Set(CRASH_FLOOR_EXIT_REASONS));
 
       // The pre-existing !startCommit guard still halts, independent of exit_reason.
       writeCfState(path.join(dir, 'state.json'));
-      const runtimeNoBaseline = cfRuntime(dir);
+      const runtimeNoBaseline = makeRuntime(dir);
       assert.equal(isFatalPhaseFailure('pickle', runtimeNoBaseline), true, '!startCommit is still fatal');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3739,7 +3590,7 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
     const dir = cfTmpDir();
     try {
       // No state.json written at all — StateManager.read throws StateError('MISSING', ...).
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
         false,
@@ -3755,12 +3606,12 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-10: default session (pipeline_continue_on_phase_fail unset) halts on a crash-floor reason', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3770,13 +3621,13 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-11: --strict-phases session (pipeline_continue_on_phase_fail=false) halts on a crash-floor reason', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
         pipeline_continue_on_phase_fail: false,
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(shouldHaltAfterPhase('pickle', 1, runtime), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3787,13 +3638,13 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-12: undefined exit_reason does not halt', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       const statePath = path.join(dir, 'state.json');
       writeCfState(statePath, { start_commit: startCommit });
       const raw = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
       delete raw.exit_reason;
       fs.writeFileSync(statePath, JSON.stringify(raw, null, 2));
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(isFatalPhaseFailure('pickle', runtime), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3803,12 +3654,12 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-12: unrecognised exit_reason string does not halt', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'some_unknown_reason_xyz',
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(isFatalPhaseFailure('pickle', runtime), false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -3821,12 +3672,12 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-13: a crash-floor reason halts even though it shares the field stale handoff reasons occupy', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       assert.equal(
         isFatalPhaseFailure('pickle', runtime),
         true,
@@ -4047,13 +3898,13 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
   test('AC-CF-05: zero-commit toolchain_unavailable halt names the crash-floor reason', () => {
     const dir = cfTmpDir();
     try {
-      const startCommit = seedGitRepoAndCommitCF(dir);
+      const startCommit = seedGitRepoAndCommit(dir);
       // No commits landed since startCommit -> commitCount === 0.
       writeCfState(path.join(dir, 'state.json'), {
         start_commit: startCommit,
         exit_reason: 'toolchain_unavailable',
       });
-      const runtime = cfRuntime(dir);
+      const runtime = makeRuntime(dir);
       const lines = [];
       logPhaseHaltReason(runtime, 'pickle', 1, (msg) => lines.push(msg));
       const joined = lines.join('\n');
@@ -4121,48 +3972,29 @@ describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
     return mkFixtureTmpDir(prefix);
   }
 
-  function git(args, cwd) {
-    return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
-  }
-
   // A repo whose typecheck/lint scripts always fail — if the abort-path gate
   // runs against it, runGate reports status:'red' and dispatchHaltAction emits
   // tsc_gate_failed. No real tsc/eslint spawn: node -e keeps this fast-tier safe.
   function initRedGateRepo(dir) {
-    git(['init', '-q', '-b', 'main'], dir);
-    git(['config', 'user.email', 'test@test.local'], dir);
-    git(['config', 'user.name', 'Test'], dir);
-    git(['config', 'commit.gpgsign', 'false'], dir);
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
-      name: 'cf-gate-fixture',
-      version: '0.0.0',
-      private: true,
-      scripts: {
-        typecheck: 'node -e "process.exit(1)"',
-        lint: 'node -e "process.exit(1)"',
-      },
-    }, null, 2));
-    git(['add', '.'], dir);
-    git(['commit', '-q', '-m', 'seed'], dir);
-    return git(['rev-parse', 'HEAD'], dir);
+    return initRepo(dir, {
+      'package.json': JSON.stringify({
+        name: 'cf-gate-fixture',
+        version: '0.0.0',
+        private: true,
+        scripts: {
+          typecheck: 'node -e "process.exit(1)"',
+          lint: 'node -e "process.exit(1)"',
+        },
+      }, null, 2),
+    });
   }
 
   function writeMainState(sessionDir, repo, startCommit, overrides = {}) {
-    fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify({
-      active: false,
+    writeStateFile(path.join(sessionDir, 'state.json'), {
       working_dir: repo,
       step: 'implement',
-      iteration: 0,
       max_iterations: 100,
-      max_time_minutes: 720,
-      worker_timeout_seconds: 1200,
-      start_time_epoch: 1000,
-      completion_promise: null,
       original_prompt: 'B-CRASHFLOOR gate-skip test',
-      current_ticket: null,
-      history: [],
-      started_at: new Date().toISOString(),
-      session_dir: sessionDir,
       schema_version: 3,
       tmux_mode: false,
       chain_meeseeks: false,
@@ -4171,7 +4003,7 @@ describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
       exit_reason: null,
       activity: [],
       ...overrides,
-    }, null, 2));
+    });
   }
 
   function writeMainPipeline(sessionDir, repo, phases) {
@@ -4863,14 +4695,7 @@ describe('AP-EXT-ITER307-01 launch self-heal below the git toplevel', () => {
 describe('AP-EXT-ITER324-01: an unproven repo-root anchor is reported, not silently returned', () => {
   function makeRepoWithSubdir() {
     const dir = tmpDir();
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, timeout: 30_000 });
-    execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: dir, timeout: 30_000 });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, timeout: 30_000 });
-    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir, timeout: 30_000 });
-    fs.mkdirSync(path.join(dir, 'pkg', 'sub'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'pkg', 'sub', 'b1.ts'), 'export const b = 1;\n');
-    execFileSync('git', ['add', '-A'], { cwd: dir, timeout: 30_000 });
-    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir, timeout: 30_000 });
+    initRepo(dir, { 'pkg/sub/b1.ts': 'export const b = 1;\n' });
     // git resolves --show-toplevel through the realpath, so compare against the same space.
     return { dir: fs.realpathSync(dir), sub: fs.realpathSync(path.join(dir, 'pkg', 'sub')) };
   }
@@ -4973,19 +4798,14 @@ describe('B-LANES 13h lane session placement', () => {
 
   function makePlacementFixture() {
     const target = fs.realpathSync(tmpDir());
-    git(target, 'init', '-q', '-b', 'main');
-    git(target, 'config', 'user.email', 'lane@test.local');
-    git(target, 'config', 'user.name', 'Lane');
-    for (const dir of ['alpha', 'beta', 'big/inner']) {
-      fs.mkdirSync(path.join(target, dir), { recursive: true });
-      fs.writeFileSync(path.join(target, dir, 'a.ts'), 'export const a = 1;\n');
-    }
-    fs.writeFileSync(path.join(target, 'big', 'top.ts'), 'export const t = 1;\n');
-    fs.mkdirSync(path.join(target, 'extension'));
-    fs.writeFileSync(path.join(target, 'extension', 'package.json'), '{}\n');
-    fs.writeFileSync(path.join(target, '.gitignore'), 'extension/node_modules\n');
-    git(target, 'add', '-A');
-    git(target, 'commit', '-q', '-m', 'seed');
+    initRepo(target, {
+      'alpha/a.ts': 'export const a = 1;\n',
+      'beta/a.ts': 'export const a = 1;\n',
+      'big/inner/a.ts': 'export const a = 1;\n',
+      'big/top.ts': 'export const t = 1;\n',
+      'extension/package.json': '{}\n',
+      '.gitignore': 'extension/node_modules\n',
+    });
     fs.mkdirSync(path.join(target, 'extension', 'node_modules', 'dep'), { recursive: true });
     fs.writeFileSync(path.join(target, 'scratch.txt'), 'operator scratch\n');
     const dataRoot = fs.realpathSync(tmpDir());
@@ -5135,16 +4955,7 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
   /** A target with three lane roots, and a follow-up commit touching all three. */
   function makeLaneFixture({ pipeline = {}, parentActive = false } = {}) {
     const repo = fs.realpathSync(tmpDir());
-    git(repo, 'init', '-q', '-b', 'main');
-    git(repo, 'config', 'user.email', 'lanes@test.local');
-    git(repo, 'config', 'user.name', 'Lanes');
-    for (const name of LANE_NAMES) {
-      fs.mkdirSync(path.join(repo, name));
-      for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
-    }
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-q', '-m', 'seed');
-    const startCommit = git(repo, 'rev-parse', 'HEAD');
+    const startCommit = initRepo(repo, laneSeedFiles(LANE_NAMES));
     for (const name of LANE_NAMES) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = 2;\n');
     git(repo, 'commit', '-q', '-am', 'followup');
     const dataRoot = fs.realpathSync(tmpDir());
@@ -5321,19 +5132,13 @@ describe('B-LANES WS-3: lane integration', () => {
 
   function makeFixture() {
     const repo = fs.realpathSync(tmpDir());
-    git(repo, 'init', '-q', '-b', 'work');
-    git(repo, 'config', 'user.email', 'lanes@test.local');
-    git(repo, 'config', 'user.name', 'Lanes');
-    for (const { name } of LANES) {
-      fs.mkdirSync(path.join(repo, name));
-      for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
-    }
-    fs.writeFileSync(path.join(repo, 'CLAUDE.md'), '# Trap doors\n- entry one\n- entry two\n');
-    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }));
-    fs.writeFileSync(path.join(repo, 'check.js'), CHECK_JS);
-    fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules/\n');
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-q', '-m', 'seed');
+    initRepo(repo, {
+      ...laneSeedFiles(LANES.map(({ name }) => name)),
+      'CLAUDE.md': '# Trap doors\n- entry one\n- entry two\n',
+      'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
+      'check.js': CHECK_JS,
+      '.gitignore': 'node_modules/\n',
+    }, { branch: 'work' });
     fs.mkdirSync(path.join(repo, 'node_modules'));
     fs.writeFileSync(path.join(repo, 'node_modules', 'marker.txt'), 'x');
     const dataRoot = fs.realpathSync(tmpDir());
@@ -5589,16 +5394,7 @@ describe('B-LANES wiring: end to end through main()', () => {
   /** A target with three lane roots, each holding one seeded defect in `<lane>/a.ts`. */
   function makeFixture(pipeline = {}) {
     const repo = fs.realpathSync(tmpDir());
-    git(repo, 'init', '-q', '-b', 'work');
-    git(repo, 'config', 'user.email', 'lanes@test.local');
-    git(repo, 'config', 'user.name', 'Lanes');
-    for (const name of LANE_NAMES) {
-      fs.mkdirSync(path.join(repo, name));
-      for (const f of ['a', 'b', 'c']) fs.writeFileSync(path.join(repo, name, `${f}.ts`), `export const ${f} = 1;\n`);
-    }
-    git(repo, 'add', '-A');
-    git(repo, 'commit', '-q', '-m', 'seed');
-    const startCommit = git(repo, 'rev-parse', 'HEAD');
+    const startCommit = initRepo(repo, laneSeedFiles(LANE_NAMES), { branch: 'work' });
     // The branch under review introduces one defect per lane.
     for (const name of LANE_NAMES) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = BUG;\n');
     git(repo, 'commit', '-q', '-am', 'introduce defects');
@@ -5805,6 +5601,151 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       finalizePhaseSuccess(runtime, mixedCounters, cancelMarker, 'anatomy-park', 0, runtime.log);
       assert.equal(mixedCounters.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:lint');
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B-FINALGATE: the incomplete-exit finalize-gate arm, driven through the REAL finalize-gate
+// ---------------------------------------------------------------------------
+
+describe('B-FINALGATE incomplete-exit arm over the real finalize-gate', () => {
+  const OLD = { check: 'lint', file: '/tmp/src/old.ts', line: 1, ruleOrCode: 'no-any', message: 'no any', severity: 'error', occurrence_index: 0 };
+  const TESTS_TIMEOUT = { check: 'tests', file: '<timeout>', line: 0, ruleOrCode: 'GATE_CHECK_TIMEOUT', message: 'tests timed out', severity: 'error', occurrence_index: 0 };
+  const freshCounters = () => ({ completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} });
+
+  function incompleteRuntime(dir) {
+    const statePath = path.join(dir, 'state.json');
+    writeBaseState(statePath, { exit_reason: 'anatomy_non_convergent' });
+    const mv = createMicroverseState({
+      prdPath: path.join(dir, 'prd.md'),
+      metric: { description: 'm', validation: 'true', type: 'command', timeout_seconds: 5, tolerance: 0 },
+      stallLimit: 3,
+    });
+    writeMicroverseState(dir, { ...mv, status: 'stopped', exit_reason: 'anatomy_non_convergent' });
+    return { sessionDir: dir, statePath, workingDir: '/tmp', extensionRoot: process.cwd(), phaseEnv: {}, config: { phases: [{}, {}] }, log: () => {} };
+  }
+
+  function writeBaseline(dir, failures) {
+    fs.mkdirSync(path.join(dir, 'gate'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'gate', 'baseline.json'), JSON.stringify({
+      schema_version: 1, captured_at: '2026-09-26T00:00:00.000Z', working_dir: '/tmp', project_type: null,
+      checks: ['typecheck', 'lint', 'tests'], failures,
+    }));
+  }
+
+  // The spawn seam runs the real finalizeGateMain in-process; only the gate itself is stubbed.
+  function stubFinalizeGate(runGateFn) {
+    __setSpawnRunnerForTests(async (_cmd, args) => {
+      const [sessionDir, skill] = args.slice(-2);
+      const briefPath = path.join(sessionDir, 'brief.md');
+      fs.writeFileSync(briefPath, 'fix');
+      const exitCode = await finalizeGateMain({
+        argv: [sessionDir, skill],
+        env: {},
+        runGateFn,
+        readStateForWorkingDirFn: () => ({ workingDir: '/tmp', backend: 'claude' }),
+        loadSettingsFn: () => ({ szechuan_max_remediation_cycles: 1, anatomy_park_max_remediation_cycles: 1, remediator_timeout_s: 60 }),
+        logActivityFn: () => {},
+        spawnGateRemediatorMainFn: async (o) => { o.stdout?.(`BRIEF_PATH=${briefPath}`); return 0; },
+        spawnRemediatorFn: () => {},
+        stdout: () => {},
+        stderr: () => {},
+      });
+      return { exitCode, stdout: '', stderr: '' };
+    });
+  }
+
+  const subtracting = (baselineRows, allRows, checkStatus) => async (opts) => {
+    const rows = opts.mode === 'baseline' ? allRows.filter(r => !baselineRows.includes(r)) : allRows;
+    return { status: rows.length ? 'red' : 'green', failures: rows, baseline_used: opts.mode === 'baseline', allowed_paths_used: false, elapsed_ms: 1, total_raw_failure_count: rows.length, new_failures_vs_baseline: 0, check_status: checkStatus };
+  };
+
+  test('AC-1: anatomy_non_convergent over pre-existing debt F is not finalize_gate_failed', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      writeBaseline(dir, [OLD]);
+      stubFinalizeGate(subtracting([OLD], [OLD]));
+      const counters = freshCounters();
+      const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(outcome.action, 'continue');
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'anatomy_non_convergent');
+      assert.equal(counters.completed, 1);
+      assert.equal(counters.nonConvergent, 1, 'the phase still did not converge');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-1 control: the same debt with no baseline is finalize_gate_failed', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      stubFinalizeGate(subtracting([OLD], [OLD]));
+      const counters = freshCounters();
+      await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'finalize_gate_failed:anatomy_non_convergent');
+      assert.equal(counters.completed, 0);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('AC-5: a tests-timeout-only incomplete exit is disclosed, not failed', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      stubFinalizeGate(subtracting([], [TESTS_TIMEOUT], { typecheck: 'ran', lint: 'ran', tests: 'failed' }));
+      const counters = freshCounters();
+      const outcome = await runAllBackendsExhaustedFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(outcome.action, 'continue');
+      assert.ok(readMicroverseState(dir)?.cap_unmeasured_checks?.includes('tests'), 'finalize-gate persisted the unmeasured check');
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'anatomy_non_convergent; converged_with_unmeasured:tests');
+      assert.equal(counters.completed, 1);
+      assert.equal(counters.nonConvergent, 1);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // 653a114f: the judge never confirmed convergence and finalize-gate did not measure a check, so
+  // nothing confirmed the phase. Since #50 that arm also carries an UNATTRIBUTABLE red — a check
+  // that exited non-zero with output no parser could read — so a plain pass here reported success.
+  test('judge_timeout pass over an unmeasured check withholds success', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      const EXITED = { check: 'typecheck', file: '/tmp', line: 0, ruleOrCode: '2', message: 'exit code 2', severity: 'error', occurrence_index: 0 };
+      stubFinalizeGate(subtracting([], [EXITED], { typecheck: 'ran', lint: 'ran', tests: 'ran' }));
+      const counters = freshCounters();
+      const outcome = await runJudgeTimeoutFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(outcome.action, 'continue');
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'judge_timeout; converged_with_unmeasured:typecheck');
+      assert.equal(counters.completed, 1);
+      assert.equal(counters.nonConvergent, 1, 'a pass nothing measured is not a success');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('judge_timeout pass over a measured green gate stays a clean pass (control)', async () => {
+    const dir = tmpDir();
+    try {
+      const runtime = incompleteRuntime(dir);
+      stubFinalizeGate(subtracting([], [], { typecheck: 'ran', lint: 'ran', tests: 'ran' }));
+      const counters = freshCounters();
+      await runJudgeTimeoutFinalizeGate(runtime, counters, 'anatomy-park', () => {});
+      assert.equal(counters.phaseDispositions['anatomy-park'], 'judge_timeout');
+      assert.equal(counters.completed, 1);
+      assert.equal(counters.nonConvergent, 0);
+    } finally {
+      __setSpawnRunnerForTests(null);
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

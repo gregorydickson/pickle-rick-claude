@@ -243,14 +243,13 @@ test('C7: buildWorkerMcpConfig command drives a real serve --mcp handshake (init
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wmm-session-'));
   const fixtureDir = makeFixture({ 'src/a.ts': 'export function f() { return 1; }\n' });
 
-  const mcpPath = buildWorkerMcpConfig(sessionDir, fixtureDir, { expose_mcp_to_workers: true }, null);
-  // When the package resolves (it does on EXPENSIVE hosts that loaded the bundle)
-  // the builder writes the session file; if it ever can't, skip rather than fail.
-  if (!mcpPath || !fs.existsSync(mcpPath)) {
-    rmDir(sessionDir);
-    rmDir(fixtureDir);
-    return t.skip('buildWorkerMcpConfig did not materialize a session config (codegraph bin unresolved)');
-  }
+  // The package resolved above, so a passthrough here is a resolveCodegraphServeEntry
+  // regression, not an absent bundle — it must red, never skip. `env: {}` keeps an
+  // ambient PICKLE_CODEGRAPH=off from answering for the resolver.
+  const mcpPath = buildWorkerMcpConfig(sessionDir, fixtureDir, { expose_mcp_to_workers: true }, null, { env: {} });
+  t.after(() => { rmDir(sessionDir); rmDir(fixtureDir); });
+  assert.equal(mcpPath, path.join(sessionDir, 'mcp', 'worker-mcp.json'),
+    'buildWorkerMcpConfig must materialize the session config once the codegraph package resolves');
   const entry = JSON.parse(fs.readFileSync(mcpPath, 'utf8')).mcpServers.codegraph;
   assert.equal(entry.command, 'node', 'materialized codegraph command is node');
   assert.ok(path.isAbsolute(entry.args[0]), 'materialized bin path is absolute');
@@ -300,8 +299,6 @@ test('C7: buildWorkerMcpConfig command drives a real serve --mcp handshake (init
       params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'pickle-wmm', version: '0.0.0' } },
     });
   });
-  rmDir(sessionDir);
-  rmDir(fixtureDir);
 
   assert.ok(result.initResult && result.initResult.serverInfo, 'initialize result has serverInfo');
   assert.ok(Array.isArray(result.tools) && result.tools.length >= 1, 'tools/list is non-empty');

@@ -81,6 +81,11 @@ function makeSession(phases) {
 async function expectMainExit(sessionDir, code) {
   const originalExit = process.exit;
   const originalTmux = process.env.TMUX;
+  const originalDataRoot = process.env.PICKLE_DATA_ROOT;
+  // main() logs activity through getDataRoot(); without a sandbox every run appends
+  // fixture session_end/phase_transition rows to the operator's real activity log.
+  const dataRoot = path.join(sessionDir, 'pickle-data');
+  process.env.PICKLE_DATA_ROOT = dataRoot;
   delete process.env.TMUX;
   process.exit = ((actualCode) => {
     throw new ExitIntercept(actualCode ?? 0);
@@ -90,8 +95,17 @@ async function expectMainExit(sessionDir, code) {
       () => main(sessionDir),
       (err) => err instanceof ExitIntercept && err.code === code,
     );
+    assert.ok(
+      fs.readdirSync(path.join(dataRoot, 'activity')).some((f) => f.endsWith('.jsonl')),
+      'main() activity must land in the sandboxed PICKLE_DATA_ROOT',
+    );
   } finally {
     process.exit = originalExit;
+    if (originalDataRoot === undefined) {
+      delete process.env.PICKLE_DATA_ROOT;
+    } else {
+      process.env.PICKLE_DATA_ROOT = originalDataRoot;
+    }
     if (originalTmux === undefined) {
       delete process.env.TMUX;
     } else {
@@ -285,6 +299,68 @@ test('abort floor stays narrow — only non-string or non-union-member strings a
     recognizedExitReason: 'session_state_corrupted',
   });
 });
+
+// #49 — a failed or degraded pipeline never ends with a success-class exit_reason. The REAL sequence:
+// anatomy-park ends without converging, `resetStateForPhase` clears its reason for szechuan-sauce, and
+// szechuan-sauce's own clean finalize stamps `converged` onto the same state.json the terminal stamp
+// then reads. `microverseRuns[i]` scripts the i-th microverse-runner spawn; finalize-gate always passes.
+async function runTerminalSequence(microverseRuns) {
+  const { repo, sessionDir } = makeSession(['anatomy-park', 'szechuan-sauce']);
+  const statePath = path.join(sessionDir, 'state.json');
+  let microverseCall = 0;
+  __setSpawnRunnerForTests(async (cmd, args) => {
+    if (args.some(a => String(a).includes('finalize-gate.js'))) return { exitCode: 0, stdout: '', stderr: '' };
+    const { exitCode, exitReason } = microverseRuns[microverseCall++];
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    state.exit_reason = exitReason;
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+    return { exitCode, stdout: '', stderr: '' };
+  });
+  try {
+    await expectMainExit(sessionDir, 1);
+    return {
+      microverseCalls: microverseCall,
+      exitReason: JSON.parse(fs.readFileSync(statePath, 'utf-8')).exit_reason,
+      pipelineStatus: JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8')),
+    };
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+}
+
+const ANATOMY_FAILS = { exitCode: 1, exitReason: 'stalled_below_target' };
+const ANATOMY_DEGRADES = { exitCode: 1, exitReason: 'all_judge_backends_exhausted' };
+
+test('AC-49a: anatomy-park fails, szechuan-sauce converges → failed arm stamps failed, not converged', async () => {
+  const r = await runTerminalSequence([ANATOMY_FAILS, { exitCode: 0, exitReason: 'converged' }]);
+  assert.equal(r.microverseCalls, 2, 'both phases must have run — the later phase is what stamps converged');
+  assert.equal(r.pipelineStatus.completed_phases, 1, 'anatomy-park did not complete: the failed arm is the one under test');
+  assert.equal(r.exitReason, 'failed');
+  assert.equal(r.pipelineStatus.status, 'failed');
+});
+
+test('AC-49b: same sequence with szechuan-sauce leaving the literal success reason → failed', async () => {
+  const r = await runTerminalSequence([ANATOMY_FAILS, { exitCode: 0, exitReason: 'success' }]);
+  assert.equal(r.microverseCalls, 2);
+  assert.equal(r.exitReason, 'failed');
+});
+
+test('AC-49c: degraded arm (every phase ran, verdict withheld) stamps completed, not converged', async () => {
+  const r = await runTerminalSequence([ANATOMY_DEGRADES, { exitCode: 0, exitReason: 'converged' }]);
+  assert.equal(r.microverseCalls, 2);
+  assert.equal(r.pipelineStatus.completed_phases, 2, 'both phases executed — this is the degraded arm, not a phase shortfall');
+  assert.equal(r.pipelineStatus.status, 'failed', 'the success verdict is still withheld');
+  assert.equal(r.exitReason, 'completed', 'R-NOPOSTTIER: ran to completion, so completed — never the later phase\'s converged');
+});
+
+for (const specific of ['done_without_commit_evidence', 'all_judge_backends_exhausted']) {
+  test(`AC-49d: a specific failure reason (${specific}) already stamped is still preserved`, async () => {
+    const r = await runTerminalSequence([ANATOMY_FAILS, { exitCode: 0, exitReason: specific }]);
+    assert.equal(r.microverseCalls, 2);
+    assert.equal(r.exitReason, specific);
+  });
+}
 
 // Assertion-count floor: guards against a future edit silently shrinking this file's coverage of
 // the B-ONEABORT contract (AC-D3). Counts assert. call sites in this file's own source.

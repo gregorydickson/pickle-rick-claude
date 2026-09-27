@@ -74,11 +74,11 @@ const GATE_REMEDIATOR_MANAGED_PATH = path.join(
 // (~/.claude/pickle-rick from `bash install.sh`). Their precondition is "install.sh
 // has been run" — true on a dev box, FALSE on CI (which never runs install.sh), so
 // on CI they should SKIP (precondition unmet), not fail. The self-contained install
-// validation lives in install-sh-e2e / install-script tests (which install to a tmp
-// prefix and pass on CI). Skip when no deploy is present.
+// validation lives in the install-script tests (which drive the real install.sh
+// against a tmp prefix and pass on CI). Skip when no deploy is present.
 const DEPLOY_SMOKE_SKIP = fs.existsSync(DEPLOYED_ROOT)
   ? false
-  : 'no ambient install.sh deploy (e.g. CI) — deploy-smoke validates a real deploy; install-sh-e2e covers install.sh self-containedly';
+  : 'no ambient install.sh deploy (e.g. CI) — deploy-smoke validates a real deploy; install-script tests cover install.sh self-containedly';
 
 test('deploy smoke: gate bins and data exist after bash install.sh', { skip: DEPLOY_SMOKE_SKIP }, () => {
   const missing = DEPLOYED_PATHS.filter(p => !fs.existsSync(p));

@@ -235,17 +235,16 @@ function preflightStartIncoming(phases) {
     }
     return diags;
 }
-function preflightGoalGateEdges(phases) {
+function withDefaultRetryTargets(phases) {
     const diags = [];
-    for (const phase of phases) {
-        if (phase.goalGate && !phase.specFirst && !phase.retryTarget) {
-            // Auto-correct: default retryTarget to fix_<phaseName>
-            const defaultTarget = `fix_${sanitizeId(phase.name)}`;
-            phase.retryTarget = defaultTarget;
-            diags.push(mkDiag('DIAMOND_MISSING_EDGES', 'warning', `goalGate phase "${phase.name}" missing retryTarget — defaulted to "${defaultTarget}"`, sanitizeId(phase.name)));
-        }
-    }
-    return diags;
+    const repaired = phases.map(phase => {
+        if (!phase.goalGate || phase.specFirst || phase.retryTarget)
+            return phase;
+        const defaultTarget = `fix_${sanitizeId(phase.name)}`;
+        diags.push(mkDiag('DIAMOND_MISSING_EDGES', 'warning', `goalGate phase "${phase.name}" missing retryTarget — defaulted to "${defaultTarget}"`, sanitizeId(phase.name)));
+        return { ...phase, retryTarget: defaultTarget };
+    });
+    return { repaired, diags };
 }
 function preflightFanOutScope(phases) {
     const independent = phases.filter(p => !p.dependsOn || p.dependsOn.length === 0);
@@ -266,23 +265,23 @@ function preflightFanOutScope(phases) {
     }
     return diags;
 }
-function preflightWorkspaceHttps(workspace, workspaceOpts) {
+function withHttpsRepoUrl(workspace, workspaceOpts) {
+    const unchanged = { repaired: workspaceOpts, diags: [] };
     if (workspace !== 'isolated')
-        return [];
-    if (!workspaceOpts?.repoUrl)
-        return [];
-    const repoUrl = workspaceOpts.repoUrl;
-    if (!repoUrl.startsWith('https://')) {
-        // Auto-correct: convert git@host:org/repo.git → https://host/org/repo.git
-        const sshMatch = repoUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
-        if (sshMatch) {
-            const converted = `https://${sshMatch[1]}/${sshMatch[2]}.git`;
-            workspaceOpts.repoUrl = converted;
-            return [mkDiag('WORKSPACE_NO_HTTPS', 'warning', `workspace="isolated" requires HTTPS repo_url — auto-converted "${repoUrl}" → "${converted}"`)];
-        }
-        return [mkDiag('WORKSPACE_NO_HTTPS', 'error', `workspace="isolated" requires HTTPS repo_url; got: "${repoUrl}" (unable to auto-convert)`)];
+        return unchanged;
+    const repoUrl = workspaceOpts?.repoUrl;
+    if (!repoUrl || repoUrl.startsWith('https://'))
+        return unchanged;
+    // Auto-correct: convert git@host:org/repo.git → https://host/org/repo.git
+    const sshMatch = repoUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+    if (!sshMatch) {
+        return { repaired: workspaceOpts, diags: [mkDiag('WORKSPACE_NO_HTTPS', 'error', `workspace="isolated" requires HTTPS repo_url; got: "${repoUrl}" (unable to auto-convert)`)] };
     }
-    return [];
+    const converted = `https://${sshMatch[1]}/${sshMatch[2]}.git`;
+    return {
+        repaired: { ...workspaceOpts, repoUrl: converted },
+        diags: [mkDiag('WORKSPACE_NO_HTTPS', 'warning', `workspace="isolated" requires HTTPS repo_url — auto-converted "${repoUrl}" → "${converted}"`)],
+    };
 }
 function preflightPlanDeadlock(phases) {
     return phases
@@ -317,7 +316,17 @@ function preflightPromptPaths(phases) {
     }
     return diags;
 }
-function preflightAutoMapAC(phases, acceptanceCriteria) {
+function withMappedAcceptanceCriteria(phases, acceptanceCriteria) {
+    const additions = new Map();
+    const diags = planAcceptanceCriteriaMapping(phases, acceptanceCriteria, additions);
+    const repaired = phases.map(phase => {
+        const added = additions.get(phase);
+        return added ? { ...phase, contextOnSuccess: { ...phase.contextOnSuccess, ...added } } : phase;
+    });
+    return { repaired, diags };
+}
+/** Records each AC key to auto-map into `additions` (phase → key → value); returns the mapping diagnostics. */
+function planAcceptanceCriteriaMapping(phases, acceptanceCriteria, additions) {
     const acKeys = Object.keys(acceptanceCriteria);
     if (acKeys.length === 0)
         return [];
@@ -325,6 +334,11 @@ function preflightAutoMapAC(phases, acceptanceCriteria) {
     const customKeys = acKeys.filter(k => !tier2.has(k));
     if (customKeys.length === 0)
         return [];
+    const addTo = (phase, k) => {
+        const added = additions.get(phase) ?? {};
+        added[k] = String(acceptanceCriteria[k] ?? 'true');
+        additions.set(phase, added);
+    };
     // Collect already-mapped keys
     const alreadyMapped = new Set();
     for (const p of phases) {
@@ -340,11 +354,8 @@ function preflightAutoMapAC(phases, acceptanceCriteria) {
     // Single-phase shortcut: all unmapped custom keys → the only phase
     if (implPhases.length === 1) {
         const phase = implPhases[0];
-        if (!phase.contextOnSuccess)
-            phase.contextOnSuccess = {};
-        for (const k of unmapped) {
-            phase.contextOnSuccess[k] = String(acceptanceCriteria[k] ?? 'true');
-        }
+        for (const k of unmapped)
+            addTo(phase, k);
         return [mkDiag('MISSING_AC_MAPPING', 'info', `single-phase pipeline — auto-mapped ${unmapped.length} AC key(s) to phase "${phase.name}": ${unmapped.join(', ')}`)];
     }
     // Multi-phase: try prefix/substring match
@@ -355,27 +366,24 @@ function preflightAutoMapAC(phases, acceptanceCriteria) {
             return k.includes(id) || id.includes(k.replace(/_/g, ''));
         });
         if (match) {
-            if (!match.contextOnSuccess)
-                match.contextOnSuccess = {};
-            match.contextOnSuccess[k] = String(acceptanceCriteria[k] ?? 'true');
+            addTo(match, k);
             diags.push(mkDiag('MISSING_AC_MAPPING', 'info', `auto-mapped AC key "${k}" to phase "${match.name}" (name match)`));
         }
         // If no match, let grRule6 handle it with better fix hints
     }
     return diags;
 }
-function preflightMissingAllowedPaths(phases) {
+function withDefaultAllowedPaths(phases) {
     const diags = [];
-    for (const phase of phases) {
+    const repaired = phases.map(phase => {
         if (phase.securityScan || phase.docOnly)
-            continue;
-        if (!phase.allowedPaths || phase.allowedPaths.length === 0) {
-            // Auto-correct: default to src/**/tests/** and warn
-            phase.allowedPaths = ['src/**', 'tests/**'];
-            diags.push(mkDiag('MISSING_ALLOWED_PATHS', 'warning', `phase "${phase.name}" missing allowedPaths — defaulted to ["src/**", "tests/**"]`, sanitizeId(phase.name)));
-        }
-    }
-    return diags;
+            return phase;
+        if (phase.allowedPaths && phase.allowedPaths.length > 0)
+            return phase;
+        diags.push(mkDiag('MISSING_ALLOWED_PATHS', 'warning', `phase "${phase.name}" missing allowedPaths — defaulted to ["src/**", "tests/**"]`, sanitizeId(phase.name)));
+        return { ...phase, allowedPaths: ['src/**', 'tests/**'] };
+    });
+    return { repaired, diags };
 }
 function buildPhaseDependencyGraph(phases) {
     const adj = new Map();
@@ -956,6 +964,31 @@ function applySpecConfig(builder, spec) {
     if (convergence)
         builder.convergence(convergence);
 }
+function freshRenderState() {
+    return {
+        nodes: [],
+        edges: [],
+        subgraphBlocks: [],
+        seenEdges: new Set(),
+        nodeMap: new Map(),
+        edgeList: [],
+        standaloneNodeIds: new Set(),
+        emittedDiagnostics: [],
+        applied: new Set(),
+        graphAttrs: {},
+        defenseMatrix: { competitive: false, guardrails: [], specDriven: 'NONE', permissions: [], adversarial: false },
+        independentPhases: [],
+        implPhases: [],
+        hasFanOut: false,
+        hasCompeting: false,
+        hasConvergence: false,
+        unionPaths: '',
+        unionEscalate: '',
+        verifyTypecheckKV: {},
+        verifyLintKV: {},
+        verifyTestsKV: {},
+    };
+}
 export class DotBuilder {
     _slug;
     _goal;
@@ -963,33 +996,7 @@ export class DotBuilder {
     _seenIds = new Set();
     _spec;
     _built = false;
-    _nodes = [];
-    _edges = [];
-    _subgraphBlocks = [];
-    _seenEdges = new Set();
-    _nodeMap = new Map();
-    _edgeList = [];
-    _standaloneNodeIds = new Set();
-    _emittedDiagnostics = [];
-    _applied = new Set();
-    _graphAttrs = {};
-    _defenseMatrix = {
-        competitive: false,
-        guardrails: [],
-        specDriven: 'NONE',
-        permissions: [],
-        adversarial: false,
-    };
-    _independentPhases = [];
-    _implPhases = [];
-    _hasFanOut = false;
-    _hasCompeting = false;
-    _hasConvergence = false;
-    _unionPaths = '';
-    _unionEscalate = '';
-    _verifyTypecheckKV = {};
-    _verifyLintKV = {};
-    _verifyTestsKV = {};
+    _render = freshRenderState();
     static fromSpec(raw) {
         if (!isRecord(raw)) {
             throw new BuildError('INVALID_SPEC', 'spec must be a non-null object');
@@ -1105,7 +1112,7 @@ export class DotBuilder {
             throw new BuildError('ALREADY_BUILT', 'build() has already been called');
         }
         this._built = true;
-        const preflightDiags = this._validatePreflightSpecs();
+        const preflightDiags = this._repairAndValidatePreflightSpecs();
         const preflightError = preflightDiags.find(d => d.severity === 'error');
         if (preflightError) {
             throw new BuildError(preflightError.rule, preflightError.message, preflightDiags);
@@ -1127,7 +1134,20 @@ export class DotBuilder {
         }
         return { dot, slug: this._slug, patternsApplied, defenseMatrix, diagnostics };
     }
-    _validatePreflightSpecs() {
+    /**
+     * Applies the pure with* spec repairs, stores the repaired phases/workspace, then runs the
+     * preflight* checks against the repaired spec. The checks never see an unrepaired value
+     * (fan-out scope reads defaulted retryTargets; prompt paths read defaulted allowedPaths);
+     * each repair's diagnostics keep their historical position in the returned list.
+     */
+    _repairAndValidatePreflightSpecs() {
+        const retryTargets = withDefaultRetryTargets(this._phases);
+        const allowedPaths = withDefaultAllowedPaths(retryTargets.repaired);
+        const acMapping = withMappedAcceptanceCriteria(allowedPaths.repaired, this._spec.acceptanceCriteria ?? {});
+        const https = withHttpsRepoUrl(this._spec.workspace, this._spec.workspaceOpts);
+        this._phases = acMapping.repaired;
+        if (https.repaired !== this._spec.workspaceOpts)
+            this._spec = { ...this._spec, workspaceOpts: https.repaired };
         const phases = this._phases;
         return [
             ...preflightReservedIds(phases),
@@ -1136,14 +1156,14 @@ export class DotBuilder {
             ...preflightAllowedPaths(phases),
             ...preflightCircularDeps(phases),
             ...preflightStartIncoming(phases),
-            ...preflightGoalGateEdges(phases),
+            ...retryTargets.diags,
             ...preflightFanOutScope(phases),
-            ...preflightWorkspaceHttps(this._spec.workspace, this._spec.workspaceOpts),
+            ...https.diags,
             ...preflightWorkspacePush(this._spec.workspace, phases),
             ...preflightPlanDeadlock(phases),
-            ...preflightMissingAllowedPaths(phases),
-            ...preflightAutoMapAC(phases, this._spec.acceptanceCriteria ?? {}),
-            ...preflightPromptPaths(phases), // must run after allowedPaths auto-correction
+            ...allowedPaths.diags,
+            ...acMapping.diags,
+            ...preflightPromptPaths(phases),
         ];
     }
     _validateConvergenceSpec() {
@@ -1166,23 +1186,23 @@ export class DotBuilder {
     _runStructuralRules() {
         const mergedAc = this._mergedAcceptanceCriteria();
         return [
-            ...this._emittedDiagnostics,
-            ...grRule1(this._nodeMap),
-            ...grRule2(this._nodeMap, this._edgeList),
-            ...grRule3(this._nodeMap, this._edgeList, this._standaloneNodeIds),
-            ...grRule4(this._nodeMap, this._edgeList),
-            ...grRule5(this._nodeMap),
-            ...grRule6(this._nodeMap, mergedAc),
-            ...grRule7(this._nodeMap),
-            ...grRule8(this._nodeMap),
-            ...grRule9(this._nodeMap),
-            ...grRule10(this._nodeMap, this._edgeList),
-            ...grRule11(this._nodeMap),
-            ...grRule12(this._nodeMap, this._graphAttrs),
-            ...grRule13(this._nodeMap, this._graphAttrs),
-            ...grRule14(this._nodeMap),
-            ...grRule15(this._nodeMap),
-            ...grRule16(this._nodeMap, mergedAc),
+            ...this._render.emittedDiagnostics,
+            ...grRule1(this._render.nodeMap),
+            ...grRule2(this._render.nodeMap, this._render.edgeList),
+            ...grRule3(this._render.nodeMap, this._render.edgeList, this._render.standaloneNodeIds),
+            ...grRule4(this._render.nodeMap, this._render.edgeList),
+            ...grRule5(this._render.nodeMap),
+            ...grRule6(this._render.nodeMap, mergedAc),
+            ...grRule7(this._render.nodeMap),
+            ...grRule8(this._render.nodeMap),
+            ...grRule9(this._render.nodeMap),
+            ...grRule10(this._render.nodeMap, this._render.edgeList),
+            ...grRule11(this._render.nodeMap),
+            ...grRule12(this._render.nodeMap, this._render.graphAttrs),
+            ...grRule13(this._render.nodeMap, this._render.graphAttrs),
+            ...grRule14(this._render.nodeMap),
+            ...grRule15(this._render.nodeMap),
+            ...grRule16(this._render.nodeMap, mergedAc),
         ];
     }
     // ---------------------------------------------------------------------------
@@ -1216,35 +1236,6 @@ export class DotBuilder {
         }
         return parts.join(' ');
     }
-    _resetEmitState() {
-        this._nodes = [];
-        this._edges = [];
-        this._subgraphBlocks = [];
-        this._seenEdges = new Set();
-        this._nodeMap = new Map();
-        this._edgeList = [];
-        this._standaloneNodeIds = new Set();
-        this._emittedDiagnostics = [];
-        this._applied = new Set();
-        this._graphAttrs = {};
-        this._defenseMatrix = {
-            competitive: false,
-            guardrails: [],
-            specDriven: 'NONE',
-            permissions: [],
-            adversarial: false,
-        };
-        this._independentPhases = [];
-        this._implPhases = [];
-        this._hasFanOut = false;
-        this._hasCompeting = false;
-        this._hasConvergence = false;
-        this._unionPaths = '';
-        this._unionEscalate = '';
-        this._verifyTypecheckKV = {};
-        this._verifyLintKV = {};
-        this._verifyTestsKV = {};
-    }
     // eslint-disable-next-line complexity -- HT-1 reviewed: context initialization folds independent schema feature flags.
     _initializeEmitContext() {
         const spec = this._spec;
@@ -1253,7 +1244,7 @@ export class DotBuilder {
         const hasBDD = phases.some(p => p.bddScenarios);
         const hasSpecFile = Boolean(spec.specFile);
         const hasSpecFirstAny = phases.some(p => p.specFirst === true || (p.goalGate && p.specFirst !== false));
-        this._independentPhases = phases.filter(p => {
+        this._render.independentPhases = phases.filter(p => {
             if (p.securityScan)
                 return false;
             if (p.docOnly)
@@ -1262,9 +1253,9 @@ export class DotBuilder {
                 return false;
             return !p.dependsOn || p.dependsOn.length === 0;
         });
-        this._hasFanOut = this._independentPhases.length >= 2 && !phases.some(p => p.competing);
-        this._hasCompeting = phases.some(p => p.competing);
-        this._hasConvergence = !!spec.convergence;
+        this._render.hasFanOut = this._render.independentPhases.length >= 2 && !phases.some(p => p.competing);
+        this._render.hasCompeting = phases.some(p => p.competing);
+        this._render.hasConvergence = !!spec.convergence;
         let specDriven = 'NONE';
         if (hasBDD && hasSpecFile)
             specDriven = 'spec_file + BDD + conformance';
@@ -1274,35 +1265,35 @@ export class DotBuilder {
             specDriven = 'spec_file + conformance';
         else if (hasSpecFirstAny)
             specDriven = 'conformance';
-        this._defenseMatrix = {
-            competitive: this._hasCompeting,
+        this._render.defenseMatrix = {
+            competitive: this._render.hasCompeting,
             guardrails: [],
             specDriven,
             permissions: [],
             adversarial: hasRedTeam,
         };
-        this._graphAttrs = {
-            label: this._hasConvergence ? escapeAttr(this._slug) : escapeAttr(`${this._slug}: ${this._goal}`),
+        this._render.graphAttrs = {
+            label: this._render.hasConvergence ? escapeAttr(this._slug) : escapeAttr(`${this._slug}: ${this._goal}`),
             rankdir: 'LR',
             goal: escapeAttr(this._goal),
-            retry_target: this._hasConvergence ? 'converge' : 'fix_types',
+            retry_target: this._render.hasConvergence ? 'converge' : 'fix_types',
         };
         if (spec.workingDir)
-            this._graphAttrs['working_dir'] = escapeAttr(spec.workingDir);
+            this._render.graphAttrs['working_dir'] = escapeAttr(spec.workingDir);
         if (spec.specFile)
-            this._graphAttrs['spec_file'] = escapeAttr(spec.specFile);
+            this._render.graphAttrs['spec_file'] = escapeAttr(spec.specFile);
         if (spec.defaultMaxRetry)
-            this._graphAttrs['default_max_retry'] = String(spec.defaultMaxRetry);
+            this._render.graphAttrs['default_max_retry'] = String(spec.defaultMaxRetry);
         if (spec.workspace === 'isolated') {
-            this._graphAttrs['workspace'] = 'isolated';
-            this._applied.add('P0');
+            this._render.graphAttrs['workspace'] = 'isolated';
+            this._render.applied.add('P0');
         }
         if (spec.modelStylesheet)
-            this._graphAttrs['model_stylesheet'] = this._buildStylesheet(spec.modelStylesheet);
+            this._render.graphAttrs['model_stylesheet'] = this._buildStylesheet(spec.modelStylesheet);
         const mergedAc = this._mergedAcceptanceCriteria();
         const acKeys = Object.keys(mergedAc).sort();
         if (acKeys.length > 0) {
-            this._graphAttrs['acceptance_criteria'] = escapeAttr(acKeys.map(k => `context.${k}=${String(mergedAc[k])}`).join(' && '));
+            this._render.graphAttrs['acceptance_criteria'] = escapeAttr(acKeys.map(k => `context.${k}=${String(mergedAc[k])}`).join(' && '));
         }
         this._emit('start', { shape: 'Mdiamond' });
         this._emit('setup_deps', {
@@ -1310,21 +1301,21 @@ export class DotBuilder {
             shape: 'parallelogram',
             tool_command: 'cd ${WORKING_DIR} && npm install 2>&1 || pnpm install 2>&1 || yarn install 2>&1',
         });
-        this._applied.add('P0a');
+        this._render.applied.add('P0a');
         this._emit('capture_baseline', {
             label: 'capture_baseline',
             read_only: 'true',
             shape: 'parallelogram',
             tool_command: "cd ${WORKING_DIR} && (npx tsc --noEmit 2>&1 | grep -c 'error TS' > /tmp/baseline_ts_errors.txt || echo 0 > /tmp/baseline_ts_errors.txt) && (npx eslint src/ 2>&1 | grep -c 'error' > /tmp/baseline_lint_errors.txt || echo 0 > /tmp/baseline_lint_errors.txt)",
         });
-        this._applied.add('P0c');
+        this._render.applied.add('P0c');
         this._link('start', 'setup_deps');
         this._link('setup_deps', 'capture_baseline');
-        this._implPhases = phases.filter(p => !p.securityScan && !p.docOnly);
+        this._render.implPhases = phases.filter(p => !p.securityScan && !p.docOnly);
         const allDependentPhases = phases.filter(p => !p.securityScan);
         const rawUnionPaths = [...new Set(allDependentPhases.flatMap(p => p.allowedPaths ?? []))];
-        this._unionPaths = expandWithTestDirs(rawUnionPaths).join(',');
-        this._unionEscalate = [...new Set(allDependentPhases.flatMap(p => p.escalateOn ?? []))].join(',');
+        this._render.unionPaths = expandWithTestDirs(rawUnionPaths).join(',');
+        this._render.unionEscalate = [...new Set(allDependentPhases.flatMap(p => p.escalateOn ?? []))].join(',');
         const tier1Keys = {};
         for (const p of phases) {
             if (p.contextOnSuccess) {
@@ -1332,51 +1323,51 @@ export class DotBuilder {
                     tier1Keys[k] = v;
             }
         }
-        this._verifyTypecheckKV = { types_compile: 'true' };
-        this._verifyLintKV = { lint_clean: 'true' };
-        this._verifyTestsKV = {
+        this._render.verifyTypecheckKV = { types_compile: 'true' };
+        this._render.verifyLintKV = { lint_clean: 'true' };
+        this._render.verifyTestsKV = {
             cli_contract: 'true', determinism: 'true', tests_pass: 'true', validation_rules: 'true',
             ...tier1Keys,
         };
     }
     _emit(id, attrs) {
-        this._nodes.push(`  ${id} [${fmtAttrs(attrs)}]`);
-        this._nodeMap.set(id, { ...attrs });
+        this._render.nodes.push(`  ${id} [${fmtAttrs(attrs)}]`);
+        this._render.nodeMap.set(id, { ...attrs });
     }
     _link(from, to, attrs) {
         const edgeLine = (attrs && Object.keys(attrs).length > 0)
             ? `  ${from} -> ${to} [${fmtAttrs(attrs)}]`
             : `  ${from} -> ${to}`;
-        if (this._seenEdges.has(edgeLine))
+        if (this._render.seenEdges.has(edgeLine))
             return;
-        this._seenEdges.add(edgeLine);
-        this._edges.push(edgeLine);
+        this._render.seenEdges.add(edgeLine);
+        this._render.edges.push(edgeLine);
         if (attrs && Object.keys(attrs).length > 0)
-            this._edgeList.push({ from, to, label: attrs['label'], attrs });
+            this._render.edgeList.push({ from, to, label: attrs['label'], attrs });
         else
-            this._edgeList.push({ from, to });
+            this._render.edgeList.push({ from, to });
     }
     _emitSubgraph(clusterId, label, bodyEmitter) {
-        const prevNodesLen = this._nodes.length;
-        const prevEdgesLen = this._edges.length;
+        const prevNodesLen = this._render.nodes.length;
+        const prevEdgesLen = this._render.edges.length;
         bodyEmitter();
-        const bodyNodes = this._nodes.splice(prevNodesLen);
-        const bodyEdges = this._edges.splice(prevEdgesLen);
-        this._subgraphBlocks.push(`  subgraph cluster_${clusterId} {`);
-        this._subgraphBlocks.push(`    label="${escapeAttr(label)}"`);
+        const bodyNodes = this._render.nodes.splice(prevNodesLen);
+        const bodyEdges = this._render.edges.splice(prevEdgesLen);
+        this._render.subgraphBlocks.push(`  subgraph cluster_${clusterId} {`);
+        this._render.subgraphBlocks.push(`    label="${escapeAttr(label)}"`);
         for (const n of bodyNodes)
-            this._subgraphBlocks.push(`  ${n}`);
+            this._render.subgraphBlocks.push(`  ${n}`);
         for (const e of bodyEdges)
-            this._subgraphBlocks.push(`  ${e}`);
-        this._subgraphBlocks.push('  }');
+            this._render.subgraphBlocks.push(`  ${e}`);
+        this._render.subgraphBlocks.push('  }');
     }
     _emitEndgameChain(prevId, prevAttrs) {
         const spec = this._spec;
-        const unionPaths = this._unionPaths;
-        const unionEscalate = this._unionEscalate;
-        const verifyTypecheckKV = this._verifyTypecheckKV;
-        const verifyLintKV = this._verifyLintKV;
-        const verifyTestsKV = this._verifyTestsKV;
+        const unionPaths = this._render.unionPaths;
+        const unionEscalate = this._render.unionEscalate;
+        const verifyTypecheckKV = this._render.verifyTypecheckKV;
+        const verifyLintKV = this._render.verifyLintKV;
+        const verifyTestsKV = this._render.verifyTestsKV;
         const emit = this._emit.bind(this);
         const link = this._link.bind(this);
         // audit: diagnostic node, never fails (|| true on all commands)
@@ -1492,9 +1483,9 @@ export class DotBuilder {
     }
     _emitFanOutTopology() {
         const phases = this._phases;
-        const independent = this._independentPhases;
-        const applied = this._applied;
-        const nodes = this._nodes;
+        const independent = this._render.independentPhases;
+        const applied = this._render.applied;
+        const nodes = this._render.nodes;
         const emit = this._emit.bind(this);
         const link = this._link.bind(this);
         const emitEndgameChain = this._emitEndgameChain.bind(this);
@@ -1531,7 +1522,7 @@ export class DotBuilder {
     }
     _emitCompetingTopology() {
         const phases = this._phases;
-        const applied = this._applied;
+        const applied = this._render.applied;
         const emit = this._emit.bind(this);
         const link = this._link.bind(this);
         // Competing implementations (Pattern 18)
@@ -1550,7 +1541,7 @@ export class DotBuilder {
     // eslint-disable-next-line complexity -- HT-1 reviewed: convergence topology mirrors the schema in one emission pass.
     _emitConvergenceTopology() {
         const spec = this._spec;
-        const applied = this._applied;
+        const applied = this._render.applied;
         const emit = this._emit.bind(this);
         const link = this._link.bind(this);
         const emitSubgraph = this._emitSubgraph.bind(this);
@@ -1723,13 +1714,13 @@ export class DotBuilder {
     _emitSequentialPhases() {
         const spec = this._spec;
         const phases = this._phases;
-        const applied = this._applied;
-        const nodes = this._nodes;
-        const nodeMap = this._nodeMap;
-        const implPhases = this._implPhases;
-        const emittedDiagnostics = this._emittedDiagnostics;
-        const defenseMatrix = this._defenseMatrix;
-        const hasConvergence = this._hasConvergence;
+        const applied = this._render.applied;
+        const nodes = this._render.nodes;
+        const nodeMap = this._render.nodeMap;
+        const implPhases = this._render.implPhases;
+        const emittedDiagnostics = this._render.emittedDiagnostics;
+        const defenseMatrix = this._render.defenseMatrix;
+        const hasConvergence = this._render.hasConvergence;
         const emit = this._emit.bind(this);
         const link = this._link.bind(this);
         const emitEndgameChain = this._emitEndgameChain.bind(this);
@@ -2114,8 +2105,8 @@ export class DotBuilder {
     _emitMicroverseLoop() {
         const spec = this._spec;
         const phases = this._phases;
-        const applied = this._applied;
-        const standaloneNodeIds = this._standaloneNodeIds;
+        const applied = this._render.applied;
+        const standaloneNodeIds = this._render.standaloneNodeIds;
         const emit = this._emit.bind(this);
         const link = this._link.bind(this);
         if (!spec.microverse)
@@ -2153,8 +2144,8 @@ export class DotBuilder {
     }
     _emitReviewRatchet() {
         const spec = this._spec;
-        const applied = this._applied;
-        const standaloneNodeIds = this._standaloneNodeIds;
+        const applied = this._render.applied;
+        const standaloneNodeIds = this._render.standaloneNodeIds;
         const emit = this._emit.bind(this);
         const link = this._link.bind(this);
         if (!spec.reviewRatchet)
@@ -2180,24 +2171,24 @@ export class DotBuilder {
     }
     // eslint-disable-next-line complexity -- HT-1 reviewed: final graph assembly has isolated/convergence rewiring branches.
     _emitDot() {
-        this._resetEmitState();
+        this._render = freshRenderState();
         this._initializeEmitContext();
-        if (this._hasFanOut)
+        if (this._render.hasFanOut)
             this._emitFanOutTopology();
-        else if (this._hasCompeting)
+        else if (this._render.hasCompeting)
             this._emitCompetingTopology();
         else
             this._emitSequentialPhases();
         // P25: Catastrophic recovery loop (suppressed by convergence — iterate has its own retry)
-        if (!this._hasFanOut && !this._hasCompeting && this._implPhases.length > 0 && !this._hasConvergence) {
-            this._applied.add('P25');
+        if (!this._render.hasFanOut && !this._render.hasCompeting && this._render.implPhases.length > 0 && !this._render.hasConvergence) {
+            this._render.applied.add('P25');
             this._link('regression_check', 'setup_deps', { loop_restart: 'true' });
         }
         this._emitMicroverseLoop();
         this._emitReviewRatchet();
         // P0: Auto-inject commit_and_push for isolated workspace if missing
         if (this._spec.workspace === 'isolated') {
-            const hasExplicitPush = [...this._nodeMap.keys()].some(isCommitPushPhaseId);
+            const hasExplicitPush = [...this._render.nodeMap.keys()].some(isCommitPushPhaseId);
             if (!hasExplicitPush) {
                 const slug = this._slug;
                 this._emit('commit_and_push', {
@@ -2207,64 +2198,64 @@ export class DotBuilder {
                     tool_command: `cd \${WORKING_DIR} && BRANCH="attractor/${slug}-$(echo $ATTRACTOR_RUN_ID | cut -c1-8)" && git checkout -B "$BRANCH" && git add -A && git -c user.name=attractor -c user.email=attractor@local commit -m "feat: ${slug} — attractor pipeline output" --allow-empty && git push origin "$BRANCH" --force 2>&1 && echo "Pushed branch: $BRANCH"`,
                 });
                 // Rewire: inject commit_and_push into the terminal chain
-                if (this._hasConvergence) {
+                if (this._render.hasConvergence) {
                     // v8: anchor on repro_verify -> done [condition="outcome=success"]
-                    const rpToDone = this._edges.findIndex(e => e.includes('repro_verify -> done') && e.includes('outcome=success'));
+                    const rpToDone = this._render.edges.findIndex(e => e.includes('repro_verify -> done') && e.includes('outcome=success'));
                     if (rpToDone !== -1) {
-                        const removedEdgeStr = this._edges[rpToDone];
-                        this._edges.splice(rpToDone, 1);
-                        const removedEdge = this._edgeList.findIndex(e => e.from === 'repro_verify' && e.to === 'done');
+                        const removedEdgeStr = this._render.edges[rpToDone];
+                        this._render.edges.splice(rpToDone, 1);
+                        const removedEdge = this._render.edgeList.findIndex(e => e.from === 'repro_verify' && e.to === 'done');
                         if (removedEdge !== -1)
-                            this._edgeList.splice(removedEdge, 1);
-                        this._seenEdges.delete(removedEdgeStr);
+                            this._render.edgeList.splice(removedEdge, 1);
+                        this._render.seenEdges.delete(removedEdgeStr);
                     }
                     this._link('repro_verify', 'commit_and_push', { condition: 'outcome=success', label: 'pass' });
                     this._link('commit_and_push', 'done', { condition: 'outcome=success', label: 'pass' });
                 }
                 else {
                     // non-convergence: anchor on quality_review -> exit
-                    const qrToExit = this._edges.findIndex(e => e.includes('quality_review -> exit'));
+                    const qrToExit = this._render.edges.findIndex(e => e.includes('quality_review -> exit'));
                     if (qrToExit !== -1) {
-                        const removedEdgeStr = this._edges[qrToExit];
-                        this._edges.splice(qrToExit, 1);
-                        const removedEdge = this._edgeList.findIndex(e => e.from === 'quality_review' && e.to === 'exit');
+                        const removedEdgeStr = this._render.edges[qrToExit];
+                        this._render.edges.splice(qrToExit, 1);
+                        const removedEdge = this._render.edgeList.findIndex(e => e.from === 'quality_review' && e.to === 'exit');
                         if (removedEdge !== -1)
-                            this._edgeList.splice(removedEdge, 1);
-                        this._seenEdges.delete(removedEdgeStr);
+                            this._render.edgeList.splice(removedEdge, 1);
+                        this._render.seenEdges.delete(removedEdgeStr);
                     }
                     this._link('quality_review', 'commit_and_push', { condition: 'outcome=success', label: 'pass' });
                     this._link('commit_and_push', 'exit');
                 }
-                this._applied.add('P0');
+                this._render.applied.add('P0');
             }
         }
         // Emit exit terminal (suppressed in convergence mode — done is the sole Msquare terminal)
-        if (!this._hasConvergence)
+        if (!this._render.hasConvergence)
             this._emit('exit', { label: 'exit', shape: 'Msquare' });
         // P23: defense matrix comment block
         const guardPatterns = ['P0c', 'P6b', 'P10', 'P13', 'P14', 'P15', 'P17', 'P25'];
-        this._defenseMatrix.guardrails = guardPatterns.filter(pg => this._applied.has(pg));
-        this._applied.add('P23');
+        this._render.defenseMatrix.guardrails = guardPatterns.filter(pg => this._render.applied.has(pg));
+        this._render.applied.add('P23');
         const graphId = sanitizeId(this._slug) || 'pipeline';
         const lines = [
             `digraph "${graphId}" {`,
-            `  graph [${fmtAttrs(this._graphAttrs)}]`,
-            ...this._subgraphBlocks,
+            `  graph [${fmtAttrs(this._render.graphAttrs)}]`,
+            ...this._render.subgraphBlocks,
             `  /* DEFENSE MATRIX`,
-            `   * competitive: ${this._defenseMatrix.competitive}`,
-            `   * adversarial: ${this._defenseMatrix.adversarial}`,
-            `   * specDriven: ${this._defenseMatrix.specDriven}`,
-            `   * guardrails: ${this._defenseMatrix.guardrails.length > 0 ? this._defenseMatrix.guardrails.join(', ') : 'none'}`,
-            `   * permissions: ${this._defenseMatrix.permissions.length > 0 ? this._defenseMatrix.permissions.join(', ') : 'none'}`,
+            `   * competitive: ${this._render.defenseMatrix.competitive}`,
+            `   * adversarial: ${this._render.defenseMatrix.adversarial}`,
+            `   * specDriven: ${this._render.defenseMatrix.specDriven}`,
+            `   * guardrails: ${this._render.defenseMatrix.guardrails.length > 0 ? this._render.defenseMatrix.guardrails.join(', ') : 'none'}`,
+            `   * permissions: ${this._render.defenseMatrix.permissions.length > 0 ? this._render.defenseMatrix.permissions.join(', ') : 'none'}`,
             `   */`,
-            ...this._nodes,
-            ...this._edges,
+            ...this._render.nodes,
+            ...this._render.edges,
             '}',
         ];
         return {
             dot: lines.join('\n'),
-            patternsApplied: [...this._applied],
-            defenseMatrix: this._defenseMatrix,
+            patternsApplied: [...this._render.applied],
+            defenseMatrix: this._render.defenseMatrix,
         };
     }
 }

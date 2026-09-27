@@ -470,6 +470,41 @@ describe('Terminal exit_reason survives a later phase\'s own clean finalize', ()
   });
 });
 
+describe('#49 — the phase-incomplete arm never keeps a later phase\'s success-class reason', () => {
+  test('sentinel forces pickle incomplete on an all-Done roster (no reason stamped); anatomy-park then converges — terminal is failed, not converged', async () => {
+    const repo = tmpDir('nsg-terminal-arm3-repo-');
+    const sessionDir = tmpDir('nsg-terminal-arm3-session-');
+    const startCommit = initRepo(repo);
+    seedAnatomySubsystem(repo);
+    writeState(sessionDir, repo, startCommit);
+    writePipeline(sessionDir, repo, ['pickle', 'anatomy-park']);
+    writePrd(sessionDir);
+    writeTicket(sessionDir, 'aaa11111', 1, 'Done');
+    commitForTicketInSubsystem(repo, 'aaa11111');
+    // The sentinel forces the phase INCOMPLETE for the exit code, but the roster is honestly
+    // all-Done, so `reportPhaseIncomplete` stamps no reason — the null-reason fallback arm.
+    fs.writeFileSync(path.join(sessionDir, 'pickle_incomplete.json'), '{}\n');
+
+    const calls = [];
+    __setSpawnRunnerForTests(async (cmd, args) => {
+      calls.push(args[0]);
+      if (args[0].includes('microverse-runner.js')) {
+        fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({ converged: true, reason: 'worker convergence complete' }, null, 2));
+        const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+        state.exit_reason = 'converged';
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(state, null, 2));
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+
+    assert.ok(calls.some((a) => a.includes('microverse-runner.js')), 'anatomy-park must have run for this test to prove anything');
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.equal(state.exit_reason, 'failed', 'a later phase\'s converged must not stand as the terminal reason of an incomplete run');
+  });
+});
+
 /**
  * R-NOPOSTTIER (ticket fa3d0f5a) — AC-3/AC-4.
  *

@@ -151,9 +151,14 @@ function readPipelineInternalExitStamps(sourceText) {
   return [...sourceText.matchAll(/recordExitReason\([^,)]+,\s*'([^']+)'/g)].map((m) => m[1]);
 }
 
-/** True when a producer body spawns finalize-gate.js and branches on its exit code. */
-function isFinalizeGateShaped(body) {
-  return body.includes('finalize-gate.js') && body.includes('gateResult.exitCode === 0');
+/**
+ * True when a producer body spawns finalize-gate.js — directly, or through the shared
+ * `spawnFinalizeGate` helper whose own body spawns it — and branches on its exit code.
+ */
+function isFinalizeGateShaped(body, sourceText) {
+  const spawnsGate = body.includes('finalize-gate.js')
+    || (body.includes('spawnFinalizeGate(') && extractFunctionBody(sourceText, 'spawnFinalizeGate').includes('finalize-gate.js'));
+  return spawnsGate && body.includes('gateResult.exitCode === 0');
 }
 
 const TMP_DIRS = new Set();
@@ -563,7 +568,7 @@ describe('AC-NSG-5b — structural producer enumeration (widened reach)', () => 
   });
 
   test('every finalize-gate-shaped producer continues on a passing gate, never breaks', () => {
-    const gateShapedProducers = producers.filter((name) => isFinalizeGateShaped(extractFunctionBody(sourceText, name)));
+    const gateShapedProducers = producers.filter((name) => isFinalizeGateShaped(extractFunctionBody(sourceText, name), sourceText));
 
     // Guards the filter itself: if this list goes empty (e.g. a refactor renames
     // `gateResult`/`exitCode`), the assertion below would vacuously pass over zero

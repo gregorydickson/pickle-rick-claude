@@ -74,8 +74,9 @@ test('runGate: scope=changed since=HEAD~1 processes changed files', async () => 
     execSync('git commit -m "add file2"', { cwd: dir, stdio: 'pipe' });
 
     const result = await runGate({ workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'] });
-    assert.ok(['green', 'red', 'green-with-known-flake-warnings'].includes(result.status));
     assert.equal(result.status, 'green');
+    // `status` alone cannot tell a run from the no_changed_files skip (both are green).
+    assert.equal(result.check_status?.tests, 'ran', 'a non-empty diff must measure the tests check');
   });
 });
 
@@ -88,7 +89,9 @@ test('runGate: scope=changed with no prior commit (HEAD~1 invalid) returns green
 
     // HEAD~1 doesn't exist → git diff fails → no changed files → return early
     const result = await runGate({ workingDir: dir, mode: 'strict', scope: 'changed', since: 'HEAD~1', checks: ['tests'] });
-    assert.ok(['green', 'red', 'green-with-known-flake-warnings'].includes(result.status));
+    assert.equal(result.status, 'green');
+    assert.equal(result.check_status?.tests, 'skipped', 'an unenumerable diff must declare a skip, not a run');
+    assert.deepEqual(result.failures, []);
   });
 });
 
