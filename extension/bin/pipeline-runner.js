@@ -1393,15 +1393,15 @@ function makePhaseChildSettler(child, heartbeat) {
  * `phaseRunnerContext` is installed by `main` alone, so an out-of-phase spawn has
  * nowhere to read the stall thresholds from.
  */
-function armPhaseChildMuxRunnerHeartbeat(child, args) {
+function armPhaseChildMuxRunnerHeartbeat(child, args, sessionDir, deps = {}) {
     if (!phaseRunnerContext || !isMuxRunnerInvocation(args))
         return null;
     return armChildMuxRunnerHeartbeat({
         child,
-        sessionDir: phaseRunnerContext.sessionDir,
+        sessionDir: sessionDir ?? phaseRunnerContext.sessionDir,
         heartbeatMs: phaseRunnerContext.childMuxRunnerHeartbeatMs,
         stallSeconds: phaseRunnerContext.childMuxRunnerStallSeconds,
-    });
+    }, deps);
 }
 function spawnRunner(cmd, args, env, opts) {
     return new Promise((resolve, reject) => {
@@ -1419,7 +1419,7 @@ function spawnRunner(cmd, args, env, opts) {
         activeChild = child;
         activeChildLeadsGroup = leadsGroup;
         opts?.onSpawn?.(child);
-        const heartbeat = armPhaseChildMuxRunnerHeartbeat(child, args);
+        const heartbeat = armPhaseChildMuxRunnerHeartbeat(child, args, opts?.sessionDir);
         // `setEncoding` before the first read, NOT a per-chunk `toString()`: an OS pipe boundary
         // is a BYTE offset, so a multi-byte UTF-8 character straddles it and each half decodes to
         // U+FFFD — mojibake in the echoed phase output AND in the accumulated stdout/stderr this
@@ -1455,6 +1455,12 @@ export function __setSpawnRunnerForTests(fn) {
 }
 export function __setCloserReleaseActionsForTests(actions) {
     _closerReleaseActionsForTests = actions;
+}
+export function __armPhaseChildMuxRunnerHeartbeatForTests(child, args, sessionDir, deps = {}) {
+    return armPhaseChildMuxRunnerHeartbeat(child, args, sessionDir, deps);
+}
+export function __setPhaseRunnerContextForTests(ctx) {
+    phaseRunnerContext = ctx;
 }
 /**
  * AP-EXT-ITER90-01: the persisted record MINUS the two fields the writer always re-authors.

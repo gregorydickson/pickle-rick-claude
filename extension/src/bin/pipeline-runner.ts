@@ -244,6 +244,12 @@ export interface SpawnRunnerResult {
 export interface SpawnRunnerOpts {
   detached?: boolean;
   onSpawn?: (child: ChildProcess) => void;
+  /** Override which directory's liveness (state.json + tmux_iteration_*.log) the mux-runner
+   * stall heartbeat watches. Omitted → falls back to `phaseRunnerContext.sessionDir` (the
+   * parent pipeline session dir), identical to HEAD behavior. A unit runner spawned into
+   * its own unit session dir passes that dir here so the heartbeat doesn't false-positive
+   * on the parent's idle mtimes. */
+  sessionDir?: string;
 }
 
 export type SpawnRunnerFn = (
@@ -1728,14 +1734,16 @@ function makePhaseChildSettler(
 function armPhaseChildMuxRunnerHeartbeat(
   child: ChildProcess,
   args: string[],
+  sessionDir?: string,
+  deps: ChildMuxRunnerHeartbeatDeps = {},
 ): ChildMuxRunnerHeartbeatHandle | null {
   if (!phaseRunnerContext || !isMuxRunnerInvocation(args)) return null;
   return armChildMuxRunnerHeartbeat({
     child,
-    sessionDir: phaseRunnerContext.sessionDir,
+    sessionDir: sessionDir ?? phaseRunnerContext.sessionDir,
     heartbeatMs: phaseRunnerContext.childMuxRunnerHeartbeatMs,
     stallSeconds: phaseRunnerContext.childMuxRunnerStallSeconds,
-  });
+  }, deps);
 }
 
 function spawnRunner(cmd: string, args: string[], env?: NodeJS.ProcessEnv, opts?: SpawnRunnerOpts): Promise<SpawnRunnerResult> {
@@ -1754,7 +1762,7 @@ function spawnRunner(cmd: string, args: string[], env?: NodeJS.ProcessEnv, opts?
     activeChild = child;
     activeChildLeadsGroup = leadsGroup;
     opts?.onSpawn?.(child);
-    const heartbeat = armPhaseChildMuxRunnerHeartbeat(child, args);
+    const heartbeat = armPhaseChildMuxRunnerHeartbeat(child, args, opts?.sessionDir);
     // `setEncoding` before the first read, NOT a per-chunk `toString()`: an OS pipe boundary
     // is a BYTE offset, so a multi-byte UTF-8 character straddles it and each half decodes to
     // U+FFFD — mojibake in the echoed phase output AND in the accumulated stdout/stderr this
@@ -1798,6 +1806,26 @@ export function __setSpawnRunnerForTests(fn: SpawnRunnerFn | null): void {
 
 export function __setCloserReleaseActionsForTests(actions: CloserReleaseActions | null): void {
   _closerReleaseActionsForTests = actions;
+}
+
+export function __armPhaseChildMuxRunnerHeartbeatForTests(
+  child: ChildProcess,
+  args: string[],
+  sessionDir?: string,
+  deps: ChildMuxRunnerHeartbeatDeps = {},
+): ChildMuxRunnerHeartbeatHandle | null {
+  return armPhaseChildMuxRunnerHeartbeat(child, args, sessionDir, deps);
+}
+
+export function __setPhaseRunnerContextForTests(
+  ctx: {
+    sessionDir: string;
+    extensionRoot: string;
+    childMuxRunnerHeartbeatMs: number;
+    childMuxRunnerStallSeconds: number;
+  } | null,
+): void {
+  phaseRunnerContext = ctx;
 }
 
 /** The `PipelineStatus` fields a caller may supply; `status`/`updated_at` are always authored here. */
