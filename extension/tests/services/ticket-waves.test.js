@@ -40,6 +40,16 @@ test('planTicketWave: cap 2, successive calls removing planned ids yield the AC-
   assert.deepEqual(pending, []);
 });
 
+test('planTicketWave: an overlapping parallel-safe candidate ends the wave; later disjoint ones are not pulled ahead', () => {
+  // Negative controls: dropping the filesOverlap check yields ['A','B','C'] (two tickets
+  // editing x.ts in one wave); turning its `break` into `continue` yields ['A','C'].
+  const A = { id: 'A', order: 1, parallelSafe: true, files: ['extension/src/services/x.ts'] };
+  const B = { id: 'B', order: 2, parallelSafe: true, files: ['extension/services/x.js'] };
+  const C = { id: 'C', order: 3, parallelSafe: true, files: ['extension/src/y.ts'] };
+  assert.deepEqual(planTicketWave([C, B, A], 3), ['A']);
+  assert.deepEqual(planTicketWave([C, B], 3), ['B', 'C']);
+});
+
 test('planTicketWave: empty pending returns empty wave', () => {
   assert.deepEqual(planTicketWave([], 2), []);
 });
