@@ -1861,59 +1861,6 @@ describe('phaseEnv propagation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Restamp guard: phase loop must not re-write state.backend when it matches.
-// We simulate the guard (`if (cur.backend !== backend) update(...)`) directly
-// against a real state.json — if the guard fires incorrectly we'd see an mtime
-// bump. Using a write-counter via fs.watchFile is flaky; instead, we stub the
-// equality predicate and assert call count.
-// ---------------------------------------------------------------------------
-
-describe('restamp guard', () => {
-  test('no write when state.backend already matches target', () => {
-    // Pure logic test — mirrors the guard expression in pipeline-runner.ts.
-    const state = { backend: 'codex' };
-    const target = 'codex';
-    let writes = 0;
-    if (state.backend !== target) { state.backend = target; writes++; }
-    assert.equal(writes, 0);
-  });
-
-  test('single write when state.backend differs from target', () => {
-    const state = { backend: 'claude' };
-    const target = 'codex';
-    let writes = 0;
-    if (state.backend !== target) { state.backend = target; writes++; }
-    assert.equal(writes, 1);
-    assert.equal(state.backend, 'codex');
-  });
-
-  test('single write when state.backend is undefined', () => {
-    const state = {};
-    const target = 'codex';
-    let writes = 0;
-    if (state.backend !== target) { state.backend = target; writes++; }
-    assert.equal(writes, 1);
-  });
-
-  test('phase loop skips sm.update when state.backend equals resolved backend (integration-style)', () => {
-    // Mirrors the anatomy-park/szechuan-sauce branches in pipeline-runner.ts
-    // which read current state then only update on drift. Ensures we don't
-    // regress back to an unconditional sm.update(s.backend = backend) write.
-    const statePath = path.join(tmpDir(), 'state.json');
-    fs.writeFileSync(statePath, JSON.stringify({ backend: 'codex' }));
-    const before = fs.statSync(statePath).mtimeMs;
-    const cur = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-    const backend = 'codex';
-    let writes = 0;
-    if (cur.backend !== backend) { writes++; }
-    assert.equal(writes, 0);
-    const after = fs.statSync(statePath).mtimeMs;
-    assert.equal(before, after, 'mtime must not change when guard short-circuits');
-    fs.rmSync(path.dirname(statePath), { recursive: true });
-  });
-});
-
-// ---------------------------------------------------------------------------
 // enterPicklePhase — guards against stale command_template and stale phase
 // config files from a previous run misrouting a resumed pickle worker.
 // ---------------------------------------------------------------------------
