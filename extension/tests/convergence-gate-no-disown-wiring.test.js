@@ -31,6 +31,18 @@ function git(dir, args) {
   execFileSync('git', args, { cwd: dir, stdio: 'pipe', timeout: 30_000 });
 }
 
+function initRepo(dir) {
+  git(dir, ['init']);
+  git(dir, ['config', 'user.name', 'Test User']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+}
+
+function makeInitializedRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  initRepo(dir);
+  return dir;
+}
+
 // A fixture whose `typecheck` script always emits the SAME tsc-shaped failure, so the
 // current run's fingerprint always matches the captured baseline. Whether the failure is
 // subtracted therefore depends ONLY on the no-disown classifier.
@@ -58,10 +70,7 @@ function writeFixture(dir) {
 }
 
 function makeRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   writeFixture(dir);
   git(dir, ['add', '.']);
   git(dir, ['commit', '-m', 'base']);
@@ -185,10 +194,7 @@ function writeNestedFixture(root) {
 }
 
 function makeNestedRepo(prefix) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(root, ['init']);
-  git(root, ['config', 'user.name', 'Test User']);
-  git(root, ['config', 'user.email', 'test@example.com']);
+  const root = makeInitializedRepo(prefix);
   const pkg = writeNestedFixture(root);
   git(root, ['add', '.']);
   git(root, ['commit', '-m', 'base']);
@@ -280,10 +286,7 @@ const UNREACHABLE_SHA = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
 /** A repo whose second commit CHANGES an exported declaration, so the happy path is non-empty. */
 function makeExportChangeRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { sum: number }\n');
   git(dir, ['add', '.']);
@@ -333,10 +336,7 @@ test('AP-EXT-ITER47-01: getChangedExportedSymbols returns null (not an empty Set
 
 /** A repo whose second commit is a PURE content move — no edit, 100% similarity. */
 function makePureMoveRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'src', 'audit.ts'),
@@ -402,9 +402,7 @@ test('AP-EXT-ITER117-01: the moved-module sweep RUNS the whole-repo typecheck in
 test('AP-EXT-ITER117-01: an unrelated non-TS edit still measures zero (the fix does not arm on everything)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter117-control-'));
   try {
-    git(dir, ['init']);
-    git(dir, ['config', 'user.name', 'Test User']);
-    git(dir, ['config', 'user.email', 'test@example.com']);
+    initRepo(dir);
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { sum: number }\n');
     fs.writeFileSync(path.join(dir, 'README.md'), 'one\n');
@@ -931,10 +929,7 @@ test('AP-EXT-ITER48-01: an unmeasurable file enumeration is RENDERED once and st
 // differ ONLY in the budget handed to the gate, so a green control cannot come from a different
 // script.
 function makeSlowTypecheckRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'package.json'),
@@ -1118,10 +1113,7 @@ test('AP-EXT-ITER7-01: an unmeasurable typecheck is RENDERED once and stays non-
  * hits — pickle-rick itself is one added `package.json` away from it.
  */
 function makeUnclassifiableRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   for (const child of ['frontend', 'backend']) {
     fs.mkdirSync(path.join(dir, child), { recursive: true });
     fs.writeFileSync(
@@ -1268,10 +1260,7 @@ test('AP-EXT-ITER7-02 fence control: a runGateFn stub carrying NO check_status i
  * targets it can only report green.
  */
 function makeCrossPackageMoveRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
 
   const sourceDir = path.join(dir, 'packages', 'source');
   const destDir = path.join(dir, 'packages', 'dest');
@@ -1391,10 +1380,7 @@ test('AP-EXT-ITER117-02 control: narrowing still excludes a package nothing touc
  * real `tsc --noEmit` over exactly this shape, plus two failures that must NOT be owned.
  */
 function makeMovedModuleRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
 
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
@@ -1821,10 +1807,7 @@ test('B-SELFRED AC-3: no_progress reports as non-convergent', async () => {
 
 /** A repo whose exported-symbol change is at the TOPLEVEL, with a subdirectory to read from. */
 function makeBelowToplevelRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   fs.mkdirSync(path.join(dir, 'pkg', 'sub'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'top.ts'), 'export interface AuditResult { sum: number }\n');
   fs.writeFileSync(path.join(dir, 'pkg', 'sub', 'leaf.ts'), 'export const leaf = 1;\n');
