@@ -1934,7 +1934,7 @@ function pendingWaveCandidates(sessionDir) {
 /** Run ticket `ticketId` as a unit session at the wave sha. A unit that cannot be created is not started. */
 async function runTicketUnit(run, ticketId) {
     const { runtime } = run;
-    const notRun = { id: ticketId, done: false, started_at: null, ended_at: null };
+    const notRun = { id: ticketId, done: false, status: null, started_at: null, ended_at: null };
     if (run.cancelledAtMs !== null)
         return notRun;
     let unit;
@@ -1970,8 +1970,8 @@ async function runTicketUnit(run, ticketId) {
         laneChildren.delete(ticketId);
         deactivateLaneState(unit.statePath, runtime.log);
     }
-    const unitTicket = collectTickets(unit.unitDir).find((t) => t.id === ticketId);
-    return { id: ticketId, done: (unitTicket?.status ?? '').toLowerCase() === 'done', started_at: startedAt, ended_at: new Date().toISOString() };
+    const status = collectTickets(unit.unitDir).find((t) => t.id === ticketId)?.status ?? null;
+    return { id: ticketId, done: (status ?? '').toLowerCase() === 'done', status, started_at: startedAt, ended_at: new Date().toISOString() };
 }
 /**
  * Picks land on the working branch in roster order, one run per integrated member, and a
@@ -1991,15 +1991,20 @@ function integratedShas(repoRoot, waveSha, integrated, commits) {
     });
     return cursor === landed.length ? shas : new Map();
 }
-/** Write every member's outcome back onto the PARENT ticket: integrated → Done + its sha, else Todo. */
-function writeBackWave(runtime, members, shas) {
+/**
+ * Write every member's chosen status back onto the PARENT ticket; an integrated member also
+ * gets its sha. A status the parent already carries is not rewritten.
+ */
+function writeBackWave(runtime, members, shas, statuses, prior) {
     members.forEach((id, i) => {
         const sha = shas.get(i);
+        if (!sha && prior.get(id) === statuses[i].toLowerCase())
+            return;
         try {
             // completion_commit is written before the status flip, so a Done never exists without its evidence.
             if (sha)
                 updateTicketFrontmatter(id, runtime.sessionDir, { completion_commit: sha });
-            if (!writeTicketStatus(runtime.sessionDir, id, sha ? 'Done' : 'Todo'))
+            if (!writeTicketStatus(runtime.sessionDir, id, statuses[i]))
                 runtime.log(`pickle waves: ${id}: status write-back failed`);
         }
         catch (err) {
@@ -2007,10 +2012,31 @@ function writeBackWave(runtime, members, shas) {
         }
     });
 }
-/** Run one wave to its barrier, integrate the Done members in order, write back. Returns the integrated count. */
-async function runTicketWave(run, members, wave) {
+const REQUEUE_OUTCOMES = new Set(['conflict', 'integration_red']);
+const FINAL_UNIT_STATUSES = new Set(['failed', 'skipped']);
+/**
+ * The parent status a member is written back with. Integrated → Done. A member already
+ * re-queued has had its one retry: its unit's Failed/Skipped stands, anything else is Todo.
+ * A unit Done that conflicted or redded at integration is re-queued ONCE (Todo). Else Todo.
+ */
+function waveStatusOf(end, outcome, requeued) {
+    if (outcome === 'integrated')
+        return 'Done';
+    const unitStatus = end.status ?? '';
+    if (requeued.has(end.id))
+        return FINAL_UNIT_STATUSES.has(unitStatus.toLowerCase()) ? unitStatus : 'Todo';
+    if (end.done && REQUEUE_OUTCOMES.has(outcome))
+        requeued.add(end.id);
+    return 'Todo';
+}
+/**
+ * Run one wave to its barrier, integrate the Done members in order, write back. A member
+ * that conflicted is added to `requeued` (once per run — see `waveStatusOf`).
+ */
+async function runTicketWave(run, members, wave, requeued) {
     const { runtime, repoRoot } = run;
     runtime.log(`pickle waves: wave ${wave} members=${members.join(',')} in_flight=${members.length}`);
+    const prior = new Map(collectTickets(runtime.sessionDir).map((t) => [t.id ?? '', (t.status ?? '').toLowerCase()]));
     const ends = await Promise.all(members.map((id) => runTicketUnit(run, id)));
     await reapCancelledLanes(run);
     // Every member has ended: the next wave's cancel and reap must reach only ITS runners.
@@ -2026,10 +2052,6 @@ async function runTicketWave(run, members, wave) {
     });
     const integrated = integration.outcomes.map((o) => o === 'integrated');
     const shas = integratedShas(repoRoot, run.sha, integrated, integration.commits);
-    writeBackWave(runtime, members, shas);
-    const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, new Set(branches.filter((_, i) => shas.has(i))));
-    if (retained.length > 0)
-        runtime.log(`pickle waves: kept unit branch(es): ${retained.join(', ')}`);
     const outcomeOf = (i) => {
         if (shas.has(i))
             return 'integrated';
@@ -2038,23 +2060,38 @@ async function runTicketWave(run, members, wave) {
         // Picked, but no landed commit is provably its own (zero commits, or a count that did not add up).
         return integration.outcomes[i] === 'integrated' ? 'unmapped' : (integration.outcomes[i] ?? 'not_integrated');
     };
+    const memberOutcomes = members.map((_, i) => outcomeOf(i));
+    const wasRequeued = new Set(requeued);
+    const statuses = ends.map((end, i) => waveStatusOf(end, memberOutcomes[i], requeued));
+    writeBackWave(runtime, members, shas, statuses, prior);
+    const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, new Set(branches.filter((_, i) => shas.has(i))));
+    if (retained.length > 0)
+        runtime.log(`pickle waves: kept unit branch(es): ${retained.join(', ')}`);
     const outcomes = members.map((id, i) => {
-        const outcome = outcomeOf(i);
-        runtime.log(`pickle waves: wave ${wave} ${id}: ${outcome}${shas.has(i) ? ` @ ${shas.get(i)}` : ' — written back Todo'}`);
-        return { id, outcome, started_at: ends[i].started_at, ended_at: ends[i].ended_at };
+        const note = shas.has(i) ? ` @ ${shas.get(i)}` : ` — written back ${statuses[i]}${requeued.has(id) && !wasRequeued.has(id) ? ' (re-queued)' : ''}`;
+        runtime.log(`pickle waves: wave ${wave} ${id}: ${memberOutcomes[i]}${note}`);
+        return { id, outcome: memberOutcomes[i], started_at: ends[i].started_at, ended_at: ends[i].ended_at };
     });
     emitLaneEvent('anatomy_lanes_integrated', runtime.sessionDir, { phase: 'pickle', wave, outcomes, retained_branches: retained });
-    return shas.size;
+    const terminalised = members.filter((id, i) => FINAL_UNIT_STATUSES.has(statuses[i].toLowerCase()) && prior.get(id) !== statuses[i].toLowerCase());
+    return { integrated: shas.size, terminalised: terminalised.length, reasons: members.map((id, i) => `${id}=${memberOutcomes[i]}`) };
+}
+/** A re-queued ticket runs in a wave of ONE: not parallel-safe, it is never appended and plans alone when first. */
+function planPickleWave(sessionDir, cap, requeued) {
+    const candidates = pendingWaveCandidates(sessionDir).map((c) => (requeued.has(c.id) ? { ...c, parallelSafe: false } : c));
+    return planTicketWave(candidates, cap);
 }
 /**
  * B-PBUILD: run the pickle phase as waves of unit sessions, at most `cap` tickets per wave
  * (`planTicketWave`). Each wave starts at the working branch's HEAD, runs every member in its
  * own worktree, waits for all of them, fast-forwards the Done members' commits onto the
- * working branch, and writes each member's outcome back onto the parent ticket. Ends when no
- * parent ticket is pending, on cancel, or when a wave integrates nothing. Returns the phase
- * exit code: 0 iff no parent ticket is left non-terminal.
+ * working branch, and writes each member's outcome back onto the parent ticket. A member that
+ * conflicted is re-queued once, alone. Every wave integrates a ticket, moves one to
+ * Failed/Skipped, or ends parallel mode: a zero-progress wave hands the rest of the phase to
+ * the serial runner and returns its exit code. Otherwise ends when no parent ticket is pending
+ * or on cancel, returning 0 iff no parent ticket is left non-terminal.
  */
-export async function runPickleWaves(runtime, cap) {
+export async function runPickleWaves(runtime, cap, phaseConfig) {
     const repoRoot = gitRepoRoot(runtime.target);
     const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
     if (headSha === null) {
@@ -2063,6 +2100,8 @@ export async function runPickleWaves(runtime, cap) {
         return 1;
     }
     const run = { runtime, repoRoot, sha: headSha, cancelledAtMs: null, statePaths: [], spawned: [], worktrees: [] };
+    const requeued = new Set();
+    let fallBackToSerial = false;
     const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
     const poll = setInterval(() => {
         if (!parentSessionActive(runtime.statePath))
@@ -2072,7 +2111,7 @@ export async function runPickleWaves(runtime, cap) {
         for (let wave = 1;; wave++) {
             if (!parentSessionActive(runtime.statePath))
                 cancelLaneRun(run);
-            const members = run.cancelledAtMs === null ? planTicketWave(pendingWaveCandidates(runtime.sessionDir), cap) : [];
+            const members = run.cancelledAtMs === null ? planPickleWave(runtime.sessionDir, cap, requeued) : [];
             if (members.length === 0)
                 break;
             reportLaneRecovery(run);
@@ -2082,8 +2121,10 @@ export async function runPickleWaves(runtime, cap) {
                 break;
             }
             run.sha = waveSha;
-            if (await runTicketWave(run, members, wave) === 0) {
-                runtime.log(`pickle waves: wave ${wave} integrated nothing — ending the wave run`);
+            const result = await runTicketWave(run, members, wave, requeued);
+            if (result.integrated === 0 && result.terminalised === 0 && run.cancelledAtMs === null) {
+                runtime.log(`pickle waves: zero-progress wave — falling back to serial (${result.reasons.join(', ')})`);
+                fallBackToSerial = true;
                 break;
             }
         }
@@ -2091,6 +2132,8 @@ export async function runPickleWaves(runtime, cap) {
     finally {
         clearInterval(poll);
     }
+    if (fallBackToSerial)
+        return (await executePhaseRunner(phaseConfig, runtime.phaseEnv)).exitCode;
     const pending = pendingWaveCandidates(runtime.sessionDir).length;
     const reason = pending === 0 ? 'success' : 'pipeline_phase_incomplete';
     recordExitReason(runtime.statePath, reason);
@@ -3967,7 +4010,7 @@ async function runConfiguredPhase(runtime, phaseConfig, counters) {
     if (lanes.length >= 2)
         return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
     if (phaseConfig.name === 'pickle' && runtime.config.max_parallel_tickets >= 2) {
-        return { skipped: false, exitCode: await runPickleWaves(runtime, runtime.config.max_parallel_tickets) };
+        return { skipped: false, exitCode: await runPickleWaves(runtime, runtime.config.max_parallel_tickets, phaseConfig) };
     }
     const result = await executePhaseRunner(phaseConfig, runtime.phaseEnv);
     return { skipped: false, exitCode: result.exitCode, stderr: result.stderr };
