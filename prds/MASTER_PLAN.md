@@ -236,13 +236,24 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
 | babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
 
+### ▶ NEXT BUNDLE — B-SELFRED (#52, general, P0) — queued behind B-PBUILD (2026-09-27)
+
+`prds/p0-b-selfred-bound-the-no-disown-refusal-loop.md`. The R-ORSR-6 refusal branch in
+`handlePostConvergenceGateDeferral` sits above the deferral cap, and a non-withheld iteration resets its latch, so a
+self-red sweep block loops with no bound (field: 296 iterations over 199 min with 0 commits; two more lanes killed by
+hand). It is identical on `main` and `exp/b-lanes`, so rule P applies. Launch on `main` with no refinement and an
+explicit scope of `paths:extension/src/bin/microverse-runner.ts,extension/tests/convergence-gate-no-disown-wiring.test.js,extension/src/bin/CLAUDE.md`
+once B-PBUILD's pipeline and gate finish. Then merge down main → exp/b-lanes (gate, push, redeploy per rule S) →
+exp/b-parallel-build. The lane-only parts of #52 (monorepo `integration_check: unavailable` disclosure; a lane that
+never passed gap analysis) are a separate branch PRD on `exp/b-lanes`.
+
 ### ▶ 2.2 BETA SOAK ACTIVE — `v2.2.0-beta.1` DEPLOYED FROM `exp/b-lanes` (2026-09-26)
 
 - **Tag:** `v2.2.0-beta.1` (pre-release) at `321b0415`. Gate `20260926T024913Z-77014` 22/22 green, soak 1803.8s,
   verified with `verify-release-tag.sh`. It contains B-LANES (finer and concurrent review lanes; `--teams` removed),
   B-LANES-FIX, B-UPGRADE-ISO and B-CAPGATE (#48, closed).
 - **Deployed runtime = the branch**, verified by content: version `2.2.0-beta.1`, 10 lanes for this repo, and the
-  removed agents are gone. **Do not `install.sh` from `main` during the soak** (babysitter rule S).
+  removed agents are gone. **Do not `install.sh` from `main` during the soak** (babysitter rule S). Redeployed 2026-09-27 at `19ac9dd7` (gate `20260927T054124Z-18787` 22/22) with #49/#50/#51 fixed.
   Rollback: `git checkout main && bash install.sh`.
 - **Measurement:** soak bundles run with `anatomy_max_parallel_lanes: 2`, and each finished bundle appends a row to the
   ledger below. The merge criterion (from the B-LANES PRD): ≥ 3 sessions, median anatomy-park **phase** wall-clock
@@ -253,6 +264,10 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 | session | changed files | lanes kept | anatomy min | passes/lane | findings fixed | lane outcomes | incidents |
 |---|---|---|---|---|---|---|---|
+| `2026-09-26-23989a13` B-FINALGATE | ~15 src/test | 5 (cap 2) | 13.9 | 2/4/3/2/2 | 2 lane commits | 5 integrated, 0 conflicts | pickle final tier red (2 stale test pins → B-FINALGATE-FIX); first REAL concurrent-lane run |
+| `2026-09-26-bcd24b6d` B-FINALGATE-FIX | 2 tests | **11 (UNSCOPED)** | **135** | 2×7, 3, 26, 9, 2 | 32 lane commits | 11 integrated, 0 conflicts | `SCOPE_EMPTY_DIFF` at setup (no-refine bundle) → no session scope → every lane reviewed; a new `prds` lane from research scripts |
+| `2026-09-26-e22412a9` B-LANES-FIX2 | 1 test | 1 (explicit `paths:` scope) | 1.6 | — | — | single lane | explicit path scope avoided the unscoped cost |
+| `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 2/3/2/2/5/2 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 
