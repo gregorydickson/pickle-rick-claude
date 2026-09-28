@@ -261,58 +261,116 @@ test('R-APXG-3: deferral counter resets on non-deferred iteration', async () => 
     }
 });
 
-// R-ORSR-6 INV-NO-DEFERRAL-FORCE-EXIT-ON-SELF-RED: a scripted worker that disowns its OWN tsc
-// red (the interface-change sweep flags a self-introduced break → selfRedOpen: true) MUST be
-// force-converged at NEITHER deferral 1 NOR deferral 3. The phase cannot win by attrition; it
-// must actually resolve its own break. This is the #103 anatomy-park regression: the worker
-// kept asserting "pre-existing" and the attrition force-exit converged on a red gate.
-test('R-ORSR-6: self-introduced red gate is NEVER force-converged (no disown by attrition)', async () => {
+// R-ORSR-6 INV-NO-DEFERRAL-FORCE-EXIT-ON-SELF-RED, as bounded by B-SELFRED: a worker that disowns its
+// OWN tsc red (the interface-change sweep flags a self-introduced break -> selfRedOpen: true) can
+// never be converged by attrition alone. The refusal is unbounded only while work lands: after
+// POST_CONVERGENCE_GATE_DEFERRAL_LIMIT refusals with HEAD UNCHANGED the baseline-aware cap gate
+// (`runCapGate`, reached through `_deps.runGate`) decides — never the worker's claim. RED ends the
+// phase 'no_progress'; a HEAD that moves keeps resetting the count, so the bound cannot fire.
+// (The pre-B-SELFRED pin held HEAD constant with no gate stub and demanded 'converged' never come
+// back at all, which B-SELFRED changed on purpose.)
+//
+// Mutation controls, each verified on the compiled mirror to red ONLY its own case:
+//   (a) turn the `verdict.kind === 'red'` arm of `handleSelfRedRefusalBound` into `return 'converged'`;
+//   (b) make `recordSelfRedRefusal` stop resetting the count when HEAD moves (always increment).
+function capGateStub(status) {
+    const red = status === 'red';
+    const stub = async () => {
+        stub.calls += 1;
+        return {
+            status,
+            failures: red
+                ? [{ ruleOrCode: 'TS0000', message: 'still broken', severity: 'error', occurrence_index: 0 }]
+                : [],
+            baseline_used: false,
+            allowed_paths_used: false,
+            elapsed_ms: 0,
+            total_raw_failure_count: red ? 1 : 0,
+            new_failures_vs_baseline: red ? 1 : 0,
+            check_status: { typecheck: 'ran', lint: 'ran' },
+        };
+    };
+    stub.calls = 0;
+    return stub;
+}
+
+const isTerminal = (result) => result !== null && result !== 'continue';
+
+// Drives handleIterationOutcome the way executeMainLoop does, stopping at the first terminal result.
+async function driveSelfRedIterations({ getHeadSha, gate, iterations }) {
     const sessionDir = makeTempDir('pickle-orsr6-selfred-');
     const workingDir = makeTempDir('pickle-orsr6-selfred-w-');
     const origRunWorker = _deps.runWorkerManagedIteration;
     const origGetHead = _deps.getHeadSha;
     const origSleep = _deps.sleep;
+    const origRunGate = _deps.runGate;
     try {
         const { runnerState, mv } = setupSession(sessionDir, workingDir);
 
         // Every iteration the worker signals the gate-deferral reason AND the sweep reports a
-        // self-introduced whole-repo break (selfRedOpen: true) — i.e. the worker disowns its
-        // own regression. This is exactly the disown-by-attrition the bound must refuse.
+        // self-introduced whole-repo break (selfRedOpen: true) — the worker disowns its own regression.
         _deps.runWorkerManagedIteration = async () => ({
             currentMv: mv,
             converged: false,
             reason: 'per-iteration gate left unresolved regressions',
             selfRedOpen: true,
         });
-        _deps.getHeadSha = () => 'selfred1';
+        _deps.getHeadSha = getHeadSha;
         _deps.sleep = async () => {};
+        _deps.runGate = gate;
 
         const ctx = makeWorkerCtx(sessionDir, workingDir, runnerState);
         const outcome = { completion: 'task_completed', timedOut: false, exitCode: 0, wallSeconds: 1 };
         const baseline = { raw: '', score: 0 };
 
-        // Drive well past POST_CONVERGENCE_GATE_DEFERRAL_LIMIT (3). The self-red bound must keep
-        // returning "keep iterating" (null/continue) — never 'converged'.
         const results = [];
-        for (let i = 1; i <= 6; i++) {
+        for (let i = 1; i <= iterations; i++) {
             ctx.iteration = i;
             const result = await handleIterationOutcome(mv, baseline, ctx, outcome);
             results.push(result);
+            if (isTerminal(result)) break;
         }
-
-        // Deferral 1 (i=1) and deferral 3 (i=3) — the two the AC names explicitly — and every
-        // iteration through 6 MUST NOT be a trust-the-worker force-exit.
-        assert.notEqual(results[0], 'converged', 'must NOT force-converge at deferral 1 on a self-introduced red');
-        assert.notEqual(results[2], 'converged', 'must NOT force-converge at deferral 3 on a self-introduced red');
-        assert.ok(
-            results.every((r) => r !== 'converged'),
-            `self-introduced red must never be force-converged by attrition; got ${JSON.stringify(results)}`,
-        );
+        return results;
     } finally {
         _deps.runWorkerManagedIteration = origRunWorker;
         _deps.getHeadSha = origGetHead;
         _deps.sleep = origSleep;
+        _deps.runGate = origRunGate;
         fs.rmSync(sessionDir, { recursive: true, force: true });
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
+}
+
+test('R-ORSR-6: HEAD unchanged + RED cap gate is never converged and ends no_progress at the bound', async () => {
+    const gate = capGateStub('red');
+    const results = await driveSelfRedIterations({ getHeadSha: () => 'selfred1', gate, iterations: 6 });
+
+    assert.ok(
+        results.every((r) => r !== 'converged'),
+        `a red cap gate must never converge a self-introduced red; got ${JSON.stringify(results)}`,
+    );
+    // Deferrals 1 and 2 keep iterating; deferral 3 reaches POST_CONVERGENCE_GATE_DEFERRAL_LIMIT.
+    assert.deepEqual(
+        results.slice(0, 2).map(isTerminal), [false, false],
+        `the bound must not fire before the limit; got ${JSON.stringify(results)}`,
+    );
+    assert.equal(
+        results[2], 'no_progress',
+        `the bound must end the phase non-convergent when the cap gate is red; got ${JSON.stringify(results)}`,
+    );
+    assert.equal(results.length, 3, 'the terminal result must end the loop at the bound');
+    assert.equal(gate.calls, 1, 'the cap gate, not the worker claim, must have decided the terminal result');
+});
+
+test('R-ORSR-6: HEAD advancing each iteration is never converged even with a GREEN cap gate', async () => {
+    const gate = capGateStub('green');
+    let head = 0;
+    const results = await driveSelfRedIterations({ getHeadSha: () => `selfred-head-${(head += 1)}`, gate, iterations: 6 });
+
+    assert.ok(
+        results.every((r) => r !== 'converged'),
+        `a self-introduced red must not be disowned by attrition while HEAD keeps moving; got ${JSON.stringify(results)}`,
+    );
+    assert.equal(results.length, 6, `no iteration may be terminal while work lands; got ${JSON.stringify(results)}`);
+    assert.equal(gate.calls, 0, 'a moving HEAD resets the refusal count, so the bound must never consult the gate');
 });
