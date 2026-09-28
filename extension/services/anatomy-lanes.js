@@ -243,14 +243,14 @@ function pickLane(worktree, sessionDir, targetDir, commits, preserve, log) {
     const picked = commits.every((sha) => laneGitOk(worktree, ['-c', 'gc.auto=0', '-c', 'commit.gpgsign=false', 'cherry-pick', sha]));
     if (!picked)
         laneGitOk(worktree, ['cherry-pick', '--abort']);
-    const check = picked ? runIntegrationTypecheck(targetDir) : 'unavailable';
-    if (picked && check === 'unavailable')
+    const check = picked ? runIntegrationTypecheck(targetDir) : null;
+    if (check === 'unavailable')
         log('anatomy lanes: integration_check: unavailable — accepting the lane');
-    if (picked && check !== 'red')
-        return 'integrated';
+    if (check !== null && check !== 'red')
+        return { outcome: 'integrated', check };
     // A partial pick (commit k+1 of n conflicted) or a red check: undo the whole lane — here only.
     resetToSha(before, worktree, preserve, { cwd: worktree, sessionDir, ticketDir: null, reason: 'pre_reset' });
-    return picked ? 'integration_red' : 'conflict';
+    return { outcome: picked ? 'integration_red' : 'conflict', check: null };
 }
 /**
  * B-LANES WS-3: cherry-pick every lane that asked to integrate, in roster order, onto
@@ -264,8 +264,9 @@ export function integrateLanes(input) {
     const { repoRoot, sessionDir, phaseStartSha, log } = input;
     const commits = input.lanes.map((lane) => (lane.integrate ? laneCommits(repoRoot, phaseStartSha, lane.branch) : []));
     const outcomes = input.lanes.map((lane) => (lane.integrate ? 'integrated' : null));
+    const checks = input.lanes.map(() => null);
     if (!commits.some((c) => c.length > 0))
-        return { outcomes, commits };
+        return { outcomes, commits, checks };
     const worktree = integrationWorktreeDir(sessionDir);
     const branch = integrationBranchName(sessionDir);
     const carried = (i) => outcomes[i] === 'integrated' && commits[i].length > 0;
@@ -274,8 +275,11 @@ export function integrateLanes(input) {
         const preserve = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
         const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
         commits.forEach((laneCommitList, i) => {
-            if (laneCommitList.length > 0)
-                outcomes[i] = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, log);
+            if (laneCommitList.length === 0)
+                return;
+            const pick = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, log);
+            outcomes[i] = pick.outcome;
+            checks[i] = pick.check;
         });
         if (outcomes.some((_, i) => carried(i)) && !laneGitOk(repoRoot, ['merge', '--ff-only', '-q', branch])) {
             log(`anatomy lanes: main checkout could not fast-forward to ${branch} — lane branches kept`);
@@ -291,7 +295,7 @@ export function integrateLanes(input) {
     finally {
         removeLaneWorktrees(repoRoot, [worktree]);
     }
-    return { outcomes, commits };
+    return { outcomes, commits, checks };
 }
 function branchExists(repoRoot, branch) {
     return laneGitOk(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
