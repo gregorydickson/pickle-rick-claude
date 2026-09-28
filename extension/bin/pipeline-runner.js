@@ -1784,7 +1784,7 @@ export async function runAnatomyLanes(runtime, lanes, cap) {
     if (stuck.length > 0)
         runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
     const outcomes = integrateLaneRun(run, lanes, ends);
-    discloseUncheckedIntegration(runtime, outcomes);
+    discloseUnmeasuredIntegration(runtime, outcomes);
     // A lane that converged but did not reach main reports WHY; every other lane reports its own reason.
     const reasons = outcomes.map((o) => (isLaneSuccess(o.exit_reason) && o.outcome !== 'integrated' ? o.outcome : o.exit_reason));
     const reason = aggregateLaneExitReason(reasons, isLaneSuccess);
@@ -1794,16 +1794,21 @@ export async function runAnatomyLanes(runtime, lanes, cap) {
 }
 const isLaneSuccess = (reason) => classifyMicroverseDisposition(reason).reportAs === 'success';
 /**
- * A lane integrated with no typecheck command to run landed unchecked. Refusing it would discard the
- * work, so it is DISCLOSED instead: `integration_typecheck` joins the parent `cap_unmeasured_checks`,
- * which `reportConvergedWithUnmeasured` already turns into `converged_with_unmeasured:` on the phase
- * disposition. `recordCapUnmeasured` replaces its list, so the existing entries are carried in. The
- * parent file exists whenever `setupAnatomyPark` ran; it is created only for a caller that skipped that
- * setup. The write is best-effort: a failed disclosure is logged and never ends the run.
+ * An integrated lane lands on main with every hole it carried, so each one is DISCLOSED on the parent:
+ * `integration_typecheck` when no typecheck command could run, plus the lane's OWN `cap_unmeasured_checks`
+ * (its runner converged over a check it could not measure, and `readLaneEnd` reads only the exit reason).
+ * They join the parent `cap_unmeasured_checks`, which `reportConvergedWithUnmeasured` turns into
+ * `converged_with_unmeasured:` on the phase disposition. A lane that did not integrate discloses nothing:
+ * its work never reached main. `recordCapUnmeasured` replaces its list, so the existing entries are
+ * carried in. The parent file exists whenever `setupAnatomyPark` ran; it is created only for a caller
+ * that skipped that setup. The write is best-effort: a failed disclosure is logged and never ends the run.
  */
-function discloseUncheckedIntegration(runtime, outcomes) {
-    const unchecked = outcomes.filter((o) => o.outcome === 'integrated' && o.integration_check === 'unavailable');
-    if (unchecked.length === 0)
+export function discloseUnmeasuredIntegration(runtime, outcomes) {
+    const holes = outcomes.flatMap((o, i) => (o.outcome !== 'integrated' ? [] : [
+        ...(o.integration_check === 'unavailable' ? ['integration_typecheck'] : []),
+        ...readCapUnmeasuredChecks(laneSessionDir(runtime.sessionDir, i + 1)),
+    ]));
+    if (holes.length === 0)
         return;
     try {
         const parent = readMicroverseState(runtime.sessionDir) ?? createMicroverseState({
@@ -1813,11 +1818,11 @@ function discloseUncheckedIntegration(runtime, outcomes) {
             convergenceMode: 'worker',
             convergenceFile: 'anatomy-park.json',
         });
-        writeMicroverseState(runtime.sessionDir, recordCapUnmeasured(parent, [...(parent.cap_unmeasured_checks ?? []), 'integration_typecheck']));
-        runtime.log(`anatomy lanes: integrated without a typecheck (${unchecked.map((o) => o.name).join(', ')}) — disclosed as integration_typecheck`);
+        writeMicroverseState(runtime.sessionDir, recordCapUnmeasured(parent, [...(parent.cap_unmeasured_checks ?? []), ...holes]));
+        runtime.log(`anatomy lanes: integrated lane(s) carried unmeasured checks — disclosed as ${[...new Set(holes)].join(', ')}`);
     }
     catch (err) {
-        runtime.log(`anatomy lanes: could not record the unchecked integration: ${safeErrorMessage(err)}`);
+        runtime.log(`anatomy lanes: could not record the unmeasured integration: ${safeErrorMessage(err)}`);
     }
 }
 function emitLaneEvent(event, sessionDir, gatePayload) {
@@ -5389,6 +5394,11 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
     }
     catch { /* non-blocking */ }
 }
+/** A session's `cap_unmeasured_checks`; never throws — an absent or unparseable file reads as none. */
+function readCapUnmeasuredChecks(sessionDir) {
+    const raw = readRecoverableJsonObject(path.join(sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
+    return Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
+}
 /**
  * B-CAPGATE: a microverse phase that passed over a check nobody measured (`cap_unmeasured_checks`,
  * written by `recordCapUnmeasured` from the post-convergence cap OR from finalize-gate) passed over
@@ -5399,9 +5409,7 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
  * Unreadable or malformed microverse state reads as "no caveat", never as a fabricated one.
  */
 function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
-    // `readRecoverableJsonObject` never throws: an absent or unparseable file is `null`.
-    const raw = readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
-    const checks = Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
+    const checks = readCapUnmeasuredChecks(runtime.sessionDir);
     if (checks.length === 0)
         return false;
     const marker = `converged_with_unmeasured:${checks.join(',')}`;
