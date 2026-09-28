@@ -5130,13 +5130,16 @@ describe('B-LANES WS-3: lane integration', () => {
     + "if(!fs.existsSync('node_modules/marker.txt')){console.error('node_modules link missing');process.exit(1)}"
     + "process.exit(['alpha/a.ts','beta/a.ts'].every((f)=>fs.readFileSync(f,'utf8').includes('RED'))?1:0)";
 
-  function makeFixture() {
+  // `typecheck: false` ships no package.json/check.js, so no integration typecheck command is discoverable.
+  function makeFixture({ typecheck = true } = {}) {
     const repo = fs.realpathSync(tmpDir());
     initRepo(repo, {
       ...laneSeedFiles(LANES.map(({ name }) => name)),
       'CLAUDE.md': '# Trap doors\n- entry one\n- entry two\n',
-      'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
-      'check.js': CHECK_JS,
+      ...(typecheck ? {
+        'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
+        'check.js': CHECK_JS,
+      } : {}),
       '.gitignore': 'node_modules/\n',
     }, { branch: 'work' });
     fs.mkdirSync(path.join(repo, 'node_modules'));
@@ -5244,6 +5247,87 @@ describe('B-LANES WS-3: lane integration', () => {
       assert.ok(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${fx.branch(2)}`), 'integration_red branch retained');
       assert.equal(readJson(fx.runtime.statePath).exit_reason, 'integration_red');
       assert.deepEqual(worktreeList(fx.repo), [`worktree ${fx.repo}`]);
+      // The pick that was undone was never kept, so its row carries no check at all.
+      assert.deepEqual([lanes.alpha.integration_check, lanes.beta.integration_check, lanes.gamma.integration_check],
+        ['green', null, 'green']);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  const writeMicroverse = (sessionDir, extra) => writeMicroverseState(sessionDir, {
+    ...createMicroverseState({
+      prdPath: 'target', stallLimit: 3,
+      metric: { description: 'none', validation: 'none', type: 'none', timeout_seconds: 0, tolerance: 0, direction: 'lower' },
+    }),
+    ...extra,
+  });
+  const capUnmeasured = (sessionDir) => {
+    const file = path.join(sessionDir, 'microverse.json');
+    return fs.existsSync(file) ? (readJson(file).cap_unmeasured_checks ?? []) : [];
+  };
+
+  test('unchecked integration: no typecheck command discoverable → lanes still integrate, rows say unavailable, parent discloses integration_typecheck', async () => {
+    const fx = makeFixture({ typecheck: false });
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'alpha/a.ts': 'export const a = 2;\n' },
+        { 'beta/a.ts': 'export const a = 2;\n' },
+      ]));
+      const code = await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3);
+      assert.equal(code, 0, `an unchecked lane still integrates; nothing halts\n${fx.logs.join('\n')}`);
+      const lanes = byName(fx.sessionDir);
+      assert.deepEqual([lanes.alpha.outcome, lanes.beta.outcome], ['integrated', 'integrated']);
+      assert.deepEqual([lanes.alpha.integration_check, lanes.beta.integration_check], ['unavailable', 'unavailable']);
+      assert.match(read(path.join(fx.repo, 'alpha/a.ts')), /= 2/, 'the unchecked lane work landed on main');
+      assert.deepEqual(capUnmeasured(fx.sessionDir), ['integration_typecheck']);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('unchecked integration: an existing cap_unmeasured_checks entry is kept, not replaced', async () => {
+    const fx = makeFixture({ typecheck: false });
+    try {
+      writeMicroverse(fx.sessionDir, { cap_unmeasured_checks: ['lint'] });
+      __setSpawnRunnerForTests(committingRunner([{ 'alpha/a.ts': 'export const a = 2;\n' }, {}]));
+      assert.equal(await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3), 0);
+      assert.deepEqual(capUnmeasured(fx.sessionDir).sort(), ['integration_typecheck', 'lint']);
+      assert.equal(byName(fx.sessionDir).beta.integration_check, null, 'a lane with no commits was never checked');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('unchecked integration control: a typecheck that runs green → integration_check green, nothing disclosed', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'alpha/a.ts': 'export const a = 2;\n' },
+        { 'beta/a.ts': 'export const a = 2;\n' },
+      ]));
+      assert.equal(await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3), 0);
+      const lanes = byName(fx.sessionDir);
+      assert.deepEqual([lanes.alpha.integration_check, lanes.beta.integration_check], ['green', 'green']);
+      assert.deepEqual(capUnmeasured(fx.sessionDir), []);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('unchecked integration: a conflicted lane carries no check and does not trigger the disclosure', async () => {
+    const fx = makeFixture({ typecheck: false });
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'CLAUDE.md': '# Trap doors\n- entry one (alpha)\n- entry two\n' },
+        { 'CLAUDE.md': '# Trap doors\n- entry one (beta)\n- entry two\n' },
+      ]));
+      await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3);
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes.beta.outcome, 'conflict');
+      assert.equal(lanes.beta.integration_check, null, 'a conflicted lane was never checked, so it says nothing about the check');
+      assert.equal(lanes.alpha.integration_check, 'unavailable');
+      assert.deepEqual(capUnmeasured(fx.sessionDir), ['integration_typecheck'], 'the integrated sibling still discloses');
     } finally {
       fx.cleanup();
     }

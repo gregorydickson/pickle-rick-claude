@@ -69,7 +69,10 @@ import {
 import { logActivity } from '../services/activity-logger.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
-import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
+import {
+  readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES,
+  createMicroverseState, readMicroverseState, recordCapUnmeasured, writeMicroverseState,
+} from '../services/microverse-state.js';
 import { runAcPhaseGate, type AcPhaseGateResult } from '../services/ac-phase-gate.js';
 import {
   resolveScope,
@@ -2159,6 +2162,7 @@ export async function runAnatomyLanes(runtime: PipelineRuntime, lanes: readonly 
   const stuck = removeLaneWorktrees(repoRoot, run.worktrees);
   if (stuck.length > 0) runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
   const outcomes = integrateLaneRun(run, lanes, ends);
+  discloseUncheckedIntegration(runtime, outcomes);
   // A lane that converged but did not reach main reports WHY; every other lane reports its own reason.
   const reasons = outcomes.map((o) => (isLaneSuccess(o.exit_reason) && o.outcome !== 'integrated' ? o.outcome : o.exit_reason));
   const reason = aggregateLaneExitReason(reasons, isLaneSuccess);
@@ -2168,6 +2172,32 @@ export async function runAnatomyLanes(runtime: PipelineRuntime, lanes: readonly 
 }
 
 const isLaneSuccess = (reason: string): boolean => classifyMicroverseDisposition(reason).reportAs === 'success';
+
+/**
+ * A lane integrated with no typecheck command to run landed unchecked. Refusing it would discard the
+ * work, so it is DISCLOSED instead: `integration_typecheck` joins the parent `cap_unmeasured_checks`,
+ * which `reportConvergedWithUnmeasured` already turns into `converged_with_unmeasured:` on the phase
+ * disposition. `recordCapUnmeasured` replaces its list, so the existing entries are carried in. The
+ * parent file exists whenever `setupAnatomyPark` ran; it is created only for a caller that skipped that
+ * setup. The write is best-effort: a failed disclosure is logged and never ends the run.
+ */
+function discloseUncheckedIntegration(runtime: PipelineRuntime, outcomes: readonly LaneOutcome[]): void {
+  const unchecked = outcomes.filter((o) => o.outcome === 'integrated' && o.integration_check === 'unavailable');
+  if (unchecked.length === 0) return;
+  try {
+    const parent = readMicroverseState(runtime.sessionDir) ?? createMicroverseState({
+      prdPath: runtime.target,
+      metric: { description: 'none', validation: 'none', type: 'none', timeout_seconds: 0, tolerance: 0, direction: 'lower' },
+      stallLimit: outcomes.length * 10,
+      convergenceMode: 'worker',
+      convergenceFile: 'anatomy-park.json',
+    });
+    writeMicroverseState(runtime.sessionDir, recordCapUnmeasured(parent, [...(parent.cap_unmeasured_checks ?? []), 'integration_typecheck']));
+    runtime.log(`anatomy lanes: integrated without a typecheck (${unchecked.map((o) => o.name).join(', ')}) — disclosed as integration_typecheck`);
+  } catch (err) {
+    runtime.log(`anatomy lanes: could not record the unchecked integration: ${safeErrorMessage(err)}`);
+  }
+}
 
 function emitLaneEvent(
   event: 'anatomy_lanes_integrated' | 'anatomy_lane_branches_reported',
@@ -2210,6 +2240,7 @@ function integrateLaneRun(run: LaneRun, lanes: readonly LaneRecord[], ends: read
     worktree: path.join(laneSessionDir(runtime.sessionDir, i + 1), 'wt'),
     started_at: ends[i].started_at, ended_at: ends[i].ended_at, passes: ends[i].passes, exit_reason: ends[i].reason,
     outcome: integration.outcomes[i] ?? (run.cancelledAtMs === null ? 'non_convergent' : 'cancelled'),
+    integration_check: integration.checks[i],
     commits: integration.commits[i],
   }));
   const integrated = new Set(outcomes.filter((o) => o.outcome === 'integrated').map((o) => o.branch));
