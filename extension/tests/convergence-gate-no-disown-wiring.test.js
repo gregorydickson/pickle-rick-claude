@@ -31,6 +31,18 @@ function git(dir, args) {
   execFileSync('git', args, { cwd: dir, stdio: 'pipe', timeout: 30_000 });
 }
 
+function initRepo(dir) {
+  git(dir, ['init']);
+  git(dir, ['config', 'user.name', 'Test User']);
+  git(dir, ['config', 'user.email', 'test@example.com']);
+}
+
+function makeInitializedRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  initRepo(dir);
+  return dir;
+}
+
 // A fixture whose `typecheck` script always emits the SAME tsc-shaped failure, so the
 // current run's fingerprint always matches the captured baseline. Whether the failure is
 // subtracted therefore depends ONLY on the no-disown classifier.
@@ -58,10 +70,7 @@ function writeFixture(dir) {
 }
 
 function makeRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   writeFixture(dir);
   git(dir, ['add', '.']);
   git(dir, ['commit', '-m', 'base']);
@@ -185,10 +194,7 @@ function writeNestedFixture(root) {
 }
 
 function makeNestedRepo(prefix) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(root, ['init']);
-  git(root, ['config', 'user.name', 'Test User']);
-  git(root, ['config', 'user.email', 'test@example.com']);
+  const root = makeInitializedRepo(prefix);
   const pkg = writeNestedFixture(root);
   git(root, ['add', '.']);
   git(root, ['commit', '-m', 'base']);
@@ -280,10 +286,7 @@ const UNREACHABLE_SHA = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
 /** A repo whose second commit CHANGES an exported declaration, so the happy path is non-empty. */
 function makeExportChangeRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { sum: number }\n');
   git(dir, ['add', '.']);
@@ -333,10 +336,7 @@ test('AP-EXT-ITER47-01: getChangedExportedSymbols returns null (not an empty Set
 
 /** A repo whose second commit is a PURE content move — no edit, 100% similarity. */
 function makePureMoveRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'src', 'audit.ts'),
@@ -402,9 +402,7 @@ test('AP-EXT-ITER117-01: the moved-module sweep RUNS the whole-repo typecheck in
 test('AP-EXT-ITER117-01: an unrelated non-TS edit still measures zero (the fix does not arm on everything)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter117-control-'));
   try {
-    git(dir, ['init']);
-    git(dir, ['config', 'user.name', 'Test User']);
-    git(dir, ['config', 'user.email', 'test@example.com']);
+    initRepo(dir);
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { sum: number }\n');
     fs.writeFileSync(path.join(dir, 'README.md'), 'one\n');
@@ -501,8 +499,11 @@ test('AP-EXT-ITER47-01: a genuine zero-symbol measurement stays distinct from an
 // The RENDER half. A skip nothing surfaces is the same silence, one layer up — the
 // `orphan-reaper.ts:sweepNotRun` lesson: the swallow is fine, the collapse into a reading is
 // the bug, and something must render it.
-async function convergeWithSymbolFn(getChangedExportedSymbolsFn) {
-  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter47-render-'));
+// One worker-managed iteration whose convergence file claims success, with no commits since
+// preIterSha (so the per-iteration gate is skipped) — leaving the interface-change sweep as the
+// only thing under test. `deps` overrides the sweep's enumerators and gate.
+async function runClaimedConvergedIteration({ iteration, startCommit = 'bbbb2222', deps }) {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-claimed-converged-'));
   const logs = [];
   try {
     fs.writeFileSync(
@@ -523,23 +524,28 @@ async function convergeWithSymbolFn(getChangedExportedSymbolsFn) {
       backend: 'claude',
       remediatorTimeoutS: 600,
       log: (msg) => logs.push(msg),
-      iteration: 12,
-      startCommit: UNREACHABLE_SHA,
+      iteration,
+      startCommit,
       _deps: {
-        // preIterSha === headSha → no commits → the per-iteration gate is skipped, leaving the
-        // sweep guard as the only thing under test.
         getHeadShaFn: () => 'aaaa1111',
         logActivityFn: () => {},
         writeMicroverseStateFn: () => {},
         runGateFn: async () => ({ failures: [] }),
-        getChangedExportedSymbolsFn,
-        getChangedFilesSinceFn: () => [],
+        ...deps,
       },
     });
     return { result, logs };
   } finally {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
+}
+
+function convergeWithSymbolFn(getChangedExportedSymbolsFn) {
+  return runClaimedConvergedIteration({
+    iteration: 12,
+    startCommit: UNREACHABLE_SHA,
+    deps: { getChangedExportedSymbolsFn, getChangedFilesSinceFn: () => [] },
+  });
 }
 
 test('AP-EXT-ITER47-01: an unmeasurable sweep is RENDERED to the operator and stays non-fatal', async () => {
@@ -728,102 +734,47 @@ test('TIER-2.5 gh-8: a non-empty symbol set with an EMPTY (non-null) file list i
 // empty-file-list shape must not converge (AC-1 — no verdict without positive evidence), and
 // must do so WITHOUT throwing, halting, or stamping a new exit reason (AC-3 — the run continues).
 test('TIER-2.5 gh-8: an iteration with the incoherent empty-file-list shape WITHHOLDS convergence and keeps iterating (AC-1/AC-3)', async () => {
-  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-gh8-round-trip-'));
-  const logs = [];
-  try {
-    fs.writeFileSync(
-      path.join(sessionDir, 'anatomy-park.json'),
-      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
-    );
-    const result = await handleWorkerManagedIteration({
-      currentMv: {
-        convergence_file: 'anatomy-park.json',
-        key_metric: { type: 'none' },
-        iteration_regressions: 0,
-      },
-      preIterSha: 'aaaa1111',
-      workingDir: sessionDir,
-      sessionDir,
-      enabledFiles: ['anatomy-park.json'],
-      regressionWarningThreshold: 5,
-      backend: 'claude',
-      remediatorTimeoutS: 600,
-      log: (msg) => logs.push(msg),
-      iteration: 42,
-      startCommit: 'bbbb2222',
-      _deps: {
-        getHeadShaFn: () => 'aaaa1111',
-        logActivityFn: () => {},
-        writeMicroverseStateFn: () => {},
-        runGateFn: async () => ({ failures: [] }),
-        getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
-        getChangedFilesSinceFn: () => [],
-      },
-    });
+  const { result, logs } = await runClaimedConvergedIteration({
+    iteration: 42,
+    deps: {
+      getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+      getChangedFilesSinceFn: () => [],
+    },
+  });
 
-    // AC-1 (direction A, under-trigger): zero evidence must not produce a convergence verdict,
-    // even though the worker's own convergence file claimed success.
-    assert.equal(result.converged, false, 'zero INV-NO-SELF-DISOWN evidence cannot produce a convergence verdict');
-    const rendered = logs.filter((line) => line.includes('changed_files_empty_incoherent'));
-    assert.equal(rendered.length, 1, `the specific reason must be surfaced; got logs: ${JSON.stringify(logs)}`);
+  // AC-1 (direction A, under-trigger): zero evidence must not produce a convergence verdict,
+  // even though the worker's own convergence file claimed success.
+  assert.equal(result.converged, false, 'zero INV-NO-SELF-DISOWN evidence cannot produce a convergence verdict');
+  const rendered = logs.filter((line) => line.includes('changed_files_empty_incoherent'));
+  assert.equal(rendered.length, 1, `the specific reason must be surfaced; got logs: ${JSON.stringify(logs)}`);
 
-    // AC-3: non-fatal — no exception was thrown reaching this line, and the disposition is the
-    // ordinary shape of ANY not-yet-converged iteration, not a distinct halt/error signal.
-    assert.equal(result.selfRedOpen, undefined, 'a missing measurement is not a measured self-red');
-    // AP-EXT-ITER221-01: `reason` is the R-APXG-3 bound's join key, so a withhold returns the
-    // ONE shared withhold value. The specific skip axis is the operator's, and it is carried by
-    // the log line asserted above — never by this field, which decides a disposition.
-    assert.equal(
-      result.reason,
-      'per-iteration gate left unresolved regressions',
-      'every withhold returns the shared value the deferral bound counts',
-    );
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
+  // AC-3: non-fatal — no exception was thrown reaching this line, and the disposition is the
+  // ordinary shape of ANY not-yet-converged iteration, not a distinct halt/error signal.
+  assert.equal(result.selfRedOpen, undefined, 'a missing measurement is not a measured self-red');
+  // AP-EXT-ITER221-01: `reason` is the R-APXG-3 bound's join key, so a withhold returns the
+  // ONE shared withhold value. The specific skip axis is the operator's, and it is carried by
+  // the log line asserted above — never by this field, which decides a disposition.
+  assert.equal(
+    result.reason,
+    'per-iteration gate left unresolved regressions',
+    'every withhold returns the shared value the deferral bound counts',
+  );
 });
 
 // AC-1 (direction B, over-trigger control): the same shape but with a REAL, non-empty file list
 // must still converge normally — proving the new guard fires only on the incoherent shape and
 // does not become a blanket "never converge when symbols changed" regression.
 test('TIER-2.5 gh-8 control: a coherent measured sweep (real files, no violations) still converges', async () => {
-  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-gh8-control-'));
-  try {
-    fs.writeFileSync(
-      path.join(sessionDir, 'anatomy-park.json'),
-      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
-    );
-    const result = await handleWorkerManagedIteration({
-      currentMv: {
-        convergence_file: 'anatomy-park.json',
-        key_metric: { type: 'none' },
-        iteration_regressions: 0,
-      },
-      preIterSha: 'aaaa1111',
-      workingDir: sessionDir,
-      sessionDir,
-      enabledFiles: ['anatomy-park.json'],
-      regressionWarningThreshold: 5,
-      backend: 'claude',
-      remediatorTimeoutS: 600,
-      log: () => {},
-      iteration: 43,
-      startCommit: 'bbbb2222',
-      _deps: {
-        getHeadShaFn: () => 'aaaa1111',
-        logActivityFn: () => {},
-        writeMicroverseStateFn: () => {},
-        runGateFn: async () => ({ failures: [] }),
-        getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
-        getChangedFilesSinceFn: () => ['src/audit.ts'],
-      },
-    });
+  const { result } = await runClaimedConvergedIteration({
+    iteration: 43,
+    deps: {
+      getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+      getChangedFilesSinceFn: () => ['src/audit.ts'],
+    },
+  });
 
-    assert.equal(result.converged, true, 'a genuinely measured, clean sweep must still converge');
-    assert.equal(result.selfRedOpen, undefined);
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
+  assert.equal(result.converged, true, 'a genuinely measured, clean sweep must still converge');
+  assert.equal(result.selfRedOpen, undefined);
 });
 
 test('AP-EXT-ITER48-01: a measured EMPTY file list on BOTH axes still sweeps as a real verdict (the skip cannot over-trigger)', async () => {
@@ -860,54 +811,27 @@ test('AP-EXT-ITER48-01: a measured EMPTY file list on BOTH axes still sweeps as 
 });
 
 test('AP-EXT-ITER48-01: an unmeasurable file enumeration is RENDERED once and stays non-fatal', async () => {
-  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter48-render-'));
-  const logs = [];
-  try {
-    fs.writeFileSync(
-      path.join(sessionDir, 'anatomy-park.json'),
-      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
-    );
-    const result = await handleWorkerManagedIteration({
-      currentMv: {
-        convergence_file: 'anatomy-park.json',
-        key_metric: { type: 'none' },
-        iteration_regressions: 0,
-      },
-      preIterSha: 'aaaa1111',
-      workingDir: sessionDir,
-      sessionDir,
-      enabledFiles: ['anatomy-park.json'],
-      regressionWarningThreshold: 5,
-      backend: 'claude',
-      remediatorTimeoutS: 600,
-      log: (msg) => logs.push(msg),
-      iteration: 13,
-      startCommit: UNREACHABLE_SHA,
-      _deps: {
-        getHeadShaFn: () => 'aaaa1111',
-        logActivityFn: () => {},
-        writeMicroverseStateFn: () => {},
-        runGateFn: async () => ({ failures: [] }),
-        getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
-        getChangedFilesSinceFn: () => null,
-      },
-    });
+  const { result, logs } = await runClaimedConvergedIteration({
+    iteration: 13,
+    startCommit: UNREACHABLE_SHA,
+    deps: {
+      getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
+      getChangedFilesSinceFn: () => null,
+    },
+  });
 
-    const rendered = logs.filter((line) => line.includes('changed_files_unmeasurable'));
-    assert.equal(
-      rendered.length,
-      1,
-      `the not-run reason must be surfaced exactly once; got logs: ${JSON.stringify(logs)}`,
-    );
-    assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
+  const rendered = logs.filter((line) => line.includes('changed_files_unmeasurable'));
+  assert.equal(
+    rendered.length,
+    1,
+    `the not-run reason must be surfaced exactly once; got logs: ${JSON.stringify(logs)}`,
+  );
+  assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
 
-    // TIER-2.5 gh-8: an ABSENT measurement is not a measured regression, so rendering it must
-    // never become a HALT — but it must also never become a convergence VERDICT.
-    assert.equal(result.converged, false, 'an unmeasurable sweep must WITHHOLD convergence, not grant it');
-    assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
+  // TIER-2.5 gh-8: an ABSENT measurement is not a measured regression, so rendering it must
+  // never become a HALT — but it must also never become a convergence VERDICT.
+  assert.equal(result.converged, false, 'an unmeasurable sweep must WITHHOLD convergence, not grant it');
+  assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
 });
 
 // ---------------------------------------------------------------------------
@@ -931,10 +855,7 @@ test('AP-EXT-ITER48-01: an unmeasurable file enumeration is RENDERED once and st
 // differ ONLY in the budget handed to the gate, so a green control cannot come from a different
 // script.
 function makeSlowTypecheckRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'package.json'),
@@ -1041,64 +962,37 @@ test('AP-EXT-ITER7-01: a timed-out whole-repo tsc reaches the sweep as skipped, 
 });
 
 test('AP-EXT-ITER7-01: an unmeasurable typecheck is RENDERED once and stays non-fatal', async () => {
-  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter7-render-'));
-  const logs = [];
-  try {
-    fs.writeFileSync(
-      path.join(sessionDir, 'anatomy-park.json'),
-      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
-    );
-    const result = await handleWorkerManagedIteration({
-      currentMv: {
-        convergence_file: 'anatomy-park.json',
-        key_metric: { type: 'none' },
-        iteration_regressions: 0,
-      },
-      preIterSha: 'aaaa1111',
-      workingDir: sessionDir,
-      sessionDir,
-      enabledFiles: ['anatomy-park.json'],
-      regressionWarningThreshold: 5,
-      backend: 'claude',
-      remediatorTimeoutS: 600,
-      log: (msg) => logs.push(msg),
-      iteration: 7,
-      startCommit: 'bbbb2222',
-      _deps: {
-        getHeadShaFn: () => 'aaaa1111',
-        logActivityFn: () => {},
-        writeMicroverseStateFn: () => {},
-        runGateFn: async () => ({
-          failures: [{
-            check: 'typecheck',
-            file: '<timeout>',
-            line: 0,
-            ruleOrCode: 'GATE_CHECK_TIMEOUT',
-            message: 'typecheck timed out after 300ms',
-            severity: 'error',
-            occurrence_index: 0,
-          }],
-          check_status: { typecheck: 'failed' },
-        }),
-        ...SWEEP_ENUMERATORS,
-      },
-    });
+  const { result, logs } = await runClaimedConvergedIteration({
+    iteration: 7,
+    deps: {
+      runGateFn: async () => ({
+        failures: [{
+          check: 'typecheck',
+          file: '<timeout>',
+          line: 0,
+          ruleOrCode: 'GATE_CHECK_TIMEOUT',
+          message: 'typecheck timed out after 300ms',
+          severity: 'error',
+          occurrence_index: 0,
+        }],
+        check_status: { typecheck: 'failed' },
+      }),
+      ...SWEEP_ENUMERATORS,
+    },
+  });
 
-    const rendered = logs.filter((line) => line.includes('typecheck_unmeasurable'));
-    assert.equal(
-      rendered.length,
-      1,
-      `the not-run reason must be surfaced exactly once; got logs: ${JSON.stringify(logs)}`,
-    );
-    assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
+  const rendered = logs.filter((line) => line.includes('typecheck_unmeasurable'));
+  assert.equal(
+    rendered.length,
+    1,
+    `the not-run reason must be surfaced exactly once; got logs: ${JSON.stringify(logs)}`,
+  );
+  assert.match(rendered[0], /NOT RUN/, 'the line must say the sweep did not run');
 
-    // TIER-2.5 gh-8: an ABSENT measurement is not a measured regression, so rendering it must
-    // never become a HALT — but it must also never become a convergence VERDICT.
-    assert.equal(result.converged, false, 'an unmeasurable sweep must WITHHOLD convergence, not grant it');
-    assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
+  // TIER-2.5 gh-8: an ABSENT measurement is not a measured regression, so rendering it must
+  // never become a HALT — but it must also never become a convergence VERDICT.
+  assert.equal(result.converged, false, 'an unmeasurable sweep must WITHHOLD convergence, not grant it');
+  assert.equal(result.selfRedOpen, undefined, 'no self-red is open — nothing was measured');
 });
 
 // ---------------------------------------------------------------------------
@@ -1118,10 +1012,7 @@ test('AP-EXT-ITER7-01: an unmeasurable typecheck is RENDERED once and stays non-
  * hits — pickle-rick itself is one added `package.json` away from it.
  */
 function makeUnclassifiableRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   for (const child of ['frontend', 'backend']) {
     fs.mkdirSync(path.join(dir, child), { recursive: true });
     fs.writeFileSync(
@@ -1268,10 +1159,7 @@ test('AP-EXT-ITER7-02 fence control: a runGateFn stub carrying NO check_status i
  * targets it can only report green.
  */
 function makeCrossPackageMoveRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
 
   const sourceDir = path.join(dir, 'packages', 'source');
   const destDir = path.join(dir, 'packages', 'dest');
@@ -1391,10 +1279,7 @@ test('AP-EXT-ITER117-02 control: narrowing still excludes a package nothing touc
  * real `tsc --noEmit` over exactly this shape, plus two failures that must NOT be owned.
  */
 function makeMovedModuleRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
 
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
@@ -1577,15 +1462,18 @@ function makeDeferralLoopSession(prefix) {
   return { sessionDir, workingDir, mv, ctx };
 }
 
-async function driveLoopUntilTerminal(mv, ctx, workerResult, maxCalls) {
+async function driveLoopUntilTerminal(mv, ctx, workerResult, maxCalls, overrides = {}) {
   const orig = {
     runWorkerManagedIteration: _deps.runWorkerManagedIteration,
     getHeadSha: _deps.getHeadSha,
     sleep: _deps.sleep,
+    runGate: _deps.runGate,
   };
   try {
-    _deps.runWorkerManagedIteration = async () => workerResult;
-    _deps.getHeadSha = () => 'abc0000';
+    _deps.runWorkerManagedIteration = async () =>
+      typeof workerResult === 'function' ? workerResult() : workerResult;
+    _deps.getHeadSha = overrides.getHeadShaFn ?? (() => 'abc0000');
+    if (overrides.runGateFn) _deps.runGate = overrides.runGateFn;
     _deps.sleep = async () => {};
     const outcome = { completion: 'task_completed', timedOut: false, exitCode: 0, wallSeconds: 1 };
     const baseline = { raw: '', score: 0 };
@@ -1601,36 +1489,18 @@ async function driveLoopUntilTerminal(mv, ctx, workerResult, maxCalls) {
     _deps.runWorkerManagedIteration = orig.runWorkerManagedIteration;
     _deps.getHeadSha = orig.getHeadSha;
     _deps.sleep = orig.sleep;
+    _deps.runGate = orig.runGate;
   }
 }
 
 test('AP-EXT-ITER221-01: an unmeasurable sweep withholds under the R-APXG-3 bound, so the loop terminates', async () => {
-  const produce = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-apiter221-produce-'));
   const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-apiter221-');
   try {
-    fs.writeFileSync(
-      path.join(produce, 'anatomy-park.json'),
-      JSON.stringify({ converged: true, reason: 'all subsystems clean' }, null, 2),
-    );
     // The REAL withhold result, produced by the REAL guard over the incoherent axes shape —
     // never a hand-written reason string, which is exactly what the bug was.
-    const withheld = await handleWorkerManagedIteration({
-      currentMv: { convergence_file: 'anatomy-park.json', key_metric: { type: 'none' }, iteration_regressions: 0 },
-      preIterSha: 'aaaa1111',
-      workingDir: produce,
-      sessionDir: produce,
-      enabledFiles: ['anatomy-park.json'],
-      regressionWarningThreshold: 5,
-      backend: 'claude',
-      remediatorTimeoutS: 600,
-      log: () => {},
+    const { result: withheld } = await runClaimedConvergedIteration({
       iteration: 1,
-      startCommit: 'bbbb2222',
-      _deps: {
-        getHeadShaFn: () => 'aaaa1111',
-        logActivityFn: () => {},
-        writeMicroverseStateFn: () => {},
-        runGateFn: async () => ({ failures: [] }),
+      deps: {
         getChangedExportedSymbolsFn: () => new Set(['AuditResult']),
         getChangedFilesSinceFn: () => [],
       },
@@ -1651,7 +1521,6 @@ test('AP-EXT-ITER221-01: an unmeasurable sweep withholds under the R-APXG-3 boun
       `the R-APXG-3 bound must fire by call 3 (POST_CONVERGENCE_GATE_DEFERRAL_LIMIT); took ${calls}`,
     );
   } finally {
-    fs.rmSync(produce, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
     fs.rmSync(workingDir, { recursive: true, force: true });
   }
@@ -1676,6 +1545,128 @@ test('AP-EXT-ITER221-01 control: an ordinary not-converged iteration still does 
 });
 
 // ---------------------------------------------------------------------------
+// B-SELFRED (a399450f): the R-ORSR-6 self-red refusal had no bound — a worker alternating
+// between "signals convergence -> self-red sweep blocks it" and "does not signal" looped until
+// its budget ran out, logging `(deferral 1)` every time (field runs hit 296 iterations / 199
+// minutes / 0 commits). These cases drive the REAL runner loop and assert it terminates by
+// re-running the SAME baseline-aware cap gate R-APXG-3 already uses at its own bound, once HEAD
+// has stayed unchanged for POST_CONVERGENCE_GATE_DEFERRAL_LIMIT consecutive refusals.
+// ---------------------------------------------------------------------------
+
+const SELF_RED_WITHHELD_REASON = 'per-iteration gate left unresolved regressions';
+const SELF_RED_DEFERRAL_LIMIT = 3; // mirrors POST_CONVERGENCE_GATE_DEFERRAL_LIMIT
+
+function greenCapGateStub() {
+  return async () => ({
+    status: 'green',
+    failures: [],
+    baseline_used: false,
+    allowed_paths_used: false,
+    elapsed_ms: 0,
+    total_raw_failure_count: 0,
+    new_failures_vs_baseline: 0,
+    check_status: { typecheck: 'ran', lint: 'ran' },
+  });
+}
+
+function redCapGateStub() {
+  return async () => ({
+    status: 'red',
+    failures: [{ ruleOrCode: 'TS0000', message: 'still broken', severity: 'error', occurrence_index: 0 }],
+    baseline_used: false,
+    allowed_paths_used: false,
+    elapsed_ms: 0,
+    total_raw_failure_count: 1,
+    new_failures_vs_baseline: 1,
+    check_status: { typecheck: 'ran', lint: 'ran' },
+  });
+}
+
+function makeAlternatingSelfRedResult(mv) {
+  let call = 0;
+  return () => {
+    call += 1;
+    return call % 2 === 1
+      ? { currentMv: mv, converged: false, reason: SELF_RED_WITHHELD_REASON, selfRedOpen: true }
+      : { currentMv: mv, converged: false, reason: 'no reason' };
+  };
+}
+
+// AC-4 mutation control (manually verified, not re-run by CI): moving the
+// `if (refusalCount >= POST_CONVERGENCE_GATE_DEFERRAL_LIMIT)` check in
+// handlePostConvergenceGateDeferral back BELOW the `ctx.log(...); return null;` early-return of
+// the selfRedOpen branch reds this AC-1 case (the bound never fires, exitReason stays null).
+test('B-SELFRED AC-1: the self-red refusal bound converges when HEAD is unchanged and the cap gate is green', async () => {
+  const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-selfred-green-');
+  try {
+    const { calls, exitReason } = await driveLoopUntilTerminal(
+      mv, ctx, makeAlternatingSelfRedResult(mv), 2 * SELF_RED_DEFERRAL_LIMIT + 2,
+      { getHeadShaFn: () => 'fixed-head-sha', runGateFn: greenCapGateStub() },
+    );
+    assert.equal(
+      exitReason, 'converged',
+      'a green cap gate at the bound must trust the gate, not the worker',
+    );
+    assert.ok(
+      calls <= 2 * SELF_RED_DEFERRAL_LIMIT + 2,
+      `must terminate within 2*limit+2 calls; took ${calls}`,
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('B-SELFRED AC-1: the self-red refusal bound ends non-convergent when HEAD is unchanged and the cap gate is red', async () => {
+  const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-selfred-red-');
+  try {
+    const { calls, exitReason } = await driveLoopUntilTerminal(
+      mv, ctx, makeAlternatingSelfRedResult(mv), 2 * SELF_RED_DEFERRAL_LIMIT + 2,
+      { getHeadShaFn: () => 'fixed-head-sha', runGateFn: redCapGateStub() },
+    );
+    assert.equal(
+      exitReason, 'no_progress',
+      'a red cap gate at the bound must end non-convergent, never force-converge over its own break',
+    );
+    assert.ok(
+      calls <= 2 * SELF_RED_DEFERRAL_LIMIT + 2,
+      `must terminate within 2*limit+2 calls; took ${calls}`,
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('B-SELFRED AC-2 control: a self-red refusal with HEAD advancing every call never converges', async () => {
+  const { sessionDir, workingDir, mv, ctx } = makeDeferralLoopSession('cg-selfred-moving-');
+  try {
+    let headCounter = 0;
+    const { calls, exitReason } = await driveLoopUntilTerminal(
+      mv, ctx,
+      { currentMv: mv, converged: false, reason: SELF_RED_WITHHELD_REASON, selfRedOpen: true },
+      20,
+      { getHeadShaFn: () => `moving-head-${(headCounter += 1)}` },
+    );
+    assert.equal(
+      exitReason, null,
+      'HEAD advancing on every refusal must never let the bound fire',
+    );
+    assert.equal(calls, 20);
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+    fs.rmSync(workingDir, { recursive: true, force: true });
+  }
+});
+
+test('B-SELFRED AC-3: no_progress reports as non-convergent', async () => {
+  const { classifyMicroverseDisposition } = await import(
+    path.resolve(__dirname, '../bin/microverse-runner.js'),
+  );
+  assert.equal(classifyMicroverseDisposition('no_progress').reportAs, 'non-convergent');
+});
+
+// ---------------------------------------------------------------------------
 // AP-EXT-ITER314-01: the sweep's two git readers read the same PATH SPACE.
 //
 // `workingDir` is `state.working_dir || process.cwd()` (microverse-runner.ts) and is never
@@ -1695,10 +1686,7 @@ test('AP-EXT-ITER221-01 control: an ordinary not-converged iteration still does 
 
 /** A repo whose exported-symbol change is at the TOPLEVEL, with a subdirectory to read from. */
 function makeBelowToplevelRepo(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  git(dir, ['init']);
-  git(dir, ['config', 'user.name', 'Test User']);
-  git(dir, ['config', 'user.email', 'test@example.com']);
+  const dir = makeInitializedRepo(prefix);
   fs.mkdirSync(path.join(dir, 'pkg', 'sub'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'top.ts'), 'export interface AuditResult { sum: number }\n');
   fs.writeFileSync(path.join(dir, 'pkg', 'sub', 'leaf.ts'), 'export const leaf = 1;\n');
