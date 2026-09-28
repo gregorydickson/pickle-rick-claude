@@ -5342,6 +5342,7 @@ describe('B-LANES WS-3: lane integration', () => {
       assert.equal(await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3), 1);
       const lanes = byName(fx.sessionDir);
       assert.equal(lanes.alpha.outcome, 'integration_ff_failed');
+      assert.equal(lanes.alpha.integration_check, null, 'a pick that never reached main is not a kept pick');
       assert.equal(lanes.beta.outcome, 'integrated', 'a lane with no commits needs nothing from main');
       assert.equal(git(fx.repo, 'rev-parse', 'HEAD'), head);
       assert.equal(read(path.join(fx.repo, 'alpha', 'a.ts')), 'operator edit\n', 'the operator edit is untouched');
