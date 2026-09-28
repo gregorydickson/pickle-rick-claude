@@ -295,7 +295,8 @@ export function integrateLanes(input) {
     finally {
         removeLaneWorktrees(repoRoot, [worktree]);
     }
-    return { outcomes, commits, checks };
+    // A pick that never reached main (integration_ff_failed) is not a kept pick, so its check says nothing.
+    return { outcomes, commits, checks: checks.map((c, i) => (outcomes[i] === 'integrated' ? c : null)) };
 }
 function branchExists(repoRoot, branch) {
     return laneGitOk(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
