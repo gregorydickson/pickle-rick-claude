@@ -271,7 +271,8 @@ function reportUnmeasuredGate(ctx, rt, cycle, checks, rows) {
     const reportPath = path.join(ctx.gateDir, `unmeasured_${rt.iso()}.md`);
     const lines = rows.map(f => `- [${f.check}] \`${f.file}\` ${f.ruleOrCode}: ${f.message.slice(0, 200)}`);
     rt.writeFile(reportPath, `# Gate Unmeasured\n\nCycle: ${cycle + 1}\nSkill: ${ctx.skill}\nChecks: ${checks.join(', ')}\nTimestamp: ${new Date().toISOString()}\n\n${lines.join('\n')}\n`);
-    rt.writeMicroverseState(ctx.sessionRoot, recordCapUnmeasured(ctx.mvState, checks));
+    // A union, never a replace: the loop may already have disclosed a hole this gate did not see.
+    rt.writeMicroverseState(ctx.sessionRoot, recordCapUnmeasured(ctx.mvState, [...(ctx.mvState.cap_unmeasured_checks ?? []), ...checks]));
     rt.err(`[finalize-gate] gate UNMEASURED on cycle ${cycle + 1} (${checks.join(', ')}) — no remediation cycle spent, disclosed, exit 0 (report: ${reportPath})`);
     return 0;
 }

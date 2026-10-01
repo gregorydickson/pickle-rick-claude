@@ -851,6 +851,12 @@ function isBaselineUncertifiable(baseline: Pick<GateBaselineFile, 'project_type'
   return baseline !== null && baseline.project_type === null;
 }
 
+// A disclosure is a UNION: `recordCapUnmeasured` replaces the field, so a later caller naming
+// only its own checks would erase an earlier iteration's hole from the final disposition.
+function discloseCapUnmeasured(state: MicroverseSessionState, checks: readonly string[]): MicroverseSessionState {
+  return recordCapUnmeasured(state, [...(state.cap_unmeasured_checks ?? []), ...checks]);
+}
+
 // B-ATTRIB-G G1: failures on a check the baseline did not measure are not NEW against it. Record
 // the check as cap-unmeasured (never a regression, never the latch) and drop its failures.
 function applyBaselineUnmeasured(
@@ -861,7 +867,7 @@ function applyBaselineUnmeasured(
   const unmeasured = baselineUnmeasuredChecks(result.check_status, baseline?.check_status, PER_ITERATION_GATE_CHECKS);
   if (unmeasured.length === 0) return { mv: opts.currentMv, result };
   opts.log(`gate: baseline did not measure ${unmeasured.join(', ')} — reporting unmeasured, not a regression`);
-  const mv = recordCapUnmeasured(opts.currentMv, [...(opts.currentMv.cap_unmeasured_checks ?? []), ...unmeasured]);
+  const mv = discloseCapUnmeasured(opts.currentMv, unmeasured);
   opts.deps.writeMicroverseStateFn(opts.sessionDir, mv);
   const failures = result.failures.filter((f) => !unmeasured.includes(f.check));
   return { mv, result: { ...result, failures, status: failures.length === 0 ? 'green' : result.status } };
@@ -5951,7 +5957,7 @@ async function handleSelfRedRefusalBound(
     return 'no_progress';
   }
   if (verdict.kind === 'unmeasured') {
-    replaceMicroverseState(state, recordCapUnmeasured(state, verdict.checks));
+    replaceMicroverseState(state, discloseCapUnmeasured(state, verdict.checks));
     ctx.log(
       `${capPrefix}; cap gate could not measure ${verdict.checks.join(', ')} — converging with an unmeasured caveat`,
     );
@@ -6033,7 +6039,7 @@ async function handlePostConvergenceGateDeferral(
       return 'error';
     }
     if (verdict.kind === 'unmeasured') {
-      replaceMicroverseState(state, recordCapUnmeasured(state, verdict.checks));
+      replaceMicroverseState(state, discloseCapUnmeasured(state, verdict.checks));
       ctx.log(`${capPrefix}; cap gate could not measure ${verdict.checks.join(', ')} — converging with an unmeasured caveat`);
       return 'converged';
     }
