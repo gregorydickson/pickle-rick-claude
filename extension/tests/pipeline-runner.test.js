@@ -3,6 +3,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 import * as url from 'node:url';
@@ -45,8 +46,9 @@ import {
   gitRepoRoot,
   createLaneSession,
   runAnatomyLanes,
+  discloseUnmeasuredIntegration,
 } from '../bin/pipeline-runner.js';
-import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS } from '../services/anatomy-lanes.js';
+import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, laneSessionDir } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
@@ -5832,6 +5834,79 @@ describe('B-FINALGATE incomplete-exit arm over the real finalize-gate', () => {
     } finally {
       __setSpawnRunnerForTests(null);
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('AP-LANES-ITER1-01', () => {
+  // Moved verbatim (substance unchanged) from
+  // extension/src/bin/__tests__/microverse-runner.handleIterationOutcome.spec.ts, whose test-runner
+  // never discovers *.spec.ts files (discoverTestFiles matches *.test.js only).
+  //
+  // AP-LANES-ITER1-01: an integrated lane's OWN cap_unmeasured_checks live in its lane session; only the
+  // parent microverse.json is read by the phase verdict, so the disclosure must carry them across.
+  test("AP-LANES-ITER1-01: an integrated lane carries its own unmeasured checks to the parent; a lane that did not integrate does not", () => {
+    const makeMicroverseState = () => ({
+      status: 'iterating',
+      prd_path: 'prds/p1-anatomy-park-worker-mode-subprocess-error-kills-loop.md',
+      key_metric: {
+        description: 'test metric',
+        validation: 'echo ok',
+        type: 'command',
+        timeout_seconds: 30,
+        tolerance: 0,
+      },
+      convergence: {
+        stall_limit: 5,
+        stall_counter: 0,
+        history: [],
+      },
+      gap_analysis_path: 'gap.md',
+      failed_approaches: [],
+      baseline_score: 0,
+      failure_history: [],
+      approach_exhaustion_fired: false,
+      convergence_mode: 'worker',
+      convergence_file: 'anatomy-park.json',
+      current_subsystem: 'alpha',
+      consecutive_subprocess_errors: 0,
+    });
+
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ap-lanes-iter1-')));
+    const parentDir = path.join(root, 'session');
+    const writeCaps = (dir, extra) => {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'microverse.json'), JSON.stringify({ ...makeMicroverseState(), ...extra }));
+    };
+    const readCaps = () => JSON.parse(fs.readFileSync(path.join(parentDir, 'microverse.json'), 'utf-8')).cap_unmeasured_checks;
+    const outcome = (name, o) => ({
+      name, dir: name, excludes: [], branch: `b/${name}`, worktree: `w/${name}`, started_at: null, ended_at: null,
+      passes: 1, exit_reason: 'converged', commits: [], ...o,
+    });
+    const logs = [];
+    const runtime = { sessionDir: parentDir, target: root, log: (m) => logs.push(m) };
+    try {
+      writeCaps(parentDir, { cap_unmeasured_checks: ['prior'] });
+      writeCaps(laneSessionDir(parentDir, 1), { cap_unmeasured_checks: ['tests'] });
+      writeCaps(laneSessionDir(parentDir, 2), { cap_unmeasured_checks: ['lint'] });
+
+      discloseUnmeasuredIntegration(runtime, [outcome('alpha', { outcome: 'integrated', integration_check: 'green' }),
+        outcome('beta', { outcome: 'conflict', integration_check: null })]);
+      assert.deepEqual(readCaps(), ['prior', 'tests'], `only the integrated lane's own hole reaches the parent\n${logs.join('\n')}`);
+
+      // Control: the typecheck hole and the lane's own hole are both disclosed for one integrated lane.
+      writeCaps(parentDir, {});
+      discloseUnmeasuredIntegration(runtime, [outcome('alpha', { outcome: 'integrated', integration_check: 'unavailable' })]);
+      assert.deepEqual(readCaps(), ['integration_typecheck', 'tests']);
+
+      // Control: nothing to disclose leaves the parent untouched. Mutation control: amputating the
+      // integrated-lane union in discloseUnmeasuredIntegration reds the two cases above; this case
+      // guards against the opposite over-trigger (disclosing when there is nothing to disclose).
+      writeCaps(parentDir, {});
+      discloseUnmeasuredIntegration(runtime, [outcome('beta', { outcome: 'conflict', integration_check: null })]);
+      assert.equal(readCaps(), undefined);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });
