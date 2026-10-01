@@ -37,6 +37,7 @@ import {
   setupAnatomyPark,
   readPersistedAllowedPaths,
   finalizePhaseSuccess,
+  computePipelineVerdict,
   resetInterruptedTicketWorkForRelaunch,
   runRelaunchSelfHeal,
   main,
@@ -4819,7 +4820,7 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
   }
   const freshCounters = () => ({ completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} });
 
-  test('caveats [typecheck, lint] record converged_with_unmeasured:typecheck,lint and leave nonConvergent alone', () => {
+  test('caveats [typecheck, lint] record converged_with_unmeasured:typecheck,lint and withhold the success verdict', () => {
     const dir = tmpDir();
     try {
       const { runtime, cancelMarker } = convergedRuntime(dir, ['typecheck', 'lint']);
@@ -4827,8 +4828,11 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
       assert.deepEqual(outcome, { action: 'continue' });
       assert.equal(counters.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck,lint');
-      assert.equal(counters.nonConvergent, 0, 'reported, NOT counted non-convergent');
+      assert.equal(counters.nonConvergent, 1, 'unmeasured checks degrade the phase, withholding success');
       assert.equal(counters.completed, 1, 'a converged phase still completes');
+      const verdictRuntime = { ...runtime, config: { phases: ['anatomy-park'] } };
+      assert.equal(computePipelineVerdict(verdictRuntime, counters).unsuccessful, true);
+      assert.equal(computePipelineVerdict(verdictRuntime, counters).pipelineFailed, false, 'withheld, not failed');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -4843,6 +4847,7 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       assert.equal(counters.phaseDispositions['anatomy-park'], undefined);
       assert.equal(counters.nonConvergent, 0);
       assert.equal(counters.completed, 1);
+      assert.equal(computePipelineVerdict({ ...runtime, config: { phases: ['anatomy-park'] } }, counters).unsuccessful, false, 'negative control: no caveat still succeeds');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
