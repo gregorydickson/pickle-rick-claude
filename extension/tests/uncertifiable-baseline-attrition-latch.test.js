@@ -365,3 +365,109 @@ test('AC-SZGBC-04: a certifiable baseline with a clean tree still converges norm
     rm(sessionDir);
   }
 });
+
+// ===========================================================================
+// B-ATTRIB-G G1: a check the BASELINE did not measure never arms the latch.
+// Table-driven over dispositions (iteration_regressions, sink/selfRedOpen,
+// cap_unmeasured_checks) — never log text. Rows 1 and 3 are regression guards
+// (pass at 55fe1ba1); row 2 is the one that reds there.
+// ===========================================================================
+
+const G1_ROWS = [
+  {
+    name: 'row 1 (regression guard): baseline typecheck ran, current typecheck has a NEW failure -> counted regression',
+    baselineStatus: { typecheck: 'ran', lint: 'ran', tests: 'skipped' },
+    currentStatus: { typecheck: 'ran', lint: 'ran', tests: 'skipped' },
+    failures: 1,
+    expect: { regressions: 1, latch: false, unmeasured: [], lacks: ['typecheck'] },
+  },
+  {
+    name: 'row 2: baseline typecheck failed, current typecheck ran with 500 failures -> unmeasured, no regression, no latch',
+    baselineStatus: { typecheck: 'failed', lint: 'ran' },
+    currentStatus: { typecheck: 'ran', lint: 'ran', tests: 'skipped' },
+    failures: 500,
+    expect: { regressions: 0, latch: false, unmeasured: ['typecheck'] },
+  },
+  {
+    name: 'row 3 (regression guard): tests skipped in both, no new failures -> no defer, tests not unmeasured',
+    baselineStatus: { typecheck: 'ran', lint: 'ran', tests: 'skipped' },
+    currentStatus: { typecheck: 'ran', lint: 'ran', tests: 'skipped' },
+    failures: 0,
+    expect: { regressions: 0, latch: false, unmeasured: [], lacks: ['tests'] },
+  },
+  {
+    name: 'row 4: every check skipped in both (project_type null) -> R-SZGB-B defer still arms the latch, does not converge',
+    projectType: null,
+    baselineStatus: { typecheck: 'skipped', lint: 'skipped', tests: 'skipped' },
+    currentStatus: { typecheck: 'skipped', lint: 'skipped', tests: 'skipped' },
+    failures: 0,
+    expect: { regressions: 1, latch: true, unmeasured: [] },
+  },
+  {
+    name: 'row 5: legacy baseline (no check_status), project_type null -> today\'s R-SZGB-B outcome',
+    projectType: null,
+    baselineStatus: undefined,
+    currentStatus: { typecheck: 'ran' },
+    failures: 0,
+    expect: { regressions: 1, latch: true, unmeasured: [] },
+  },
+];
+
+for (const row of G1_ROWS) {
+  test(`G1 ${row.name}`, async () => {
+    const workingDir = makeGitRepo('g1-repo-');
+    const sessionDir = mkTmp('g1-session-');
+    try {
+      fs.writeFileSync(path.join(workingDir, 'README.md'), 'x\n');
+      commitAll(workingDir, 'initial');
+      await ensurePerIterationGateBaseline({
+        currentMv: makeMv({ key_metric: undefined }),
+        workingDir, sessionDir, enabledFiles: ['anatomy-park.json'], log: () => {},
+      });
+      const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+      const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+      baseline.project_type = row.projectType === undefined ? 'npm' : row.projectType;
+      if (row.baselineStatus === undefined) delete baseline.check_status;
+      else baseline.check_status = row.baselineStatus;
+      fs.writeFileSync(baselinePath, JSON.stringify(baseline));
+
+      const preIterSha = headSha(workingDir);
+      fs.writeFileSync(path.join(workingDir, 'src.ts'), 'export {};\n');
+      fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({ converged: true, reason: 'r' }));
+      commitAll(workingDir, 'change');
+
+      const failures = Array.from({ length: row.failures }, (_, i) => ({
+        check: 'typecheck', file: path.join(workingDir, 'src.ts'), line: i + 1,
+        ruleOrCode: 'TS2322', message: `e${i}`, severity: 'error', occurrence_index: 0,
+      }));
+      const writes = [];
+      const result = await handleWorkerManagedIteration({
+        ...BASE_OPTS,
+        currentMv: makeMv({ key_metric: undefined }),
+        preIterSha, workingDir, sessionDir, iteration: 1,
+        enabledFiles: ['anatomy-park.json'],
+        _deps: {
+          writeMicroverseStateFn: (_d, mv) => writes.push(mv),
+          logActivityFn: () => {},
+          runGateFn: async () => ({
+            status: failures.length > 0 ? 'red' : 'green',
+            failures, baseline_used: true, allowed_paths_used: false, elapsed_ms: 0,
+            total_raw_failure_count: failures.length, new_failures_vs_baseline: failures.length,
+            check_status: row.currentStatus,
+          }),
+        },
+      });
+
+      const regressions = Number(result.currentMv.iteration_regressions ?? 0);
+      assert.equal(regressions, row.expect.regressions, 'iteration_regressions');
+      assert.equal(result.selfRedOpen === true, row.expect.latch, 'sink fired / selfRedOpen');
+      const unmeasured = result.currentMv.cap_unmeasured_checks ?? [];
+      for (const c of row.expect.unmeasured) assert.ok(unmeasured.includes(c), `cap_unmeasured_checks ⊇ ${c}`);
+      for (const c of row.expect.lacks ?? []) assert.ok(!unmeasured.includes(c), `cap_unmeasured_checks lacks ${c}`);
+      if (row.expect.latch) assert.equal(result.converged, false, 'never certifies convergence');
+    } finally {
+      rm(workingDir);
+      rm(sessionDir);
+    }
+  });
+}

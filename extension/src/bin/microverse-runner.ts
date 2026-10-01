@@ -95,6 +95,7 @@ import {
   filterByScope,
   classifyNoDisown,
   isCheckUnmeasured,
+  baselineUnmeasuredChecks,
   getChangedExportedSymbols,
   getChangedFilesSince,
   runBaselineAwareGate,
@@ -802,9 +803,24 @@ async function attemptStrictBaselineRecapture(opts: RunChangedPerIterationGateOp
 // the resolved target (WS-1 already tried and failed the depth-1 child scan) — zero captured
 // checks is not evidence of a clean tree. Reuses the existing GateBaselineFile.project_type
 // signal; no new state field/flag.
-function isBaselineUncertifiable(baselinePath: string): boolean {
-  const baseline = readRecoverableJsonObject(baselinePath) as Pick<GateBaselineFile, 'project_type'> | null;
+function isBaselineUncertifiable(baseline: Pick<GateBaselineFile, 'project_type'> | null): boolean {
   return baseline !== null && baseline.project_type === null;
+}
+
+// B-ATTRIB-G G1: failures on a check the baseline did not measure are not NEW against it. Record
+// the check as cap-unmeasured (never a regression, never the latch) and drop its failures.
+function applyBaselineUnmeasured(
+  opts: RunChangedPerIterationGateOpts,
+  result: GateResult,
+  baseline: Pick<GateBaselineFile, 'check_status'> | null,
+): { mv: MicroverseSessionState; result: GateResult } {
+  const unmeasured = baselineUnmeasuredChecks(result.check_status, baseline?.check_status, PER_ITERATION_GATE_CHECKS);
+  if (unmeasured.length === 0) return { mv: opts.currentMv, result };
+  opts.log(`gate: baseline did not measure ${unmeasured.join(', ')} — reporting unmeasured, not a regression`);
+  const mv = recordCapUnmeasured(opts.currentMv, [...(opts.currentMv.cap_unmeasured_checks ?? []), ...unmeasured]);
+  opts.deps.writeMicroverseStateFn(opts.sessionDir, mv);
+  const failures = result.failures.filter((f) => !unmeasured.includes(f.check));
+  return { mv, result: { ...result, failures, status: failures.length === 0 ? 'green' : result.status } };
 }
 
 // R-SZGB-B: an uncertifiable baseline can never certify a clean replay. Defer the same way a
@@ -856,20 +872,25 @@ async function runChangedPerIterationGate(opts: RunChangedPerIterationGateOpts):
     opts.lintFailuresSink.push(...result.failures.filter((f) => f.check === 'lint'));
   }
 
-  if (gateMode === 'baseline' && isBaselineUncertifiable(opts.baselinePath)) {
+  const baseline = gateMode === 'baseline'
+    ? readRecoverableJsonObject(opts.baselinePath) as Pick<GateBaselineFile, 'project_type' | 'check_status'> | null
+    : null;
+  const applied = applyBaselineUnmeasured(opts, result, baseline);
+  if (applied.mv === opts.currentMv && isBaselineUncertifiable(baseline)) {
     return recordUncertifiableBaselineDefer(opts);
   }
+  const gateOpts = { ...opts, currentMv: applied.mv };
 
-  if (result.status !== 'red' || result.failures.length === 0) {
-    return opts.currentMv;
+  if (applied.result.status !== 'red' || applied.result.failures.length === 0) {
+    return gateOpts.currentMv;
   }
 
-  const remediationOutcome = await opts.deps.runRemediatorFn(result, opts.sessionDir);
+  const remediationOutcome = await opts.deps.runRemediatorFn(applied.result, opts.sessionDir);
   if (remediationOutcome.success) {
-    return opts.currentMv;
+    return gateOpts.currentMv;
   }
 
-  return recordPerIterationGateRegression(opts, result, gateMode);
+  return recordPerIterationGateRegression(gateOpts, applied.result, gateMode);
 }
 
 function recordPerIterationGateRegression(

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildFailures, isUnrunnableCheckResult, runGate } from '../../services/convergence-gate.js';
+import { baselineUnmeasuredChecks, buildFailures, isUnrunnableCheckResult, runBaselineAwareGate, runGate } from '../../services/convergence-gate.js';
 
 // ---------------------------------------------------------------------------
 // AC-SZGBD-03 regression guard: isUnrunnableCheckResult unit cases.
@@ -221,4 +221,47 @@ test('AP-EXT-ITER318-01: a no-exit-status failure does not borrow a real exit co
   assert.notEqual(killed.message, real.message);
   // The arm the null check sits beside is unmoved: exit 0 is still no failure at all.
   assert.deepEqual(buildFailures({ stdout: '', stderr: '', exitCode: 0 }, 'typecheck', '/pkg'), []);
+});
+
+// ---------------------------------------------------------------------------
+// B-ATTRIB-G G1: a check the BASELINE did not measure is unmeasured, never red.
+// ---------------------------------------------------------------------------
+
+function writeBaseline(checkStatus) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'g1-baseline-'));
+  const baselinePath = path.join(dir, 'baseline.json');
+  fs.writeFileSync(baselinePath, JSON.stringify({
+    schema_version: 1, captured_at: new Date().toISOString(), working_dir: dir,
+    project_type: 'npm', checks: ['typecheck', 'lint'], failures: [], check_status: checkStatus,
+  }));
+  return { dir, baselinePath };
+}
+
+const redTypecheckGate = async () => ({
+  status: 'red',
+  failures: [{ check: 'typecheck', file: '/x/a.ts', line: 1, ruleOrCode: 'TS2322', message: 'm', severity: 'error', occurrence_index: 0 }],
+  baseline_used: true, allowed_paths_used: false, elapsed_ms: 0, total_raw_failure_count: 1, new_failures_vs_baseline: 1,
+  check_status: { typecheck: 'ran', lint: 'ran' },
+});
+
+test('G1: runBaselineAwareGate reports unmeasured (not red) for a typecheck the baseline failed to measure', async () => {
+  const { dir, baselinePath } = writeBaseline({ typecheck: 'failed', lint: 'ran' });
+  try {
+    const out = await runBaselineAwareGate({ workingDir: dir, baselinePath, checks: ['typecheck', 'lint'], runGateFn: redTypecheckGate });
+    assert.deepEqual(out.verdict, { unmeasured: ['typecheck'] });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('G1 negative control: a typecheck the baseline DID measure stays red', async () => {
+  const { dir, baselinePath } = writeBaseline({ typecheck: 'ran', lint: 'ran' });
+  try {
+    const out = await runBaselineAwareGate({ workingDir: dir, baselinePath, checks: ['typecheck', 'lint'], runGateFn: redTypecheckGate });
+    assert.equal(out.verdict, 'red');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('G1: baselineUnmeasuredChecks — legacy baseline (no check_status) and absent current yield none', () => {
+  assert.deepEqual(baselineUnmeasuredChecks({ typecheck: 'ran' }, undefined, ['typecheck']), []);
+  assert.deepEqual(baselineUnmeasuredChecks(undefined, { typecheck: 'failed' }, ['typecheck']), []);
+  assert.deepEqual(baselineUnmeasuredChecks({ typecheck: 'ran', tests: 'skipped' }, { typecheck: 'skipped', tests: 'skipped' }, ['typecheck', 'tests']), ['typecheck']);
 });
