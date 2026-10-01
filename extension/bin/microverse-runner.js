@@ -22,7 +22,7 @@ import { resolveCodexModel } from './spawn-morty.js';
 import { checkScopeDiff, isUnevaluableScopeStatus } from './check-scope-diff.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
 import { logActivity } from '../services/activity-logger.js';
-import { assertBaselineFresh, runGate, filterByScope, classifyNoDisown, isCheckUnmeasured, getChangedExportedSymbols, getChangedFilesSince, runBaselineAwareGate, } from '../services/convergence-gate.js';
+import { assertBaselineFresh, runGate, filterByScope, classifyNoDisown, isCheckUnmeasured, baselineUnmeasuredChecks, getChangedExportedSymbols, getChangedFilesSince, runBaselineAwareGate, } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 class MicroverseExitError extends Error {
     exitReason;
@@ -464,9 +464,20 @@ async function attemptStrictBaselineRecapture(opts) {
 // the resolved target (WS-1 already tried and failed the depth-1 child scan) — zero captured
 // checks is not evidence of a clean tree. Reuses the existing GateBaselineFile.project_type
 // signal; no new state field/flag.
-function isBaselineUncertifiable(baselinePath) {
-    const baseline = readRecoverableJsonObject(baselinePath);
+function isBaselineUncertifiable(baseline) {
     return baseline !== null && baseline.project_type === null;
+}
+// B-ATTRIB-G G1: failures on a check the baseline did not measure are not NEW against it. Record
+// the check as cap-unmeasured (never a regression, never the latch) and drop its failures.
+function applyBaselineUnmeasured(opts, result, baseline) {
+    const unmeasured = baselineUnmeasuredChecks(result.check_status, baseline?.check_status, PER_ITERATION_GATE_CHECKS);
+    if (unmeasured.length === 0)
+        return { mv: opts.currentMv, result };
+    opts.log(`gate: baseline did not measure ${unmeasured.join(', ')} — reporting unmeasured, not a regression`);
+    const mv = recordCapUnmeasured(opts.currentMv, [...(opts.currentMv.cap_unmeasured_checks ?? []), ...unmeasured]);
+    opts.deps.writeMicroverseStateFn(opts.sessionDir, mv);
+    const failures = result.failures.filter((f) => !unmeasured.includes(f.check));
+    return { mv, result: { ...result, failures, status: failures.length === 0 ? 'green' : result.status } };
 }
 // R-SZGB-B: an uncertifiable baseline can never certify a clean replay. Defer the same way a
 // real gate regression would (bump iteration_regressions) so the worker-managed convergence
@@ -510,17 +521,22 @@ async function runChangedPerIterationGate(opts) {
     if (opts.lintFailuresSink) {
         opts.lintFailuresSink.push(...result.failures.filter((f) => f.check === 'lint'));
     }
-    if (gateMode === 'baseline' && isBaselineUncertifiable(opts.baselinePath)) {
+    const baseline = gateMode === 'baseline'
+        ? readRecoverableJsonObject(opts.baselinePath)
+        : null;
+    const applied = applyBaselineUnmeasured(opts, result, baseline);
+    if (applied.mv === opts.currentMv && isBaselineUncertifiable(baseline)) {
         return recordUncertifiableBaselineDefer(opts);
     }
-    if (result.status !== 'red' || result.failures.length === 0) {
-        return opts.currentMv;
+    const gateOpts = { ...opts, currentMv: applied.mv };
+    if (applied.result.status !== 'red' || applied.result.failures.length === 0) {
+        return gateOpts.currentMv;
     }
-    const remediationOutcome = await opts.deps.runRemediatorFn(result, opts.sessionDir);
+    const remediationOutcome = await opts.deps.runRemediatorFn(applied.result, opts.sessionDir);
     if (remediationOutcome.success) {
-        return opts.currentMv;
+        return gateOpts.currentMv;
     }
-    return recordPerIterationGateRegression(opts, result, gateMode);
+    return recordPerIterationGateRegression(gateOpts, applied.result, gateMode);
 }
 function recordPerIterationGateRegression(opts, result, gateMode) {
     const gatePayload = {
