@@ -37,7 +37,7 @@ import {
 } from '../services/microverse-state.js';
 import type { MetricComparisonFigures } from '../services/microverse-state.js';
 import { removeRecoverableJsonObject } from '../services/recoverable-json.js';
-import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths, listWorkingTreeDirtyPathsExcludingCodegraph } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { rankFindings } from '../services/citadel/reporter.js';
@@ -660,7 +660,9 @@ async function withCleanTemporaryCheckout<T>(
   sha: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  if (isWorkingTreeDirty(workingDir)) {
+  // The runtime's own `.codegraph/` index is not work: its self-ignoring `.gitignore` shows as
+  // untracked in any repo that does not exclude the directory, and no commit tracks it.
+  if (listWorkingTreeDirtyPathsExcludingCodegraph(workingDir).length > 0) {
     throw new Error('working tree is dirty; refusing baseline recapture checkout');
   }
 
@@ -690,30 +692,34 @@ export type BaseCheckoutFn = <T>(workingDir: string, sha: string, fn: () => Prom
  *
  * The replayed typecheck may write untracked build info (`*.tsbuildinfo`). MEASURED: one at a path
  * HEAD tracks makes the restore refuse and strands the worktree at `start_commit`; any other stays
- * `??`, and `-uall` dirtiness then refuses every later checkout. The helper refused a dirty tree on
- * entry, so every untracked non-ignored file present after `fn` is the replay's own — those, and
- * only those, are removed BEFORE the restore.
+ * `??`, and `-uall` dirtiness then refuses every later checkout. So the untracked set is snapshotted
+ * after the checkout and every file absent from that snapshot is removed BEFORE the restore — only
+ * what the replay created, never an untracked file that was already there.
  */
 export const withCleanReplayCheckout: BaseCheckoutFn = (workingDir, sha, fn) =>
   withCleanTemporaryCheckout(workingDir, sha, async () => {
+    const toplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: workingDir,
+      encoding: 'utf-8',
+      timeout: GIT_TEMP_CHECKOUT_TIMEOUT_MS,
+    }).trim();
+    const preexisting = new Set(listUntrackedFiles(toplevel));
     try {
       return await fn();
     } finally {
-      removeUntrackedFiles(workingDir);
+      for (const rel of listUntrackedFiles(toplevel)) {
+        if (!preexisting.has(rel)) fs.rmSync(path.join(toplevel, rel), { force: true });
+      }
     }
   });
 
-function removeUntrackedFiles(workingDir: string): void {
-  const gitOpts = { cwd: workingDir, encoding: 'utf-8' as const, timeout: GIT_TEMP_CHECKOUT_TIMEOUT_MS };
-  const toplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], gitOpts).trim();
-  const listed = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
-    ...gitOpts,
+function listUntrackedFiles(toplevel: string): string[] {
+  return execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
     cwd: toplevel,
+    encoding: 'utf-8',
+    timeout: GIT_TEMP_CHECKOUT_TIMEOUT_MS,
     maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
-  });
-  for (const rel of listed.split('\0').filter((entry) => entry.length > 0)) {
-    fs.rmSync(path.join(toplevel, rel), { force: true });
-  }
+  }).split('\0').filter((entry) => entry.length > 0);
 }
 
 async function capturePerIterationGateBaseline(opts: {

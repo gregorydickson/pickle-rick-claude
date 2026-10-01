@@ -2045,6 +2045,30 @@ test('G2: the replay removes the untracked build info it created, so the restore
   }
 });
 
+test('G2: the runtime\'s own untracked .codegraph index neither refuses the replay nor is deleted by it', async () => {
+  // MEASURED: in a repo that does not exclude `.codegraph/`, the index's self-ignoring
+  // `.gitignore` (`*` then `!.gitignore`) is the one untracked path `git status -uall` reports.
+  // Read as dirt, every replay would refuse and the sweep would be permanently unmeasurable.
+  const pre = tscLine(USE_TS, 2, 'TS2339', widgetMissing('size'));
+  const repo = makeReplayRepo('cg-g2-codegraph-', { baseTsc: [pre], headTsc: [pre] });
+  const cgIgnore = path.join(repo.dir, '.codegraph', '.gitignore');
+  try {
+    fs.mkdirSync(path.dirname(cgIgnore), { recursive: true });
+    fs.writeFileSync(cgIgnore, '*\n!.gitignore\n');
+    fs.writeFileSync(path.join(repo.dir, '.codegraph', 'codegraph.db'), 'db');
+    const status = execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: repo.dir, encoding: 'utf-8', timeout: 30_000 });
+    assert.equal(status, '?? .codegraph/.gitignore\n', 'precondition: the index reads as untracked dirt');
+
+    const sweep = await sweepAgainstReplay(repo);
+    assert.equal(sweep.ran, true, `the index must not refuse the replay; got ${JSON.stringify(sweep)}`);
+    assert.equal(sweep.selfIntroduced.length, 0, 'and the replay base still subtracts the pre-existing failure');
+    assert.equal(headSha(repo.dir), repo.head);
+    assert.equal(fs.existsSync(cgIgnore), true, 'an untracked file that predates the replay is never removed by it');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
 test('G2: the replay is cached per start_commit, and an unreadable cache recomputes — never read as empty', async () => {
   const pre = tscLine(USE_TS, 2, 'TS2339', widgetMissing('size'));
   const repo = makeReplayRepo('cg-g2-cache-', { baseTsc: [pre], headTsc: [pre] });
