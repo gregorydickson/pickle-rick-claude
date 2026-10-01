@@ -128,6 +128,13 @@ function writeCertifiableFixtureRepo(dir) {
   fs.writeFileSync(path.join(dir, 'src', 'broken.js'), 'module.exports = 1;\n');
 }
 
+// A red gate reaches runRemediatorFn; the default spawns a real `claude -p` remediator (600s
+// budget) whose verdict decides the regression count. Inject a recording stub instead.
+function stubRemediator() {
+  const calls = [];
+  return { calls, fn: async (gateResult) => { calls.push(gateResult); return { success: false }; } };
+}
+
 const BASE_OPTS = {
   regressionWarningThreshold: 5,
   backend: 'claude',
@@ -292,6 +299,7 @@ test('AC-SZGBC-03: a genuine strict-mode regression (real lint failure, certifia
     fs.writeFileSync(path.join(workingDir, 'trigger-lint.txt'), 'trigger\n');
     commitAll(workingDir, 'introduce final-iteration lint regression');
 
+    const remediator = stubRemediator();
     const result = await handleWorkerManagedIteration({
       ...BASE_OPTS,
       currentMv: makeMv({ key_metric: undefined }),
@@ -300,8 +308,10 @@ test('AC-SZGBC-03: a genuine strict-mode regression (real lint failure, certifia
       sessionDir,
       iteration: 1,
       enabledFiles: ['anatomy-park.json'],
-      _deps: { writeMicroverseStateFn: () => {}, logActivityFn: () => {} },
+      _deps: { writeMicroverseStateFn: () => {}, logActivityFn: () => {}, runRemediatorFn: remediator.fn },
     });
+
+    assert.equal(remediator.calls.length, 1, 'the red gate must reach the injected remediator, never a real spawn');
 
     assert.equal(result.converged, false, 'a genuine strict-mode regression must still defer convergence');
     assert.equal(result.reason, 'per-iteration gate left unresolved regressions');
@@ -441,6 +451,7 @@ for (const row of G1_ROWS) {
         ruleOrCode: 'TS2322', message: `e${i}`, severity: 'error', occurrence_index: 0,
       }));
       const writes = [];
+      const remediator = stubRemediator();
       const result = await handleWorkerManagedIteration({
         ...BASE_OPTS,
         currentMv: makeMv({ key_metric: undefined }),
@@ -449,6 +460,7 @@ for (const row of G1_ROWS) {
         _deps: {
           writeMicroverseStateFn: (_d, mv) => writes.push(mv),
           logActivityFn: () => {},
+          runRemediatorFn: remediator.fn,
           runGateFn: async () => ({
             status: failures.length > 0 ? 'red' : 'green',
             failures, baseline_used: true, allowed_paths_used: false, elapsed_ms: 0,
@@ -458,6 +470,7 @@ for (const row of G1_ROWS) {
         },
       });
 
+      assert.equal(remediator.calls.length, row.expect.regressions === 1 && !row.expect.latch ? 1 : 0, 'remediator reached only via the stub');
       const regressions = Number(result.currentMv.iteration_regressions ?? 0);
       assert.equal(regressions, row.expect.regressions, 'iteration_regressions');
       assert.equal(result.selfRedOpen === true, row.expect.latch, 'sink fired / selfRedOpen');
