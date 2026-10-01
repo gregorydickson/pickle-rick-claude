@@ -3,7 +3,6 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 import * as url from 'node:url';
@@ -5872,7 +5871,7 @@ describe('AP-LANES-ITER1-01', () => {
       consecutive_subprocess_errors: 0,
     });
 
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ap-lanes-iter1-')));
+    const root = fs.realpathSync(tmpDir());
     const parentDir = path.join(root, 'session');
     const writeCaps = (dir, extra) => {
       fs.mkdirSync(dir, { recursive: true });
