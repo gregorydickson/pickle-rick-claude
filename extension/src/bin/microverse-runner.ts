@@ -99,6 +99,8 @@ import {
   getChangedExportedSymbols,
   getChangedFilesSince,
   runBaselineAwareGate,
+  assignOccurrenceIndices,
+  subtractBaseline,
 } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 
@@ -545,6 +547,7 @@ export interface PerIterationGateDeps {
   // R-ORSR-6 interface-change sweep deps (injectable for tests).
   getChangedExportedSymbolsFn?: typeof getChangedExportedSymbols;
   getChangedFilesSinceFn?: typeof getChangedFilesSince;
+  baseCheckoutFn?: BaseCheckoutFn;
 }
 
 /**
@@ -675,6 +678,41 @@ async function withCleanTemporaryCheckout<T>(
       stdio: 'pipe',
       timeout: GIT_TEMP_CHECKOUT_TIMEOUT_MS,
     });
+  }
+}
+
+/** Check out `sha`, run `fn`, restore HEAD — the interface-change sweep's replay seam. */
+export type BaseCheckoutFn = <T>(workingDir: string, sha: string, fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * G2: `withCleanTemporaryCheckout` for the sweep's `start_commit` replay. PRECONDITION: it runs
+ * between iterations with no live worker, so nothing else writes the tree while HEAD is moved.
+ *
+ * The replayed typecheck may write untracked build info (`*.tsbuildinfo`). MEASURED: one at a path
+ * HEAD tracks makes the restore refuse and strands the worktree at `start_commit`; any other stays
+ * `??`, and `-uall` dirtiness then refuses every later checkout. The helper refused a dirty tree on
+ * entry, so every untracked non-ignored file present after `fn` is the replay's own — those, and
+ * only those, are removed BEFORE the restore.
+ */
+export const withCleanReplayCheckout: BaseCheckoutFn = (workingDir, sha, fn) =>
+  withCleanTemporaryCheckout(workingDir, sha, async () => {
+    try {
+      return await fn();
+    } finally {
+      removeUntrackedFiles(workingDir);
+    }
+  });
+
+function removeUntrackedFiles(workingDir: string): void {
+  const gitOpts = { cwd: workingDir, encoding: 'utf-8' as const, timeout: GIT_TEMP_CHECKOUT_TIMEOUT_MS };
+  const toplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], gitOpts).trim();
+  const listed = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
+    ...gitOpts,
+    cwd: toplevel,
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+  });
+  for (const rel of listed.split('\0').filter((entry) => entry.length > 0)) {
+    fs.rmSync(path.join(toplevel, rel), { force: true });
   }
 }
 
@@ -1266,12 +1304,89 @@ function enumerateInterfaceSweepAxes(
   };
 }
 
+const INTERFACE_SWEEP_BASE_FILE = 'interface-sweep-base.json';
+
+function isCachedGateFailure(row: unknown): row is GateFailure {
+  if (typeof row !== 'object' || row === null) return false;
+  const r = row as Record<string, unknown>;
+  return typeof r.check === 'string' && typeof r.file === 'string'
+    && typeof r.ruleOrCode === 'string' && typeof r.line === 'number';
+}
+
+/** The cached replay for exactly `startCommit`, or `null` — a missing, unreadable, malformed or
+ * other-sha cache is "not cached", never an empty base. */
+function readInterfaceSweepBaseCache(cachePath: string, startCommit: string): GateFailure[] | null {
+  try {
+    const raw = readRecoverableJsonObject(cachePath) as { start_commit?: unknown; failures?: unknown } | null;
+    if (raw?.start_commit !== startCommit || !Array.isArray(raw.failures)) return null;
+    return raw.failures.every(isCachedGateFailure) ? raw.failures : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * G2: the typecheck REPLAYED at `start_commit` in this same worktree (fingerprints carry its paths),
+ * cached once per sha in `<session>/gate/`. Never the rolling `gate/baseline.json`: a refresh recaptures
+ * at the phase's own HEAD, so subtracting it would disown the phase's own breaks. `null` = unmeasured
+ * (dirty tree, checkout error, unmeasured typecheck) — every one a value, never a throw.
+ */
+async function resolveInterfaceSweepBase(opts: {
+  workingDir: string;
+  sessionDir: string;
+  startCommit: string;
+  runGateFn: typeof runGate;
+  logActivityFn: typeof logActivity;
+  baseCheckoutFn: BaseCheckoutFn;
+}): Promise<GateFailure[] | null> {
+  const cachePath = path.join(opts.sessionDir, 'gate', INTERFACE_SWEEP_BASE_FILE);
+  const cached = readInterfaceSweepBaseCache(cachePath, opts.startCommit);
+  if (cached !== null) return cached;
+  let replay: GateFailure[] | null;
+  try {
+    replay = await opts.baseCheckoutFn(opts.workingDir, opts.startCommit, () => runInterfaceSweepTypecheck(opts));
+  } catch {
+    return null;
+  }
+  if (replay !== null) writeInterfaceSweepBaseCache(cachePath, opts.startCommit, replay);
+  return replay;
+}
+
+function writeInterfaceSweepBaseCache(cachePath: string, startCommit: string, failures: GateFailure[]): void {
+  try {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    writeStateFile(cachePath, { start_commit: startCommit, failures });
+  } catch {
+    // The cache only saves a replay; a failed write recomputes next time.
+  }
+}
+
+/** Failures NEW against `base`. Both sides are re-indexed: strict-mode rows all carry occurrence 0,
+ * which would make this a SET subtraction that disowns a 4th occurrence of a baselined identity. */
+function subtractInterfaceSweepBase(current: GateFailure[], base: GateFailure[], workingDir: string): GateFailure[] {
+  const baseline: GateBaselineFile = {
+    schema_version: 1,
+    captured_at: '',
+    working_dir: workingDir,
+    project_type: null,
+    checks: ['typecheck'],
+    failures: assignOccurrenceIndices(base),
+  };
+  return subtractBaseline(assignOccurrenceIndices(current), baseline, undefined, true);
+}
+
+/**
+ * `baseCheckoutFn` is REQUIRED for TS callers: the production guard passes
+ * `withCleanReplayCheckout`; `null` (or a JS caller omitting it) classifies the raw typecheck with
+ * no replay — the shape the direct-call unit fixtures pin, whose stubs return one list for every run.
+ */
 export async function runInterfaceChangeSweep(opts: {
   workingDir: string;
   sessionDir: string;
   startCommit: string;
   runGateFn: typeof runGate;
   logActivityFn: typeof logActivity;
+  baseCheckoutFn: BaseCheckoutFn | null;
   getChangedExportedSymbolsFn?: typeof getChangedExportedSymbols;
   getChangedFilesSinceFn?: typeof getChangedFilesSince;
 }): Promise<{ ran: boolean; skipped: InterfaceSweepSkipReason | null; selfIntroduced: GateFailure[] }> {
@@ -1285,11 +1400,16 @@ export async function runInterfaceChangeSweep(opts: {
   if (axes.changedExportedSymbols.size === 0) {
     return { ran: false, skipped: null, selfIntroduced: [] };
   }
+  // The replay runs FIRST, so build info the current-side typecheck writes cannot dirty its checkout.
+  const base = opts.baseCheckoutFn
+    ? await resolveInterfaceSweepBase({ ...opts, baseCheckoutFn: opts.baseCheckoutFn })
+    : undefined;
+  const unmeasurable = { ran: false, skipped: 'typecheck_unmeasurable' as const, selfIntroduced: [] };
+  if (base === null) return unmeasurable;
   const typecheck = await runInterfaceSweepTypecheck(opts);
-  if (typecheck === null) {
-    return { ran: false, skipped: 'typecheck_unmeasurable', selfIntroduced: [] };
-  }
-  const { selfIntroduced } = classifyNoDisown(typecheck, {
+  if (typecheck === null) return unmeasurable;
+  const residue = base === undefined ? typecheck : subtractInterfaceSweepBase(typecheck, base, opts.workingDir);
+  const { selfIntroduced } = classifyNoDisown(residue, {
     changedFiles: axes.changedFiles,
     changedExportedSymbols: axes.changedExportedSymbols,
     workingDir: opts.workingDir,
@@ -1326,18 +1446,24 @@ async function runInterfaceSweepTypecheck(opts: {
   runGateFn: typeof runGate;
   logActivityFn: typeof logActivity;
 }): Promise<GateFailure[] | null> {
-  const result = await opts.runGateFn({
-    workingDir: opts.workingDir,
-    mode: 'strict',
-    scope: 'full',
-    checks: ['typecheck'],
-    onEvent: (event, data) => opts.logActivityFn({
-      event: event as ActivityEventType,
-      source: 'pickle',
-      session: path.basename(opts.sessionDir),
-      gate_payload: { ...data, interface_change_sweep: true },
-    }),
-  });
+  let result: GateResult;
+  try {
+    result = await opts.runGateFn({
+      workingDir: opts.workingDir,
+      mode: 'strict',
+      scope: 'full',
+      checks: ['typecheck'],
+      onEvent: (event, data) => opts.logActivityFn({
+        event: event as ActivityEventType,
+        source: 'pickle',
+        session: path.basename(opts.sessionDir),
+        gate_payload: { ...data, interface_change_sweep: true },
+      }),
+    });
+  } catch {
+    // A gate that threw did not measure; no exception escapes the sweep (G2).
+    return null;
+  }
   if (isCheckUnmeasured(result.check_status, 'typecheck')) return null;
   return result.failures;
 }
@@ -1457,6 +1583,16 @@ function renderInterfaceSweepNotRun(
  * no base to diff against, so it is unarmed and returns null. Callers pass the raw
  * `state.start_commit` through — AP-EXT-ITER14-01 pins that wiring at the one seam that crosses it.
  */
+function resolveInterfaceSweepDeps(deps: PerIterationGateDeps | undefined) {
+  return {
+    runGateFn: deps?.runGateFn ?? runGate,
+    logActivityFn: deps?.logActivityFn ?? logActivity,
+    getChangedExportedSymbolsFn: deps?.getChangedExportedSymbolsFn,
+    getChangedFilesSinceFn: deps?.getChangedFilesSinceFn,
+    baseCheckoutFn: deps?.baseCheckoutFn ?? withCleanReplayCheckout,
+  };
+}
+
 async function applyInterfaceChangeSweepGuard(opts: {
   currentMv: MicroverseSessionState;
   workingDir: string;
@@ -1473,10 +1609,7 @@ async function applyInterfaceChangeSweepGuard(opts: {
     workingDir,
     sessionDir,
     startCommit: baseCommit,
-    runGateFn: _deps?.runGateFn ?? runGate,
-    logActivityFn: _deps?.logActivityFn ?? logActivity,
-    getChangedExportedSymbolsFn: _deps?.getChangedExportedSymbolsFn,
-    getChangedFilesSinceFn: _deps?.getChangedFilesSinceFn,
+    ...resolveInterfaceSweepDeps(_deps),
   });
   if (sweep.skipped !== null) {
     renderInterfaceSweepNotRun(sweep.skipped, iteration, log);
