@@ -882,11 +882,8 @@ function isDirtyPathUnderWorkingDir(repoRoot: string, workingDir: string, dirtyP
   // while `workingDir` (from state.json) is not. Comparing the two raw would mis-classify
   // in-working_dir dirt as "outside" whenever the repo lives under a symlinked path
   // (/var, /tmp), tripping a spurious Branch-4 FATAL and defeating the dirty-tree self-heal.
-  const realpathOrResolve = (p: string): string => {
-    try { return fs.realpathSync(path.resolve(p)); } catch { return path.resolve(p); }
-  };
-  const resolvedWorking = realpathOrResolve(workingDir);
-  const resolved = path.resolve(realpathOrResolve(repoRoot), dirtyPath);
+  const resolvedWorking = realpathOrResolveScopePath(workingDir);
+  const resolved = path.resolve(realpathOrResolveScopePath(repoRoot), dirtyPath);
   return resolved === resolvedWorking || resolved.startsWith(resolvedWorking + path.sep);
 }
 
