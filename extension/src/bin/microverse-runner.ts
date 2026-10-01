@@ -1576,6 +1576,16 @@ function renderInterfaceSweepNotRun(
   );
 }
 
+function resolveInterfaceSweepDeps(deps: PerIterationGateDeps | undefined) {
+  return {
+    runGateFn: deps?.runGateFn ?? runGate,
+    logActivityFn: deps?.logActivityFn ?? logActivity,
+    getChangedExportedSymbolsFn: deps?.getChangedExportedSymbolsFn,
+    getChangedFilesSinceFn: deps?.getChangedFilesSinceFn,
+    baseCheckoutFn: deps?.baseCheckoutFn ?? withCleanReplayCheckout,
+  };
+}
+
 /**
  * R-ORSR-6 interface-change sweep: before trusting a convergence signal, run a whole-repo tsc
  * when the phase's own diff changed an exported symbol. A self-introduced out-of-scope consumer
@@ -1595,16 +1605,6 @@ function renderInterfaceSweepNotRun(
  * no base to diff against, so it is unarmed and returns null. Callers pass the raw
  * `state.start_commit` through — AP-EXT-ITER14-01 pins that wiring at the one seam that crosses it.
  */
-function resolveInterfaceSweepDeps(deps: PerIterationGateDeps | undefined) {
-  return {
-    runGateFn: deps?.runGateFn ?? runGate,
-    logActivityFn: deps?.logActivityFn ?? logActivity,
-    getChangedExportedSymbolsFn: deps?.getChangedExportedSymbolsFn,
-    getChangedFilesSinceFn: deps?.getChangedFilesSinceFn,
-    baseCheckoutFn: deps?.baseCheckoutFn ?? withCleanReplayCheckout,
-  };
-}
-
 async function applyInterfaceChangeSweepGuard(opts: {
   currentMv: MicroverseSessionState;
   workingDir: string;

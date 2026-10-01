@@ -1083,6 +1083,15 @@ function renderInterfaceSweepNotRun(skipped, iteration, log) {
         `the no-disown classifier needs did not complete, so this iteration carries no ` +
         `INV-NO-SELF-DISOWN evidence in either direction — continuing (non-fatal)`);
 }
+function resolveInterfaceSweepDeps(deps) {
+    return {
+        runGateFn: deps?.runGateFn ?? runGate,
+        logActivityFn: deps?.logActivityFn ?? logActivity,
+        getChangedExportedSymbolsFn: deps?.getChangedExportedSymbolsFn,
+        getChangedFilesSinceFn: deps?.getChangedFilesSinceFn,
+        baseCheckoutFn: deps?.baseCheckoutFn ?? withCleanReplayCheckout,
+    };
+}
 /**
  * R-ORSR-6 interface-change sweep: before trusting a convergence signal, run a whole-repo tsc
  * when the phase's own diff changed an exported symbol. A self-introduced out-of-scope consumer
@@ -1102,15 +1111,6 @@ function renderInterfaceSweepNotRun(skipped, iteration, log) {
  * no base to diff against, so it is unarmed and returns null. Callers pass the raw
  * `state.start_commit` through — AP-EXT-ITER14-01 pins that wiring at the one seam that crosses it.
  */
-function resolveInterfaceSweepDeps(deps) {
-    return {
-        runGateFn: deps?.runGateFn ?? runGate,
-        logActivityFn: deps?.logActivityFn ?? logActivity,
-        getChangedExportedSymbolsFn: deps?.getChangedExportedSymbolsFn,
-        getChangedFilesSinceFn: deps?.getChangedFilesSinceFn,
-        baseCheckoutFn: deps?.baseCheckoutFn ?? withCleanReplayCheckout,
-    };
-}
 async function applyInterfaceChangeSweepGuard(opts) {
     const { currentMv, workingDir, sessionDir, iteration, log, _deps } = opts;
     const baseCommit = sweepBaseCommit(opts.startCommit);
