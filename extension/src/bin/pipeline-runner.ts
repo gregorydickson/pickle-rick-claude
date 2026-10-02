@@ -4903,6 +4903,15 @@ function runPhaseSetup(runtime: PipelineRuntime, phaseConfig: PhaseConfig, scope
   }
 }
 
+/** `unreproducibleNodeModulesCount`, where a count that cannot be taken reads as a gap (serial), never as none. */
+function unreproducibleNodeModulesGap(runtime: PipelineRuntime): number {
+  try {
+    return unreproducibleNodeModulesCount(gitRepoRoot(runtime.target));
+  } catch {
+    return 1;
+  }
+}
+
 async function runConfiguredPhase(
   runtime: PipelineRuntime,
   phaseConfig: PhaseConfig,
@@ -4917,15 +4926,22 @@ async function runConfiguredPhase(
   if (phaseConfig.name === 'citadel') return { skipped: false, exitCode: (await executeCitadelPhase(runtime)).exitCode };
   const cap = runtime.config.anatomy_max_parallel_lanes;
   const lanes = phaseConfig.name === 'anatomy-park' && cap >= 2 ? readAnatomyLanes(runtime.sessionDir) : [];
+  const pickleWaves = phaseConfig.name === 'pickle' && runtime.config.max_parallel_tickets >= 2;
+  // One predicate guards both parallel arms: a lane or unit worktree gets only the `node_modules` it can link.
+  const missing = lanes.length >= 2 || pickleWaves ? unreproducibleNodeModulesGap(runtime) : 0;
   if (lanes.length >= 2) {
-    const missing = unreproducibleNodeModulesCount(gitRepoRoot(runtime.target));
     if (missing === 0) return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
     runtime.log(
       `anatomy lanes: disabled for this phase — lane worktrees cannot reproduce ${missing} node_modules dir(s); running serially`,
     );
   }
-  if (phaseConfig.name === 'pickle' && runtime.config.max_parallel_tickets >= 2) {
-    return { skipped: false, exitCode: await runPickleWaves(runtime, runtime.config.max_parallel_tickets, phaseConfig) };
+  if (pickleWaves) {
+    if (missing === 0) {
+      return { skipped: false, exitCode: await runPickleWaves(runtime, runtime.config.max_parallel_tickets, phaseConfig) };
+    }
+    runtime.log(
+      `pickle waves: disabled for this phase — lane worktrees cannot reproduce ${missing} node_modules dir(s); running serially`,
+    );
   }
   const result = await executePhaseRunner(phaseConfig, runtime.phaseEnv);
   return { skipped: false, exitCode: result.exitCode, stderr: result.stderr };

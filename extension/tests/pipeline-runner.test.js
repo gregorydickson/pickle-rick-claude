@@ -60,7 +60,7 @@ import { loadFinalizeGateSettings, finalizeGateMain } from '../bin/finalize-gate
 import { runInterfaceChangeSweep, withCleanReplayCheckout } from '../bin/microverse-runner.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
-import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
+import { LATEST_SCHEMA_VERSION, Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
 
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
   cwd, encoding: 'utf-8', timeout: 60_000,
@@ -6319,6 +6319,127 @@ describe('AP-LANES-ITER1-01', () => {
       assert.equal(readCaps(), undefined);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A1: pickle waves and anatomy lanes share ONE node_modules eligibility predicate
+// ---------------------------------------------------------------------------
+
+describe('A1: pickle waves fall back to serial where a unit worktree cannot reproduce node_modules', () => {
+  const WAVE_IDS = ['aaaa1111', 'bbbb2222'];
+  const WAVES_LINE = /pickle waves: disabled for this phase — lane worktrees cannot reproduce 1 node_modules dir\(s\); running serially/;
+
+  /** A self-ignoring dependency dir at `<dir>/node_modules`, so the checkout stays clean; no install, no network. */
+  const seedNodeModules = (repo, ...dirs) => {
+    for (const dir of dirs) {
+      fs.mkdirSync(path.join(repo, dir, 'node_modules'), { recursive: true });
+      fs.writeFileSync(path.join(repo, dir, 'node_modules', '.gitignore'), '*\n');
+    }
+  };
+  const readRunnerLog = (sessionDir) => {
+    const file = path.join(sessionDir, 'pipeline-runner.log');
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '';
+  };
+
+  /** A workspace repo, a pickle-only pipeline and two parallel_safe Todo tickets declaring disjoint files. */
+  function makeWavesFixture({ pipeline = {}, nodeModules = [] } = {}) {
+    const repo = fs.realpathSync(tmpDir());
+    const startCommit = initRepo(repo, {
+      // No trailing slash: the unit worktree's linked node_modules is a symlink, which `node_modules/` never matches.
+      '.gitignore': 'node_modules\n',
+      'package.json': JSON.stringify({ name: 'fx', private: true, workspaces: ['packages/*'] }),
+      'packages/a/index.ts': 'export const a = 1;\n',
+    });
+    seedNodeModules(repo, ...nodeModules);
+    const dataRoot = fs.realpathSync(tmpDir());
+    const sessionDir = path.join(dataRoot, 'sessions', '2026-10-02-a1waves');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    writeBaseState(path.join(sessionDir, 'state.json'), {
+      active: false, working_dir: repo, session_dir: sessionDir, step: 'implement', iteration: 0, current_ticket: null,
+      tmux_mode: false, schema_version: LATEST_SCHEMA_VERSION, start_commit: startCommit, exit_reason: null, activity: [], history: [],
+    });
+    fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+      phases: ['pickle'], target: repo, anatomy_stall_limit: 3, szechuan_stall_limit: 5,
+      anatomy_max_iterations: 5, szechuan_max_iterations: 5, dirty_exempt_segments: ['prds', 'docs'], ...pipeline,
+    }));
+    WAVE_IDS.forEach((id, i) => {
+      fs.mkdirSync(path.join(sessionDir, id));
+      fs.writeFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`),
+        `---\nid: ${id}\ntitle: ${id}\nstatus: Todo\norder: ${(i + 1) * 10}\nparallel_safe: true\n---\n`
+        + `# ${id}\n## Implementation Details\n**Files to modify/create**: \`src/${id}.ts\`\n`);
+    });
+    const cleanup = () => {
+      for (const dir of fs.readdirSync(path.dirname(sessionDir))) {
+        fs.rmSync(path.join(path.dirname(sessionDir), dir), { recursive: true, force: true });
+      }
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    };
+    return { repo, dataRoot, sessionDir, cleanup };
+  }
+
+  /** Stub mux-runner: records each spawn; a unit session stamps its own ticket Done after committing, the serial one does nothing. */
+  function recordingRunner(calls) {
+    return async (_cmd, args) => {
+      calls.push(args[1]);
+      const unit = /--unit-([0-9a-f]+)$/.exec(args[1]);
+      if (unit) {
+        const wt = readJson(path.join(args[1], 'state.json')).working_dir;
+        fs.mkdirSync(path.join(wt, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(wt, 'src', `${unit[1]}.ts`), `export const v = '${unit[1]}';\n`);
+        git(wt, 'add', '-A');
+        git(wt, '-c', 'user.email=l@l', '-c', 'user.name=l', 'commit', '-q', '-m', `feat(${unit[1]}): unit work`);
+        const sha = git(wt, 'rev-parse', 'HEAD');
+        const ticketPath = path.join(args[1], unit[1], `rick_ticket_${unit[1]}.md`);
+        fs.writeFileSync(ticketPath, fs.readFileSync(ticketPath, 'utf-8').replace(/^status:.*$/m, `status: Done\ncompletion_commit: ${sha}`));
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+  }
+
+  test('A1-1: a node_modules below depth 1 sends the pickle phase to ONE serial runner, no unit session, waves line logged', async () => {
+    const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: ['', path.join('packages', 'a')] });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(recordingRunner(calls));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      assert.deepEqual(calls, [fx.sessionDir], 'one runner over the parent session');
+      for (const id of WAVE_IDS) assert.equal(fs.existsSync(`${fx.sessionDir}--unit-${id}`), false, `no unit session for ${id}`);
+      assert.match(readRunnerLog(fx.sessionDir), WAVES_LINE);
+      assert.doesNotMatch(readRunnerLog(fx.sessionDir), /anatomy lanes: disabled/, 'the anatomy literal is not borrowed by the pickle phase');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('A1-2: control — a root-only node_modules still runs the waves, and neither disabled line is logged', async () => {
+    const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: [''] });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(recordingRunner(calls));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      assert.deepEqual(calls.sort(), WAVE_IDS.map((id) => `${fx.sessionDir}--unit-${id}`), 'one unit per ticket, no serial runner');
+      assert.doesNotMatch(readRunnerLog(fx.sessionDir), /disabled for this phase/);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('A1-3: control — a serial pickle phase over the same workspace logs neither disabled line', async () => {
+    const fx = makeWavesFixture({ nodeModules: ['', path.join('packages', 'a')] });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(recordingRunner(calls));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      assert.deepEqual(calls, [fx.sessionDir]);
+      assert.doesNotMatch(readRunnerLog(fx.sessionDir), /disabled for this phase/, 'the predicate is not even asked on a serial phase');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
     }
   });
 });
