@@ -269,12 +269,14 @@ function laneCommits(repoRoot, phaseStartSha, branch) {
     }
 }
 /** Pick one lane onto the integration worktree; anything short of green leaves it where it was. */
-function pickLane(worktree, sessionDir, targetDir, commits, preserve, log) {
+function pickLane(worktree, sessionDir, targetDir, commits, preserve, baseRed, log) {
     const before = laneGit(worktree, ['rev-parse', 'HEAD']);
     const picked = commits.every((sha) => laneGitOk(worktree, ['-c', 'gc.auto=0', '-c', 'commit.gpgsign=false', 'cherry-pick', sha]));
     if (!picked)
         laneGitOk(worktree, ['cherry-pick', '--abort']);
-    const check = picked ? runIntegrationTypecheck(targetDir) : null;
+    const measured = picked ? runIntegrationTypecheck(targetDir) : null;
+    // A target already red at the phase start sha measures nothing about this lane.
+    const check = measured === 'red' && baseRed ? 'unavailable' : measured;
     if (check === 'unavailable')
         log('anatomy lanes: integration_check: unavailable — accepting the lane');
     if (check !== null && check !== 'red')
@@ -305,10 +307,11 @@ export function integrateLanes(input) {
         createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
         const preserve = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
         const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
+        const baseRed = runIntegrationTypecheck(targetDir) === 'red';
         commits.forEach((laneCommitList, i) => {
             if (laneCommitList.length === 0)
                 return;
-            const pick = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, log);
+            const pick = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, baseRed, log);
             outcomes[i] = pick.outcome;
             checks[i] = pick.check;
         });

@@ -5152,7 +5152,7 @@ describe('B-LANES WS-3: lane integration', () => {
     + "process.exit(['alpha/a.ts','beta/a.ts'].every((f)=>fs.readFileSync(f,'utf8').includes('RED'))?1:0)";
 
   // `typecheck: false` ships no package.json/check.js, so no integration typecheck command is discoverable.
-  function makeFixture({ typecheck = true } = {}) {
+  function makeFixture({ typecheck = true, redAtBase = false } = {}) {
     const repo = fs.realpathSync(tmpDir());
     initRepo(repo, {
       ...laneSeedFiles(LANES.map(({ name }) => name)),
@@ -5161,6 +5161,7 @@ describe('B-LANES WS-3: lane integration', () => {
         'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
         'check.js': CHECK_JS,
       } : {}),
+      ...(redAtBase ? { 'alpha/a.ts': 'export const a = "RED";\n', 'beta/a.ts': 'export const a = "RED";\n' } : {}),
       '.gitignore': 'node_modules/\n',
     }, { branch: 'work' });
     fs.mkdirSync(path.join(repo, 'node_modules'));
@@ -5302,6 +5303,40 @@ describe('B-LANES WS-3: lane integration', () => {
       assert.deepEqual([lanes.alpha.integration_check, lanes.beta.integration_check], ['unavailable', 'unavailable']);
       assert.match(read(path.join(fx.repo, 'alpha/a.ts')), /= 2/, 'the unchecked lane work landed on main');
       assert.deepEqual(capUnmeasured(fx.sessionDir), ['integration_typecheck']);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L6-red-at-base: a target already red at the phase start sha → lane integrated, check unavailable, disclosed', async () => {
+    const fx = makeFixture({ redAtBase: true });
+    try {
+      __setSpawnRunnerForTests(committingRunner([{}, {}, { 'gamma/a.ts': 'export const a = 2;\n' }]));
+      const code = await runAnatomyLanes(fx.runtime, LANES, 3);
+      assert.equal(code, 0, fx.logs.join('\n'));
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes.alpha.outcome, 'integrated');
+      assert.equal(lanes.gamma.outcome, 'integrated');
+      assert.equal(lanes.gamma.integration_check, 'unavailable');
+      assert.match(read(path.join(fx.repo, 'gamma/a.ts')), /= 2/, 'the lane work landed on main');
+      assert.ok(capUnmeasured(fx.sessionDir).includes('integration_typecheck'));
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L6-green-at-base: green at base + a lane that introduces a typecheck error → still integration_red', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'alpha/a.ts': 'export const a = "RED";\n' },
+        { 'beta/a.ts': 'export const a = "RED";\n' },
+      ]));
+      await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3);
+      const lanes = byName(fx.sessionDir);
+      assert.deepEqual([lanes.alpha.outcome, lanes.beta.outcome], ['integrated', 'integration_red']);
+      assert.equal(lanes.beta.integration_check, null);
+      assert.deepEqual(capUnmeasured(fx.sessionDir), []);
     } finally {
       fx.cleanup();
     }
