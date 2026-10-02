@@ -42,21 +42,16 @@ test('AC-WSE-04: reminder ties tier-lifecycle phrase to <promise>I AM DONE</prom
  */
 const BACKGROUNDING_FORMS = ['run_in_background', '&', 'nohup', 'setsid', 'disown'];
 
-// '&' is a single character that can appear incidentally anywhere in the
-// template (HTML entities, prose "&", unrelated shell examples), so a bare
-// content.includes('&') can never fail — it would pass even if the directive
-// stopped naming trailing '&' as forbidden. Every other form is a multi-char
-// token unlikely to appear incidentally, so a substring match stays precise.
-const FORM_ASSERTIONS = {
-  '&': (content) =>
-    /no trailing `&`/.test(content),
-};
-
 describeEach(BACKGROUNDING_FORMS)(
   'R-MWBG: send-to-morty.md forbids backgrounding form %s for the worker\'s own long commands',
   (form) => {
     test(`names "${form}" as forbidden`, () => {
-      const matches = FORM_ASSERTIONS[form] ? FORM_ASSERTIONS[form](content) : content.includes(form);
+      // '&' is a single character that can appear incidentally anywhere in the
+      // template (HTML entities, prose "&", unrelated shell examples), so a bare
+      // content.includes('&') can never fail — it would pass even if the directive
+      // stopped naming trailing '&' as forbidden. Every other form is a multi-char
+      // token unlikely to appear incidentally, so a substring match stays precise.
+      const matches = form === '&' ? /no trailing `&`/.test(content) : content.includes(form);
       assert.ok(
         matches,
         `expected send-to-morty.md to name "${form}" as a forbidden backgrounding form`,
