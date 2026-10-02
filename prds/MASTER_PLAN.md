@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 01:55Z) — step 2 merge-down: exp/b-lanes gate red 21/22, branch fix pipeline RUNNING
+### ▶ STATE (2026-10-02 04:55Z) — queue steps 1–2 DONE; step 3 (B-ATTRIB-L) next; queue below is the babysitter's
 
 | | |
 |---|---|
 | `main` | **`3cdb1c4c`** + this STATE commit, pushed. **B-ATTRIB-G built** (session `2026-10-01-face240c`, 4/4 phases, finished 22:53Z; G1 `d1e369ce`, G2 `c3fc60af`/`970370c7`, D2 `f73e828d`). Gate `20261001T233051Z-35963` 22/22 at `3cdb1c4c`, soak 1803.7s |
-| `exp/b-lanes` | **DEPLOYED = `979b55b1`** (B-LANES-UNCHECKED + FIX; gate 22/22; verified by content). Pushed tip **`9d193e05`** = merge of main/B-ATTRIB-G (`d27b8be1`) + PRD B-LANES-MERGE-G; NOT deployed. Gate `20261002T004822Z-46820` at `d27b8be1`: **21/22**, `test_fast_budget` red — B-LANES wiring AC 1 `1 !== 0` 3/3 runs (fixture has no runnable typecheck → `integration_typecheck` unmeasured → D2 withholds success; the test is stale, the product is right) |
+| `exp/b-lanes` | pushed **`2e813f87`** = **DEPLOYED** (B-LANES-UNCHECKED + FIX, main/B-ATTRIB-G merged at `d27b8be1`, B-LANES-MERGE-G `e038fc9b`). Gate `20261002T033059Z-66885` 22/22, soak 1803.7s. Verified by content: `baselineUnmeasuredChecks` in deployed `convergence-gate.js` + `microverse-runner.js`, `integration_check` in `pipeline-runner.js`; bin/ + services/ diff = 0 |
 | `exp/b-parallel-build` | pushed **`fc9e05dd`** (B-PBUILD #43 + #52 bound; gate 22/22). Not deployed. Merge-down of B-LANES-UNCHECKED and B-ATTRIB is deferred until both land |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-LANES-MERGE-G** on `exp/b-lanes`, session `2026-10-02-76f112c8` (tmux `pipeline-76f112c8`, launched 01:52Z; 1 test-only ticket, `paths:` scope = `extension/tests/pipeline-runner.test.js`) |
+| RUNNING | **nothing** (as of 04:55Z). Old `pipeline-*` tmux shells are idle |
 | open issues | **#53** (B-ATTRIB, in progress), **#52** (bound shipped, lane part in flight), **#43** (B-PBUILD built, on its branch awaiting field runs), **#5** (operator-deferred) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
@@ -240,15 +240,9 @@ NO measured basis. Large PRDs are not constrained by the cap.
 ### ▶ QUEUE (strictly sequential; never two pipelines; never commit to a branch while its pipeline or gate runs)
 
 1. ~~Gate `exp/b-lanes`~~ — DONE 2026-10-01: 22/22, pushed `979b55b1`, redeployed, verified by content.
-2. **B-ATTRIB-G (#53 general) on `main`.** BUILT + main gated green + pushed (see STATE). **Remaining: merge
-   `main` into `exp/b-lanes` → gate → push → redeploy (grep deployed `microverse-runner.js` for the G1 helper).**
-   Merged (`d27b8be1`), gate red 21/22 → fix PRD `prds/p1-b-lanes-merge-attrib-g-stale-ac1.md` (on the branch) running.
-   When it finishes: gate `exp/b-lanes` → push → redeploy → verify by content.
-   - Materials: PRD `prds/p0-b-attrib-g-unmeasured-is-not-self-introduced.md`; 3 tickets already written in session
-     `2026-10-01-face240c` (G1 medium, G2 large, D2 medium).
-   - Switch the main checkout to `main`, `setup.js --tmux --resume <session>`, and write `pipeline.json` with
-     `"anatomy_max_parallel_lanes": 2` and an explicit `paths:` scope listing every ticket's Files.
-   - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy.
+2. ~~B-ATTRIB-G (#53 general)~~ — DONE 2026-10-02: built on `main` (session `2026-10-01-face240c`), main gate 22/22, merged into
+   `exp/b-lanes`; the merge exposed a stale lane-wiring fixture (fixed by B-LANES-MERGE-G, session `2026-10-02-76f112c8`);
+   branch gate 22/22, pushed, redeployed, verified by content. Merge-down to `exp/b-parallel-build` stays deferred until B-ATTRIB-L lands.
 3. **B-ATTRIB-L (#53 lanes) on `exp/b-lanes`.**
    - PRD: `prds/p0-b-attrib-l-lanes-measure-their-own-work.md`. It was drafted on `main` for durability; commit it on
      the branch too.
@@ -294,6 +288,7 @@ collects `*.test.js` only).
 | `2026-09-26-e22412a9` B-LANES-FIX2 | 1 test | 1 (explicit `paths:` scope) | 1.6 | — | — | single lane | explicit path scope avoided the unscoped cost |
 | `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 2/3/2/2/5/2 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) |
 | `2026-10-01-face240c` B-ATTRIB-G (on `main`) | 17 (943+/127−) | 5 (cap 2, explicit `paths:` scope) | 26.0 | 4/2/3/2/2 | 3 lane commits | 5 integrated, 0 conflicts | none; pickle 74 min for 3 tickets; szechuan 5.8 min |
+| `2026-10-02-76f112c8` B-LANES-MERGE-G (on `exp/b-lanes`) | 1 test | 1 (explicit `paths:` scope) | 1.9 | 2 | 0 | single lane | none; pickle 17.5 min, szechuan 8.7 min (2 DRY/doc commits) |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 
