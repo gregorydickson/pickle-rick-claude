@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 10:15Z) — QUEUE DRAINED (steps 1–3 done); babysitter is in rule E (idle research) until the operator refills
+### ▶ STATE (2026-10-02 14:10Z) — queue refilled from #54; step 4 (B-RUNREPORT-54) launching on main
 
 | | |
 |---|---|
@@ -246,7 +246,14 @@ NO measured basis. Large PRDs are not constrained by the cap.
 3. ~~B-ATTRIB-L (#53 lanes)~~ — DONE 2026-10-02: built on `exp/b-lanes` (session `2026-10-02-1d45b656`), gated 22/22, pushed, redeployed,
    verified by content; merged into `exp/b-parallel-build` (`99fe61eb`), gated 22/22, pushed. Evidence comments on #53.
 
-**Queue drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
+4. **B-RUNREPORT-54 (#54, general) on `main`.** PRD `prds/p1-b-runreport-54.md`; 5 hand-written tickets (T1 conformance-FAIL
+   refuses Done via the Z1 path + F5 prompt rider; T2 citadel `orphan-test-file` only where `ENFORCE:` exists + `ac_coverage`
+   UNMEASURED disclosure; T3 refinement AC-shape dedupe, `missing_requirement_ids`, dependency `.d.ts` symbol resolution;
+   T4 monitor template; T5 `/pickle-pipeline` session binding + 0-ahead scope pin). Every premise re-measured at `72797f3e`
+   (8/8 live). Decisions D-1..D-4 taken at the recommended defaults. G3/G4 and the AC-shape advisory demotion are follow-ups.
+   - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy → merge into `exp/b-parallel-build` → gate → push.
+
+**Before #54 the queue was drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
 merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
 merge `exp/b-lanes` into `main` (the ledger now has 7 sessions); deploy or merge `exp/b-parallel-build`; close #52/#53.
 
