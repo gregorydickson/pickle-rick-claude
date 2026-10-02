@@ -43,7 +43,7 @@ import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES, createMicroverseState, readMicroverseState, recordCapUnmeasured, writeMicroverseState, } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, laneCommits, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, laneCommits, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, RETAINED_BRANCH_MAX_AGE_MS, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -1855,7 +1855,6 @@ function reportLaneRecovery({ runtime, repoRoot }) {
     }
 }
 const KEPT_LANE_SUBJECT_CAP = 5;
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 /**
  * One line per retained lane branch that holds commits, read back from `archive/lanes.json`: what is
  * on it, why it was not integrated, and the date any later lanes run deletes it. The retention
@@ -1880,7 +1879,7 @@ export function reportKeptLaneBranches(runtime) {
         const more = commits.length - subjects.length;
         const tipSeconds = Number(runGitString(['log', '-1', '--format=%ct', row.branch], repoRoot));
         const recoverBefore = Number.isFinite(tipSeconds) && tipSeconds > 0
-            ? new Date(tipSeconds * 1000 + RETAINED_BRANCH_MAX_AGE_DAYS * MS_PER_DAY).toISOString() : 'unknown (tip date unreadable)';
+            ? new Date(tipSeconds * 1000 + RETAINED_BRANCH_MAX_AGE_MS).toISOString() : 'unknown (tip date unreadable)';
         runtime.log(`kept lane branch ${row.branch}: ${commits.length} commit(s), outcome ${row.outcome}, exit ${row.exit_reason} — ${subjects.join('; ')}${more > 0 ? `; … (+${more} more)` : ''} — recover before ${recoverBefore} (deleted by any later lanes run after ${RETAINED_BRANCH_MAX_AGE_DAYS} days)`);
     }
 }

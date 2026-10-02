@@ -100,6 +100,7 @@ import {
   releaseLaneBranches,
   recoverLaneBranches,
   RETAINED_BRANCH_MAX_AGE_DAYS,
+  RETAINED_BRANCH_MAX_AGE_MS,
   type LaneOutcome,
 } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
@@ -2246,7 +2247,6 @@ function reportLaneRecovery({ runtime, repoRoot }: LaneRun): void {
 }
 
 const KEPT_LANE_SUBJECT_CAP = 5;
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
  * One line per retained lane branch that holds commits, read back from `archive/lanes.json`: what is
@@ -2269,7 +2269,7 @@ export function reportKeptLaneBranches(runtime: PipelineRuntime): void {
     const more = commits.length - subjects.length;
     const tipSeconds = Number(runGitString(['log', '-1', '--format=%ct', row.branch], repoRoot));
     const recoverBefore = Number.isFinite(tipSeconds) && tipSeconds > 0
-      ? new Date(tipSeconds * 1000 + RETAINED_BRANCH_MAX_AGE_DAYS * MS_PER_DAY).toISOString() : 'unknown (tip date unreadable)';
+      ? new Date(tipSeconds * 1000 + RETAINED_BRANCH_MAX_AGE_MS).toISOString() : 'unknown (tip date unreadable)';
     runtime.log(`kept lane branch ${row.branch}: ${commits.length} commit(s), outcome ${row.outcome}, exit ${row.exit_reason} — ${subjects.join('; ')}${more > 0 ? `; … (+${more} more)` : ''} — recover before ${recoverBefore} (deleted by any later lanes run after ${RETAINED_BRANCH_MAX_AGE_DAYS} days)`);
   }
 }

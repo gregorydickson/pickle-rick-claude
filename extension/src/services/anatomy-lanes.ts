@@ -224,7 +224,7 @@ export function aggregateLaneExitReason(
 const LANE_TYPECHECK_TIMEOUT_MS = 300_000;
 /** How long a kept `pickle-lane/*` branch survives before phase-start recovery deletes it. */
 export const RETAINED_BRANCH_MAX_AGE_DAYS = 14;
-const RETAINED_BRANCH_MAX_AGE_MS = RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+export const RETAINED_BRANCH_MAX_AGE_MS = RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 const UNINTEGRATED_PREFIX = 'unintegrated-';
 
 export type LaneIntegrationOutcome =
