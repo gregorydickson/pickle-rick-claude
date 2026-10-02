@@ -304,17 +304,15 @@ wave path, not a speed result.**
    - Two of #5's three moves closed on evidence with no code.
    - Optionally the never-invoked archaeology module (O-3).
 
-## Operator decisions still open
+## Operator decisions (answered 2026-10-02)
 
-- **O-1.** Confirm the launch precondition: wait for the full B-RUNREPORT-54 merge-down (recommended), or drop E3, E4,
-  E6, C3 and D4 from this bundle.
-- **O-2.** A2 changes what lanes and units see in EVERY workspace repo the deployed build touches. Ship it in this
-  bundle (the default), or land A1 only and run A2 after a monorepo field run?
-- **O-3.** #5 Move 1: archaeology is dead code (0 callers, 0 artifacts in 62 sessions). Choose one: (a) wire plus
-  cache, which adds a setup spawn per session; (b) delete the module and the stale `PRD_GUIDE.md` reference (a
-  subtraction); (c) defer. Recommended: (b).
-- **O-4.** Close #5 (Moves 2–3 satisfied, 4–5 out of scope), and #53 / #52 on the lane-branch evidence, now or at
-  branch merge?
-- **O-5.** The catalog size residual (1.27 MB of trap-door catalogs vs #5's 20–40 lines per directory) is its own
-  subtraction PRD. File it, or record it only?
-- **O-6.** E5 is cosmetic. Keep it, or cut it to shorten the serial `.claude/**` tail?
+- **O-1 — launch precondition:** wait for the full B-RUNREPORT-54 + B-DEPLOYPARITY merge-down (main → `exp/b-lanes` →
+  `exp/b-parallel-build`, each gated). E3, E4, E6, C3 and D4 stay in.
+- **O-2 — A2 ships in this bundle.** A1 is kept as the safety net: when linking cannot reproduce a workspace's
+  `node_modules`, units and lanes fall back to serial. This repo cannot exercise A2; the first monorepo field run is its
+  real test and must be reported.
+- **O-3 — delete archaeology** (the dead module, its tests, and the stale `PRD_GUIDE.md` reference). #5 Move 1 is closed
+  by subtraction; Moves 2–3 are already satisfied (evidence above).
+- **O-4 — close #5, #52 and #53 only when the branch merges to `main`,** with evidence comments then.
+- **O-5 — record only:** the trap-door catalog size residual is not in this bundle.
+- **O-6 — E5 is cut** (cosmetic; recorded, no ticket).
