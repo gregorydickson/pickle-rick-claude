@@ -668,19 +668,7 @@ function readWindowMode(tmuxBin: string, target: string, spawnSyncFn: typeof spa
  * what this mode needs, so play it safe and rebuild.
  */
 export function monitorModesCompatible(existing: string | null, want: MonitorMode): boolean {
-  if (!existing) return false;
-  switch (want) {
-    case 'pickle':
-      return existing === 'pickle';
-    case 'council':
-      return existing === 'council';
-    case 'refinement':
-      return existing === 'refinement';
-    case 'szechuan-sauce':
-      return existing === 'szechuan-sauce';
-    case 'anatomy-park':
-      return existing === 'anatomy-park';
-  }
+  return existing === want;
 }
 
 export interface RespawnMonitorWindowForModeOpts {

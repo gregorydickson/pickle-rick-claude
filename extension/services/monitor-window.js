@@ -506,20 +506,7 @@ function readWindowMode(tmuxBin, target, spawnSyncFn) {
  * what this mode needs, so play it safe and rebuild.
  */
 export function monitorModesCompatible(existing, want) {
-    if (!existing)
-        return false;
-    switch (want) {
-        case 'pickle':
-            return existing === 'pickle';
-        case 'council':
-            return existing === 'council';
-        case 'refinement':
-            return existing === 'refinement';
-        case 'szechuan-sauce':
-            return existing === 'szechuan-sauce';
-        case 'anatomy-park':
-            return existing === 'anatomy-park';
-    }
+    return existing === want;
 }
 function _resolveTmuxSessionName(spawnSyncFn, log, mode) {
     const r = spawnSyncFn('tmux', ['display-message', '-p', '#S'], { encoding: 'utf-8', timeout: 5_000 });
