@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 14:10Z) — queue refilled from #54; step 4 (B-RUNREPORT-54) launching on main
+### ▶ STATE (2026-10-02 15:30Z) — step 4 (B-RUNREPORT-54) RUNNING on main; step 5 (B-MEGA, operator-approved) being planned
 
 | | |
 |---|---|
@@ -231,8 +231,9 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | pushed **`e86180e0`** = **DEPLOYED** (adds B-ATTRIB-L, session `2026-10-02-1d45b656`). Gate `20261002T073139Z-13368` 22/22, soak 1803.7s. Verified by content in deployed `pipeline-runner.js`: `disabled for this phase` (L2), `kept lane branch` (L4), `node_modules_linked` (L5), `start_commit: phaseStartSha` (L1); bin/ + services/ diff = 0 |
 | `exp/b-parallel-build` | pushed **`99fe61eb`** = merge of `exp/b-lanes@e86180e0` (B-ATTRIB-G + B-LANES-MERGE-G + B-ATTRIB-L). Gate `20261002T085127Z-22748` 22/22, soak 1803.7s. Not deployed (operator decision) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **nothing** (as of 10:15Z). The main checkout is back on `exp/b-lanes` (the deployed branch) |
-| open issues | **#53** (B-ATTRIB, in progress), **#52** (bound shipped, lane part in flight), **#43** (B-PBUILD built, on its branch awaiting field runs), **#5** (operator-deferred) |
+| RUNNING | **B-RUNREPORT-54** on `main`, session `2026-10-02-74246bff` (tmux `pipeline-74246bff`, launched 13:48Z). 5/5 tickets Done (`11af854e`..`d9a64406`, local, unpushed); pickle phase closing, then citadel → anatomy-park → szechuan. **Local `main` will need `git merge origin/main` (NOT rebase — tickets record their `completion_commit` shas) before the post-gate push**, because this STATE commit was pushed from a worktree while the pipeline ran (operator-requested) |
+| open issues | **#54** (B-RUNREPORT-54 in flight), **#55** (design: the review chain is anchored on the refined PRD + branch diff — premise ledger, card-mode citadel, dependency lanes, sibling-writer protocol check, `dropped_findings.md` consumer; NOT queued — operator prioritizes), **#53**/**#52** (fixed on the experimental branches only), **#43**, **#5** (operator-deferred) |
+| client data | **#54 and #55 sanitized 2026-10-02** (bodies rewritten generic at operator request; GitHub edit history still holds the originals — only deleting the issue removes it, operator's call). **Still exposed (measured 2026-10-02):** the client name appears in the bodies of #9, #14, #15, #48, #52, #53, #55-before-edit and in one comment each on #15, #31, #48, #53; and in **145 files** at `origin/main` (`git grep -il <client>`), i.e. the #31 leak was never fully drained. Sweep = operator decision (issue edits are outward-facing; file purge is a bundle) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
 | exocortex | integration DEFERRED until memory-graph/exocortex#1 (reads drop `content`) is fixed. The runner-only plan is in auto-memory |
@@ -246,12 +247,33 @@ NO measured basis. Large PRDs are not constrained by the cap.
 3. ~~B-ATTRIB-L (#53 lanes)~~ — DONE 2026-10-02: built on `exp/b-lanes` (session `2026-10-02-1d45b656`), gated 22/22, pushed, redeployed,
    verified by content; merged into `exp/b-parallel-build` (`99fe61eb`), gated 22/22, pushed. Evidence comments on #53.
 
-4. **B-RUNREPORT-54 (#54, general) on `main`.** PRD `prds/p1-b-runreport-54.md`; 5 hand-written tickets (T1 conformance-FAIL
+4. **B-RUNREPORT-54 (#54, general) on `main`.** LAUNCHED 13:48Z. **Deviation from the committed PRD (T3):** scope-setup silently drops
+   paths that do not exist yet (32 listed → `allowed=30`), so the PRD's "move the R-RCEX resolver into a new `services/` file"
+   would have failed the worker scope fence; the ticket was re-scoped before it started to EXPORT the resolver from
+   `bin/check-readiness.ts` in place (precedent: two modules already import from it). Landed as `598b66fa`. PRD `prds/p1-b-runreport-54.md`; 5 hand-written tickets (T1 conformance-FAIL
    refuses Done via the Z1 path + F5 prompt rider; T2 citadel `orphan-test-file` only where `ENFORCE:` exists + `ac_coverage`
    UNMEASURED disclosure; T3 refinement AC-shape dedupe, `missing_requirement_ids`, dependency `.d.ts` symbol resolution;
    T4 monitor template; T5 `/pickle-pipeline` session binding + 0-ahead scope pin). Every premise re-measured at `72797f3e`
    (8/8 live). Decisions D-1..D-4 taken at the recommended defaults. G3/G4 and the AC-shape advisory demotion are follow-ups.
    - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy → merge into `exp/b-parallel-build` → gate → push.
+
+5. **B-MEGA — fix every open issue + keep developing the multi-agent branch (operator decision 2026-10-02).**
+   - **Placement (operator):** ONE bundle on `exp/b-parallel-build`, **deployed first** (operator-approved deploy of that
+     branch, superseding the "never deploy exp/b-parallel-build" default for this bundle), run with
+     `max_parallel_tickets: 2` + `anatomy_max_parallel_lanes: 2`, refinement ON (new features). This knowingly departs from
+     rule P for this bundle: the general fixes in it reach `main` only when the operator merges the branch.
+   - **#5 scope (operator):** Moves 1–3 only (context cache, committed trap doors, circuit-breaker taxonomy). Moves 4–5 out.
+   - **Workstreams:** A parallel build in monorepos (#43/#52: wire the B-ATTRIB-L node_modules predicate into build units —
+     the merge into this branch left units without it — then link workspace node_modules into lanes/units; wave telemetry
+     for the B-PBUILD merge criterion) · B dependency-lens review lanes + sibling-writer protocol check (#55) · C premise
+     ledger, escalations stay open, phantom-guarantee check, test-expectation independence (#55) · D citadel card mode,
+     non-lexical coverage, "conforms to PRD" ≠ drop, `dropped_findings.md` consumer (#55, #54) · E #54 follow-ups (G3
+     drift report, G4 scripted decomposition, AC-shape gate advisory, one requirement-id rule, microverse template,
+     nested-workspace .d.ts resolution) · F #5 Moves 1–3.
+   - **Order:** after step 4 finishes AND merges down (main → exp/b-lanes → exp/b-parallel-build, each gated); then deploy
+     `exp/b-parallel-build`, verify by content, launch. PRD being drafted with every premise measured at the branch HEAD.
+   - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
+     depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
 
 **Before #54 the queue was drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
 merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
