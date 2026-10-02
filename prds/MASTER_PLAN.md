@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 15:00Z) — step 4 (B-RUNREPORT-54) RUNNING on main; issues #54/#55 sanitized; client-name exposure audit pending operator
+### ▶ STATE (2026-10-02 15:30Z) — step 4 (B-RUNREPORT-54) RUNNING on main; step 5 (B-MEGA, operator-approved) being planned
 
 | | |
 |---|---|
@@ -256,6 +256,24 @@ NO measured basis. Large PRDs are not constrained by the cap.
    T4 monitor template; T5 `/pickle-pipeline` session binding + 0-ahead scope pin). Every premise re-measured at `72797f3e`
    (8/8 live). Decisions D-1..D-4 taken at the recommended defaults. G3/G4 and the AC-shape advisory demotion are follow-ups.
    - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy → merge into `exp/b-parallel-build` → gate → push.
+
+5. **B-MEGA — fix every open issue + keep developing the multi-agent branch (operator decision 2026-10-02).**
+   - **Placement (operator):** ONE bundle on `exp/b-parallel-build`, **deployed first** (operator-approved deploy of that
+     branch, superseding the "never deploy exp/b-parallel-build" default for this bundle), run with
+     `max_parallel_tickets: 2` + `anatomy_max_parallel_lanes: 2`, refinement ON (new features). This knowingly departs from
+     rule P for this bundle: the general fixes in it reach `main` only when the operator merges the branch.
+   - **#5 scope (operator):** Moves 1–3 only (context cache, committed trap doors, circuit-breaker taxonomy). Moves 4–5 out.
+   - **Workstreams:** A parallel build in monorepos (#43/#52: wire the B-ATTRIB-L node_modules predicate into build units —
+     the merge into this branch left units without it — then link workspace node_modules into lanes/units; wave telemetry
+     for the B-PBUILD merge criterion) · B dependency-lens review lanes + sibling-writer protocol check (#55) · C premise
+     ledger, escalations stay open, phantom-guarantee check, test-expectation independence (#55) · D citadel card mode,
+     non-lexical coverage, "conforms to PRD" ≠ drop, `dropped_findings.md` consumer (#55, #54) · E #54 follow-ups (G3
+     drift report, G4 scripted decomposition, AC-shape gate advisory, one requirement-id rule, microverse template,
+     nested-workspace .d.ts resolution) · F #5 Moves 1–3.
+   - **Order:** after step 4 finishes AND merges down (main → exp/b-lanes → exp/b-parallel-build, each gated); then deploy
+     `exp/b-parallel-build`, verify by content, launch. PRD being drafted with every premise measured at the branch HEAD.
+   - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
+     depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
 
 **Before #54 the queue was drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
 merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
