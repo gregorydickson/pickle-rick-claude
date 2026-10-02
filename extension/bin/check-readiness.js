@@ -253,7 +253,7 @@ function resolvePathRef(ref, repoRoot, ticket, sessionDir, cache) {
 }
 // R-RCEX (Finding #65): bounds for the node_modules `.d.ts` resolution scan.
 const EXTERNAL_DTS_FILE_CAP = 3_000;
-const EXTERNAL_DTS_MAX_BYTES = 512 * 1024;
+export const EXTERNAL_DTS_MAX_BYTES = 512 * 1024;
 /**
  * R-RCEX (Finding #65): declared dependency names from the target repo's
  * `package.json` (and the `extension/` sub-package, mirroring `resolvePathRef`
@@ -300,7 +300,7 @@ function collectDtsFilesUnder(dir, acc) {
         }
     }
 }
-function collectExternalDtsFiles(repoRoot) {
+export function collectExternalDtsFiles(repoRoot) {
     const files = [];
     const deps = declaredDependencyNames(repoRoot).filter((dep) => !dep.startsWith('@types/'));
     const moduleRoots = [
