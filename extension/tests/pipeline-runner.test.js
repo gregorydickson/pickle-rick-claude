@@ -5367,7 +5367,11 @@ describe('B-LANES WS-3: lane integration', () => {
       assert.equal(lines.length, 1, `exactly one kept-branch line\n${fx.logs.join('\n')}`);
       assert.match(lines[0], new RegExp(`kept lane branch ${fx.branch(1).replace(/[/]/g, '\\/')}: 2 commit\\(s\\), outcome non_convergent`));
       assert.match(lines[0], /stranded 1 step 1; stranded 1 step 2/, 'subjects are named');
-      assert.match(lines[0], /recover before \d{4}-\d{2}-\d{2}T[\d:.]+Z \(deleted by any later lanes run after 14 days\)/);
+      // The deadline is the kept branch's tip date + the retention window recoverLaneBranches deletes at;
+      // a shape-only match passes a deadline that has already elapsed.
+      const tipMs = Number(git(fx.repo, 'log', '-1', '--format=%ct', fx.branch(1))) * 1000;
+      const recoverBefore = new Date(tipMs + RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      assert.ok(lines[0].includes(`recover before ${recoverBefore} (deleted by any later lanes run after ${RETAINED_BRANCH_MAX_AGE_DAYS} days)`), lines[0]);
     } finally {
       fx.cleanup();
     }
