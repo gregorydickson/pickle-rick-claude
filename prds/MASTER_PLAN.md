@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-01 19:45Z) — one pipeline just finished; queue below is the babysitter's
+### ▶ STATE (2026-10-02 00:50Z) — queue step 1 done, step 2 mid-flight (merge-down); queue below is the babysitter's
 
 | | |
 |---|---|
-| `main` | **`3c2fe069`**, pushed. Gate 22/22 at `55fe1ba1` (B-SELFRED + B-SELFRED-FIX, #52 bound). `3c2fe069` adds only the B-ATTRIB-G PRD |
-| `exp/b-lanes` | pushed **`1816dc36`** = **DEPLOYED** (beta.1 + #52 bound; verified by content: `recordSelfRedRefusal` in deployed `microverse-runner.js`). **LOCAL is ahead, UNPUSHED, UNGATED**: B-LANES-UNCHECKED (`49e76d6f`…`266152d4`), PRD `dde3aaae`, and the B-LANES-UNCHECKED-FIX pipeline commits (session `2026-10-01-e8ab3ac6`, finished 18:54Z, 4/4 phases). The main checkout is ON `exp/b-lanes` |
+| `main` | **`3cdb1c4c`** + this STATE commit, pushed. **B-ATTRIB-G built** (session `2026-10-01-face240c`, 4/4 phases, finished 22:53Z; G1 `d1e369ce`, G2 `c3fc60af`/`970370c7`, D2 `f73e828d`). Gate `20261001T233051Z-35963` 22/22 at `3cdb1c4c`, soak 1803.7s |
+| `exp/b-lanes` | pushed **`979b55b1`** = **DEPLOYED** (B-LANES-UNCHECKED + FIX; gate `20261001T194834Z-88031` 22/22, soak 1803.9s; verified by content: `integration_check` in deployed `pipeline-runner.js`). B-ATTRIB-G NOT yet merged in |
 | `exp/b-parallel-build` | pushed **`fc9e05dd`** (B-PBUILD #43 + #52 bound; gate 22/22). Not deployed. Merge-down of B-LANES-UNCHECKED and B-ATTRIB is deferred until both land |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **nothing** (as of 19:45Z). Old `pipeline-*` tmux shells are idle |
+| RUNNING | **nothing** (as of 00:50Z). Old `pipeline-*` tmux shells are idle |
 | open issues | **#53** (B-ATTRIB, in progress), **#52** (bound shipped, lane part in flight), **#43** (B-PBUILD built, on its branch awaiting field runs), **#5** (operator-deferred) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
@@ -239,11 +239,9 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ### ▶ QUEUE (strictly sequential; never two pipelines; never commit to a branch while its pipeline or gate runs)
 
-1. **Gate `exp/b-lanes`** at its local HEAD (B-LANES-UNCHECKED + its FIX).
-   - **Green (22/22, full soak):** push, `bash install.sh` (redeploy), and verify by content (grep the deployed
-     `pipeline-runner.js` for `integration_check`).
-   - **Red:** author a fix PRD on the branch and run it as a pipeline.
-2. **B-ATTRIB-G (#53 general) on `main`.**
+1. ~~Gate `exp/b-lanes`~~ — DONE 2026-10-01: 22/22, pushed `979b55b1`, redeployed, verified by content.
+2. **B-ATTRIB-G (#53 general) on `main`.** BUILT + main gated green + pushed (see STATE). **Remaining: merge
+   `main` into `exp/b-lanes` → gate → push → redeploy (grep deployed `microverse-runner.js` for the G1 helper).**
    - Materials: PRD `prds/p0-b-attrib-g-unmeasured-is-not-self-introduced.md`; 3 tickets already written in session
      `2026-10-01-face240c` (G1 medium, G2 large, D2 medium).
    - Switch the main checkout to `main`, `setup.js --tmux --resume <session>`, and write `pipeline.json` with
@@ -293,6 +291,7 @@ collects `*.test.js` only).
 | `2026-09-26-bcd24b6d` B-FINALGATE-FIX | 2 tests | **11 (UNSCOPED)** | **135** | 2×7, 3, 26, 9, 2 | 32 lane commits | 11 integrated, 0 conflicts | `SCOPE_EMPTY_DIFF` at setup (no-refine bundle) → no session scope → every lane reviewed; a new `prds` lane from research scripts |
 | `2026-09-26-e22412a9` B-LANES-FIX2 | 1 test | 1 (explicit `paths:` scope) | 1.6 | — | — | single lane | explicit path scope avoided the unscoped cost |
 | `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 2/3/2/2/5/2 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) |
+| `2026-10-01-face240c` B-ATTRIB-G (on `main`) | 17 (943+/127−) | 5 (cap 2, explicit `paths:` scope) | 26.0 | 4/2/3/2/2 | 3 lane commits | 5 integrated, 0 conflicts | none; pickle 74 min for 3 tickets; szechuan 5.8 min |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 
