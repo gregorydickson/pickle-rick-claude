@@ -5580,7 +5580,7 @@ describe('B-LANES wiring: end to end through main()', () => {
   });
 
   // Regression guard (passes at d27b8be1 by design). Mutation control: forcing
-  // discloseUnmeasuredIntegration to return no checks reds this test.
+  // discloseUnmeasuredIntegration to collect no holes (early-return unconditionally) reds this test.
   test('AC 1b: an UNMEASURED integration check withholds success', async () => {
     const fx = makeFixture({ anatomy_max_parallel_lanes: 3 }, { typecheck: false });
     const calls = [];
