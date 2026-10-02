@@ -1,9 +1,11 @@
 // @tier: fast
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { buildCitadelAuditReport } from '../services/citadel/audit-runner.js';
 import { buildAcCoverageScorecard, extractKeywordAnchors } from '../services/citadel/ac-coverage-scorecard.js';
 
 function writeFile(repoRoot, filePath, content) {
@@ -297,5 +299,30 @@ describe('extractKeywordAnchors', () => {
       'retry',
       'validates',
     ]);
+  });
+});
+
+describe('ac_coverage section disclosure (T2 F2b)', () => {
+  function sectionFor(prdBody) {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-skip-'));
+    try {
+      writeFile(repoRoot, 'prd.md', prdBody);
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot, timeout: 30000 });
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x'], { cwd: repoRoot, timeout: 30000 });
+      return buildCitadelAuditReport({ prdPath: 'prd.md', diffRange: 'HEAD..HEAD', repoRoot }).sections.ac_coverage;
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+
+  test('FR-only PRD → skipped no_acceptance_criteria', () => {
+    const section = sectionFor('# PRD\n\n- FR-1: something happens\n');
+    assert.equal(section.skipped, 'no_acceptance_criteria');
+    assert.deepEqual(section.findings, []);
+  });
+
+  test('PRD with an AC id is still scored (negative control)', () => {
+    const section = sectionFor('# PRD\n\n- AC-1: `buildThing` returns true\n');
+    assert.notEqual(section.skipped, 'no_acceptance_criteria');
   });
 });
