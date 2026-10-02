@@ -651,6 +651,7 @@ function runGitString(args, cwd) {
         const out = execFileSync('git', ['-C', cwd, ...args], {
             encoding: 'utf-8',
             timeout: GIT_REPO_ROOT_TIMEOUT_MS,
+            stdio: ['ignore', 'pipe', 'ignore'],
         }).trim();
         return out || null;
     }
@@ -1581,7 +1582,7 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     const repoRoot = gitRepoRoot(target);
     fs.mkdirSync(laneDir, { recursive: true });
     createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
-    symlinkLaneNodeModules(repoRoot, worktree);
+    const nodeModulesLinked = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
     const statePath = path.join(laneDir, 'state.json');
     const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
     // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing lane state to lock against
@@ -1593,7 +1594,7 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     const citadelReport = path.join(parentSessionDir, 'citadel_report.json');
     if (fs.existsSync(citadelReport))
         fs.copyFileSync(citadelReport, path.join(laneDir, 'citadel_report.json'));
-    return { laneDir, worktree, branch, statePath, workingDir };
+    return { laneDir, worktree, branch, statePath, workingDir, nodeModulesLinked };
 }
 const LANE_KILL_GRACE_MS = 2_000;
 const LANE_POLL_FALLBACK_MS = 60_000;
@@ -1649,6 +1650,7 @@ const LANE_NO_VERDICT = 'lane_no_verdict';
 function readLaneEnd(run, statePath, startedAt) {
     const end = {
         reason: run.cancelledAtMs === null ? LANE_NO_VERDICT : 'stopped', passes: 0, started_at: startedAt, ended_at: new Date().toISOString(),
+        node_modules_linked: [], baseline_check_status: null,
     };
     try {
         const state = sm.read(statePath);
@@ -1660,7 +1662,19 @@ function readLaneEnd(run, statePath, startedAt) {
     catch { /* unreadable lane state → no verdict of its own */ }
     return end;
 }
-const notStarted = (reason) => ({ reason, passes: 0, started_at: null, ended_at: null });
+const notStarted = (reason) => ({
+    reason, passes: 0, started_at: null, ended_at: null, node_modules_linked: [], baseline_check_status: null,
+});
+/** The `check_status` the lane's own runner captured at its first iteration; `null` when it wrote none. */
+function readLaneBaselineCheckStatus(laneDir) {
+    try {
+        const status = readRecoverableJsonObject(path.join(laneDir, 'gate', 'baseline.json'))?.check_status;
+        return typeof status === 'object' && status !== null && !Array.isArray(status) ? status : null;
+    }
+    catch {
+        return null;
+    }
+}
 async function runOneLane(run, lane, index) {
     const { runtime } = run;
     if (run.cancelledAtMs !== null)
@@ -1677,7 +1691,8 @@ async function runOneLane(run, lane, index) {
     run.statePaths.push(session.statePath);
     run.worktrees.push(session.worktree);
     try {
-        return await runLaneSession(run, lane, session, startedAt);
+        const end = await runLaneSession(run, lane, session, startedAt);
+        return { ...end, node_modules_linked: session.nodeModulesLinked, baseline_check_status: readLaneBaselineCheckStatus(session.laneDir) };
     }
     finally {
         // createLaneSession claimed the lane active; however the lane ended, it is not running now.
@@ -1839,6 +1854,39 @@ function reportLaneRecovery({ runtime, repoRoot }) {
         });
     }
 }
+function strandedLaneCommits(repoRoot, phaseStartSha, branch) {
+    return (runGitString(['rev-list', '--reverse', `${phaseStartSha}..${branch}`], repoRoot) ?? '').split('\n').filter(Boolean);
+}
+const KEPT_LANE_SUBJECT_CAP = 5;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/**
+ * One line per retained lane branch that holds commits, read back from `archive/lanes.json`: what is
+ * on it, why it was not integrated, and the date any later lanes run deletes it. The retention
+ * (`recoverLaneBranches`) is by tip commit date, so that is the clock the date counts from.
+ */
+export function reportKeptLaneBranches(runtime) {
+    let rows;
+    try {
+        rows = JSON.parse(fs.readFileSync(path.join(runtime.sessionDir, 'archive', 'lanes.json'), 'utf-8'));
+    }
+    catch {
+        return;
+    }
+    if (!Array.isArray(rows))
+        return;
+    const repoRoot = gitRepoRoot(runtime.target);
+    for (const row of rows) {
+        const commits = Array.isArray(row.commits) ? row.commits : [];
+        if (row.outcome === 'integrated' || commits.length === 0 || typeof row.branch !== 'string')
+            continue;
+        const subjects = commits.slice(0, KEPT_LANE_SUBJECT_CAP).map((sha) => runGitString(['log', '-1', '--format=%s', sha], repoRoot) ?? sha);
+        const more = commits.length - subjects.length;
+        const tipSeconds = Number(runGitString(['log', '-1', '--format=%ct', row.branch], repoRoot));
+        const recoverBefore = Number.isFinite(tipSeconds) && tipSeconds > 0
+            ? new Date(tipSeconds * 1000 + RETAINED_BRANCH_MAX_AGE_DAYS * MS_PER_DAY).toISOString() : 'unknown (tip date unreadable)';
+        runtime.log(`kept lane branch ${row.branch}: ${commits.length} commit(s), outcome ${row.outcome}, exit ${row.exit_reason} — ${subjects.join('; ')}${more > 0 ? `; … (+${more} more)` : ''} — recover before ${recoverBefore} (deleted by any later lanes run after ${RETAINED_BRANCH_MAX_AGE_DAYS} days)`);
+    }
+}
 /**
  * Integrate the converged lanes, release every branch main now reaches, and write
  * `archive/lanes.json`. Returns one row per lane in roster order.
@@ -1856,7 +1904,11 @@ function integrateLaneRun(run, lanes, ends) {
         started_at: ends[i].started_at, ended_at: ends[i].ended_at, passes: ends[i].passes, exit_reason: ends[i].reason,
         outcome: integration.outcomes[i] ?? (run.cancelledAtMs === null ? 'non_convergent' : 'cancelled'),
         integration_check: integration.checks[i],
-        commits: integration.commits[i],
+        // A lane that did not integrate is not handed to integrateLanes (its pick loop would PICK them),
+        // yet its commits are what a stranded lane leaves behind — listed here for the record only.
+        commits: integration.commits[i].length > 0 ? integration.commits[i] : strandedLaneCommits(repoRoot, run.sha, branches[i]),
+        node_modules_linked: ends[i].node_modules_linked,
+        baseline_check_status: ends[i].baseline_check_status,
     }));
     const integrated = new Set(outcomes.filter((o) => o.outcome === 'integrated').map((o) => o.branch));
     const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, integrated);
@@ -4083,6 +4135,7 @@ function logPhaseStart(runtime, phase, index) {
 }
 function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipelineFailed) {
     runtime.log(`Pipeline finished: ${phasesSummary} phases, ${formatTime(totalElapsed)}`);
+    reportKeptLaneBranches(runtime);
     emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
     logActivity({
         event: 'session_end', source: 'pickle',

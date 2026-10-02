@@ -46,6 +46,7 @@ import {
   gitRepoRoot,
   createLaneSession,
   runAnatomyLanes,
+  reportKeptLaneBranches,
   discloseUnmeasuredIntegration,
 } from '../bin/pipeline-runner.js';
 import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, laneSessionDir } from '../services/anatomy-lanes.js';
@@ -5320,6 +5321,118 @@ describe('B-LANES WS-3: lane integration', () => {
       assert.equal(lanes.gamma.integration_check, 'unavailable');
       assert.match(read(path.join(fx.repo, 'gamma/a.ts')), /= 2/, 'the lane work landed on main');
       assert.ok(capUnmeasured(fx.sessionDir).includes('integration_typecheck'));
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  /**
+   * Stub lane runner that commits `commitCounts[laneIndex]` times in the lane worktree and stamps
+   * `converged` only for the indexes in `converge` — the rest end with no verdict (non-convergent).
+   */
+  function strandingRunner(commitCounts, { converge = [], onLaneEnd } = {}) {
+    return async (_cmd, args) => {
+      const laneDir = args[1];
+      const index = Number(/--lane-(\d+)$/.exec(laneDir)[1]) - 1;
+      const wt = path.join(laneDir, 'wt');
+      for (let n = 1; n <= (commitCounts[index] ?? 0); n++) {
+        fs.writeFileSync(path.join(wt, LANES[index].dir, 'a.ts'), `export const a = ${100 + n};\n`);
+        git(wt, '-c', 'user.email=l@l', '-c', 'user.name=l', 'commit', '-q', '-am', `stranded ${index + 1} step ${n}`);
+      }
+      if (converge.includes(index)) {
+        const statePath = path.join(laneDir, 'state.json');
+        fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: 'converged' }));
+      }
+      if (onLaneEnd) onLaneEnd(index, laneDir);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+  }
+  const keptLines = (fx) => fx.logs.filter((l) => l.startsWith('kept lane branch '));
+
+  test('L4-stranded: 0 integrating lanes + 1 non-convergent lane with 2 commits → commits listed, branch kept and named, main untouched', async () => {
+    const fx = makeFixture();
+    try {
+      const headBefore = git(fx.repo, 'rev-parse', 'HEAD');
+      __setSpawnRunnerForTests(strandingRunner([2, 0, 0]));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes.alpha.commits.length, 2, 'the stranded lane\'s commits are recorded');
+      assert.equal(lanes.alpha.outcome, 'non_convergent');
+      assert.deepEqual(git(fx.repo, 'rev-list', '--reverse', `${headBefore}..${fx.branch(1)}`).split('\n'), lanes.alpha.commits);
+      assert.equal(git(fx.repo, 'rev-parse', 'HEAD'), headBefore, 'main HEAD is unchanged');
+      assert.equal(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${fx.branch('integration')}`), false, 'no integration branch');
+      reportKeptLaneBranches(fx.runtime);
+      const lines = keptLines(fx);
+      assert.equal(lines.length, 1, `exactly one kept-branch line\n${fx.logs.join('\n')}`);
+      assert.match(lines[0], new RegExp(`kept lane branch ${fx.branch(1).replace(/[/]/g, '\\/')}: 2 commit\\(s\\), outcome non_convergent`));
+      assert.match(lines[0], /stranded 1 step 1; stranded 1 step 2/, 'subjects are named');
+      assert.match(lines[0], /recover before \d{4}-\d{2}-\d{2}T[\d:.]+Z \(deleted by any later lanes run after 14 days\)/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L4-integrated-control: an integrated lane yields no kept-branch line', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(strandingRunner([1, 0, 0], { converge: [0, 1, 2] }));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      assert.equal(byName(fx.sessionDir).alpha.outcome, 'integrated');
+      reportKeptLaneBranches(fx.runtime);
+      assert.deepEqual(keptLines(fx), []);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L4-cancelled-control: a cancelled lane with commits gets its line', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(strandingRunner([1, 0, 0], {
+        onLaneEnd: (index) => {
+          if (index !== 0) return;
+          const state = readJson(fx.runtime.statePath);
+          fs.writeFileSync(fx.runtime.statePath, JSON.stringify({ ...state, active: false }));
+        },
+      }));
+      await runAnatomyLanes(fx.runtime, LANES, 1);
+      assert.equal(byName(fx.sessionDir).alpha.outcome, 'cancelled');
+      reportKeptLaneBranches(fx.runtime);
+      const lines = keptLines(fx);
+      assert.equal(lines.length, 1, fx.logs.join('\n'));
+      assert.match(lines[0], /1 commit\(s\), outcome cancelled/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L4-cap: more than five commits name five subjects and count the rest', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(strandingRunner([7, 0, 0]));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      reportKeptLaneBranches(fx.runtime);
+      const [line] = keptLines(fx);
+      assert.match(line, /7 commit\(s\)/);
+      assert.match(line, /stranded 1 step 5; … \(\+2 more\)/);
+      assert.doesNotMatch(line, /step 6/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L5-manifest: every lanes.json row records node_modules_linked (array) and baseline_check_status (object or null)', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(strandingRunner([1, 1, 1], { converge: [0, 1, 2] }));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      const rows = readJson(path.join(fx.sessionDir, 'archive', 'lanes.json'));
+      assert.equal(rows.length, 3);
+      for (const row of rows) {
+        assert.ok(Array.isArray(row.node_modules_linked), `${row.name}: node_modules_linked is an array`);
+        assert.ok(row.baseline_check_status === null || typeof row.baseline_check_status === 'object', `${row.name}: baseline_check_status`);
+        assert.deepEqual(row.node_modules_linked, ['node_modules'], `${row.name}: the root node_modules link is recorded`);
+      }
     } finally {
       fx.cleanup();
     }

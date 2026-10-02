@@ -247,7 +247,12 @@ export interface LaneOutcome {
   outcome: LaneIntegrationOutcome;
   /** `null` when no pick was kept: not integrated, no commits, a conflict, or a pick undone by `integration_red`. */
   integration_check: IntegrationCheck | null;
+  /** The lane branch's commits since the phase start sha, whatever the outcome — a stranded lane's work is listed too. */
   commits: string[];
+  /** The `node_modules` links the lane worktree was given, relative to it; `[]` when the lane never started. */
+  node_modules_linked: string[];
+  /** The lane's own `gate/baseline.json` `check_status`, or `null` when it wrote none. */
+  baseline_check_status: Record<string, string> | null;
 }
 
 export function integrationBranchName(sessionDir: string): string {
