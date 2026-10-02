@@ -9,6 +9,7 @@
     "prd_path": { "type": "string", "minLength": 1 },
     "refinement_dir": { "type": "string", "minLength": 1 },
     "all_success": { "type": "boolean" },
+    "missing_requirement_ids": { "type": "array", "items": { "type": "string" } },
     "cycles_requested": { "type": "integer", "minimum": 1 },
     "cycles_completed": { "type": "integer", "minimum": 0 },
     "max_turns_per_worker": { "type": "integer", "minimum": 0 },

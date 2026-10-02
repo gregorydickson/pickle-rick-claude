@@ -20,6 +20,7 @@ import { buildWorkerInvocation, isBackend, SpawnInvocation } from '../services/b
 import { Backend, PromiseTokens, Defaults, UNBOUNDED_READ_MAX_BUFFER, VALID_ACTIVITY_EVENTS, enumerationCompleted } from '../types/index.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
+import { collectExternalDtsFiles, EXTERNAL_DTS_MAX_BYTES } from './check-readiness.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { FOM_EVIDENCE_RULES, FOM_HONEST_REPORTING_RULES } from '../services/fom-blocks.js';
 
@@ -369,6 +370,7 @@ export interface RefinementManifest {
   prd_path: string;
   refinement_dir: string;
   all_success: boolean;
+  missing_requirement_ids: string[];
   cycles_requested: number;
   cycles_completed: number;
   max_turns_per_worker: number;
@@ -2188,7 +2190,17 @@ export function isParametrizedTicket(ticket: RefinementTicketManifestEntry): boo
 
 export function evaluateAcShapeEnforcement(manifest: Pick<RefinementManifest, 'ac_shape_smells' | 'tickets'>): AcShapeViolation[] {
   const violations: AcShapeViolation[] = [];
+  // One verdict per ac_id: each analyst copy of a smell tags the same AC, so the
+  // per-AC cardinality question asks the collapsed view (ticket_ids unioned).
+  const smellsByAc = new Map<string, AcShapeSmell>();
   for (const smell of manifest.ac_shape_smells) {
+    const prior = smellsByAc.get(smell.ac_id);
+    smellsByAc.set(smell.ac_id, prior === undefined ? smell : {
+      ...prior,
+      ticket_ids: [...new Set([...(prior.ticket_ids ?? []), ...(smell.ticket_ids ?? [])])],
+    });
+  }
+  for (const smell of smellsByAc.values()) {
     const matchingTickets = ticketsForSmell(smell, manifest.tickets);
     if (matchingTickets.length === 0) {
       violations.push({
@@ -2213,7 +2225,7 @@ export function evaluateAcShapeEnforcement(manifest: Pick<RefinementManifest, 'a
     if (unjustified.length > 0) {
       violations.push({
         ac_id: smell.ac_id,
-        reason: 'multi-ticket decomposition lacks // JUSTIFICATION: blocks on every matching ticket',
+        reason: 'multi-ticket decomposition lacks // JUSTIFICATION: blocks on every matching ticket — collapse or justify at Step 7',
         ticket_ids: unjustified.map((ticket) => ticket.id),
       });
     }
@@ -2548,6 +2560,17 @@ function hasSourceHit(symbol: string, workingDir: string): boolean {
   return false;
 }
 
+/** Resolves a symbol against declared-dependency `.d.ts` files (the R-RCEX collector, shared with check-readiness). */
+function hasDependencyDtsHit(symbol: string, dtsFiles: string[]): boolean {
+  return dtsFiles.some((file) => {
+    try {
+      return fs.statSync(file).size <= EXTERNAL_DTS_MAX_BYTES && fs.readFileSync(file, 'utf-8').includes(symbol);
+    } catch {
+      return false;
+    }
+  });
+}
+
 function collectHelperSentinelReferences(
   prdContent: string,
   workingDir: string,
@@ -2555,6 +2578,8 @@ function collectHelperSentinelReferences(
 ): SymbolAuditReference[] {
   const valid = new Set<string>(declaredSymbols);
   const refs: SymbolAuditReference[] = [];
+  // Walk node_modules at most once per audit, and only when a symbol misses the source tree.
+  let dependencyDtsFiles: string[] | undefined;
   for (const { line, sourceLine } of lineRefs(prdContent)) {
     if (!/\b(?:helpers?|sentinels?)\b/i.test(line)) continue;
     QUOTED_SYMBOL_RE.lastIndex = 0;
@@ -2563,12 +2588,15 @@ function collectHelperSentinelReferences(
       const [, symbol] = match;
       if (!/^[A-Za-z_$][A-Za-z0-9_$.-]*$/.test(symbol)) continue;
       const grounded = valid.has(symbol) || hasSourceHit(symbol, workingDir);
-      const status = grounded ? 'valid' : 'phantom';
+      const inDependency = !grounded
+        && hasDependencyDtsHit(symbol, dependencyDtsFiles ??= collectExternalDtsFiles(workingDir));
+      const status = grounded || inDependency ? 'valid' : 'phantom';
       refs.push({
         symbol,
         sourceLine,
         evidence: line.trim(),
         status,
+        ...(inDependency ? { reason: 'declared in an installed dependency' } : {}),
         ...(status === 'phantom' ? { reason: 'no source-tree hit found' } : {}),
       });
     }
@@ -2698,6 +2726,7 @@ export function buildRefinementManifest(args: RefinementArgs, results: CycleResu
     prd_path: args.prdPath,
     refinement_dir: results.refinementDir,
     all_success: results.allSuccess && requirementCoverage.missingRequirementIds.length === 0,
+    missing_requirement_ids: requirementCoverage.missingRequirementIds,
     cycles_requested: results.cyclesRequested,
     cycles_completed: results.allCycleResults.length,
     max_turns_per_worker: results.maxTurns,

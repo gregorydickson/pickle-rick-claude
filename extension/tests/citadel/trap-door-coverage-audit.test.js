@@ -75,7 +75,7 @@ describe('runT6TrapDoorCoverage', () => {
   test('orphan_test_file: test file has no inbound ENFORCE ref → MEDIUM finding', async () => {
     const projectRoot = path.join(tmpRoot, 'orphan-test-file');
     mkFixture(projectRoot, {
-      enforceLines: '',
+      enforceLines: '- ENFORCE: none\n',
       testFiles: {
         'extension/tests/unreferenced.test.js': "test('x', () => {});\n",
       },
@@ -86,6 +86,19 @@ describe('runT6TrapDoorCoverage', () => {
     const orphan = medium.find((f) => f.id.includes('unreferenced.test.js'));
     assert.ok(orphan, 'expected orphan-test-file finding for unreferenced.test.js');
     assert.match(orphan.id, /orphan-test-file/);
+  });
+
+  test('orphan_test_file: no catalog uses ENFORCE: → no orphan-test-file finding', async () => {
+    const projectRoot = path.join(tmpRoot, 'orphan-test-file-no-convention');
+    mkFixture(projectRoot, {
+      enforceLines: '',
+      testFiles: {
+        'extension/tests/unreferenced.test.js': "test('x', () => {});\n",
+      },
+    });
+    const { runT6TrapDoorCoverage } = await importAnalyzer();
+    const result = runT6TrapDoorCoverage({ projectRoot });
+    assert.equal(result.findings.filter((f) => f.id.startsWith('orphan-test-file:')).length, 0);
   });
 
   test('bare-path legacy: no #anchor → exactly 1 LOW finding per CLAUDE.md', async () => {

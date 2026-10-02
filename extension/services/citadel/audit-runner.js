@@ -98,6 +98,11 @@ const NO_PRD_SKIPPED = {
     skipped: 'no_prd',
     reason: 'no PRD path provided for standalone run',
 };
+const NO_AC_SKIPPED = {
+    findings: [],
+    skipped: 'no_acceptance_criteria',
+    reason: 'PRD defines no AC-* ids — PRD-to-diff conformance unmeasured',
+};
 export function buildCitadelAuditReport(options) {
     const repoRoot = path.resolve(options.repoRoot ?? process.cwd());
     const resolvedPrdPath = options.prdPath !== undefined
@@ -257,7 +262,9 @@ function runPrdContractAnalyzers({ repoRoot, resolvedPrdPath, parsedPrd, prdUnre
         ? NO_PRD_SKIPPED
         : prdUnresolved !== null
             ? prdUnresolvedResult(prdUnresolved)
-            : safeRunAnalyzer('citadel-ac-coverage', () => buildAcCoverageScorecard(parsedPrd.acceptanceCriteria, diff, { repoRoot }));
+            : safeRunAnalyzer('citadel-ac-coverage', () => parsedPrd.acceptanceCriteria.length === 0
+                ? NO_AC_SKIPPED
+                : buildAcCoverageScorecard(parsedPrd.acceptanceCriteria, diff, { repoRoot }));
     const allowlistDead = safeRunAnalyzer('citadel-allowlist-dead', () => detectAllowlistDeadEntries(diff, { repoRoot }));
     const stateTransitions = resolvedPrdPath
         ? safeRunAnalyzer('citadel-state-transitions', () => auditStateTransitions(parsedPrd.transitionAuditRows, diff, { repoRoot }))

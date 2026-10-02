@@ -7654,3 +7654,87 @@ test('Z1-5 (R-ORSR-2 over-trigger control): real work committed and the AC TRUE 
     assert.ok(result.sha, 'the guard resolved a completion sha');
     assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done');
 });
+
+// --- Z1-6 (B-RUNREPORT-54 T1): the worker's own latest conformance verdict is a measurement too ---
+//
+// A self-flipped Done contradicted by `conformance_*.md` ending in FAIL is a false-converge. The
+// refusal reuses Z1's park (status In Progress, no exit_reason, the loop continues). The live
+// corpus (50 conformance files when this was written) holds 47 PASS, 0 FAIL and 3 with no verdict,
+// so the FAIL direction is proven by these fixtures alone, not by a replay.
+
+function z1ConformanceCase(ticketId, conformanceBody) {
+    const { repo, startCommit } = z1Repo();
+    const { sessionDir, statePath } = z1Session(repo, startCommit, ticketId);
+    writeAutoMarkTicketWithCriteria(sessionDir, ticketId, 'Done', ['- Z1-6: prose-only criterion, nothing executable']);
+    fs.writeFileSync(path.join(sessionDir, ticketId, 'conformance_2026-10-01.md'), conformanceBody);
+    z1CommitTrailered(repo, 'marker.txt', 'work\n', ticketId);
+    return { repo, sessionDir, statePath };
+}
+
+test('Z1-6 (B-RUNREPORT-54 T1): a self-flipped Done whose latest conformance verdict is FAIL is un-claimed', async () => {
+    const { guardCompletionCommitBeforeDone, isAcceptanceAssertionRefusal } = await import('../bin/mux-runner.js');
+    const ticketId = 'z1-conformance-fail';
+    const { repo, sessionDir, statePath } = z1ConformanceCase(ticketId, '# Conformance\n\n## Verdict: FAIL\n\n- criterion 2 failed\n');
+
+    const guard = withProductionGuard(() => guardCompletionCommitBeforeDone({
+        sessionDir, ticketId, workingDir: repo, flags: null, rereadBackoffMs: 0,
+    }));
+
+    assert.equal(guard.ok, false);
+    assert.equal(isAcceptanceAssertionRefusal(guard), true);
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'In Progress');
+    assert.equal(z1ExitReason(statePath), null, 'the refusal is LOCAL: no exit_reason is recorded');
+});
+
+test('Z1-6 control (B-RUNREPORT-54 T1): the same fixture with an ALL_PASS verdict stays Done', async () => {
+    const { guardCompletionCommitBeforeDone } = await import('../bin/mux-runner.js');
+    const ticketId = 'z1-conformance-pass';
+    const { repo, sessionDir } = z1ConformanceCase(ticketId, '# Conformance\n\n## Verdict: ALL_PASS\n');
+
+    const guard = withProductionGuard(() => guardCompletionCommitBeforeDone({
+        sessionDir, ticketId, workingDir: repo, flags: null, rereadBackoffMs: 0,
+    }));
+
+    assert.equal(guard.ok, true);
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done');
+});
+
+test('Z1-6 control (B-RUNREPORT-54 T1): a FAIL verdict followed by a LATER ALL_PASS verdict in the same file stays Done', async () => {
+    const { guardCompletionCommitBeforeDone } = await import('../bin/mux-runner.js');
+    const ticketId = 'z1-conformance-fail-then-pass';
+    const { repo, sessionDir } = z1ConformanceCase(ticketId, [
+        '# Conformance', '', '## Verdict: FAIL', '', '- criterion 2 failed', '',
+        '## Re-run after fix', '', '## Verdict: ALL_PASS', '',
+    ].join('\n'));
+
+    const guard = withProductionGuard(() => guardCompletionCommitBeforeDone({
+        sessionDir, ticketId, workingDir: repo, flags: null, rereadBackoffMs: 0,
+    }));
+
+    assert.equal(guard.ok, true);
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done');
+});
+
+test('Z1-6 control (B-RUNREPORT-54 T1): a conformance file with no verdict refuses nothing', async () => {
+    const { guardCompletionCommitBeforeDone } = await import('../bin/mux-runner.js');
+    const ticketId = 'z1-conformance-no-verdict';
+    const { repo, sessionDir } = z1ConformanceCase(ticketId, '# Conformance\n\nNotes only; a FAIL elsewhere in prose is not a verdict.\n');
+
+    const guard = withProductionGuard(() => guardCompletionCommitBeforeDone({
+        sessionDir, ticketId, workingDir: repo, flags: null, rereadBackoffMs: 0,
+    }));
+
+    assert.equal(guard.ok, true);
+});
+
+test('Z1-6 (B-RUNREPORT-54 T1): the verdict token on the line AFTER the heading is read', async () => {
+    const { guardCompletionCommitBeforeDone, isAcceptanceAssertionRefusal } = await import('../bin/mux-runner.js');
+    const ticketId = 'z1-conformance-next-line';
+    const { repo, sessionDir } = z1ConformanceCase(ticketId, '# Conformance\n\n### 6. Verdict\nFAIL (failures with file:line refs)\n');
+
+    const guard = withProductionGuard(() => guardCompletionCommitBeforeDone({
+        sessionDir, ticketId, workingDir: repo, flags: null, rereadBackoffMs: 0,
+    }));
+
+    assert.equal(isAcceptanceAssertionRefusal(guard), true);
+});
