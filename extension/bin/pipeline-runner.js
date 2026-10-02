@@ -1585,7 +1585,7 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     const statePath = path.join(laneDir, 'state.json');
     const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
     // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing lane state to lock against
-    sm.forceWrite(statePath, { ...sm.read(path.join(parentSessionDir, 'state.json')), working_dir: workingDir, session_dir: laneDir });
+    sm.forceWrite(statePath, { ...sm.read(path.join(parentSessionDir, 'state.json')), working_dir: workingDir, session_dir: laneDir, start_commit: phaseStartSha });
     resetStateForPhase(statePath, 'anatomy-park.md', readAnatomyMaxIterations(parentSessionDir));
     claimPipelineRunnerActive(statePath);
     writeStateFile(path.join(laneDir, 'scope.json'), buildLaneScope(laneAllowedPaths(repoRoot, target, lane, phaseStartSha, discoverLanes(target).generated), phaseStartSha));

@@ -4866,6 +4866,28 @@ describe('B-LANES 13h lane session placement', () => {
     }
   });
 
+  test('L1-a: a lane session\'s start_commit is its fork sha, not the pipeline base; the parent is unchanged', () => {
+    const { target, dataRoot, parent, sha: pipelineBase } = makePlacementFixture();
+    try {
+      writeBaseState(path.join(parent, 'state.json'), {
+        working_dir: target, session_dir: parent, active: true, start_commit: pipelineBase,
+      });
+      for (const n of [1, 2]) {
+        fs.writeFileSync(path.join(target, 'alpha', `earlier${n}.ts`), `export const e${n} = ${n};\n`);
+        git(target, 'add', '-A');
+        git(target, 'commit', '-q', '-m', `earlier phase ${n}`);
+      }
+      const fork = git(target, 'rev-parse', 'HEAD');
+      assert.notEqual(fork, pipelineBase, 'fixture precondition: the fork is past the pipeline base');
+      const lane = createLaneSession(parent, lanes[0], 1, fork, target);
+      assert.equal(JSON.parse(fs.readFileSync(lane.statePath, 'utf-8')).start_commit, fork);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(parent, 'state.json'), 'utf-8')).start_commit, pipelineBase);
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   // B-LANES data-flow audit (8512be3a) F2: setupAnatomyPark reads citadel_report.json from the
   // session it is given — for a lane, the LANE dir — so a lane PRD silently lost every citadel
   // finding the serial phase would have carried.
