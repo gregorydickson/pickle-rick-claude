@@ -5305,6 +5305,11 @@ function measureAcceptanceAssertion(assertion, workingDir) {
 }
 /** The first executable assertion that measured FALSE, or null (none declared, all pass, or unmeasured). */
 function findFailedAcceptanceAssertion(sessionDir, ticketId, workingDir) {
+    // T1 (B-RUNREPORT-54): the worker's own latest conformance verdict is a measurement; FAIL refuses first.
+    const conformance = readLatestTicketConformanceSnapshot(path.join(sessionDir, ticketId));
+    if (conformance.verdictFail && conformance.file) {
+        return { command: conformance.file, kind: 'exits', expected: 0, observed: 'latest conformance verdict is FAIL' };
+    }
     let content;
     try {
         content = fs.readFileSync(ticketFilePath(sessionDir, ticketId), 'utf-8');
@@ -5457,24 +5462,43 @@ function readLatestTicketConformanceSnapshot(ticketDir) {
         entries = fs.readdirSync(ticketDir);
     }
     catch {
-        return { file: null, hasManagerHandoff: false };
+        return { file: null, hasManagerHandoff: false, verdictFail: false };
     }
     const latest = entries
         .filter(file => /^conformance_.*\.md$/.test(file))
         .sort()
         .at(-1);
     if (!latest)
-        return { file: null, hasManagerHandoff: false };
+        return { file: null, hasManagerHandoff: false, verdictFail: false };
     try {
         const content = fs.readFileSync(path.join(ticketDir, latest), 'utf-8');
         return {
             file: latest,
             hasManagerHandoff: hasSubstantiveManagerHandoff(content),
+            verdictFail: conformanceVerdictIsFail(content),
         };
     }
     catch {
-        return { file: latest, hasManagerHandoff: false };
+        return { file: latest, hasManagerHandoff: false, verdictFail: false };
     }
+}
+/**
+ * T1 (B-RUNREPORT-54): true only when the LAST `Verdict` heading or line in a conformance artifact
+ * names FAIL. The first `ALL_PASS`/`FAIL` token on that line or the next one decides, so the
+ * template line `ALL_PASS / FAIL` reads as ALL_PASS. No verdict line, or no token, is false: an
+ * unreadable verdict refuses nothing.
+ */
+export function conformanceVerdictIsFail(content) {
+    const lines = content.split('\n');
+    let verdictAt = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (/^[\s#>*\-\d.]*verdict\b/i.test(lines[i]))
+            verdictAt = i;
+    }
+    if (verdictAt < 0)
+        return false;
+    const token = /\b(ALL_PASS|FAIL)\b/.exec(`${lines[verdictAt]}\n${lines[verdictAt + 1] ?? ''}`);
+    return token?.[1] === 'FAIL';
 }
 function readCloserHandoffBudget(extensionRoot) {
     const settings = loadSettingsBag(extensionRoot, 'mux-runner:closer-handoff-budget:settings');
