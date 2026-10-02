@@ -16,9 +16,9 @@ import { describeEach } from './helpers/describe-each.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SEND_TO_MORTY = path.resolve(__dirname, '..', '..', '.claude', 'commands', 'send-to-morty.md');
+const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
 
 test('AC-WSE-04: send-to-morty.md contains the tier-parameterized premature-promise reminder', () => {
-  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
   const matches = content.match(/all phases in the tier's lifecycle set/g) || [];
   assert.ok(
     matches.length >= 1,
@@ -27,7 +27,6 @@ test('AC-WSE-04: send-to-morty.md contains the tier-parameterized premature-prom
 });
 
 test('AC-WSE-04: reminder ties tier-lifecycle phrase to <promise>I AM DONE</promise> guard', () => {
-  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
   const reminderRe = /Do NOT emit[^.]{0,300}I AM DONE[^.]{0,300}tier's lifecycle set/s;
   assert.ok(
     reminderRe.test(content),
@@ -57,7 +56,6 @@ describeEach(BACKGROUNDING_FORMS)(
   'R-MWBG: send-to-morty.md forbids backgrounding form %s for the worker\'s own long commands',
   (form) => {
     test(`names "${form}" as forbidden`, () => {
-      const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
       const matches = FORM_ASSERTIONS[form] ? FORM_ASSERTIONS[form](content) : content.includes(form);
       assert.ok(
         matches,
@@ -68,7 +66,6 @@ describeEach(BACKGROUNDING_FORMS)(
 );
 
 test('R-MWBG: send-to-morty.md requires FOREGROUND execution with an explicit large timeout', () => {
-  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
   assert.ok(/FOREGROUND/.test(content), 'expected send-to-morty.md to require FOREGROUND execution');
   assert.ok(
     /explicit large `?timeout`?/i.test(content),
@@ -88,7 +85,6 @@ test('R-MWBG: send-to-morty.md requires FOREGROUND execution with an explicit la
  * echo a marker is what puts the line in that file.
  */
 test('AC-2: send-to-morty.md names the R-MWBG-LONGCMD marker', () => {
-  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
   assert.ok(
     content.includes('R-MWBG-LONGCMD'),
     'expected send-to-morty.md to name the R-MWBG-LONGCMD attributable marker',
@@ -96,7 +92,6 @@ test('AC-2: send-to-morty.md names the R-MWBG-LONGCMD marker', () => {
 });
 
 test('AC-2: the marker is emitted BEFORE the long command, so a cut leaves start-without-done', () => {
-  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
   // The start/done asymmetry IS the diagnostic: a `done` marker alone would be
   // emitted only on the paths that already completed, which are exactly the
   // ones that never needed diagnosing. Assert both halves are specified.
@@ -117,7 +112,6 @@ test('AC-2: the marker is emitted BEFORE the long command, so a cut leaves start
 });
 
 test('AC-2: the directive ties the marker to worker_session logs and the stall signature', () => {
-  const content = fs.readFileSync(SEND_TO_MORTY, 'utf-8');
   assert.ok(
     /worker_session/.test(content),
     'expected the directive to name worker_session_<pid>.log as where the markers land',
