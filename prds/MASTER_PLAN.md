@@ -249,13 +249,6 @@ NO measured basis. Large PRDs are not constrained by the cap.
 **Queue drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
 merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
 merge `exp/b-lanes` into `main` (the ledger now has 7 sessions); deploy or merge `exp/b-parallel-build`; close #52/#53.
-   - PRD: `prds/p0-b-attrib-l-lanes-measure-their-own-work.md`. It was drafted on `main` for durability; commit it on
-     the branch too.
-   - Tickets: L1 fork-sha `start_commit`; L2 whole-phase serial fallback when lane worktrees cannot reproduce the
-     checkout's `node_modules`; L6 red-at-base integration reads `unavailable`; L4+L5+R7 commits always listed, kept
-     branches named with their expiry date, env manifest; L3 end-to-end. Measure every AC red at HEAD first.
-   - Then: gate → push → redeploy → merge `exp/b-lanes` into `exp/b-parallel-build` → gate → push.
-   - Comment on #53 with evidence after each ships (no client names).
 
 **B-ATTRIB decisions (refinement session `2026-10-01-e8b44a10`, 3×3):**
 - The sweep base is a typecheck REPLAYED at `start_commit` in the same worktree. The rolling `gate/baseline.json` is
