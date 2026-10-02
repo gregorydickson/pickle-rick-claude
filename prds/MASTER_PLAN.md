@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 22:15Z) — step 4 + B-DEPLOYPARITY shipped to main and exp/b-lanes (deployed); exp/b-parallel-build merge gate RUNNING; then step 5 B-MEGA
+### ▶ STATE (2026-10-02 23:45Z) — exp/b-parallel-build DEPLOYED (operator-approved); step 5 B-MEGA in REFINEMENT
 
 | | |
 |---|---|
 | `main` | pushed **`06af73a4`**: B-RUNREPORT-54 (#54 T1–T5), B-DEPLOYPARITY (`b0eae302`), B-MEGA PRD with operator answers. Gate `20261002T193103Z-60505` 22/22, soak 1803.7s |
-| `exp/b-lanes` | pushed **`fcec8f1d`** = **DEPLOYED** (merge of main). Gate `20261002T204811Z-81418` 22/22, soak 1803.8s. Verified by content: `verdictFail` (deployed `mux-runner.js`), `ac_coverage UNMEASURED` (`pipeline-runner.js`), `missing_requirement_ids` (`spawn-refinement-team.js`); `bin/`, `services/` and `.claude/commands` diffs = 0 |
-| `exp/b-parallel-build` | local **`1bacc67a`** = merge of `exp/b-lanes@fcec8f1d` (clean, JS unchanged). Gate RUNNING; push on green; then DEPLOY this branch (operator-approved for B-MEGA) and launch B-MEGA |
+| `exp/b-lanes` | pushed **`fcec8f1d`** (merge of main; gate 22/22). **No longer the deployed runtime** while B-MEGA runs (see `exp/b-parallel-build`) |
+| `exp/b-parallel-build` | pushed **`1bacc67a`** = **DEPLOYED 2026-10-02 23:3xZ** (operator-approved for B-MEGA; supersedes `exp/b-lanes` as the deployed runtime while B-MEGA runs). Gate `20261002T220652Z-75128` 22/22, soak 1803.8s. Verified by content: `runPickleWaves`, `max_parallel_tickets`, `services/ticket-waves.js`, `verdictFail` in the deployed JS; `bin/`, `services/`, `.claude/commands` diffs = 0. Rollback: `git checkout exp/b-lanes && bash install.sh` |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | gate on `exp/b-parallel-build@1bacc67a` (main checkout is on that branch). No pipeline |
+| RUNNING | **B-MEGA refinement** (3 analysts × 3 cycles), session `2026-10-02-be104839`, on `exp/b-parallel-build`. PRD readiness fixes applied first: F1 rewritten to the operator's delete (with read-tolerance for the old `state.archaeology` key and events — archaeology is not isolated: calibration corpus imports it), E5 cut, Interface Contracts section added |
 | open issues | **#54** (B-RUNREPORT-54 in flight), **#55** (design: the review chain is anchored on the refined PRD + branch diff — premise ledger, card-mode citadel, dependency lanes, sibling-writer protocol check, `dropped_findings.md` consumer; NOT queued — operator prioritizes), **#53**/**#52** (fixed on the experimental branches only), **#43**, **#5** (operator-deferred) |
 | client data | **#54 and #55 sanitized 2026-10-02** (bodies rewritten generic at operator request; GitHub edit history still holds the originals — only deleting the issue removes it, operator's call). **Still exposed (measured 2026-10-02):** the client name appears in the bodies of #9, #14, #15, #48, #52, #53, #55-before-edit and in one comment each on #15, #31, #48, #53; and in **145 files** at `origin/main` (`git grep -il <client>`), i.e. the #31 leak was never fully drained. Sweep = operator decision (issue edits are outward-facing; file purge is a bundle) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
