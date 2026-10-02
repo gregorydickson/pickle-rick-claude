@@ -463,15 +463,14 @@ test('AP-EXT-ITER6-01: a TIMED-OUT check marks the baseline uncertifiable and re
       _deps: { writeMicroverseStateFn: () => {}, logActivityFn: () => {} },
     });
 
-    assert.equal(
-      result.converged,
-      false,
-      'a baseline whose typecheck never ran must never certify convergence, even on a net-zero replay',
-    );
-    assert.equal(
-      result.selfRedOpen,
-      true,
-      'the uncertifiable-baseline defer must arm the existing R-ORSR-6 no-attrition latch (selfRedOpen)',
+    // B-ATTRIB-G G1: the replay measured `typecheck` where the baseline could not. That is a
+    // baseline-unmeasured check — disclosed via cap_unmeasured_checks, never a counted
+    // regression and never the no-attrition latch.
+    assert.notEqual(result.selfRedOpen, true, 'a check the baseline did not measure must not arm the latch');
+    assert.equal(Number(result.currentMv.iteration_regressions ?? 0), 0, 'and must not count as a regression');
+    assert.ok(
+      (result.currentMv.cap_unmeasured_checks ?? []).includes('typecheck'),
+      `typecheck must surface as cap_unmeasured_checks, got ${JSON.stringify(result.currentMv.cap_unmeasured_checks)}`,
     );
   } finally {
     rm(workingDir);
@@ -658,15 +657,14 @@ test('AP-EXT-ITER127-02: a check the CUMULATIVE gate deadline cut off marks the 
       _deps: { writeMicroverseStateFn: () => {}, logActivityFn: () => {} },
     });
 
-    assert.equal(
-      result.converged,
-      false,
-      'a baseline whose only check was cut off by the cumulative deadline must never certify convergence',
-    );
-    assert.equal(
-      result.selfRedOpen,
-      true,
-      'the uncertifiable-baseline defer must arm the existing R-ORSR-6 no-attrition latch (selfRedOpen)',
+    // B-ATTRIB-G G1: the replay measured checks the baseline could not. That is a
+    // baseline-unmeasured check — disclosed via cap_unmeasured_checks, never a counted
+    // regression and never the no-attrition latch.
+    assert.notEqual(result.selfRedOpen, true, 'a check the baseline did not measure must not arm the latch');
+    assert.equal(Number(result.currentMv.iteration_regressions ?? 0), 0, 'and must not count as a regression');
+    assert.ok(
+      (result.currentMv.cap_unmeasured_checks ?? []).length > 0,
+      `the checks the baseline never measured must surface as cap_unmeasured_checks, got ${JSON.stringify(result.currentMv.cap_unmeasured_checks)}`,
     );
   } finally {
     rm(workingDir);

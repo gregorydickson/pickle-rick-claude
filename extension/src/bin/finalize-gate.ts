@@ -357,7 +357,8 @@ function reportUnmeasuredGate(ctx: FinalizeContext, rt: FinalizeRuntime, cycle: 
     reportPath,
     `# Gate Unmeasured\n\nCycle: ${cycle + 1}\nSkill: ${ctx.skill}\nChecks: ${checks.join(', ')}\nTimestamp: ${new Date().toISOString()}\n\n${lines.join('\n')}\n`
   );
-  rt.writeMicroverseState(ctx.sessionRoot, recordCapUnmeasured(ctx.mvState, checks));
+  // A union, never a replace: the loop may already have disclosed a hole this gate did not see.
+  rt.writeMicroverseState(ctx.sessionRoot, recordCapUnmeasured(ctx.mvState, [...(ctx.mvState.cap_unmeasured_checks ?? []), ...checks]));
   rt.err(`[finalize-gate] gate UNMEASURED on cycle ${cycle + 1} (${checks.join(', ')}) — no remediation cycle spent, disclosed, exit 0 (report: ${reportPath})`);
   return 0;
 }

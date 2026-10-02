@@ -1329,6 +1329,23 @@ export function isCheckUnmeasured(
   return checkStatus[check] !== 'ran';
 }
 
+/**
+ * B-ATTRIB-G G1: the checks the BASELINE did not measure for THIS comparison — the current reading
+ * holds positive evidence (`'ran'`) while the baseline holds none. Failures on such a check cannot be
+ * "new" against a baseline that never saw it, so a consumer reports it unmeasured instead of red /
+ * a regression. Built on `isCheckUnmeasured` (never `hasUnmeasuredCheck`, which excludes `'skipped'`
+ * on purpose). A legacy baseline with no `check_status` yields `[]` (`undefined` reads as measured),
+ * leaving the `project_type === null` rule in charge.
+ */
+export function baselineUnmeasuredChecks(
+  current: Partial<Record<GateCheck, GateCheckStatus>> | undefined,
+  baseline: Partial<Record<GateCheck, GateCheckStatus>> | undefined,
+  checks: readonly GateCheck[],
+): GateCheck[] {
+  if (current === undefined) return [];
+  return checks.filter((c) => !isCheckUnmeasured(current, c) && isCheckUnmeasured(baseline, c));
+}
+
 export type BaselineAwareGateResult =
   | {
       verdict: 'green' | 'red' | { unmeasured: string[] };
@@ -1367,7 +1384,8 @@ export interface BaselineAwareGateOpts {
  * thrown gate is reported as `{ threw }` — a measurement failure, never a verdict on the tree.
  */
 export async function runBaselineAwareGate(opts: BaselineAwareGateOpts): Promise<BaselineAwareGateResult> {
-  const mode = readUsableBaseline(opts.baselinePath) === null ? 'strict' : 'baseline';
+  const usableBaseline = readUsableBaseline(opts.baselinePath);
+  const mode = usableBaseline === null ? 'strict' : 'baseline';
   const runGateFn = opts.runGateFn ?? runGate;
   let gate: GateResult;
   try {
@@ -1383,10 +1401,16 @@ export async function runBaselineAwareGate(opts: BaselineAwareGateOpts): Promise
   } catch (err) {
     return { threw: err instanceof Error ? err.message : String(err), mode };
   }
-  if (gate.status === 'red' && gate.failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE)) {
+  const baselineUnmeasured = baselineUnmeasuredChecks(gate.check_status, usableBaseline?.check_status, opts.checks);
+  if (
+    gate.status === 'red' &&
+    gate.failures.some((f) => f.ruleOrCode !== GATE_CHECK_TIMEOUT_CODE && !baselineUnmeasured.includes(f.check))
+  ) {
     return { verdict: 'red', gate, mode };
   }
-  const unmeasured = opts.checks.filter((check) => isCheckUnmeasured(gate.check_status, check));
+  const unmeasured = opts.checks.filter(
+    (check) => isCheckUnmeasured(gate.check_status, check) || baselineUnmeasured.includes(check),
+  );
   return { verdict: unmeasured.length > 0 ? { unmeasured } : 'green', gate, mode };
 }
 

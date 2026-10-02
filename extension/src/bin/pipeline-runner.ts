@@ -1032,11 +1032,8 @@ function isDirtyPathUnderWorkingDir(repoRoot: string, workingDir: string, dirtyP
   // while `workingDir` (from state.json) is not. Comparing the two raw would mis-classify
   // in-working_dir dirt as "outside" whenever the repo lives under a symlinked path
   // (/var, /tmp), tripping a spurious Branch-4 FATAL and defeating the dirty-tree self-heal.
-  const realpathOrResolve = (p: string): string => {
-    try { return fs.realpathSync(path.resolve(p)); } catch { return path.resolve(p); }
-  };
-  const resolvedWorking = realpathOrResolve(workingDir);
-  const resolved = path.resolve(realpathOrResolve(repoRoot), dirtyPath);
+  const resolvedWorking = realpathOrResolveScopePath(workingDir);
+  const resolved = path.resolve(realpathOrResolveScopePath(repoRoot), dirtyPath);
   return resolved === resolvedWorking || resolved.startsWith(resolvedWorking + path.sep);
 }
 
@@ -6279,10 +6276,9 @@ function readCapUnmeasuredChecks(sessionDir: string): string[] {
 /**
  * B-CAPGATE: a microverse phase that passed over a check nobody measured (`cap_unmeasured_checks`,
  * written by `recordCapUnmeasured` from the post-convergence cap OR from finalize-gate) passed over
- * a hole, and a silent success would hide it. Reported — appended to the phase disposition — but
- * never counted `nonConvergent` here: on the converged path the phase did converge (the precedent
- * is `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`). Returns whether
- * it disclosed, so a caller whose phase nothing else confirmed can withhold success on it.
+ * a hole, and a silent success would hide it. Reported — appended to the phase disposition — and
+ * NOT counted `nonConvergent` here: every caller raises on the returned boolean, so the phase still
+ * counts completed while the run withholds the success verdict. Returns whether it disclosed.
  * Unreadable or malformed microverse state reads as "no caveat", never as a fabricated one.
  */
 function reportConvergedWithUnmeasured(
@@ -6425,15 +6421,16 @@ export function finalizePhaseSuccess(
   if (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce') {
     let exitReason: unknown = null;
     try { exitReason = sm.read(runtime.statePath).exit_reason; } catch { /* best-effort — unreadable state defers to the success path below */ }
-    if (typeof exitReason === 'string' && classifyMicroverseDisposition(exitReason).reportAs !== 'success') {
-      counters.nonConvergent++;
-      counters.phaseDispositions[rawPhase] = exitReason;
+    const diverged = typeof exitReason === 'string' && classifyMicroverseDisposition(exitReason).reportAs !== 'success';
+    // One raise for both degraded arms; `||` keeps the unmeasured disclosure off a diverged phase.
+    if (diverged || reportConvergedWithUnmeasured(runtime, counters, rawPhase, log)) counters.nonConvergent++;
+    if (diverged) {
+      counters.phaseDispositions[rawPhase] = exitReason as string;
       // Errors are non-blocking: a failed status write still reports the phase and continues.
       try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
       log(`Phase ${rawPhase} did NOT converge (${exitReason}) — reported non-convergent, not counted as completed`);
       return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
     }
-    reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
   }
   counters.completed++;
   writeRunningStatus(runtime, counters, null);

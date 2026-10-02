@@ -19,6 +19,7 @@ const { runGate, getChangedExportedSymbols, getChangedFilesSince } = await impor
 );
 const {
   runInterfaceChangeSweep,
+  withCleanReplayCheckout,
   handleWorkerManagedIteration,
   handleIterationOutcome,
   _deps,
@@ -531,6 +532,9 @@ async function runClaimedConvergedIteration({ iteration, startCommit = 'bbbb2222
         logActivityFn: () => {},
         writeMicroverseStateFn: () => {},
         runGateFn: async () => ({ failures: [] }),
+        // G2: `workingDir` here is a non-git tmp dir, so the real replay checkout could only ever
+        // report `typecheck_unmeasurable`. Pass through instead; the G2 block drives the real one.
+        baseCheckoutFn: async (_dir, _sha, fn) => fn(),
         ...deps,
       },
     });
@@ -1802,4 +1806,302 @@ test('AP-EXT-ITER314-01: the sweep ARMS from a subdirectory instead of reporting
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// G2 (B-ATTRIB-G): the sweep classifies only failures NEW against a typecheck REPLAYED at
+// `start_commit`. Pre-G2 it handed the RAW whole-repo typecheck to `classifyNoDisown`, so every
+// failure that already existed in a changed file, or that named a changed exported symbol, was
+// "self-introduced" — ~2,250 such breaks in the field, all present before the phase's first edit.
+//
+// Every fixture is a REAL repo driven through the REAL `runGate`, the REAL git enumerators and the
+// REAL `withCleanReplayCheckout`: the root `typecheck` script prints the committed `tsc.txt`, so its
+// output follows whichever commit is checked out and the replay genuinely measures `start_commit`.
+// Every fixture changes an EXPORTED declaration, and every row asserts `ran === true` beside its count
+// — a zero from a sweep that never ran is vacuous.
+// ---------------------------------------------------------------------------
+
+const REPLAY_TYPECHECK_SCRIPT = [
+  "const fs = require('fs');",
+  "const out = fs.readFileSync('tsc.txt', 'utf8');",
+  'process.stdout.write(out);',
+  'process.exit(out.trim() ? 1 : 0);',
+  '',
+].join('\n');
+
+function tscLine(file, line, code, message) {
+  return `${file}(${line},1): error ${code}: ${message}`;
+}
+
+function writeTree(dir, files) {
+  for (const [rel, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), content);
+  }
+}
+
+/**
+ * Two packages (`packages/a` exports `Widget`, `packages/b` consumes it) under one root typecheck.
+ * `start_commit` carries `baseTsc`; the phase commit changes `Widget`'s exported shape and carries
+ * `headTsc`. Returns the repo, `start_commit`, and a separate session dir (never inside the repo).
+ */
+function makeReplayRepo(prefix, { baseTsc, headTsc, baseExtra = {}, headExtra = {} }) {
+  const dir = fs.realpathSync(makeInitializedRepo(prefix));
+  const sessionDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}session-`)));
+  writeTree(dir, {
+    'package.json': JSON.stringify({ name: 'g2-fixture', private: true, scripts: { typecheck: 'node typecheck.cjs' } }, null, 2),
+    'typecheck.cjs': REPLAY_TYPECHECK_SCRIPT,
+    'packages/a/src/widget.ts': 'export interface Widget { id: string }\n',
+    'packages/b/src/use.ts': "import type { Widget } from '../../a/src/widget.js';\nexport const w: Widget = { id: 'x' };\n",
+    'tsc.txt': baseTsc.map((l) => `${l}\n`).join(''),
+    ...baseExtra,
+  });
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'start_commit']);
+  const base = headSha(dir);
+  writeTree(dir, {
+    'packages/a/src/widget.ts': 'export interface Widget { id: string; name: string }\n',
+    'tsc.txt': headTsc.map((l) => `${l}\n`).join(''),
+    ...headExtra,
+  });
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'phase changes the exported Widget']);
+  return { dir, base, head: headSha(dir), sessionDir };
+}
+
+function sweepAgainstReplay({ dir, base, sessionDir }, extra = {}) {
+  return runInterfaceChangeSweep({
+    workingDir: dir,
+    sessionDir,
+    startCommit: base,
+    runGateFn: runGate,
+    logActivityFn: () => {},
+    baseCheckoutFn: withCleanReplayCheckout,
+    ...extra,
+  });
+}
+
+function cleanupReplayRepo({ dir, sessionDir }) {
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(sessionDir, { recursive: true, force: true });
+}
+
+const WIDGET_TS = 'packages/a/src/widget.ts';
+const USE_TS = 'packages/b/src/use.ts';
+const widgetMissing = (prop) => `Property '${prop}' does not exist on type 'Widget'.`;
+
+test('G2 (a): an error pre-existing at start_commit in packages/b is NOT self-introduced by an export change in packages/a', async () => {
+  const pre = tscLine(USE_TS, 2, 'TS2339', widgetMissing('size'));
+  const repo = makeReplayRepo('cg-g2a-', { baseTsc: [pre], headTsc: [pre] });
+  try {
+    const sweep = await sweepAgainstReplay(repo);
+    assert.equal(sweep.ran, true, 'the export change must ARM the sweep, or the zero below is vacuous');
+    assert.equal(sweep.skipped, null);
+    assert.equal(
+      sweep.selfIntroduced.length, 0,
+      'the failure names `Widget` but existed before the phase began — pre-G2 the identifier axis owned it',
+    );
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
+// MUTATION CONTROL (manually verified on the compiled mirror): deleting the CURRENT-side
+// `assignOccurrenceIndices` in `subtractInterfaceSweepBase` reds this row — every current row then
+// carries occurrence 0, the subtraction degrades to a SET subtraction, and the 4th occurrence of a
+// baselined identity is disowned (0 instead of 1).
+test('G2 (b): k=3 occurrences at start_commit, n=4 now, in a touched file → exactly 1 self-introduced', async () => {
+  const at = (line) => tscLine(WIDGET_TS, line, 'TS2322', "Type 'number' is not assignable to type 'string'.");
+  const repo = makeReplayRepo('cg-g2b-', { baseTsc: [at(10), at(20), at(30)], headTsc: [at(10), at(20), at(30), at(40)] });
+  try {
+    const sweep = await sweepAgainstReplay(repo);
+    assert.equal(sweep.ran, true);
+    assert.equal(sweep.selfIntroduced.length, 1, 'only the occurrence beyond the base count is new');
+    assert.equal(sweep.selfIntroduced[0].ruleOrCode, 'TS2322');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
+test('G2 (c): k=3 → n=3 in a touched file → 0 self-introduced', async () => {
+  const at = (line) => tscLine(WIDGET_TS, line, 'TS2322', "Type 'number' is not assignable to type 'string'.");
+  const lines = [at(10), at(20), at(30)];
+  const repo = makeReplayRepo('cg-g2c-', { baseTsc: lines, headTsc: lines });
+  try {
+    const sweep = await sweepAgainstReplay(repo);
+    assert.equal(sweep.ran, true);
+    assert.equal(sweep.selfIntroduced.length, 0, 'every occurrence existed at start_commit');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
+test('G2 (d): a pre-existing error in an untouched file naming the changed symbol → 0; a NEW one → 1', async () => {
+  const pre = tscLine(USE_TS, 2, 'TS2339', widgetMissing('size'));
+  const fresh = tscLine('packages/b/src/other.ts', 3, 'TS2741', "Property 'name' is missing in type '{}' but required in type 'Widget'.");
+  const repo = makeReplayRepo('cg-g2d-', {
+    baseTsc: [pre],
+    headTsc: [pre, fresh],
+    baseExtra: { 'packages/b/src/other.ts': 'export const o = 1;\n' },
+  });
+  try {
+    const sweep = await sweepAgainstReplay(repo);
+    assert.equal(sweep.ran, true);
+    assert.equal(sweep.selfIntroduced.length, 1, 'control: the subtraction removes the old failure, never the new one');
+    assert.match(sweep.selfIntroduced[0].file, /other\.ts$/, 'the surviving row is the NEW consumer break');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
+test('G2 (e): a self-introduced error stays owned after gate/baseline.json is refreshed to contain it (rolling-base control)', async () => {
+  const own = tscLine(WIDGET_TS, 1, 'TS2322', "Type 'number' is not assignable to type 'string'.");
+  const repo = makeReplayRepo('cg-g2e-', { baseTsc: [], headTsc: [own] });
+  try {
+    // A refresh recaptures at the phase's own HEAD, so the rolling baseline now CONTAINS the break.
+    // Subtracting it would disown the phase's own regression; the replay base must ignore it.
+    const baselinePath = path.join(repo.sessionDir, 'gate', 'baseline.json');
+    fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
+    await captureBaseline(repo.dir, baselinePath);
+    assert.equal(JSON.parse(fs.readFileSync(baselinePath, 'utf8')).failures.length, 1, 'precondition: the rolling base holds the break');
+
+    const sweep = await sweepAgainstReplay(repo);
+    assert.equal(sweep.ran, true);
+    assert.equal(sweep.selfIntroduced.length, 1, 'the base is the start_commit replay, never the rolling baseline');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
+test('G2 (f): a checkout that throws is typecheck_unmeasurable — no exception, no selfRedOpen', async () => {
+  const pre = tscLine(USE_TS, 2, 'TS2339', widgetMissing('size'));
+  const repo = makeReplayRepo('cg-g2f-', { baseTsc: [pre], headTsc: [pre] });
+  try {
+    const sweep = await sweepAgainstReplay(repo, {
+      baseCheckoutFn: async () => { throw new Error('checkout refused'); },
+    });
+    assert.equal(sweep.ran, false);
+    assert.equal(sweep.skipped, 'typecheck_unmeasurable');
+    assert.equal(sweep.selfIntroduced.length, 0);
+
+    // A DIRTY tree takes the same door through the real helper, and the tree is left untouched.
+    fs.writeFileSync(path.join(repo.dir, 'scratch.txt'), 'uncommitted\n');
+    const dirty = await sweepAgainstReplay(repo);
+    assert.equal(dirty.ran, false);
+    assert.equal(dirty.skipped, 'typecheck_unmeasurable');
+    assert.equal(headSha(repo.dir), repo.head, 'a refused replay never moves HEAD');
+    assert.equal(fs.readFileSync(path.join(repo.dir, 'scratch.txt'), 'utf8'), 'uncommitted\n');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+
+  // Through the guard: the withhold carries no selfRedOpen and reaches the caller without throwing.
+  const { result } = await runClaimedConvergedIteration({
+    iteration: 7,
+    deps: {
+      getChangedExportedSymbolsFn: () => new Set(['Widget']),
+      getChangedFilesSinceFn: () => [WIDGET_TS],
+      baseCheckoutFn: async () => { throw new Error('checkout refused'); },
+    },
+  });
+  assert.equal(result.converged, false, 'an unmeasured base withholds convergence');
+  assert.equal(result.selfRedOpen, undefined, 'and is not a measured self-red');
+});
+
+test('G2: the replay removes the untracked build info it created, so the restore and later checkouts are never refused', async () => {
+  // MEASURED hazard: an untracked file written at start_commit at a path HEAD TRACKS makes the
+  // restore refuse (worktree stranded at start_commit); any other one stays `??` and every later
+  // `withCleanTemporaryCheckout` refuses as dirty. Only the base commit's typecheck writes them.
+  const writesBuildInfo = [
+    "require('fs').writeFileSync('tracked-later.tsbuildinfo', '{}');",
+    "require('fs').writeFileSync('tsconfig.tsbuildinfo', '{}');",
+    REPLAY_TYPECHECK_SCRIPT,
+  ].join('\n');
+  const repo = makeReplayRepo('cg-g2-buildinfo-', {
+    baseTsc: [],
+    headTsc: [],
+    baseExtra: { 'typecheck.cjs': writesBuildInfo },
+    headExtra: { 'typecheck.cjs': REPLAY_TYPECHECK_SCRIPT, 'tracked-later.tsbuildinfo': '{"head":true}' },
+  });
+  try {
+    // Fixture precondition: the start_commit typecheck really writes both files, or this case pins nothing.
+    const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-g2-buildinfo-probe-'));
+    try {
+      fs.writeFileSync(path.join(probe, 'tsc.txt'), '');
+      execFileSync(process.execPath, ['-e', writesBuildInfo], { cwd: probe, stdio: 'pipe', timeout: 30_000 });
+      assert.ok(fs.existsSync(path.join(probe, 'tracked-later.tsbuildinfo')), 'precondition: the base typecheck writes build info');
+    } finally {
+      fs.rmSync(probe, { recursive: true, force: true });
+    }
+
+    const sweep = await sweepAgainstReplay(repo);
+    assert.equal(sweep.ran, true, `the restore must succeed; got ${JSON.stringify(sweep)}`);
+    assert.equal(headSha(repo.dir), repo.head, 'the worktree is back on the phase HEAD');
+    const status = execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: repo.dir, encoding: 'utf-8', timeout: 30_000 });
+    assert.equal(status, '', 'nothing the replay created survives it');
+    assert.equal(fs.readFileSync(path.join(repo.dir, 'tracked-later.tsbuildinfo'), 'utf8'), '{"head":true}');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
+test('G2: the runtime\'s own untracked .codegraph index neither refuses the replay nor is deleted by it', async () => {
+  // MEASURED: in a repo that does not exclude `.codegraph/`, the index's self-ignoring
+  // `.gitignore` (`*` then `!.gitignore`) is the one untracked path `git status -uall` reports.
+  // Read as dirt, every replay would refuse and the sweep would be permanently unmeasurable.
+  const pre = tscLine(USE_TS, 2, 'TS2339', widgetMissing('size'));
+  const repo = makeReplayRepo('cg-g2-codegraph-', { baseTsc: [pre], headTsc: [pre] });
+  const cgIgnore = path.join(repo.dir, '.codegraph', '.gitignore');
+  try {
+    fs.mkdirSync(path.dirname(cgIgnore), { recursive: true });
+    fs.writeFileSync(cgIgnore, '*\n!.gitignore\n');
+    fs.writeFileSync(path.join(repo.dir, '.codegraph', 'codegraph.db'), 'db');
+    const status = execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: repo.dir, encoding: 'utf-8', timeout: 30_000 });
+    assert.equal(status, '?? .codegraph/.gitignore\n', 'precondition: the index reads as untracked dirt');
+
+    const sweep = await sweepAgainstReplay(repo);
+    assert.equal(sweep.ran, true, `the index must not refuse the replay; got ${JSON.stringify(sweep)}`);
+    assert.equal(sweep.selfIntroduced.length, 0, 'and the replay base still subtracts the pre-existing failure');
+    assert.equal(headSha(repo.dir), repo.head);
+    assert.equal(fs.existsSync(cgIgnore), true, 'an untracked file that predates the replay is never removed by it');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
+test('G2: the replay is cached per start_commit, and an unreadable cache recomputes — never read as empty', async () => {
+  const pre = tscLine(USE_TS, 2, 'TS2339', widgetMissing('size'));
+  const repo = makeReplayRepo('cg-g2-cache-', { baseTsc: [pre], headTsc: [pre] });
+  let checkouts = 0;
+  const counting = (d, s, fn) => { checkouts++; return withCleanReplayCheckout(d, s, fn); };
+  const cachePath = path.join(repo.sessionDir, 'gate', 'interface-sweep-base.json');
+  try {
+    const first = await sweepAgainstReplay(repo, { baseCheckoutFn: counting });
+    const second = await sweepAgainstReplay(repo, { baseCheckoutFn: counting });
+    assert.equal(checkouts, 1, 'the same start_commit replays once');
+    assert.equal(JSON.parse(fs.readFileSync(cachePath, 'utf8')).start_commit, repo.base);
+    for (const sweep of [first, second]) {
+      assert.equal(sweep.ran, true);
+      assert.equal(sweep.selfIntroduced.length, 0);
+    }
+
+    // An unreadable cache, a malformed one, and one for another sha all recompute. Were any of them
+    // read as an EMPTY base, the pre-existing failure would come back as self-introduced (1).
+    for (const corrupt of ['{not json', JSON.stringify({ start_commit: repo.base, failures: 'x' }), JSON.stringify({ start_commit: 'f00', failures: [] })]) {
+      fs.writeFileSync(cachePath, corrupt);
+      const sweep = await sweepAgainstReplay(repo, { baseCheckoutFn: counting });
+      assert.equal(sweep.ran, true);
+      assert.equal(sweep.selfIntroduced.length, 0, `cache ${corrupt} must recompute, not read as empty`);
+    }
+    assert.equal(checkouts, 4, 'each unusable cache forced exactly one replay');
+  } finally {
+    cleanupReplayRepo(repo);
+  }
+});
+
+test('G2: InterfaceSweepSkipReason keeps its four members (no new skip door)', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '../src/bin/microverse-runner.ts'), 'utf8');
+  const decl = src.match(/export type InterfaceSweepSkipReason =([^;]*);/);
+  assert.ok(decl, 'the union must still be declared');
+  assert.equal((decl[1].match(/\|\s*'[a-z_]+'/g) ?? []).length, 4);
 });
