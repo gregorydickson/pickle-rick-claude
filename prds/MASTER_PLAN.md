@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 15:30Z) — step 4 (B-RUNREPORT-54) RUNNING on main; step 5 (B-MEGA, operator-approved) being planned
+### ▶ STATE (2026-10-02 18:45Z) — step 4 built, main gate 21/22 (host-state test); fix B-DEPLOYPARITY RUNNING on main; step 5 B-MEGA awaiting operator answers
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | pushed **`e86180e0`** = **DEPLOYED** (adds B-ATTRIB-L, session `2026-10-02-1d45b656`). Gate `20261002T073139Z-13368` 22/22, soak 1803.7s. Verified by content in deployed `pipeline-runner.js`: `disabled for this phase` (L2), `kept lane branch` (L4), `node_modules_linked` (L5), `start_commit: phaseStartSha` (L1); bin/ + services/ diff = 0 |
 | `exp/b-parallel-build` | pushed **`99fe61eb`** = merge of `exp/b-lanes@e86180e0` (B-ATTRIB-G + B-LANES-MERGE-G + B-ATTRIB-L). Gate `20261002T085127Z-22748` 22/22, soak 1803.7s. Not deployed (operator decision) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-RUNREPORT-54** on `main`, session `2026-10-02-74246bff` (tmux `pipeline-74246bff`, launched 13:48Z). 5/5 tickets Done (`11af854e`..`d9a64406`, local, unpushed); pickle phase closing, then citadel → anatomy-park → szechuan. **Local `main` will need `git merge origin/main` (NOT rebase — tickets record their `completion_commit` shas) before the post-gate push**, because this STATE commit was pushed from a worktree while the pipeline ran (operator-requested) |
+| RUNNING | **B-DEPLOYPARITY** on `main`, session `2026-10-02-0051f0c6` (tmux `pipeline-0051f0c6`, 18:43Z; 1 ticket, `paths:` scope of 2). **LOCAL `main` is ahead of origin and UNPUSHED:** B-RUNREPORT-54 (`11af854e`..`028729e1`, 4/4 phases, finished 15:07Z), merge `2a37b414`, B-MEGA PRD `c48dc61c`, B-DEPLOYPARITY PRD. Gate `20261002T152831Z-49037` at `c48dc61c`: **21/22**, `test_fast_budget` red 3/3 on `R-MWBG: send-to-morty.md deployed copy matches the repo copy` — a fast-tier test comparing the tree with THIS host's deployed `~/.claude/commands`, which a pre-deploy gate can never satisfy after a command edit (T1 quoted `status: "Done"`). Fix deletes it and moves the check to post-deploy (`diff -rq .claude/commands`). Then: re-gate main → push (merge `origin/main` first, never rebase) → merge-down |
 | open issues | **#54** (B-RUNREPORT-54 in flight), **#55** (design: the review chain is anchored on the refined PRD + branch diff — premise ledger, card-mode citadel, dependency lanes, sibling-writer protocol check, `dropped_findings.md` consumer; NOT queued — operator prioritizes), **#53**/**#52** (fixed on the experimental branches only), **#43**, **#5** (operator-deferred) |
 | client data | **#54 and #55 sanitized 2026-10-02** (bodies rewritten generic at operator request; GitHub edit history still holds the originals — only deleting the issue removes it, operator's call). **Still exposed (measured 2026-10-02):** the client name appears in the bodies of #9, #14, #15, #48, #52, #53, #55-before-edit and in one comment each on #15, #31, #48, #53; and in **145 files** at `origin/main` (`git grep -il <client>`), i.e. the #31 leak was never fully drained. Sweep = operator decision (issue edits are outward-facing; file purge is a bundle) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
@@ -247,7 +247,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 3. ~~B-ATTRIB-L (#53 lanes)~~ — DONE 2026-10-02: built on `exp/b-lanes` (session `2026-10-02-1d45b656`), gated 22/22, pushed, redeployed,
    verified by content; merged into `exp/b-parallel-build` (`99fe61eb`), gated 22/22, pushed. Evidence comments on #53.
 
-4. **B-RUNREPORT-54 (#54, general) on `main`.** LAUNCHED 13:48Z. **Deviation from the committed PRD (T3):** scope-setup silently drops
+4. **B-RUNREPORT-54 (#54, general) on `main`.** BUILT 15:07Z (session `2026-10-02-74246bff`); main gate red only on the host-state test → B-DEPLOYPARITY. LAUNCHED 13:48Z. **Deviation from the committed PRD (T3):** scope-setup silently drops
    paths that do not exist yet (32 listed → `allowed=30`), so the PRD's "move the R-RCEX resolver into a new `services/` file"
    would have failed the worker scope fence; the ticket was re-scoped before it started to EXPORT the resolver from
    `bin/check-readiness.ts` in place (precedent: two modules already import from it). Landed as `598b66fa`. PRD `prds/p1-b-runreport-54.md`; 5 hand-written tickets (T1 conformance-FAIL
@@ -270,6 +270,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
      non-lexical coverage, "conforms to PRD" ≠ drop, `dropped_findings.md` consumer (#55, #54) · E #54 follow-ups (G3
      drift report, G4 scripted decomposition, AC-shape gate advisory, one requirement-id rule, microverse template,
      nested-workspace .d.ts resolution) · F #5 Moves 1–3.
+   - **PRD committed on local main** (`prds/p1-b-mega-multiagent.md`, premises measured at `exp/b-parallel-build@99fe61eb`; ~25 tickets; first-ever real wave run; #5 Moves 2–3 found already satisfied, Move 1's archaeology has 0 callers). **Operator answers (2026-10-02):** (1) **A2 ships in B-MEGA** with A1 kept as the safety net — if linking cannot reproduce a workspace's node_modules, units/lanes fall back to serial; the first monorepo field run is A2's real test; (2) **delete archaeology** (dead module + stale `PRD_GUIDE.md` reference) and close #5 with the evidence that Moves 2–3 are already satisfied; (3) **close #52/#53/#5 only when the branch merges to `main`**; (4) **cut E5** (cosmetic; recorded only). The PRD on local main is amended to match once B-DEPLOYPARITY finishes.
    - **Order:** after step 4 finishes AND merges down (main → exp/b-lanes → exp/b-parallel-build, each gated); then deploy
      `exp/b-parallel-build`, verify by content, launch. PRD being drafted with every premise measured at the branch HEAD.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
