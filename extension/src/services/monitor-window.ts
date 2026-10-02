@@ -74,7 +74,7 @@ export interface EnsureMonitorWindowOptions {
 export function inferMonitorMode(sessionDir: string, log?: (msg: string) => void): MonitorMode {
   try {
     const state = new StateManager().read(path.join(sessionDir, 'state.json')) as { command_template?: string };
-    const tpl = (state.command_template || '').toLowerCase();
+    const tpl = (state.command_template || '').toLowerCase().replace(/^_/, '');
     if (!tpl) {
       log?.('[ensureMonitorWindow] command_template missing; defaulting to pickle');
       return 'pickle';

@@ -14,7 +14,7 @@ import { _killOldMonitorPid, formatLocalDateKey, getDataRoot, getExtensionRoot, 
 export function inferMonitorMode(sessionDir, log) {
     try {
         const state = new StateManager().read(path.join(sessionDir, 'state.json'));
-        const tpl = (state.command_template || '').toLowerCase();
+        const tpl = (state.command_template || '').toLowerCase().replace(/^_/, '');
         if (!tpl) {
             log?.('[ensureMonitorWindow] command_template missing; defaulting to pickle');
             return 'pickle';

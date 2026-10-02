@@ -133,6 +133,15 @@ test('inferMonitorMode: undefined template → pickle + WARN (missing)', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('inferMonitorMode: underscore-prefixed pickle manager template → pickle, no WARN', () => {
+  const dir = makeSessionDir('_pickle-manager.md');
+  try {
+    const warns = [];
+    assert.equal(inferMonitorMode(dir, (m) => warns.push(m)), 'pickle');
+    assert.equal(warns.length, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('inferMonitorMode: unrecognized template → pickle + WARN', () => {
   const dir = makeSessionDir('unknown-widget.md');
   try {
