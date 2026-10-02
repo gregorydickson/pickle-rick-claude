@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 00:50Z) — queue step 1 done, step 2 mid-flight (merge-down); queue below is the babysitter's
+### ▶ STATE (2026-10-02 01:55Z) — step 2 merge-down: exp/b-lanes gate red 21/22, branch fix pipeline RUNNING
 
 | | |
 |---|---|
 | `main` | **`3cdb1c4c`** + this STATE commit, pushed. **B-ATTRIB-G built** (session `2026-10-01-face240c`, 4/4 phases, finished 22:53Z; G1 `d1e369ce`, G2 `c3fc60af`/`970370c7`, D2 `f73e828d`). Gate `20261001T233051Z-35963` 22/22 at `3cdb1c4c`, soak 1803.7s |
-| `exp/b-lanes` | pushed **`979b55b1`** = **DEPLOYED** (B-LANES-UNCHECKED + FIX; gate `20261001T194834Z-88031` 22/22, soak 1803.9s; verified by content: `integration_check` in deployed `pipeline-runner.js`). B-ATTRIB-G NOT yet merged in |
+| `exp/b-lanes` | **DEPLOYED = `979b55b1`** (B-LANES-UNCHECKED + FIX; gate 22/22; verified by content). Pushed tip **`9d193e05`** = merge of main/B-ATTRIB-G (`d27b8be1`) + PRD B-LANES-MERGE-G; NOT deployed. Gate `20261002T004822Z-46820` at `d27b8be1`: **21/22**, `test_fast_budget` red — B-LANES wiring AC 1 `1 !== 0` 3/3 runs (fixture has no runnable typecheck → `integration_typecheck` unmeasured → D2 withholds success; the test is stale, the product is right) |
 | `exp/b-parallel-build` | pushed **`fc9e05dd`** (B-PBUILD #43 + #52 bound; gate 22/22). Not deployed. Merge-down of B-LANES-UNCHECKED and B-ATTRIB is deferred until both land |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **nothing** (as of 00:50Z). Old `pipeline-*` tmux shells are idle |
+| RUNNING | **B-LANES-MERGE-G** on `exp/b-lanes`, session `2026-10-02-76f112c8` (tmux `pipeline-76f112c8`, launched 01:52Z; 1 test-only ticket, `paths:` scope = `extension/tests/pipeline-runner.test.js`) |
 | open issues | **#53** (B-ATTRIB, in progress), **#52** (bound shipped, lane part in flight), **#43** (B-PBUILD built, on its branch awaiting field runs), **#5** (operator-deferred) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
@@ -242,6 +242,8 @@ NO measured basis. Large PRDs are not constrained by the cap.
 1. ~~Gate `exp/b-lanes`~~ — DONE 2026-10-01: 22/22, pushed `979b55b1`, redeployed, verified by content.
 2. **B-ATTRIB-G (#53 general) on `main`.** BUILT + main gated green + pushed (see STATE). **Remaining: merge
    `main` into `exp/b-lanes` → gate → push → redeploy (grep deployed `microverse-runner.js` for the G1 helper).**
+   Merged (`d27b8be1`), gate red 21/22 → fix PRD `prds/p1-b-lanes-merge-attrib-g-stale-ac1.md` (on the branch) running.
+   When it finishes: gate `exp/b-lanes` → push → redeploy → verify by content.
    - Materials: PRD `prds/p0-b-attrib-g-unmeasured-is-not-self-introduced.md`; 3 tickets already written in session
      `2026-10-01-face240c` (G1 medium, G2 large, D2 medium).
    - Switch the main checkout to `main`, `setup.js --tmux --resume <session>`, and write `pipeline.json` with
