@@ -43,7 +43,7 @@ import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES, createMicroverseState, readMicroverseState, recordCapUnmeasured, writeMicroverseState, } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, laneCommits, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -1854,9 +1854,6 @@ function reportLaneRecovery({ runtime, repoRoot }) {
         });
     }
 }
-function strandedLaneCommits(repoRoot, phaseStartSha, branch) {
-    return (runGitString(['rev-list', '--reverse', `${phaseStartSha}..${branch}`], repoRoot) ?? '').split('\n').filter(Boolean);
-}
 const KEPT_LANE_SUBJECT_CAP = 5;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 /**
@@ -1906,7 +1903,7 @@ function integrateLaneRun(run, lanes, ends) {
         integration_check: integration.checks[i],
         // A lane that did not integrate is not handed to integrateLanes (its pick loop would PICK them),
         // yet its commits are what a stranded lane leaves behind — listed here for the record only.
-        commits: integration.commits[i].length > 0 ? integration.commits[i] : strandedLaneCommits(repoRoot, run.sha, branches[i]),
+        commits: integration.commits[i].length > 0 ? integration.commits[i] : laneCommits(repoRoot, run.sha, branches[i]),
         node_modules_linked: ends[i].node_modules_linked,
         baseline_check_status: ends[i].baseline_check_status,
     }));

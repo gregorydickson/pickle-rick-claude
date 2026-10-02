@@ -96,6 +96,7 @@ import {
   removeLaneWorktrees,
   aggregateLaneExitReason,
   integrateLanes,
+  laneCommits,
   releaseLaneBranches,
   recoverLaneBranches,
   RETAINED_BRANCH_MAX_AGE_DAYS,
@@ -2244,10 +2245,6 @@ function reportLaneRecovery({ runtime, repoRoot }: LaneRun): void {
   }
 }
 
-function strandedLaneCommits(repoRoot: string, phaseStartSha: string, branch: string): string[] {
-  return (runGitString(['rev-list', '--reverse', `${phaseStartSha}..${branch}`], repoRoot) ?? '').split('\n').filter(Boolean);
-}
-
 const KEPT_LANE_SUBJECT_CAP = 5;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -2296,7 +2293,7 @@ function integrateLaneRun(run: LaneRun, lanes: readonly LaneRecord[], ends: read
     integration_check: integration.checks[i],
     // A lane that did not integrate is not handed to integrateLanes (its pick loop would PICK them),
     // yet its commits are what a stranded lane leaves behind — listed here for the record only.
-    commits: integration.commits[i].length > 0 ? integration.commits[i] : strandedLaneCommits(repoRoot, run.sha, branches[i]),
+    commits: integration.commits[i].length > 0 ? integration.commits[i] : laneCommits(repoRoot, run.sha, branches[i]),
     node_modules_linked: ends[i].node_modules_linked,
     baseline_check_status: ends[i].baseline_check_status,
   }));

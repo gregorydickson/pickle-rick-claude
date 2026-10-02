@@ -314,7 +314,8 @@ export function runIntegrationTypecheck(dir: string): 'green' | 'red' | 'unavail
   return ran ? 'green' : 'unavailable';
 }
 
-function laneCommits(repoRoot: string, phaseStartSha: string, branch: string): string[] {
+/** The lane branch's commits since the phase start sha, oldest first; `[]` when the branch is unreadable. */
+export function laneCommits(repoRoot: string, phaseStartSha: string, branch: string): string[] {
   try {
     return laneGit(repoRoot, ['rev-list', '--reverse', `${phaseStartSha}..${branch}`]).split('\n').filter(Boolean);
   } catch {
