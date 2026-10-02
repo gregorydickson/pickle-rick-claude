@@ -112,7 +112,11 @@ test('AC-2: the directive ties the marker to worker_session logs and the stall s
     'expected the directive to name worker_session_<pid>.log as where the markers land',
   );
   assert.ok(
-    /exit:0/.test(content) && /validation: failed/.test(content),
-    'expected the directive to name the exit:0 + validation: failed signature it makes diagnosable',
+    /exit:0/.test(content),
+    'expected the directive to name the exit:0 half of the stall signature it makes diagnosable',
+  );
+  assert.ok(
+    /validation: failed/.test(content),
+    'expected the directive to name the validation: failed half of the stall signature it makes diagnosable',
   );
 });
