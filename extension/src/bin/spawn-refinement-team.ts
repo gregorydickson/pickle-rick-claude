@@ -2560,9 +2560,9 @@ function hasSourceHit(symbol: string, workingDir: string): boolean {
   return false;
 }
 
-/** Resolves a symbol against declared-dependency `.d.ts` files (the R-RCEX resolver, shared with check-readiness). */
-function hasDependencyDtsHit(symbol: string, workingDir: string): boolean {
-  return collectExternalDtsFiles(workingDir).some((file) => {
+/** Resolves a symbol against declared-dependency `.d.ts` files (the R-RCEX collector, shared with check-readiness). */
+function hasDependencyDtsHit(symbol: string, dtsFiles: string[]): boolean {
+  return dtsFiles.some((file) => {
     try {
       return fs.statSync(file).size <= EXTERNAL_DTS_MAX_BYTES && fs.readFileSync(file, 'utf-8').includes(symbol);
     } catch {
@@ -2578,6 +2578,8 @@ function collectHelperSentinelReferences(
 ): SymbolAuditReference[] {
   const valid = new Set<string>(declaredSymbols);
   const refs: SymbolAuditReference[] = [];
+  // Walk node_modules at most once per audit, and only when a symbol misses the source tree.
+  let dependencyDtsFiles: string[] | undefined;
   for (const { line, sourceLine } of lineRefs(prdContent)) {
     if (!/\b(?:helpers?|sentinels?)\b/i.test(line)) continue;
     QUOTED_SYMBOL_RE.lastIndex = 0;
@@ -2586,7 +2588,8 @@ function collectHelperSentinelReferences(
       const [, symbol] = match;
       if (!/^[A-Za-z_$][A-Za-z0-9_$.-]*$/.test(symbol)) continue;
       const grounded = valid.has(symbol) || hasSourceHit(symbol, workingDir);
-      const inDependency = !grounded && hasDependencyDtsHit(symbol, workingDir);
+      const inDependency = !grounded
+        && hasDependencyDtsHit(symbol, dependencyDtsFiles ??= collectExternalDtsFiles(workingDir));
       const status = grounded || inDependency ? 'valid' : 'phantom';
       refs.push({
         symbol,
