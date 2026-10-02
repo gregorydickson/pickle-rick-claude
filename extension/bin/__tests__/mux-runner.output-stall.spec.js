@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { runIteration } from '../../bin/mux-runner.js';
+import { conformanceVerdictIsFail, runIteration } from '../../bin/mux-runner.js';
 function makeExecutableNodeScript(filePath, source) {
     fs.writeFileSync(filePath, `#!/usr/bin/env node\n${source}`);
     fs.chmodSync(filePath, 0o755);
@@ -239,4 +239,15 @@ test('R-APMW-6: normal subprocess clears both timers on success', async () => {
     finally {
         fs.rmSync(scenario.sessionDir, { recursive: true, force: true });
     }
+});
+// AP-BIN-ITER257-01: the verdict token sits on the first NON-BLANK line after the heading. 4 of 48
+// live conformance artifacts write `## 6. Verdict`, a blank line, then `**FAIL**`/`**ALL_PASS**`;
+// reading only the very next line saw the blank and refused nothing, so a FAIL self-flip shipped Done.
+test('AP-BIN-ITER257-01: a verdict separated from its heading by blank lines is read', () => {
+    assert.equal(conformanceVerdictIsFail('# Conformance\n\n## 6. Verdict\n\n**FAIL**\n\n- criterion 2\n'), true);
+    assert.equal(conformanceVerdictIsFail('# Conformance\n\n## 6. Verdict\n\n\n**FAIL**\n'), true);
+    // Controls: the same layout with ALL_PASS, the template line, and a heading followed only by prose.
+    assert.equal(conformanceVerdictIsFail('# Conformance\n\n## 6. Verdict\n\n**ALL_PASS**\n'), false);
+    assert.equal(conformanceVerdictIsFail('6. **Verdict**: ALL_PASS / FAIL (failures with file:line refs)\n'), false);
+    assert.equal(conformanceVerdictIsFail('## Verdict\n\nSee notes.\n\nFAIL\n'), false);
 });

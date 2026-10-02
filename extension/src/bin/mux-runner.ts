@@ -6497,7 +6497,8 @@ function readLatestTicketConformanceSnapshot(ticketDir: string): TicketConforman
 
 /**
  * T1 (B-RUNREPORT-54): true only when the LAST `Verdict` heading or line in a conformance artifact
- * names FAIL. The first `ALL_PASS`/`FAIL` token on that line or the next one decides, so the
+ * names FAIL. The first `ALL_PASS`/`FAIL` token on that line or the next NON-BLANK one decides
+ * (a markdown heading is followed by a blank line), so the
  * template line `ALL_PASS / FAIL` reads as ALL_PASS. No verdict line, or no token, is false: an
  * unreadable verdict refuses nothing.
  */
@@ -6508,7 +6509,8 @@ export function conformanceVerdictIsFail(content: string): boolean {
     if (/^[\s#>*\-\d.]*verdict\b/i.test(lines[i])) verdictAt = i;
   }
   if (verdictAt < 0) return false;
-  const token = /\b(ALL_PASS|FAIL)\b/.exec(`${lines[verdictAt]}\n${lines[verdictAt + 1] ?? ''}`);
+  const next = lines.slice(verdictAt + 1).find((line) => line.trim() !== '') ?? '';
+  const token = /\b(ALL_PASS|FAIL)\b/.exec(`${lines[verdictAt]}\n${next}`);
   return token?.[1] === 'FAIL';
 }
 
