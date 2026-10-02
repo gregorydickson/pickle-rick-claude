@@ -5479,9 +5479,13 @@ describe('B-LANES wiring: end to end through main()', () => {
   const FIXED = 'export const a = 1; // fixed\n';
 
   /** A target with three lane roots, each holding one seeded defect in `<lane>/a.ts`. */
-  function makeFixture(pipeline = {}) {
+  function makeFixture(pipeline = {}, { typecheck = true } = {}) {
     const repo = fs.realpathSync(tmpDir());
-    const startCommit = initRepo(repo, laneSeedFiles(LANE_NAMES), { branch: 'work' });
+    // A root typecheck script makes the integration typecheck MEASURABLE; without it every lane's
+    // check is `unavailable` and a converged run is (correctly) withheld as converged_with_unmeasured.
+    const rootPackage = typecheck
+      ? { 'package.json': JSON.stringify({ name: 'fx', private: true, scripts: { typecheck: 'true' } }) } : {};
+    const startCommit = initRepo(repo, { ...rootPackage, ...laneSeedFiles(LANE_NAMES) }, { branch: 'work' });
     // The branch under review introduces one defect per lane.
     for (const name of LANE_NAMES) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = BUG;\n');
     git(repo, 'commit', '-q', '-am', 'introduce defects');
@@ -5570,6 +5574,25 @@ describe('B-LANES wiring: end to end through main()', () => {
       assert.match(log, /Phase anatomy-park completed successfully/);
       const status = readJson(path.join(fx.sessionDir, 'pipeline-status.json'));
       assert.deepEqual([status.status, status.completed_phases], ['completed', 1]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  // Regression guard (passes at d27b8be1 by design). Mutation control: forcing
+  // discloseUnmeasuredIntegration to return no checks reds this test.
+  test('AC 1b: an UNMEASURED integration check withholds success', async () => {
+    const fx = makeFixture({ anatomy_max_parallel_lanes: 3 }, { typecheck: false });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(fixingRunner(calls));
+      const code = await runLaneMain(fx.sessionDir, fx.dataRoot);
+      const log = fs.existsSync(path.join(fx.sessionDir, 'pipeline-runner.log'))
+        ? fs.readFileSync(path.join(fx.sessionDir, 'pipeline-runner.log'), 'utf-8') : '';
+      assert.notEqual(code, 0, `an unmeasured integration check must not finalize clean\n${log}`);
+      assert.match(log, /converged_with_unmeasured:integration_typecheck/);
+      const rows = readJson(path.join(fx.sessionDir, 'archive', 'lanes.json'));
+      assert.deepEqual(rows.map((r) => [r.name, r.outcome]), LANE_NAMES.map((n) => [n, 'integrated']));
     } finally {
       fx.cleanup();
     }
