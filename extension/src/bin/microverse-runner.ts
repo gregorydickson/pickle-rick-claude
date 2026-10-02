@@ -37,7 +37,7 @@ import {
 } from '../services/microverse-state.js';
 import type { MetricComparisonFigures } from '../services/microverse-state.js';
 import { removeRecoverableJsonObject } from '../services/recoverable-json.js';
-import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { ArchiveAbortError, getHeadSha, resetToSha, isWorkingTreeDirty, listWorkingTreeDirtyPaths, listWorkingTreeDirtyPathsExcludingCodegraph } from '../services/git-utils.js';
 import { salvageDirtyTree, stageOwnedPaths } from '../services/dirty-tree-salvage.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { rankFindings } from '../services/citadel/reporter.js';
@@ -96,9 +96,12 @@ import {
   filterByScope,
   classifyNoDisown,
   isCheckUnmeasured,
+  baselineUnmeasuredChecks,
   getChangedExportedSymbols,
   getChangedFilesSince,
   runBaselineAwareGate,
+  assignOccurrenceIndices,
+  subtractBaseline,
 } from '../services/convergence-gate.js';
 import { spawnGateRemediatorMain } from './spawn-gate-remediator.js';
 
@@ -545,6 +548,7 @@ export interface PerIterationGateDeps {
   // R-ORSR-6 interface-change sweep deps (injectable for tests).
   getChangedExportedSymbolsFn?: typeof getChangedExportedSymbols;
   getChangedFilesSinceFn?: typeof getChangedFilesSince;
+  baseCheckoutFn?: BaseCheckoutFn;
 }
 
 /**
@@ -657,7 +661,9 @@ async function withCleanTemporaryCheckout<T>(
   sha: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  if (isWorkingTreeDirty(workingDir)) {
+  // The runtime's own `.codegraph/` index is not work: its self-ignoring `.gitignore` shows as
+  // untracked in any repo that does not exclude the directory, and no commit tracks it.
+  if (listWorkingTreeDirtyPathsExcludingCodegraph(workingDir).length > 0) {
     throw new Error('working tree is dirty; refusing baseline recapture checkout');
   }
 
@@ -676,6 +682,45 @@ async function withCleanTemporaryCheckout<T>(
       timeout: GIT_TEMP_CHECKOUT_TIMEOUT_MS,
     });
   }
+}
+
+/** Check out `sha`, run `fn`, restore HEAD — the interface-change sweep's replay seam. */
+export type BaseCheckoutFn = <T>(workingDir: string, sha: string, fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * G2: `withCleanTemporaryCheckout` for the sweep's `start_commit` replay. PRECONDITION: it runs
+ * between iterations with no live worker, so nothing else writes the tree while HEAD is moved.
+ *
+ * The replayed typecheck may write untracked build info (`*.tsbuildinfo`). MEASURED: one at a path
+ * HEAD tracks makes the restore refuse and strands the worktree at `start_commit`; any other stays
+ * `??`, and `-uall` dirtiness then refuses every later checkout. So the untracked set is snapshotted
+ * after the checkout and every file absent from that snapshot is removed BEFORE the restore — only
+ * what the replay created, never an untracked file that was already there.
+ */
+export const withCleanReplayCheckout: BaseCheckoutFn = (workingDir, sha, fn) =>
+  withCleanTemporaryCheckout(workingDir, sha, async () => {
+    const toplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: workingDir,
+      encoding: 'utf-8',
+      timeout: GIT_TEMP_CHECKOUT_TIMEOUT_MS,
+    }).trim();
+    const preexisting = new Set(listUntrackedFiles(toplevel));
+    try {
+      return await fn();
+    } finally {
+      for (const rel of listUntrackedFiles(toplevel)) {
+        if (!preexisting.has(rel)) fs.rmSync(path.join(toplevel, rel), { force: true });
+      }
+    }
+  });
+
+function listUntrackedFiles(toplevel: string): string[] {
+  return execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
+    cwd: toplevel,
+    encoding: 'utf-8',
+    timeout: GIT_TEMP_CHECKOUT_TIMEOUT_MS,
+    maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+  }).split('\0').filter((entry) => entry.length > 0);
 }
 
 async function capturePerIterationGateBaseline(opts: {
@@ -803,9 +848,30 @@ async function attemptStrictBaselineRecapture(opts: RunChangedPerIterationGateOp
 // the resolved target (WS-1 already tried and failed the depth-1 child scan) — zero captured
 // checks is not evidence of a clean tree. Reuses the existing GateBaselineFile.project_type
 // signal; no new state field/flag.
-function isBaselineUncertifiable(baselinePath: string): boolean {
-  const baseline = readRecoverableJsonObject(baselinePath) as Pick<GateBaselineFile, 'project_type'> | null;
+function isBaselineUncertifiable(baseline: Pick<GateBaselineFile, 'project_type'> | null): boolean {
   return baseline !== null && baseline.project_type === null;
+}
+
+// A disclosure is a UNION: `recordCapUnmeasured` replaces the field, so a later caller naming
+// only its own checks would erase an earlier iteration's hole from the final disposition.
+function discloseCapUnmeasured(state: MicroverseSessionState, checks: readonly string[]): MicroverseSessionState {
+  return recordCapUnmeasured(state, [...(state.cap_unmeasured_checks ?? []), ...checks]);
+}
+
+// B-ATTRIB-G G1: failures on a check the baseline did not measure are not NEW against it. Record
+// the check as cap-unmeasured (never a regression, never the latch) and drop its failures.
+function applyBaselineUnmeasured(
+  opts: RunChangedPerIterationGateOpts,
+  result: GateResult,
+  baseline: Pick<GateBaselineFile, 'check_status'> | null,
+): { mv: MicroverseSessionState; result: GateResult } {
+  const unmeasured = baselineUnmeasuredChecks(result.check_status, baseline?.check_status, PER_ITERATION_GATE_CHECKS);
+  if (unmeasured.length === 0) return { mv: opts.currentMv, result };
+  opts.log(`gate: baseline did not measure ${unmeasured.join(', ')} — reporting unmeasured, not a regression`);
+  const mv = discloseCapUnmeasured(opts.currentMv, unmeasured);
+  opts.deps.writeMicroverseStateFn(opts.sessionDir, mv);
+  const failures = result.failures.filter((f) => !unmeasured.includes(f.check));
+  return { mv, result: { ...result, failures, status: failures.length === 0 ? 'green' : result.status } };
 }
 
 // R-SZGB-B: an uncertifiable baseline can never certify a clean replay. Defer the same way a
@@ -857,20 +923,25 @@ async function runChangedPerIterationGate(opts: RunChangedPerIterationGateOpts):
     opts.lintFailuresSink.push(...result.failures.filter((f) => f.check === 'lint'));
   }
 
-  if (gateMode === 'baseline' && isBaselineUncertifiable(opts.baselinePath)) {
+  const baseline = gateMode === 'baseline'
+    ? readRecoverableJsonObject(opts.baselinePath) as Pick<GateBaselineFile, 'project_type' | 'check_status'> | null
+    : null;
+  const applied = applyBaselineUnmeasured(opts, result, baseline);
+  if (applied.mv === opts.currentMv && isBaselineUncertifiable(baseline)) {
     return recordUncertifiableBaselineDefer(opts);
   }
+  const gateOpts = { ...opts, currentMv: applied.mv };
 
-  if (result.status !== 'red' || result.failures.length === 0) {
-    return opts.currentMv;
+  if (applied.result.status !== 'red' || applied.result.failures.length === 0) {
+    return gateOpts.currentMv;
   }
 
-  const remediationOutcome = await opts.deps.runRemediatorFn(result, opts.sessionDir);
+  const remediationOutcome = await opts.deps.runRemediatorFn(applied.result, opts.sessionDir);
   if (remediationOutcome.success) {
-    return opts.currentMv;
+    return gateOpts.currentMv;
   }
 
-  return recordPerIterationGateRegression(opts, result, gateMode);
+  return recordPerIterationGateRegression(gateOpts, applied.result, gateMode);
 }
 
 function recordPerIterationGateRegression(
@@ -1246,12 +1317,89 @@ function enumerateInterfaceSweepAxes(
   };
 }
 
+const INTERFACE_SWEEP_BASE_FILE = 'interface-sweep-base.json';
+
+function isCachedGateFailure(row: unknown): row is GateFailure {
+  if (typeof row !== 'object' || row === null) return false;
+  const r = row as Record<string, unknown>;
+  return typeof r.check === 'string' && typeof r.file === 'string'
+    && typeof r.ruleOrCode === 'string' && typeof r.line === 'number';
+}
+
+/** The cached replay for exactly `startCommit`, or `null` — a missing, unreadable, malformed or
+ * other-sha cache is "not cached", never an empty base. */
+function readInterfaceSweepBaseCache(cachePath: string, startCommit: string): GateFailure[] | null {
+  try {
+    const raw = readRecoverableJsonObject(cachePath) as { start_commit?: unknown; failures?: unknown } | null;
+    if (raw?.start_commit !== startCommit || !Array.isArray(raw.failures)) return null;
+    return raw.failures.every(isCachedGateFailure) ? raw.failures : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * G2: the typecheck REPLAYED at `start_commit` in this same worktree (fingerprints carry its paths),
+ * cached once per sha in `<session>/gate/`. Never the rolling `gate/baseline.json`: a refresh recaptures
+ * at the phase's own HEAD, so subtracting it would disown the phase's own breaks. `null` = unmeasured
+ * (dirty tree, checkout error, unmeasured typecheck) — every one a value, never a throw.
+ */
+async function resolveInterfaceSweepBase(opts: {
+  workingDir: string;
+  sessionDir: string;
+  startCommit: string;
+  runGateFn: typeof runGate;
+  logActivityFn: typeof logActivity;
+  baseCheckoutFn: BaseCheckoutFn;
+}): Promise<GateFailure[] | null> {
+  const cachePath = path.join(opts.sessionDir, 'gate', INTERFACE_SWEEP_BASE_FILE);
+  const cached = readInterfaceSweepBaseCache(cachePath, opts.startCommit);
+  if (cached !== null) return cached;
+  let replay: GateFailure[] | null;
+  try {
+    replay = await opts.baseCheckoutFn(opts.workingDir, opts.startCommit, () => runInterfaceSweepTypecheck(opts));
+  } catch {
+    return null;
+  }
+  if (replay !== null) writeInterfaceSweepBaseCache(cachePath, opts.startCommit, replay);
+  return replay;
+}
+
+function writeInterfaceSweepBaseCache(cachePath: string, startCommit: string, failures: GateFailure[]): void {
+  try {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    writeStateFile(cachePath, { start_commit: startCommit, failures });
+  } catch {
+    // The cache only saves a replay; a failed write recomputes next time.
+  }
+}
+
+/** Failures NEW against `base`. Both sides are re-indexed: strict-mode rows all carry occurrence 0,
+ * which would make this a SET subtraction that disowns a 4th occurrence of a baselined identity. */
+function subtractInterfaceSweepBase(current: GateFailure[], base: GateFailure[], workingDir: string): GateFailure[] {
+  const baseline: GateBaselineFile = {
+    schema_version: 1,
+    captured_at: '',
+    working_dir: workingDir,
+    project_type: null,
+    checks: ['typecheck'],
+    failures: assignOccurrenceIndices(base),
+  };
+  return subtractBaseline(assignOccurrenceIndices(current), baseline, undefined, true);
+}
+
+/**
+ * `baseCheckoutFn` is REQUIRED for TS callers: the production guard passes
+ * `withCleanReplayCheckout`; `null` (or a JS caller omitting it) classifies the raw typecheck with
+ * no replay — the shape the direct-call unit fixtures pin, whose stubs return one list for every run.
+ */
 export async function runInterfaceChangeSweep(opts: {
   workingDir: string;
   sessionDir: string;
   startCommit: string;
   runGateFn: typeof runGate;
   logActivityFn: typeof logActivity;
+  baseCheckoutFn: BaseCheckoutFn | null;
   getChangedExportedSymbolsFn?: typeof getChangedExportedSymbols;
   getChangedFilesSinceFn?: typeof getChangedFilesSince;
 }): Promise<{ ran: boolean; skipped: InterfaceSweepSkipReason | null; selfIntroduced: GateFailure[] }> {
@@ -1265,11 +1413,16 @@ export async function runInterfaceChangeSweep(opts: {
   if (axes.changedExportedSymbols.size === 0) {
     return { ran: false, skipped: null, selfIntroduced: [] };
   }
+  // The replay runs FIRST, so build info the current-side typecheck writes cannot dirty its checkout.
+  const base = opts.baseCheckoutFn
+    ? await resolveInterfaceSweepBase({ ...opts, baseCheckoutFn: opts.baseCheckoutFn })
+    : undefined;
+  const unmeasurable = { ran: false, skipped: 'typecheck_unmeasurable' as const, selfIntroduced: [] };
+  if (base === null) return unmeasurable;
   const typecheck = await runInterfaceSweepTypecheck(opts);
-  if (typecheck === null) {
-    return { ran: false, skipped: 'typecheck_unmeasurable', selfIntroduced: [] };
-  }
-  const { selfIntroduced } = classifyNoDisown(typecheck, {
+  if (typecheck === null) return unmeasurable;
+  const residue = base === undefined ? typecheck : subtractInterfaceSweepBase(typecheck, base, opts.workingDir);
+  const { selfIntroduced } = classifyNoDisown(residue, {
     changedFiles: axes.changedFiles,
     changedExportedSymbols: axes.changedExportedSymbols,
     workingDir: opts.workingDir,
@@ -1306,18 +1459,24 @@ async function runInterfaceSweepTypecheck(opts: {
   runGateFn: typeof runGate;
   logActivityFn: typeof logActivity;
 }): Promise<GateFailure[] | null> {
-  const result = await opts.runGateFn({
-    workingDir: opts.workingDir,
-    mode: 'strict',
-    scope: 'full',
-    checks: ['typecheck'],
-    onEvent: (event, data) => opts.logActivityFn({
-      event: event as ActivityEventType,
-      source: 'pickle',
-      session: path.basename(opts.sessionDir),
-      gate_payload: { ...data, interface_change_sweep: true },
-    }),
-  });
+  let result: GateResult;
+  try {
+    result = await opts.runGateFn({
+      workingDir: opts.workingDir,
+      mode: 'strict',
+      scope: 'full',
+      checks: ['typecheck'],
+      onEvent: (event, data) => opts.logActivityFn({
+        event: event as ActivityEventType,
+        source: 'pickle',
+        session: path.basename(opts.sessionDir),
+        gate_payload: { ...data, interface_change_sweep: true },
+      }),
+    });
+  } catch {
+    // A gate that threw did not measure; no exception escapes the sweep (G2).
+    return null;
+  }
   if (isCheckUnmeasured(result.check_status, 'typecheck')) return null;
   return result.failures;
 }
@@ -1418,6 +1577,16 @@ function renderInterfaceSweepNotRun(
   );
 }
 
+function resolveInterfaceSweepDeps(deps: PerIterationGateDeps | undefined) {
+  return {
+    runGateFn: deps?.runGateFn ?? runGate,
+    logActivityFn: deps?.logActivityFn ?? logActivity,
+    getChangedExportedSymbolsFn: deps?.getChangedExportedSymbolsFn,
+    getChangedFilesSinceFn: deps?.getChangedFilesSinceFn,
+    baseCheckoutFn: deps?.baseCheckoutFn ?? withCleanReplayCheckout,
+  };
+}
+
 /**
  * R-ORSR-6 interface-change sweep: before trusting a convergence signal, run a whole-repo tsc
  * when the phase's own diff changed an exported symbol. A self-introduced out-of-scope consumer
@@ -1453,10 +1622,7 @@ async function applyInterfaceChangeSweepGuard(opts: {
     workingDir,
     sessionDir,
     startCommit: baseCommit,
-    runGateFn: _deps?.runGateFn ?? runGate,
-    logActivityFn: _deps?.logActivityFn ?? logActivity,
-    getChangedExportedSymbolsFn: _deps?.getChangedExportedSymbolsFn,
-    getChangedFilesSinceFn: _deps?.getChangedFilesSinceFn,
+    ...resolveInterfaceSweepDeps(_deps),
   });
   if (sweep.skipped !== null) {
     renderInterfaceSweepNotRun(sweep.skipped, iteration, log);
@@ -5792,7 +5958,7 @@ async function handleSelfRedRefusalBound(
     return 'no_progress';
   }
   if (verdict.kind === 'unmeasured') {
-    replaceMicroverseState(state, recordCapUnmeasured(state, verdict.checks));
+    replaceMicroverseState(state, discloseCapUnmeasured(state, verdict.checks));
     ctx.log(
       `${capPrefix}; cap gate could not measure ${verdict.checks.join(', ')} — converging with an unmeasured caveat`,
     );
@@ -5874,7 +6040,7 @@ async function handlePostConvergenceGateDeferral(
       return 'error';
     }
     if (verdict.kind === 'unmeasured') {
-      replaceMicroverseState(state, recordCapUnmeasured(state, verdict.checks));
+      replaceMicroverseState(state, discloseCapUnmeasured(state, verdict.checks));
       ctx.log(`${capPrefix}; cap gate could not measure ${verdict.checks.join(', ')} — converging with an unmeasured caveat`);
       return 'converged';
     }

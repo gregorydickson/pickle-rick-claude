@@ -223,29 +223,52 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE — nothing is running
+### ▶ STATE (2026-10-02 00:50Z) — queue step 1 done, step 2 mid-flight (merge-down); queue below is the babysitter's
 
 | | |
 |---|---|
-| branch | **`main`** at **`d6e036fd`**, pushed 2026-09-23. `release/v2.2-beta` is historical |
-| version | `extension/package.json` = **`2.1.1`**. Tag **`v2.1.1`** at **`81e1c2e9`** (gate `20260923T143852Z-82646` 22/22 green, soak 1803.8s). Its Release workflow went RED on the two CI-only tests fixed in `d6e036fd` (test files only); CI on `d6e036fd` is **green**, the first green since 2026-09-16 (`392bd817`) |
-| deployed | **`81e1c2e9`** (B-REFUSAL fix; `d6e036fd` changes tests only). Previously in sync with `c534c59e`, `install.sh` run 2026-09-23; deployed codegraph resolves **`1.6.0`** (`^1.6.0`) and verified BY CONTENT (one intentional diff: the `tmux-runner.js` symlink) |
-| RUNNING | **nothing.** Stale tmux shells linger (`pipeline-*`, `refine-*`) — idle, safe to kill |
-| unpushed | **0** |
-| open issues | **#43**, **#5** (both operator-deferred). **Zero open bugs.** #46, #47 closed on measured evidence |
-| gate runner | **`prds/gate-runner.sh <log>`** — 22 legs, ~70 min. Wait for `GATE_END` with a matching `RUN_ID` |
-| babysitter prompt | **`prds/babysitter.md`** — current prompt at the top, v1 superseded below |
+| `main` | **`3cdb1c4c`** + this STATE commit, pushed. **B-ATTRIB-G built** (session `2026-10-01-face240c`, 4/4 phases, finished 22:53Z; G1 `d1e369ce`, G2 `c3fc60af`/`970370c7`, D2 `f73e828d`). Gate `20261001T233051Z-35963` 22/22 at `3cdb1c4c`, soak 1803.7s |
+| `exp/b-lanes` | pushed **`979b55b1`** = **DEPLOYED** (B-LANES-UNCHECKED + FIX; gate `20261001T194834Z-88031` 22/22, soak 1803.9s; verified by content: `integration_check` in deployed `pipeline-runner.js`). B-ATTRIB-G NOT yet merged in |
+| `exp/b-parallel-build` | pushed **`fc9e05dd`** (B-PBUILD #43 + #52 bound; gate 22/22). Not deployed. Merge-down of B-LANES-UNCHECKED and B-ATTRIB is deferred until both land |
+| version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
+| RUNNING | **nothing** (as of 00:50Z). Old `pipeline-*` tmux shells are idle |
+| open issues | **#53** (B-ATTRIB, in progress), **#52** (bound shipped, lane part in flight), **#43** (B-PBUILD built, on its branch awaiting field runs), **#5** (operator-deferred) |
+| gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
+| babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
+| exocortex | integration DEFERRED until memory-graph/exocortex#1 (reads drop `content`) is fixed. The runner-only plan is in auto-memory |
 
-### ▶ NEXT BUNDLE — B-SELFRED (#52, general, P0) — queued behind B-PBUILD (2026-09-27)
+### ▶ QUEUE (strictly sequential; never two pipelines; never commit to a branch while its pipeline or gate runs)
 
-`prds/p0-b-selfred-bound-the-no-disown-refusal-loop.md`. The R-ORSR-6 refusal branch in
-`handlePostConvergenceGateDeferral` sits above the deferral cap, and a non-withheld iteration resets its latch, so a
-self-red sweep block loops with no bound (field: 296 iterations over 199 min with 0 commits; two more lanes killed by
-hand). It is identical on `main` and `exp/b-lanes`, so rule P applies. Launch on `main` with no refinement and an
-explicit scope of `paths:extension/src/bin/microverse-runner.ts,extension/tests/convergence-gate-no-disown-wiring.test.js,extension/src/bin/CLAUDE.md`
-once B-PBUILD's pipeline and gate finish. Then merge down main → exp/b-lanes (gate, push, redeploy per rule S) →
-exp/b-parallel-build. The lane-only parts of #52 (monorepo `integration_check: unavailable` disclosure; a lane that
-never passed gap analysis) are a separate branch PRD on `exp/b-lanes`.
+1. ~~Gate `exp/b-lanes`~~ — DONE 2026-10-01: 22/22, pushed `979b55b1`, redeployed, verified by content.
+2. **B-ATTRIB-G (#53 general) on `main`.** BUILT + main gated green + pushed (see STATE). **Remaining: merge
+   `main` into `exp/b-lanes` → gate → push → redeploy (grep deployed `microverse-runner.js` for the G1 helper).**
+   - Materials: PRD `prds/p0-b-attrib-g-unmeasured-is-not-self-introduced.md`; 3 tickets already written in session
+     `2026-10-01-face240c` (G1 medium, G2 large, D2 medium).
+   - Switch the main checkout to `main`, `setup.js --tmux --resume <session>`, and write `pipeline.json` with
+     `"anatomy_max_parallel_lanes": 2` and an explicit `paths:` scope listing every ticket's Files.
+   - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy.
+3. **B-ATTRIB-L (#53 lanes) on `exp/b-lanes`.**
+   - PRD: `prds/p0-b-attrib-l-lanes-measure-their-own-work.md`. It was drafted on `main` for durability; commit it on
+     the branch too.
+   - Tickets: L1 fork-sha `start_commit`; L2 whole-phase serial fallback when lane worktrees cannot reproduce the
+     checkout's `node_modules`; L6 red-at-base integration reads `unavailable`; L4+L5+R7 commits always listed, kept
+     branches named with their expiry date, env manifest; L3 end-to-end. Measure every AC red at HEAD first.
+   - Then: gate → push → redeploy → merge `exp/b-lanes` into `exp/b-parallel-build` → gate → push.
+   - Comment on #53 with evidence after each ships (no client names).
+
+**B-ATTRIB decisions (refinement session `2026-10-01-e8b44a10`, 3×3):**
+- The sweep base is a typecheck REPLAYED at `start_commit` in the same worktree. The rolling `gate/baseline.json` is
+  refreshed mid-phase and would disown the phase's own breaks.
+- Both sides are re-indexed with `assignOccurrenceIndices`. The sweep's rows are all `occurrence_index: 0`, which
+  makes subtraction a set operation.
+- `selfGuard` is unchanged.
+- D2: `converged_with_unmeasured` on the normal converged path WITHHOLDS success, as the judge-timeout path already
+  does.
+- L2 departs from the analysts' per-lane refusal. In a pnpm workspace every lane would be refused and nothing
+  reviewed, so the whole phase runs serially instead.
+
+**Recorded, not filed:** `extension/src/bin/__tests__/*.spec.ts` are never run by any tier (`discoverTestFiles`
+collects `*.test.js` only).
 
 ### ▶ 2.2 BETA SOAK ACTIVE — `v2.2.0-beta.1` DEPLOYED FROM `exp/b-lanes` (2026-09-26)
 
@@ -268,6 +291,7 @@ never passed gap analysis) are a separate branch PRD on `exp/b-lanes`.
 | `2026-09-26-bcd24b6d` B-FINALGATE-FIX | 2 tests | **11 (UNSCOPED)** | **135** | 2×7, 3, 26, 9, 2 | 32 lane commits | 11 integrated, 0 conflicts | `SCOPE_EMPTY_DIFF` at setup (no-refine bundle) → no session scope → every lane reviewed; a new `prds` lane from research scripts |
 | `2026-09-26-e22412a9` B-LANES-FIX2 | 1 test | 1 (explicit `paths:` scope) | 1.6 | — | — | single lane | explicit path scope avoided the unscoped cost |
 | `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 2/3/2/2/5/2 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) |
+| `2026-10-01-face240c` B-ATTRIB-G (on `main`) | 17 (943+/127−) | 5 (cap 2, explicit `paths:` scope) | 26.0 | 4/2/3/2/2 | 3 lane commits | 5 integrated, 0 conflicts | none; pickle 74 min for 3 tickets; szechuan 5.8 min |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 

@@ -90,18 +90,51 @@ function isDirectory(p: string): boolean {
   }
 }
 
+/** Checkout-relative `node_modules` dirs a lane worktree links: the root's and each direct child's. */
+function laneLinkableNodeModules(repoRoot: string): string[] {
+  return ['', ...fs.readdirSync(repoRoot)]
+    .map((rel) => path.join(rel, 'node_modules'))
+    .filter((rel) => isDirectory(path.join(repoRoot, rel)));
+}
+
+const NODE_MODULES_WALK_DEPTH = 3;
+
+/** Checkout-relative `node_modules` dirs within `NODE_MODULES_WALK_DEPTH` levels; never descends into one. */
+function findNodeModulesDirs(repoRoot: string, rel = '', depth = 0): string[] {
+  if (depth > NODE_MODULES_WALK_DEPTH) return [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => e.isDirectory() && e.name !== '.git')
+    .flatMap((e) => {
+      const child = path.join(rel, e.name);
+      return e.name === 'node_modules' ? [child] : findNodeModulesDirs(repoRoot, child, depth + 1);
+    });
+}
+
+/**
+ * How many `node_modules` dirs the checkout has that a lane worktree would NOT get linked
+ * (no worktree is created: this shares its source enumeration with `symlinkLaneNodeModules`).
+ */
+export function unreproducibleNodeModulesCount(repoRoot: string): number {
+  const linkable = new Set(laneLinkableNodeModules(repoRoot));
+  return findNodeModulesDirs(repoRoot).filter((rel) => !linkable.has(rel)).length;
+}
+
 /**
  * Lane workers never install: every `node_modules` the main checkout has at its root or
  * one level down is symlinked into the same place in the worktree. Returns the links made.
  */
 export function symlinkLaneNodeModules(repoRoot: string, worktree: string): string[] {
   const linked: string[] = [];
-  for (const rel of ['', ...fs.readdirSync(repoRoot)]) {
-    const source = path.join(repoRoot, rel, 'node_modules');
-    const destParent = path.join(worktree, rel);
-    const dest = path.join(destParent, 'node_modules');
-    if (!isDirectory(source) || !isDirectory(destParent) || fs.existsSync(dest)) continue;
-    fs.symlinkSync(source, dest, 'dir');
+  for (const rel of laneLinkableNodeModules(repoRoot)) {
+    const dest = path.join(worktree, rel);
+    if (!isDirectory(path.dirname(dest)) || fs.existsSync(dest)) continue;
+    fs.symlinkSync(path.join(repoRoot, rel), dest, 'dir');
     linked.push(dest);
   }
   return linked;
@@ -204,11 +237,14 @@ export function aggregateLaneExitReason(
 const LANE_TYPECHECK_TIMEOUT_MS = 300_000;
 /** How long a kept `pickle-lane/*` branch survives before phase-start recovery deletes it. */
 export const RETAINED_BRANCH_MAX_AGE_DAYS = 14;
-const RETAINED_BRANCH_MAX_AGE_MS = RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+export const RETAINED_BRANCH_MAX_AGE_MS = RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
 const UNINTEGRATED_PREFIX = 'unintegrated-';
 
 export type LaneIntegrationOutcome =
   | 'integrated' | 'conflict' | 'integration_red' | 'integration_ff_failed' | 'non_convergent' | 'cancelled';
+
+/** What the integration typecheck said about a lane that was picked and kept; `unavailable` = no command ran. */
+export type IntegrationCheck = 'green' | 'unavailable';
 
 /** One `archive/lanes.json` row. */
 export interface LaneOutcome {
@@ -222,7 +258,14 @@ export interface LaneOutcome {
   passes: number;
   exit_reason: string;
   outcome: LaneIntegrationOutcome;
+  /** `null` when no pick was kept: not integrated, no commits, a conflict, or a pick undone by `integration_red`. */
+  integration_check: IntegrationCheck | null;
+  /** The lane branch's commits since the phase start sha, whatever the outcome — a stranded lane's work is listed too. */
   commits: string[];
+  /** The `node_modules` links the lane worktree was given, relative to it; `[]` when the lane never started. */
+  node_modules_linked: string[];
+  /** The lane's own `gate/baseline.json` `check_status`, or `null` when it wrote none. */
+  baseline_check_status: Record<string, string> | null;
 }
 
 export function integrationBranchName(sessionDir: string): string {
@@ -284,7 +327,8 @@ export function runIntegrationTypecheck(dir: string): 'green' | 'red' | 'unavail
   return ran ? 'green' : 'unavailable';
 }
 
-function laneCommits(repoRoot: string, phaseStartSha: string, branch: string): string[] {
+/** The lane branch's commits since the phase start sha, oldest first; `[]` when the branch is unreadable. */
+export function laneCommits(repoRoot: string, phaseStartSha: string, branch: string): string[] {
   try {
     return laneGit(repoRoot, ['rev-list', '--reverse', `${phaseStartSha}..${branch}`]).split('\n').filter(Boolean);
   } catch {
@@ -305,23 +349,30 @@ export interface IntegrateLanesInput {
 export interface IntegrateLanesResult {
   outcomes: (LaneIntegrationOutcome | null)[];
   commits: string[][];
+  /** One per lane in roster order; see `LaneOutcome.integration_check`. */
+  checks: (IntegrationCheck | null)[];
 }
 
-type PickOutcome = 'integrated' | 'conflict' | 'integration_red';
+interface PickResult {
+  outcome: 'integrated' | 'conflict' | 'integration_red';
+  check: IntegrationCheck | null;
+}
 
 /** Pick one lane onto the integration worktree; anything short of green leaves it where it was. */
 function pickLane(
-  worktree: string, sessionDir: string, targetDir: string, commits: string[], preserve: string[], log: (msg: string) => void,
-): PickOutcome {
+  worktree: string, sessionDir: string, targetDir: string, commits: string[], preserve: string[], baseRed: boolean, log: (msg: string) => void,
+): PickResult {
   const before = laneGit(worktree, ['rev-parse', 'HEAD']);
   const picked = commits.every((sha) => laneGitOk(worktree, ['-c', 'gc.auto=0', '-c', 'commit.gpgsign=false', 'cherry-pick', sha]));
   if (!picked) laneGitOk(worktree, ['cherry-pick', '--abort']);
-  const check = picked ? runIntegrationTypecheck(targetDir) : 'unavailable';
-  if (picked && check === 'unavailable') log('anatomy lanes: integration_check: unavailable — accepting the lane');
-  if (picked && check !== 'red') return 'integrated';
+  const measured = picked ? runIntegrationTypecheck(targetDir) : null;
+  // A target already red at the phase start sha measures nothing about this lane.
+  const check = measured === 'red' && baseRed ? 'unavailable' : measured;
+  if (check === 'unavailable') log('anatomy lanes: integration_check: unavailable — accepting the lane');
+  if (check !== null && check !== 'red') return { outcome: 'integrated', check };
   // A partial pick (commit k+1 of n conflicted) or a red check: undo the whole lane — here only.
   resetToSha(before, worktree, preserve, { cwd: worktree, sessionDir, ticketDir: null, reason: 'pre_reset' });
-  return picked ? 'integration_red' : 'conflict';
+  return { outcome: picked ? 'integration_red' : 'conflict', check: null };
 }
 
 /**
@@ -336,7 +387,8 @@ export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult
   const { repoRoot, sessionDir, phaseStartSha, log } = input;
   const commits = input.lanes.map((lane) => (lane.integrate ? laneCommits(repoRoot, phaseStartSha, lane.branch) : []));
   const outcomes: (LaneIntegrationOutcome | null)[] = input.lanes.map((lane) => (lane.integrate ? 'integrated' : null));
-  if (!commits.some((c) => c.length > 0)) return { outcomes, commits };
+  const checks: (IntegrationCheck | null)[] = input.lanes.map(() => null);
+  if (!commits.some((c) => c.length > 0)) return { outcomes, commits, checks };
 
   const worktree = integrationWorktreeDir(sessionDir);
   const branch = integrationBranchName(sessionDir);
@@ -345,8 +397,12 @@ export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult
     createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
     const preserve = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
     const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
+    const baseRed = runIntegrationTypecheck(targetDir) === 'red';
     commits.forEach((laneCommitList, i) => {
-      if (laneCommitList.length > 0) outcomes[i] = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, log);
+      if (laneCommitList.length === 0) return;
+      const pick = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, baseRed, log);
+      outcomes[i] = pick.outcome;
+      checks[i] = pick.check;
     });
     if (outcomes.some((_, i) => carried(i)) && !laneGitOk(repoRoot, ['merge', '--ff-only', '-q', branch])) {
       log(`anatomy lanes: main checkout could not fast-forward to ${branch} — lane branches kept`);
@@ -358,7 +414,8 @@ export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult
   } finally {
     removeLaneWorktrees(repoRoot, [worktree]);
   }
-  return { outcomes, commits };
+  // A pick that never reached main (integration_ff_failed) is not a kept pick, so its check says nothing.
+  return { outcomes, commits, checks: checks.map((c, i) => (outcomes[i] === 'integrated' ? c : null)) };
 }
 
 function branchExists(repoRoot: string, branch: string): boolean {

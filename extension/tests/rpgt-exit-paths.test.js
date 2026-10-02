@@ -659,7 +659,7 @@ describe('convergence-exit: baseline-aware cap (#48)', () => {
             assert.deepEqual(state.cap_unmeasured_checks, ['typecheck'], 'only the check that timed out is unmeasured; lint ran');
             assert.ok(!logs.some((l) => l.includes(TRUSTED_LINE)), 'an unmeasured cap must not claim the bare trusted-exit line');
             assert.equal(inspected.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck');
-            assert.equal(inspected.nonConvergent, 0, 'reported, not counted non-convergent');
+            assert.equal(inspected.nonConvergent, 1, 'disclosed and withholds the success verdict, not a failure');
         } finally { rm(dir); }
     });
 

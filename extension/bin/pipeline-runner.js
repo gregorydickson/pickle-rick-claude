@@ -40,10 +40,10 @@ import { isGitIgnoredPath, gitReportedExitStatus, listWorkingTreeDirtyPaths, get
 import { logActivity } from '../services/activity-logger.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
-import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
+import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES, createMicroverseState, readMicroverseState, recordCapUnmeasured, writeMicroverseState, } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, unitSessionDir, unitBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, unitSessionDir, unitBranchName, createLaneWorktree, symlinkLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, laneCommits, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, RETAINED_BRANCH_MAX_AGE_MS, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { planTicketWave, readParallelSafe } from '../services/ticket-waves.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
@@ -653,6 +653,7 @@ function runGitString(args, cwd) {
         const out = execFileSync('git', ['-C', cwd, ...args], {
             encoding: 'utf-8',
             timeout: GIT_REPO_ROOT_TIMEOUT_MS,
+            stdio: ['ignore', 'pipe', 'ignore'],
         }).trim();
         return out || null;
     }
@@ -824,16 +825,8 @@ function isDirtyPathUnderWorkingDir(repoRoot, workingDir, dirtyPath) {
     // while `workingDir` (from state.json) is not. Comparing the two raw would mis-classify
     // in-working_dir dirt as "outside" whenever the repo lives under a symlinked path
     // (/var, /tmp), tripping a spurious Branch-4 FATAL and defeating the dirty-tree self-heal.
-    const realpathOrResolve = (p) => {
-        try {
-            return fs.realpathSync(path.resolve(p));
-        }
-        catch {
-            return path.resolve(p);
-        }
-    };
-    const resolvedWorking = realpathOrResolve(workingDir);
-    const resolved = path.resolve(realpathOrResolve(repoRoot), dirtyPath);
+    const resolvedWorking = realpathOrResolveScopePath(workingDir);
+    const resolved = path.resolve(realpathOrResolveScopePath(repoRoot), dirtyPath);
     return resolved === resolvedWorking || resolved.startsWith(resolvedWorking + path.sep);
 }
 function emitQuarantineEvent(event, payload) {
@@ -1597,11 +1590,11 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     const repoRoot = gitRepoRoot(target);
     fs.mkdirSync(laneDir, { recursive: true });
     createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
-    symlinkLaneNodeModules(repoRoot, worktree);
+    const nodeModulesLinked = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
     const statePath = path.join(laneDir, 'state.json');
     const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
     // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing lane state to lock against
-    sm.forceWrite(statePath, { ...sm.read(path.join(parentSessionDir, 'state.json')), working_dir: workingDir, session_dir: laneDir });
+    sm.forceWrite(statePath, { ...sm.read(path.join(parentSessionDir, 'state.json')), working_dir: workingDir, session_dir: laneDir, start_commit: phaseStartSha });
     resetStateForPhase(statePath, 'anatomy-park.md', readAnatomyMaxIterations(parentSessionDir));
     claimPipelineRunnerActive(statePath);
     writeStateFile(path.join(laneDir, 'scope.json'), buildLaneScope(laneAllowedPaths(repoRoot, target, lane, phaseStartSha, discoverLanes(target).generated), phaseStartSha));
@@ -1609,7 +1602,7 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     const citadelReport = path.join(parentSessionDir, 'citadel_report.json');
     if (fs.existsSync(citadelReport))
         fs.copyFileSync(citadelReport, path.join(laneDir, 'citadel_report.json'));
-    return { laneDir, worktree, branch, statePath, workingDir };
+    return { laneDir, worktree, branch, statePath, workingDir, nodeModulesLinked };
 }
 /** Parent session files a build unit reads as-is; `scope.json` is the PARENT fence, not a lane's. */
 const UNIT_SEED_FILES = ['scope.json', 'prd.md', 'prd_refined.md'];
@@ -1719,6 +1712,7 @@ const LANE_NO_VERDICT = 'lane_no_verdict';
 function readLaneEnd(run, statePath, startedAt) {
     const end = {
         reason: run.cancelledAtMs === null ? LANE_NO_VERDICT : 'stopped', passes: 0, started_at: startedAt, ended_at: new Date().toISOString(),
+        node_modules_linked: [], baseline_check_status: null,
     };
     try {
         const state = sm.read(statePath);
@@ -1730,7 +1724,19 @@ function readLaneEnd(run, statePath, startedAt) {
     catch { /* unreadable lane state → no verdict of its own */ }
     return end;
 }
-const notStarted = (reason) => ({ reason, passes: 0, started_at: null, ended_at: null });
+const notStarted = (reason) => ({
+    reason, passes: 0, started_at: null, ended_at: null, node_modules_linked: [], baseline_check_status: null,
+});
+/** The `check_status` the lane's own runner captured at its first iteration; `null` when it wrote none. */
+function readLaneBaselineCheckStatus(laneDir) {
+    try {
+        const status = readRecoverableJsonObject(path.join(laneDir, 'gate', 'baseline.json'))?.check_status;
+        return typeof status === 'object' && status !== null && !Array.isArray(status) ? status : null;
+    }
+    catch {
+        return null;
+    }
+}
 async function runOneLane(run, lane, index) {
     const { runtime } = run;
     if (run.cancelledAtMs !== null)
@@ -1747,7 +1753,8 @@ async function runOneLane(run, lane, index) {
     run.statePaths.push(session.statePath);
     run.worktrees.push(session.worktree);
     try {
-        return await runLaneSession(run, lane, session, startedAt);
+        const end = await runLaneSession(run, lane, session, startedAt);
+        return { ...end, node_modules_linked: session.nodeModulesLinked, baseline_check_status: readLaneBaselineCheckStatus(session.laneDir) };
     }
     finally {
         // createLaneSession claimed the lane active; however the lane ended, it is not running now.
@@ -1846,6 +1853,7 @@ export async function runAnatomyLanes(runtime, lanes, cap) {
     if (stuck.length > 0)
         runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
     const outcomes = integrateLaneRun(run, lanes, ends);
+    discloseUnmeasuredIntegration(runtime, outcomes);
     // A lane that converged but did not reach main reports WHY; every other lane reports its own reason.
     const reasons = outcomes.map((o) => (isLaneSuccess(o.exit_reason) && o.outcome !== 'integrated' ? o.outcome : o.exit_reason));
     const reason = aggregateLaneExitReason(reasons, isLaneSuccess);
@@ -1854,6 +1862,38 @@ export async function runAnatomyLanes(runtime, lanes, cap) {
     return reason === 'converged' ? 0 : 1;
 }
 const isLaneSuccess = (reason) => classifyMicroverseDisposition(reason).reportAs === 'success';
+/**
+ * An integrated lane lands on main with every hole it carried, so each one is DISCLOSED on the parent:
+ * `integration_typecheck` when no typecheck command could run, plus the lane's OWN `cap_unmeasured_checks`
+ * (its runner converged over a check it could not measure, and `readLaneEnd` reads only the exit reason).
+ * They join the parent `cap_unmeasured_checks`, which `reportConvergedWithUnmeasured` turns into
+ * `converged_with_unmeasured:` on the phase disposition. A lane that did not integrate discloses nothing:
+ * its work never reached main. `recordCapUnmeasured` replaces its list, so the existing entries are
+ * carried in. The parent file exists whenever `setupAnatomyPark` ran; it is created only for a caller
+ * that skipped that setup. The write is best-effort: a failed disclosure is logged and never ends the run.
+ */
+export function discloseUnmeasuredIntegration(runtime, outcomes) {
+    const holes = outcomes.flatMap((o, i) => (o.outcome !== 'integrated' ? [] : [
+        ...(o.integration_check === 'unavailable' ? ['integration_typecheck'] : []),
+        ...readCapUnmeasuredChecks(laneSessionDir(runtime.sessionDir, i + 1)),
+    ]));
+    if (holes.length === 0)
+        return;
+    try {
+        const parent = readMicroverseState(runtime.sessionDir) ?? createMicroverseState({
+            prdPath: runtime.target,
+            metric: { description: 'none', validation: 'none', type: 'none', timeout_seconds: 0, tolerance: 0, direction: 'lower' },
+            stallLimit: outcomes.length * 10,
+            convergenceMode: 'worker',
+            convergenceFile: 'anatomy-park.json',
+        });
+        writeMicroverseState(runtime.sessionDir, recordCapUnmeasured(parent, [...(parent.cap_unmeasured_checks ?? []), ...holes]));
+        runtime.log(`anatomy lanes: integrated lane(s) carried unmeasured checks — disclosed as ${[...new Set(holes)].join(', ')}`);
+    }
+    catch (err) {
+        runtime.log(`anatomy lanes: could not record the unmeasured integration: ${safeErrorMessage(err)}`);
+    }
+}
 function emitLaneEvent(event, sessionDir, gatePayload) {
     try {
         logActivity({ event, source: 'pickle', session: path.basename(sessionDir), gate_payload: gatePayload });
@@ -1876,6 +1916,35 @@ function reportLaneRecovery({ runtime, repoRoot }) {
         });
     }
 }
+const KEPT_LANE_SUBJECT_CAP = 5;
+/**
+ * One line per retained lane branch that holds commits, read back from `archive/lanes.json`: what is
+ * on it, why it was not integrated, and the date any later lanes run deletes it. The retention
+ * (`recoverLaneBranches`) is by tip commit date, so that is the clock the date counts from.
+ */
+export function reportKeptLaneBranches(runtime) {
+    let rows;
+    try {
+        rows = JSON.parse(fs.readFileSync(path.join(runtime.sessionDir, 'archive', 'lanes.json'), 'utf-8'));
+    }
+    catch {
+        return;
+    }
+    if (!Array.isArray(rows))
+        return;
+    const repoRoot = gitRepoRoot(runtime.target);
+    for (const row of rows) {
+        const commits = Array.isArray(row.commits) ? row.commits : [];
+        if (row.outcome === 'integrated' || commits.length === 0 || typeof row.branch !== 'string')
+            continue;
+        const subjects = commits.slice(0, KEPT_LANE_SUBJECT_CAP).map((sha) => runGitString(['log', '-1', '--format=%s', sha], repoRoot) ?? sha);
+        const more = commits.length - subjects.length;
+        const tipSeconds = Number(runGitString(['log', '-1', '--format=%ct', row.branch], repoRoot));
+        const recoverBefore = Number.isFinite(tipSeconds) && tipSeconds > 0
+            ? new Date(tipSeconds * 1000 + RETAINED_BRANCH_MAX_AGE_MS).toISOString() : 'unknown (tip date unreadable)';
+        runtime.log(`kept lane branch ${row.branch}: ${commits.length} commit(s), outcome ${row.outcome}, exit ${row.exit_reason} — ${subjects.join('; ')}${more > 0 ? `; … (+${more} more)` : ''} — recover before ${recoverBefore} (deleted by any later lanes run after ${RETAINED_BRANCH_MAX_AGE_DAYS} days)`);
+    }
+}
 /**
  * Integrate the converged lanes, release every branch main now reaches, and write
  * `archive/lanes.json`. Returns one row per lane in roster order.
@@ -1892,7 +1961,12 @@ function integrateLaneRun(run, lanes, ends) {
         worktree: path.join(laneSessionDir(runtime.sessionDir, i + 1), 'wt'),
         started_at: ends[i].started_at, ended_at: ends[i].ended_at, passes: ends[i].passes, exit_reason: ends[i].reason,
         outcome: integration.outcomes[i] ?? (run.cancelledAtMs === null ? 'non_convergent' : 'cancelled'),
-        commits: integration.commits[i],
+        integration_check: integration.checks[i],
+        // A lane that did not integrate is not handed to integrateLanes (its pick loop would PICK them),
+        // yet its commits are what a stranded lane leaves behind — listed here for the record only.
+        commits: integration.commits[i].length > 0 ? integration.commits[i] : laneCommits(repoRoot, run.sha, branches[i]),
+        node_modules_linked: ends[i].node_modules_linked,
+        baseline_check_status: ends[i].baseline_check_status,
     }));
     const integrated = new Set(outcomes.filter((o) => o.outcome === 'integrated').map((o) => o.branch));
     const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, integrated);
@@ -4089,8 +4163,12 @@ async function runConfiguredPhase(runtime, phaseConfig, counters) {
         return { skipped: false, exitCode: (await executeCitadelPhase(runtime)).exitCode };
     const cap = runtime.config.anatomy_max_parallel_lanes;
     const lanes = phaseConfig.name === 'anatomy-park' && cap >= 2 ? readAnatomyLanes(runtime.sessionDir) : [];
-    if (lanes.length >= 2)
-        return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+    if (lanes.length >= 2) {
+        const missing = unreproducibleNodeModulesCount(gitRepoRoot(runtime.target));
+        if (missing === 0)
+            return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+        runtime.log(`anatomy lanes: disabled for this phase — lane worktrees cannot reproduce ${missing} node_modules dir(s); running serially`);
+    }
     if (phaseConfig.name === 'pickle' && runtime.config.max_parallel_tickets >= 2) {
         return { skipped: false, exitCode: await runPickleWaves(runtime, runtime.config.max_parallel_tickets, phaseConfig) };
     }
@@ -4429,6 +4507,7 @@ function logPhaseStart(runtime, phase, index) {
 }
 function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipelineFailed) {
     runtime.log(`Pipeline finished: ${phasesSummary} phases, ${formatTime(totalElapsed)}`);
+    reportKeptLaneBranches(runtime);
     emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
     logActivity({
         event: 'session_end', source: 'pickle',
@@ -5736,19 +5815,21 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
     }
     catch { /* non-blocking */ }
 }
+/** A session's `cap_unmeasured_checks`; never throws — an absent or unparseable file reads as none. */
+function readCapUnmeasuredChecks(sessionDir) {
+    const raw = readRecoverableJsonObject(path.join(sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
+    return Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
+}
 /**
  * B-CAPGATE: a microverse phase that passed over a check nobody measured (`cap_unmeasured_checks`,
  * written by `recordCapUnmeasured` from the post-convergence cap OR from finalize-gate) passed over
- * a hole, and a silent success would hide it. Reported — appended to the phase disposition — but
- * never counted `nonConvergent` here: on the converged path the phase did converge (the precedent
- * is `done_over_unmeasured_worker_gate_tests:` in `reportDoneOverRedTestVerdict`). Returns whether
- * it disclosed, so a caller whose phase nothing else confirmed can withhold success on it.
+ * a hole, and a silent success would hide it. Reported — appended to the phase disposition — and
+ * NOT counted `nonConvergent` here: every caller raises on the returned boolean, so the phase still
+ * counts completed while the run withholds the success verdict. Returns whether it disclosed.
  * Unreadable or malformed microverse state reads as "no caveat", never as a fabricated one.
  */
 function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
-    // `readRecoverableJsonObject` never throws: an absent or unparseable file is `null`.
-    const raw = readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
-    const checks = Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
+    const checks = readCapUnmeasuredChecks(runtime.sessionDir);
     if (checks.length === 0)
         return false;
     const marker = `converged_with_unmeasured:${checks.join(',')}`;
@@ -5869,8 +5950,11 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
             exitReason = sm.read(runtime.statePath).exit_reason;
         }
         catch { /* best-effort — unreadable state defers to the success path below */ }
-        if (typeof exitReason === 'string' && classifyMicroverseDisposition(exitReason).reportAs !== 'success') {
+        const diverged = typeof exitReason === 'string' && classifyMicroverseDisposition(exitReason).reportAs !== 'success';
+        // One raise for both degraded arms; `||` keeps the unmeasured disclosure off a diverged phase.
+        if (diverged || reportConvergedWithUnmeasured(runtime, counters, rawPhase, log))
             counters.nonConvergent++;
+        if (diverged) {
             counters.phaseDispositions[rawPhase] = exitReason;
             // Errors are non-blocking: a failed status write still reports the phase and continues.
             try {
@@ -5880,7 +5964,6 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
             log(`Phase ${rawPhase} did NOT converge (${exitReason}) — reported non-convergent, not counted as completed`);
             return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
         }
-        reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
     }
     counters.completed++;
     writeRunningStatus(runtime, counters, null);

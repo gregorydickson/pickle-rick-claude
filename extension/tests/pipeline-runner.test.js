@@ -39,14 +39,17 @@ import {
   setupAnatomyPark,
   readPersistedAllowedPaths,
   finalizePhaseSuccess,
+  computePipelineVerdict,
   resetInterruptedTicketWorkForRelaunch,
   runRelaunchSelfHeal,
   main,
   gitRepoRoot,
   createLaneSession,
   runAnatomyLanes,
+  reportKeptLaneBranches,
+  discloseUnmeasuredIntegration,
 } from '../bin/pipeline-runner.js';
-import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName } from '../services/anatomy-lanes.js';
+import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
@@ -54,9 +57,15 @@ import { createMicroverseState, recordCapUnmeasured, readMicroverseState, writeM
 import { simulateBinaryAbsent } from './helpers/simulate-binary-absent.js';
 import { isGateResult } from '../bin/spawn-gate-remediator.js';
 import { loadFinalizeGateSettings, finalizeGateMain } from '../bin/finalize-gate.js';
+import { runInterfaceChangeSweep, withCleanReplayCheckout } from '../bin/microverse-runner.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
+
+const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+  cwd, encoding: 'utf-8', timeout: 60_000,
+}).trim();
+const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
 
 function tmpDir() {
   return mkFixtureTmpDir('pickle-pipeline-');
@@ -4859,6 +4868,28 @@ describe('B-LANES 13h lane session placement', () => {
     }
   });
 
+  test('L1-a: a lane session\'s start_commit is its fork sha, not the pipeline base; the parent is unchanged', () => {
+    const { target, dataRoot, parent, sha: pipelineBase } = makePlacementFixture();
+    try {
+      writeBaseState(path.join(parent, 'state.json'), {
+        working_dir: target, session_dir: parent, active: true, start_commit: pipelineBase,
+      });
+      for (const n of [1, 2]) {
+        fs.writeFileSync(path.join(target, 'alpha', `earlier${n}.ts`), `export const e${n} = ${n};\n`);
+        git(target, 'add', '-A');
+        git(target, 'commit', '-q', '-m', `earlier phase ${n}`);
+      }
+      const fork = git(target, 'rev-parse', 'HEAD');
+      assert.notEqual(fork, pipelineBase, 'fixture precondition: the fork is past the pipeline base');
+      const lane = createLaneSession(parent, lanes[0], 1, fork, target);
+      assert.equal(JSON.parse(fs.readFileSync(lane.statePath, 'utf-8')).start_commit, fork);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(parent, 'state.json'), 'utf-8')).start_commit, pipelineBase);
+    } finally {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   // B-LANES data-flow audit (8512be3a) F2: setupAnatomyPark reads citadel_report.json from the
   // session it is given — for a lane, the LANE dir — so a lane PRD silently lost every citadel
   // finding the serial phase would have carried.
@@ -4942,11 +4973,7 @@ async function runLaneMain(sessionDir, dataRoot) {
 describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
   const EXTENSION_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..');
   const LANE_NAMES = ['alpha', 'beta', 'gamma'];
-  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
-    cwd, encoding: 'utf-8', timeout: 60_000,
-  }).trim();
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
   const writeLaneReason = (laneDir, reason) => {
     const statePath = path.join(laneDir, 'state.json');
     fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: reason }));
@@ -5139,24 +5166,24 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
 describe('B-LANES WS-3: lane integration', () => {
   const EXTENSION_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..');
   const LANES = ['alpha', 'beta', 'gamma'].map((name) => ({ name, dir: name, excludes: [], testRatioApplies: false, fileCount: 3 }));
-  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
-    cwd, encoding: 'utf-8', timeout: 60_000,
-  }).trim();
   const gitOk = (cwd, ...args) => { try { git(cwd, ...args); return true; } catch { return false; } };
-  const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
   const read = (p) => fs.readFileSync(p, 'utf-8');
   // Red iff alpha/a.ts AND beta/a.ts both say RED, or the linked node_modules is gone.
   const CHECK_JS = "const fs=require('fs');"
     + "if(!fs.existsSync('node_modules/marker.txt')){console.error('node_modules link missing');process.exit(1)}"
     + "process.exit(['alpha/a.ts','beta/a.ts'].every((f)=>fs.readFileSync(f,'utf8').includes('RED'))?1:0)";
 
-  function makeFixture() {
+  // `typecheck: false` ships no package.json/check.js, so no integration typecheck command is discoverable.
+  function makeFixture({ typecheck = true, redAtBase = false } = {}) {
     const repo = fs.realpathSync(tmpDir());
     initRepo(repo, {
       ...laneSeedFiles(LANES.map(({ name }) => name)),
       'CLAUDE.md': '# Trap doors\n- entry one\n- entry two\n',
-      'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
-      'check.js': CHECK_JS,
+      ...(typecheck ? {
+        'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
+        'check.js': CHECK_JS,
+      } : {}),
+      ...(redAtBase ? { 'alpha/a.ts': 'export const a = "RED";\n', 'beta/a.ts': 'export const a = "RED";\n' } : {}),
       '.gitignore': 'node_modules/\n',
     }, { branch: 'work' });
     fs.mkdirSync(path.join(repo, 'node_modules'));
@@ -5264,6 +5291,247 @@ describe('B-LANES WS-3: lane integration', () => {
       assert.ok(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${fx.branch(2)}`), 'integration_red branch retained');
       assert.equal(readJson(fx.runtime.statePath).exit_reason, 'integration_red');
       assert.deepEqual(worktreeList(fx.repo), [`worktree ${fx.repo}`]);
+      // The pick that was undone was never kept, so its row carries no check at all.
+      assert.deepEqual([lanes.alpha.integration_check, lanes.beta.integration_check, lanes.gamma.integration_check],
+        ['green', null, 'green']);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  const writeMicroverse = (sessionDir, extra) => writeMicroverseState(sessionDir, {
+    ...createMicroverseState({
+      prdPath: 'target', stallLimit: 3,
+      metric: { description: 'none', validation: 'none', type: 'none', timeout_seconds: 0, tolerance: 0, direction: 'lower' },
+    }),
+    ...extra,
+  });
+  const capUnmeasured = (sessionDir) => {
+    const file = path.join(sessionDir, 'microverse.json');
+    return fs.existsSync(file) ? (readJson(file).cap_unmeasured_checks ?? []) : [];
+  };
+
+  test('unchecked integration: no typecheck command discoverable → lanes still integrate, rows say unavailable, parent discloses integration_typecheck', async () => {
+    const fx = makeFixture({ typecheck: false });
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'alpha/a.ts': 'export const a = 2;\n' },
+        { 'beta/a.ts': 'export const a = 2;\n' },
+      ]));
+      const code = await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3);
+      assert.equal(code, 0, `an unchecked lane still integrates; nothing halts\n${fx.logs.join('\n')}`);
+      const lanes = byName(fx.sessionDir);
+      assert.deepEqual([lanes.alpha.outcome, lanes.beta.outcome], ['integrated', 'integrated']);
+      assert.deepEqual([lanes.alpha.integration_check, lanes.beta.integration_check], ['unavailable', 'unavailable']);
+      assert.match(read(path.join(fx.repo, 'alpha/a.ts')), /= 2/, 'the unchecked lane work landed on main');
+      assert.deepEqual(capUnmeasured(fx.sessionDir), ['integration_typecheck']);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L6-red-at-base: a target already red at the phase start sha → lane integrated, check unavailable, disclosed', async () => {
+    const fx = makeFixture({ redAtBase: true });
+    try {
+      __setSpawnRunnerForTests(committingRunner([{}, {}, { 'gamma/a.ts': 'export const a = 2;\n' }]));
+      const code = await runAnatomyLanes(fx.runtime, LANES, 3);
+      assert.equal(code, 0, fx.logs.join('\n'));
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes.alpha.outcome, 'integrated');
+      assert.equal(lanes.gamma.outcome, 'integrated');
+      assert.equal(lanes.gamma.integration_check, 'unavailable');
+      assert.match(read(path.join(fx.repo, 'gamma/a.ts')), /= 2/, 'the lane work landed on main');
+      assert.ok(capUnmeasured(fx.sessionDir).includes('integration_typecheck'));
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  /**
+   * Stub lane runner that commits `commitCounts[laneIndex]` times in the lane worktree and stamps
+   * `converged` only for the indexes in `converge` — the rest end with no verdict (non-convergent).
+   */
+  function strandingRunner(commitCounts, { converge = [], onLaneEnd } = {}) {
+    return async (_cmd, args) => {
+      const laneDir = args[1];
+      const index = Number(/--lane-(\d+)$/.exec(laneDir)[1]) - 1;
+      const wt = path.join(laneDir, 'wt');
+      for (let n = 1; n <= (commitCounts[index] ?? 0); n++) {
+        fs.writeFileSync(path.join(wt, LANES[index].dir, 'a.ts'), `export const a = ${100 + n};\n`);
+        git(wt, '-c', 'user.email=l@l', '-c', 'user.name=l', 'commit', '-q', '-am', `stranded ${index + 1} step ${n}`);
+      }
+      if (converge.includes(index)) {
+        const statePath = path.join(laneDir, 'state.json');
+        fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: 'converged' }));
+      }
+      if (onLaneEnd) onLaneEnd(index, laneDir);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+  }
+  const keptLines = (fx) => fx.logs.filter((l) => l.startsWith('kept lane branch '));
+
+  test('L4-stranded: 0 integrating lanes + 1 non-convergent lane with 2 commits → commits listed, branch kept and named, main untouched', async () => {
+    const fx = makeFixture();
+    try {
+      const headBefore = git(fx.repo, 'rev-parse', 'HEAD');
+      __setSpawnRunnerForTests(strandingRunner([2, 0, 0]));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes.alpha.commits.length, 2, 'the stranded lane\'s commits are recorded');
+      assert.equal(lanes.alpha.outcome, 'non_convergent');
+      assert.deepEqual(git(fx.repo, 'rev-list', '--reverse', `${headBefore}..${fx.branch(1)}`).split('\n'), lanes.alpha.commits);
+      assert.equal(git(fx.repo, 'rev-parse', 'HEAD'), headBefore, 'main HEAD is unchanged');
+      assert.equal(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${fx.branch('integration')}`), false, 'no integration branch');
+      reportKeptLaneBranches(fx.runtime);
+      const lines = keptLines(fx);
+      assert.equal(lines.length, 1, `exactly one kept-branch line\n${fx.logs.join('\n')}`);
+      assert.match(lines[0], new RegExp(`kept lane branch ${fx.branch(1).replace(/[/]/g, '\\/')}: 2 commit\\(s\\), outcome non_convergent`));
+      assert.match(lines[0], /stranded 1 step 1; stranded 1 step 2/, 'subjects are named');
+      // The deadline is the kept branch's tip date + the retention window recoverLaneBranches deletes at;
+      // a shape-only match passes a deadline that has already elapsed.
+      const tipMs = Number(git(fx.repo, 'log', '-1', '--format=%ct', fx.branch(1))) * 1000;
+      const recoverBefore = new Date(tipMs + RETAINED_BRANCH_MAX_AGE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      assert.ok(lines[0].includes(`recover before ${recoverBefore} (deleted by any later lanes run after ${RETAINED_BRANCH_MAX_AGE_DAYS} days)`), lines[0]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L4-integrated-control: an integrated lane yields no kept-branch line', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(strandingRunner([1, 0, 0], { converge: [0, 1, 2] }));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      assert.equal(byName(fx.sessionDir).alpha.outcome, 'integrated');
+      reportKeptLaneBranches(fx.runtime);
+      assert.deepEqual(keptLines(fx), []);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L4-cancelled-control: a cancelled lane with commits gets its line', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(strandingRunner([1, 0, 0], {
+        onLaneEnd: (index) => {
+          if (index !== 0) return;
+          const state = readJson(fx.runtime.statePath);
+          fs.writeFileSync(fx.runtime.statePath, JSON.stringify({ ...state, active: false }));
+        },
+      }));
+      await runAnatomyLanes(fx.runtime, LANES, 1);
+      assert.equal(byName(fx.sessionDir).alpha.outcome, 'cancelled');
+      reportKeptLaneBranches(fx.runtime);
+      const lines = keptLines(fx);
+      assert.equal(lines.length, 1, fx.logs.join('\n'));
+      assert.match(lines[0], /1 commit\(s\), outcome cancelled/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L4-cap: more than five commits name five subjects and count the rest', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(strandingRunner([7, 0, 0]));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      reportKeptLaneBranches(fx.runtime);
+      const [line] = keptLines(fx);
+      assert.match(line, /7 commit\(s\)/);
+      assert.match(line, /stranded 1 step 5; … \(\+2 more\)/);
+      assert.doesNotMatch(line, /step 6/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L5-manifest: every lanes.json row records node_modules_linked (array) and baseline_check_status (object or null)', async () => {
+    const fx = makeFixture();
+    // Only beta's runner captures a baseline, so the row must carry exactly its check_status and the
+    // others null — an "object or null" check alone passes a reader that never reads the lane's file.
+    const betaStatus = { typecheck: 'ran', lint: 'skipped_no_project_type' };
+    try {
+      __setSpawnRunnerForTests(strandingRunner([1, 1, 1], {
+        converge: [0, 1, 2],
+        onLaneEnd: (index, laneDir) => {
+          if (index !== 1) return;
+          fs.mkdirSync(path.join(laneDir, 'gate'), { recursive: true });
+          fs.writeFileSync(path.join(laneDir, 'gate', 'baseline.json'), JSON.stringify({ check_status: betaStatus }));
+        },
+      }));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      const rows = readJson(path.join(fx.sessionDir, 'archive', 'lanes.json'));
+      assert.equal(rows.length, 3);
+      for (const row of rows) {
+        assert.ok(Array.isArray(row.node_modules_linked), `${row.name}: node_modules_linked is an array`);
+        assert.deepEqual(row.baseline_check_status, row.name === 'beta' ? betaStatus : null, `${row.name}: baseline_check_status`);
+        assert.deepEqual(row.node_modules_linked, ['node_modules'], `${row.name}: the root node_modules link is recorded`);
+      }
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L6-green-at-base: green at base + a lane that introduces a typecheck error → still integration_red', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'alpha/a.ts': 'export const a = "RED";\n' },
+        { 'beta/a.ts': 'export const a = "RED";\n' },
+      ]));
+      await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3);
+      const lanes = byName(fx.sessionDir);
+      assert.deepEqual([lanes.alpha.outcome, lanes.beta.outcome], ['integrated', 'integration_red']);
+      assert.equal(lanes.beta.integration_check, null);
+      assert.deepEqual(capUnmeasured(fx.sessionDir), []);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('unchecked integration: an existing cap_unmeasured_checks entry is kept, not replaced', async () => {
+    const fx = makeFixture({ typecheck: false });
+    try {
+      writeMicroverse(fx.sessionDir, { cap_unmeasured_checks: ['lint'] });
+      __setSpawnRunnerForTests(committingRunner([{ 'alpha/a.ts': 'export const a = 2;\n' }, {}]));
+      assert.equal(await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3), 0);
+      assert.deepEqual(capUnmeasured(fx.sessionDir).sort(), ['integration_typecheck', 'lint']);
+      assert.equal(byName(fx.sessionDir).beta.integration_check, null, 'a lane with no commits was never checked');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('unchecked integration control: a typecheck that runs green → integration_check green, nothing disclosed', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'alpha/a.ts': 'export const a = 2;\n' },
+        { 'beta/a.ts': 'export const a = 2;\n' },
+      ]));
+      assert.equal(await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3), 0);
+      const lanes = byName(fx.sessionDir);
+      assert.deepEqual([lanes.alpha.integration_check, lanes.beta.integration_check], ['green', 'green']);
+      assert.deepEqual(capUnmeasured(fx.sessionDir), []);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('unchecked integration: a conflicted lane carries no check and does not trigger the disclosure', async () => {
+    const fx = makeFixture({ typecheck: false });
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'CLAUDE.md': '# Trap doors\n- entry one (alpha)\n- entry two\n' },
+        { 'CLAUDE.md': '# Trap doors\n- entry one (beta)\n- entry two\n' },
+      ]));
+      await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3);
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes.beta.outcome, 'conflict');
+      assert.equal(lanes.beta.integration_check, null, 'a conflicted lane was never checked, so it says nothing about the check');
+      assert.equal(lanes.alpha.integration_check, 'unavailable');
+      assert.deepEqual(capUnmeasured(fx.sessionDir), ['integration_typecheck'], 'the integrated sibling still discloses');
     } finally {
       fx.cleanup();
     }
@@ -5278,6 +5546,7 @@ describe('B-LANES WS-3: lane integration', () => {
       assert.equal(await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3), 1);
       const lanes = byName(fx.sessionDir);
       assert.equal(lanes.alpha.outcome, 'integration_ff_failed');
+      assert.equal(lanes.alpha.integration_check, null, 'a pick that never reached main is not a kept pick');
       assert.equal(lanes.beta.outcome, 'integrated', 'a lane with no commits needs nothing from main');
       assert.equal(git(fx.repo, 'rev-parse', 'HEAD'), head);
       assert.equal(read(path.join(fx.repo, 'alpha', 'a.ts')), 'operator edit\n', 'the operator edit is untouched');
@@ -5437,17 +5706,17 @@ describe('B-LANES WS-3: lane integration', () => {
 
 describe('B-LANES wiring: end to end through main()', () => {
   const LANE_NAMES = ['alpha', 'beta', 'gamma'];
-  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
-    cwd, encoding: 'utf-8', timeout: 60_000,
-  }).trim();
-  const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const FIXED = 'export const a = 1; // fixed\n';
 
   /** A target with three lane roots, each holding one seeded defect in `<lane>/a.ts`. */
-  function makeFixture(pipeline = {}) {
+  function makeFixture(pipeline = {}, { typecheck = true } = {}) {
     const repo = fs.realpathSync(tmpDir());
-    const startCommit = initRepo(repo, laneSeedFiles(LANE_NAMES), { branch: 'work' });
+    // A root typecheck script makes the integration typecheck MEASURABLE; without it every lane's
+    // check is `unavailable` and a converged run is (correctly) withheld as converged_with_unmeasured.
+    const rootPackage = typecheck
+      ? { 'package.json': JSON.stringify({ name: 'fx', private: true, scripts: { typecheck: 'true' } }) } : {};
+    const startCommit = initRepo(repo, { ...rootPackage, ...laneSeedFiles(LANE_NAMES) }, { branch: 'work' });
     // The branch under review introduces one defect per lane.
     for (const name of LANE_NAMES) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = BUG;\n');
     git(repo, 'commit', '-q', '-am', 'introduce defects');
@@ -5541,6 +5810,25 @@ describe('B-LANES wiring: end to end through main()', () => {
     }
   });
 
+  // Regression guard (passes at d27b8be1 by design). Mutation control: forcing
+  // discloseUnmeasuredIntegration to collect no holes (early-return unconditionally) reds this test.
+  test('AC 1b: an UNMEASURED integration check withholds success', async () => {
+    const fx = makeFixture({ anatomy_max_parallel_lanes: 3 }, { typecheck: false });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(fixingRunner(calls));
+      const code = await runLaneMain(fx.sessionDir, fx.dataRoot);
+      const log = fs.existsSync(path.join(fx.sessionDir, 'pipeline-runner.log'))
+        ? fs.readFileSync(path.join(fx.sessionDir, 'pipeline-runner.log'), 'utf-8') : '';
+      assert.notEqual(code, 0, `an unmeasured integration check must not finalize clean\n${log}`);
+      assert.match(log, /converged_with_unmeasured:integration_typecheck/);
+      const rows = readJson(path.join(fx.sessionDir, 'archive', 'lanes.json'));
+      assert.deepEqual(rows.map((r) => [r.name, r.outcome]), LANE_NAMES.map((n) => [n, 'integrated']));
+    } finally {
+      fx.cleanup();
+    }
+  });
+
   test('AC 2: the same fixture with the key absent runs one serial runner in the main checkout', async () => {
     const fx = makeFixture();
     const calls = [];
@@ -5555,6 +5843,160 @@ describe('B-LANES wiring: end to end through main()', () => {
       assert.equal(readJson(path.join(fx.sessionDir, 'pipeline-status.json')).status, 'completed');
     } finally {
       fx.cleanup();
+    }
+  });
+
+  /** Plain dependency dirs (self-ignoring, so the checkout stays clean); no install, no network. */
+  const seedNodeModules = (repo, ...dirs) => {
+    for (const dir of dirs) {
+      fs.mkdirSync(path.join(repo, dir, 'node_modules'), { recursive: true });
+      fs.writeFileSync(path.join(repo, dir, 'node_modules', '.gitignore'), '*\n');
+    }
+  };
+  const readRunnerLog = (sessionDir) => {
+    const file = path.join(sessionDir, 'pipeline-runner.log');
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '';
+  };
+
+  test('L2-workspace: a node_modules below depth 1 disables lanes — one serial runner, no lane session', async () => {
+    const fx = makeFixture({ anatomy_max_parallel_lanes: 2 });
+    const calls = [];
+    try {
+      seedNodeModules(fx.repo, '', path.join('packages', 'a'));
+      __setSpawnRunnerForTests(fixingRunner(calls));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
+      assert.equal(fs.existsSync(`${fx.sessionDir}--lane-1`), false, 'no lane session');
+      assert.match(readRunnerLog(fx.sessionDir), /anatomy lanes: disabled for this phase — lane worktrees cannot reproduce 1 node_modules dir\(s\); running serially/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L2-single-package: only a root node_modules → lanes still run', async () => {
+    const fx = makeFixture({ anatomy_max_parallel_lanes: 2 });
+    const calls = [];
+    try {
+      seedNodeModules(fx.repo, '');
+      __setSpawnRunnerForTests(fixingRunner(calls));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      assert.deepEqual(calls.map((c) => c.sessionArg).sort(), [1, 2, 3].map((n) => `${fx.sessionDir}--lane-${n}`));
+      assert.doesNotMatch(readRunnerLog(fx.sessionDir), /anatomy lanes: disabled for this phase/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  // L3: the field incident's shape end to end. The lanes' convergence is decided by the REAL
+  // interface-change sweep (G2 replay at the lane's own `start_commit`), so an earlier phase's
+  // error or a pre-existing one in a lane-touched file is attributed exactly as a lane runner would.
+  const ERR_CHECK_JS = "const fs=require('fs'),path=require('path');const bad=[];"
+    + "(function walk(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){"
+    + "if(e.name==='.git'||e.name==='node_modules')continue;const p=path.join(d,e.name);"
+    + "if(e.isDirectory())walk(p);else if(p.endsWith('.ts')&&fs.readFileSync(p,'utf8').includes('ERR'))bad.push(path.relative('.',p))}})('.');"
+    + "process.stdout.write(bad.sort().join('\\n'));process.exit(bad.length?1:0)";
+
+  /** Files the fixture's typecheck reports, run in `dir`; `[]` when it is green. */
+  function fixtureTypecheckFailures(dir) {
+    try {
+      execFileSync(process.execPath, ['check.js'], { cwd: dir, encoding: 'utf-8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+      return [];
+    } catch (err) {
+      if (err.status !== 1) throw err;
+      return String(err.stdout).split('\n').filter(Boolean);
+    }
+  }
+
+  /** Lane 1 renames its exported declaration; every lane ends on its own sweep's verdict. */
+  function sweepJudgedRunner(sweeps) {
+    return async (_cmd, args) => {
+      const laneDir = args[1];
+      const index = Number(/--lane-(\d+)$/.exec(laneDir)[1]) - 1;
+      const wt = path.join(laneDir, 'wt');
+      if (index === 0) {
+        fs.writeFileSync(path.join(wt, 'alpha', 'a.ts'), 'export const aRenamed = 1;\n// ERR pre-existing\n');
+        commit(wt, 'alpha: rename the exported declaration');
+      }
+      const statePath = path.join(laneDir, 'state.json');
+      const sweep = await runInterfaceChangeSweep({
+        workingDir: wt,
+        sessionDir: laneDir,
+        startCommit: readJson(statePath).start_commit,
+        runGateFn: async ({ workingDir }) => ({
+          failures: fixtureTypecheckFailures(workingDir).map((file) => ({
+            check: 'typecheck', file, line: 1, ruleOrCode: 'FIXTURE_ERR', message: 'ERR', severity: 'error', occurrence_index: 0,
+          })),
+          check_status: { typecheck: 'ran' },
+        }),
+        logActivityFn: () => {},
+        baseCheckoutFn: withCleanReplayCheckout,
+      });
+      sweeps[LANE_NAMES[index]] = sweep;
+      // A self-introduced break a lane cannot fix is what ends a real lane runner `no_progress`.
+      const exitReason = sweep.selfIntroduced.length > 0 ? 'no_progress' : 'converged';
+      fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: exitReason }));
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+  }
+
+  test('L3-e2e: an earlier phase\'s error and a pre-existing error in a lane-touched file never strand the lane no_progress', async () => {
+    const repo = fs.realpathSync(tmpDir());
+    const dataRoot = fs.realpathSync(tmpDir());
+    try {
+      const startCommit = initRepo(repo, {
+        ...laneSeedFiles(LANE_NAMES),
+        'alpha/a.ts': 'export const a = 1;\n// ERR pre-existing\n',
+        'package.json': JSON.stringify({ name: 'fx', private: true, scripts: { typecheck: 'node check.js' } }),
+        'check.js': ERR_CHECK_JS,
+      }, { branch: 'work' });
+      // An EARLIER phase, between the pipeline base and the lanes' fork, introduces an error.
+      fs.writeFileSync(path.join(repo, 'beta', 'earlier.ts'), 'export const earlier = ERR;\n');
+      git(repo, 'add', '-A');
+      commit(repo, 'earlier phase');
+      const phaseStartSha = git(repo, 'rev-parse', 'HEAD');
+      assert.deepEqual(fixtureTypecheckFailures(repo), ['alpha/a.ts', 'beta/earlier.ts'], 'fixture precondition: red at the fork');
+      const sessionDir = path.join(dataRoot, 'sessions', '2026-10-02-l3');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      writeBaseState(path.join(sessionDir, 'state.json'), {
+        active: true, pid: process.pid, working_dir: repo, step: 'implement', iteration: 0, current_ticket: null,
+        tmux_mode: false, schema_version: 3, start_commit: startCommit, exit_reason: null, activity: [],
+      });
+      fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+        phases: ['anatomy-park'], target: repo, anatomy_stall_limit: 3, szechuan_stall_limit: 5,
+        anatomy_max_iterations: 5, szechuan_max_iterations: 5, dirty_exempt_segments: ['prds', 'docs'],
+        anatomy_max_parallel_lanes: 3,
+      }));
+      const sweeps = {};
+      __setSpawnRunnerForTests(sweepJudgedRunner(sweeps));
+      const code = await runLaneMain(sessionDir, dataRoot);
+      const log = readRunnerLog(sessionDir);
+
+      assert.equal(sweeps.alpha.ran, true, 'the exported-declaration change armed the sweep');
+      assert.deepEqual(sweeps.alpha.selfIntroduced, [], 'neither pre-existing error is attributed to the lane');
+      const rows = readJson(path.join(sessionDir, 'archive', 'lanes.json'));
+      assert.deepEqual(rows.filter((r) => r.exit_reason === 'no_progress').map((r) => r.name), [], `no lane strands no_progress\n${log}`);
+      const alpha = rows.find((r) => r.name === 'alpha');
+      assert.deepEqual([alpha.outcome, alpha.commits.length, alpha.integration_check], ['integrated', 1, 'unavailable'],
+        'red at the fork cannot arbitrate the pick: integrated, check disclosed unavailable');
+      assert.equal(git(repo, 'show', 'HEAD:alpha/a.ts'), 'export const aRenamed = 1;\n// ERR pre-existing');
+      git(repo, 'merge-base', '--is-ancestor', phaseStartSha, 'HEAD'); // throws unless the fork is still under HEAD
+      assert.doesNotMatch(log, /kept lane branch /, 'nothing is stranded');
+
+      // D2: the unmeasured integration check withholds success; the run still completes.
+      assert.notEqual(code, 0, log);
+      const status = readJson(path.join(sessionDir, 'pipeline-status.json'));
+      const verdict = computePipelineVerdict(
+        { config: { phases: ['anatomy-park'] }, statePath: path.join(sessionDir, 'state.json'), log: () => {} },
+        {
+          completed: status.completed_phases, skipped: status.skipped_phases, phaseSkips: status.phase_skips ?? {},
+          nonConvergent: status.non_convergent ?? 0, phaseDispositions: status.phase_dispositions ?? {},
+        },
+      );
+      assert.deepEqual([verdict.pipelineFailed, verdict.unsuccessful], [false, true], JSON.stringify(status));
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });
@@ -5580,7 +6022,7 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
   }
   const freshCounters = () => ({ completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} });
 
-  test('caveats [typecheck, lint] record converged_with_unmeasured:typecheck,lint and leave nonConvergent alone', () => {
+  test('caveats [typecheck, lint] record converged_with_unmeasured:typecheck,lint and withhold the success verdict', () => {
     const dir = tmpDir();
     try {
       const { runtime, cancelMarker } = convergedRuntime(dir, ['typecheck', 'lint']);
@@ -5588,8 +6030,11 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
       assert.deepEqual(outcome, { action: 'continue' });
       assert.equal(counters.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck,lint');
-      assert.equal(counters.nonConvergent, 0, 'reported, NOT counted non-convergent');
+      assert.equal(counters.nonConvergent, 1, 'unmeasured checks degrade the phase, withholding success');
       assert.equal(counters.completed, 1, 'a converged phase still completes');
+      const verdictRuntime = { ...runtime, config: { phases: ['anatomy-park'] } };
+      assert.equal(computePipelineVerdict(verdictRuntime, counters).unsuccessful, true);
+      assert.equal(computePipelineVerdict(verdictRuntime, counters).pipelineFailed, false, 'withheld, not failed');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -5604,6 +6049,7 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       assert.equal(counters.phaseDispositions['anatomy-park'], undefined);
       assert.equal(counters.nonConvergent, 0);
       assert.equal(counters.completed, 1);
+      assert.equal(computePipelineVerdict({ ...runtime, config: { phases: ['anatomy-park'] } }, counters).unsuccessful, false, 'negative control: no caveat still succeeds');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -5800,6 +6246,79 @@ describe('B-FINALGATE incomplete-exit arm over the real finalize-gate', () => {
     } finally {
       __setSpawnRunnerForTests(null);
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('AP-LANES-ITER1-01', () => {
+  // Moved verbatim (substance unchanged) from
+  // extension/src/bin/__tests__/microverse-runner.handleIterationOutcome.spec.ts, whose test-runner
+  // never discovers *.spec.ts files (discoverTestFiles matches *.test.js only).
+  //
+  // AP-LANES-ITER1-01: an integrated lane's OWN cap_unmeasured_checks live in its lane session; only the
+  // parent microverse.json is read by the phase verdict, so the disclosure must carry them across.
+  test("AP-LANES-ITER1-01: an integrated lane carries its own unmeasured checks to the parent; a lane that did not integrate does not", () => {
+    const makeMicroverseState = () => ({
+      status: 'iterating',
+      prd_path: 'prds/p1-anatomy-park-worker-mode-subprocess-error-kills-loop.md',
+      key_metric: {
+        description: 'test metric',
+        validation: 'echo ok',
+        type: 'command',
+        timeout_seconds: 30,
+        tolerance: 0,
+      },
+      convergence: {
+        stall_limit: 5,
+        stall_counter: 0,
+        history: [],
+      },
+      gap_analysis_path: 'gap.md',
+      failed_approaches: [],
+      baseline_score: 0,
+      failure_history: [],
+      approach_exhaustion_fired: false,
+      convergence_mode: 'worker',
+      convergence_file: 'anatomy-park.json',
+      current_subsystem: 'alpha',
+      consecutive_subprocess_errors: 0,
+    });
+
+    const root = fs.realpathSync(tmpDir());
+    const parentDir = path.join(root, 'session');
+    const writeCaps = (dir, extra) => {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'microverse.json'), JSON.stringify({ ...makeMicroverseState(), ...extra }));
+    };
+    const readCaps = () => JSON.parse(fs.readFileSync(path.join(parentDir, 'microverse.json'), 'utf-8')).cap_unmeasured_checks;
+    const outcome = (name, o) => ({
+      name, dir: name, excludes: [], branch: `b/${name}`, worktree: `w/${name}`, started_at: null, ended_at: null,
+      passes: 1, exit_reason: 'converged', commits: [], ...o,
+    });
+    const logs = [];
+    const runtime = { sessionDir: parentDir, target: root, log: (m) => logs.push(m) };
+    try {
+      writeCaps(parentDir, { cap_unmeasured_checks: ['prior'] });
+      writeCaps(laneSessionDir(parentDir, 1), { cap_unmeasured_checks: ['tests'] });
+      writeCaps(laneSessionDir(parentDir, 2), { cap_unmeasured_checks: ['lint'] });
+
+      discloseUnmeasuredIntegration(runtime, [outcome('alpha', { outcome: 'integrated', integration_check: 'green' }),
+        outcome('beta', { outcome: 'conflict', integration_check: null })]);
+      assert.deepEqual(readCaps(), ['prior', 'tests'], `only the integrated lane's own hole reaches the parent\n${logs.join('\n')}`);
+
+      // Control: the typecheck hole and the lane's own hole are both disclosed for one integrated lane.
+      writeCaps(parentDir, {});
+      discloseUnmeasuredIntegration(runtime, [outcome('alpha', { outcome: 'integrated', integration_check: 'unavailable' })]);
+      assert.deepEqual(readCaps(), ['integration_typecheck', 'tests']);
+
+      // Control: nothing to disclose leaves the parent untouched. Mutation control: amputating the
+      // integrated-lane union in discloseUnmeasuredIntegration reds the two cases above; this case
+      // guards against the opposite over-trigger (disclosing when there is nothing to disclose).
+      writeCaps(parentDir, {});
+      discloseUnmeasuredIntegration(runtime, [outcome('beta', { outcome: 'conflict', integration_check: null })]);
+      assert.equal(readCaps(), undefined);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });
