@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 23:45Z) — exp/b-parallel-build DEPLOYED (operator-approved); step 5 B-MEGA in REFINEMENT
+### ▶ STATE (2026-10-02 23:50Z) — step 5 B-MEGA RUNNING on exp/b-parallel-build (first real wave run)
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | pushed **`fcec8f1d`** (merge of main; gate 22/22). **No longer the deployed runtime** while B-MEGA runs (see `exp/b-parallel-build`) |
 | `exp/b-parallel-build` | pushed **`1bacc67a`** = **DEPLOYED 2026-10-02 23:3xZ** (operator-approved for B-MEGA; supersedes `exp/b-lanes` as the deployed runtime while B-MEGA runs). Gate `20261002T220652Z-75128` 22/22, soak 1803.8s. Verified by content: `runPickleWaves`, `max_parallel_tickets`, `services/ticket-waves.js`, `verdictFail` in the deployed JS; `bin/`, `services/`, `.claude/commands` diffs = 0. Rollback: `git checkout exp/b-lanes && bash install.sh` |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-MEGA refinement** (3 analysts × 3 cycles), session `2026-10-02-be104839`, on `exp/b-parallel-build`. PRD readiness fixes applied first: F1 rewritten to the operator's delete (with read-tolerance for the old `state.archaeology` key and events — archaeology is not isolated: calibration corpus imports it), E5 cut, Interface Contracts section added |
+| RUNNING | **B-MEGA** on `exp/b-parallel-build`, session `2026-10-02-be104839` (tmux `pipeline-be104839`, launched 23:43Z). 23 tickets (19 impl + 4 hardening), refined 3×3 (9/9 analysts). `max_parallel_tickets: 2`, `anatomy_max_parallel_lanes: 2`, scope `branch` @ `1bacc67a`. Refined PRD committed `1ecc11f4` (branch, unpushed). First real `pickle waves:` run on record. Watch: scope armed `allowed=1` at setup (expected; B-PBUILD built fine the same way) — confirm the first ticket is not fenced; R2 fake-red estimate via A3's reader afterwards |
 | open issues | **#54** (B-RUNREPORT-54 in flight), **#55** (design: the review chain is anchored on the refined PRD + branch diff — premise ledger, card-mode citadel, dependency lanes, sibling-writer protocol check, `dropped_findings.md` consumer; NOT queued — operator prioritizes), **#53**/**#52** (fixed on the experimental branches only), **#43**, **#5** (operator-deferred) |
 | client data | **#54 and #55 sanitized 2026-10-02** (bodies rewritten generic at operator request; GitHub edit history still holds the originals — only deleting the issue removes it, operator's call). **Still exposed (measured 2026-10-02):** the client name appears in the bodies of #9, #14, #15, #48, #52, #53, #55-before-edit and in one comment each on #15, #31, #48, #53; and in **145 files** at `origin/main` (`git grep -il <client>`), i.e. the #31 leak was never fully drained. Sweep = operator decision (issue edits are outward-facing; file purge is a bundle) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
@@ -257,7 +257,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
    (8/8 live). Decisions D-1..D-4 taken at the recommended defaults. G3/G4 and the AC-shape advisory demotion are follow-ups.
    - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy → merge into `exp/b-parallel-build` → gate → push.
 
-5. **B-MEGA — fix every open issue + keep developing the multi-agent branch (operator decision 2026-10-02).**
+5. **B-MEGA — fix every open issue + keep developing the multi-agent branch (operator decision 2026-10-02).** **LAUNCHED 2026-10-02 23:43Z** (session `2026-10-02-be104839`).
    - **Placement (operator):** ONE bundle on `exp/b-parallel-build`, **deployed first** (operator-approved deploy of that
      branch, superseding the "never deploy exp/b-parallel-build" default for this bundle), run with
      `max_parallel_tickets: 2` + `anatomy_max_parallel_lanes: 2`, refinement ON (new features). This knowingly departs from
