@@ -60,6 +60,11 @@ import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
 
+const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+  cwd, encoding: 'utf-8', timeout: 60_000,
+}).trim();
+const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
+
 function tmpDir() {
   return mkFixtureTmpDir('pickle-pipeline-');
 }
@@ -4944,11 +4949,7 @@ async function runLaneMain(sessionDir, dataRoot) {
 describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
   const EXTENSION_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..');
   const LANE_NAMES = ['alpha', 'beta', 'gamma'];
-  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
-    cwd, encoding: 'utf-8', timeout: 60_000,
-  }).trim();
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
   const writeLaneReason = (laneDir, reason) => {
     const statePath = path.join(laneDir, 'state.json');
     fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: reason }));
@@ -5121,11 +5122,7 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
 describe('B-LANES WS-3: lane integration', () => {
   const EXTENSION_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..', '..');
   const LANES = ['alpha', 'beta', 'gamma'].map((name) => ({ name, dir: name, excludes: [], testRatioApplies: false, fileCount: 3 }));
-  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
-    cwd, encoding: 'utf-8', timeout: 60_000,
-  }).trim();
   const gitOk = (cwd, ...args) => { try { git(cwd, ...args); return true; } catch { return false; } };
-  const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
   const read = (p) => fs.readFileSync(p, 'utf-8');
   // Red iff alpha/a.ts AND beta/a.ts both say RED, or the linked node_modules is gone.
   const CHECK_JS = "const fs=require('fs');"
@@ -5471,10 +5468,6 @@ describe('B-LANES WS-3: lane integration', () => {
 
 describe('B-LANES wiring: end to end through main()', () => {
   const LANE_NAMES = ['alpha', 'beta', 'gamma'];
-  const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
-    cwd, encoding: 'utf-8', timeout: 60_000,
-  }).trim();
-  const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const FIXED = 'export const a = 1; // fixed\n';
 
