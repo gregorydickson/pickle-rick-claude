@@ -5424,14 +5424,24 @@ describe('B-LANES WS-3: lane integration', () => {
 
   test('L5-manifest: every lanes.json row records node_modules_linked (array) and baseline_check_status (object or null)', async () => {
     const fx = makeFixture();
+    // Only beta's runner captures a baseline, so the row must carry exactly its check_status and the
+    // others null — an "object or null" check alone passes a reader that never reads the lane's file.
+    const betaStatus = { typecheck: 'ran', lint: 'skipped_no_project_type' };
     try {
-      __setSpawnRunnerForTests(strandingRunner([1, 1, 1], { converge: [0, 1, 2] }));
+      __setSpawnRunnerForTests(strandingRunner([1, 1, 1], {
+        converge: [0, 1, 2],
+        onLaneEnd: (index, laneDir) => {
+          if (index !== 1) return;
+          fs.mkdirSync(path.join(laneDir, 'gate'), { recursive: true });
+          fs.writeFileSync(path.join(laneDir, 'gate', 'baseline.json'), JSON.stringify({ check_status: betaStatus }));
+        },
+      }));
       await runAnatomyLanes(fx.runtime, LANES, 3);
       const rows = readJson(path.join(fx.sessionDir, 'archive', 'lanes.json'));
       assert.equal(rows.length, 3);
       for (const row of rows) {
         assert.ok(Array.isArray(row.node_modules_linked), `${row.name}: node_modules_linked is an array`);
-        assert.ok(row.baseline_check_status === null || typeof row.baseline_check_status === 'object', `${row.name}: baseline_check_status`);
+        assert.deepEqual(row.baseline_check_status, row.name === 'beta' ? betaStatus : null, `${row.name}: baseline_check_status`);
         assert.deepEqual(row.node_modules_linked, ['node_modules'], `${row.name}: the root node_modules link is recorded`);
       }
     } finally {
