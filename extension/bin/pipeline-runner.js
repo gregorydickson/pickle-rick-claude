@@ -3686,6 +3686,10 @@ function partitionCitadelCycleFindings(findings, threshold, mechanicalFloorEnabl
         advisory: findings.filter(f => !findingMeetsThreshold(f, threshold) && !isMechanicalCitadelFinding(f)),
     };
 }
+function acUnmeasuredSuffix(sections) {
+    const ac = sections?.['ac_coverage'];
+    return ac?.skipped === 'no_acceptance_criteria' ? `; ac_coverage UNMEASURED (${String(ac.reason)})` : '';
+}
 export async function executeCitadelPhase(runtime) {
     const inputs = resolveCitadelPhaseInputs(runtime);
     if (!inputs)
@@ -3723,7 +3727,7 @@ export async function executeCitadelPhase(runtime) {
         const wrote = result.persist_error === undefined
             ? `wrote ${reportPath}`
             : `report NOT written to ${reportPath} (${result.persist_error}) —`;
-        runtime.log(`citadel: cycle ${cycle + 1}/${cap} — ${wrote} with ${result.findings.length} finding(s), ${cyclePartition.remediable.length} remediable (>= ${threshold}), ${cyclePartition.mechanical.length} mechanical, ${toRemediate.length} total, ${lastAdvisory.length} advisory`);
+        runtime.log(`citadel: cycle ${cycle + 1}/${cap} — ${wrote} with ${result.findings.length} finding(s), ${cyclePartition.remediable.length} remediable (>= ${threshold}), ${cyclePartition.mechanical.length} mechanical, ${toRemediate.length} total, ${lastAdvisory.length} advisory${acUnmeasuredSuffix(result.sections)}`);
         if (toRemediate.length === 0) {
             runtime.log('citadel: no remediable findings — phase complete, continuing pipeline');
             surfaceCitadelAdvisory(runtime, lastAdvisory);

@@ -19,7 +19,10 @@ export function runT6TrapDoorCoverage(context) {
     for (const claudeFile of allClaudeFiles) {
         findings.push(...auditClaudeTrapDoorRefs(projectRoot, claudeFile, scope, referencedFiles));
     }
-    findings.push(...collectOrphanTestFileFindings(projectRoot, scope, referencedFiles));
+    // The orphan-test-file convention exists only where a catalog uses `ENFORCE:`; derived, not listed.
+    if (allClaudeFiles.some((claudeFile) => readTextFile(claudeFile)?.includes('ENFORCE:'))) {
+        findings.push(...collectOrphanTestFileFindings(projectRoot, scope, referencedFiles));
+    }
     return { findings };
 }
 /**

@@ -2469,6 +2469,36 @@ test('AC-1 (direction 2): a manifest covering every requirement, with every anal
     assert.equal(manifest.all_success, true, 'full requirement coverage plus successful analysts must report all_success: true');
 });
 
+test('T3-F3b: the manifest persists missing_requirement_ids (AC-4 unmapped -> [AC-4]); empty when fully covered', () => {
+    const dir = tmpDir('pickle-reqgap-persist-');
+    const manifest = buildManifestWithPrdBodyAndTickets(dir, NINE_AC_PRD, [
+        ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3']),
+        ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7', 'AC-8']),
+        ticketCovering('T-3', ['AC-9']),
+    ]);
+    assert.deepEqual(manifest.missing_requirement_ids, ['AC-4']);
+    assert.equal(manifest.all_success, false);
+    const full = buildManifestWithPrdBodyAndTickets(tmpDir('pickle-reqgap-persist-full-'), NINE_AC_PRD, [
+        ticketCovering('T-1', ['AC-1', 'AC-2', 'AC-3', 'AC-4']),
+        ticketCovering('T-2', ['AC-5', 'AC-6', 'AC-7', 'AC-8']),
+        ticketCovering('T-3', ['AC-9']),
+    ]);
+    assert.deepEqual(full.missing_requirement_ids, []);
+});
+
+test('T3-F3a: AC-shape smells repeated per analyst collapse to ONE violation naming Step 7', async () => {
+    const { evaluateAcShapeEnforcement } = await import('../bin/spawn-refinement-team.js');
+    const roles = ['requirements', 'codebase', 'risk-scope'];
+    const violations = evaluateAcShapeEnforcement({
+        ac_shape_smells: roles.map((r) => ({ ac_id: 'AC-9', ticket_ids: [], source_worker: r, source_file: r })),
+        tickets: roles.flatMap((r) => ['t1', 't2'].map((id) => ({
+            id, title: id, source_ac_ids: ['AC-9'], acceptance_test: 'x', source_worker: r, source_file: r,
+        }))),
+    });
+    assert.equal(violations.length, 1);
+    assert.match(violations[0].reason, /Step 7/);
+});
+
 test('AC-3: a dropped requirement is reported to stderr and the manifest build still completes — no new halt', () => {
     const dir = tmpDir('pickle-reqgap-nohalt-');
     const originalWrite = process.stderr.write;

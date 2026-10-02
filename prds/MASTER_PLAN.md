@@ -223,16 +223,17 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 00:50Z) — queue step 1 done, step 2 mid-flight (merge-down); queue below is the babysitter's
+### ▶ STATE (2026-10-02 18:45Z) — step 4 built, main gate 21/22 (host-state test); fix B-DEPLOYPARITY RUNNING on main; step 5 B-MEGA awaiting operator answers
 
 | | |
 |---|---|
 | `main` | **`3cdb1c4c`** + this STATE commit, pushed. **B-ATTRIB-G built** (session `2026-10-01-face240c`, 4/4 phases, finished 22:53Z; G1 `d1e369ce`, G2 `c3fc60af`/`970370c7`, D2 `f73e828d`). Gate `20261001T233051Z-35963` 22/22 at `3cdb1c4c`, soak 1803.7s |
-| `exp/b-lanes` | pushed **`979b55b1`** = **DEPLOYED** (B-LANES-UNCHECKED + FIX; gate `20261001T194834Z-88031` 22/22, soak 1803.9s; verified by content: `integration_check` in deployed `pipeline-runner.js`). B-ATTRIB-G NOT yet merged in |
-| `exp/b-parallel-build` | pushed **`fc9e05dd`** (B-PBUILD #43 + #52 bound; gate 22/22). Not deployed. Merge-down of B-LANES-UNCHECKED and B-ATTRIB is deferred until both land |
+| `exp/b-lanes` | pushed **`e86180e0`** = **DEPLOYED** (adds B-ATTRIB-L, session `2026-10-02-1d45b656`). Gate `20261002T073139Z-13368` 22/22, soak 1803.7s. Verified by content in deployed `pipeline-runner.js`: `disabled for this phase` (L2), `kept lane branch` (L4), `node_modules_linked` (L5), `start_commit: phaseStartSha` (L1); bin/ + services/ diff = 0 |
+| `exp/b-parallel-build` | pushed **`99fe61eb`** = merge of `exp/b-lanes@e86180e0` (B-ATTRIB-G + B-LANES-MERGE-G + B-ATTRIB-L). Gate `20261002T085127Z-22748` 22/22, soak 1803.7s. Not deployed (operator decision) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **nothing** (as of 00:50Z). Old `pipeline-*` tmux shells are idle |
-| open issues | **#53** (B-ATTRIB, in progress), **#52** (bound shipped, lane part in flight), **#43** (B-PBUILD built, on its branch awaiting field runs), **#5** (operator-deferred) |
+| RUNNING | **B-DEPLOYPARITY** on `main`, session `2026-10-02-0051f0c6` (tmux `pipeline-0051f0c6`, 18:43Z; 1 ticket, `paths:` scope of 2). **LOCAL `main` is ahead of origin and UNPUSHED:** B-RUNREPORT-54 (`11af854e`..`028729e1`, 4/4 phases, finished 15:07Z), merge `2a37b414`, B-MEGA PRD `c48dc61c`, B-DEPLOYPARITY PRD. Gate `20261002T152831Z-49037` at `c48dc61c`: **21/22**, `test_fast_budget` red 3/3 on `R-MWBG: send-to-morty.md deployed copy matches the repo copy` — a fast-tier test comparing the tree with THIS host's deployed `~/.claude/commands`, which a pre-deploy gate can never satisfy after a command edit (T1 quoted `status: "Done"`). Fix deletes it and moves the check to post-deploy (`diff -rq .claude/commands`). Then: re-gate main → push (merge `origin/main` first, never rebase) → merge-down |
+| open issues | **#54** (B-RUNREPORT-54 in flight), **#55** (design: the review chain is anchored on the refined PRD + branch diff — premise ledger, card-mode citadel, dependency lanes, sibling-writer protocol check, `dropped_findings.md` consumer; NOT queued — operator prioritizes), **#53**/**#52** (fixed on the experimental branches only), **#43**, **#5** (operator-deferred) |
+| client data | **#54 and #55 sanitized 2026-10-02** (bodies rewritten generic at operator request; GitHub edit history still holds the originals — only deleting the issue removes it, operator's call). **Still exposed (measured 2026-10-02):** the client name appears in the bodies of #9, #14, #15, #48, #52, #53, #55-before-edit and in one comment each on #15, #31, #48, #53; and in **145 files** at `origin/main` (`git grep -il <client>`), i.e. the #31 leak was never fully drained. Sweep = operator decision (issue edits are outward-facing; file purge is a bundle) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
 | exocortex | integration DEFERRED until memory-graph/exocortex#1 (reads drop `content`) is fixed. The runner-only plan is in auto-memory |
@@ -240,21 +241,44 @@ NO measured basis. Large PRDs are not constrained by the cap.
 ### ▶ QUEUE (strictly sequential; never two pipelines; never commit to a branch while its pipeline or gate runs)
 
 1. ~~Gate `exp/b-lanes`~~ — DONE 2026-10-01: 22/22, pushed `979b55b1`, redeployed, verified by content.
-2. **B-ATTRIB-G (#53 general) on `main`.** BUILT + main gated green + pushed (see STATE). **Remaining: merge
-   `main` into `exp/b-lanes` → gate → push → redeploy (grep deployed `microverse-runner.js` for the G1 helper).**
-   - Materials: PRD `prds/p0-b-attrib-g-unmeasured-is-not-self-introduced.md`; 3 tickets already written in session
-     `2026-10-01-face240c` (G1 medium, G2 large, D2 medium).
-   - Switch the main checkout to `main`, `setup.js --tmux --resume <session>`, and write `pipeline.json` with
-     `"anatomy_max_parallel_lanes": 2` and an explicit `paths:` scope listing every ticket's Files.
-   - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy.
-3. **B-ATTRIB-L (#53 lanes) on `exp/b-lanes`.**
-   - PRD: `prds/p0-b-attrib-l-lanes-measure-their-own-work.md`. It was drafted on `main` for durability; commit it on
-     the branch too.
-   - Tickets: L1 fork-sha `start_commit`; L2 whole-phase serial fallback when lane worktrees cannot reproduce the
-     checkout's `node_modules`; L6 red-at-base integration reads `unavailable`; L4+L5+R7 commits always listed, kept
-     branches named with their expiry date, env manifest; L3 end-to-end. Measure every AC red at HEAD first.
-   - Then: gate → push → redeploy → merge `exp/b-lanes` into `exp/b-parallel-build` → gate → push.
-   - Comment on #53 with evidence after each ships (no client names).
+2. ~~B-ATTRIB-G (#53 general)~~ — DONE 2026-10-02: built on `main` (session `2026-10-01-face240c`), main gate 22/22, merged into
+   `exp/b-lanes`; the merge exposed a stale lane-wiring fixture (fixed by B-LANES-MERGE-G, session `2026-10-02-76f112c8`);
+   branch gate 22/22, pushed, redeployed, verified by content. Merge-down to `exp/b-parallel-build` stays deferred until B-ATTRIB-L lands.
+3. ~~B-ATTRIB-L (#53 lanes)~~ — DONE 2026-10-02: built on `exp/b-lanes` (session `2026-10-02-1d45b656`), gated 22/22, pushed, redeployed,
+   verified by content; merged into `exp/b-parallel-build` (`99fe61eb`), gated 22/22, pushed. Evidence comments on #53.
+
+4. **B-RUNREPORT-54 (#54, general) on `main`.** BUILT 15:07Z (session `2026-10-02-74246bff`); main gate red only on the host-state test → B-DEPLOYPARITY. LAUNCHED 13:48Z. **Deviation from the committed PRD (T3):** scope-setup silently drops
+   paths that do not exist yet (32 listed → `allowed=30`), so the PRD's "move the R-RCEX resolver into a new `services/` file"
+   would have failed the worker scope fence; the ticket was re-scoped before it started to EXPORT the resolver from
+   `bin/check-readiness.ts` in place (precedent: two modules already import from it). Landed as `598b66fa`. PRD `prds/p1-b-runreport-54.md`; 5 hand-written tickets (T1 conformance-FAIL
+   refuses Done via the Z1 path + F5 prompt rider; T2 citadel `orphan-test-file` only where `ENFORCE:` exists + `ac_coverage`
+   UNMEASURED disclosure; T3 refinement AC-shape dedupe, `missing_requirement_ids`, dependency `.d.ts` symbol resolution;
+   T4 monitor template; T5 `/pickle-pipeline` session binding + 0-ahead scope pin). Every premise re-measured at `72797f3e`
+   (8/8 live). Decisions D-1..D-4 taken at the recommended defaults. G3/G4 and the AC-shape advisory demotion are follow-ups.
+   - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy → merge into `exp/b-parallel-build` → gate → push.
+
+5. **B-MEGA — fix every open issue + keep developing the multi-agent branch (operator decision 2026-10-02).**
+   - **Placement (operator):** ONE bundle on `exp/b-parallel-build`, **deployed first** (operator-approved deploy of that
+     branch, superseding the "never deploy exp/b-parallel-build" default for this bundle), run with
+     `max_parallel_tickets: 2` + `anatomy_max_parallel_lanes: 2`, refinement ON (new features). This knowingly departs from
+     rule P for this bundle: the general fixes in it reach `main` only when the operator merges the branch.
+   - **#5 scope (operator):** Moves 1–3 only (context cache, committed trap doors, circuit-breaker taxonomy). Moves 4–5 out.
+   - **Workstreams:** A parallel build in monorepos (#43/#52: wire the B-ATTRIB-L node_modules predicate into build units —
+     the merge into this branch left units without it — then link workspace node_modules into lanes/units; wave telemetry
+     for the B-PBUILD merge criterion) · B dependency-lens review lanes + sibling-writer protocol check (#55) · C premise
+     ledger, escalations stay open, phantom-guarantee check, test-expectation independence (#55) · D citadel card mode,
+     non-lexical coverage, "conforms to PRD" ≠ drop, `dropped_findings.md` consumer (#55, #54) · E #54 follow-ups (G3
+     drift report, G4 scripted decomposition, AC-shape gate advisory, one requirement-id rule, microverse template,
+     nested-workspace .d.ts resolution) · F #5 Moves 1–3.
+   - **PRD committed on local main** (`prds/p1-b-mega-multiagent.md`, premises measured at `exp/b-parallel-build@99fe61eb`; ~25 tickets; first-ever real wave run; #5 Moves 2–3 found already satisfied, Move 1's archaeology has 0 callers). **Operator answers (2026-10-02):** (1) **A2 ships in B-MEGA** with A1 kept as the safety net — if linking cannot reproduce a workspace's node_modules, units/lanes fall back to serial; the first monorepo field run is A2's real test; (2) **delete archaeology** (dead module + stale `PRD_GUIDE.md` reference) and close #5 with the evidence that Moves 2–3 are already satisfied; (3) **close #52/#53/#5 only when the branch merges to `main`**; (4) **cut E5** (cosmetic; recorded only). The PRD on local main is amended to match once B-DEPLOYPARITY finishes.
+   - **Order:** after step 4 finishes AND merges down (main → exp/b-lanes → exp/b-parallel-build, each gated); then deploy
+     `exp/b-parallel-build`, verify by content, launch. PRD being drafted with every premise measured at the branch HEAD.
+   - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
+     depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
+
+**Before #54 the queue was drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
+merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
+merge `exp/b-lanes` into `main` (the ledger now has 7 sessions); deploy or merge `exp/b-parallel-build`; close #52/#53.
 
 **B-ATTRIB decisions (refinement session `2026-10-01-e8b44a10`, 3×3):**
 - The sweep base is a typecheck REPLAYED at `start_commit` in the same worktree. The rolling `gate/baseline.json` is
@@ -292,6 +316,8 @@ collects `*.test.js` only).
 | `2026-09-26-e22412a9` B-LANES-FIX2 | 1 test | 1 (explicit `paths:` scope) | 1.6 | — | — | single lane | explicit path scope avoided the unscoped cost |
 | `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 2/3/2/2/5/2 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) |
 | `2026-10-01-face240c` B-ATTRIB-G (on `main`) | 17 (943+/127−) | 5 (cap 2, explicit `paths:` scope) | 26.0 | 4/2/3/2/2 | 3 lane commits | 5 integrated, 0 conflicts | none; pickle 74 min for 3 tickets; szechuan 5.8 min |
+| `2026-10-02-76f112c8` B-LANES-MERGE-G (on `exp/b-lanes`) | 1 test | 1 (explicit `paths:` scope) | 1.9 | 2 | 0 | single lane | none; pickle 17.5 min, szechuan 8.7 min (2 DRY/doc commits) |
+| `2026-10-02-1d45b656` B-ATTRIB-L (on `exp/b-lanes`) | 4 src/test (+2 catalogs) | 3 (cap 2, explicit `paths:` scope) | 11.7 | 4/5/6 | 2 lane commits | 3 integrated, 0 conflicts | none; pickle 78 min for 5 tickets; szechuan 23 min (2 DRY commits) |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 

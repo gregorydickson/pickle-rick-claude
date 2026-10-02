@@ -34,7 +34,7 @@ If `REFINE=false` → strip `--refine`/`--no-refine` from `$ARGUMENTS` if presen
 **If `REFINE=true`:**
 
 **0a — Resolve PRD path AND session, if any.** First match wins:
-1. Explicit path in `$ARGUMENTS` (e.g. `path/to/prd.md`) → `PRD_PATH=<resolved>`, leave `SESSION_ROOT` unset (no session associated yet)
+1. Explicit path in `$ARGUMENTS` (e.g. `path/to/prd.md`) → `PRD_PATH=<resolved>`. If `$(dirname "$PRD_PATH")/state.json` exists, the PRD belongs to that session: set `SESSION_ROOT=$(dirname "$PRD_PATH")` and treat it exactly as path 3 (same already-refined skip, mid-refinement detection and `--resume` handling). Otherwise leave `SESSION_ROOT` unset (no session associated yet)
 2. `prd.md` or `PRD.md` in current working directory → `PRD_PATH=<resolved>`, leave `SESSION_ROOT` unset
 3. Most recent session's `prd.md` via `node "$HOME/.claude/pickle-rick/extension/bin/get-session.js"` → `PRD_PATH=<resolved>`, set `SESSION_ROOT=$(dirname "$PRD_PATH")` (the returned path is session-relative)
 
@@ -105,14 +105,14 @@ DEFAULT=$(git -C "${TARGET}" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null |
 CURRENT=$(git -C "${TARGET}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 AHEAD=$(git -C "${TARGET}" rev-list --count HEAD ^"${DEFAULT}" 2>/dev/null || echo 0)
 ```
-If `CURRENT` is non-empty AND `CURRENT != DEFAULT` AND `AHEAD >= 1` → set `SCOPE_SIGNAL=non_default_branch`, `BRANCH_NAME=$CURRENT`, `AHEAD_COUNT=$AHEAD`.
+If `CURRENT` is non-empty AND `CURRENT != DEFAULT` → set `SCOPE_SIGNAL=non_default_branch`, `BRANCH_NAME=$CURRENT`, `AHEAD_COUNT=$AHEAD`.
 
 **When `SCOPE_SIGNAL=non_default_branch`:** emit exactly one AskUserQuestion:
 > "Target is on branch `${BRANCH_NAME}` with ${AHEAD_COUNT} commit(s) ahead of `${DEFAULT}`. Lock pipeline to branch diff, or proceed unscoped?"
 >
 > Options: `Lock to branch (Recommended)` / `Proceed unscoped (with reason)`
 
-- `Lock to branch`: set `SCOPE_FLAG=branch`; this is treated as if `--scope branch` was passed
+- `Lock to branch`: set `SCOPE_FLAG=branch`; this is treated as if `--scope branch` was passed. When `AHEAD == 0`, also set `SCOPE_BASE=$(git -C "${TARGET}" rev-parse HEAD)` (load-bearing: avoids a `SCOPE_BASE_AHEAD_OF_HEAD` halt)
 - `Proceed unscoped (with reason)`: leave `SCOPE_FLAG` unset; log `"scope-inference: operator chose unscoped on branch ${BRANCH_NAME}"` as activity
 
 **When `SCOPE_SIGNAL=branch` or `SCOPE_SIGNAL=api_only`:** emit exactly one AskUserQuestion:

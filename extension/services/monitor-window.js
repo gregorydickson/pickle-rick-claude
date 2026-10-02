@@ -14,7 +14,7 @@ import { _killOldMonitorPid, formatLocalDateKey, getDataRoot, getExtensionRoot, 
 export function inferMonitorMode(sessionDir, log) {
     try {
         const state = new StateManager().read(path.join(sessionDir, 'state.json'));
-        const tpl = (state.command_template || '').toLowerCase();
+        const tpl = (state.command_template || '').toLowerCase().replace(/^_/, '');
         if (!tpl) {
             log?.('[ensureMonitorWindow] command_template missing; defaulting to pickle');
             return 'pickle';
@@ -506,20 +506,7 @@ function readWindowMode(tmuxBin, target, spawnSyncFn) {
  * what this mode needs, so play it safe and rebuild.
  */
 export function monitorModesCompatible(existing, want) {
-    if (!existing)
-        return false;
-    switch (want) {
-        case 'pickle':
-            return existing === 'pickle';
-        case 'council':
-            return existing === 'council';
-        case 'refinement':
-            return existing === 'refinement';
-        case 'szechuan-sauce':
-            return existing === 'szechuan-sauce';
-        case 'anatomy-park':
-            return existing === 'anatomy-park';
-    }
+    return existing === want;
 }
 function _resolveTmuxSessionName(spawnSyncFn, log, mode) {
     const r = spawnSyncFn('tmux', ['display-message', '-p', '#S'], { encoding: 'utf-8', timeout: 5_000 });
