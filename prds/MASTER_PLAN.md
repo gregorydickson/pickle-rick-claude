@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 08:55Z) — queue steps 1–3 built; exp/b-parallel-build merge-down gate RUNNING; queue below is the babysitter's
+### ▶ STATE (2026-10-02 10:15Z) — QUEUE DRAINED (steps 1–3 done); babysitter is in rule E (idle research) until the operator refills
 
 | | |
 |---|---|
 | `main` | **`3cdb1c4c`** + this STATE commit, pushed. **B-ATTRIB-G built** (session `2026-10-01-face240c`, 4/4 phases, finished 22:53Z; G1 `d1e369ce`, G2 `c3fc60af`/`970370c7`, D2 `f73e828d`). Gate `20261001T233051Z-35963` 22/22 at `3cdb1c4c`, soak 1803.7s |
 | `exp/b-lanes` | pushed **`e86180e0`** = **DEPLOYED** (adds B-ATTRIB-L, session `2026-10-02-1d45b656`). Gate `20261002T073139Z-13368` 22/22, soak 1803.7s. Verified by content in deployed `pipeline-runner.js`: `disabled for this phase` (L2), `kept lane branch` (L4), `node_modules_linked` (L5), `start_commit: phaseStartSha` (L1); bin/ + services/ diff = 0 |
-| `exp/b-parallel-build` | local **`99fe61eb`** = merge of `exp/b-lanes@e86180e0` (5 conflicts resolved by union — lane L2 predicate then the pickle-wave dispatch; catalog rows unioned; JS regenerated; `pipeline-runner.test.js` 280/280 locally). Gate RUNNING; push on green. Pushed tip still `fc9e05dd`. Not deployed |
+| `exp/b-parallel-build` | pushed **`99fe61eb`** = merge of `exp/b-lanes@e86180e0` (B-ATTRIB-G + B-LANES-MERGE-G + B-ATTRIB-L). Gate `20261002T085127Z-22748` 22/22, soak 1803.7s. Not deployed (operator decision) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | gate on `exp/b-parallel-build@99fe61eb` (main checkout is on that branch). No pipeline |
+| RUNNING | **nothing** (as of 10:15Z). The main checkout is back on `exp/b-lanes` (the deployed branch) |
 | open issues | **#53** (B-ATTRIB, in progress), **#52** (bound shipped, lane part in flight), **#43** (B-PBUILD built, on its branch awaiting field runs), **#5** (operator-deferred) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
@@ -243,8 +243,12 @@ NO measured basis. Large PRDs are not constrained by the cap.
 2. ~~B-ATTRIB-G (#53 general)~~ — DONE 2026-10-02: built on `main` (session `2026-10-01-face240c`), main gate 22/22, merged into
    `exp/b-lanes`; the merge exposed a stale lane-wiring fixture (fixed by B-LANES-MERGE-G, session `2026-10-02-76f112c8`);
    branch gate 22/22, pushed, redeployed, verified by content. Merge-down to `exp/b-parallel-build` stays deferred until B-ATTRIB-L lands.
-3. **B-ATTRIB-L (#53 lanes) on `exp/b-lanes`.** BUILT (5/5 tickets, 4/4 phases), branch gate 22/22, pushed, redeployed, verified by
-   content (see STATE). **Remaining: `exp/b-parallel-build` merge gate → push.** Then queue empty → refill from open issues.
+3. ~~B-ATTRIB-L (#53 lanes)~~ — DONE 2026-10-02: built on `exp/b-lanes` (session `2026-10-02-1d45b656`), gated 22/22, pushed, redeployed,
+   verified by content; merged into `exp/b-parallel-build` (`99fe61eb`), gated 22/22, pushed. Evidence comments on #53.
+
+**Queue drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
+merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
+merge `exp/b-lanes` into `main` (the ledger now has 7 sessions); deploy or merge `exp/b-parallel-build`; close #52/#53.
    - PRD: `prds/p0-b-attrib-l-lanes-measure-their-own-work.md`. It was drafted on `main` for durability; commit it on
      the branch too.
    - Tickets: L1 fork-sha `start_commit`; L2 whole-phase serial fallback when lane worktrees cannot reproduce the
