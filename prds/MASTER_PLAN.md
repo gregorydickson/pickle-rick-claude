@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 04:55Z) — queue steps 1–2 DONE; step 3 (B-ATTRIB-L) next; queue below is the babysitter's
+### ▶ STATE (2026-10-02 05:35Z) — queue step 3 (B-ATTRIB-L) RUNNING on exp/b-lanes; queue below is the babysitter's
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | pushed **`2e813f87`** = **DEPLOYED** (B-LANES-UNCHECKED + FIX, main/B-ATTRIB-G merged at `d27b8be1`, B-LANES-MERGE-G `e038fc9b`). Gate `20261002T033059Z-66885` 22/22, soak 1803.7s. Verified by content: `baselineUnmeasuredChecks` in deployed `convergence-gate.js` + `microverse-runner.js`, `integration_check` in `pipeline-runner.js`; bin/ + services/ diff = 0 |
 | `exp/b-parallel-build` | pushed **`fc9e05dd`** (B-PBUILD #43 + #52 bound; gate 22/22). Not deployed. Merge-down of B-LANES-UNCHECKED and B-ATTRIB is deferred until both land |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **nothing** (as of 04:55Z). Old `pipeline-*` tmux shells are idle |
+| RUNNING | **B-ATTRIB-L** on `exp/b-lanes`, session `2026-10-02-1d45b656` (tmux `pipeline-1d45b656`, launched 05:32Z; 5 hand-written tickets L1, L2, L6, L4+L5+R7, L3; strict `paths:` scope of 8; base `2e813f87`) |
 | open issues | **#53** (B-ATTRIB, in progress), **#52** (bound shipped, lane part in flight), **#43** (B-PBUILD built, on its branch awaiting field runs), **#5** (operator-deferred) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
@@ -243,7 +243,9 @@ NO measured basis. Large PRDs are not constrained by the cap.
 2. ~~B-ATTRIB-G (#53 general)~~ — DONE 2026-10-02: built on `main` (session `2026-10-01-face240c`), main gate 22/22, merged into
    `exp/b-lanes`; the merge exposed a stale lane-wiring fixture (fixed by B-LANES-MERGE-G, session `2026-10-02-76f112c8`);
    branch gate 22/22, pushed, redeployed, verified by content. Merge-down to `exp/b-parallel-build` stays deferred until B-ATTRIB-L lands.
-3. **B-ATTRIB-L (#53 lanes) on `exp/b-lanes`.**
+3. **B-ATTRIB-L (#53 lanes) on `exp/b-lanes`.** LAUNCHED 2026-10-02 05:32Z (session `2026-10-02-1d45b656`). Every premise measured at
+   `2e813f87` before launch: lane seed has no `start_commit`; dispatch `:4445` has no node_modules predicate; linker depth ≤ 1;
+   the check runs post-pick only; non-integrating lanes get `commits: []`; 0 tests named `L[1-6]-` exist.
    - PRD: `prds/p0-b-attrib-l-lanes-measure-their-own-work.md`. It was drafted on `main` for durability; commit it on
      the branch too.
    - Tickets: L1 fork-sha `start_commit`; L2 whole-phase serial fallback when lane worktrees cannot reproduce the
