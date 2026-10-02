@@ -89,6 +89,7 @@ import {
   laneBranchName,
   createLaneWorktree,
   symlinkLaneNodeModules,
+  unreproducibleNodeModulesCount,
   laneAllowedPaths,
   buildLaneScope,
   laneRunnerEnv,
@@ -4443,7 +4444,13 @@ async function runConfiguredPhase(
   if (phaseConfig.name === 'citadel') return { skipped: false, exitCode: (await executeCitadelPhase(runtime)).exitCode };
   const cap = runtime.config.anatomy_max_parallel_lanes;
   const lanes = phaseConfig.name === 'anatomy-park' && cap >= 2 ? readAnatomyLanes(runtime.sessionDir) : [];
-  if (lanes.length >= 2) return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+  if (lanes.length >= 2) {
+    const missing = unreproducibleNodeModulesCount(gitRepoRoot(runtime.target));
+    if (missing === 0) return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+    runtime.log(
+      `anatomy lanes: disabled for this phase — lane worktrees cannot reproduce ${missing} node_modules dir(s); running serially`,
+    );
+  }
   const result = await executePhaseRunner(phaseConfig, runtime.phaseEnv);
   return { skipped: false, exitCode: result.exitCode, stderr: result.stderr };
 }

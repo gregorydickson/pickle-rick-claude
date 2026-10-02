@@ -5629,6 +5629,47 @@ describe('B-LANES wiring: end to end through main()', () => {
       fx.cleanup();
     }
   });
+
+  /** Plain dependency dirs (self-ignoring, so the checkout stays clean); no install, no network. */
+  const seedNodeModules = (repo, ...dirs) => {
+    for (const dir of dirs) {
+      fs.mkdirSync(path.join(repo, dir, 'node_modules'), { recursive: true });
+      fs.writeFileSync(path.join(repo, dir, 'node_modules', '.gitignore'), '*\n');
+    }
+  };
+  const readRunnerLog = (sessionDir) => {
+    const file = path.join(sessionDir, 'pipeline-runner.log');
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '';
+  };
+
+  test('L2-workspace: a node_modules below depth 1 disables lanes — one serial runner, no lane session', async () => {
+    const fx = makeFixture({ anatomy_max_parallel_lanes: 2 });
+    const calls = [];
+    try {
+      seedNodeModules(fx.repo, '', path.join('packages', 'a'));
+      __setSpawnRunnerForTests(fixingRunner(calls));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      assert.deepEqual(calls.map((c) => c.sessionArg), [fx.sessionDir], 'one runner over the parent session');
+      assert.equal(fs.existsSync(`${fx.sessionDir}--lane-1`), false, 'no lane session');
+      assert.match(readRunnerLog(fx.sessionDir), /anatomy lanes: disabled for this phase — lane worktrees cannot reproduce 1 node_modules dir\(s\); running serially/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('L2-single-package: only a root node_modules → lanes still run', async () => {
+    const fx = makeFixture({ anatomy_max_parallel_lanes: 2 });
+    const calls = [];
+    try {
+      seedNodeModules(fx.repo, '');
+      __setSpawnRunnerForTests(fixingRunner(calls));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      assert.deepEqual(calls.map((c) => c.sessionArg).sort(), [1, 2, 3].map((n) => `${fx.sessionDir}--lane-${n}`));
+      assert.doesNotMatch(readRunnerLog(fx.sessionDir), /anatomy lanes: disabled for this phase/);
+    } finally {
+      fx.cleanup();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

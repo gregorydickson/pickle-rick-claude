@@ -81,18 +81,51 @@ function isDirectory(p: string): boolean {
   }
 }
 
+/** Checkout-relative `node_modules` dirs a lane worktree links: the root's and each direct child's. */
+function laneLinkableNodeModules(repoRoot: string): string[] {
+  return ['', ...fs.readdirSync(repoRoot)]
+    .map((rel) => path.join(rel, 'node_modules'))
+    .filter((rel) => isDirectory(path.join(repoRoot, rel)));
+}
+
+const NODE_MODULES_WALK_DEPTH = 3;
+
+/** Checkout-relative `node_modules` dirs within `NODE_MODULES_WALK_DEPTH` levels; never descends into one. */
+function findNodeModulesDirs(repoRoot: string, rel = '', depth = 0): string[] {
+  if (depth > NODE_MODULES_WALK_DEPTH) return [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => e.isDirectory() && e.name !== '.git')
+    .flatMap((e) => {
+      const child = path.join(rel, e.name);
+      return e.name === 'node_modules' ? [child] : findNodeModulesDirs(repoRoot, child, depth + 1);
+    });
+}
+
+/**
+ * How many `node_modules` dirs the checkout has that a lane worktree would NOT get linked
+ * (no worktree is created: this shares its source enumeration with `symlinkLaneNodeModules`).
+ */
+export function unreproducibleNodeModulesCount(repoRoot: string): number {
+  const linkable = new Set(laneLinkableNodeModules(repoRoot));
+  return findNodeModulesDirs(repoRoot).filter((rel) => !linkable.has(rel)).length;
+}
+
 /**
  * Lane workers never install: every `node_modules` the main checkout has at its root or
  * one level down is symlinked into the same place in the worktree. Returns the links made.
  */
 export function symlinkLaneNodeModules(repoRoot: string, worktree: string): string[] {
   const linked: string[] = [];
-  for (const rel of ['', ...fs.readdirSync(repoRoot)]) {
-    const source = path.join(repoRoot, rel, 'node_modules');
-    const destParent = path.join(worktree, rel);
-    const dest = path.join(destParent, 'node_modules');
-    if (!isDirectory(source) || !isDirectory(destParent) || fs.existsSync(dest)) continue;
-    fs.symlinkSync(source, dest, 'dir');
+  for (const rel of laneLinkableNodeModules(repoRoot)) {
+    const dest = path.join(worktree, rel);
+    if (!isDirectory(path.dirname(dest)) || fs.existsSync(dest)) continue;
+    fs.symlinkSync(path.join(repoRoot, rel), dest, 'dir');
     linked.push(dest);
   }
   return linked;

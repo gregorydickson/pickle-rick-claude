@@ -43,7 +43,7 @@ import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES, createMicroverseState, readMicroverseState, recordCapUnmeasured, writeMicroverseState, } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, createLaneWorktree, symlinkLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
@@ -3742,8 +3742,12 @@ async function runConfiguredPhase(runtime, phaseConfig, counters) {
         return { skipped: false, exitCode: (await executeCitadelPhase(runtime)).exitCode };
     const cap = runtime.config.anatomy_max_parallel_lanes;
     const lanes = phaseConfig.name === 'anatomy-park' && cap >= 2 ? readAnatomyLanes(runtime.sessionDir) : [];
-    if (lanes.length >= 2)
-        return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+    if (lanes.length >= 2) {
+        const missing = unreproducibleNodeModulesCount(gitRepoRoot(runtime.target));
+        if (missing === 0)
+            return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+        runtime.log(`anatomy lanes: disabled for this phase — lane worktrees cannot reproduce ${missing} node_modules dir(s); running serially`);
+    }
     const result = await executePhaseRunner(phaseConfig, runtime.phaseEnv);
     return { skipped: false, exitCode: result.exitCode, stderr: result.stderr };
 }
