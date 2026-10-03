@@ -310,17 +310,19 @@ test('check-readiness: E6-3 a repo with no workspaces still reads root and exten
     }
 });
 
-test('check-readiness: E6-4 the real repo enumeration is byte-identical to the pre-E6 baseline', async () => {
+test('check-readiness: E6-4 the real repo enumeration reads only the pre-E6 [root, extension] pair', async () => {
     const { collectExternalDtsFiles } = await import(BIN);
     const repoRoot = path.resolve(__dirname, '../..');
+    const { getWorkspacePackages } = await import('../services/convergence-gate.js');
     const files = collectExternalDtsFiles(repoRoot);
-    // Control: this repo declares no workspaces, so the union is just [root, extension].
-    // Baseline measured at HEAD before E6: 291 files, sha256 below (path-set is
-    // checkout-relative, so hash the repo-relative listing).
+    // Control: the pre-E6 resolver read [root, extension]; E6 adds getWorkspacePackages(root). This repo
+    // declares no workspaces, so the union IS the pre-E6 pair — asserted structurally, not as a file count
+    // (291 at E6 time), which any dependency bump would change without an E6 regression.
+    assert.deepEqual(getWorkspacePackages(repoRoot), [], 'no workspace package widens the union here');
     const rel = files.map((f) => path.relative(repoRoot, f));
     assert.ok(rel.length > 0, 'control enumeration must be non-empty');
-    assert.ok(rel.every((f) => f.startsWith('node_modules') || f.startsWith(path.join('extension', 'node_modules'))));
-    assert.equal(files.length, 291);
+    assert.ok(rel.every((f) => f.startsWith(`node_modules${path.sep}`) || f.startsWith(path.join('extension', 'node_modules') + path.sep)));
+    assert.equal(new Set(rel).size, rel.length, 'the union is de-duplicated');
 });
 
 test('check-readiness: R-RCEX (#65) a symbol absent from every dependency still fails', () => runFixture((sessionDir) => {
