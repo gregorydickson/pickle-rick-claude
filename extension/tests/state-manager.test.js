@@ -1719,3 +1719,23 @@ test('F1-1: a legacy state carrying archaeology metadata and archaeology activit
     assert.deepEqual(result.activity.map((entry) => entry.event), ['archaeology_complete', 'archaeology_skipped']);
   });
 });
+
+// F1 kept `archaeology` in V3_STATE_SHAPE_MARKERS: a schema-less legacy state whose ONLY v3 field is
+// its archaeology metadata must still be recognised as v3-shaped, not silently migrated to v1.
+test('F1-4: a schema-less state whose only v3 marker is archaeology still fails as SCHEMA_MISMATCH naming it', () => {
+  withDir((dir) => {
+    const sm = new StateManager({ schemaVersion: 2 });
+    const sp = path.join(dir, 'state.json');
+    const state = makeState({ archaeology: { file_count: 3, project_type: 'web' } });
+    delete state.schema_version;
+    fs.writeFileSync(sp, JSON.stringify(state, null, 2));
+
+    assert.throws(() => sm.read(sp), (err) => {
+      assert.ok(err instanceof StateError);
+      assert.equal(err.code, 'SCHEMA_MISMATCH');
+      assert.match(err.message, /schema v3 fields \(archaeology\)/);
+      return true;
+    });
+    assert.equal(JSON.parse(fs.readFileSync(sp, 'utf-8')).schema_version, undefined, 'not stamped v1');
+  });
+});
