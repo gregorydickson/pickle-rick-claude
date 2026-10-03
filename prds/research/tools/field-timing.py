@@ -100,7 +100,7 @@ def lane_passes(root, name):
     """Anatomy passes summed over the session's own file and every sibling <name>--lane-N dir."""
     total = 0
     for d in [name] + sorted(x for x in os.listdir(root) if x.startswith(name + "--lane-")):
-        total += sum((read_json(os.path.join(root, d, "anatomy-park.json")) or {}).get("pass_counts", {}).values())
+        total += sum(((read_json(os.path.join(root, d, "anatomy-park.json")) or {}).get("pass_counts") or {}).values())
     return total
 
 
