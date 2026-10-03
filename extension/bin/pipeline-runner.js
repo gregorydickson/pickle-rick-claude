@@ -1945,6 +1945,55 @@ export function reportKeptLaneBranches(runtime) {
         runtime.log(`kept lane branch ${row.branch}: ${commits.length} commit(s), outcome ${row.outcome}, exit ${row.exit_reason} — ${subjects.join('; ')}${more > 0 ? `; … (+${more} more)` : ''} — recover before ${recoverBefore} (deleted by any later lanes run after ${RETAINED_BRANCH_MAX_AGE_DAYS} days)`);
     }
 }
+const BASE_DRIFT_FETCH_TIMEOUT_MS = 15_000;
+const BASE_DRIFT_MERGE_TIMEOUT_MS = 30_000;
+const BASE_DRIFT_PATH_CAP = 5;
+/** Run git for the drift report; exit status and stdout survive a non-zero exit (`merge-tree` reports a conflict as exit 1). */
+function runGitForDrift(repoRoot, args, timeout) {
+    try {
+        const stdout = execFileSync('git', ['-C', repoRoot, ...args], {
+            encoding: 'utf-8', timeout, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        });
+        return { status: 0, stdout };
+    }
+    catch (err) {
+        const e = err;
+        return { status: typeof e.status === 'number' ? e.status : null, stdout: e.stdout ? String(e.stdout) : '' };
+    }
+}
+/**
+ * One line at the end of a run: does merging the run's HEAD into its base branch conflict? Fetches the
+ * single base ref (falling back to the local ref, labelled stale), then asks `merge-tree --write-tree`.
+ * Report only — never throws, never changes the exit code.
+ */
+export function reportBaseDrift(runtime) {
+    try {
+        const base = resolveSetupScopeBaseRef(runtime.repoRoot);
+        const remote = base.startsWith('origin/') ? base.slice('origin/'.length) : base;
+        const fetched = runGitForDrift(runtime.repoRoot, ['fetch', '--no-tags', 'origin', remote], BASE_DRIFT_FETCH_TIMEOUT_MS).status === 0;
+        const label = fetched ? base : `${base} (stale)`;
+        const comparand = fetched ? 'FETCH_HEAD' : base;
+        const merge = runGitForDrift(runtime.repoRoot, ['merge-tree', '--write-tree', 'HEAD', comparand], BASE_DRIFT_MERGE_TIMEOUT_MS);
+        if (merge.status === 0) {
+            runtime.log(`base drift: clean (${label})`);
+            return;
+        }
+        const conflicted = merge.status === 1 ? [...new Set([...merge.stdout.matchAll(/^\d+ [0-9a-f]+ [123]\t(.+)$/gm)].map((m) => m[1]))] : [];
+        if (conflicted.length === 0) {
+            runtime.log(`base drift: unmeasured (${label}: git merge-tree exit ${merge.status ?? 'none'}, no conflicted path)`);
+            return;
+        }
+        const shown = conflicted.slice(0, BASE_DRIFT_PATH_CAP).join(', ');
+        const more = conflicted.length - BASE_DRIFT_PATH_CAP;
+        runtime.log(`base drift: CONFLICT ${shown}${more > 0 ? ` (+${more} more)` : ''} (${label})`);
+    }
+    catch (err) {
+        try {
+            runtime.log(`base drift: unmeasured (${safeErrorMessage(err)})`);
+        }
+        catch { /* report only */ }
+    }
+}
 /**
  * Integrate the converged lanes, release every branch main now reaches, and write
  * `archive/lanes.json`. Returns one row per lane in roster order.
@@ -4532,6 +4581,7 @@ function logPhaseStart(runtime, phase, index) {
 function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipelineFailed) {
     runtime.log(`Pipeline finished: ${phasesSummary} phases, ${formatTime(totalElapsed)}`);
     reportKeptLaneBranches(runtime);
+    reportBaseDrift(runtime);
     emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
     logActivity({
         event: 'session_end', source: 'pickle',

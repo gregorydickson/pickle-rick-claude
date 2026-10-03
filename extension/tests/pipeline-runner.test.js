@@ -47,6 +47,7 @@ import {
   createLaneSession,
   runAnatomyLanes,
   reportKeptLaneBranches,
+  reportBaseDrift,
   discloseUnmeasuredIntegration,
 } from '../bin/pipeline-runner.js';
 import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir } from '../services/anatomy-lanes.js';
@@ -6469,6 +6470,105 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
       assert.doesNotMatch(log, /integration typecheck unavailable|unavailable integration typecheck/);
     } finally {
       __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+});
+
+describe('E1: reportBaseDrift reports drift against the base branch without touching the exit code', () => {
+  const g = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.email=e@e', '-c', 'user.name=e', ...args], {
+    cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+  /** A repo whose `origin` is a bare sibling; `upstream` edits land on origin/main via a second clone. */
+  function makeDriftFixture({ withRemote = true } = {}) {
+    const root = mkFixtureTmpDir('e1-drift-');
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(repo);
+    g(repo, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(repo, 'f.txt'), 'base\n');
+    g(repo, 'add', '.');
+    g(repo, 'commit', '-q', '-m', 'base');
+    if (withRemote) {
+      g(root, 'init', '-q', '--bare', '-b', 'main', 'origin.git');
+      g(repo, 'remote', 'add', 'origin', path.join(root, 'origin.git'));
+      g(repo, 'push', '-q', 'origin', 'main');
+      g(repo, 'fetch', '-q', 'origin');
+    }
+    const logs = [];
+    const runtime = { repoRoot: repo, log: (m) => logs.push(m), sessionDir: path.join(root, 'session') };
+    const pushUpstream = (file, content) => {
+      const other = path.join(root, 'other');
+      if (!fs.existsSync(other)) g(root, 'clone', '-q', path.join(root, 'origin.git'), 'other');
+      fs.writeFileSync(path.join(other, file), content);
+      g(other, 'add', '.');
+      g(other, 'commit', '-q', '-m', `upstream ${file}`);
+      g(other, 'push', '-q', 'origin', 'HEAD:main');
+    };
+    const commitLocal = (file, content) => {
+      fs.writeFileSync(path.join(repo, file), content);
+      g(repo, 'add', '.');
+      g(repo, 'commit', '-q', '-m', `local ${file}`);
+    };
+    return { root, repo, logs, runtime, pushUpstream, commitLocal, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  }
+  const driftLines = (fx) => fx.logs.filter((l) => l.startsWith('base drift: '));
+
+  test('E1-1: conflicting upstream reports CONFLICT <path> and returns normally (scope_base = HEAD would have read clean)', () => {
+    const fx = makeDriftFixture();
+    try {
+      fx.pushUpstream('f.txt', 'upstream\n');
+      fx.commitLocal('f.txt', 'local\n');
+      assert.equal(reportBaseDrift(fx.runtime), undefined);
+      const lines = driftLines(fx);
+      assert.equal(lines.length, 1, fx.logs.join('\n'));
+      assert.match(lines[0], /^base drift: CONFLICT f\.txt \(origin\/main\)$/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('E1-2: non-conflicting upstream reports clean with the ref', () => {
+    const fx = makeDriftFixture();
+    try {
+      fx.pushUpstream('other.txt', 'x\n');
+      fx.commitLocal('f.txt', 'local\n');
+      reportBaseDrift(fx.runtime);
+      assert.deepEqual(driftLines(fx), ['base drift: clean (origin/main)']);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('E1-3: no remote reports unmeasured and does not throw', () => {
+    const fx = makeDriftFixture({ withRemote: false });
+    try {
+      assert.doesNotThrow(() => reportBaseDrift(fx.runtime));
+      const lines = driftLines(fx);
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^base drift: unmeasured \(/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('E1-4: a failed fetch compares against the local ref labelled (stale)', () => {
+    const fx = makeDriftFixture();
+    try {
+      fx.commitLocal('f.txt', 'local\n');
+      g(fx.repo, 'remote', 'set-url', 'origin', path.join(fx.root, 'missing.git'));
+      reportBaseDrift(fx.runtime);
+      assert.deepEqual(driftLines(fx), ['base drift: clean (origin/main (stale))']);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('E1-5: a logger that throws is swallowed — the report never ends the run', () => {
+    const fx = makeDriftFixture();
+    try {
+      assert.doesNotThrow(() => reportBaseDrift({ ...fx.runtime, log: () => { throw new Error('boom'); } }));
+    } finally {
       fx.cleanup();
     }
   });
