@@ -102,19 +102,23 @@ export function extractKeywordAnchors(text) {
 }
 function buildRow(criterion, productionFiles, testFiles, maxEvidencePerKind, llmEntities) {
     const keywordAnchors = extractKeywordAnchors(criterion.text);
-    const implementationEvidence = findProductionEvidence(criterion, keywordAnchors, llmEntities, productionFiles, maxEvidencePerKind);
+    const findImplementation = (anchors) => findProductionEvidence(criterion, anchors, llmEntities, productionFiles, maxEvidencePerKind);
+    const implementationEvidence = findImplementation([]);
     const implementationSymbols = uniqueSortedStrings(implementationEvidence.map((evidence) => evidence.symbol).filter((symbol) => Boolean(symbol)));
-    const testEvidence = findTestEvidence(criterion, keywordAnchors, uniqueSortedStrings([...implementationSymbols, ...llmEntities]), testFiles, maxEvidencePerKind);
+    const testSymbols = uniqueSortedStrings([...implementationSymbols, ...llmEntities]);
+    const findTests = (anchors) => findTestEvidence(criterion, anchors, testSymbols, testFiles, maxEvidencePerKind);
+    const testEvidence = findTests([]);
     return {
         id: criterion.id,
         implemented: implementationEvidence.length > 0,
         tested: testEvidence.length > 0,
         acLine: criterion.line,
         acText: criterion.text,
-        keywordAnchors,
         implementationSymbols,
         implementationEvidence,
         testEvidence,
+        lexicalOnlyImplementation: implementationEvidence.length > 0 ? [] : findImplementation(keywordAnchors),
+        lexicalOnlyTest: testEvidence.length > 0 ? [] : findTests(keywordAnchors),
     };
 }
 function findProductionEvidence(criterion, keywordAnchors, llmEntities, files, maxEvidence) {
@@ -169,26 +173,30 @@ function findTestEvidence(criterion, keywordAnchors, implementationSymbols, file
 }
 function buildFindings(row) {
     if (!row.implemented) {
+        const lexicalOnly = row.lexicalOnlyImplementation.length > 0;
         return [
             {
                 id: `citadel-ac-coverage-${row.id}-implementation`,
                 acId: row.id,
-                severity: 'Critical',
-                message: `${row.id} has no production implementation evidence in changed files.`,
-                evidence: [],
-                keywordAnchors: row.keywordAnchors,
+                severity: lexicalOnly ? 'Medium' : 'Critical',
+                message: lexicalOnly
+                    ? `lexical-only: ${row.id} has only keyword-anchor implementation evidence in changed files (no AC id, declared symbol or mapped entity).`
+                    : `${row.id} has no production implementation evidence in changed files.`,
+                evidence: row.lexicalOnlyImplementation,
             },
         ];
     }
     if (!row.tested) {
+        const lexicalOnly = row.lexicalOnlyTest.length > 0;
         return [
             {
                 id: `citadel-ac-coverage-${row.id}-test`,
                 acId: row.id,
-                severity: 'High',
-                message: `${row.id} has production evidence but no changed test evidence.`,
+                severity: lexicalOnly ? 'Medium' : 'High',
+                message: lexicalOnly
+                    ? `lexical-only: ${row.id} has production evidence but only keyword-anchor test evidence in changed files.`
+                    : `${row.id} has production evidence but no changed test evidence.`,
                 evidence: row.implementationEvidence,
-                keywordAnchors: row.keywordAnchors,
             },
         ];
     }
