@@ -6800,9 +6800,16 @@ describe('B1 anatomy-park Dependency Lens', () => {
 
   test('B1-1: a premise citing a path outside the allowed paths is rendered in the lens', () => {
     const { prd, logs } = runLens('## Premises\n| Claim | Tag | Evidence |\n|---|---|---|\n| beta stays stable | (verified) | `src/beta/x.ts:12` |\n| alpha ok | (verified) | src/alpha/a.ts |');
-    assert.ok(prd.includes('## Dependency Lens (review-only)'));
-    assert.ok((prd.match(/src\/beta/g) ?? []).length >= 1);
-    assert.ok(prd.includes('[report-only: dependency-lens]'));
+    // Line-based over the lens section only: the beta row is listed with its outside path, the alpha
+    // row (inside the allowed path) is not, and the section itself carries the report-only tag.
+    const lines = prd.split('\n');
+    const start = lines.indexOf('## Dependency Lens (review-only)');
+    assert.ok(start > -1, prd);
+    const end = lines.findIndex((l, i) => i > start && l.startsWith('## '));
+    const section = lines.slice(start + 1, end === -1 ? undefined : end);
+    assert.deepEqual(section.filter((l) => l.startsWith('- ')),
+      ['- | beta stays stable | (verified) | `src/beta/x.ts:12` | (outside: src/beta/x.ts)']);
+    assert.ok(section.some((l) => l.includes('`[report-only: dependency-lens]`')), section.join('\n'));
     assert.ok(logs.includes('dependency lens: 2 premises parsed (1 outside allowed paths)'), logs.join('\n'));
   });
 
@@ -6820,6 +6827,9 @@ describe('B1 anatomy-park Dependency Lens', () => {
 
   test('B1-4: the rubric carries the dependency-lens exception', () => {
     const rubric = fs.readFileSync(path.join(AP_REPO_ROOT, 'extension', 'szechuan-sauce-principles.md'), 'utf-8');
-    assert.ok(rubric.includes('dependency-lens'));
+    // The exception belongs to the pre-existing-lines false-positive bullet, not anywhere in the file.
+    const bullet = rubric.split('\n').filter((l) => l.startsWith('- Pre-existing issues on lines the current change did not touch'));
+    assert.equal(bullet.length, 1);
+    assert.match(bullet[0], /Dependency Lens[^\n]*`\[report-only: dependency-lens\]`/);
   });
 });
