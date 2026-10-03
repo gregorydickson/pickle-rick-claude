@@ -4713,7 +4713,7 @@ function isMicroverseArmFatal(reason: unknown): boolean {
 }
 
 /**
- * Two demotions govern the pickle arm and neither is visible from the surviving lines, so they are
+ * Two demotions govern the non-microverse arm (pickle, citadel, any later phase) and neither is visible from the surviving lines, so they are
  * recorded here rather than beside the code that no longer implements them:
  *
  * B-GTRUTH WS-A2: `done_without_commit_evidence` is no longer phase-fatal here. AC-MWMO-D2-8's
@@ -4732,21 +4732,15 @@ function isMicroverseArmFatal(reason: unknown): boolean {
 export function isFatalPhaseFailure(phase: PhaseName, runtime: PipelineRuntime): boolean {
   try {
     const runnerState = sm.read(runtime.statePath);
-    if (phase === 'pickle') {
-      const startCommit = runnerState.start_commit?.trim();
-      if (!startCommit) return true;
-      // B-CRASHFLOOR: cannot-physically-continue reasons (toolchain_unavailable,
-      // state_working_dir_missing, state_schema_version_ahead) halt the pickle phase, mirroring
-      // how the microverse arm consults MICROVERSE_FATAL_REASONS. Deliberately NOT
-      // the broad failure verdict class (mux-runner.ts) — those are quality/measurement verdicts CLAUDE.md
-      // binds to park-and-flag, not the crash floor.
-      if (isCrashFloorExitReason(runnerState.exit_reason)) return true;
-      return false;
-    }
     if (phase === 'anatomy-park' || phase === 'szechuan-sauce') {
       return isMicroverseArmFatal(runnerState.exit_reason);
     }
-    return true;
+    // MREL-A12: every other phase (pickle, citadel, any future one) shares the crash floor — a
+    // missing baseline or a cannot-physically-continue reason — so no phase halts by omission.
+    // Deliberately NOT the broad failure verdict class (mux-runner.ts): those are quality/measurement
+    // verdicts CLAUDE.md binds to park-and-flag.
+    if (!runnerState.start_commit?.trim()) return true;
+    return isCrashFloorExitReason(runnerState.exit_reason);
   } catch {
     // B-CRASHFLOOR AC-CF-04: a throwing sm.read is not itself a cannot-continue verdict — fail
     // OPEN (non-halt) rather than fail-closed, so a transient read error parks-and-flags instead
@@ -4759,8 +4753,9 @@ export function shouldHaltAfterPhase(phase: PhaseName, exitCode: number, runtime
   if (exitCode === 0) return false;
   // R-HRP-1: no phase is special-cased here any more. The conformance audit became fix-forward —
   // it feeds findings to the remediator and always returns exitCode 0, so it only reaches this
-  // function on a genuine misconfiguration (missing PRD/start_commit), which isFatalPhaseFailure
-  // still treats as halting. Every phase now follows the same fatal-failure / strict-policy path.
+  // function on a missing PRD, which MREL-A12 parks (non-convergent, run continues) rather than
+  // halts; a missing start_commit is on the crash floor and still halts. Every phase now follows
+  // the same fatal-failure / strict-policy path.
   if (isFatalPhaseFailure(phase, runtime)) return true;
   return isStrictPhasePolicy(runtime);
 }
@@ -7053,6 +7048,26 @@ export function withholdForFailedAcGate(
 }
 
 /**
+ * MREL-A12: the disposition a non-pickle phase must report instead of `completed`, or `null` when
+ * it genuinely converged. Honesty keys on the EXIT CODE: a phase that exited non-zero is never
+ * counted completed, so a citadel that parked on missing inputs cannot fall through to
+ * `completed++`. The one refinement is a microverse phase's own stated `exit_reason` — only those
+ * phases stamp a disposition for this phase (AP-EXT-ITER5-01: `converged` is the sole success
+ * value), so it overrides the exit code in BOTH directions. Any other phase's on-disk reason may
+ * be stale from an earlier phase and is never read.
+ */
+function phaseDivergence(runtime: PipelineRuntime, rawPhase: PhaseName, exitCode: number): string | null {
+  if (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce') {
+    let exitReason: unknown = null;
+    try { exitReason = sm.read(runtime.statePath).exit_reason; } catch { /* best-effort — unreadable state falls back to the exit code */ }
+    if (typeof exitReason === 'string' && exitReason !== '') {
+      return classifyMicroverseDisposition(exitReason).reportAs !== 'success' ? exitReason : null;
+    }
+  }
+  return exitCode !== 0 ? `exit_${exitCode}` : null;
+}
+
+/**
  * B-NONSTOP WS-2 (AC-NS-6): the non-pickle honesty gate below. `maybeStampPhaseGraduation`
  * is pickle-only (`:3592`), so a non-convergent anatomy-park / szechuan-sauce phase — which
  * reaches here with exitCode 1 (R-PHC-6 continue-by-default) — would otherwise fall straight
@@ -7086,17 +7101,17 @@ export function finalizePhaseSuccess(
   const graduationBreak = maybeStampPhaseGraduation(runtime, rawPhase, exitCode, counters, log);
   if (graduationBreak) { return graduationBreak; }
   if (rawPhase === 'pickle') withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log);
-  if (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce') {
-    let exitReason: unknown = null;
-    try { exitReason = sm.read(runtime.statePath).exit_reason; } catch { /* best-effort — unreadable state defers to the success path below */ }
-    const diverged = typeof exitReason === 'string' && classifyMicroverseDisposition(exitReason).reportAs !== 'success';
-    // One raise for both degraded arms; `||` keeps the unmeasured disclosure off a diverged phase.
-    if (diverged || reportConvergedWithUnmeasured(runtime, counters, rawPhase, log)) counters.nonConvergent++;
-    if (diverged) {
-      counters.phaseDispositions[rawPhase] = exitReason as string;
+  if (rawPhase !== 'pickle') {
+    const disposition = phaseDivergence(runtime, rawPhase, exitCode);
+    // One raise for both degraded arms; `??` keeps the unmeasured disclosure off a diverged phase.
+    const unmeasured = disposition === null && (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce')
+      && reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
+    if (disposition !== null || unmeasured) counters.nonConvergent++;
+    if (disposition !== null) {
+      counters.phaseDispositions[rawPhase] = disposition;
       // Errors are non-blocking: a failed status write still reports the phase and continues.
       try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
-      log(`Phase ${rawPhase} did NOT converge (${exitReason}) — reported non-convergent, not counted as completed`);
+      log(`Phase ${rawPhase} did NOT converge (${disposition}) — reported non-convergent, not counted as completed`);
       return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
     }
   }

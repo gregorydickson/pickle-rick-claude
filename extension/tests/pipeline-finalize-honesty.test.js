@@ -175,10 +175,11 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     fs.rmSync(dir, { recursive: true });
   });
 
-  test('AC-NS-6 citadel carve-out: citadel (exit 1) never enters the honesty branch', () => {
+  test('MREL-A12-honesty: citadel (exit 1) is reported non-convergent, never counted completed', () => {
     const dir = tmpDir();
     const { runtime, statePath, cancelMarker } = makeRuntime(dir);
-    // Even with a non-convergent-looking exit_reason on disk, citadel must not be gated by it.
+    // MREL-A12: honesty keys on the exit code — a non-zero citadel exit did not complete, and a
+    // microverse reason left on disk by an earlier phase is never read for it.
     writeState(statePath, 'approach_exhaustion');
     const logs = [];
     runtime.log = (m) => logs.push(m);
@@ -187,12 +188,11 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'citadel', 1, runtime.log);
 
     assert.equal(outcome.action, 'continue');
-    assert.equal(counters.completed, 1, 'citadel keeps its own audit-exit-code path (counts completed)');
-    assert.equal(counters.nonConvergent, 0);
-    assert.equal(counters.phaseDispositions['citadel'], undefined, 'no phase_dispositions entry for citadel');
+    assert.equal(counters.completed, 0, 'a failed citadel must not be counted completed');
+    assert.equal(counters.nonConvergent, 1);
+    assert.equal(counters.phaseDispositions['citadel'], 'exit_1');
 
-    const status = readStatus(dir);
-    assert.equal(status.phase_dispositions, undefined);
+    assert.equal(readStatus(dir).phase_dispositions['citadel'], 'exit_1');
     fs.rmSync(dir, { recursive: true });
   });
 

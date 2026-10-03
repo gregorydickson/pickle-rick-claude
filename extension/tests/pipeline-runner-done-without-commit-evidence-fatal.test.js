@@ -315,13 +315,13 @@ test('AC-GTRUTH-A2-7 (superseded): zero commits since baseline is NO LONGER fata
   }, { commitFollowupWork: false, stateOverrides: { exit_reason: 'done_without_commit_evidence' } });
 });
 
-test('AC-GTRUTH-A2-7: a non-pickle, non-microverse phase failure is STILL fatal', () => {
+test('MREL-A12-inv: a non-pickle, non-microverse phase failure is NOT fatal off the floor', () => {
   withFatalFixture((runtime) => {
     assert.equal(
       isFatalPhaseFailure('citadel', runtime),
-      true,
-      'the default arm is unchanged — the demotion is scoped to the pickle phase\'s ' +
-      'done_without_commit_evidence reason',
+      false,
+      'MREL-A12: only the crash floor halts a non-microverse phase — a done_without_commit_evidence ' +
+      'reason with start_commit present is not on it',
     );
   }, { stateOverrides: { exit_reason: 'done_without_commit_evidence' } });
 });

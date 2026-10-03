@@ -3727,7 +3727,8 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
 
     const prSrc = fs.readFileSync(new URL('../src/bin/pipeline-runner.ts', import.meta.url), 'utf-8');
     const fnStart = prSrc.indexOf('export function isFatalPhaseFailure');
-    const pickleArmEnd = prSrc.indexOf("if (phase === 'anatomy-park'", fnStart);
+    // MREL-A12: the crash floor is the shared non-microverse arm (pickle, citadel, any later phase).
+    const pickleArmEnd = prSrc.indexOf('export function shouldHaltAfterPhase', fnStart);
     const pickleArm = prSrc.slice(fnStart, pickleArmEnd);
     assert.doesNotMatch(pickleArm, /isFailureExit/, 'the pickle arm must not consult isFailureExit');
     assert.match(pickleArm, /isCrashFloorExitReason/, 'the pickle arm must consult the crash-floor predicate');

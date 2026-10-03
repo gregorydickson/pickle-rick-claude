@@ -1317,3 +1317,66 @@ test('B-LANES audit F1: a lane whose session setup fails does not halt the pipel
   assert.deepEqual(rows.map((r) => r.exit_reason === 'converged'), [true, false, true],
     'only the lane that could not start lacks a converged verdict');
 });
+
+// ---------------------------------------------------------------------------
+// MREL-A12 — no phase halts off the crash floor. A citadel that cannot resolve
+// its inputs (no prd_path) parks with a disposition and the run continues; the
+// success verdict is withheld through `nonConvergent`, not through a halt.
+// ---------------------------------------------------------------------------
+
+function driveCitadelThenAnatomy(stateOverrides) {
+  const { repo, sessionDir } = makePipelineSession({
+    createFollowupCommit: true,
+    stateOverrides,
+    pipelineOverrides: {
+      phases: ['citadel', 'anatomy-park'],
+      anatomy_max_iterations: 1,
+    },
+  });
+  const runnersSpawned = [];
+  __setSpawnRunnerForTests(async (_cmd, args) => {
+    runnersSpawned.push(path.basename(String(args?.[0] ?? '')));
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  return { repo, sessionDir, runnersSpawned };
+}
+
+test('MREL-A12-a: citadel with an unhealable missing prd_path parks — anatomy-park still runs', async () => {
+  const { repo, sessionDir, runnersSpawned } = driveCitadelThenAnatomy({});
+
+  await expectMainExit(sessionDir, 1);
+
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(runnerLog, /PHASE 2\/2: ANATOMY-PARK/);
+  assert.match(runnerLog, /Pipeline finished:/);
+  assert.doesNotMatch(runnerLog, /stopping pipeline/);
+  assert.ok(runnersSpawned.length >= 1, 'anatomy-park spawned its runner');
+  const status = readStatus(sessionDir);
+  assert.equal(status.status, 'failed', 'continuing is not claiming success');
+  assert.equal(typeof status.phase_dispositions?.citadel, 'string');
+  assert.ok(status.phase_dispositions.citadel.length > 0);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('MREL-A12-b-control: citadel with a missing start_commit still halts (the crash floor)', async () => {
+  const { repo, sessionDir, runnersSpawned } = driveCitadelThenAnatomy({ start_commit: undefined });
+
+  await expectMainExit(sessionDir, 1);
+
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.doesNotMatch(runnerLog, /PHASE 2\/2: ANATOMY-PARK/);
+  assert.equal(runnersSpawned.length, 0, 'anatomy-park never started');
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('MREL-A12-c: a non-zero citadel exit is never counted completed — it is non-convergent with a disposition', () => {
+  const { runtime } = makeRuntime({ createFollowupCommit: true });
+  const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+
+  const outcome = finalizePhaseSuccess(runtime, counters, '__no_cancel__', 'citadel', 1, () => {});
+
+  assert.equal(outcome.action, 'continue');
+  assert.equal(counters.completed, 0);
+  assert.equal(counters.nonConvergent, 1);
+  assert.equal(counters.phaseDispositions.citadel, 'exit_1');
+});
