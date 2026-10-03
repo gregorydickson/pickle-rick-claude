@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-03 15:00Z) — step 5 B-MEGA BUILT + gated 22/22 + pushed on exp/b-parallel-build; new field-run issues #56–#67 being sanitized/consolidated
+### ▶ STATE (2026-10-03 18:30Z) — B-MERGE-REL planned by an agent team (7 agents + revision); awaiting operator decisions
 
 | | |
 |---|---|
@@ -275,6 +275,14 @@ NO measured basis. Large PRDs are not constrained by the cap.
      `exp/b-parallel-build`, verify by content, launch. PRD being drafted with every premise measured at the branch HEAD.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
      depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
+
+7. **B-MERGE-REL — job 1: close every phase-failure path, merge the experimental work, then ratchet** (operator, 2026-10-03).
+   Plan: `prds/p0-b-merge-reliability-plan.md` (agent team: phase-failure forensics, merge analysis, issue inventory,
+   reliability baseline → planner → complexity skeptic + measurement verifier → revision against every blocking finding).
+   19 tickets, gate legs 22 → 22. Reliability now tracked as N1 hands-off completion (16/17) and N2 all-phases-converged
+   with nothing stranded (13/14; #53 is an N2 failure), both computed by `field-timing.py`. **Awaiting operator decisions:**
+   merge into main; deploy timing; version (flag removal = Major); reversing R-ORSR-6 (integrate non-convergent lanes);
+   deletions/closures. Supersedes step 6's tier-1 list (folded in as A6–A9).
 
 6. **Field-run issues #56–#67 — triaged by the ratchet order (root `CLAUDE.md` "Ratchet order" and "A guard per finding";
    swarms sequenced last per "🐝 AGENT SWARMS" below).**
