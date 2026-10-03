@@ -261,5 +261,8 @@ test('C8a-1: every lifecycle shape renders the Expected-value source rule', () =
 
 test('C8a-2: the rule sits outside the per-phase sections, so it cannot depend on a phase being active', () => {
   const out = buildTierLifecycleSections(['implement', 'code_review'], 'trivial');
-  assert.ok(out.indexOf('Expected-value source:') < out.indexOf('### 1. Implement'));
+  const ruleAt = out.indexOf('Expected-value source:');
+  const implementAt = out.indexOf('### 1. Implement');
+  assert.ok(ruleAt > -1 && implementAt > -1, `both markers render (rule ${ruleAt}, implement ${implementAt})`);
+  assert.ok(ruleAt < implementAt);
 });
