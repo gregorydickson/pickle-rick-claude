@@ -141,7 +141,7 @@ Read `${SESSION_ROOT}/refinement_manifest.json` (on the workflow path this is th
 agent wrote; the returned `manifest` object mirrors it). Warn on failed workers, continue with
 available `analysis_*.md` + original PRD.
 
-If `spawn-refinement-team.js` exits `2` with an AC-shape collapse-or-justify failure, stop and fix the PRD/ticket shape before continuing:
+If `spawn-refinement-team.js` stderr reports an `ac-shape gate advisory` (AC-shape collapse-or-justify findings; refinement still completes and exits 0), treat it as advisory and fix the PRD/ticket shape when practical:
 - Rewrite the smelly AC as one invariant-shaped acceptance criterion using a universal quantifier such as "all", "every", or "for any"; then rerun refinement.
 - Or keep the multi-ticket decomposition only when every split ticket has a manifest `justification` value containing a `// JUSTIFICATION:` block explaining why collapse is wrong.
 

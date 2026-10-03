@@ -1634,24 +1634,51 @@ test('AP-EXT-ITER91-01: the refinement handoff is emitted after the readiness ga
     );
 });
 
-test('AP-EXT-ITER91-01 (negative control): the AC-shape gate keeps its documented blocking contract', () => {
-    // Not a defect-asserting test: `.claude/commands/pickle-refine-prd.md` Step 5
-    // tells the operator that exit 2 means "stop and fix the PRD/ticket shape".
-    // If a later advisory sweep widens onto runAcShapeEnforcement, this reddens
-    // and forces the command doc to be updated in the same change.
+test('E3-2: the AC-shape gate verdict is reported advisory, not halted', () => {
     const source = readCode(REFINE_SRC_PATH);
     assert.match(
         source,
+        /reportAdvisoryGateVerdict\('ac-shape gate', acShapeStatus\);/,
+        'main() must route the AC-shape verdict through reportAdvisoryGateVerdict'
+    );
+    assert.doesNotMatch(
+        source,
         /if \(acShapeStatus !== 0\) process\.exit\(acShapeStatus\);/,
-        'the AC-shape gate must still halt — its exit 2 is a documented operator contract'
+        'the AC-shape verdict must not halt refinement'
     );
     const commandDoc = readCommandDoc();
     if (commandDoc !== null) {
-        assert.match(
-            commandDoc,
-            /exits `2` with an AC-shape collapse-or-justify failure/,
-            'the exit-2 contract must stay documented in /pickle-refine-prd Step 5'
+        assert.equal(commandDoc.includes('stop and fix'), false, 'Step 5 must no longer say "stop and fix"');
+        assert.match(commandDoc, /ac-shape gate advisory/, 'Step 5 must document the advisory');
+    }
+});
+
+test('E3-3 (control): a clean manifest emits no ac-shape gate advisory', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-e3-'));
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-e3-bin-'));
+    try {
+        const prd = path.join(tmp, 'prd.md');
+        fs.writeFileSync(prd, '# PRD\nContent');
+        fs.writeFileSync(path.join(fakeBin, 'claude'), `#!/usr/bin/env node
+const fs = require('fs');
+const idx = process.argv.indexOf('-p');
+const prompt = idx === -1 ? '' : process.argv[idx + 1];
+const match = /Write ALL findings to this file: (.+)/.exec(prompt);
+if (!match) process.exit(1);
+fs.writeFileSync(match[1], 'analysis\\n');
+process.stdout.write('<promise>ANALYSIS_DONE</promise>\\n');
+`);
+        fs.chmodSync(path.join(fakeBin, 'claude'), 0o755);
+        const result = spawnSync(
+            process.execPath,
+            [path.join(__dirname, '..', 'bin', 'spawn-refinement-team.js'), '--prd', prd, '--session-dir', tmp,
+                '--cycles', '1', '--max-turns', '15', '--timeout', '5'],
+            { encoding: 'utf-8', timeout: 60000, env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } }
         );
+        assert.doesNotMatch(result.stderr, /ac-shape gate advisory/);
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+        fs.rmSync(fakeBin, { recursive: true, force: true });
     }
 });
 

@@ -1855,7 +1855,7 @@ export function runAcShapeEnforcement(manifest, opts) {
     const violations = evaluateAcShapeEnforcement(manifest);
     if (violations.length === 0)
         return 0;
-    process.stderr.write('[pickle-rick] AC shape gate FAILED — the following ac_ids have ticket shape violations:\n');
+    process.stderr.write('[pickle-rick] AC shape advisory — the following ac_ids have ticket shape violations:\n');
     for (const violation of violations) {
         const ticketList = violation.ticket_ids.length > 0 ? violation.ticket_ids.join(', ') : '(none)';
         process.stderr.write(`[pickle-rick] ${violation.ac_id} ticket=${ticketList}: ${violation.reason}\n`);
@@ -1867,7 +1867,6 @@ export function runAcShapeEnforcement(manifest, opts) {
             process.stderr.write('[pickle-rick]     title: "All <entities> <condition>"\n');
             process.stderr.write("[pickle-rick]     acceptance_test: \"describeEach([['input1'], ['input2']])(...)\" (tests/helpers/describe-each.js)\n");
         }
-        process.stderr.write(`[pickle-rick]   Override: --skip-ac-shape-gate "<reason>"\n`);
     }
     return 2;
 }
@@ -1891,10 +1890,9 @@ export function runAcShapeEnforcement(manifest, opts) {
  * still returns its non-zero verdict, and still prints every finding — this cuts
  * the halting wire only.
  *
- * Deliberately NOT applied to the AC-shape gate above: its exit 2 is a documented
- * operator contract (`.claude/commands/pickle-refine-prd.md` Step 5 tells the
- * operator to stop and reshape the PRD), it is not one of the gates
- * `87d837f6` demoted, and `tests/spawn-refinement-team.test.js` pins it.
+ * Applied to the AC-shape gate above as well: `runAcShapeEnforcement` still returns 2 and
+ * prints every violation, but `main()` reports it through this helper instead of exiting,
+ * so the manifest handoff survives. `--skip-ac-shape-gate <reason>` is kept as a CLI arg.
  */
 function reportAdvisoryGateVerdict(gate, status) {
     if (status === 0)
@@ -2574,8 +2572,7 @@ async function main() {
     }
     await writeManifestAtomic(manifestPath, manifest);
     const acShapeStatus = runAcShapeEnforcement(manifest, { sessionDir: args.sessionDir, skipAcShapeGate: args.skipAcShapeGate });
-    if (acShapeStatus !== 0)
-        process.exit(acShapeStatus);
+    reportAdvisoryGateVerdict('ac-shape gate', acShapeStatus);
     const postRefinementGate = runAcPhaseGate({
         sessionDir: args.sessionDir,
         evaluationPhase: 'post-refinement',
