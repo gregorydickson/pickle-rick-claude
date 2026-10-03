@@ -81,28 +81,15 @@ function isDirectory(p) {
     }
 }
 /**
- * Checkout-relative `node_modules` dirs within `maxDepth` levels; never descends into one. A
- * `node_modules` that is a symlink to a dir counts too (the walk itself never follows a symlink).
+ * Checkout-relative git-ignored `node_modules` dirs at any depth, from the git ignored listing. A `node_modules`
+ * that is a symlink to a dir counts too (stat follows it). A `node_modules` that is not git-ignored is not found,
+ * and one inside a wholly-ignored directory is listed only as that ancestor, so it is not found either.
  */
-export function findNodeModulesDirs(repoRoot, maxDepth = 3) {
-    const walk = (rel, depth) => {
-        if (depth > maxDepth)
-            return [];
-        let entries;
-        try {
-            entries = fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true });
-        }
-        catch {
-            return [];
-        }
-        return entries.flatMap((e) => {
-            const child = path.join(rel, e.name);
-            if (e.name === 'node_modules')
-                return isDirectory(path.join(repoRoot, child)) ? [child] : [];
-            return e.isDirectory() && e.name !== '.git' ? walk(child, depth + 1) : [];
-        });
-    };
-    return walk('', 0);
+export function findNodeModulesDirs(repoRoot) {
+    return laneGit(repoRoot, ['ls-files', '-z', '-o', '-i', '--exclude-standard', '--directory'])
+        .split('\0')
+        .map((entry) => entry.replace(/\/$/, ''))
+        .filter((rel) => rel !== '' && path.basename(rel) === 'node_modules' && isDirectory(path.join(repoRoot, rel)));
 }
 /** The checkout-relative dir holding `rel` (`''` for the root). */
 function parentOf(rel) {
@@ -121,7 +108,7 @@ function trackedDirs(repoRoot) {
 /**
  * How many `node_modules` dirs the checkout has that a lane worktree's replica cannot create — those whose
  * parent holds no tracked file, so a fresh worktree has nowhere to put them. Dry: no worktree is created, and
- * the enumeration is the one `replicateLaneNodeModules` walks.
+ * the enumeration is the one `replicateLaneNodeModules` uses.
  */
 export function unreproducibleNodeModulesCount(repoRoot) {
     const tracked = trackedDirs(repoRoot);

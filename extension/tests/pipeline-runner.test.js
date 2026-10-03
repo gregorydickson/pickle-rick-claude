@@ -53,7 +53,7 @@ import {
   discloseUnmeasuredIntegration,
   unreproducibleNodeModulesGap,
 } from '../bin/pipeline-runner.js';
-import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount } from '../services/anatomy-lanes.js';
+import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount, findNodeModulesDirs, replicateLaneNodeModules } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
@@ -5193,8 +5193,8 @@ describe('B-LANES WS-3: lane integration', () => {
         'check.js': CHECK_JS,
       } : {}),
       ...(redAtBase ? { 'alpha/a.ts': 'export const a = "RED";\n', 'beta/a.ts': 'export const a = "RED";\n' } : {}),
-      // Anchored in workspace mode: the nested replica is then untracked, so only `preserve` keeps it through a reset.
-      '.gitignore': workspace ? '/node_modules/\n' : 'node_modules/\n',
+      // Workspace mode ignores each node_modules by an anchored path (discovery needs git-ignored dirs); the nested replica stays untracked.
+      '.gitignore': workspace ? '/node_modules/\n/packages/a/node_modules/\n' : 'node_modules/\n',
     }, { branch: 'work' });
     for (const dir of workspace ? ['', path.join('packages', 'a')] : ['']) {
       fs.mkdirSync(path.join(repo, dir, 'node_modules'));
@@ -6654,6 +6654,41 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
       assert.equal(unreproducibleNodeModulesCount(fx.repo), 1, 'packages/c holds no tracked file, so no worktree has it');
     } finally {
       fx.cleanup();
+    }
+  });
+
+  test('MREL-A5P-1: an ignored node_modules deeper than three levels is discovered, counted and replicated', () => {
+    const repo = fs.realpathSync(tmpDir());
+    const wtRoot = fs.realpathSync(tmpDir());
+    try {
+      initRepo(repo, { '.gitignore': 'node_modules\n', 'a/b/c/d/src/f.ts': 'export const f = 1;\n' });
+      fs.mkdirSync(path.join(repo, 'a/b/c/d/node_modules/x'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'a/b/c/d/node_modules/x/i.js'), 'module.exports = 1;\n');
+      const deep = path.join('a', 'b', 'c', 'd', 'node_modules');
+      assert.ok(findNodeModulesDirs(repo).includes(deep));
+      assert.equal(unreproducibleNodeModulesCount(repo), 0);
+      const wt = path.join(wtRoot, 'wt');
+      git(repo, 'worktree', 'add', '-q', '--detach', wt, 'HEAD');
+      assert.ok(replicateLaneNodeModules(repo, wt).replicated.includes(deep));
+      assert.ok(fs.existsSync(path.join(wt, deep, 'x', 'i.js')), 'the replica resolves inside the worktree');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(wtRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('MREL-A5P-2: other ignored paths (a log file, a cache dir) are not node_modules gaps', () => {
+    const repo = fs.realpathSync(tmpDir());
+    try {
+      initRepo(repo, { '.gitignore': 'node_modules\n*.log\n.cache/\n', 'src/f.ts': 'export const f = 1;\n' });
+      fs.mkdirSync(path.join(repo, 'node_modules'));
+      fs.mkdirSync(path.join(repo, '.cache'));
+      fs.writeFileSync(path.join(repo, '.cache', 'c'), 'x');
+      fs.writeFileSync(path.join(repo, 'out.log'), 'x');
+      assert.deepEqual(findNodeModulesDirs(repo), ['node_modules']);
+      assert.equal(unreproducibleNodeModulesCount(repo), 0);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
     }
   });
 
