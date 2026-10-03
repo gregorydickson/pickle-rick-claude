@@ -6549,6 +6549,27 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
     }
   });
 
+  test('A2-5: a node_modules that is a SYMLINK to a dir is counted and replicated, never silently skipped', () => {
+    const fx = makeWorkspaceFixture();
+    const realNodeModules = mkFixtureTmpDir('pickle-symlinked-nm-');
+    try {
+      fs.cpSync(path.join(fx.repo, 'node_modules'), realNodeModules, { recursive: true });
+      fs.rmSync(path.join(fx.repo, 'node_modules'), { recursive: true });
+      fs.symlinkSync(realNodeModules, path.join(fx.repo, 'node_modules'), 'dir');
+      assert.equal(unreproducibleNodeModulesCount(fx.repo), 0);
+      const lane = { name: 'packages', dir: 'packages', excludes: [], testRatioApplies: false, fileCount: 2 };
+      const session = createLaneSession(fx.sessionDir, lane, 1, git(fx.repo, 'rev-parse', 'HEAD'), fx.repo);
+      assert.ok(session.nodeModulesLinked.includes('node_modules'), `replicated: ${JSON.stringify(session.nodeModulesLinked)}`);
+      assert.equal(
+        fs.realpathSync(path.join(session.worktree, 'node_modules', 'dep', 'index.js')),
+        fs.realpathSync(path.join(realNodeModules, 'dep', 'index.js')),
+      );
+    } finally {
+      fx.cleanup();
+      fs.rmSync(realNodeModules, { recursive: true, force: true });
+    }
+  });
+
   test('A4-1: a wave over a target with no runnable typecheck marks each integrated member line and logs one phase-end count', async () => {
     const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: [''] });
     try {

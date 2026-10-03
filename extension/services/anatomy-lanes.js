@@ -80,7 +80,10 @@ function isDirectory(p) {
         return false;
     }
 }
-/** Checkout-relative `node_modules` dirs within `maxDepth` levels; never descends into one. */
+/**
+ * Checkout-relative `node_modules` dirs within `maxDepth` levels; never descends into one. A
+ * `node_modules` that is a symlink to a dir counts too (the walk itself never follows a symlink).
+ */
 export function findNodeModulesDirs(repoRoot, maxDepth = 3) {
     const walk = (rel, depth) => {
         if (depth > maxDepth)
@@ -92,11 +95,11 @@ export function findNodeModulesDirs(repoRoot, maxDepth = 3) {
         catch {
             return [];
         }
-        return entries
-            .filter((e) => e.isDirectory() && e.name !== '.git')
-            .flatMap((e) => {
+        return entries.flatMap((e) => {
             const child = path.join(rel, e.name);
-            return e.name === 'node_modules' ? [child] : walk(child, depth + 1);
+            if (e.name === 'node_modules')
+                return isDirectory(path.join(repoRoot, child)) ? [child] : [];
+            return e.isDirectory() && e.name !== '.git' ? walk(child, depth + 1) : [];
         });
     };
     return walk('', 0);
