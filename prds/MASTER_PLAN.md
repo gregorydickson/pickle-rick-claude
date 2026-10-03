@@ -232,8 +232,8 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-parallel-build` | pushed **`d9767fcb`** = B-MEGA (session `2026-10-02-be104839`, 4/4 phases, 709.5 min, 52 commits). Gate `20261003T133052Z-29559` 22/22, soak 1803.9s. **DEPLOYED is still `1bacc67a`** (pre-B-MEGA); redeploying `d9767fcb` = operator decision |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
 | RUNNING | **nothing** (as of 15:00Z) |
-| open issues | **#54** (B-RUNREPORT-54 in flight), **#55** (design: the review chain is anchored on the refined PRD + branch diff — premise ledger, card-mode citadel, dependency lanes, sibling-writer protocol check, `dropped_findings.md` consumer; NOT queued — operator prioritizes), **#53**/**#52** (fixed on the experimental branches only), **#43**, **#5** (operator-deferred) |
-| client data | **#54 and #55 sanitized 2026-10-02** (bodies rewritten generic at operator request; GitHub edit history still holds the originals — only deleting the issue removes it, operator's call). **Still exposed (measured 2026-10-02):** the client name appears in the bodies of #9, #14, #15, #48, #52, #53, #55-before-edit and in one comment each on #15, #31, #48, #53; and in **145 files** at `origin/main` (`git grep -il <client>`), i.e. the #31 leak was never fully drained. Sweep = operator decision (issue edits are outward-facing; file purge is a bundle) |
+| open issues | **#56–#67** (field-run reports 2026-10-03; no strict duplicates — consolidation below), #54/#55 (B-RUNREPORT-54 shipped on main; B-MEGA on exp/b-parallel-build covers #55 B/C/D), #52/#53 (fixed on branches; close at merge), #43, #5 |
+| client data | **Sanitized 2026-10-03 at operator request:** bodies of #54, #55, #56–#67 and the 2026-10-03 comments on #54/#55 rewritten generic (edit history keeps originals; deletion = operator, declined for now). **Still exposed:** bodies of #52 and #53 and one 2026-09-30 comment on #53; older closed issues (#9, #14, #15, #31, #48); 145 files at `origin/main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
 | exocortex | integration DEFERRED until memory-graph/exocortex#1 (reads drop `content`) is fixed. The runner-only plan is in auto-memory |
@@ -275,6 +275,18 @@ NO measured basis. Large PRDs are not constrained by the cap.
      `exp/b-parallel-build`, verify by content, launch. PRD being drafted with every premise measured at the branch HEAD.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
      depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
+
+6. **Field-run issues #56–#67 — not yet queued (operator to order).** Consolidation by root/surface (no closures, all distinct):
+   - **Final-verdict honesty:** #56 (no review-convergence verdict; `post_final_verdict` is fast-tier only), #65 (Skipped ticket
+     counts as done; skip unsurfaced), #66 item 3 (unmeasured both sides → no `cap_unmeasured_checks`; HYPOTHESIS, needs a
+     fixture), #67 (`isConverged` reads the last ACCEPTED score, so a regressed iteration converges at metric 1; rollback guard
+     protects the iteration's own commit). One "disposition carries the degradation" ticket folds #65/#67's status fixes.
+   - **Target-repo contract:** #58 (tracker key), #59 (PRD ids leak into code), #62 (pickle conventions hardcoded), #64 (target
+     test rules, mutation proof; B-MEGA C8 covers only the source note). ONE target-facts resolver, not three.
+   - **Session-artifact integrity:** #60 (stale `_c3` archives counted as produced), #61 (Step 8 overwrites the source PRD in
+     `--resume` — now the common path after B-RUNREPORT-54 T5; breaks B-MEGA D4b's source).
+   - **Standalone:** #57 (scope refresh widens strict `allowed_paths` from the branch diff), #63 (`read -r _` in 5 launch templates).
+   - Cross-reference comments posted on #56, #61, #64, #66.
 
 **Before #54 the queue was drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
 merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
