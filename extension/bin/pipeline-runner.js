@@ -20,7 +20,7 @@ import { execFileSync, spawn, spawnSync } from 'child_process';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
-import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, } from '../services/pickle-utils.js';
+import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, readFrontmatterField, ticketFilePath, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 // B-NONSTOP WS-2 (AC-NS-6): reuse the T3 disposition map to classify a non-pickle
 // phase's `state.exit_reason` (no re-mapping — single source of truth in microverse-runner).
@@ -2056,6 +2056,34 @@ export function reportDroppedFindings(runtime) {
     catch (err) {
         try {
             runtime.log(`dropped findings: unmeasured (${safeErrorMessage(err)})`);
+        }
+        catch { /* report only */ }
+    }
+}
+/**
+ * One line at the end of a run naming every Skipped or Failed ticket and its recorded reason. Report only:
+ * it withholds nothing and never throws.
+ */
+export function reportSkippedFailedTickets(runtime) {
+    try {
+        const unfinished = collectTickets(runtime.sessionDir)
+            .filter((t) => ['skipped', 'failed'].includes((t.status ?? '').toLowerCase()));
+        if (unfinished.length === 0) {
+            runtime.log('skipped/failed tickets: 0');
+            return;
+        }
+        const described = unfinished.slice(0, UNFINISHED_TICKETS_PRINT_CAP).map((t) => {
+            const reason = fs.existsSync(ticketFilePath(runtime.sessionDir, t.id ?? ''))
+                ? readFrontmatterField(fs.readFileSync(ticketFilePath(runtime.sessionDir, t.id ?? ''), 'utf-8'), 'failed_reason')
+                : null;
+            return `${t.id} ${t.status} (${reason ?? 'no reason recorded'})`;
+        });
+        const more = unfinished.length - UNFINISHED_TICKETS_PRINT_CAP;
+        runtime.log(`skipped/failed tickets: ${unfinished.length} — ${described.join(', ')}${more > 0 ? ` (+${more} more)` : ''}`);
+    }
+    catch (err) {
+        try {
+            runtime.log(`skipped/failed tickets: unmeasured (${safeErrorMessage(err)})`);
         }
         catch { /* report only */ }
     }
@@ -4712,6 +4740,7 @@ function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipeli
     reportKeptLaneBranches(runtime);
     reportBaseDrift(runtime);
     reportDroppedFindings(runtime);
+    reportSkippedFailedTickets(runtime);
     emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
     logActivity({
         event: 'session_end', source: 'pickle',

@@ -34,6 +34,8 @@ import {
   writeStateFile,
   isoCompactStamp,
   collectTickets,
+  readFrontmatterField,
+  ticketFilePath,
   respawnMonitorWindowForMode,
   classifyDiffVisualDominance,
   VISUAL_DOMINANCE_THRESHOLD,
@@ -2471,6 +2473,28 @@ export function reportDroppedFindings(runtime: PipelineRuntime): void {
     runtime.log(`dropped findings (conf>=${DROPPED_FINDING_MIN_CONF}): ${total} in ${hits.slice(0, DROPPED_FINDING_FILE_CAP).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`);
   } catch (err) {
     try { runtime.log(`dropped findings: unmeasured (${safeErrorMessage(err)})`); } catch { /* report only */ }
+  }
+}
+
+/**
+ * One line at the end of a run naming every Skipped or Failed ticket and its recorded reason. Report only:
+ * it withholds nothing and never throws.
+ */
+export function reportSkippedFailedTickets(runtime: PipelineRuntime): void {
+  try {
+    const unfinished = collectTickets(runtime.sessionDir)
+      .filter((t) => ['skipped', 'failed'].includes((t.status ?? '').toLowerCase()));
+    if (unfinished.length === 0) { runtime.log('skipped/failed tickets: 0'); return; }
+    const described = unfinished.slice(0, UNFINISHED_TICKETS_PRINT_CAP).map((t) => {
+      const reason = fs.existsSync(ticketFilePath(runtime.sessionDir, t.id ?? ''))
+        ? readFrontmatterField(fs.readFileSync(ticketFilePath(runtime.sessionDir, t.id ?? ''), 'utf-8'), 'failed_reason')
+        : null;
+      return `${t.id} ${t.status} (${reason ?? 'no reason recorded'})`;
+    });
+    const more = unfinished.length - UNFINISHED_TICKETS_PRINT_CAP;
+    runtime.log(`skipped/failed tickets: ${unfinished.length} — ${described.join(', ')}${more > 0 ? ` (+${more} more)` : ''}`);
+  } catch (err) {
+    try { runtime.log(`skipped/failed tickets: unmeasured (${safeErrorMessage(err)})`); } catch { /* report only */ }
   }
 }
 
@@ -5542,6 +5566,7 @@ function writeFinalPipelineActivity(
   reportKeptLaneBranches(runtime);
   reportBaseDrift(runtime);
   reportDroppedFindings(runtime);
+  reportSkippedFailedTickets(runtime);
   emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
   logActivity({
     event: 'session_end', source: 'pickle',

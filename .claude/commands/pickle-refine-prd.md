@@ -243,6 +243,7 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
 Stamp `parallel_safe: true` only when the ticket needs no other bundle ticket to have landed first and touches no package manifest/lockfile.
+A verification-only ticket (it proves something and commits no diff) declares `zero_diff_intent: verification` in frontmatter.
 
 ```markdown
 ---

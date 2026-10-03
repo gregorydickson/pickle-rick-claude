@@ -49,6 +49,7 @@ import {
   reportKeptLaneBranches,
   reportBaseDrift,
   reportDroppedFindings,
+  reportSkippedFailedTickets,
   discloseUnmeasuredIntegration,
   unreproducibleNodeModulesGap,
 } from '../bin/pipeline-runner.js';
@@ -6937,6 +6938,51 @@ describe('D7b: the run summary reports dropped findings across parent and lane s
       reportDroppedFindings(fx.runtime);
       assert.deepEqual(fx.logs, ['dropped findings (conf>=25): 3 in session/extension/src/bin, session--lane-1/extension/tests']);
     } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+  });
+});
+
+describe('MREL-A8: the run summary names Skipped and Failed tickets', () => {
+  function writeTicket(sessionDir, id, fm) {
+    fs.mkdirSync(path.join(sessionDir, id), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`), `---\nid: ${id}\ntitle: "t"\n${fm}\n---\n# body\n`);
+  }
+
+  test('MREL-A8-1: one line names the Skipped and the Failed ticket with its reason', () => {
+    const root = mkFixtureTmpDir('mrel-a8-');
+    try {
+      const sessionDir = path.join(root, 'session');
+      writeTicket(sessionDir, 'aaaa1111', 'status: Done');
+      writeTicket(sessionDir, 'bbbb2222', 'status: Skipped');
+      writeTicket(sessionDir, 'cccc3333', 'status: Failed\nfailed_reason: no_progress');
+      const logs = [];
+      reportSkippedFailedTickets({ sessionDir, log: (m) => logs.push(m) });
+      assert.equal(logs.length, 1);
+      assert.match(logs[0], /^skipped\/failed tickets: 2 — /);
+      assert.match(logs[0], /bbbb2222 Skipped \(no reason recorded\)/);
+      assert.match(logs[0], /cccc3333 Failed \(no_progress\)/);
+      assert.doesNotMatch(logs[0], /aaaa1111/);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('MREL-A8-2: no Skipped or Failed ticket prints 0', () => {
+    const root = mkFixtureTmpDir('mrel-a8-');
+    try {
+      const sessionDir = path.join(root, 'session');
+      writeTicket(sessionDir, 'aaaa1111', 'status: Done');
+      const logs = [];
+      reportSkippedFailedTickets({ sessionDir, log: (m) => logs.push(m) });
+      assert.deepEqual(logs, ['skipped/failed tickets: 0']);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('MREL-A8-3: a throwing log is reported unmeasured and never propagates', () => {
+    const logs = [];
+    let first = true;
+    assert.doesNotThrow(() => reportSkippedFailedTickets({
+      sessionDir: '/nonexistent-mrel-a8',
+      log: (m) => { if (first) { first = false; throw new Error('boom'); } logs.push(m); },
+    }));
+    assert.match(logs[0], /^skipped\/failed tickets: unmeasured \(boom\)$/);
   });
 });
 
