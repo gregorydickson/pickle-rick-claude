@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1143,4 +1143,85 @@ test('buildWorkerPrompt persona omits the CRITICAL RULE line for every analyst r
         const prompt = buildWorkerPrompt(role, '# PRD', '/out.md', '/target', 1);
         assert.ok(!prompt.includes('CRITICAL RULE'), `${role} prompt must not contain the CRITICAL RULE line`);
     }
+});
+
+// MREL-A10: a signal-killed refinement run records how it ended in the session activity log.
+let signalledRefinement = null;
+
+function sleepMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Runs one refinement whose fake worker sleeps, SIGTERMs it mid-cycle-1, and returns
+// { entries, pid } from state.json `activity`. Memoized so both tests read one run.
+function runSignalledRefinement() {
+    signalledRefinement ??= (async () => {
+        const tmp = makeTmpDir();
+        const fakeBin = makeTmpDir('fake-bin-');
+        const repo = makeGitRepo();
+        let child = null;
+        try {
+            const sessionDir = path.join(tmp, 'session');
+            fs.mkdirSync(sessionDir, { recursive: true });
+            const prd = path.join(sessionDir, 'prd.md');
+            fs.writeFileSync(prd, '# PRD\nContent\n');
+            const statePath = path.join(sessionDir, 'state.json');
+            fs.writeFileSync(statePath, JSON.stringify({
+                active: true,
+                working_dir: repo,
+                worker_timeout_seconds: 60,
+                iteration: 1,
+                schema_version: 1,
+            }));
+            const started = path.join(tmp, 'worker-started');
+            fs.writeFileSync(path.join(fakeBin, 'claude'), `#!/bin/sh\ntouch ${JSON.stringify(started)}\nexec sleep 30\n`);
+            fs.chmodSync(path.join(fakeBin, 'claude'), 0o755);
+
+            child = spawn(
+                process.execPath,
+                [BIN, '--prd', prd, '--session-dir', sessionDir, '--cycles', '1', '--max-turns', '5', '--timeout', '60'],
+                {
+                    env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+                    stdio: 'ignore',
+                    timeout: REFINEMENT_SPAWN_TIMEOUT_MS,
+                },
+            );
+            const exited = new Promise((resolve) => child.once('exit', resolve));
+            const deadline = Date.now() + 60000;
+            while (!fs.existsSync(started) && Date.now() < deadline) await sleepMs(50);
+            assert.ok(fs.existsSync(started), 'a refinement worker should be launched before the signal');
+            const pid = child.pid;
+            child.kill('SIGTERM');
+            await exited;
+            const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+            return { entries: (state.activity ?? []).filter((e) => e.event === 'signal_received'), pid };
+        } finally {
+            if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+            fs.rmSync(tmp, { recursive: true, force: true });
+            fs.rmSync(fakeBin, { recursive: true, force: true });
+            fs.rmSync(repo, { recursive: true, force: true });
+        }
+    })();
+    return signalledRefinement;
+}
+
+test('MREL-A10-1: SIGTERM during cycle 1 records one signal_received entry naming signal and cycle', async () => {
+    const { entries, pid } = await runSignalledRefinement();
+    assert.equal(entries.length, 1, 'exactly one signal_received entry');
+    assert.equal(entries[0].signal, 'SIGTERM');
+    assert.equal(entries[0].cycle, 1);
+    assert.equal(entries[0].pid, pid);
+});
+
+test('MREL-A10-2: the recorded signal_received entry satisfies the schema definition', async () => {
+    const { entries } = await runSignalledRefinement();
+    const schema = JSON.parse(fs.readFileSync(ACTIVITY_EVENT_SCHEMA_PATH, 'utf-8'));
+    const def = schema.definitions.signal_received;
+    assert.equal(entries.length, 1);
+    for (const key of def.required) {
+        assert.ok(key in entries[0], `required field ${key} present`);
+    }
+    assert.equal(def.properties.cycle.type, 'integer');
+    assert.ok(Number.isInteger(entries[0].cycle), 'cycle is an integer');
+    assert.ok(!def.required.includes('cycle'), 'cycle stays optional in the schema');
 });

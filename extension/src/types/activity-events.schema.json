@@ -85,6 +85,7 @@
         "active_child_pid": { "type": "integer" },
         "active_child_cmd": { "type": "string" },
         "current_phase": { "type": "string" },
+        "cycle": { "type": "integer" },
         "received_at_iso": { "type": "string" },
         "handler_stack": {
           "type": "array",

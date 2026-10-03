@@ -1409,11 +1409,32 @@ function clampTimeoutToSession(timeout: number, state: { max_time_minutes?: unkn
   return timeout;
 }
 
-function registerShutdownHandlers(): void {
+// Refinement cycle in flight (0 until the first cycle starts); named in the signal_received entry.
+let currentCycle = 0;
+
+function registerShutdownHandlers(sessionDir: string): void {
   const handleShutdownSignal = (signal: string) => {
     console.error(`\n${Style.YELLOW}⚠️  Received ${signal} — killing ${activeWorkerProcs.size} active worker(s)${Style.RESET}`);
     for (const wp of activeWorkerProcs) {
       terminateWorkerProcess(wp, 'SIGTERM');
+    }
+    try {
+      const receivedAt = new Date().toISOString();
+      writeActivityEntry(path.join(sessionDir, 'state.json'), {
+        event: 'signal_received',
+        ts: receivedAt,
+        source: 'refinement',
+        session: path.basename(sessionDir),
+        signal,
+        pid: process.pid,
+        ppid: process.ppid,
+        is_tty: Boolean(process.stdin.isTTY || process.stdout.isTTY),
+        received_at_iso: receivedAt,
+        handler_stack: new Error('signal received').stack?.split('\n').slice(1, 6).map((line) => line.trim()) ?? [],
+        cycle: currentCycle,
+      });
+    } catch {
+      /* best-effort telemetry */
     }
     process.exit(0);
   };
@@ -1570,7 +1591,7 @@ export async function orchestrateCycles(
   const refinementDir = path.join(args.sessionDir, 'refinement');
   const extensionRoot = getExtensionRoot();
   ensureRefinementDir(refinementDir);
-  registerShutdownHandlers();
+  registerShutdownHandlers(args.sessionDir);
   printDeploymentPanel(args, refinementDir, runtime.cycles, runtime.maxTurns, runtime.timeout, runtime.sessionEffort);
   const preRefinementGate = runAcPhaseGate({
     sessionDir: args.sessionDir,
@@ -1587,6 +1608,7 @@ export async function orchestrateCycles(
   const allCycleResults: WorkerResult[][] = [];
   const portalContext = detectPortalContext(args.sessionDir);
   for (let cycle = 1; cycle <= runtime.cycles; cycle++) {
+    currentCycle = cycle;
     if (runtime.cycles > 1) printCyclePanel(cycle, runtime.cycles);
     const results = await runCycle({
       cycle,
