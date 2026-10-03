@@ -877,12 +877,24 @@ function applyBaselineUnmeasured(
 // R-SZGB-B: an uncertifiable baseline can never certify a clean replay. Defer the same way a
 // real gate regression would (bump iteration_regressions) so the worker-managed convergence
 // guard (applyWorkerConvergenceGuard, via iterationLeftRegression) blocks rather than converges.
-function recordUncertifiableBaselineDefer(opts: RunChangedPerIterationGateOpts): MicroverseSessionState {
-  opts.log('gate: uncertifiable baseline (no project type detected at target) — cannot certify convergence');
+function recordUncertifiableBaselineDefer(
+  opts: RunChangedPerIterationGateOpts,
+  baseline: Pick<GateBaselineFile, 'check_status'> | null,
+): MicroverseSessionState {
+  // A check the baseline did not run (e.g. tests: 'failed' from a timeout) is the true cause; 'skipped' is
+  // "not applicable" and stays undisclosed. A baseline with no check_status leaves this empty.
+  const status = baseline?.check_status ?? {};
+  const unmeasured = PER_ITERATION_GATE_CHECKS.filter(
+    (c) => status[c] !== undefined && status[c] !== 'ran' && status[c] !== 'skipped',
+  );
+  opts.log(unmeasured.length > 0
+    ? `gate: uncertifiable baseline (baseline did not measure: ${unmeasured.map((c) => `${c}=${status[c]}`).join(', ')}) — cannot certify convergence`
+    : 'gate: uncertifiable baseline (no project type detected at target) — cannot certify convergence');
   opts.log('gate: uncertifiable baseline defer — arming no-attrition latch (cannot force-converge)');
   if (opts.uncertifiableBaselineDeferSink) opts.uncertifiableBaselineDeferSink.fired = true;
+  const disclosed = unmeasured.length > 0 ? discloseCapUnmeasured(opts.currentMv, unmeasured) : opts.currentMv;
   const nextMv: MicroverseSessionState = {
-    ...opts.currentMv,
+    ...disclosed,
     iteration_regressions: (opts.currentMv.iteration_regressions ?? 0) + 1,
   };
   opts.deps.writeMicroverseStateFn(opts.sessionDir, nextMv);
@@ -928,7 +940,7 @@ async function runChangedPerIterationGate(opts: RunChangedPerIterationGateOpts):
     : null;
   const applied = applyBaselineUnmeasured(opts, result, baseline);
   if (applied.mv === opts.currentMv && isBaselineUncertifiable(baseline)) {
-    return recordUncertifiableBaselineDefer(opts);
+    return recordUncertifiableBaselineDefer(opts, baseline);
   }
   const gateOpts = { ...opts, currentMv: applied.mv };
 

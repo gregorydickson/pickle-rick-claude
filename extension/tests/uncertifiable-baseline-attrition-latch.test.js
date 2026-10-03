@@ -484,3 +484,71 @@ for (const row of G1_ROWS) {
     }
   });
 }
+
+// ===========================================================================
+// MREL-A7: an uncertifiable baseline whose real cause is a failed/unrun check names that
+// check (log + cap_unmeasured_checks); the genuine no-project case keeps the old literal.
+// ===========================================================================
+
+async function driveUncertifiableBaseline(baselineStatus) {
+  const workingDir = makeGitRepo('a7-repo-');
+  const sessionDir = mkTmp('a7-session-');
+  try {
+    fs.writeFileSync(path.join(workingDir, 'README.md'), 'x\n');
+    commitAll(workingDir, 'initial');
+    await ensurePerIterationGateBaseline({
+      currentMv: makeMv({ key_metric: undefined }),
+      workingDir, sessionDir, enabledFiles: ['anatomy-park.json'], log: () => {},
+    });
+    const baselinePath = path.join(sessionDir, 'gate', 'baseline.json');
+    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+    baseline.project_type = null;
+    baseline.check_status = baselineStatus;
+    fs.writeFileSync(baselinePath, JSON.stringify(baseline));
+
+    const preIterSha = headSha(workingDir);
+    fs.writeFileSync(path.join(workingDir, 'src.ts'), 'export {};\n');
+    fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({ converged: true, reason: 'r' }));
+    commitAll(workingDir, 'change');
+
+    const logs = [];
+    const result = await handleWorkerManagedIteration({
+      ...BASE_OPTS,
+      log: (m) => logs.push(m),
+      currentMv: makeMv({ key_metric: undefined }),
+      preIterSha, workingDir, sessionDir, iteration: 1,
+      enabledFiles: ['anatomy-park.json'],
+      _deps: {
+        writeMicroverseStateFn: () => {},
+        logActivityFn: () => {},
+        runRemediatorFn: stubRemediator().fn,
+        runGateFn: async () => ({
+          status: 'green', failures: [], baseline_used: true, allowed_paths_used: false, elapsed_ms: 0,
+          total_raw_failure_count: 0, new_failures_vs_baseline: 0, check_status: baselineStatus,
+        }),
+      },
+    });
+    return { result, logs: logs.join('\n') };
+  } finally {
+    rm(workingDir);
+    rm(sessionDir);
+  }
+}
+
+test('MREL-A7-1: baseline tests=failed with project_type null discloses tests, keeps the defer and latch', async () => {
+  const { result, logs } = await driveUncertifiableBaseline({ typecheck: 'skipped', lint: 'skipped', tests: 'failed' });
+  assert.ok((result.currentMv.cap_unmeasured_checks ?? []).includes('tests'), 'cap_unmeasured_checks ⊇ tests');
+  assert.equal(Number(result.currentMv.iteration_regressions ?? 0), 1, 'iteration_regressions');
+  assert.equal(result.selfRedOpen === true, true, 'latch armed');
+  assert.equal(result.converged, false, 'never certifies convergence');
+  assert.match(logs, /tests/);
+  assert.doesNotMatch(logs, /no project type detected/);
+});
+
+test('MREL-A7-2: all-skipped baseline discloses nothing and keeps the old no-project literal', async () => {
+  const { result, logs } = await driveUncertifiableBaseline({ typecheck: 'skipped', lint: 'skipped', tests: 'skipped' });
+  assert.deepEqual(result.currentMv.cap_unmeasured_checks ?? [], []);
+  assert.equal(Number(result.currentMv.iteration_regressions ?? 0), 1, 'iteration_regressions');
+  assert.equal(result.selfRedOpen === true, true, 'latch armed');
+  assert.match(logs, /no project type detected at target/);
+});
