@@ -1675,6 +1675,10 @@ process.stdout.write('<promise>ANALYSIS_DONE</promise>\\n');
                 '--cycles', '1', '--max-turns', '15', '--timeout', '5'],
             { encoding: 'utf-8', timeout: 60000, env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } }
         );
+        // The readiness gate runs AFTER the ac-shape verdict in main(), so its snapshot proves the run
+        // reached the gate — a run that died earlier would pass the absence check below vacuously.
+        assert.equal(result.status, 0, result.stderr);
+        assert.ok(fs.existsSync(path.join(tmp, 'readiness_snapshot.json')), 'the run reached the gates');
         assert.doesNotMatch(result.stderr, /ac-shape gate advisory/);
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
