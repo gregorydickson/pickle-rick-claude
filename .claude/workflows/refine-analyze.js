@@ -231,6 +231,11 @@ function synthPrompt(prdPath, sessionDir, refinementDir, analyses, cycles, maxTu
     `   workers[] has one entry per role (${ROLES.join(', ')}) with`,
     '     { role, success, output_file (absolute analysis_<role>.md), exists, log_file:"", cycle }.',
     '   completed_at is the current time as an ISO-8601 date-time string.',
+    '   prd_refined.md MUST contain a `## Premises` ledger (one row per premise: claim, tag, evidence).',
+    '   Copy each analyst (verified)/(hypothesis) tag verbatim; analysts converging is not verification.',
+    '   It MUST also contain an `## Open Decisions` table (decision, options, owner). A needs-human item',
+    '   is never written under settled decisions without a quoted human decision.',
+    '   An empty ledger or table is written as one explicit `none` row.',
     '3. Return that same manifest object as your structured result.',
   ].join('\n');
   return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
