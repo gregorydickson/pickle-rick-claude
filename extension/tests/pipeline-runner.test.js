@@ -5566,7 +5566,7 @@ describe('B-LANES WS-3: lane integration', () => {
   /** Wraps a lane runner so each lane spawns a short-lived child registered via `opts.onSpawn`; records its pid. */
   function pidRecordingRunner(inner, pids) {
     return async (cmd, args, env, opts) => {
-      const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},200)'], { stdio: 'ignore' });
+      const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},200)'], { stdio: 'ignore', timeout: 30_000 });
       pids.push(child.pid);
       opts?.onSpawn?.(child);
       const done = new Promise((resolve) => child.once('exit', resolve));
