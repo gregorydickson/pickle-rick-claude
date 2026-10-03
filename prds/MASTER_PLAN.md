@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-03 19:00Z) — B-MERGE-REL approved; exp/b-parallel-build MERGED into main (f61abc92); merged-tree gate next
+### ▶ STATE (2026-10-03 17:45Z) — main = merged experimental work, gated 22/22 + pushed; B-MERGE-REL-1 RUNNING on main
 
 | | |
 |---|---|
-| `main` | pushed **`06af73a4`**: B-RUNREPORT-54 (#54 T1–T5), B-DEPLOYPARITY (`b0eae302`), B-MEGA PRD with operator answers. Gate `20261002T193103Z-60505` 22/22, soak 1803.7s |
+| `main` | pushed **`7597dd0e`** = merge `f61abc92` of `exp/b-parallel-build@d9767fcb` + decisions. Gate `20261003T162026Z-8342` 22/22, soak 1804.0s. Rollback ref `ddf071d4`. Version still `2.2.0-beta.1` (next pre-release `3.0.0-beta.1`, operator decision 3) |
 | `exp/b-lanes` | pushed **`fcec8f1d`** (merge of main; gate 22/22). **No longer the deployed runtime** while B-MEGA runs (see `exp/b-parallel-build`) |
 | `exp/b-parallel-build` | pushed **`d9767fcb`** = B-MEGA (session `2026-10-02-be104839`, 4/4 phases, 709.5 min, 52 commits). Gate `20261003T133052Z-29559` 22/22, soak 1803.9s. **DEPLOYED is still `1bacc67a`** (pre-B-MEGA); redeploying `d9767fcb` = operator decision |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **nothing** (as of 15:00Z) |
+| RUNNING | **B-MERGE-REL-1** on `main`, session `2026-10-03-2868b847` (tmux `pipeline-2868b847`, 17:41Z). 19 tickets (A3 declared zero-diff), `paths:` scope 47 (all armed), lanes 2, tickets 1. Deployed runtime stays `1bacc67a` until it lands; then deploy merged main + Part 1 (decision 2) |
 | open issues | **#56–#67** (field-run reports 2026-10-03; no strict duplicates — consolidation below), #54/#55 (B-RUNREPORT-54 shipped on main; B-MEGA on exp/b-parallel-build covers #55 B/C/D), #52/#53 (fixed on branches; close at merge), #43, #5 |
 | client data | **Sanitized 2026-10-03 at operator request:** bodies of #54, #55, #56–#67 and the 2026-10-03 comments on #54/#55 rewritten generic (edit history keeps originals; deletion = operator, declined for now). **Still exposed:** bodies of #52 and #53 and one 2026-09-30 comment on #53; older closed issues (#9, #14, #15, #31, #48); 145 files at `origin/main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
