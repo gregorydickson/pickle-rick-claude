@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { extractFrontmatter } from '../pickle-utils.js';
+import { definedRequirementIdsInLine, requirementIdPatternFor, requirementIdsInPrd } from '../requirement-ids.js';
 export const MAX_COMPOSES_DEPTH = 8;
 export class ComposesError extends Error {
     constructor(message) {
@@ -58,7 +59,11 @@ export function parsePrdMarkdown(markdown) {
         statusCodeRows: new Set(),
         transitionAuditRows: new Set(),
     };
-    const state = { tableContext: undefined };
+    // E4: the shared requirement-id rule. A PRD that defines any `AC-*` id keeps the legacy `AC-*`
+    // scan untouched (`genericIdRe` null); one that defines none is read in the generic `<UPPER>-<n>`
+    // form, defined ids only — so an FR-only PRD yields criteria and a prose-only mention yields none.
+    const definesAc = requirementIdsInPrd(markdown).some((id) => id.startsWith('AC-'));
+    const state = { tableContext: undefined, genericIdRe: definesAc ? null : requirementIdPatternFor(markdown) };
     markdown.split(/\r?\n/).forEach((line, index) => {
         const lineNumber = index + 1;
         scanLine(line, lineNumber, result, seen, state);
@@ -68,7 +73,7 @@ export function parsePrdMarkdown(markdown) {
 function scanLine(line, lineNumber, result, seen, state) {
     updateContext(line, state);
     scanDecisions(line, lineNumber, result.decisions, seen.decisions);
-    scanAcceptanceCriteria(line, lineNumber, result.acceptanceCriteria, seen.acceptanceCriteria);
+    scanAcceptanceCriteria(line, lineNumber, result.acceptanceCriteria, seen.acceptanceCriteria, state.genericIdRe);
     scanEndpoint(line, lineNumber, result, seen.endpoints, state);
     scanAllowlistEntries(line, lineNumber, result.allowlistEntries, seen.allowlistEntries, state.tableContext);
     scanStatusCodeRow(line, lineNumber, result.statusCodeRows, seen.statusCodeRows, state);
@@ -110,9 +115,9 @@ function scanDecisions(line, lineNumber, decisions, seen) {
         decisions.push({ id, line: lineNumber, text: line.trim() });
     }
 }
-function scanAcceptanceCriteria(line, lineNumber, acceptanceCriteria, seen) {
-    for (const match of line.matchAll(AC_ID_PATTERN)) {
-        const id = match[0];
+function scanAcceptanceCriteria(line, lineNumber, acceptanceCriteria, seen, genericIdRe) {
+    const ids = genericIdRe ? definedRequirementIdsInLine(line, genericIdRe) : [...line.matchAll(AC_ID_PATTERN)].map((match) => match[0]);
+    for (const id of ids) {
         if (seen.has(id))
             continue;
         seen.add(id);

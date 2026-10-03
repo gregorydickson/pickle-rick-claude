@@ -54,3 +54,33 @@ describe('parsePrdFile', () => {
     assert.equal(parsed.statusCodeRows.length, 2);
   });
 });
+
+// E4: the citadel parser shares the refinement/readiness requirement-id rule. A PRD that defines
+// no `AC-*` id is read in the generic `<UPPER>-<n>` form; one that defines any keeps the legacy
+// `AC-*` scan byte-for-byte.
+describe('E4 shared requirement-id rule', () => {
+  test('E4-1: an FR-only PRD yields its defined FR ids as acceptance criteria', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(path.join(tmpdir(), 'pickle-e4-prd-parser-'));
+    const prdPath = path.join(dir, 'prd.md');
+    writeFileSync(prdPath, '# PRD\n\n- FR-1 first\n- **FR-2** second\nprose citing FR-9 mid-sentence\n');
+
+    const parsed = parsePrdFile(prdPath);
+
+    assert.ok(parsed.acceptanceCriteria.length >= 1);
+    assert.deepEqual(parsed.acceptanceCriteria.map((criterion) => criterion.id), ['FR-1', 'FR-2']);
+  });
+
+  test('E4-2: an AC-* PRD keeps the legacy scan — cited AC ids and FR-looking leads are unchanged', () => {
+    const parsed = parsePrdMarkdown('- AC-1 first\n- FR-7 not a criterion here\nsee AC-OTHER-2 cited\n');
+
+    assert.deepEqual(parsed.acceptanceCriteria.map((criterion) => criterion.id), ['AC-1', 'AC-OTHER-2']);
+  });
+
+  test('E4-3: self-hosting control — AC-1/AC-3/AC-DR-1 mentioned only in prose define 0 criteria', () => {
+    const parsed = parsePrdMarkdown('The control mentions AC-1 and AC-3 and AC-DR-1 in prose only.\n');
+
+    assert.equal(parsed.acceptanceCriteria.length, 0);
+  });
+});

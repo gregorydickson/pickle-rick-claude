@@ -30,6 +30,7 @@ import {
     computeRequirementCoverageGap,
 } from '../bin/spawn-refinement-team.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { definedRequirementIdsInLine, requirementIdsInPrd } from '../services/requirement-ids.js';
 
 const Ajv = AjvModule.default || AjvModule;
 
@@ -2649,4 +2650,82 @@ test('AP-EXT-ITER222-01: every markdown block lead this repo defines requirement
         'AC-BULLET-1', 'AC-CHECK-1', 'AC-HEAD-1', 'AC-MIXED-1', 'AC-NUMBER-1',
         'AC-PAIR-1', 'AC-PAIR-2', 'AC-QUOTE-1', 'AC-TABLE-1',
     ], 'every definition shape must be expected, and only the cited ids excluded');
+});
+
+// ─── E4: ONE requirement-id rule — an FR-only PRD is no longer invisible to the coverage gate ───
+//
+// `computeRequirementCoverageGap` only knew the `AC-*` spelling, so a PRD that numbers its
+// requirements `FR-1`, `REQ-2`, … expected NOTHING and a refinement that dropped every one of
+// them reported `all_success: true`. The shared rule decides the spelling ONCE per PRD: the
+// generic `<UPPER>-<n>` form applies only when the PRD defines no `AC-*` id, with no prefix list.
+
+test('E4-1: an FR-only PRD expects its defined FR ids, and a dropped one is reported', () => {
+    const dir = tmpDir('pickle-e4-fr-only-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, [
+        '# FR-only PRD',
+        '',
+        '## Requirements',
+        '- FR-1 first requirement',
+        '- **FR-2** second requirement',
+        '| REQ-3 | table-row requirement |',
+        'prose that cites FR-9 mid-sentence is not a definition',
+        '',
+    ].join('\n'));
+
+    const gap = computeRequirementCoverageGap(prdPath, [ticketCovering('T-1', ['FR-1', 'FR-2'])]);
+
+    assert.ok(gap.expectedRequirementIds.length >= 1, 'an FR-only PRD must expect at least one requirement');
+    assert.deepEqual(gap.expectedRequirementIds, ['FR-1', 'FR-2', 'REQ-3']);
+    assert.deepEqual(gap.missingRequirementIds, ['REQ-3'], 'the unmapped FR-style requirement must be flagged');
+});
+
+test('E4-2: an AC-* PRD expected set is byte-identical — FR-looking leads in it are NOT requirements', () => {
+    const dir = tmpDir('pickle-e4-ac-control-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, [
+        '## Acceptance Criteria',
+        '- AC-1 first',
+        '- AC-2 second',
+        '- FR-7 a generic-looking lead inside a PRD that defines AC ids',
+        'see UTF-8 handling and AC-OTHER-1 cited mid-sentence',
+        '',
+    ].join('\n'));
+
+    const gap = computeRequirementCoverageGap(prdPath, []);
+
+    assert.equal(JSON.stringify(gap.expectedRequirementIds), JSON.stringify(['AC-1', 'AC-2']));
+});
+
+test('E4-3: self-hosting control — AC ids a PRD only CITES in prose yield zero expected requirements', () => {
+    const dir = tmpDir('pickle-e4-self-hosting-');
+    const prdPath = path.join(dir, 'prd.md');
+    // Prose shape taken from a spec that talks ABOUT criteria: `AC-1`/`AC-3`/`AC-DR-1` mid-sentence.
+    fs.writeFileSync(prdPath, [
+        '# Spec about criteria',
+        '',
+        'The self-hosting control: this text mentions AC-1 and AC-3 and also AC-DR-1 in prose,',
+        'and none of them is a requirement of THIS document.',
+        '',
+    ].join('\n'));
+
+    const gap = computeRequirementCoverageGap(prdPath, []);
+
+    assert.deepEqual(gap.expectedRequirementIds, []);
+});
+
+test('E4-4: the shared service decides the spelling once per PRD and defined-vs-cited once per id', () => {
+    const generic = /\b[A-Z][A-Z0-9]*-\d+\b/g;
+
+    // defined-vs-cited: a prose word before the id makes it a citation; another id does not.
+    assert.deepEqual(definedRequirementIdsInLine('- **FR-1**, **FR-2**: lead', generic), ['FR-1', 'FR-2']);
+    assert.deepEqual(definedRequirementIdsInLine('see FR-1 for details', generic), []);
+    // a non-global pattern is accepted (no stateful lastIndex shared between calls).
+    assert.deepEqual(definedRequirementIdsInLine('- FR-3 x', /\b[A-Z][A-Z0-9]*-\d+\b/), ['FR-3']);
+
+    // spelling: generic only when the PRD defines no AC id.
+    assert.deepEqual(requirementIdsInPrd('- FR-1 a\n- REQ-2 b\n'), ['FR-1', 'REQ-2']);
+    assert.deepEqual(requirementIdsInPrd('- AC-1 a\n- FR-1 b\n'), ['AC-1']);
+    assert.deepEqual(requirementIdsInPrd('mentions AC-1 only in prose\n- FR-1 b\n'), ['FR-1']);
+    assert.deepEqual(requirementIdsInPrd(''), []);
 });

@@ -174,6 +174,7 @@ surface that this document covers.
 - `promise-tokens.ts` -> `FORBIDDEN_WORKER_TOKENS`, `PROMISE_TOKENS`, `PromiseToken`, `ScrubResult`, `scrubForbiddenWorkerTokens`
 - `recoverable-json.ts` -> `readRecoverableJsonObject`
 - `recovery-controller.ts` -> `ExecutePhaseLoopDeps`, `ExecutePhaseLoopResult`, `PlanPhase`, `ReExecutionSeam`, `RecoveryDeps`, `RecoveryEvidence`, `RecoveryOutcome`, `RecoveryStrategy`, `executePhaseLoop`, `isConvergedPlanEligible`, `parsePlanPhases`, `runRecoveryLadder`
+- `requirement-ids.ts` -> `definedRequirementIdsInLine`, `requirementIdPatternFor`, `requirementIdsInPrd`
 - `retry-lock.ts` -> `RetryLockOptions`, `sleepSync`, `withRetryLock`
 - `scope-resolver.ts` -> `LaneRecord`, `ParsedScope`, `RefreshEntry`, `RefreshScopeOpts`, `ScopeArgs`, `ScopeError`, `ScopeErrorCode`, `ScopeJson`, `ScopeMode`, `ScopeStrategy`, `buildScopeV1Schema`, `computeOneHop`, `computeReviewBase`, `filterByPaths`, `filterBySubsystem`, `laneAdmits`, `parseScope`, `refreshScope`, `resolveScope`
 - `session-resolution.ts` -> `MAX_FUTURE_RECENCY_DRIFT_MS`, `readSessionsMapFallback`, `resolveSessionPath`, `selectScannedSessionPath`

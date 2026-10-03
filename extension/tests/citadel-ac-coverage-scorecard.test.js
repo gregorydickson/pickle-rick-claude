@@ -419,8 +419,13 @@ describe('ac_coverage section disclosure (T2 F2b)', () => {
     }
   }
 
-  test('FR-only PRD → skipped no_acceptance_criteria', () => {
+  test('E4-5: FR-only PRD is scored, not skipped no_acceptance_criteria', () => {
     const section = sectionFor('# PRD\n\n- FR-1: something happens\n');
+    assert.notEqual(section.skipped, 'no_acceptance_criteria');
+  });
+
+  test('PRD with no requirement ids at all → skipped no_acceptance_criteria', () => {
+    const section = sectionFor('# PRD\n\n- something happens\n');
     assert.equal(section.skipped, 'no_acceptance_criteria');
     assert.deepEqual(section.findings, []);
   });

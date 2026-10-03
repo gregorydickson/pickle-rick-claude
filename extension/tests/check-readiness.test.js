@@ -417,3 +417,25 @@ test('check-readiness: post-correction delta recovers dead-writer snapshot tmp',
     assert.deepEqual(out.findings.map((finding) => path.basename(path.dirname(finding.ticket))), ['changed']);
     assert.equal(fs.existsSync(tmpSnapshotPath), false, 'dead-writer snapshot tmp should be promoted');
 }));
+
+test('E4-1: check-readiness reads a peer PRD that numbers requirements FR-n, and ignores AC ids it only cites', () => runFixture((sessionDir) => {
+    const parentPrd = path.join(sessionDir, 'bundle.md');
+    const peerPrd = path.join(sessionDir, 'peer.md');
+    fs.writeFileSync(parentPrd, ['---', 'peer_prds:', '  deferred:', '    - peer.md', '---', '# Bundle'].join('\n'));
+    fs.writeFileSync(peerPrd, [
+        '# Peer',
+        '',
+        '## Requirements',
+        '- FR-1 defined requirement',
+        'prose that mentions AC-CITED-1 mid-sentence',
+        '',
+    ].join('\n'));
+    writeTicket(sessionDir, 'e4peer01', { acIds: ['REQ-2'] });
+    writeManifest(sessionDir, { prd_path: parentPrd, tickets: [{ id: 'e4peer01', key: 'E4-1', ac_ids: ['REQ-2'] }] });
+
+    const result = runReadiness(sessionDir, sessionDir);
+    const out = JSON.parse(result.stdout);
+    const prdMap = out.findings.filter((finding) => finding.kind === 'prd_map').map((finding) => finding.detail);
+
+    assert.deepEqual(prdMap, ['FR-1']);
+}));

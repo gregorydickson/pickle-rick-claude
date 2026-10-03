@@ -12,6 +12,7 @@ import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 import type { ReadinessCycleHistoryEntry } from '../types/index.js';
 import { resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
+import { definedRequirementIdsInLine, requirementIdPatternFor } from '../services/requirement-ids.js';
 import { CallerGap, ResolverCache, SCOPE_AUTO_EXTEND_MAX, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
 
 export interface ReadinessArgs {
@@ -686,15 +687,18 @@ function resolvePeerPrdPath(parentPrdPath: string, peerPath: string, repoRoot: s
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-function requirementsFromPrd(filePath: string, sourcePrd: string, idPattern = /\bAC-[A-Za-z0-9-]+\b/g): SourceRequirement[] {
+function requirementsFromPrd(filePath: string, sourcePrd: string, idPattern?: RegExp): SourceRequirement[] {
   const requirements: SourceRequirement[] = [];
-  const lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/);
+  const content = fs.readFileSync(filePath, 'utf-8');
+  // E4: the shared defines-vs-cites rule. A caller naming a pattern scopes WHICH ids (the parent
+  // bundle only owns `AC-DR-*`); absent one, the PRD's own spelling decides, once, for the whole file.
+  const idRe = idPattern ?? requirementIdPatternFor(content);
   let section = '';
-  for (const line of lines) {
+  for (const line of content.split(/\r?\n/)) {
     const heading = /^#{1,6}\s+(.+?)\s*$/.exec(line);
     if (heading) section = heading[1].trim();
-    for (const match of line.matchAll(idPattern)) {
-      requirements.push({ sourcePrd, sourceSection: section, requirementId: match[0] });
+    for (const requirementId of definedRequirementIdsInLine(line, idRe)) {
+      requirements.push({ sourcePrd, sourceSection: section, requirementId });
     }
   }
   return requirements;
