@@ -83,6 +83,7 @@ describe('banned-casts: findBannedCasts', () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bcast-'));
     try {
       fs.mkdirSync(path.join(repoRoot, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(repoRoot, 'eslint.config.js'), "export default [{ rules: { '@typescript-eslint/no-explicit-any': 'warn' } }];\n");
       fs.writeFileSync(path.join(repoRoot, 'src/y.ts'), 'export const m = (err as Error).message;\n');
       const result = auditBannedCasts({
         range: 'BASE..HEAD', base: 'BASE', head: 'HEAD', repoRoot,
@@ -93,6 +94,40 @@ describe('banned-casts: findBannedCasts', () => {
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+});
+
+function castFindings(cfgDir, cfgText, file) {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bcast-b2-'));
+  try {
+    fs.mkdirSync(path.join(repoRoot, path.dirname(file)), { recursive: true });
+    if (cfgText !== null) {
+      fs.mkdirSync(path.join(repoRoot, cfgDir), { recursive: true });
+      fs.writeFileSync(path.join(repoRoot, cfgDir, 'eslint.config.js'), cfgText);
+    }
+    fs.writeFileSync(path.join(repoRoot, file), 'const a = (b as any);\nconst m = (err as Error).message;\n');
+    return auditBannedCasts({
+      range: 'BASE..HEAD', base: 'BASE', head: 'HEAD', repoRoot,
+      changedFiles: [{ path: file, status: 'M', kind: 'production', changedLines: [{ start: 1, end: 2 }], blame: [] }],
+      claudeFiles: [],
+    }).findings;
+  } finally {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+describe('MREL-B2 banned-casts gated on target eslint config', () => {
+  test('MREL-B2-1 config-less target gets no cast findings', () => {
+    assert.equal(castFindings('.', null, 'src/y.ts').length, 0);
+  });
+  test('MREL-B2-2 nearest config enabling no-explicit-any keeps both findings', () => {
+    const f = castFindings('extension', "export default [{ rules: { '@typescript-eslint/no-explicit-any': 'warn' } }];\n", 'extension/src/y.ts');
+    assert.ok(f.some((x) => x.id.startsWith('banned-cast:as-any:')));
+    assert.ok(f.some((x) => x.id.startsWith('banned-cast:as-error:')));
+    assert.equal(f.length, 2);
+  });
+  test('MREL-B2-3 config setting no-explicit-any off gets no findings', () => {
+    assert.equal(castFindings('.', "export default [{ rules: { '@typescript-eslint/no-explicit-any': 'off' } }];\n", 'src/y.ts').length, 0);
   });
 });
 

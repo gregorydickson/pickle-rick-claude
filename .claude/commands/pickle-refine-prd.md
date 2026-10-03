@@ -443,7 +443,7 @@ All prior tickets are complete and individually verified. Test suite passes.
 6. Re-check the file. If P0-P1 violations remain, repeat from step 3.
 
 **Principle checklist (check ALL modified files)**:
-- Functions over the project's enforced lint ceiling (Pickle Rick: 120 code lines, `max-lines-per-function` in `extension/eslint.config.js`) → extract named helpers
+- Functions over the project's enforced lint ceiling (the target's enforced `max-lines-per-function`, if any) → extract named helpers
 - Nesting 3+ levels → guard clauses / early return
 - Copy-pasted code 3+ times across tickets → extract shared function
 - Magic numbers/strings → named constants
@@ -460,7 +460,7 @@ All prior tickets are complete and individually verified. Test suite passes.
 ## Acceptance Criteria
 - [ ] Zero P0 violations in MODIFIED_FILES — Verify: manual review complete, no security/data-loss issues — Type: llm-conformance
 - [ ] Zero P1 violations in MODIFIED_FILES — Verify: manual review complete, no bugs-waiting-to-happen — Type: llm-conformance
-- [ ] All functions within the project's enforced function-size ceiling in MODIFIED_FILES — Verify: run the project linter (Pickle Rick: `max-lines-per-function`, 120 code lines) — Type: lint
+- [ ] All functions within the target's enforced `max-lines-per-function`, if any, in MODIFIED_FILES — Verify: run the project linter — Type: lint
 - [ ] No dead imports/exports in MODIFIED_FILES — Verify: `${TC_CMD}` + grep unused — Type: lint
 - [ ] Test suite passes — Verify: `${TEST_CMD}` — Type: test
 - [ ] Type checker passes — Verify: `${TC_CMD}` — Type: typecheck
@@ -769,7 +769,6 @@ For each pair of documentation files in DOC_FILES:
 - [ ] Zero HIGH cross-reference mismatches — Verify: Pass 1+2+3 review complete — Type: llm-conformance
 - [ ] All new public APIs documented — Verify: Pass 2 review complete — Type: llm-conformance
 - [ ] Test suite passes — Verify: `${TEST_CMD}` — Type: test
-- [ ] Commands deployed — Verify: `bash install.sh` — Type: integration
 
 ## Test Expectations
 | Criterion | Test File | Description | Assertion | Source |
@@ -781,7 +780,6 @@ For each pair of documentation files in DOC_FILES:
 - [ ] Type checker passes — no new errors
 - [ ] Test runner passes — all tests
 - [ ] All CRITICAL/HIGH mismatches resolved
-- [ ] `bash install.sh` deploys clean
 
 ## Exit State
 Zero CRITICAL+HIGH cross-reference mismatches. All new public APIs documented. Doc references verified against implementation. Each fix is an atomic commit with format: `audit: [CRITICAL/HIGH] cross-ref — [description]`.

@@ -136,3 +136,13 @@ test('AC-TAQ-04-3: malformed audit comment (wrong-shape date) fires the finding'
   const findings = checkMissingAuditComment(makeTicket(body));
   assert.equal(findings.length, 1, 'expected finding for wrong-shape date');
 });
+
+test('MREL-B2-4 refine skill carries no pickle-rick install.sh or size-ceiling hardcodes', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const skill = fs.readFileSync(path.join(here, '..', '..', '.claude', 'commands', 'pickle-refine-prd.md'), 'utf-8');
+  assert.equal(skill.includes('bash install.sh'), false);
+  assert.equal(skill.includes('120 code lines'), false);
+  assert.equal(skill.includes('extension/eslint.config.js'), false);
+  const phrase = "the target's enforced `max-lines-per-function`, if any";
+  assert.ok(skill.split(phrase).length - 1 >= 2);
+});

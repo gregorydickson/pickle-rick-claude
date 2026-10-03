@@ -1,3 +1,5 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { slugify } from './reporter.js';
 import { collectChangedCodeLines, isCommentLine, stripStringLiterals, } from './banned-constructs-audit.js';
 const AS_ERROR_ACCESS_RE = /\(\s*[\w$.[\]]+\s+as\s+Error\s*\)\s*\./;
@@ -53,6 +55,31 @@ export function findBannedCasts(sources) {
     }
     return findings;
 }
+const NO_EXPLICIT_ANY_RE = /no-explicit-any['"]?\s*[:,]?\s*[[\s'"]*(\w+)/;
+const RULE_OFF = new Set(['off', '0']);
+function nearestEslintConfigText(repoRoot, file) {
+    const root = path.resolve(repoRoot);
+    let dir = path.dirname(path.resolve(root, file));
+    for (;;) {
+        try {
+            const name = readdirSync(dir).find((n) => n.startsWith('eslint.config.') || n.startsWith('.eslintrc'));
+            if (name !== undefined)
+                return readFileSync(path.join(dir, name), 'utf-8');
+        }
+        catch {
+            return null;
+        }
+        if (dir === root || !dir.startsWith(root) || !existsSync(path.dirname(dir)))
+            return null;
+        dir = path.dirname(dir);
+    }
+}
+function targetBansCasts(repoRoot, file) {
+    const text = nearestEslintConfigText(repoRoot, file);
+    const level = text === null ? undefined : NO_EXPLICIT_ANY_RE.exec(text)?.[1];
+    return level !== undefined && !RULE_OFF.has(level);
+}
 export function auditBannedCasts(diff) {
-    return { findings: findBannedCasts(collectChangedCodeLines(diff)) };
+    const sources = collectChangedCodeLines(diff).filter((s) => targetBansCasts(diff.repoRoot, s.file));
+    return { findings: findBannedCasts(sources) };
 }
