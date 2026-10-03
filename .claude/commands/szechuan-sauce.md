@@ -259,7 +259,6 @@ if [ "$RC" -eq 0 ]; then
 else
     echo "Sauce obtained but gate exhausted remediation cycles — see $SESSION_ROOT/gate/escalation_*.md"
 fi
-read -r _
 LAUNCH_EOF
 chmod +x "${SESSION_ROOT}/launch.sh"
 

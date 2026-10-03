@@ -62,7 +62,7 @@ Print attach command immediately: `tmux attach -t <name>` (Window 1 "monitor" = 
 
 ## Step 4: Launch Runner
 ```bash
-tmux send-keys -t <name>:0 "node $HOME/.claude/pickle-rick/extension/bin/mux-runner.js <SESSION_ROOT>; echo ''; echo 'Runner finished.  Ctrl+B 1 → monitor  |  Ctrl+B D → detach'; read" Enter
+tmux send-keys -t <name>:0 "node $HOME/.claude/pickle-rick/extension/bin/mux-runner.js <SESSION_ROOT>; echo ''" Enter
 ```
 
 ### Codex Backend

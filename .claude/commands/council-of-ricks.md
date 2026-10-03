@@ -183,7 +183,7 @@ node "$HOME/.claude/pickle-rick/extension/bin/setup.js" --tmux --min-iterations 
 Extract `SESSION_ROOT=<path>`. Session name: `council-<hash>` from basename.
 ```bash
 tmux new-session -d -s <name> -c <working_dir> && sleep 1
-tmux send-keys -t <name>:0 "node $HOME/.claude/pickle-rick/extension/bin/mux-runner.js <SESSION_ROOT>; echo ''; echo 'The Council has adjourned.'; read" Enter
+tmux send-keys -t <name>:0 "node $HOME/.claude/pickle-rick/extension/bin/mux-runner.js <SESSION_ROOT>; echo ''; echo 'The Council has adjourned.'" Enter
 ```
 
 mux-runner auto-creates the monitor window on startup (council layout — dashboard / log-stream / mux-runner tail / raw-morty), no manual invocation needed. Each mux-runner iteration runs one complete round.

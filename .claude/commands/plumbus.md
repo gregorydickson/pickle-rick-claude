@@ -230,7 +230,6 @@ NODE_EOF
 node "$HOME/.claude/pickle-rick/extension/bin/microverse-runner.js" "$SESSION_ROOT"
 echo ""
 echo "That... is a plumbus."
-read -r _
 LAUNCH_EOF
 chmod +x "${SESSION_ROOT}/launch.sh"
 

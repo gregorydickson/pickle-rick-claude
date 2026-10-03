@@ -658,7 +658,7 @@ PORTAL_HASH="$(basename "${SESSION_ROOT}" | sed 's/.*\(.\{8\}\)$/\1/')"
 PORTAL_SESSION="portal-${PORTAL_HASH}"
 tmux new-session -d -s "$PORTAL_SESSION" -c <working_dir>
 sleep 1
-tmux send-keys -t "$PORTAL_SESSION":0 "node $HOME/.claude/pickle-rick/extension/bin/mux-runner.js ${SESSION_ROOT}; echo ''; echo 'Pass complete. Checking coverage...'; read" Enter
+tmux send-keys -t "$PORTAL_SESSION":0 "node $HOME/.claude/pickle-rick/extension/bin/mux-runner.js ${SESSION_ROOT}; echo ''; echo 'Pass complete. Checking coverage...'" Enter
 ```
 
 mux-runner auto-creates the 4-pane monitor window on startup — no manual invocation needed.

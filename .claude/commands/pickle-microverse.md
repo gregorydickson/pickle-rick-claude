@@ -133,8 +133,6 @@ try {
 NODE_EOF
 node "$HOME/.claude/pickle-rick/extension/bin/microverse-runner.js" "$SESSION_ROOT"
 echo ""
-echo "Microverse runner finished.  Ctrl+B 1 → monitor  |  Ctrl+B D → detach"
-read -r _
 LAUNCH_EOF
 chmod +x "${SESSION_ROOT}/launch.sh"
 
