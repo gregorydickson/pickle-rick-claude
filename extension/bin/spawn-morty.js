@@ -410,6 +410,7 @@ export function buildTierLifecycleSections(phases, tier) {
     const phaseSet = new Set(phases);
     const isReduced = phases.length < ALL_LIFECYCLE_PHASES.length;
     let out = `**Tier: ${tier} | Active phases: ${phases.join(', ')}**\n`;
+    out += `\n> **Expected-value source:** a count or literal you assert or check in an acceptance criterion comes from RUNNING its predicate at HEAD and reading the output — never from memory or from the spec's own prose. A predicate that already passes before your change verifies nothing.\n`;
     if (isReduced) {
         out += `\n> **Plan/Research source for skipped phases**: The ticket body (\`## Problem\`, \`## Solution\`, \`## Research Seeds\`) is the specification — read it directly in place of research/plan artifacts. No new artifact format is needed for skipped phases.\n`;
         out += `\n> **Reduced lifecycle ≠ reduced verification**: before committing, RUN each verify command in the ticket's \`## Acceptance Criteria\` and read its real output. A checked box is a claim; command output is the evidence — re-reading the diff is not a substitute for running the commands.\n`;

@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
 import {
+  buildTierLifecycleSections,
   buildWorkerPrompt,
   isPhasePersonasEnabled,
   resolveEffectiveTimeout,
@@ -261,4 +263,23 @@ test('resolveWorkerModelFromTierAndPersona: ticket tier precedes persona default
   assert.equal(resolveWorkerModelFromTierAndPersona('large', 'sonnet'), 'opus');
   assert.equal(resolveWorkerModelFromTierAndPersona(undefined, 'opus'), 'opus');
   assert.equal(resolveWorkerModelFromTierAndPersona(undefined, undefined), 'sonnet');
+});
+
+// C8a: the shapes are DERIVED from TIER_LIFECYCLE (one tier per distinct phase list), never listed by hand.
+const lifecycleShapes = [...new Map(
+  Object.entries(TIER_LIFECYCLE).map(([tier, phases]) => [JSON.stringify(phases), { tier, phases }]),
+).values()];
+
+test('C8a-1: every lifecycle shape renders the Expected-value source rule', () => {
+  assert.ok(lifecycleShapes.length >= 2, 'fixture floor: more than one distinct lifecycle shape');
+  for (const { tier, phases } of lifecycleShapes) {
+    const out = buildTierLifecycleSections(phases, tier);
+    assert.match(out, /Expected-value source:/, `tier ${tier} (${phases.join(',')}) lacks the rule`);
+    assert.equal(out.split('Expected-value source:').length - 1, 1, `tier ${tier} renders the rule once`);
+  }
+});
+
+test('C8a-2: the rule sits outside the per-phase sections, so it cannot depend on a phase being active', () => {
+  const out = buildTierLifecycleSections(['implement', 'code_review'], 'trivial');
+  assert.ok(out.indexOf('Expected-value source:') < out.indexOf('### 1. Implement'));
 });
