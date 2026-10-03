@@ -21,6 +21,14 @@ const SKILL_PATH = path.resolve(__dirname, '..', '..', '.claude', 'commands', 'p
 const SPAWN_REFINEMENT_TS = path.resolve(__dirname, '..', 'src', 'bin', 'spawn-refinement-team.ts');
 const { checkMissingAuditComment } = await import('../bin/audit-ticket-bundle.js');
 
+test('MREL-B1-1: refine Step 8 skips when realpath(<PRD_PATH>) is the session prd.md and makes no "preserved at" claim', () => {
+  const content = fs.readFileSync(SKILL_PATH, 'utf-8');
+  const step8 = content.slice(content.indexOf('## Step 8'), content.indexOf('## Step 9'));
+  assert.ok(step8.includes('realpath'), 'Step 8 must name the realpath skip');
+  assert.ok(step8.includes('${SESSION_ROOT}/prd.md'), 'Step 8 must name the session prd.md');
+  assert.ok(!content.includes('Pre-refinement preserved at'), 'false "preserved at" claim must be gone');
+});
+
 test('AC-TAQ-04: pickle-refine-prd.md contains "Failure-mode checklist"', () => {
   const content = fs.readFileSync(SKILL_PATH, 'utf-8');
   const matches = content.match(/Failure-mode checklist/g) || [];

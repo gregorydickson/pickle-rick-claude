@@ -805,7 +805,8 @@ node "${EXTENSION_ROOT}/extension/bin/update-state.js" current_ticket ${FIRST_ID
 Note: `${FIRST_ID}` is the first **implementation** ticket, not a hardening ticket. Hardening tickets run last.
 
 ## Step 8: Update Original PRD
-Write `${SESSION_ROOT}/prd_refined.md` back to `<PRD_PATH>`. Pre-refinement preserved at `${SESSION_ROOT}/prd.md`.
+If `realpath(<PRD_PATH>)` equals `realpath(${SESSION_ROOT}/prd.md)` (always the case in RESUME_MODE), do NOT write anything — record "Step 8 skipped: <PRD_PATH> is the session's own prd.md" in `refinement_summary.md` (Step 9) and move on.
+Otherwise write `${SESSION_ROOT}/prd_refined.md` back to `<PRD_PATH>`.
 
 ## Step 9: Refinement Summary
 Write `${SESSION_ROOT}/refinement_summary.md`: paths, timestamp, per-analysis changes, task list, failures.
