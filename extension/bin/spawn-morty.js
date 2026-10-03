@@ -388,6 +388,8 @@ export function buildTierLifecycleSections(phases, tier) {
     const isReduced = phases.length < ALL_LIFECYCLE_PHASES.length;
     let out = `**Tier: ${tier} | Active phases: ${phases.join(', ')}**\n`;
     out += `\n> **Expected-value source:** a count or literal you assert or check in an acceptance criterion comes from RUNNING its predicate at HEAD and reading the output — never from memory or from the spec's own prose. A predicate that already passes before your change verifies nothing.\n`;
+    out += `\n> **Name the behaviour, not the PRD clause:** code, comments, test names and repo docs describe the behaviour itself. A PRD requirement id (FR-n, AC-n, CUJ n) or session-file nickname points at a document that lives outside the repo, so no reader can resolve it — unless the ticket or the target repo's CLAUDE.md asks for one.\n`;
+    out += `\n> **Follow the target repo's CLAUDE.md test rules:** read the CLAUDE.md files in the working directory (repo root and ancestors of the files you touch) for test-writing rules, and follow them in every test you add or change.\n`;
     if (isReduced) {
         out += `\n> **Plan/Research source for skipped phases**: The ticket body (\`## Problem\`, \`## Solution\`, \`## Research Seeds\`) is the specification — read it directly in place of research/plan artifacts. No new artifact format is needed for skipped phases.\n`;
         out += `\n> **Reduced lifecycle ≠ reduced verification**: before committing, RUN each verify command in the ticket's \`## Acceptance Criteria\` and read its real output. A checked box is a claim; command output is the evidence — re-reading the diff is not a substitute for running the commands.\n`;

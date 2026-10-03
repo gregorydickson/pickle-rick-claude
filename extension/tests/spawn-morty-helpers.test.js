@@ -267,6 +267,18 @@ test('C8a-2: the rule sits outside the per-phase sections, so it cannot depend o
   assert.ok(ruleAt < implementAt);
 });
 
+test('MREL-B3-1: every lifecycle shape renders the behaviour-naming and test-rules sentences once, before the first phase section', () => {
+  for (const { tier, phases } of lifecycleShapes) {
+    const out = buildTierLifecycleSections(phases, tier);
+    const firstHeading = out.indexOf('### ');
+    assert.ok(firstHeading > -1, `tier ${tier} renders a phase section`);
+    for (const sentence of ['Name the behaviour, not the PRD clause', "Follow the target repo's CLAUDE.md test rules"]) {
+      assert.equal(out.split(sentence).length - 1, 1, `tier ${tier} renders "${sentence}" once`);
+      assert.ok(out.indexOf(sentence) < firstHeading, `tier ${tier}: "${sentence}" precedes the first phase section`);
+    }
+  }
+});
+
 // F1: `git grep -l 'archaeology.js' -- extension/src` returned 2 at 1bacc67a (the module itself and
 // calibration-corpus.ts) and must return 0. Walked with fs so the fast tier spawns nothing; like git grep,
 // a comment naming the file counts.
