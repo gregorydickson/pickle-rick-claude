@@ -2420,6 +2420,21 @@ const DROPPED_FINDING_MIN_CONF = 25;
 const DROPPED_FINDING_FILE_CAP = 5;
 
 /**
+ * Every `dropped_findings.md` under `dir`, at any depth: the writer puts it at `<session>/<subsystem>/`
+ * and a subsystem is a repo path (`extension/src/bin`). A dir holding `.git` is a worktree checkout, not
+ * a subsystem dir, and is never entered — its tracked files are the repo's, not this run's drops.
+ */
+function droppedFindingFiles(dir: string): string[] {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  if (entries.some((e) => e.name === '.git')) return [];
+  return entries.flatMap((e) => {
+    const child = path.join(dir, e.name);
+    if (e.isDirectory()) return droppedFindingFiles(child);
+    return e.name === 'dropped_findings.md' ? [child] : [];
+  });
+}
+
+/**
  * One line at the end of a run: how many findings anatomy-park dropped at conf>=25, counted over
  * `<session>/<subsystem>/dropped_findings.md` under the parent and each `--lane-*` sibling. Report only.
  */
@@ -2431,12 +2446,11 @@ export function reportDroppedFindings(runtime: PipelineRuntime): void {
     const hits: string[] = [];
     let total = 0;
     for (const root of roots) {
-      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-        const file = path.join(root, entry.name, 'dropped_findings.md');
-        if (!entry.isDirectory() || !fs.existsSync(file)) continue;
+      for (const file of fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory())
+        .flatMap((e) => droppedFindingFiles(path.join(root, e.name)))) {
         const n = fs.readFileSync(file, 'utf-8').split('\n')
           .filter((l) => Number(/\bconf=(\d+)/.exec(l)?.[1] ?? -1) >= DROPPED_FINDING_MIN_CONF).length;
-        if (n > 0) { total += n; hits.push(`${path.basename(root)}/${entry.name}`); }
+        if (n > 0) { total += n; hits.push(path.join(path.basename(root), path.relative(root, path.dirname(file)))); }
       }
     }
     if (total === 0) { runtime.log(`dropped findings (conf>=${DROPPED_FINDING_MIN_CONF}): 0`); return; }

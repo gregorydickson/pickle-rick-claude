@@ -6756,6 +6756,25 @@ describe('D7b: the run summary reports dropped findings across parent and lane s
       assert.equal(execFileSync('git', ['ls-files', 'extension/dropped_findings.md'], { cwd: path.resolve(import.meta.dirname, '..', '..'), encoding: 'utf-8', timeout: 30_000 }).trim(), '');
     } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
   });
+
+  // The writer (anatomy-park.md) appends to ${SESSION_ROOT}/<subsystem>/dropped_findings.md and a
+  // subsystem is a repo PATH (`extension/src/bin`), so the file sits as deep as the path. A session's
+  // worktree is a repo checkout, never a subsystem dir, and may track its own dropped_findings.md.
+  test('D7b-4: nested subsystem paths are counted; a worktree checkout is not', () => {
+    const fx = fixture();
+    try {
+      const nested = path.join(fx.sessionDir, 'extension', 'src', 'bin');
+      const laneNested = path.join(fx.lane, 'extension', 'tests');
+      const worktree = path.join(fx.sessionDir, 'wt');
+      for (const dir of [nested, laneNested, path.join(worktree, 'extension')]) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(nested, 'dropped_findings.md'), 'a — conf=60 — x\nb — conf=30 — y\n');
+      fs.writeFileSync(path.join(laneNested, 'dropped_findings.md'), 'c — conf=90 — z\n');
+      fs.writeFileSync(path.join(worktree, '.git'), 'gitdir: /elsewhere\n');
+      fs.writeFileSync(path.join(worktree, 'extension', 'dropped_findings.md'), 'd — conf=99 — committed\n');
+      reportDroppedFindings(fx.runtime);
+      assert.deepEqual(fx.logs, ['dropped findings (conf>=25): 3 in session/extension/src/bin, session--lane-1/extension/tests']);
+    } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+  });
 });
 
 describe('B1 anatomy-park Dependency Lens', () => {
