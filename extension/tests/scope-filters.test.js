@@ -147,9 +147,9 @@ test('pipeline-mode integration: discoverSubsystems lanes feed filterBySubsystem
 // The three throws that reach are not equally loud, and the loudest is fatal:
 // `resolveScope` gives SCOPE_EMPTY_DIFF (demoted by setupScope to a WARN, so a
 // scoped session silently runs UNSCOPED) or SCOPE_EMPTY_PATHS, while
-// `refreshScope` at anatomy-park gives SCOPE_EMPTY_POST_BUILD — and that phase
-// sets `throwOnEmptyScope`, so the throw walks out through `runPhaseIteration`,
-// `runPipelinePhaseLoop` and `main`'s try/FINALLY, none of which catch. Measured
+// `refreshScope` at anatomy-park gives SCOPE_EMPTY_POST_BUILD — which
+// `refreshPhaseScope` turns into an `empty_branch_diff` skip (it was once a throw that
+// walked out through `main`'s try/FINALLY, none of which catch). Measured
 // end to end through the real `main()` with the target the only variable:
 // direct → exit 0, 2 spawns, 2/2 phases; symlinked → the throw escapes, ZERO
 // spawns, 0/2 phases, status `failed`.
@@ -252,9 +252,8 @@ test('AP-EXT-ITER310-02: symlinked target does not fire SCOPE_EMPTY_POST_BUILD a
             JSON.stringify({ working_dir: repoRoot, phases_entered: [] }),
         );
 
-        // This is the FATAL arm: anatomy-park sets throwOnEmptyScope, and nothing
-        // between the throw and the CLI handler catches, so an empty result here
-        // costs every remaining phase — not just this one's review surface.
+        // An empty result here costs anatomy-park's review surface: `refreshPhaseScope`
+        // skips the phase as `empty_branch_diff`.
         const refreshed = refreshScope(sessionRoot, 'anatomy-park', {
             repoRoot,
             target: targetViaLink,

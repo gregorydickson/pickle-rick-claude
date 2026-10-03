@@ -494,10 +494,9 @@ test('AP-EXT-ITER323-01: a below-toplevel opts.repoRoot agrees with the toplevel
     const control = makeNestedSession(repo, repo);
     const subject = makeNestedSession(repo, repo);
     try {
-        // Pre-fix this is the FATAL arm: `path.relative(pkg/sub, <toplevel>)` is `../..`,
-        // every repo-relative diff path fails the prefix test, and anatomy-park's
-        // throwOnEmptyScope turns the empty result into SCOPE_EMPTY_POST_BUILD — which
-        // ends the pipeline, not just this phase's review surface.
+        // Pre-fix `path.relative(pkg/sub, <toplevel>)` is `../..`, every repo-relative
+        // diff path fails the prefix test, and the empty result becomes
+        // SCOPE_EMPTY_POST_BUILD — a lost anatomy-park review surface.
         const expected = refreshScope(control, 'anatomy-park', { repoRoot: repo, target: repo, log: () => {} });
         const actual = refreshScope(subject, 'anatomy-park', { repoRoot: below, target: repo, log: () => {} });
         assert.deepStrictEqual(actual.allowed_paths, expected.allowed_paths);

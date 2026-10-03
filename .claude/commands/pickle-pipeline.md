@@ -161,7 +161,7 @@ From `$ARGUMENTS`:
 - `--scope <flag>` → SCOPE_FLAG (values: `branch`, `branch:one-hop`, `diff:<ref>`, `diff:<ref>:one-hop`, `paths:<glob,...>`)
 - `--scope-base <ref>` → SCOPE_BASE (base ref override for `branch` mode)
 
-When set, these flags are written into `pipeline.json` in Step 4 — do NOT pass them to `setup.js`. pipeline-runner reads them from `pipeline.json` at startup, resolves scope (writes `${SESSION_ROOT}/scope.json`), and refreshes per non-pickle phase (archives to `${SESSION_ROOT}/archive/scope.<phase>.json`). Empty diff at setup → WARN; empty diff at anatomy-park refresh → `SCOPE_EMPTY_POST_BUILD` error.
+When set, these flags are written into `pipeline.json` in Step 4 — do NOT pass them to `setup.js`. pipeline-runner reads them from `pipeline.json` at startup, resolves scope (writes `${SESSION_ROOT}/scope.json`), and refreshes per non-pickle phase (archives to `${SESSION_ROOT}/archive/scope.<phase>.json`). Empty diff at setup → WARN; empty diff at anatomy-park refresh → anatomy-park skipped (`empty_branch_diff`).
 
 ## Skip-flag overrides
 

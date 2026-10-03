@@ -1482,7 +1482,7 @@ function readPriorStatusDetails(statusPath) {
  * dropped key is indistinguishable from a key that never applied. Measured on the compiled
  * mirror, the four unguarded writes erased `citadel_advisory_findings` (writeRunningStatus),
  * and `phase_skips`/`phase_dispositions`/`citadel_advisory_findings` (the terminal finalize
- * write, the terminal `cancelled` signal write, and the SCOPE_EMPTY_POST_BUILD write).
+ * write and the terminal `cancelled` signal write).
  *
  * The rule is now uniform and has ONE home: an explicitly supplied value ALWAYS wins —
  * including `null` (the terminal writes clear `current_phase`) and `{}` (an empty counter map
@@ -2806,8 +2806,7 @@ export function setupScope(args) {
  * AP-EXT-ITER290-01: that "pure audit file" contract is now ENFORCED here rather than merely
  * stated in this docblock. Every step is inside ONE frame, so a failed observability write
  * degrades to a logged warning and the phase proceeds. Before, the throw was rethrown by
- * `refreshPhaseScope` (only `SCOPE_EMPTY_POST_BUILD` is special-cased there, and that path
- * throws too) and nothing above it caught — `main` wraps the phase loop in `try`/`finally`, NOT
+ * `refreshPhaseScope` (which then rethrew every refresh error) and nothing above it caught — `main` wraps the phase loop in `try`/`finally`, NOT
  * `try`/`catch` — so an audit file ended the whole run with the phase and EVERY PHASE AFTER IT
  * never run. Identical halt to AP-EXT-ITER288-01/-02 and AP-EXT-ITER289-01, one call site over.
  *
@@ -3536,7 +3535,6 @@ function picklePhaseConfig() {
         runnerScript: 'mux-runner.js',
         setup: null,
         refreshScope: false,
-        throwOnEmptyScope: false,
         preSpawnStateMutation: null,
     };
 }
@@ -3547,7 +3545,6 @@ function citadelPhaseConfig() {
         runnerScript: null,
         setup: null,
         refreshScope: false,
-        throwOnEmptyScope: false,
         preSpawnStateMutation: null,
     };
 }
@@ -3558,7 +3555,6 @@ function anatomyPhaseConfig(config) {
         runnerScript: 'microverse-runner.js',
         setup: (args) => setupAnatomyPark(args.sessionDir, args.target, config.anatomy_stall_limit, args.extensionRoot, args.log, args.scope ? { allowedPaths: args.scope.allowed_paths, repoRoot: args.workingDir } : undefined, args.designSafe),
         refreshScope: true,
-        throwOnEmptyScope: true,
         preSpawnStateMutation: null,
     };
 }
@@ -3570,7 +3566,6 @@ function szechuanPhaseConfig(config) {
         setup: (args) => setupSzechuanSauce(args.sessionDir, args.target, config.szechuan_stall_limit, args.extensionRoot, config.szechuan_domain, config.szechuan_focus, args.log, args.scope ? { allowedPaths: args.scope.allowed_paths } : undefined, args.designSafe),
         setupExtraArgs: { domain: config.szechuan_domain, focus: config.szechuan_focus },
         refreshScope: true,
-        throwOnEmptyScope: false,
         preSpawnStateMutation: null,
     };
 }
@@ -4251,7 +4246,7 @@ function preparePhaseState(phaseConfig, runtime) {
     claimPipelineRunnerActive(runtime.statePath);
     persistPhaseTransition(runtime, phaseConfig, previousState);
 }
-function refreshPhaseScope(phaseConfig, runtime, counters) {
+function refreshPhaseScope(phaseConfig, runtime) {
     if (!phaseConfig.refreshScope)
         return undefined;
     try {
@@ -4266,17 +4261,13 @@ function refreshPhaseScope(phaseConfig, runtime, counters) {
         return refreshed ?? undefined;
     }
     catch (err) {
-        if (phaseConfig.throwOnEmptyScope && err instanceof Error && err instanceof ScopeError && err.code === 'SCOPE_EMPTY_POST_BUILD') {
-            runtime.log(`SCOPE_EMPTY_POST_BUILD at ${phaseConfig.name} — ${err.message}`);
-            writePipelineStatus(runtime.sessionDir, 'failed', {
-                current_phase: phaseConfig.name,
-                completed_phases: counters.completed,
-                skipped_phases: counters.skipped,
-                total_phases: runtime.config.phases.length,
-            });
-            throw err;
+        // An empty post-build scope means this run authored no reviewable change: a benign skip, not a crash.
+        if (err instanceof Error && err instanceof ScopeError && err.code === 'SCOPE_EMPTY_POST_BUILD') {
+            runtime.log(`SCOPE_EMPTY_POST_BUILD at ${phaseConfig.name} — ${safeErrorMessage(err)} — skipping phase (empty_branch_diff)`);
+            return { skipReason: 'empty_branch_diff' };
         }
-        throw err;
+        runtime.log(`${phaseConfig.name}: scope refresh failed: ${safeErrorMessage(err)} — skipping phase (setup_error)`);
+        return { skipReason: 'setup_error' };
     }
 }
 /**
@@ -4312,9 +4303,8 @@ function refreshPhaseScope(phaseConfig, runtime, counters) {
  * and no new disposition: `runPhaseIteration` counts the skip, names it in `phase_skips` and logs
  * it, exactly as it does for every other skip reason.
  *
- * Deliberately scoped to the setup call: `preparePhaseState` above it writes `state.json` and
- * `refreshPhaseScope` throws `SCOPE_EMPTY_POST_BUILD` by design — the first is the genuine crash
- * floor, the second a documented refusal, and neither is a weak reason to end a run.
+ * Deliberately scoped to the setup call: `preparePhaseState` above it writes `state.json` — the
+ * genuine crash floor — while `refreshPhaseScope` returns its own skip result rather than throwing.
  */
 function runPhaseSetup(runtime, phaseConfig, scope) {
     if (!phaseConfig.setup)
@@ -4350,10 +4340,13 @@ export function unreproducibleNodeModulesGap(runtime) {
         return 1;
     }
 }
-async function runConfiguredPhase(runtime, phaseConfig, counters) {
+async function runConfiguredPhase(runtime, phaseConfig) {
     await postPhaseCleanup(phaseConfig.name, runtime.sessionDir);
     preparePhaseState(phaseConfig, runtime);
-    const scope = refreshPhaseScope(phaseConfig, runtime, counters);
+    const refreshed = refreshPhaseScope(phaseConfig, runtime);
+    if (refreshed && 'skipReason' in refreshed)
+        return { skipped: true, skipReason: refreshed.skipReason, exitCode: null };
+    const scope = refreshed;
     const setupResult = runPhaseSetup(runtime, phaseConfig, scope);
     // R-PSSS-3: a non-`true` setup result carries the skip reason.
     if (setupResult !== true)
@@ -5743,7 +5736,7 @@ function resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log) {
 async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, index, log) {
     logPhaseStart(runtime, rawPhase, index);
     writeRunningStatus(runtime, counters, rawPhase);
-    const result = await runConfiguredPhase(runtime, setupPhase(rawPhase, runtime.config), counters);
+    const result = await runConfiguredPhase(runtime, setupPhase(rawPhase, runtime.config));
     if (result.skipped) {
         counters.skipped++;
         // R-PSSS-3: record the specific skip disposition for pipeline-status.json
@@ -6232,6 +6225,43 @@ export function seedResumePhaseCounters(runtime, counters, log) {
     return resumePlan.index;
 }
 /**
+ * A throw out of a phase iteration is a crashed phase, not the crash floor. The floor probe IS the
+ * disposition write: one un-swallowed `sm.update` recording the failure. If state cannot be
+ * read/written that is the real floor, and the ORIGINAL error propagates (not the probe's).
+ * No exception-class list: a lock that has since cleared continues, one still held fails the probe.
+ */
+function downgradePhaseThrow(runtime, counters, phase, phaseIndex, err, log) {
+    const message = safeErrorMessage(err);
+    const downstreamPhasesRemaining = runtime.config.phases.slice(phaseIndex + 1);
+    try {
+        sm.update(runtime.statePath, state => {
+            const activity = Array.isArray(state.activity) ? state.activity : [];
+            state.activity = [
+                ...activity,
+                {
+                    event: 'recoverable_phase_failure',
+                    ts: new Date().toISOString(),
+                    phase,
+                    exit_code: 1,
+                    fatal: false,
+                    reason: `phase threw: ${message}`,
+                    error: message,
+                    downstream_phases_remaining: downstreamPhasesRemaining,
+                    decision: 'continue',
+                },
+            ];
+        });
+    }
+    catch {
+        throw err;
+    }
+    counters.skipped++;
+    counters.phaseSkips[phase] = 'crash_downgraded';
+    writeRunningStatus(runtime, counters, null);
+    log(`Phase ${phase} threw: ${message} — downgraded to crash_downgraded, continuing pipeline`);
+    return { action: 'continue' };
+}
+/**
  * Run the configured phases in order from `startIndex`, accumulating the incompleteness
  * verdict. B-NOSTOP-GATES WS-1: the session's exit code derives from WHETHER any phase
  * reported incomplete, not from which arm ended the loop — honesty and halting are
@@ -6245,7 +6275,14 @@ async function runPipelinePhaseLoop(runtime, counters, cancelMarker, startIndex,
             log(`Unknown phase: ${String(rawPhase)} — skipping`);
             continue;
         }
-        const outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i, log);
+        let outcome;
+        try {
+            outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i, log);
+        }
+        catch (err) {
+            const downgraded = downgradePhaseThrow(runtime, counters, rawPhase, i, err, log);
+            outcome = cancelledOutcome(cancelMarker, log) ?? downgraded;
+        }
         if (outcome.phaseIncomplete) {
             result.phaseIncomplete = true;
             // Capture the reason AT THE MOMENT it was stamped — a later phase's own

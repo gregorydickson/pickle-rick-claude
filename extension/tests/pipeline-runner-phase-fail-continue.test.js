@@ -21,7 +21,7 @@ import {
   shouldHaltAfterPhase,
   writeSkippedByScope,
 } from '../bin/pipeline-runner.js';
-import { MICROVERSE_FATAL_REASONS } from '../types/index.js';
+import { LockError, MICROVERSE_FATAL_REASONS } from '../types/index.js';
 import { StateManager } from '../services/state-manager.js';
 
 const TMP_DIRS = new Set();
@@ -882,6 +882,70 @@ test('AP-EXT-ITER289-01 control: a healthy setup still runs both phases and repo
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
+// MREL-A1: ONE catch at the phase-iteration boundary. The floor probe IS the disposition write.
+function driveTwoPhaseRunWithRejectingAnatomy(makeError) {
+  const run = driveTwoPhaseRunWithBrokenSetup(null);
+  __setSpawnRunnerForTests(async (_cmd, args) => {
+    run.runnersSpawned.push(path.basename(String(args?.[0] ?? '')));
+    if (run.runnersSpawned.length === 1) await makeError(run.sessionDir);
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  return run;
+}
+
+test('MREL-A1-1a: a plain Error from the anatomy phase is downgraded and szechuan still runs', async () => {
+  const { repo, sessionDir, runnersSpawned } = driveTwoPhaseRunWithRejectingAnatomy(() => {
+    throw new Error('boom');
+  });
+
+  await expectMainExit(sessionDir, 1);
+
+  assert.equal(runnersSpawned.length, 2, 'szechuan ran after the anatomy throw');
+  const status = readStatus(sessionDir);
+  assert.equal(status.phase_skips['anatomy-park'], 'crash_downgraded');
+  assert.equal(status.status, 'failed', 'continuing is not claiming success');
+  const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+  assert.notEqual(state.exit_reason, 'fatal');
+  assert.ok(
+    state.activity.some(e => e.event === 'recoverable_phase_failure' && e.phase === 'anatomy-park' && /boom/.test(e.error)),
+    'the failure is recorded with its message',
+  );
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(runnerLog, /Pipeline finished:/);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('MREL-A1-1c: an unwritable state (the probe write fails) rethrows the ORIGINAL error and halts', async () => {
+  const { repo, sessionDir, runnersSpawned } = driveTwoPhaseRunWithRejectingAnatomy((dir) => {
+    const statePath = path.join(dir, 'state.json');
+    fs.rmSync(statePath, { force: true });
+    fs.mkdirSync(statePath);
+    throw new Error('boom-c');
+  });
+  const originalExit = process.exit;
+  try {
+    await assert.rejects(() => main(sessionDir), (err) => err instanceof Error && err.message === 'boom-c');
+  } finally {
+    process.exit = originalExit;
+  }
+  assert.equal(runnersSpawned.length, 1, 'szechuan was not spawned');
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('MREL-A1-1e: a LockError from the anatomy phase with writable state continues to szechuan', async () => {
+  const { repo, sessionDir, runnersSpawned } = driveTwoPhaseRunWithRejectingAnatomy(() => {
+    throw new LockError('lock held');
+  });
+
+  await expectMainExit(sessionDir, 1);
+
+  assert.equal(runnersSpawned.length, 2);
+  assert.equal(readStatus(sessionDir).phase_skips['anatomy-park'], 'crash_downgraded');
+  const runnerLog = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(runnerLog, /Pipeline finished:/);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
 // The REPORTING half. Continuing past a failed setup must not report the run as
 // successful — `setup_error` joins `crash_downgraded` in the ONE named set of
 // DEGRADED skip reasons, while the "nothing to do" skips stay benign.
@@ -913,8 +977,7 @@ test('AP-EXT-ITER289-01: a setup_error skip withholds success; a no-work skip do
 //
 // `writeSkippedByScope` writes `archive/skipped_by_scope.<phase>.json`, and its own
 // docblock calls it a pure audit file. But its throw was rethrown by
-// `refreshPhaseScope` (only SCOPE_EMPTY_POST_BUILD is special-cased there, and that
-// path throws too), and nothing above it caught — `main` wraps the phase loop in
+// `refreshPhaseScope` (which rethrew every refresh error), and nothing above it caught — `main` wraps the phase loop in
 // `try`/`finally`, NOT `try`/`catch`. So an observability write ended the run with
 // the phase and every phase AFTER it never run: the same halt AP-EXT-ITER288-01/-02
 // and AP-EXT-ITER289-01 closed, one call site over.
@@ -1081,8 +1144,8 @@ test('AP-EXT-ITER291-01: an unwritable scope.json degrades the seed — the run 
 // (tests/pipeline-scope-ticket-seed.test.js, `AP-EXT-ITER291-01 control`), not here.
 // A healthy branch-mode seed cannot reach finalize in THIS harness: seeding requires an
 // empty pre-build branch diff, and with no real build phase to produce one,
-// `refreshPhaseScope` then raises the documented `SCOPE_EMPTY_POST_BUILD` refusal. That
-// is pre-existing, deliberate behaviour (`throwOnEmptyScope`) and not this fix's to pin.
+// `refreshPhaseScope` then skips anatomy-park as `empty_branch_diff`. That is not this
+// fix's to pin.
 // The seam-level control asserts the healthy seed LANDS and logs no degrade, so
 // degrading unconditionally still reds.
 

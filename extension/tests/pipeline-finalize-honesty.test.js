@@ -861,7 +861,7 @@ describe('AP-EXT-ITER89-01: the fatal-exit status carries the crash attribution 
 // indistinguishable from a key that never applied. Measured on the compiled mirror, the four
 // unguarded writes erased `citadel_advisory_findings` (writeRunningStatus) and
 // `phase_skips`/`phase_dispositions`/`citadel_advisory_findings` (the terminal finalize write,
-// the terminal `cancelled` signal write, and the SCOPE_EMPTY_POST_BUILD write). Corroborated
+// and the terminal `cancelled` signal write). Corroborated
 // across 14 host sessions, 13 of which ran citadel: `citadel_advisory_findings` survives in 0.
 //
 // The rule now has ONE home — the writer. These tests pin both halves: an OMITTED key is
@@ -924,9 +924,9 @@ describe('AP-EXT-ITER90-01: writePipelineStatus carries the record; callers name
     fs.rmSync(dir, { recursive: true });
   });
 
-  test('the SCOPE_EMPTY_POST_BUILD write keeps the attribution it then throws past', () => {
-    // refreshPhaseScope writes `failed` and THROWS, so whatever it strips is what the fatal
-    // handler faithfully carries forward — the strip has to not happen in the first place.
+  test('a failed write keeps the attribution an earlier terminal write carried', () => {
+    // A `failed` write must not strip what an earlier write recorded — the strip has to not
+    // happen in the first place.
     const dir = tmpDir();
     seedFullStatus(dir);
 

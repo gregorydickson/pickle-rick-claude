@@ -226,7 +226,6 @@ describe('pipeline phase config dispatch', () => {
     const pickle = setupPhase('pickle', config);
     assert.equal(pickle.runnerScript, 'mux-runner.js');
     assert.equal(pickle.setup, null);
-    assert.equal(pickle.throwOnEmptyScope, false);
     assert.equal(pickle.preSpawnStateMutation, null);
 
     const citadel = setupPhase('citadel', config);
@@ -234,21 +233,18 @@ describe('pipeline phase config dispatch', () => {
     assert.equal(citadel.runnerScript, null);
     assert.equal(citadel.setup, null);
     assert.equal(citadel.refreshScope, false);
-    assert.equal(citadel.throwOnEmptyScope, false);
 
     const anatomy = setupPhase('anatomy-park', config);
     assert.equal(anatomy.prevPhase, 'citadel');
     assert.equal(anatomy.runnerScript, 'microverse-runner.js');
     assert.equal(typeof anatomy.setup, 'function');
     assert.equal(anatomy.refreshScope, true);
-    assert.equal(anatomy.throwOnEmptyScope, true);
     assert.equal(anatomy.preSpawnStateMutation, null);
 
     const szechuan = setupPhase('szechuan-sauce', config);
     assert.equal(szechuan.prevPhase, 'anatomy-park');
     assert.equal(szechuan.runnerScript, 'microverse-runner.js');
     assert.deepEqual(szechuan.setupExtraArgs, { domain: 'typescript', focus: 'error handling' });
-    assert.equal(szechuan.throwOnEmptyScope, false);
     assert.equal(szechuan.preSpawnStateMutation, null);
   });
 
@@ -492,7 +488,7 @@ describe('pipeline phase config dispatch', () => {
     }
   });
 
-  test('main preserves anatomy-park empty scope failure', async () => {
+  test('MREL-A1-1b main skips anatomy-park as empty_branch_diff when post-build scope is empty', async () => {
     const { repo, sessionDir } = makeSession(['anatomy-park']);
     const head = git(['rev-parse', 'HEAD'], repo);
     fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify({
@@ -510,16 +506,18 @@ describe('pipeline phase config dispatch', () => {
       throw new Error('runner should not be called');
     });
     const originalTmux = process.env.TMUX;
+    const originalExit = process.exit;
     delete process.env.TMUX;
     try {
-      await assert.rejects(
-        () => main(sessionDir),
-        (err) => err && err.name === 'ScopeError' && err.code === 'SCOPE_EMPTY_POST_BUILD',
-      );
+      const exitCodes = [];
+      process.exit = ((code) => { exitCodes.push(code ?? 0); throw new Error('MREL-A1-1b-exit'); });
+      await assert.rejects(() => main(sessionDir), /MREL-A1-1b-exit/);
+      assert.deepEqual(exitCodes, [0], 'finalize exits 0 — the benign skip does not withhold success');
       const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
-      assert.equal(status.status, 'failed');
-      assert.equal(status.current_phase, 'anatomy-park');
+      assert.equal(status.status, 'completed');
+      assert.equal(status.phase_skips['anatomy-park'], 'empty_branch_diff');
     } finally {
+      process.exit = originalExit;
       if (originalTmux === undefined) {
         delete process.env.TMUX;
       } else {
