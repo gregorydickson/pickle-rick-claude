@@ -2475,15 +2475,26 @@ export function reportDroppedFindings(runtime: PipelineRuntime): void {
 }
 
 /**
- * Integrate the converged lanes, release every branch main now reaches, and write
- * `archive/lanes.json`. Returns one row per lane in roster order.
+ * A converged lane always goes to the pick. A non-convergent one (`no_progress`, `stalled_below_target`, ...) goes only
+ * when it holds commits and the run was not cancelled: its verdict may reflect the lane worktree's environment, and the
+ * integration typecheck — off the main checkout — decides. No-verdict, crashed and `stopped` lanes classify elsewhere.
+ */
+function laneIntegrates(run: LaneRun, branch: string, reason: string): boolean {
+  const { reportAs } = classifyMicroverseDisposition(reason);
+  if (reportAs === 'success') return true;
+  return reportAs === 'non-convergent' && run.cancelledAtMs === null && laneCommits(run.repoRoot, run.sha, branch).length > 0;
+}
+
+/**
+ * Integrate the converged lanes and any non-convergent lane holding commits, release every branch main now reaches,
+ * and write `archive/lanes.json`. Returns one row per lane in roster order.
  */
 function integrateLaneRun(run: LaneRun, lanes: readonly LaneRecord[], ends: readonly LaneEnd[]): LaneOutcome[] {
   const { runtime, repoRoot } = run;
   const branches = lanes.map((_, i) => laneBranchName(runtime.sessionDir, i + 1));
   const integration = integrateLanes({
     repoRoot, target: runtime.target, sessionDir: runtime.sessionDir, phaseStartSha: run.sha, log: runtime.log,
-    lanes: branches.map((branch, i) => ({ branch, integrate: isLaneSuccess(ends[i].reason) })),
+    lanes: branches.map((branch, i) => ({ branch, integrate: laneIntegrates(run, branch, ends[i].reason) })),
   });
   const outcomes: LaneOutcome[] = lanes.map((lane, i) => ({
     name: lane.name, dir: lane.dir, excludes: [...lane.excludes], branch: branches[i],
@@ -2491,7 +2502,7 @@ function integrateLaneRun(run: LaneRun, lanes: readonly LaneRecord[], ends: read
     started_at: ends[i].started_at, ended_at: ends[i].ended_at, passes: ends[i].passes, exit_reason: ends[i].reason,
     outcome: integration.outcomes[i] ?? (run.cancelledAtMs === null ? 'non_convergent' : 'cancelled'),
     integration_check: integration.checks[i],
-    // A lane that did not integrate is not handed to integrateLanes (its pick loop would PICK them),
+    // A cancelled, crashed or no-verdict lane is not handed to integrateLanes (its pick loop would PICK them),
     // yet its commits are what a stranded lane leaves behind — listed here for the record only.
     commits: integration.commits[i].length > 0 ? integration.commits[i] : laneCommits(repoRoot, run.sha, branches[i]),
     node_modules_linked: ends[i].node_modules_linked,

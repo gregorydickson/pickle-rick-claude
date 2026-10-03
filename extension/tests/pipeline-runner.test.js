@@ -5429,6 +5429,90 @@ describe('B-LANES WS-3: lane integration', () => {
     }
   });
 
+  /**
+   * MREL-A4 stub lane runner: lane `index` makes the commits `steps[index]` lists (each a `{ rel: content }` edit)
+   * and stamps `reasons[index]` — `no_progress` is the exact value the real R-ORSR-6 refusal bound returns.
+   */
+  function reasonedRunner(steps, reasons) {
+    return async (_cmd, args) => {
+      const laneDir = args[1];
+      const index = Number(/--lane-(\d+)$/.exec(laneDir)[1]) - 1;
+      const wt = path.join(laneDir, 'wt');
+      for (const [n, edit] of (steps[index] ?? []).entries()) {
+        for (const [rel, content] of Object.entries(edit)) fs.writeFileSync(path.join(wt, rel), content);
+        git(wt, '-c', 'user.email=l@l', '-c', 'user.name=l', 'commit', '-q', '-am', `lane ${index + 1} step ${n + 1}`);
+      }
+      const statePath = path.join(laneDir, 'state.json');
+      fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: reasons[index] }));
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+  }
+  const commitsSince = (repo, sha) => Number(git(repo, 'rev-list', '--count', `${sha}..HEAD`));
+
+  test('MREL-A4-1: a no_progress lane with 2 clean commits is picked onto main; the phase still reports non-convergent', async () => {
+    const fx = makeFixture();
+    try {
+      const headBefore = git(fx.repo, 'rev-parse', 'HEAD');
+      __setSpawnRunnerForTests(reasonedRunner(
+        [[{ 'alpha/a.ts': 'export const a = 2;\n' }, { 'alpha/a.ts': 'export const a = 3;\n' }], [], []],
+        ['no_progress', 'converged', 'converged'],
+      ));
+      const code = await runAnatomyLanes(fx.runtime, LANES, 3);
+      const alpha = byName(fx.sessionDir).alpha;
+      assert.equal(alpha.exit_reason, 'no_progress', 'the lane keeps its own reason');
+      assert.equal(alpha.outcome, 'integrated', fx.logs.join('\n'));
+      assert.equal(alpha.commits.length, 2);
+      assert.equal(commitsSince(fx.repo, headBefore), 2, 'main advanced by exactly the lane\'s two commits');
+      assert.match(read(path.join(fx.repo, 'alpha/a.ts')), /= 3/);
+      assert.equal(code, 1, 'an integrated non-convergent lane is still not converged');
+      assert.equal(readJson(fx.runtime.statePath).exit_reason, 'no_progress');
+      assert.equal(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${fx.branch(1)}`), false, 'integrated branch deleted');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('MREL-A4-2: a no_progress lane whose commits red the integration typecheck is integration_red, branch retained, main unchanged by it', async () => {
+    const fx = makeFixture();
+    try {
+      const headBefore = git(fx.repo, 'rev-parse', 'HEAD');
+      __setSpawnRunnerForTests(reasonedRunner(
+        [[{ 'alpha/a.ts': 'export const a = "RED";\n' }], [{ 'beta/a.ts': 'export const a = 5;\n' }, { 'beta/a.ts': 'export const a = "RED";\n' }], []],
+        ['converged', 'no_progress', 'converged'],
+      ));
+      const code = await runAnatomyLanes(fx.runtime, LANES, 3);
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes.alpha.outcome, 'integrated');
+      assert.equal(lanes.beta.outcome, 'integration_red', fx.logs.join('\n'));
+      assert.equal(lanes.beta.exit_reason, 'no_progress');
+      assert.equal(commitsSince(fx.repo, headBefore), 1, 'only alpha\'s commit reached main');
+      assert.doesNotMatch(read(path.join(fx.repo, 'beta/a.ts')), /RED|= 5/, 'the red lane never reached main');
+      assert.ok(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${fx.branch(2)}`), 'integration_red branch retained');
+      assert.equal(code, 1);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('MREL-A4-3: a non-convergent lane with ZERO commits stays non_convergent and a lane with no verdict is never picked', async () => {
+    const fx = makeFixture();
+    try {
+      const headBefore = git(fx.repo, 'rev-parse', 'HEAD');
+      __setSpawnRunnerForTests(reasonedRunner(
+        [[], [{ 'beta/a.ts': 'export const a = 9;\n' }], []],
+        ['anatomy_non_convergent', 'lane_no_verdict', 'error'],
+      ));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes.alpha.outcome, 'non_convergent', 'a do-nothing non-convergent lane is not labelled integrated');
+      assert.equal(lanes.beta.outcome, 'non_convergent', 'no verdict is not integrable');
+      assert.equal(lanes.beta.commits.length, 1, 'its commit is still listed');
+      assert.equal(commitsSince(fx.repo, headBefore), 0, 'main did not move');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
   test('L4-integrated-control: an integrated lane yields no kept-branch line', async () => {
     const fx = makeFixture();
     try {
