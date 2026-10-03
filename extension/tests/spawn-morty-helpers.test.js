@@ -266,3 +266,19 @@ test('C8a-2: the rule sits outside the per-phase sections, so it cannot depend o
   assert.ok(ruleAt > -1 && implementAt > -1, `both markers render (rule ${ruleAt}, implement ${implementAt})`);
   assert.ok(ruleAt < implementAt);
 });
+
+// F1: `git grep -l 'archaeology.js' -- extension/src` returned 2 at 1bacc67a (the module itself and
+// calibration-corpus.ts) and must return 0. Walked with fs so the fast tier spawns nothing; like git grep,
+// a comment naming the file counts.
+test('F1-4: no extension/src file references archaeology.js', () => {
+  const srcRoot = path.resolve(import.meta.dirname, '..', 'src');
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const child = path.join(dir, e.name);
+    return e.isDirectory() ? walk(child) : [child];
+  });
+  const files = walk(srcRoot);
+  assert.ok(files.includes(path.join(srcRoot, 'bin', 'spawn-morty.ts')), `walk floor: ${files.length} files, spawn-morty.ts not among them`);
+  const referencing = files.filter((f) => fs.readFileSync(f, 'utf-8').includes('archaeology.js'))
+    .map((f) => path.relative(srcRoot, f));
+  assert.deepEqual(referencing, []);
+});
