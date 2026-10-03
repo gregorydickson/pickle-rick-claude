@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-02 23:50Z) — step 5 B-MEGA RUNNING on exp/b-parallel-build (first real wave run)
+### ▶ STATE (2026-10-03 15:00Z) — step 5 B-MEGA BUILT + gated 22/22 + pushed on exp/b-parallel-build; new field-run issues #56–#67 being sanitized/consolidated
 
 | | |
 |---|---|
 | `main` | pushed **`06af73a4`**: B-RUNREPORT-54 (#54 T1–T5), B-DEPLOYPARITY (`b0eae302`), B-MEGA PRD with operator answers. Gate `20261002T193103Z-60505` 22/22, soak 1803.7s |
 | `exp/b-lanes` | pushed **`fcec8f1d`** (merge of main; gate 22/22). **No longer the deployed runtime** while B-MEGA runs (see `exp/b-parallel-build`) |
-| `exp/b-parallel-build` | pushed **`1bacc67a`** = **DEPLOYED 2026-10-02 23:3xZ** (operator-approved for B-MEGA; supersedes `exp/b-lanes` as the deployed runtime while B-MEGA runs). Gate `20261002T220652Z-75128` 22/22, soak 1803.8s. Verified by content: `runPickleWaves`, `max_parallel_tickets`, `services/ticket-waves.js`, `verdictFail` in the deployed JS; `bin/`, `services/`, `.claude/commands` diffs = 0. Rollback: `git checkout exp/b-lanes && bash install.sh` |
+| `exp/b-parallel-build` | pushed **`d9767fcb`** = B-MEGA (session `2026-10-02-be104839`, 4/4 phases, 709.5 min, 52 commits). Gate `20261003T133052Z-29559` 22/22, soak 1803.9s. **DEPLOYED is still `1bacc67a`** (pre-B-MEGA); redeploying `d9767fcb` = operator decision |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-MEGA** on `exp/b-parallel-build`, session `2026-10-02-be104839` (tmux `pipeline-be104839`, launched 23:43Z). 23 tickets (19 impl + 4 hardening), refined 3×3 (9/9 analysts). `max_parallel_tickets: 2`, `anatomy_max_parallel_lanes: 2`, scope `branch` @ `1bacc67a`. Refined PRD committed `1ecc11f4` (branch, unpushed). First real `pickle waves:` run on record. Watch: scope armed `allowed=1` at setup (expected; B-PBUILD built fine the same way) — confirm the first ticket is not fenced; R2 fake-red estimate via A3's reader afterwards |
+| RUNNING | **nothing** (as of 15:00Z) |
 | open issues | **#54** (B-RUNREPORT-54 in flight), **#55** (design: the review chain is anchored on the refined PRD + branch diff — premise ledger, card-mode citadel, dependency lanes, sibling-writer protocol check, `dropped_findings.md` consumer; NOT queued — operator prioritizes), **#53**/**#52** (fixed on the experimental branches only), **#43**, **#5** (operator-deferred) |
 | client data | **#54 and #55 sanitized 2026-10-02** (bodies rewritten generic at operator request; GitHub edit history still holds the originals — only deleting the issue removes it, operator's call). **Still exposed (measured 2026-10-02):** the client name appears in the bodies of #9, #14, #15, #48, #52, #53, #55-before-edit and in one comment each on #15, #31, #48, #53; and in **145 files** at `origin/main` (`git grep -il <client>`), i.e. the #31 leak was never fully drained. Sweep = operator decision (issue edits are outward-facing; file purge is a bundle) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
@@ -257,7 +257,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
    (8/8 live). Decisions D-1..D-4 taken at the recommended defaults. G3/G4 and the AC-shape advisory demotion are follow-ups.
    - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy → merge into `exp/b-parallel-build` → gate → push.
 
-5. **B-MEGA — fix every open issue + keep developing the multi-agent branch (operator decision 2026-10-02).** **LAUNCHED 2026-10-02 23:43Z** (session `2026-10-02-be104839`).
+5. **B-MEGA — fix every open issue + keep developing the multi-agent branch (operator decision 2026-10-02).** **LAUNCHED 2026-10-02 23:43Z** (session `2026-10-02-be104839`). **BUILT 2026-10-03 11:33Z; gate 22/22 at `d9767fcb`; pushed.** Measured (A3's `field-timing.py`): pickle 636 min for 23 tickets (≈27.6 min/ticket = the serial baseline), wave widths 1×21 + 2×1, implementation sub-phase 189.8 min, 0 wave-failed-then-serial-done, 25 anatomy passes. B-PBUILD merge criterion NOT met (no width>1 speedup; self-build only).
    - **Placement (operator):** ONE bundle on `exp/b-parallel-build`, **deployed first** (operator-approved deploy of that
      branch, superseding the "never deploy exp/b-parallel-build" default for this bundle), run with
      `max_parallel_tickets: 2` + `anatomy_max_parallel_lanes: 2`, refinement ON (new features). This knowingly departs from
@@ -318,6 +318,7 @@ collects `*.test.js` only).
 | `2026-10-01-face240c` B-ATTRIB-G (on `main`) | 17 (943+/127−) | 5 (cap 2, explicit `paths:` scope) | 26.0 | 4/2/3/2/2 | 3 lane commits | 5 integrated, 0 conflicts | none; pickle 74 min for 3 tickets; szechuan 5.8 min |
 | `2026-10-02-76f112c8` B-LANES-MERGE-G (on `exp/b-lanes`) | 1 test | 1 (explicit `paths:` scope) | 1.9 | 2 | 0 | single lane | none; pickle 17.5 min, szechuan 8.7 min (2 DRY/doc commits) |
 | `2026-10-02-1d45b656` B-ATTRIB-L (on `exp/b-lanes`) | 4 src/test (+2 catalogs) | 3 (cap 2, explicit `paths:` scope) | 11.7 | 4/5/6 | 2 lane commits | 3 integrated, 0 conflicts | none; pickle 78 min for 5 tickets; szechuan 23 min (2 DRY commits) |
+| `2026-10-02-be104839` B-MEGA (on `exp/b-parallel-build`, waves 2) | ~60 src/test/doc | 6 (cap 2, `branch` scope) | 59.9 | 13/3/2/2/2/3 | 11 lane commits | 6 integrated, 0 conflicts; integration_check green on all 3 committing lanes | none; pickle 636 min (23 tickets, 1 of 22 waves width 2); szechuan 13.3 min |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 
