@@ -6833,3 +6833,22 @@ describe('B1 anatomy-park Dependency Lens', () => {
     assert.match(bullet[0], /Dependency Lens[^\n]*`\[report-only: dependency-lens\]`/);
   });
 });
+
+// B2+D7a: the review rubric's two protocol additions. Line-based: each clause must live on the line that
+// carries its rule, so a passing mention elsewhere in the rubric cannot satisfy it.
+describe('B2D7a: review rubric — existing writers and spec-suspect exonerations', () => {
+  const rubricLines = () => fs.readFileSync(path.join(AP_REPO_ROOT, 'extension', 'szechuan-sauce-principles.md'), 'utf-8').split('\n');
+
+  test('B2D7a-1: a new writer to a table with writers must list their locks, transaction boundaries and advisory keys', () => {
+    const lines = rubricLines().filter((l) => !l.startsWith('#') && /\bexisting writers\b/i.test(l));
+    assert.equal(lines.length, 1, lines.join('\n'));
+    for (const term of ['locks', 'transaction boundaries', 'advisory keys']) assert.ok(lines[0].includes(term), `missing "${term}"`);
+    assert.match(lines[0], /match them or give a written reason/);
+  });
+
+  test('B2D7a-2: a PRD-says-so-only exoneration of a correctness or concurrency finding is kept report-only: spec-suspect', () => {
+    const bullet = rubricLines().filter((l) => l.startsWith('- Changes that look bug-like but are obviously the stated intent of the change'));
+    assert.equal(bullet.length, 1);
+    assert.match(bullet[0], /correctness or concurrency finding[^\n]*`\[report-only: spec-suspect\]`/);
+  });
+});
