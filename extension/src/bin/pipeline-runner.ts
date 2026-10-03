@@ -5036,11 +5036,16 @@ function runPhaseSetup(runtime: PipelineRuntime, phaseConfig: PhaseConfig, scope
   }
 }
 
-/** `unreproducibleNodeModulesCount`, where a count that cannot be taken reads as a gap (serial), never as none. */
-function unreproducibleNodeModulesGap(runtime: PipelineRuntime): number {
+/**
+ * `unreproducibleNodeModulesCount`, where a count that cannot be taken reads as a gap (serial), never as
+ * none — and is logged as unmeasured, so the caller's "cannot reproduce 1" line is not the only record.
+ */
+export function unreproducibleNodeModulesGap(runtime: Pick<PipelineRuntime, 'target' | 'log'>): number {
   try {
     return unreproducibleNodeModulesCount(gitRepoRoot(runtime.target));
-  } catch {
+  } catch (err) {
+    const reason = safeErrorMessage(err).replace(/\s+/g, ' ').trim();
+    runtime.log(`node_modules eligibility: unmeasured (${reason}) — treating as a gap`);
     return 1;
   }
 }

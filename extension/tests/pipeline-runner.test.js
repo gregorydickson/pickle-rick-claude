@@ -50,6 +50,7 @@ import {
   reportBaseDrift,
   reportDroppedFindings,
   discloseUnmeasuredIntegration,
+  unreproducibleNodeModulesGap,
 } from '../bin/pipeline-runner.js';
 import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
@@ -6567,6 +6568,18 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
     } finally {
       fx.cleanup();
       fs.rmSync(realNodeModules, { recursive: true, force: true });
+    }
+  });
+
+  test('A1-eligibility: a node_modules count that cannot be taken reads as a gap AND says why, never as a measured 1', () => {
+    const notARepo = mkFixtureTmpDir('pickle-not-a-repo-');
+    const lines = [];
+    try {
+      assert.equal(unreproducibleNodeModulesGap({ target: notARepo, log: (line) => lines.push(line) }), 1);
+      assert.equal(lines.length, 1, JSON.stringify(lines));
+      assert.match(lines[0], /^node_modules eligibility: unmeasured \(.+\) — treating as a gap$/);
+    } finally {
+      fs.rmSync(notARepo, { recursive: true, force: true });
     }
   });
 
