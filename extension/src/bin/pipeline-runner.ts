@@ -2196,6 +2196,9 @@ async function runOneLane(run: LaneRun, lane: LaneRecord, index: number): Promis
   try {
     const end = await runLaneSession(run, lane, session, startedAt);
     return { ...end, node_modules_linked: session.nodeModulesLinked, baseline_check_status: readLaneBaselineCheckStatus(session.laneDir) };
+  } catch (err) {
+    runtime.log(`anatomy lane ${lane.name}: session failed: ${safeErrorMessage(err)}`);
+    return notStarted(LANE_NO_VERDICT);
   } finally {
     // createLaneSession claimed the lane active; however the lane ended, it is not running now.
     deactivateLaneState(session.statePath, runtime.log);
@@ -2274,14 +2277,18 @@ export async function runAnatomyLanes(runtime: PipelineRuntime, lanes: readonly 
     while (next < lanes.length) {
       const index = next++;
       if (!parentSessionActive(runtime.statePath)) cancelLaneRun(run);
+      // A lane whose runner rejects keeps this slot: no verdict, never a lost row.
+      ends[index] = notStarted(LANE_NO_VERDICT);
       ends[index] = await runOneLane(run, lanes[index], index + 1);
     }
   };
+  let settled: PromiseSettledResult<void>[];
   try {
-    await Promise.all(Array.from({ length: workers }, worker));
+    settled = await Promise.allSettled(Array.from({ length: workers }, worker));
   } finally {
     clearInterval(poll);
   }
+  if (settled.some((s) => s.status === 'rejected')) cancelLaneRun(run);
   await reapCancelledLanes(run);
   const stuck = removeLaneWorktrees(repoRoot, run.worktrees);
   if (stuck.length > 0) runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
@@ -2580,8 +2587,13 @@ async function runTicketUnit(run: LaneRun, ticketId: string): Promise<UnitEnd> {
     laneChildren.delete(ticketId);
     deactivateLaneState(unit.statePath, runtime.log);
   }
-  const status = collectTickets(unit.unitDir).find((t) => t.id === ticketId)?.status ?? null;
-  return { id: ticketId, done: (status ?? '').toLowerCase() === 'done', status, started_at: startedAt, ended_at: new Date().toISOString() };
+  try {
+    const status = collectTickets(unit.unitDir).find((t) => t.id === ticketId)?.status ?? null;
+    return { id: ticketId, done: (status ?? '').toLowerCase() === 'done', status, started_at: startedAt, ended_at: new Date().toISOString() };
+  } catch (err) {
+    runtime.log(`pickle waves: unit ${ticketId}: result read failed: ${safeErrorMessage(err)}`);
+    return notRun;
+  }
 }
 
 /**
@@ -2661,7 +2673,10 @@ async function runTicketWave(run: LaneRun, members: readonly string[], wave: num
   const { runtime, repoRoot } = run;
   runtime.log(`pickle waves: wave ${wave} members=${members.join(',')} in_flight=${members.length}`);
   const prior = new Map(collectTickets(runtime.sessionDir).map((t): [string, string] => [t.id ?? '', (t.status ?? '').toLowerCase()]));
-  const ends = await Promise.all(members.map((id) => runTicketUnit(run, id)));
+  const settled = await Promise.allSettled(members.map((id) => runTicketUnit(run, id)));
+  const ends = settled.map((s, i): UnitEnd => (s.status === 'fulfilled' ? s.value
+    : { id: members[i], done: false, status: null, started_at: null, ended_at: null }));
+  if (settled.some((s) => s.status === 'rejected')) cancelLaneRun(run);
   await reapCancelledLanes(run);
   // Every member has ended: the next wave's cancel and reap must reach only ITS runners.
   run.spawned.length = 0;

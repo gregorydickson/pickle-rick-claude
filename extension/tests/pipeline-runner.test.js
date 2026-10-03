@@ -5477,6 +5477,60 @@ describe('B-LANES WS-3: lane integration', () => {
     }
   });
 
+  /** Wraps a lane runner so each lane spawns a short-lived child registered via `opts.onSpawn`; records its pid. */
+  function pidRecordingRunner(inner, pids) {
+    return async (cmd, args, env, opts) => {
+      const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},200)'], { stdio: 'ignore' });
+      pids.push(child.pid);
+      opts?.onSpawn?.(child);
+      const done = new Promise((resolve) => child.once('exit', resolve));
+      const result = await inner(cmd, args, env, opts);
+      await done;
+      return result;
+    };
+  }
+  const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code !== 'ESRCH'; } };
+  const laneRows = (sessionDir) => readJson(path.join(sessionDir, 'archive', 'lanes.json')).map((o) => [o.name, o.exit_reason, o.outcome, o.passes]);
+
+  test('MREL-A1B-1: lane 1 setup throws → runAnatomyLanes resolves, lane 1 is lane_no_verdict, lane 2 integrates, no pid or worktree survives', async () => {
+    const fx = makeFixture();
+    try {
+      // A DIRECTORY at lane 1's anatomy-park.json makes setupAnatomyPark's rename throw EISDIR (root-independent).
+      fs.mkdirSync(path.join(`${fx.sessionDir}--lane-1`, 'anatomy-park.json'), { recursive: true });
+      const pids = [];
+      __setSpawnRunnerForTests(pidRecordingRunner(committingRunner([{}, { [`${LANES[1].dir}/a.ts`]: 'export const a = 2;\n' }]), pids));
+      const code = await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 2);
+      assert.equal(code, 1, 'a lane with no verdict withholds convergence');
+      const lanes = byName(fx.sessionDir);
+      assert.equal(lanes[LANES[0].name].exit_reason, 'lane_no_verdict');
+      assert.equal(lanes[LANES[0].name].started_at, null);
+      assert.equal(lanes[LANES[0].name].passes, 0);
+      assert.equal(lanes[LANES[1].name].outcome, 'integrated');
+      assert.ok(pids.length >= 1, 'the surviving lane registered a spawned child');
+      for (const pid of pids) assert.equal(pidAlive(pid), false, `spawned pid ${pid} is dead`);
+      assert.equal(worktreeList(fx.repo).filter((l) => l.includes('--lane-')).length, 0, 'no --lane- worktree remains');
+      assert.ok(fx.logs.some((l) => l.includes(`anatomy lane ${LANES[0].name}: session failed:`) && l.includes('EISDIR')), 'a log line names the lane and the error');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('MREL-A1B-2: control — no lane throws → both lanes converged/integrated, code 0, no lane worktree', async () => {
+    const fx = makeFixture();
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { [`${LANES[0].dir}/a.ts`]: 'export const a = 2;\n' },
+        { [`${LANES[1].dir}/a.ts`]: 'export const a = 2;\n' },
+      ]));
+      const code = await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 2);
+      assert.equal(code, 0, fx.logs.join('\n'));
+      assert.deepEqual(laneRows(fx.sessionDir), [[LANES[0].name, 'converged', 'integrated', 0], [LANES[1].name, 'converged', 'integrated', 0]]);
+      assert.equal(worktreeList(fx.repo).filter((l) => l.includes('--lane-')).length, 0);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
   test('L5-manifest: every lanes.json row records node_modules_linked (array) and baseline_check_status (object or null)', async () => {
     const fx = makeFixture();
     // Only beta's runner captures a baseline, so the row must carry exactly its check_status and the
