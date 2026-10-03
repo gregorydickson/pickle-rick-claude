@@ -270,8 +270,8 @@ links:
 - Use `verify_pre:` only for criteria that must be checked before implementation and are expected to pass at readiness time.
 - Default criteria are `verify_post` and are checked after implementation; omit the prefix unless a pre-flight check is intentional.
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
 ## Conformance Check
 - [ ] Type checker passes — no new errors
 - [ ] Test runner passes — all acceptance tests
@@ -352,10 +352,10 @@ All prior tickets are complete and individually verified.
 - [ ] [Library] Public API surface matches Interface Contracts — Verify: `${TEST_CMD}` exercises all exports — Type: integration
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| [Application] Full app runs | test/e2e/ or test/integration/ | Launch app, exercise top-level features | No errors, all routes/handlers respond |
-| [Library] API surface works | test/integration/ | Import public API, call each export | All exports resolve, return expected types |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| [Application] Full app runs | test/e2e/ or test/integration/ | Launch app, exercise top-level features | No errors, all routes/handlers respond | <source of expected value> |
+| [Library] API surface works | test/integration/ | Import public API, call each export | All exports resolve, return expected types | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -458,10 +458,10 @@ All prior tickets are complete and individually verified. Test suite passes.
 - [ ] Type checker passes — Verify: `${TC_CMD}` — Type: typecheck
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| P1 violation fixes | Alongside each fix | Regression test per behavioral fix | Exercises the specific failure mode |
-| Edge cases | In existing test files | Error/boundary tests for modified code | Covers empty, null, max, error states |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| P1 violation fixes | Alongside each fix | Regression test per behavioral fix | Exercises the specific failure mode | <source of expected value> |
+| Edge cases | In existing test files | Error/boundary tests for modified code | Covers empty, null, max, error states | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -556,10 +556,10 @@ After each fix: verify callers, consumers, dead code, boolean logic branches. If
 - [ ] Each fix has a regression test — Verify: `git log --oneline` shows test alongside each fix — Type: test
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| Data flow integrity | Integration test file | Trace value from entry to exit | Output matches expected transformation |
-| Cross-ticket handoff | Integration test file | Value crosses module boundary | Types align, no silent coercion |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| Data flow integrity | Integration test file | Trace value from entry to exit | Output matches expected transformation | <source of expected value> |
+| Cross-ticket handoff | Integration test file | Value crosses module boundary | Types align, no silent coercion | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -657,11 +657,11 @@ All prior tickets are complete and individually verified. Test suite passes.
 - [ ] Type checker passes — Verify: `${TC_CMD}` — Type: typecheck
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| Strengthened assertions | Modified test files | Assertions upgraded to structural/line-based | No weak .includes() remaining for node IDs or attributes |
-| Edge case coverage | Modified test files | Error paths, boundary conditions | Invalid inputs produce expected errors |
-| Transformation coverage | Modified test files | Field name/shape conversions | Input camelCase produces output snake_case |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| Strengthened assertions | Modified test files | Assertions upgraded to structural/line-based | No weak .includes() remaining for node IDs or attributes | <source of expected value> |
+| Edge case coverage | Modified test files | Error paths, boundary conditions | Invalid inputs produce expected errors | <source of expected value> |
+| Transformation coverage | Modified test files | Field name/shape conversions | Input camelCase produces output snake_case | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -764,10 +764,10 @@ For each pair of documentation files in DOC_FILES:
 - [ ] Commands deployed — Verify: `bash install.sh` — Type: integration
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| Doc accuracy | N/A | Manual cross-reference | All doc references resolve to real implementation |
-| Pattern consistency | N/A | Cross-doc check | No pattern number collisions |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| Doc accuracy | N/A | Manual cross-reference | All doc references resolve to real implementation | <source of expected value> |
+| Pattern consistency | N/A | Cross-doc check | No pattern number collisions | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
