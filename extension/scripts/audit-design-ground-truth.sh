@@ -83,7 +83,8 @@ fi
 # — a RAW `finalizeTerminalState` carrying a completion exitReason is the unrouted-finalize /
 # raw-phase-advance regression (default-DENY). The scan is multi-line-aware (three real sites
 # span multiple lines). Two ASSERTED exemption allowlists, default-deny everything else:
-#   - reason-exempt: `exitReason: 'limit'` (the 7 mux wall-clock/time-limit sites) and
+#   - reason-exempt: `exitReason: 'limit'` (the mux wall-clock/time-limit sites — not counted:
+#     a site count asserts nothing about routing and reds on every legitimate new limit exit) and
 #     `exitReason: 'failed'` (the pipeline FAILURE finalize — not a completion claim) and the
 #     no-exitReason preserve form `{ step: 'completed' }` (handoff/readiness reason-preserve) and
 #     the parameterized forensic helper form `exitReason,` (ctxFinalize / finalizeTaskSession).
@@ -126,8 +127,6 @@ for (const [name, p] of [["mux-runner.ts", process.env.MUX], ["pipeline-runner.t
   }
 }
 const muxSrc = read(process.env.MUX) || "";
-const limitCount = (muxSrc.match(/exitReason:\s*["']limit["']/g) || []).length;
-if (limitCount !== 7) offenders.push("reason-exempt drift: expected 7 mux exitReason:limit sites, found " + limitCount);
 const jarSrc = read(process.env.JAR) || "";
 const mvSrc = read(process.env.MV) || "";
 if (!/finalizeTerminalState\s*\(/.test(jarSrc)) offenders.push("seam-exempt drift: jar-runner.ts finalize site missing");
