@@ -321,6 +321,83 @@ describe('citadel audit-runner composes: wiring (ticket 98dc9bed)', () => {
     }
   });
 
+  // D4b: the session's source PRD (prd-pickle.md, else prd.md) vs prd_refined.md.
+  const sessionWith = (files) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-runner-d4b-'));
+    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body);
+    return dir;
+  };
+  const dropDecisions = (sessionDir) => {
+    const repo = makeCommittedRepo('audit-runner-d4b-repo-', { 'seed.txt': 'x\n' });
+    try {
+      return buildCitadelAuditReport({ diffRange: 'HEAD..HEAD', repoRoot: repo, sessionDir })
+        .decisions.filter((d) => d.id.endsWith('-dropped'));
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  };
+
+  test('D4b-1: an id defined in prd-pickle.md and absent from prd_refined.md yields one decision naming it', () => {
+    const dir = sessionWith({
+      'prd-pickle.md': '# P\n\n- **AC-1**: kept\n- **AC-3**: dropped one\n',
+      'prd_refined.md': '# R\n\n- **AC-1**: kept\n',
+    });
+    try {
+      const found = dropDecisions(dir);
+      assert.equal(found.length, 1);
+      assert.equal(found[0].id, 'AC-3-dropped');
+      assert.equal(found[0].severity, 'Medium');
+      assert.match(found[0].message, /AC-3/);
+      assert.deepEqual(found[0].evidence, [{ file: 'prd-pickle.md', line: 4 }]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('D4b-2: control — prd.md is an Anatomy Park PRD and prd-pickle.md matches prd_refined.md, so no decision', () => {
+    const dir = sessionWith({
+      'prd.md': '# Anatomy Park\n\n- **AC-9**: subsystem review criterion\n',
+      'prd-pickle.md': '# P\n\n- **AC-1**: kept\n',
+      'prd_refined.md': '# R\n\n- **AC-1**: kept\n',
+    });
+    try {
+      assert.deepEqual(dropDecisions(dir), []);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('D4b-3: prd.md is the source when prd-pickle.md is absent; a longer id does not mask a dropped prefix id', () => {
+    const dir = sessionWith({
+      'prd.md': '# P\n\n- **AC-3**: dropped\n',
+      'prd_refined.md': '# R\n\n- **AC-3-1**: a different id\n',
+    });
+    try {
+      assert.deepEqual(dropDecisions(dir).map((d) => d.id), ['AC-3-dropped']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('D4b-4: an absent source or refined PRD yields no decisions and never throws', () => {
+    const noRefined = sessionWith({ 'prd-pickle.md': '- **AC-1**: x\n' });
+    const noSource = sessionWith({ 'prd_refined.md': '- **AC-1**: x\n' });
+    try {
+      assert.deepEqual(dropDecisions(noRefined), []);
+      assert.deepEqual(dropDecisions(noSource), []);
+      assert.deepEqual(dropDecisions(path.join(noSource, 'does-not-exist')), []);
+    } finally {
+      fs.rmSync(noRefined, { recursive: true, force: true });
+      fs.rmSync(noSource, { recursive: true, force: true });
+    }
+  });
+
+  test('D4b-5: decisionRequired is derived from every section decisionsRequired, not two named ones', () => {
+    const src = fs.readFileSync(AUDIT_RUNNER_SRC, 'utf-8');
+    assert.match(src, /Object\.values\(sections\)\.flatMap/);
+    assert.doesNotMatch(src, /sections\.divergence_reconciliation\.decisionsRequired/);
+  });
+
   test('buildCitadelAuditReport consumes composed child AC and transition inputs', () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-runner-composed-inputs-'));
     const run = (args, cwd) => execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 }).toString().trim();
