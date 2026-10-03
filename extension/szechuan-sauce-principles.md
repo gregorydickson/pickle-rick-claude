@@ -89,7 +89,7 @@ The following categories are noise. Exclude them regardless of severity or how c
 - Anything a linter, typechecker, or compiler surfaces on the next build — CI is the filter for that class of error, not a Rick
 - Missing imports, type errors, broken tests, formatting drift, trailing newlines — tooling catches these in milliseconds, don't waste a finding slot
 - Generic "needs more test coverage" hand-wringing, unless CLAUDE.md or a principle in this doc names a specific coverage target
-- Changes that look bug-like but are obviously the stated intent of the change (removing a feature flag the PRD said to remove, deleting a deprecated path)
+- Changes that look bug-like but are obviously the stated intent of the change (removing a feature flag the PRD said to remove, deleting a deprecated path). A PRD-says-so-only exoneration of a correctness or concurrency finding (the PRD's wording is the sole evidence it is safe) is not dropped: keep it as `[report-only: spec-suspect]`, since the spec itself may be the defect
 - Issues the author explicitly silenced via `// eslint-disable`, `// @ts-expect-error`, `// type: ignore`, or equivalent — flag only if the silencer itself is the wrong call
 - Stylistic preferences not codified in CLAUDE.md or this principles document — naming taste, comment wording (the phrasing of an existing comment), spacing, bracket religion, all out. This does NOT cover comment-heavy code driven by restructurable complexity — that is P2 Maintainability (see Priority Matrix), not a style preference
 - Speculative future-risk findings — "what if someone later adds Y" is not a finding; review the diff in front of you, not the hypothetical one
@@ -188,6 +188,9 @@ Prefer immutable data structures. Mutation is a source of bugs, especially with 
 
 ### Idempotency
 Multiple executions produce the same result as one. Critical for retry logic, event handlers, API endpoints.
+
+### Existing Writers
+A new writer to a table or store that already has writers must list the existing writers' locks, transaction boundaries and advisory keys, and either match them or give a written reason it need not. A writer that takes a different lock, or none, races the others silently.
 
 ### Resilience
 Continue operating despite partial failures. Patterns: exponential backoff with jitter, circuit breakers, graceful degradation, bulkheads.
