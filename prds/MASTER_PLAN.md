@@ -276,9 +276,8 @@ NO measured basis. Large PRDs are not constrained by the cap.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
      depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
 
-6. **Field-run issues #56–#67 — triaged by the operator's goal order (2026-10-03): (1) autonomy, (2) slow quality
-   ratchet, (3) multi-agent speed last. NO new gate, verdict or lint per finding; fixes correct a predicate, remove a
-   case, or add a disclosure line.**
+6. **Field-run issues #56–#67 — triaged by the ratchet order (root `CLAUDE.md` "Ratchet order" and "A guard per finding";
+   swarms sequenced last per "🐝 AGENT SWARMS" below).**
    - **Tier 1 — earns code (loop-stopping or false convergence):** #67 (correct `isConverged` to read the latest
      iteration, let the rollback run), #65 (disclose a Skipped ticket in the final status line; no halt, no new state
      field), #60 (count only analyses produced this cycle), #61 (freeze the source PRD at session creation), #63 (delete
