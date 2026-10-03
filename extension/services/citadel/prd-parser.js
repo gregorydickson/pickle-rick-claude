@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { extractFrontmatter } from '../pickle-utils.js';
-import { definedRequirementIdsInLine, requirementIdPatternFor, requirementIdsInPrd } from '../requirement-ids.js';
+import { definedRequirementIdsInLine, requirementIdPatternFor } from '../requirement-ids.js';
 export const MAX_COMPOSES_DEPTH = 8;
 export class ComposesError extends Error {
     constructor(message) {
@@ -62,8 +62,10 @@ export function parsePrdMarkdown(markdown) {
     // E4: the shared requirement-id rule. A PRD that defines any `AC-*` id keeps the legacy `AC-*`
     // scan untouched (`genericIdRe` null); one that defines none is read in the generic `<UPPER>-<n>`
     // form, defined ids only — so an FR-only PRD yields criteria and a prose-only mention yields none.
-    const definesAc = requirementIdsInPrd(markdown).some((id) => id.startsWith('AC-'));
-    const state = { tableContext: undefined, genericIdRe: definesAc ? null : requirementIdPatternFor(markdown) };
+    // The two spellings are disjoint, so the chosen pattern accepting an `AC-*` id IS the AC choice.
+    const idRe = requirementIdPatternFor(markdown);
+    const definesAc = definedRequirementIdsInLine('AC-1', idRe).length > 0;
+    const state = { tableContext: undefined, genericIdRe: definesAc ? null : idRe };
     markdown.split(/\r?\n/).forEach((line, index) => {
         const lineNumber = index + 1;
         scanLine(line, lineNumber, result, seen, state);
