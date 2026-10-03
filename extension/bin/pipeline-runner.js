@@ -1590,7 +1590,7 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     const repoRoot = gitRepoRoot(target);
     fs.mkdirSync(laneDir, { recursive: true });
     createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
-    const nodeModulesLinked = replicateLaneNodeModules(repoRoot, worktree).replicated;
+    const { replicated: nodeModulesLinked, unreproducible: nodeModulesUnreproducible } = replicateLaneNodeModules(repoRoot, worktree);
     const statePath = path.join(laneDir, 'state.json');
     const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
     // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing lane state to lock against
@@ -1602,7 +1602,7 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     const citadelReport = path.join(parentSessionDir, 'citadel_report.json');
     if (fs.existsSync(citadelReport))
         fs.copyFileSync(citadelReport, path.join(laneDir, 'citadel_report.json'));
-    return { laneDir, worktree, branch, statePath, workingDir, nodeModulesLinked };
+    return { laneDir, worktree, branch, statePath, workingDir, nodeModulesLinked, nodeModulesUnreproducible };
 }
 /** Parent session files a build unit reads as-is; `scope.json` is the PARENT fence, not a lane's. */
 const UNIT_SEED_FILES = ['scope.json', 'prd.md', 'prd_refined.md'];
@@ -1622,7 +1622,7 @@ export function createTicketUnitSession(parentSessionDir, ticketId, waveSha, tar
     const repoRoot = gitRepoRoot(target);
     fs.mkdirSync(unitDir, { recursive: true });
     createLaneWorktree(repoRoot, worktree, branch, waveSha);
-    replicateLaneNodeModules(repoRoot, worktree);
+    const nodeModulesUnreproducible = replicateLaneNodeModules(repoRoot, worktree).unreproducible;
     const statePath = path.join(unitDir, 'state.json');
     const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
     // Not `sm.read`: that heals and PERSISTS the parent's defaults, and the parent is never written here.
@@ -1656,7 +1656,7 @@ export function createTicketUnitSession(parentSessionDir, ticketId, waveSha, tar
     const ticketDir = path.join(parentSessionDir, ticketId);
     if (fs.existsSync(ticketDir))
         fs.cpSync(ticketDir, path.join(unitDir, ticketId), { recursive: true });
-    return { unitDir, worktree, branch, statePath, workingDir };
+    return { unitDir, worktree, branch, statePath, workingDir, nodeModulesUnreproducible };
 }
 const LANE_KILL_GRACE_MS = 2_000;
 const LANE_POLL_FALLBACK_MS = 60_000;
@@ -1749,6 +1749,9 @@ async function runOneLane(run, lane, index) {
     catch (err) {
         runtime.log(`anatomy lane ${lane.name}: session setup failed: ${safeErrorMessage(err)}`);
         return notStarted(LANE_NO_VERDICT);
+    }
+    if (session.nodeModulesUnreproducible.length > 0) {
+        runtime.log(`anatomy lane ${lane.name}: node_modules not replicated: ${session.nodeModulesUnreproducible.join(', ')}`);
     }
     run.statePaths.push(session.statePath);
     run.worktrees.push(session.worktree);
@@ -2127,6 +2130,9 @@ async function runTicketUnit(run, ticketId) {
     catch (err) {
         runtime.log(`pickle waves: unit ${ticketId}: session setup failed: ${safeErrorMessage(err)}`);
         return notRun;
+    }
+    if (unit.nodeModulesUnreproducible.length > 0) {
+        runtime.log(`pickle waves: unit ${ticketId}: node_modules not replicated: ${unit.nodeModulesUnreproducible.join(', ')}`);
     }
     run.statePaths.push(unit.statePath);
     run.worktrees.push(unit.worktree);

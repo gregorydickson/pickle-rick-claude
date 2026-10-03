@@ -440,7 +440,8 @@ export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult
   const carried = (i: number): boolean => outcomes[i] === 'integrated' && commits[i].length > 0;
   try {
     createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
-    const preserve = replicateLaneNodeModules(repoRoot, worktree).replicated;
+    const { replicated: preserve, unreproducible } = replicateLaneNodeModules(repoRoot, worktree);
+    if (unreproducible.length > 0) log(`anatomy lanes: integration node_modules not replicated: ${unreproducible.join(', ')}`);
     const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
     const baseRed = runIntegrationTypecheck(targetDir) === 'red';
     commits.forEach((laneCommitList, i) => {
