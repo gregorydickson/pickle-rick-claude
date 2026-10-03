@@ -921,3 +921,21 @@ test('logActivity: buffer capped at 100 events — excess events dropped', async
         _setRetryDelayMs(500);
     }
 });
+
+// F1 deleted the archaeology module; activity logs written before the deletion still
+// carry its two event names and must keep reading back.
+test('F1-2: a legacy activity log carrying archaeology events still loads', () => {
+    withTempActivityDir((activityDir) => {
+        const day = new Date(2026, 4, 1, 12, 0, 0, 0);
+        fs.mkdirSync(activityDir, { recursive: true });
+        const lines = ['archaeology_complete', 'archaeology_skipped']
+            .map((event) => JSON.stringify({ event, source: 'pickle', ts: day.toISOString() }));
+        fs.writeFileSync(path.join(activityDir, `${formatLocalDateKey(day)}.jsonl`), `${lines.join('\n')}\n`);
+
+        const events = readActivityFiles(activityDir, new Date(2026, 4, 1), new Date(2026, 4, 2));
+
+        assert.deepEqual(events.map((entry) => entry.event), ['archaeology_complete', 'archaeology_skipped']);
+        assert.ok(VALID_ACTIVITY_EVENTS.includes('archaeology_complete'));
+        assert.ok(VALID_ACTIVITY_EVENTS.includes('archaeology_skipped'));
+    });
+});

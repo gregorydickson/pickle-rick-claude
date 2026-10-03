@@ -158,20 +158,6 @@ export function resolveWorkerModelFromTierAndPersona(ticketTier, personaModel) {
         return tierToModel(ticketTier);
     return personaModel ?? 'sonnet';
 }
-function readProjectContextBlock(sessionRoot) {
-    try {
-        if (isArchaeologyDisabled(sessionRoot))
-            return '';
-        const projectContextPath = path.join(sessionRoot, 'project-context.md');
-        if (!fs.existsSync(projectContextPath))
-            return '';
-        const projectContext = fs.readFileSync(projectContextPath, 'utf-8').trim();
-        return projectContext ? `\n\n## Project Context\n${projectContext}` : '';
-    }
-    catch {
-        return '';
-    }
-}
 function isLastToolErrorState(value) {
     if (!isRecord(value))
         return false;
@@ -242,15 +228,6 @@ function readHandoffNotesBlock(ticketPath) {
     }
     catch {
         return '';
-    }
-}
-function isArchaeologyDisabled(sessionRoot) {
-    try {
-        const state = readRecoverableJsonObject(path.join(sessionRoot, 'state.json'));
-        return state?.flags?.no_archaeology === true;
-    }
-    catch {
-        return false;
     }
 }
 function die(message) {
@@ -1042,7 +1019,6 @@ export function buildWorkerPrompt(opts) {
         extensionRoot,
         agentsDir: opts.agentsDir,
     });
-    workerPrompt += readProjectContextBlock(ticket.sessionRoot);
     workerPrompt += `\n\n# TARGET TICKET CONTENT\n${ticket.ticketContent || 'N/A'}`;
     const firewallDetected = detectAgentsMdFirewall(opts.repoRoot ?? process.cwd());
     workerPrompt += `\n\n# EXECUTION CONTEXT\n- SESSION_ROOT: ${ticket.sessionRoot}\n- TICKET_ID: ${ticket.ticketId}\n- TICKET_DIR: ${ticket.ticketPath}`;

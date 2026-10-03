@@ -71,19 +71,18 @@ function withPhasePersonaEnv(value, fn) {
   }
 }
 
-test('buildWorkerPrompt: injects project context before ticket content when available', () => {
+test('F1-3: buildWorkerPrompt no longer injects a legacy session project-context.md', () => {
   const repoRoot = makeTmpDir();
   try {
     fs.writeFileSync(path.join(repoRoot, 'project-context.md'), 'Architecture\n- Existing shape');
     const prompt = buildWorkerPrompt({ ticket: baseTicket(repoRoot), model: 'sonnet', repoRoot });
 
-    const contextIndex = prompt.indexOf('## Project Context\nArchitecture\n- Existing shape');
     const ticketIndex = prompt.indexOf('# TARGET TICKET CONTENT');
     const executionIndex = prompt.indexOf('# EXECUTION CONTEXT');
 
-    assert.ok(contextIndex > -1, 'should include project context block');
-    assert.ok(contextIndex < ticketIndex, 'project context should precede target ticket content');
-    assert.ok(ticketIndex < executionIndex, 'target ticket content should precede execution context');
+    assert.equal(prompt.includes('## Project Context'), false);
+    assert.equal(prompt.includes('- Existing shape'), false);
+    assert.ok(ticketIndex > -1 && ticketIndex < executionIndex, 'target ticket content should precede execution context');
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -100,14 +99,13 @@ test('buildWorkerPrompt: includes acceptance-criteria ownership guidance', () =>
   }
 });
 
-test('buildWorkerPrompt: injects active persona between template and project context when enabled', () => {
+test('buildWorkerPrompt: injects active persona between template and ticket content when enabled', () => {
   const repoRoot = makeTmpDir();
   const extensionRoot = makeTmpDir('pickle-spawn-morty-extension-');
   const agentsDir = makeTmpDir('pickle-spawn-morty-agents-');
   try {
     writePhasePersonaFixture(extensionRoot, agentsDir);
     fs.writeFileSync(path.join(repoRoot, 'state.json'), JSON.stringify({ step: 'implement' }, null, 2));
-    fs.writeFileSync(path.join(repoRoot, 'project-context.md'), 'Architecture\n- Existing shape');
     const prompt = withPhasePersonaEnv('on', () => {
       return buildWorkerPrompt({
         ticket: baseTicket(repoRoot),
@@ -121,7 +119,6 @@ test('buildWorkerPrompt: injects active persona between template and project con
     const templateIndex = prompt.indexOf('implement helper tests');
     const personaIndex = prompt.indexOf('## Active Persona\nBase Rick voice.');
     const phaseIndex = prompt.indexOf('Phase implementer specialization.');
-    const contextIndex = prompt.indexOf('## Project Context\nArchitecture\n- Existing shape');
     const ticketIndex = prompt.indexOf('# TARGET TICKET CONTENT');
     const executionIndex = prompt.indexOf('# EXECUTION CONTEXT');
     const tailIndex = prompt.indexOf('**IMPORTANT**: You are a localized worker.');
@@ -129,8 +126,7 @@ test('buildWorkerPrompt: injects active persona between template and project con
     assert.ok(templateIndex > -1, 'should include template body');
     assert.ok(personaIndex > templateIndex, 'active persona should follow template body');
     assert.ok(phaseIndex > personaIndex, 'phase body should be inside active persona block');
-    assert.ok(contextIndex > phaseIndex, 'project context should follow active persona');
-    assert.ok(ticketIndex > contextIndex, 'target ticket content should follow project context');
+    assert.ok(ticketIndex > phaseIndex, 'target ticket content should follow active persona');
     assert.ok(executionIndex > ticketIndex, 'execution context should follow target ticket content');
     assert.ok(tailIndex > executionIndex, 'localized-worker tail should follow execution context');
   } finally {
@@ -229,22 +225,6 @@ test('buildWorkerPrompt: omits active persona when phase mapping is absent', () 
     fs.rmSync(repoRoot, { recursive: true, force: true });
     fs.rmSync(extensionRoot, { recursive: true, force: true });
     fs.rmSync(agentsDir, { recursive: true, force: true });
-  }
-});
-
-test('buildWorkerPrompt: omits project context when session disables archaeology', () => {
-  const repoRoot = makeTmpDir();
-  try {
-    fs.writeFileSync(path.join(repoRoot, 'project-context.md'), 'Architecture\n- Existing shape');
-    fs.writeFileSync(path.join(repoRoot, 'state.json'), JSON.stringify({
-      flags: { no_archaeology: true },
-    }, null, 2));
-    const prompt = buildWorkerPrompt({ ticket: baseTicket(repoRoot), model: 'sonnet', repoRoot });
-
-    assert.equal(prompt.includes('## Project Context'), false);
-    assert.equal(prompt.includes('- Existing shape'), false);
-  } finally {
-    fs.rmSync(repoRoot, { recursive: true, force: true });
   }
 });
 

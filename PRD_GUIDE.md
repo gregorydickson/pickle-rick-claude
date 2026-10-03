@@ -165,9 +165,6 @@ Every user-facing BMAD hardening knob lives in one of these surfaces. Anything e
 | `/pickle-readiness` | `--skip-readiness "<reason>"` | string <=200 chars | none | Bypass gate; reason required and logged |
 | `/pickle-readiness` | `--repo-root <path>` | repeatable path | `process.cwd()` | Multi-repo workspace targeting |
 | `/pickle-readiness` | `--history [--last N]` | int | 10 | Show readiness cycle history |
-| `/pickle-archaeology` | `--refresh` | bool | false | Force re-archaeology |
-| `/pickle-archaeology` | `--no-archaeology` | bool | false | Disable injection for session |
-| `/pickle-archaeology` | `--project-type <category>` | enum | auto | Override classifier |
 | `/pickle-correct-course` | `--auto-apply` | bool | false | Skip approval prompt |
 | `/pickle-correct-course` | `--force` | bool | false | Override low-confidence gate; structural predicates still apply |
 | `/pickle-correct-course` | `--dry-run` | bool | false | Emit proposal without apply |
@@ -185,7 +182,6 @@ Every user-facing BMAD hardening knob lives in one of these surfaces. Anything e
 | Variable | Type | Default | Effect |
 |:---------|:-----|:--------|:-------|
 | `PICKLE_PHASE_PERSONAS` | `on|off` | `off` | P2 dispatcher kill-switch until behavioral baseline is checked in |
-| `PICKLE_ARCHAEOLOGY_AUTO_REFRESH` | `on|off` | `on` | P1 auto-trigger kill-switch |
 | `BEHAVIORAL` | `0|1` | `0` | Gate behavioral tests |
 | `CI` | `0|1` | `0` | Suppress confirmation prompts; strict budget |
 
@@ -195,7 +191,6 @@ Settings live under `~/.claude/pickle-rick/pickle_settings.json:bmad_hardening`.
 
 | Key | Type | Default | Used by |
 |:----|:-----|:--------|:--------|
-| `archaeology_refresh_threshold_pct` | int 0-100 | 10 | P1 auto-refresh |
 | `debate_max_rounds` | int 1-10 | 5 | P4 multi-round cap |
 | `debate_codex_solo_max_rounds` | int 1-5 | 2 | P4 codex solo cap |
 | `debate_min_rounds_confirm` | int 1-10 | 3 | P4 multi-round confirmation |
@@ -212,7 +207,7 @@ Settings live under `~/.claude/pickle-rick/pickle_settings.json:bmad_hardening`.
 - `/help-pickle` lists skills and primary flags.
 - `/pickle-status --config` prints resolved configuration for the current session, including provenance.
 - `/pickle-readiness --history` shows readiness cycle log.
-- Calibration drift gates are `npm run calibrate:readiness`, `npm run calibrate:correct-course`, and `npm run calibrate:archaeology` from `extension/`; run `node bin/calibrate.js <suite> --write` only when intentionally recalibrating after the documented baseline trigger changes.
+- Calibration drift gates are `npm run calibrate:readiness` and `npm run calibrate:correct-course` from `extension/`; run `node bin/calibrate.js <suite> --write` only when intentionally recalibrating after the documented baseline trigger changes.
 - This guide mirrors the source configuration table.
 
 ### Hang Guards
@@ -220,7 +215,6 @@ Settings live under `~/.claude/pickle-rick/pickle_settings.json:bmad_hardening`.
 | Const | Default | Used by |
 |:------|:--------|:--------|
 | `READINESS_GREP_TIMEOUT_MS` | `30_000` ms | P0 contract resolution through `scope-resolver.computeOneHop()` |
-| `ARCHAEOLOGY_WORKER_TIMEOUT_S` | `600` s | P1 worker spawn through `buildWorkerInvocation()` |
 | `CORRECTOR_TIMEOUT_S` | `300` s | P3 corrector path through `buildJudgeInvocation()`; current bin is brief-prep only |
 | `DEBATER_TIMEOUT_S` | `240` s | P4 per-persona path; current bin is brief-prep only |
 

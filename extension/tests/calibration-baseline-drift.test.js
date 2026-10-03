@@ -16,7 +16,6 @@ const EXTENSION_ROOT = path.resolve(__dirname, '..');
 const EXPECTED_TRIGGERS = {
   readiness: 'extension/src/bin/check-readiness.ts heuristic or fixture changes',
   'correct-course': 'extension/src/bin/correct-course.ts proposal validator changes',
-  archaeology: 'extension/src/bin/archaeology.ts prompt or context normalization changes',
 };
 
 test('calibration baselines are versioned and governed by recalibration triggers', () => {

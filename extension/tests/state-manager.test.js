@@ -1694,3 +1694,28 @@ test('R-MDS-6 crash recovery: missing monitor_panes field defaults to false (saf
       'crash-recovery default must be false for all panes');
   });
 });
+
+// F1 deleted the archaeology module but kept its state member and event names, so a
+// session written before the deletion must still load with those values intact.
+test('F1-1: a legacy state carrying archaeology metadata and archaeology activity loads intact', () => {
+  withDir((dir) => {
+    const sm = new StateManager();
+    const sp = path.join(dir, 'state.json');
+    const archaeology = {
+      project_context_path: path.join(dir, 'project-context.md'),
+      last_run_iso: '2026-05-01T00:00:00.000Z',
+      file_count: 42,
+      project_type: 'web',
+    };
+    const activity = [
+      { event: 'archaeology_complete', ts: '2026-05-01T00:00:00.000Z', source: 'pickle' },
+      { event: 'archaeology_skipped', ts: '2026-05-01T00:01:00.000Z', source: 'pickle' },
+    ];
+    writeStateFile(sp, makeState({ schema_version: LATEST_SCHEMA_VERSION, archaeology, activity }));
+
+    const result = sm.read(sp);
+
+    assert.deepEqual(result.archaeology, archaeology);
+    assert.deepEqual(result.activity.map((entry) => entry.event), ['archaeology_complete', 'archaeology_skipped']);
+  });
+});

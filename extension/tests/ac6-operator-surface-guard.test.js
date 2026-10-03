@@ -36,7 +36,6 @@ const BASE_INVENTORIES = {
     'idle_stall_unrecoverable', 'state_working_dir_missing', 'toolchain_unavailable',
   ],
   TERMINAL_ABORT_SITES: [
-    'bin/archaeology.ts::usage',
     'bin/calibrate.ts::usage',
     'bin/check-readiness.ts::usage',
     'bin/correct-course.ts::usage',
@@ -654,10 +653,13 @@ describe('AC-5: two-sha baseline equality proof', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+    // Deleting a whole file removes its sites without adding any surface (F1 deleted
+    // bin/archaeology.ts), so only sites whose file still exists must match.
+    const liveAtBase = atBase.filter((site) => fs.existsSync(path.join(EXTENSION_DIR, 'src', site.split('::')[0])));
 
     assert.deepStrictEqual(
       atHead,
-      atBase,
+      liveAtBase,
       `TERMINAL_ABORT_SITES must be byte-identical between HEAD and base sha ${BASE_SHA}`
     );
   });

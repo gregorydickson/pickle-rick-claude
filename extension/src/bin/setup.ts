@@ -1590,7 +1590,6 @@ function createInitialState(config: SetupArgs, sessionPath: string, taskStr: str
     worker_backend: config.workerBackend,
     pipeline_continue_on_phase_fail: config.pipelineContinueOnPhaseFail,
     effort: config.effort,
-    archaeology: null,
     tickets_version: 0,
     last_course_correction: null,
     phase_personas_active: false,

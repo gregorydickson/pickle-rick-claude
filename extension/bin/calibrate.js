@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertKnownSuite, CALIBRATION_SUITES, checkCalibrationDrift, writeCalibrationBaseline, } from '../services/calibration-corpus.js';
 function usage() {
-    process.stderr.write('Usage: node calibrate.js <readiness|correct-course|archaeology|all> [--check] [--write] [--extension-root <dir>]\n');
+    process.stderr.write('Usage: node calibrate.js <readiness|correct-course|all> [--check] [--write] [--extension-root <dir>]\n');
     process.exit(1);
 }
 export function parseArgs(argv) {

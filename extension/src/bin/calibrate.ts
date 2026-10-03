@@ -16,7 +16,7 @@ interface CalibrateArgs {
 }
 
 function usage(): never {
-  process.stderr.write('Usage: node calibrate.js <readiness|correct-course|archaeology|all> [--check] [--write] [--extension-root <dir>]\n');
+  process.stderr.write('Usage: node calibrate.js <readiness|correct-course|all> [--check] [--write] [--extension-root <dir>]\n');
   process.exit(1);
 }
 
