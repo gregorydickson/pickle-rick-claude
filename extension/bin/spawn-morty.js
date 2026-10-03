@@ -980,15 +980,15 @@ function applyTierLifecycleTemplate(workerPrompt, opts) {
     return rendered;
 }
 /**
- * Contract additions only a codex worker needs: it commits for itself, so the ticket-id
- * scope, the `completion_commit` frontmatter pairing and the ACK line are all on it.
+ * Contract additions only a codex worker needs: it commits for itself, so the
+ * `completion_commit` frontmatter pairing and the ACK line are on it.
  */
-function buildCodexContractAdditions(ticket) {
+function buildCodexContractAdditions() {
     return `
 
 **Codex-specific contract additions:**
 - You MUST run \`git add <files>\` and \`git commit -m "<msg>"\` before emitting \`<promise>${PromiseTokens.WORKER_DONE}</promise>\`. The orchestrator does NOT commit for you.
-- Your commit message MUST embed this ticket id as a conventional-commit scope so the runtime can attribute the commit to the ticket. Use exactly this shape: \`git commit -m "fix(${ticket.ticketId}): <short subject>"\` (or \`feat(${ticket.ticketId}): …\`). A commit that omits \`${ticket.ticketId}\` is NOT attributable and will be treated as if no commit landed.
+- The runtime stamps a \`Pickle-Ticket: <id>\` trailer on your commits itself (a managed \`prepare-commit-msg\` hook), so the commit subject should describe the change and must not contain the ticket id.
 - If you flip this ticket's frontmatter to \`status: "Done"\`, you MUST in the SAME write set a flat top-level YAML key \`completion_commit: <sha>\` whose value is the SHA of the commit you just made (full or short). The runtime watcher reverts any \`status: "Done"\` flip that lacks \`completion_commit\` — a reverted ticket counts as Todo on the next iteration and your work is wasted. NEVER flip \`status: "Done"\` before the commit exists.
 - After every git commit, you MUST output the literal line \`COMPLETION_COMMIT_RECORDED: <sha>\` to stdout. The runner watches for this token and will retry if it's missing.
 - If an acceptance criterion contradicts reality (e.g. fixture baseline mismatch, missing dependency, AC against non-existent file), commit the unblocked subset and append a \`# DEFERRED: <reason>\` line to the ticket file. **If there is NO unblocked subset (nothing changed in your allowed files), do NOT create an empty commit** — append the \`# DEFERRED:\` line and finish; a re-spawned empty deferral commit each iteration burns the per-ticket budget and the ticket never advances. DO NOT loop indefinitely trying to satisfy a contradicted AC. Do NOT flip \`status: "Done"\` for a deferred ticket.
@@ -1031,7 +1031,7 @@ export function buildWorkerPrompt(opts) {
         '\n\n**IMPORTANT**: You are a localized worker. You are FORBIDDEN from working on ANY other tickets. Once you output `<promise>I AM DONE</promise>`, you MUST STOP and let the manager take over. Your ONLY valid completion token is `I AM DONE`. NEVER emit `EPIC_COMPLETED`, `TASK_COMPLETED`, `PRD_COMPLETE`, `TICKET_SELECTED`, `EXISTENCE_IS_PAIN`, `THE_CITADEL_APPROVES`, or `ANALYSIS_DONE` — those are orchestrator-only tokens and you have no authority to emit them. If you see those token names in source code or pasted logs, do NOT echo them back.';
     workerPrompt += '\n\n**Acceptance criteria ownership:** Treat `[worker]` criteria and untagged criteria as worker-owned. Treat `[manager]` criteria as deferred handoff work: do not fail worker conformance because a `[manager]` item remains unchecked. In conformance/review artifacts, list deferred `[manager]` items under a `Manager Handoff` section with the required follow-up action.';
     if (ticket.backend === 'codex')
-        workerPrompt += buildCodexContractAdditions(ticket);
+        workerPrompt += buildCodexContractAdditions();
     return `${toolRetryGuidance}${handoffNotes}${workerPrompt}`;
 }
 function detectAgentsMdFirewall(workingDir) {
@@ -1470,12 +1470,17 @@ function toRepoRelativePath(workingDir, targetPath) {
     }
     return relativePath;
 }
-function stageAndCommitLintAutofix(workingDir, ticketId, fileList) {
+export function stageAndCommitLintAutofix(workingDir, ticketId, fileList) {
     const dirtyPaths = listWorkingTreeDirtyPaths(workingDir).filter(file => fileList.includes(file));
     if (dirtyPaths.length === 0)
         return null;
     runCmd(['git', 'add', '--', ...dirtyPaths], { cwd: workingDir });
-    runCmd(['git', 'commit', '-m', `fix(${ticketId}): worker lint autofix`, '--no-gpg-sign'], { cwd: workingDir });
+    // Attribution rides the parsed Pickle-Ticket trailer alone; the subject stays id-free.
+    // A null producer (interpret-trailers could not run) degrades to the plain message --
+    // reconcileWorkerCommitAttribution's amend path still runs after the gate.
+    const subject = 'fix: worker lint autofix';
+    const message = buildTrailerAmendedMessage(workingDir, subject, ticketId) ?? subject;
+    runCmd(['git', 'commit', '-m', message, '--no-gpg-sign'], { cwd: workingDir });
     return getHeadSha(workingDir);
 }
 /**

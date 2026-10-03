@@ -18,7 +18,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { reconcileWorkerCommitAttribution } from '../bin/spawn-morty.js';
+import {
+  buildWorkerPrompt,
+  reconcileWorkerCommitAttribution,
+  stageAndCommitLintAutofix,
+} from '../bin/spawn-morty.js';
+import { readEvidence } from '../services/ticket-completion-evidence.js';
+
+// MREL-B4: an inherited prepare-commit-msg hook would stamp ITS ticket id into the fixtures.
+delete process.env.PICKLE_TICKET_ID;
+for (const k of Object.keys(process.env)) {
+  if (k.startsWith('GIT_CONFIG')) delete process.env[k];
+}
 
 const TICKET_ID = 'c46045a6';
 const HALLUCINATED_SHA = '224678f39759e1da0000000000000000deadbeef';
@@ -331,4 +342,78 @@ test('AP-EXT-ITER115-01: a declared path with a leading space is not trimmed awa
 
   assert.equal(result, c1, 'the untrimmed NUL listing preserves the leading space');
   assert.notEqual(result, c2, 'must not fall through to the window tip');
+});
+
+// ---------------------------------------------------------------------------
+// MREL-B4 (#58): attribution rides the Pickle-Ticket trailer alone; a ticket id in the
+// commit SUBJECT is neither required nor read (B-GITATTR WS-3 deleted message inference).
+// ---------------------------------------------------------------------------
+
+const B4_TICKET_ID = 'aaaa1111';
+
+/** Session dir holding the ticket under test plus one sibling ticket dir. */
+function makeB4Session() {
+  const sessionDir = makeTmp();
+  for (const id of [B4_TICKET_ID, 'bbbb2222']) {
+    fs.mkdirSync(path.join(sessionDir, id));
+    fs.writeFileSync(
+      path.join(sessionDir, id, `rick_ticket_${id}.md`),
+      `---\nid: ${id}\ntitle: "t"\nstatus: "In Progress"\n---\n# t\n`,
+    );
+  }
+  return sessionDir;
+}
+
+test('MREL-B4-1: a plain subject plus a Pickle-Ticket trailer attributes; the subject scope alone does not', () => {
+  const sessionDir = makeB4Session();
+
+  const trailered = initRepo();
+  commitFile(trailered.repoDir, 'a.txt', 'a\n', `fix: plain subject\n\nPickle-Ticket: ${B4_TICKET_ID}`);
+  const withTrailer = readEvidence({
+    sessionDir, ticketId: B4_TICKET_ID, workingDir: trailered.repoDir, startCommit: trailered.baseSha,
+  });
+  assert.equal(withTrailer.kind, 'committed');
+  assert.equal(withTrailer.via, 'scan');
+
+  const scoped = initRepo();
+  commitFile(scoped.repoDir, 'a.txt', 'a\n', `fix(${B4_TICKET_ID}): scoped subject`);
+  const withScopeOnly = readEvidence({
+    sessionDir, ticketId: B4_TICKET_ID, workingDir: scoped.repoDir, startCommit: scoped.baseSha,
+  });
+  assert.equal(withScopeOnly.kind, 'absent', 'a subject scope without the trailer is not attribution');
+});
+
+test('MREL-B4-2: the lint-autofix commit has an id-free subject and attributes by its parsed trailer', () => {
+  const sessionDir = makeB4Session();
+  const { repoDir, baseSha } = initRepo();
+  fs.writeFileSync(path.join(repoDir, 'base.txt'), 'base\nautofixed\n');
+
+  const sha = stageAndCommitLintAutofix(repoDir, B4_TICKET_ID, ['base.txt']);
+
+  assert.equal(sha, git(repoDir, ['rev-parse', 'HEAD']), 'returns the new HEAD');
+  assert.doesNotMatch(git(repoDir, ['log', '-1', '--format=%s']), new RegExp(B4_TICKET_ID));
+  assert.deepEqual(parsedTicketTrailers(repoDir, sha), [B4_TICKET_ID]);
+  const evidence = readEvidence({ sessionDir, ticketId: B4_TICKET_ID, workingDir: repoDir, startCommit: baseSha });
+  assert.equal(evidence.kind, 'committed');
+});
+
+test('MREL-B4-3: the codex contract no longer demands the ticket id in the commit subject', () => {
+  const repoRoot = makeTmp();
+  const prompt = buildWorkerPrompt({
+    ticket: {
+      task: 'finish the ticket',
+      ticketContent: '# Ticket',
+      ticketId: B4_TICKET_ID,
+      ticketPath: path.join(repoRoot, B4_TICKET_ID),
+      sessionRoot: repoRoot,
+      backend: 'codex',
+      isReviewTicket: false,
+    },
+    model: 'sonnet',
+    repoRoot,
+  });
+
+  assert.match(prompt, /Codex-specific contract additions/);
+  assert.doesNotMatch(prompt, /conventional-commit scope/);
+  assert.doesNotMatch(prompt, new RegExp(`fix\\(${B4_TICKET_ID}\\)`));
 });
