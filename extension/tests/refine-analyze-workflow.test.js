@@ -264,3 +264,43 @@ test('E2-5: command doc and README name the fallback line and the decompose phas
     assert.ok(fs.readFileSync(path.join(root, f), 'utf-8').includes(line), f);
   }
 });
+
+// C1+C2: both synthesis surfaces must ask for a `## Premises` ledger and an `## Open Decisions` table.
+const COMMAND_DOC_PATH = fileURLToPath(new URL('../../.claude/commands/pickle-refine-prd.md', import.meta.url));
+const commandDocLines = () => fs.readFileSync(COMMAND_DOC_PATH, 'utf-8').split('\n');
+/** The command doc's `## Step <n>:` section, cut at the next `## Step` heading (a step embeds `## ` FOM blocks). */
+function commandDocStep(n) {
+  const lines = commandDocLines();
+  const start = lines.findIndex((l) => l.startsWith(`## Step ${n}:`));
+  const end = lines.findIndex((l) => l.startsWith(`## Step ${n + 1}:`));
+  assert.ok(start > -1 && end > start, `## Step ${n}: and ## Step ${n + 1}: headings present (${start}, ${end})`);
+  return lines.slice(start + 1, end);
+}
+const LEDGER_RULES = [
+  /`## Premises` ledger/,
+  /`?\(verified\)`?\/`?\(hypothesis\)`? tag verbatim/,
+  /converging[^\n]*is not verification/,
+  /`## Open Decisions` table/,
+  /needs-human item\s+is never written under settled decisions\s+without a quoted human decision/,
+  /explicit (?:`none` row|row: `none`)/,
+];
+
+test('C1C2-1: the workflow synthesis prompt actually sent to the agent carries the Premises and Open Decisions rules', async () => {
+  const argsObj = defaultArgs(1);
+  const harness = makeHarness(argsObj);
+  const prompts = [];
+  const agent = harness.ambient[0];
+  harness.ambient[0] = (prompt, opts = {}) => {
+    if (opts.phase === 'synthesize') prompts.push(prompt);
+    return agent(prompt, opts);
+  };
+  await loadWorkflow()(...harness.ambient);
+  assert.equal(prompts.length, 1, 'one synthesis call');
+  for (const rule of LEDGER_RULES) assert.match(prompts[0], rule);
+});
+
+test('C1C2-2: the command doc writes both ledgers in Step 6 (Synthesize), not elsewhere', () => {
+  const step6 = commandDocStep(6).join('\n');
+  for (const rule of LEDGER_RULES) assert.match(step6, rule);
+});
+
