@@ -39,10 +39,7 @@ test('parseArgs: single known suite returns correct structure', () => {
 
 test('parseArgs: "all" expands to every known suite', () => {
   const result = parseArgs(['all', '--extension-root', EXTENSION_ROOT]);
-  assert.ok(result.suites.length >= 3, 'should expand to at least 3 suites');
-  assert.ok(result.suites.includes('readiness'));
-  assert.ok(result.suites.includes('correct-course'));
-  assert.ok(result.suites.includes('archaeology'));
+  assert.deepEqual(result.suites, ['readiness', 'correct-course']);
 });
 
 test('parseArgs: --write flag is captured', () => {

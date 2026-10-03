@@ -205,16 +205,68 @@ Step 5 text changes from "stop" to advisory. Re-pin `spawn-refinement-team.test.
 ≥ 1 and `computeRequirementCoverageGap(...).expectedRequirementIds.length` ≥ 1. Today: `0 0`. Control: an `AC-*` PRD's
 expected set is byte-identical.
 
-**E5 (small).** D-E5. AC: a `microverse.md` session reaches `inferMonitorMode` with 0 WARNs. Today: 1.
-`unknown-widget.md` still gives 1 WARN.
+**E5 — CUT (operator O-6, 2026-10-02).** Recorded only; no ticket.
 
 **E6 (small; after the merge-down).** D-E6. AC: the workspace fixture (dependency declared only in `packages/a`) →
 `dts ≥ 1`. Today: `0`. The root-declared control is unchanged.
 
-**F1 — per O-3.** If built: wire `runArchaeology` into setup, keyed on `git rev-parse HEAD:<target-rel>` under
-`getDataRoot()/archaeology/`. A hit copies into the session; any failure falls through. AC: with an injected spawn, a
-second setup on the same tree makes 0 spawns. To be measured at refinement. **F2, F3:** close on the evidence above, no
-tickets.
+**F1 (medium) — DELETE archaeology (operator O-3, 2026-10-02).** Correction to the draft's "0 callers": the pipeline
+never runs it (no setup/runner call site; 0 of 62 sessions hold `project-context.md`), but it is not isolated —
+`services/calibration-corpus.ts:3` imports `normalizeProjectContext`/`buildArchaeologyPrompt` from it and defines an
+`archaeology` calibration suite (`:9,:11,:61`); `bin/calibrate.ts:19` lists it; `bin/spawn-morty.ts:357` reads
+`state.flags.no_archaeology`; `state.archaeology` is defaulted in `services/state-manager.ts:547,736` and typed at
+`types/index.ts:113`; events `archaeology_complete`/`archaeology_skipped` are declared at `types/index.ts:776-777`.
+- **Delete:** `extension/src/bin/archaeology.ts` (+ compiled mirror), `extension/tests/archaeology.test.js`, the
+  `archaeology` calibration suite and its corpus rows, the `calibrate.js` usage member, the `no_archaeology` flag read,
+  the stale `PRD_GUIDE.md` reference, and test fixtures that exist only to exercise these.
+- **Keep read-tolerant (no schema bump, no migration):** an old `state.json` carrying `archaeology` and an old
+  activity log carrying the two event names must still load. Removing the WRITER of `state.archaeology` and the
+  event declarations is allowed only if every reader/validator still accepts the old values; otherwise keep the
+  declaration and record why. `LATEST_SCHEMA_VERSION` is untouched (Worker Forbidden Ops).
+- **AC:** `git grep -c "from '../bin/archaeology.js'\|archaeology.js" -- extension/src` returns 0 (today: 2), and
+  `cd extension && node --test tests/state-manager.test.js tests/activity-logger.test.js` passes with a fixture state
+  holding `archaeology: {…}`. **F2, F3:** close #5 on the evidence above at branch merge; no tickets.
+
+## Interface Contracts (added at refinement readiness, 2026-10-02 — derived from the Decisions section)
+
+- **A1** `runConfiguredPhase` (pipeline-runner.ts): one `const missing = unreproducibleNodeModulesCount(gitRepoRoot(runtime.target))`
+  computed once per phase BEFORE both parallel arms; `missing > 0` → neither `runAnatomyLanes` nor `runPickleWaves`
+  runs; log `<lanes|waves>: disabled for this phase — lane worktrees cannot reproduce N node_modules dir(s); running serially`.
+  Signature unchanged: `unreproducibleNodeModulesCount(repoRoot: string): number`.
+- **A2** `services/anatomy-lanes.ts`: `findNodeModulesDirs(repoRoot: string, maxDepth = 3): string[]` (repo-relative,
+  never descends into a `node_modules`) is the ONE walk shared by linker and predicate.
+  `replicateLaneNodeModules(repoRoot: string, worktree: string): { replicated: string[]; unreproducible: string[] }`
+  replaces `symlinkLaneNodeModules` at both call sites (lane + unit); `LaneOutcome.node_modules_linked` keeps its
+  `string[]` type (= `replicated`). Never throws; a per-dir failure lands in `unreproducible`.
+  `unreproducibleNodeModulesCount` = `findNodeModulesDirs(...)` entries the replica cannot create (dry, no worktree).
+- **A3** `field-timing.py --json` per-session object gains `wave_widths: number[]`, `impl_subphase_min: number | null`,
+  `anatomy_passes: number` (lane-summed); `--unit-*`/`--lane-*` dirs are never rows.
+- **A4** wave member log line: `pickle waves: <ticket> integrated (integration typecheck unavailable)` + phase-end
+  `pickle waves: N member(s) integrated over an unavailable integration typecheck`. No verdict input.
+- **B1** refined PRD table `## Premises` columns: `| claim | file:line | status (verified|hypothesis) | verifier |`.
+  `buildAnatomyPrd` renders `## Dependency Lens (review-only)` listing the distinct `file` values outside the
+  session's allowed paths; findings there are tagged `[report-only: dependency-lens]`.
+- **C1/C2** synthesis output sections: `## Premises` (as B1) and `## Open Decisions`
+  (`| item | raised by | options | owner | status: open |`). A needs-human item never appears under settled decisions
+  without a quoted human decision.
+- **C3** readiness advisory finding `{ kind: 'ac_unowned', id: string, reason: 'not-in-scope-only' | 'unmapped', advisory: true }`
+  in the existing readiness findings array; exit code unchanged.
+- **C8** worker prompt sentence `Expected-value source:`; template Test Expectations header
+  `| Criterion | Test File | Description | Assertion | Source |`.
+- **D4a** `buildAcCoverageScorecard(criteria, ctx)` return shape unchanged (`{ rows: { id, implemented, tested, … }[] }`);
+  only the lexical evidence path is removed.
+- **D4b** citadel report `sections.decision_required: { id: string; kind: 'dropped' | 'weakened'; source: 'prd.md'; refined: 'prd_refined.md' }[]`.
+- **D7b** end-of-run panel line `dropped findings (conf>=25): N in <file>[, <file>…]`; anatomy prompt line format
+  `- <finding> — conf=<n> — cat=<category> — <reason>`.
+- **E1** `export async function reportBaseDrift(runtime: PipelineRuntime): Promise<void>` — logs
+  `base drift: CONFLICT <path>` per path, or `base drift: clean (<base>)`, or `base drift: unmeasured (<reason>)`;
+  bounded `git fetch` timeout; never throws; never changes the exit code.
+- **E2** `refine-analyze.js` gains `phase('decompose')` returning `{ tickets: { id: string; path: string }[] }`; the
+  command doc's workflow path skips inline Step 7.
+- **E3** `reportAdvisoryGateVerdict('ac-shape gate', …)` at the `main()` call site; process exit 0 on a smell.
+- **E4** `definedRequirementIdsInLine(line: string, opts: { generic: boolean }): string[]` in one shared service;
+  `generic` is true only when the PRD defines no `AC-*` id.
+- **E6** external `.d.ts` resolver reads declared dependencies from every `getWorkspacePackages` dir (caps unchanged).
 
 ## Ordering and dependencies
 
@@ -316,3 +368,212 @@ wave path, not a speed result.**
 - **O-4 — close #5, #52 and #53 only when the branch merges to `main`,** with evidence comments then.
 - **O-5 — record only:** the trap-door catalog size residual is not in this bundle.
 - **O-6 — E5 is cut** (cosmetic; recorded, no ticket).
+
+---
+
+## Refinement (3 analysts × 3 cycles, session `2026-10-02-be104839`, measured at `1bacc67a`) — SUPERSEDES the sections above where they differ
+
+*(refined: all 9 analyses succeeded; `all_success: true`, `missing_requirement_ids: []`. The AC-shape gate exited 2 on one
+analyst decomposition hint (C8b lacked a `describeEach` acceptance test); the hint's title is already universal and the
+ticket below carries the requested parametrized check, so refinement proceeded without a re-run. The symbol audit's 5
+"PHANTOM" entries are prose words on PRD line 41 (field names, a session id), not code symbols — the #54 F4 class.)*
+
+### Run config (refined — the precondition is satisfied) *(refined: risk-scope c3)*
+- `exp/b-parallel-build@1bacc67a` contains the B-RUNREPORT-54 + B-DEPLOYPARITY merge-down and is DEPLOYED, byte-identical
+  (gate `20261002T220652Z-75128` 22/22). The beta soak on `exp/b-lanes` is paused, not "ended", while this runs.
+- `pipeline.json`: `max_parallel_tickets: 2`, `anatomy_max_parallel_lanes: 2`, `scope: branch`,
+  `scope_base: 1bacc67a273d185266945443d51a78f7a2c45dc8`. Pre-launch: `git merge-base --is-ancestor 1bacc67a HEAD` exits 0.
+  **Never pin `origin/main`** — it is not an ancestor of this branch and halts setup with `scope_base_ahead_of_head`.
+- Iteration caps unchanged (500; measured 0.4–4 iterations/ticket). Commit the refined PRD before launch.
+- **Gate legs 22 → 22. Verdict-input deltas, each measured by an AC:** D4a lexical-only losses emit at `Medium` (below the
+  remediation threshold); C3 reuses `kind: 'advisory'` (readiness exit unchanged); E4's citadel half waits for D4a and its
+  FR-only flip count is recorded. *(refined: replaces "no verdict input", falsified three ways)*
+
+### CUJ-OP-1 — the operator reads a finished B-MEGA run *(refined: requirements c2)*
+1. At a phase start `pipeline-runner.log` shows `anatomy lanes: disabled for this phase — …` or `pickle waves: disabled for
+   this phase — …` only when a parallel arm was eligible and `missing > 0` (A1).
+2. During pickle each wave member line ends ` (integration typecheck unavailable)` when the check could not run, plus one
+   phase-end `pickle waves: N member(s) integrated over an unavailable integration typecheck` when N > 0 (A4).
+3. The final activity block prints, in order: kept lane branches → `base drift: base=<ref>` then `CONFLICT <path>` /
+   `clean` / `unmeasured (<reason>)` (E1) → `dropped findings (conf>=25): N in <files>` (D7b, printed even when N = 0).
+   All are LOG LINES (one sink).
+4. Action map: `CONFLICT` → rebase before merging; `unmeasured` → run `git merge-tree --write-tree <base> HEAD` by hand;
+   dropped N > 0 → read the files; unavailable integration → a lone typecheck re-run. No line changes the exit code or the
+   success verdict.
+
+### Fixtures *(refined: requirements c3 — none of the PRD's named fixtures exist in the repo)*
+Every fixture is BUILT IN-TEST under `os.tmpdir()` in the ticket's own test file (a committed `node_modules` is
+gitignored; a separate fixture file is a scope-violation risk). Shapes are stated per requirement below.
+
+### Refined requirements (each replaces the same-named entry above)
+
+- **A1 (medium).** Guard + hoist: `const parallelArm = lanes.length >= 2 || (phaseConfig.name === 'pickle' &&
+  runtime.config.max_parallel_tickets >= 2); const missing = parallelArm ? unreproducibleNodeModulesCount(gitRepoRoot(runtime.target)) : 0;`
+  A throw from the count → treat as `missing > 0` (fail to serial). Literals: `anatomy lanes: disabled …` stays
+  BYTE-IDENTICAL (pinned `tests/pipeline-runner.test.js:5870`/`:5884`); new `pickle waves: disabled for this phase — lane
+  worktrees cannot reproduce N node_modules dir(s); running serially`. Fixture: tmp repo, root `package.json`
+  (`workspaces: ["packages/*"]`), `node_modules/`, `packages/a/node_modules/`, two `parallel_safe: true` tickets. AC: the
+  serial runner gets the parent session dir, no `<session>--unit-*` dir, the waves literal is logged. Controls: root-only
+  fixture still runs waves; a serial pickle phase logs neither line.
+- **A2 (large).** As contracted, at all THREE call sites (lane creation, unit creation, and `integrateLanes`' `preserve`
+  prefixes, `anatomy-lanes.ts:~398`, which must preserve the replica during `resetToSha`). Fixture: A1's plus
+  `packages/b/index.ts` and relative symlink `packages/a/node_modules/@s/b → ../../../b`. AC: `realpathSync(<wt>/packages/a/
+  node_modules/@s/b/index.ts)` is under `<wt>` (today under `<main>`), and the predicate → `0` (today `1`). Record
+  `node_modules_linked` per lane/unit in `lanes.json` (existing field). **R9 (common mode) applies** — see Risks.
+- **A3 (small; research tool, no runtime change).** `field-timing.py` (takes `SESSIONS_DIR` positionally; no argparse —
+  never rely on `--help`). Committed synthetic fixture sessions under `prds/research/tools/fixtures/`: (a) `waves/` — two
+  `parallel_safe: true` tickets + `pickle waves: wave 1 members=… in_flight=2` + member outcome lines → `wave_widths ==
+  [2]` and `impl_subphase_min ==` the hand value; (b) `serial/` — two `parallel_safe: true` tickets + two `[done-guard]`
+  lines → their interval; (c) `lanes/` — copies of `2026-10-01-face240c`'s lane `anatomy-park.json` files →
+  `anatomy_passes == 13` (today 0); (d) `<s>--unit-1/` holding a ticket dir → no row. Also emit
+  `wave_member_failed_then_serial_done` (the fake-red estimate, R2). Do NOT write an AC for lane-dir exclusion (true today).
+- **A4 (medium).** In `pipeline-runner.ts` ONLY (reads `integration.checks` from `integrateLanes`' return; does NOT edit
+  `anatomy-lanes.ts`). Literals as CUJ step 2. Fixture: a wave whose target has no runnable typecheck. Today 0 occurrences.
+- **B1 (medium; after C1).** `buildAnatomyPrd` parses the refined PRD's `## Premises` table and renders `## Dependency Lens
+  (review-only)`; logs `dependency lens: N premises parsed (M outside allowed paths)` (N=0 when absent — never silent).
+  Findings tagged `[report-only: dependency-lens]`; the rubric's pre-existing-lines false-positive bullet
+  (`szechuan-sauce-principles.md:~88`) gains the matching exception. ACs: on an in-test session (allowed path `src/alpha`,
+  a Premises row citing `src/beta/x.ts`) `grep -c 'src/beta' <session>/prd-anatomy-park.md` ≥ 1 (today 0); no table → the
+  log line with N=0; `grep -c 'dependency-lens' extension/szechuan-sauce-principles.md` ≥ 1 (today 0).
+- **B2 + D7a (small, doc).** `szechuan-sauce-principles.md`: an "existing writers" protocol check (a new writer to a table
+  with writers lists their locks/transaction boundaries/advisory keys and requires parity or a written reason), and the
+  `:~92` "stated intent of the change" bullet makes a PRD-says-so-only exoneration of a correctness/concurrency finding
+  `[report-only: spec-suspect]`. ACs: `grep -ciE 'other writers|existing writers'` ≥ 1 (today 0); `grep -c 'report-only:
+  spec-suspect'` ≥ 1 (today 0). Conformance: no client names, paths, schema names or quoted finding text.
+- **C1 + C2 (small, doc).** Both synthesis surfaces (`.claude/commands/pickle-refine-prd.md` Step 6, `.claude/workflows/
+  refine-analyze.js` synthesis prompt) emit `## Premises` and `## Open Decisions` per the contracts; analyst
+  `(verified)`/`(hypothesis)` tags copied verbatim; "analysts converge" is not verification; a needs-human item is never
+  written under settled decisions without a quoted human decision; an empty ledger is written as an explicit "none"
+  row. The optional machine check (D-C1) is OUT. ACs: each grep ≥ 1 in both files (today 0/0/0/0; presence checks, not
+  behaviour). Same conformance line as B2.
+- **C3 (medium; after E4).** Finding shape `{ ticket: 'manifest', kind: 'advisory', analyst: 'gaps', message, detail:
+  '<id>: not-in-scope-only' | '<id>: unmapped' }` — NO new `kind` member (the blocking filter `check-readiness.ts:1246`
+  is a negative enumeration). The `AC-DR-*` widening goes through E4's shared rule, not a second regex. Edge cases: an id
+  both `prd_map`-missing and unowned emits `prd_map` only; an id under NOT in Scope that a ticket body also names is owned.
+  ACs on an in-test PRD + ticket dir: readiness exits 0 and prints `AC-DR-1: not-in-scope-only` and `AC-1: unmapped`
+  (today neither); the existing `prd_map` control still exits 2.
+- **C8a (small).** `spawn-morty.ts` `buildTierLifecycleSections` renders `Expected-value source:` for every tier. AC on
+  RENDERED output: `buildTierLifecycleSections(<phases>, t)` contains it for one tier per lifecycle shape (today 0).
+- **C8b (small, doc).** All six Test Expectations tables in `pickle-refine-prd.md` (`:270, :352, :458, :556, :657, :764`)
+  gain a `Source` column and a fifth separator cell. ACs: `grep -c '| Criterion | Test File | Description | Assertion |
+  Source |'` returns 6 (today 0) AND `grep -c '| Criterion | Test File | Description | Assertion |$'` returns 0 (today 6).
+- **D4a (medium).** Replace `CoverageSeverity` (`ac-coverage-scorecard.ts:8`) with `CitadelSeverity` (`reporter.ts:1`);
+  rows whose credit came only from removed lexical evidence emit at `Medium` with message prefix `lexical-only:` (below
+  `REMEDIATION_SEVERITY_THRESHOLD`; advisory via `partitionCitadelCycleFindings`; not claimed by the mechanical
+  classifier). Remove `keywordAnchors` from row and finding (no other reader). KEEP `isUsableIdentityToken`/`COMMON_WORDS`
+  (they guard `extractSymbolName`, AP-EXT-ITER286-01 pin stays green unmodified). Edit the `src/services/CLAUDE.md:~189`
+  export row. ACs: the in-test fixture (`src/label.ts` `export function formatLabel(s: string) { return s.trim(); }`,
+  `src/other.test.ts` importing nothing, neither containing `AC-1`) prints exactly `false false` (today `true true`);
+  `findings[0].severity === 'Medium'`; control: an `AC-1` literal in a changed production line → `implemented true`.
+  Completion note: the replay severity distribution over local `citadel_report.json` files. **R10 (Goodhart)** applies.
+- **D4b (medium; cut-first if the bundle runs long; after E4).** Source = `<session>/prd-pickle.md` if present, else
+  `prd.md` (`prd.md` is overwritten by anatomy/szechuan setup, `pipeline-runner.ts:~3761/~3919`). Emit `dropped` only
+  (`weakened` cut): ids defined in the source (E4 rule) and absent from `prd_refined.md`, each a `CitadelDecision { id:
+  '<id>-dropped', severity: 'Medium', message, evidence: ['<source>:<line>'] }` from a new section exposing
+  `decisionsRequired`. `buildCitadelAuditReport` derives `decisionRequired` from EVERY section's `decisionsRequired`
+  (`Object.values(sections).flatMap(…)`) instead of naming two — a collapse, not a third member. Absent source or refined
+  PRD → `[]`, never a throw. ACs: `AC-3` in `prd-pickle.md`, absent in `prd_refined.md` → one decision naming `AC-3`;
+  control: `prd.md` is an "Anatomy Park" PRD and `prd-pickle.md` matches `prd_refined.md` → 0. Measured population today:
+  0 dropped ids over 11 eligible sessions.
+- **D7b (medium).** One log line (CUJ step 3), searching `${SESSION_ROOT}/<subsystem>/dropped_findings.md` one level under
+  the parent and each `--lane-*` sibling; zero case prints `0`. `.claude/commands/anatomy-park.md` line format gains
+  `cat=<category>` (free text, not an enum). Remove the stray committed `extension/dropped_findings.md` and its
+  `extension/CLAUDE.md:~135` cite (0 test readers, measured). ACs: an in-test session with one lane file holding two
+  conf≥25 lines → `dropped findings (conf>=25): 2 in …` (today: no such line); zero case prints `0`;
+  `git ls-files extension/dropped_findings.md | wc -l` returns 0 (today 1).
+- **E1 (medium).** `export function reportBaseDrift(runtime: PipelineRuntime): void` — SYNC (the caller
+  `writeFinalPipelineActivity` is sync). Base = `resolveSetupScopeBaseRef(repoRoot)` with exactly ONE argument (passing
+  the session `scope_base` is the vacuous pass-through, `:895-896`). `git fetch --no-tags origin <single ref>` (no refspec
+  mapping; only `FETCH_HEAD`), 15 000 ms timeout; on fetch failure compare against the local ref labelled `(stale)`. Its
+  own `execFileSync` with `timeout`, reading stdout on exit 1 (`runGitString` swallows exit 1, which is how `merge-tree
+  --write-tree` reports a conflict). Never throws; never touches the exit code. ACs on one in-test repo with an `origin`
+  remote: conflicting upstream with `scope_base` = HEAD → `base drift: CONFLICT <path>` (the pass-through control);
+  non-conflicting → `base drift: clean (<ref>)`; no remote → `base drift: unmeasured (`; pipeline exit equals the no-E1
+  baseline in all three. Field observation for the closer: on this run it reads `clean` (origin/main differs only by
+  MASTER_PLAN commits).
+- **E2 (medium, narrowed).** Opt-in workflow path only (`PICKLE_REFINE_WORKFLOW=on`); legacy default and inline Step 7
+  unchanged. The phase covers 7a–7e; Step 7g (state handoff) stays with the command (a workflow agent writing `state.json`
+  is a Worker Forbidden Op). Throw or 0 tickets → the command runs inline Step 7 and logs `decompose phase: fallback to
+  inline Step 7 (<reason>)`. `meta.phases` becomes `['analyze','synthesize','decompose']`;
+  `tests/refine-analyze-workflow.test.js` gains a `decompose` branch. README per the Documentation Rule. ACs: `grep -c
+  "phase('decompose')"` ≥ 1 (today 0); the command doc names the fallback line; the returned `{tickets}` is an agent's
+  report, so the behavioural check is ≥ 1 `rick_ticket_*.md` with `complexity_tier` on disk.
+- **E3 (medium).** `spawn-refinement-team.ts:~3058` `if (acShapeStatus !== 0) process.exit(acShapeStatus);` becomes
+  `reportAdvisoryGateVerdict('ac-shape gate', acShapeStatus);` (mirror `:~3068`). Wording: "AC shape gate FAILED" → "AC
+  shape advisory"; drop the `Override:` line; KEEP `--skip-ac-shape-gate` (removing a CLI arg is Major). Touch-set: the
+  helper docblock (`:~2338-2342`), `tests/spawn-refinement-team-checker.test.js:~1637-1655` (invert to assert the advisory
+  call and the new doc text), `tests/spawn-refinement-team.test.js:~1019`, the AP-EXT-ITER234-01 BREAKS clause in
+  `src/bin/CLAUDE.md:~36` ("returns 2, reported advisory"), `.claude/commands/pickle-refine-prd.md` Step 5 ("stop and fix"
+  → advisory). ACs: `main()` over the unjustified-fanout manifest exits 0 with stderr `ac-shape gate advisory: exited 2`;
+  control: a clean manifest emits no `ac-shape gate advisory`; `grep -c 'stop and fix' .claude/commands/pickle-refine-prd.md`
+  returns 0 (today 1).
+- **E4 (medium).** Export from ONE new service `extension/src/services/requirement-ids.ts`:
+  `requirementIdsInPrd(markdown: string): string[]` (decides `generic` once: the generic `<UPPER>-<n>` form only when the
+  PRD defines no `AC-*` id; no prefix list) and `definedRequirementIdsInLine(line: string, idRe: RegExp): string[]`.
+  Refinement (`spawn-refinement-team.ts:~2064/~2081`) and readiness (`check-readiness.ts:~707`) adopt it. **Citadel's
+  `prd-parser.ts` adoption only after D4a lands** (otherwise new FR-only rows arrive Critical). ACs: an in-test FR-only
+  PRD → `parsePrdFile(…).acceptanceCriteria.length ≥ 1` and `computeRequirementCoverageGap(…).expectedRequirementIds.length
+  ≥ 1` (today `0 0`); control: an `AC-*` PRD's expected set is byte-identical; self-hosting control: this PRD's prose
+  `AC-1`/`AC-3`/`AC-DR-1` yield 0 defined criteria. Completion note: over `prds/**/*.md` FR-only PRDs, the count whose
+  expected set goes 0 → > 0, and the `acceptanceCriteria.length` delta.
+- **E6 (medium).** The external `.d.ts` resolver reads declared dependencies from the UNION (de-duplicated) of
+  `[root, extension]` and `getWorkspacePackages(repoRoot)` — the enumerator alone returns `[]` on this repo and would drop
+  `extension/`. Caps unchanged. ACs: in-test workspace fixture (dependency declared only in `packages/a`) → `dts ≥ 1`
+  (today 0); control: `collectExternalDtsFiles(<this repo>)` byte-identical before/after.
+- **F1 (large).** Delete per O-3. Allowed paths = `git grep -l -i archaeology -- extension/ PRD_GUIDE.md package.json`
+  MINUS `extension/src/services/state-manager.ts` and `extension/src/types/index.ts` (their archaeology members stay; the
+  `V3_STATE_SHAPE_MARKERS` marker matters for schema-less legacy states). Also the orphaned `project-type-classifier`,
+  `readProjectContextBlock`/`isArchaeologyDisabled` in `spawn-morty.ts`, and the `calibrate:archaeology` npm script. ACs:
+  `git grep -l "archaeology.js" -- extension/src | wc -l` returns 0 (today 2); NEW legacy-load controls (labelled controls,
+  green before and after): a state with `archaeology: {…}` and an activity log with `archaeology_complete` both load.
+
+### Risks added *(refined: risk-scope c3)*
+- **R2 bound.** A3's `wave_member_failed_then_serial_done` is the fake-red estimate; the closer reports it.
+- **R9 (A1/A2 common mode).** The predicate shares the linker's walk, so a replica that exists but resolves wrongly reads 0
+  and the serial fallback does not fire. Field falsifier: a lane/unit gate fails `Cannot find module`/`ERR_MODULE_NOT_FOUND`
+  while the main checkout passes. Action: `max_parallel_tickets: 1` + `anatomy_max_parallel_lanes: 1` in that repo's
+  `pipeline.json`, file against A2 with the path. The first monorepo field run reports per-lane `node_modules_linked`.
+- **R10 (D4a Goodhart).** Falsifier: added `AC-` literals in remediator commits under `extension/src`. Action: keep the
+  `Medium` routing (it removes the remediation pressure).
+
+### Ordering *(refined)*
+A1 → A2 (A4 independent; file-disjoint from A2). C1 → B1. E4 → C3, E4 → D4b, D4a → E4's citadel half. C8b after C1+C2
+(same file). E3 and E2 touch `pickle-refine-prd.md` after C8b. F1 last of the implementation tickets (widest file set).
+
+### Wiring ticket — skipped *(refined)*
+Each item lands in an existing surface and is exercised by its own end-to-end AC (A1/A4 through `main()`, E1 at
+`writeFinalPipelineActivity`, D4b in `buildCitadelAuditReport`); no new module needs mounting. The four hardening tickets
+run last over the union of files.
+
+### Tiers *(refined: consensus)*
+large: A2, F1 · medium: A1, A4, B1, C3, D4a, D4b, D7b, E1, E2, E3, E4, E6 · small: A3, C8a · small doc-only: B2+D7a,
+C1+C2, C8b. **19 implementation tickets + 4 hardening = 23.**
+
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Tier | Entry (deps) | Exit | Files |
+|---|---|---|---|---|---|---|---|
+| 10 | `305f9d98` | Pickle waves and anatomy lanes fall back to serial behind one eligibility-guarded node_modules predicate | High | medium | none | ACs green, committed | 3 |
+| 20 | `dd9db0ea` | Wave members disclose an unavailable integration typecheck in the log (pipeline-runner only) | High | medium | none | ACs green, committed | 3 |
+| 30 | `62ccbcf4` | A finished pipeline reports drift against its base branch without touching the exit code | High | medium | none | ACs green, committed | 3 |
+| 40 | `eecd4ce2` | The run summary reports dropped findings (conf>=25) and the stray committed dropped_findings.md is removed | High | medium | none | ACs green, committed | 6 |
+| 50 | `d2db0da1` | Lane and unit worktrees replicate nested workspace node_modules so relative workspace links resolve inside the worktree | High | large | `305f9d98` (A1) | ACs green, committed | 6 |
+| 60 | `da045ce1` | field-timing.py reports wave widths, the implementation sub-phase and lane-summed anatomy passes from committed fixtures | High | small | none | ACs green, committed | 2 |
+| 70 | `228074bc` | The review rubric checks existing writers' protocols and tags PRD-says-so exonerations report-only: spec-suspect | High | small | none | ACs green, committed | 1 |
+| 80 | `18f65637` | Both refinement synthesis surfaces write a Premises ledger and an Open Decisions table | High | small | none | ACs green, committed | 2 |
+| 90 | `d87c5ec0` | Every worker lifecycle tier renders an Expected-value source rule | High | small | none | ACs green, committed | 3 |
+| 100 | `e23660a5` | Every Test Expectations table in the refinement template carries a Source column | High | small | `18f65637` (C1C2) | ACs green, committed | 1 |
+| 110 | `541cc02b` | Anatomy-park renders a review-only Dependency Lens from the refined PRD Premises ledger | High | medium | `18f65637` (C1C2), `228074bc` (B2D7a) | ACs green, committed | 4 |
+| 120 | `4ff809e5` | Citadel AC coverage drops lexical keyword credit and routes lexical-only losses at Medium | High | medium | none | ACs green, committed | 4 |
+| 130 | `72e52d1f` | One shared requirement-id rule serves refinement, readiness and citadel | High | medium | `4ff809e5` (D4a) | ACs green, committed | 12 |
+| 140 | `73a487de` | Readiness reports acceptance criteria owned only by NOT in Scope, or by nothing, as advisory findings | High | medium | `72e52d1f` (E4) | ACs green, committed | 4 |
+| 150 | `374ad1c3` | Citadel reports requirement ids the refined PRD dropped, derived from every section decisionsRequired | High | medium | `72e52d1f` (E4) | ACs green, committed | 3 |
+| 160 | `4489720b` | The external .d.ts resolver reads every workspace package plus root and extension | High | medium | `73a487de` (C3) | ACs green, committed | 3 |
+| 170 | `2f9606ec` | The refinement AC-shape gate reports advisory instead of stopping refinement | High | medium | `e23660a5` (C8b), `72e52d1f` (E4) | ACs green, committed | 7 |
+| 180 | `d287216a` | The opt-in refinement workflow gains a decompose phase with an inline-Step-7 fallback | High | medium | `2f9606ec` (E3) | ACs green, committed | 4 |
+| 190 | `44e235da` | Delete the never-run archaeology module and everything that exists only for it, keeping legacy state and logs loadable | High | large | `d287216a` (E2) | ACs green, committed | 37 |
+| 200 | `b7b650b7` | Harden: code quality review of B-MEGA | High | large | all implementation tickets | ACs green, committed | 42 |
+| 210 | `ba2159ca` | Audit: data flow integrity for B-MEGA | High | large | all implementation tickets | ACs green, committed | 42 |
+| 220 | `35818690` | Harden: test quality review of B-MEGA | High | large | all implementation tickets | ACs green, committed | 29 |
+| 230 | `9908237e` | Audit: cross-reference consistency for B-MEGA | High | medium | all implementation tickets | ACs green, committed | 8 |

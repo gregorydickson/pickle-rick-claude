@@ -10,7 +10,7 @@ This skill is **file-based, not harness-task-based**. The authoritative task lis
 
 **Do NOT use TaskCreate / TaskUpdate / TaskList / TodoWrite during this skill.** The harness will inject "consider using TaskCreate" reminders during long loops (Step 4b parallel waits, Step 7c per-ticket loop, Step 7e hardening loop). Those reminders are turn-based nags, not project requirements — ignore them and continue the file-based work.
 
-If stale harness tasks exist at handoff (Step 7g), mark them `deleted` before advancing state — orphan tasks pollute downstream `/pickle-tmux --teams` mode.
+If stale harness tasks exist at handoff (Step 7g), mark them `deleted` before advancing state.
 
 ## Step 0: Parse Flags
 `$ARGUMENTS`: `--run` → AUTO_RUN. `--resume [PATH]` → RESUME_MODE (reuse existing session). `--model <id>` → REFINE_MODEL (strip from `${TASK_ARGS}`; overrides `default_refinement_model` for this run). Remainder = `${TASK_ARGS}`.
@@ -106,8 +106,15 @@ variables — no `analysis_*.md` disk round-trip) and a synthesis agent that wri
 and `refinement_manifest.json` to `${SESSION_ROOT}` and returns:
 
 ```
-{ sessionDir, refinementDir, manifestPath, manifest, analyses, allSuccess }
+{ decompose, sessionDir, refinementDir, manifestPath, manifest, analyses, allSuccess }
 ```
+
+The workflow's third phase, `decompose`, runs Steps 7a–7e (parent, child, wiring and hardening tickets);
+Step 7g (state handoff) always stays with this command. `decompose` is `{ tickets }`, plus `fallback: <reason>`
+when the phase threw or reported 0 tickets. In that case log
+`decompose phase: fallback to inline Step 7 (<reason>)` and run Step 7 below inline. Otherwise treat
+`decompose.tickets` as the agent's report only: confirm at least one `${SESSION_ROOT}/*/rick_ticket_*.md` with
+`complexity_tier` exists on disk (else use the same fallback line), then continue at Step 7f.
 
 **Consume the returned `manifest` / `manifestPath` directly** in place of the legacy `MANIFEST=` /
 `REFINEMENT_DIR=` stdout parse. Then skip Steps 4a–4c and go to Step 5.
@@ -141,7 +148,7 @@ Read `${SESSION_ROOT}/refinement_manifest.json` (on the workflow path this is th
 agent wrote; the returned `manifest` object mirrors it). Warn on failed workers, continue with
 available `analysis_*.md` + original PRD.
 
-If `spawn-refinement-team.js` exits `2` with an AC-shape collapse-or-justify failure, stop and fix the PRD/ticket shape before continuing:
+If `spawn-refinement-team.js` stderr reports an `ac-shape gate advisory` (AC-shape collapse-or-justify findings; refinement still completes and exits 0), treat it as advisory and fix the PRD/ticket shape when practical:
 - Rewrite the smelly AC as one invariant-shaped acceptance criterion using a universal quantifier such as "all", "every", or "for any"; then rerun refinement.
 - Or keep the multi-ticket decomposition only when every split ticket has a manifest `justification` value containing a `// JUSTIFICATION:` block explaining why collapse is wrong.
 
@@ -163,7 +170,7 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 <!-- END FOM_HONEST_REPORTING_RULES -->
 
 > **Workflow path:** `prd_refined.md` was already written by the workflow's synthesis agent in
-> Step 4-WF. Verify it exists and is non-empty, then continue to Step 7. Do NOT re-synthesize.
+> Step 4-WF. Verify it exists and is non-empty, then continue to Step 7 (skipped when the workflow's `decompose` phase succeeded — see Step 4-WF). Do NOT re-synthesize.
 
 **Legacy path:** Write `${SESSION_ROOT}/prd_refined.md`. Rules:
 1. Preserve structure, additive over rewriting
@@ -177,6 +184,8 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 9. Contracts required: exact I/O/error shapes per boundary. Missing = failure.
 10. Test expectations: file paths, descriptions, assertions per requirement
 11. LLM conformance-ready: requirements phrased for yes/no answer. Rewrite ambiguous ones.
+12. `## Premises` ledger: one row per premise the PRD rests on — claim, tag, evidence. Copy each analyst `(verified)`/`(hypothesis)` tag verbatim; analysts converging on a claim is not verification. No premises → write one explicit row: `none`.
+13. `## Open Decisions` table: one row per unresolved or needs-human item — decision, options, owner. A needs-human item is never written under settled decisions without a quoted human decision. No open decisions → write one explicit row: `none`.
 
 ## Step 7: Task Decomposition
 
@@ -233,6 +242,8 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 
 Hash: `openssl rand -hex 4`. Dir: `${SESSION_ROOT}/[hash]/`. File: `rick_ticket_[hash].md`:
 
+Stamp `parallel_safe: true` only when the ticket needs no other bundle ticket to have landed first and touches no package manifest/lockfile.
+
 ```markdown
 ---
 id: [hash]
@@ -240,6 +251,7 @@ title: "[verb + target]"
 status: Todo
 priority: [High|Medium|Low]
 order: [N]
+parallel_safe: true
 working_dir: [path or omit]
 source_prd: [source PRD path for manifest/bundle decompositions; omit only when not applicable]
 source_section: [source heading/section for mapped requirements; omit only when not applicable]
@@ -265,8 +277,8 @@ links:
 - Use `verify_pre:` only for criteria that must be checked before implementation and are expected to pass at readiness time.
 - Default criteria are `verify_post` and are checked after implementation; omit the prefix unless a pre-flight check is intentional.
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
 ## Conformance Check
 - [ ] Type checker passes — no new errors
 - [ ] Test runner passes — all acceptance tests
@@ -347,10 +359,10 @@ All prior tickets are complete and individually verified.
 - [ ] [Library] Public API surface matches Interface Contracts — Verify: `${TEST_CMD}` exercises all exports — Type: integration
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| [Application] Full app runs | test/e2e/ or test/integration/ | Launch app, exercise top-level features | No errors, all routes/handlers respond |
-| [Library] API surface works | test/integration/ | Import public API, call each export | All exports resolve, return expected types |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| [Application] Full app runs | test/e2e/ or test/integration/ | Launch app, exercise top-level features | No errors, all routes/handlers respond | <source of expected value> |
+| [Library] API surface works | test/integration/ | Import public API, call each export | All exports resolve, return expected types | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -453,10 +465,10 @@ All prior tickets are complete and individually verified. Test suite passes.
 - [ ] Type checker passes — Verify: `${TC_CMD}` — Type: typecheck
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| P1 violation fixes | Alongside each fix | Regression test per behavioral fix | Exercises the specific failure mode |
-| Edge cases | In existing test files | Error/boundary tests for modified code | Covers empty, null, max, error states |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| P1 violation fixes | Alongside each fix | Regression test per behavioral fix | Exercises the specific failure mode | <source of expected value> |
+| Edge cases | In existing test files | Error/boundary tests for modified code | Covers empty, null, max, error states | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -551,10 +563,10 @@ After each fix: verify callers, consumers, dead code, boolean logic branches. If
 - [ ] Each fix has a regression test — Verify: `git log --oneline` shows test alongside each fix — Type: test
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| Data flow integrity | Integration test file | Trace value from entry to exit | Output matches expected transformation |
-| Cross-ticket handoff | Integration test file | Value crosses module boundary | Types align, no silent coercion |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| Data flow integrity | Integration test file | Trace value from entry to exit | Output matches expected transformation | <source of expected value> |
+| Cross-ticket handoff | Integration test file | Value crosses module boundary | Types align, no silent coercion | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -652,11 +664,11 @@ All prior tickets are complete and individually verified. Test suite passes.
 - [ ] Type checker passes — Verify: `${TC_CMD}` — Type: typecheck
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| Strengthened assertions | Modified test files | Assertions upgraded to structural/line-based | No weak .includes() remaining for node IDs or attributes |
-| Edge case coverage | Modified test files | Error paths, boundary conditions | Invalid inputs produce expected errors |
-| Transformation coverage | Modified test files | Field name/shape conversions | Input camelCase produces output snake_case |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| Strengthened assertions | Modified test files | Assertions upgraded to structural/line-based | No weak .includes() remaining for node IDs or attributes | <source of expected value> |
+| Edge case coverage | Modified test files | Error paths, boundary conditions | Invalid inputs produce expected errors | <source of expected value> |
+| Transformation coverage | Modified test files | Field name/shape conversions | Input camelCase produces output snake_case | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -759,10 +771,10 @@ For each pair of documentation files in DOC_FILES:
 - [ ] Commands deployed — Verify: `bash install.sh` — Type: integration
 
 ## Test Expectations
-| Criterion | Test File | Description | Assertion |
-|:---|:---|:---|:---|
-| Doc accuracy | N/A | Manual cross-reference | All doc references resolve to real implementation |
-| Pattern consistency | N/A | Cross-doc check | No pattern number collisions |
+| Criterion | Test File | Description | Assertion | Source |
+|:---|:---|:---|:---|:---|
+| Doc accuracy | N/A | Manual cross-reference | All doc references resolve to real implementation | <source of expected value> |
+| Pattern consistency | N/A | Cross-doc check | No pattern number collisions | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -782,7 +794,7 @@ Add `## Implementation Task Breakdown` table to `${SESSION_ROOT}/prd_refined.md`
 
 ### 7g: Advance State
 
-**Harness task hygiene** (run before advancing state): if any harness tasks were created during this skill (against the Tool Discipline directive at the top), mark them all `deleted` now via `TaskUpdate(taskId=<id>, status="deleted")`. State handoff is filesystem-only; downstream `/pickle-tmux --teams` owns the harness task list and orphan tasks will pollute its `TaskList` poll.
+**Harness task hygiene** (run before advancing state): if any harness tasks were created during this skill (against the Tool Discipline directive at the top), mark them all `deleted` now via `TaskUpdate(taskId=<id>, status="deleted")`. State handoff is filesystem-only.
 
 ```bash
 node "${EXTENSION_ROOT}/extension/bin/update-state.js" step research "${SESSION_ROOT}"

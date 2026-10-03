@@ -2,7 +2,6 @@
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { writeActivityEntry } from '../services/state-manager.js';
 
 export const COVERAGE_EXCEPTION_TRAILER_RE = /^Coverage-Exception: ([^:]+):(.+)$/;
@@ -110,10 +109,7 @@ export function main() {
   return 0;
 }
 
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
-const modulePath = fileURLToPath(import.meta.url);
-
-if (invokedPath === modulePath) {
+if (process.argv[1] && path.basename(process.argv[1]) === 'parse-coverage-exception.js') {
   try {
     process.exitCode = main();
   } catch (err) {

@@ -5,10 +5,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { setupAnatomyPark, writePipelineStatus } from '../bin/pipeline-runner.js';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createLaneSession, discoverLanes, setupAnatomyPark, writePipelineStatus, writeSkippedByScope } from '../bin/pipeline-runner.js';
+import { laneRunnerEnv } from '../services/anatomy-lanes.js';
 import { finalizeGateMain } from '../bin/finalize-gate.js';
 import { filterBySubsystem } from '../services/scope-resolver.js';
+
+// B-LANES: filterBySubsystem takes lane records; these cases name plain one-dir lanes.
+const lane = (name) => ({ name, dir: name, excludes: [], testRatioApplies: true, fileCount: 0 });
+const keptNames = (names, ...rest) => filterBySubsystem(names.map(lane), ...rest).map((l) => l.name);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // R-CIFB: resolve the extension root from the REPO (not the deployed
@@ -90,6 +95,198 @@ test('pipeline filter: 4 subsystems, scope covering 2 → anatomy-park.json has 
     assert.deepStrictEqual(ap.consecutive_clean, { alpha: 0, gamma: 0 });
     assert.deepStrictEqual(ap.stall_counts, { alpha: 0, gamma: 0 });
     assert.deepStrictEqual(ap.findings_history, { alpha: [], gamma: [] });
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('B-LANES: a split lane persists its record, prints its excludes, and a generated .js admits no lane', () => {
+  const session = makeSession();
+  const target = makeTarget();
+  try {
+    makeSubsystem(target, 'big/a', 20);
+    makeSubsystem(target, 'big/b', 20);
+    makeSubsystem(target, 'big/loose', 2);
+    fs.mkdirSync(path.join(target, 'big', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(target, 'big', 'src', 'gen.ts'), 'export const g = 1;\n');
+    fs.writeFileSync(path.join(target, 'big', 'gen.js'), 'exports.g = 1;\n');
+    fs.writeFileSync(path.join(target, 'big', 'tsconfig.json'), '{ "compilerOptions": { "outDir": ".", "rootDir": "src" } }');
+
+    // Scope names ONLY the compiled twin of big/src/gen.ts plus one loose remainder file.
+    const onlyGenerated = setupAnatomyPark(makeSession(), target, 3, EXTENSION_ROOT, () => {}, {
+      allowedPaths: ['big/gen.js'], repoRoot: target,
+    });
+    assert.deepStrictEqual(onlyGenerated, { skipReason: 'empty_scope' }, 'a generated file belongs to no lane');
+
+    setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {}, {
+      allowedPaths: ['big/loose/f0.ts', 'big/gen.js'], repoRoot: target,
+    });
+    const ap = readAnatomyPark(session);
+    assert.deepStrictEqual(ap.subsystems, ['big/.']);
+    assert.deepStrictEqual(ap.lanes, [
+      { name: 'big/.', dir: 'big', excludes: ['big/a', 'big/b'], testRatioApplies: false, fileCount: 3 },
+    ]);
+    const prd = fs.readFileSync(path.join(session, 'prd.md'), 'utf-8');
+    assert.match(prd, /1\. big\/\. \(3 files\) — reviews big\/ EXCLUDING big\/a\/, big\/b\/ \(other lanes\)/);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// B-LANES: lane-less code is REPORTED (files_unmapped), never silently green
+// ---------------------------------------------------------------------------
+
+// Lanes of this fixture: extension/. (loose.ts), extension/src/bin, extension/src/services,
+// extension/tests. Repo-root install.sh and anything outside a source directory belong to no lane.
+function makeExtensionTarget() {
+  const target = makeTarget();
+  makeSubsystem(target, 'extension/src/bin', 20);
+  fs.writeFileSync(path.join(target, 'extension/src/bin/setup.ts'), 'export const s = 1;\n');
+  makeSubsystem(target, 'extension/src/services', 20);
+  makeSubsystem(target, 'extension/tests/unit', 20);
+  fs.writeFileSync(path.join(target, 'extension/loose.ts'), 'export const l = 1;\n');
+  fs.mkdirSync(path.join(target, 'extension/templates'), { recursive: true });
+  fs.writeFileSync(path.join(target, 'extension/templates/_pickle-manager-prompt.md'), '# prompt\n');
+  return target;
+}
+
+function scopeJson(allowedPaths) {
+  return {
+    version: 1, mode: 'branch', strategy: 'strict',
+    base_ref: 'main', base_sha: null, head_sha: 'deadbeef'.repeat(5),
+    allowed_paths: allowedPaths,
+    resolved_at: new Date().toISOString(),
+    refresh_history: [],
+  };
+}
+
+function readSkippedByScope(session) {
+  return JSON.parse(fs.readFileSync(path.join(session, 'archive', 'skipped_by_scope.anatomy-park.json'), 'utf-8'));
+}
+
+// Runs `fn` with activity writes sandboxed to a private data root; returns the recorded event names.
+function withActivityCapture(fn) {
+  const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-scope-data-'));
+  const prior = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  try {
+    fn();
+    const dir = path.join(dataRoot, 'activity');
+    const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+    return files
+      .flatMap((f) => fs.readFileSync(path.join(dir, f), 'utf-8').split('\n').filter(Boolean))
+      .map((line) => JSON.parse(line));
+  } finally {
+    if (prior === undefined) delete process.env.PICKLE_DATA_ROOT;
+    else process.env.PICKLE_DATA_ROOT = prior;
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+}
+
+test('AC-7: a doc-only scope skips as empty_scope, emits its event, and records no unmapped code', () => {
+  const session = makeSession();
+  const target = makeExtensionTarget();
+  try {
+    let result;
+    const events = withActivityCapture(() => {
+      result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {}, {
+        allowedPaths: ['prds/x.md'], repoRoot: target,
+      });
+    });
+    assert.deepStrictEqual(result, { skipReason: 'empty_scope' });
+    assert.ok(
+      events.some((e) => e.event === 'anatomy_park_empty_scope_skip'
+        && JSON.stringify(e.gate_payload.in_scope_paths) === JSON.stringify(['prds/x.md'])),
+      'the skip event must still fire',
+    );
+    writeSkippedByScope(session, 'anatomy-park', scopeJson(['prds/x.md']), target, target);
+    assert.deepStrictEqual(readSkippedByScope(session).files_unmapped, [], 'a .md file is not code, so nothing is unmapped');
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-7: a template under the extension lane is admitted by the remainder lane extension/.', () => {
+  const session = makeSession();
+  const target = makeExtensionTarget();
+  try {
+    const result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {}, {
+      allowedPaths: ['extension/templates/_pickle-manager-prompt.md'], repoRoot: target,
+    });
+    assert.equal(result, true);
+    assert.deepStrictEqual(readAnatomyPark(session).subsystems, ['extension/.']);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-7: repo-root install.sh beside a lane-admitted file is recorded in files_unmapped and logged', () => {
+  const session = makeSession();
+  const target = makeExtensionTarget();
+  try {
+    const logs = [];
+    const allowedPaths = ['install.sh', 'extension/src/bin/setup.ts'];
+    const result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, (m) => logs.push(m), {
+      allowedPaths, repoRoot: target,
+    });
+    assert.equal(result, true, 'reporting must not skip or halt the phase');
+    assert.deepStrictEqual(readAnatomyPark(session).subsystems, ['extension/src/bin']);
+    assert.match(logs.join('\n'), /1 changed code path\(s\) belong to no lane \(files_unmapped\): install\.sh/);
+
+    writeSkippedByScope(session, 'anatomy-park', scopeJson(allowedPaths), target, target);
+    const record = readSkippedByScope(session);
+    assert.deepStrictEqual(record.files_unmapped, ['install.sh']);
+    assert.deepStrictEqual(record.subsystems_kept, ['extension/src/bin']);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-7: a scope of ONLY lane-less code is empty_scope, still non-degraded, and names its unmapped files', () => {
+  const session = makeSession();
+  const target = makeExtensionTarget();
+  try {
+    const logs = [];
+    const result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, (m) => logs.push(m), {
+      allowedPaths: ['install.sh', 'scripts/release.py', 'README.md'], repoRoot: target,
+    });
+    assert.deepStrictEqual(result, { skipReason: 'empty_scope' }, 'no new skip reason');
+    assert.match(logs.join('\n'), /2 changed code path\(s\) belong to no lane \(files_unmapped\): install\.sh, scripts\/release\.py/);
+    writeSkippedByScope(session, 'anatomy-park', scopeJson(['install.sh', 'scripts/release.py', 'README.md']), target, target);
+    assert.deepStrictEqual(readSkippedByScope(session).files_unmapped, ['install.sh', 'scripts/release.py']);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-8: each lane names the nearest existing ancestor CLAUDE.md as its trap-door catalog', () => {
+  const session = makeSession();
+  const target = makeTarget();
+  try {
+    makeSubsystem(target, 'extension/src/core', 20);
+    makeSubsystem(target, 'extension/tests/integration', 20);
+    makeSubsystem(target, 'extension/tests/unit', 20);
+    fs.writeFileSync(path.join(target, 'extension/CLAUDE.md'), '# extension catalog\n');
+    fs.writeFileSync(path.join(target, 'extension/tests/unit/CLAUDE.md'), '# unit catalog\n');
+
+    setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {});
+    assert.deepStrictEqual(
+      readAnatomyPark(session).subsystems,
+      ['extension/src', 'extension/tests/integration', 'extension/tests/unit'],
+    );
+    const prd = fs.readFileSync(path.join(session, 'prd.md'), 'utf-8');
+    assert.match(prd, /extension\/tests\/integration → extension\/CLAUDE\.md/, 'no swept catalog of its own: nearest ancestor');
+    assert.match(prd, /extension\/src → extension\/CLAUDE\.md/);
+    assert.match(prd, /extension\/tests\/unit → extension\/tests\/unit\/CLAUDE\.md/, 'a lane that owns a catalog keeps it');
+    assert.doesNotMatch(prd, /extension\/tests\/integration → extension\/tests\/integration\/CLAUDE\.md/);
+    assert.match(prd, /never create a new CLAUDE\.md/i);
   } finally {
     fs.rmSync(session, { recursive: true, force: true });
     fs.rmSync(target, { recursive: true, force: true });
@@ -386,8 +583,8 @@ test('AP-EXT-ITER321-01: a resume below the git toplevel keeps the SAME subsyste
 
     // FIXTURE PRECONDITION: this fixture genuinely separates the two path spaces. Without
     // it the agreement assertion below could green on a fixture where they coincide.
-    assert.deepStrictEqual(filterBySubsystem(['alpha'], ['alpha/f0.ts'], target, below), []);
-    assert.deepStrictEqual(filterBySubsystem(['alpha'], ['alpha/f0.ts'], target, target), ['alpha']);
+    assert.deepStrictEqual(keptNames(['alpha'], ['alpha/f0.ts'], target, below), []);
+    assert.deepStrictEqual(keptNames(['alpha'], ['alpha/f0.ts'], target, target), ['alpha']);
 
     writeResumeScope(sessionTop, ['alpha/f0.ts']);
     writeState(sessionTop, target);
@@ -462,7 +659,7 @@ test('standalone filter parity: filterBySubsystem same fixture → identical to 
     const repoRoot = target;
     const allNames = ['alpha', 'beta', 'delta', 'gamma']; // sorted
 
-    const result = filterBySubsystem(allNames, allowedPaths, target, repoRoot);
+    const result = keptNames(allNames, allowedPaths, target, repoRoot);
     assert.deepStrictEqual(result, ['alpha', 'gamma']);
   } finally {
     fs.rmSync(target, { recursive: true, force: true });
@@ -752,14 +949,14 @@ test('AP-EXT-ITER310-01: filterBySubsystem itself anchors both sides, not just i
     const allowedPaths = ['pkg/alpha/f0.ts', 'pkg/gamma/f2.ts'];
 
     assert.deepStrictEqual(
-      filterBySubsystem(names, allowedPaths, targetViaLink, repoRoot),
+      keptNames(names, allowedPaths, targetViaLink, repoRoot),
       ['alpha', 'gamma'],
       'a target reached through a symlink must resolve into repoRoot space',
     );
     // A non-existent repoRoot/target pair has no realpath to take: the helper
     // falls back to path.resolve, so the pure-fixture callers keep working.
     assert.deepStrictEqual(
-      filterBySubsystem(names, ['pkg/beta/f0.ts'], '/nowhere-ap310/pkg', '/nowhere-ap310'),
+      keptNames(names, ['pkg/beta/f0.ts'], '/nowhere-ap310/pkg', '/nowhere-ap310'),
       ['beta'],
     );
   } finally {
@@ -779,10 +976,219 @@ test('AP-EXT-ITER310-01: a pair that agreed before anchoring still agrees when o
     assert.ok(fs.existsSync(rawRoot) && !fs.existsSync(missingTarget), 'fixture invalid');
 
     assert.deepStrictEqual(
-      filterBySubsystem(['alpha', 'beta'], ['nope/alpha/f0.ts'], missingTarget, rawRoot),
+      keptNames(['alpha', 'beta'], ['nope/alpha/f0.ts'], missingTarget, rawRoot),
       ['alpha'],
     );
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AC-15: the standalone /anatomy-park reads lanes from the compiled rule
+// ---------------------------------------------------------------------------
+
+const RESOLVE_SCOPE_JS = path.resolve(__dirname, '..', 'bin', 'resolve-scope.js');
+
+function printSubsystems(args, cwd) {
+  return spawnSync(process.execPath, [RESOLVE_SCOPE_JS, '--print-subsystems', ...args], {
+    cwd,
+    encoding: 'utf-8',
+    timeout: 60_000,
+  });
+}
+
+function gitFixture(cwd, args) {
+  const res = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf-8',
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+      GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    },
+  });
+  assert.equal(res.status, 0, `git ${args.join(' ')} failed: ${res.stderr}`);
+}
+
+// Two child dirs of `src/` that each clear MIN_LANE_FILES, plus a few loose files
+// so the parent keeps a remainder lane.
+function makeSplitTarget() {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'ap-print-target-'));
+  for (const child of ['alpha', 'beta']) {
+    fs.mkdirSync(path.join(target, 'src', child), { recursive: true });
+    for (let i = 0; i < 20; i++) fs.writeFileSync(path.join(target, 'src', child, `f${i}.ts`), `export const v${i} = ${i};\n`);
+  }
+  for (let i = 0; i < 4; i++) fs.writeFileSync(path.join(target, 'src', `loose${i}.ts`), `export const l${i} = ${i};\n`);
+  return target;
+}
+
+test('AC-15: --print-subsystems prints the compiled lane records for the repo root and exits 0', () => {
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  const res = printSubsystems(['--target', repoRoot], repoRoot);
+  assert.equal(res.status, 0, res.stderr);
+  const lanes = JSON.parse(res.stdout);
+  assert.ok(Array.isArray(lanes) && lanes.length >= 5, `expected >= 5 lanes, got ${lanes.length}`);
+  for (const lane of lanes) {
+    assert.ok(lane.name && lane.dir && Array.isArray(lane.excludes), `malformed lane record: ${JSON.stringify(lane)}`);
+  }
+  // The CLI prints the compiled rule's own records, not a re-derivation of them.
+  assert.deepStrictEqual(lanes, discoverLanes(repoRoot).lanes);
+});
+
+test('AC-15: --print-subsystems splits by the lane rule and a remainder lane lists its excluded children', () => {
+  const target = makeSplitTarget();
+  try {
+    const res = printSubsystems(['--target', target], target);
+    assert.equal(res.status, 0, res.stderr);
+    const lanes = JSON.parse(res.stdout);
+    assert.deepStrictEqual(lanes.map((l) => l.name), ['src/.', 'src/alpha', 'src/beta']);
+    const remainder = lanes.find((l) => l.name === 'src/.');
+    assert.deepStrictEqual(remainder.excludes, ['src/alpha', 'src/beta']);
+    assert.deepStrictEqual(lanes.find((l) => l.name === 'src/alpha').excludes, []);
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-15: --print-subsystems --scope narrows the lanes to those admitting an allowed path, without a session root', () => {
+  const target = makeSplitTarget();
+  try {
+    gitFixture(target, ['init', '-q', '-b', 'main']);
+    gitFixture(target, ['add', '.']);
+    gitFixture(target, ['commit', '-qm', 'seed']);
+    const all = JSON.parse(printSubsystems(['--target', target], target).stdout).map((l) => l.name);
+    assert.deepStrictEqual(all, ['src/.', 'src/alpha', 'src/beta']);
+
+    const res = printSubsystems(['--target', target, '--scope', 'paths:src/beta/*.ts'], target);
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepStrictEqual(JSON.parse(res.stdout).map((l) => l.name), ['src/beta']);
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-15: --print-subsystems exits 0 with an empty array when discovery finds nothing', () => {
+  const missing = path.join(os.tmpdir(), `ap-print-missing-${process.pid}-${Date.now()}`);
+  const res = printSubsystems(['--target', missing], os.tmpdir());
+  assert.equal(res.status, 0, res.stderr);
+  assert.deepStrictEqual(JSON.parse(res.stdout), []);
+});
+
+test('AC-15: --print-subsystems with a malformed --scope is a refusal, never an unfiltered list', () => {
+  const target = makeSplitTarget();
+  try {
+    const res = printSubsystems(['--target', target, '--scope', 'nonsense'], target);
+    assert.notEqual(res.status, 0);
+    assert.equal(res.stdout, '', 'a refused scope must not print lanes');
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('AC-15: anatomy-park.md carries no second copy of the lane rule and defers to --print-subsystems', () => {
+  const content = fs.readFileSync(ANATOMY_PARK_MD, 'utf-8');
+  assert.equal(content.split('Do NOT descend further').length - 1, 0, 'Step 3 prose copy of the rule must be gone');
+  assert.ok(content.includes('resolve-scope.js" --print-subsystems'), 'Steps 3 and 7 must call --print-subsystems');
+  assert.match(content, /remainder lane[^\n]*exclud/i, 'the phase-1 marker must say a remainder lane excludes its listed children');
+  assert.match(content, /standalone[^\n]*serial/i, 'the standalone command must state it stays serial');
+  assert.ok(content.includes('<!-- scope-invariant: phase-1-reads-all-subsystem-files -->'), 'pinned marker must stay intact');
+});
+
+// ---------------------------------------------------------------------------
+// B-LANES WS-3: a lane session reviews exactly its own lane
+// ---------------------------------------------------------------------------
+
+test('B-LANES one-lane: setupAnatomyPark with lanes:[lane] writes exactly that roster, no re-discovery', () => {
+  const session = makeSession();
+  const target = makeTarget();
+  try {
+    makeSubsystem(target, 'alpha');
+    makeSubsystem(target, 'beta');
+    writeState(session, target);
+    const alpha = { name: 'alpha', dir: 'alpha', excludes: [], testRatioApplies: false, fileCount: 3 };
+    const result = setupAnatomyPark(session, target, 3, EXTENSION_ROOT, () => {}, undefined, undefined, { lanes: [alpha] });
+    assert.equal(result, true);
+    const ap = readAnatomyPark(session);
+    assert.deepStrictEqual(ap.subsystems, ['alpha']);
+    assert.deepStrictEqual(ap.lanes, [alpha]);
+  } finally {
+    fs.rmSync(session, { recursive: true, force: true });
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+const CONFIG_PROTECTION = path.resolve(__dirname, '..', 'hooks', 'handlers', 'config-protection.js');
+const GIT_TIMEOUT = 30_000;
+
+function git(cwd, ...args) {
+  return execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf-8', timeout: GIT_TIMEOUT }).trim();
+}
+
+/** A committed target repo plus a sandbox data root holding the parent session. */
+function makeLaneFixture() {
+  const target = fs.realpathSync(makeTarget());
+  git(target, 'init', '-q', '-b', 'main');
+  git(target, 'config', 'user.email', 'lane@test.local');
+  git(target, 'config', 'user.name', 'Lane');
+  makeSubsystem(target, 'alpha');
+  makeSubsystem(target, 'beta');
+  git(target, 'add', '-A');
+  git(target, 'commit', '-q', '-m', 'seed');
+  const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ap-lane-data-')));
+  fs.mkdirSync(path.join(dataRoot, 'extension', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(dataRoot, 'extension', 'bin', 'log-watcher.js'), '');
+  const parent = path.join(dataRoot, 'sessions', '2026-09-24-lanetest');
+  fs.mkdirSync(parent, { recursive: true });
+  writeState(parent, target);
+  fs.writeFileSync(path.join(parent, 'pipeline.json'), JSON.stringify({ anatomy_max_iterations: 7 }));
+  return { target, dataRoot, parent, sha: git(target, 'rev-parse', 'HEAD') };
+}
+
+function runConfigProtection({ cwd, dataRoot, env, filePath }) {
+  const out = execFileSync(process.execPath, [CONFIG_PROTECTION], {
+    cwd,
+    input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: filePath } }),
+    encoding: 'utf-8',
+    timeout: GIT_TIMEOUT,
+    env: { ...process.env, EXTENSION_DIR: dataRoot, PICKLE_DATA_ROOT: dataRoot, FORCE_COLOR: '0', ...env },
+  });
+  return JSON.parse(out.trim()).decision;
+}
+
+test('B-LANES 13f: a lane worker write to the lane state.json is blocked; the main-checkout control approves', () => {
+  const { target, dataRoot, parent, sha } = makeLaneFixture();
+  try {
+    const alpha = { name: 'alpha', dir: 'alpha', excludes: [], testRatioApplies: false, fileCount: 3 };
+    const lane = createLaneSession(parent, alpha, 1, sha, target);
+    const env = laneRunnerEnv(lane.statePath, {});
+    assert.equal(
+      runConfigProtection({ cwd: lane.worktree, dataRoot, env, filePath: lane.statePath }),
+      'block',
+      'the lane state resolves for a worker inside the lane worktree',
+    );
+    // Mutation control: the same lane state pointing at the main checkout no longer resolves.
+    const raw = JSON.parse(fs.readFileSync(lane.statePath, 'utf-8'));
+    fs.writeFileSync(lane.statePath, JSON.stringify({ ...raw, working_dir: target }));
+    assert.equal(runConfigProtection({ cwd: lane.worktree, dataRoot, env, filePath: lane.statePath }), 'approve');
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test('B-LANES one-lane: a created lane session reviews exactly its lane from its own worktree', () => {
+  const { target, dataRoot, parent, sha } = makeLaneFixture();
+  try {
+    const beta = { name: 'beta', dir: 'beta', excludes: [], testRatioApplies: false, fileCount: 3 };
+    const lane = createLaneSession(parent, beta, 2, sha, target);
+    const result = setupAnatomyPark(lane.laneDir, lane.worktree, 3, EXTENSION_ROOT, () => {}, undefined, undefined, { lanes: [beta] });
+    assert.equal(result, true);
+    assert.deepStrictEqual(readAnatomyPark(lane.laneDir).subsystems, ['beta']);
+    assert.deepStrictEqual(readMicroverse(lane.laneDir).allowed_paths, ['beta/f0.ts', 'beta/f1.ts', 'beta/f2.ts']);
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.rmSync(dataRoot, { recursive: true, force: true });
   }
 });

@@ -1427,6 +1427,9 @@ test('activity-event-payload: schema defines all registered event type definitio
     'scope_auto_extended',
     // 70a67ccb: per-session worker-spawn lock contention.
     'worker_spawn_lock_contended',
+    // B-LANES WS-3: lane integration outcome counts and a previous run's reported lane branches.
+    'anatomy_lanes_integrated',
+    'anatomy_lane_branches_reported',
   ];
   // Structural drift check — assert set-equality between registered events
   // and asserted EVENT_NAMES rather than a hardcoded count literal.

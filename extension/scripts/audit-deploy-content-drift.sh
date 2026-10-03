@@ -4,6 +4,7 @@
 # The compared file set is DERIVED from install.sh's own copy manifest
 # (its rsync --exclude flags and its MANAGED_KEYS jq filter), never a second
 # hand-maintained list. Read-only; never halts the pipeline; standalone.
+# Exit: 0 clean/skipped, 1 drift, 2 usage, 3 unverified (some file uncompared).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -290,9 +291,14 @@ join_entries() {
   echo "$out"
 }
 
+# A file that could not be compared is not a file that matched: with no tsc,
+# every compiled runtime file lands in `unverified`, so a stale deploy would
+# otherwise read `clean`. Drift outranks unverified; clean means checked-equal.
 status="clean"
 if [ "${#drifted[@]}" -gt 0 ]; then
   status="drift"
+elif [ -n "${unverified[*]:-}" ]; then
+  status="unverified"
 fi
 
 drifted_json="$(join_entries "${drifted[@]:-}")"
@@ -301,7 +307,8 @@ unverified_json="$(join_entries "${unverified[@]:-}")"
 printf '{"status":"%s","source_root":"%s","deployed_root":"%s","checked":%d,"drifted":%s,"unverified":%s,"settings_managed_keys_ok":%s}\n' \
   "$status" "$SOURCE_ROOT" "$DEPLOYED_ROOT" "$checked" "$drifted_json" "$unverified_json" "$settings_managed_keys_ok"
 
-if [ "$status" = "drift" ]; then
-  exit 1
-fi
+case "$status" in
+  drift) exit 1 ;;
+  unverified) exit 3 ;;
+esac
 exit 0

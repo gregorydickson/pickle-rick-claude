@@ -2105,3 +2105,64 @@ test('G2: InterfaceSweepSkipReason keeps its four members (no new skip door)', (
   assert.ok(decl, 'the union must still be declared');
   assert.equal((decl[1].match(/\|\s*'[a-z_]+'/g) ?? []).length, 4);
 });
+
+// L1: a lane's `start_commit` is its fork sha, so the sweep counts only the lane's own edits.
+function makeForkedLaneRepo(prefix) {
+  const dir = makeInitializedRepo(prefix);
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { sum: number }\nconst helper = 1;\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'pipeline base']);
+  const pipelineBase = headSha(dir);
+
+  // An EARLIER phase changes the exported shape; the lane forks after it.
+  fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { total: number }\nconst helper = 1;\n');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-m', 'earlier phase changes the export']);
+  return { dir, pipelineBase, fork: headSha(dir) };
+}
+
+async function sweepFrom(dir, startCommit) {
+  return runInterfaceChangeSweep({
+    workingDir: dir,
+    sessionDir: dir,
+    startCommit,
+    runGateFn: async () => ({ failures: [] }),
+    logActivityFn: () => {},
+    getChangedFilesSinceFn: () => ['src/audit.ts'],
+  });
+}
+
+test('L1-c: with start_commit = fork sha, an internal-only edit after the fork does not arm the sweep', async () => {
+  const { dir, pipelineBase, fork } = makeForkedLaneRepo('cg-l1c-');
+  try {
+    fs.appendFileSync(path.join(dir, 'src', 'audit.ts'), 'const internalOnly = 2;\n');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-m', 'lane: internal edit']);
+
+    const own = await sweepFrom(dir, fork);
+    assert.equal(own.ran, false);
+    assert.equal(own.skipped, null, 'a measured zero, not an unmeasurable one');
+
+    // Control: the pipeline base counts the earlier phase's export change as the lane's own.
+    const inherited = await sweepFrom(dir, pipelineBase);
+    assert.equal(inherited.ran, true, 'the pipeline base over-attributes — this is the defect L1 removes');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('L1-d: with start_commit = fork sha, an exported-declaration change after the fork arms the sweep', async () => {
+  const { dir, fork } = makeForkedLaneRepo('cg-l1d-');
+  try {
+    fs.writeFileSync(path.join(dir, 'src', 'audit.ts'), 'export interface AuditResult { grand: number }\nconst helper = 1;\n');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-m', 'lane: change the export']);
+
+    const own = await sweepFrom(dir, fork);
+    assert.equal(own.ran, true);
+    assert.equal(own.skipped, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

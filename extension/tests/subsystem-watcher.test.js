@@ -167,3 +167,116 @@ test('subsystem-watcher: does not re-emit unchanged subsystem', () => {
         fs.rmSync(sessionDir, { recursive: true, force: true });
     }
 });
+
+// B-LANES WS-3 (C6): concurrent lanes are sibling sessions `<session>--lane-<n>`.
+function makeLaneRoot() {
+    return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-subsystem-lanes-')));
+}
+
+function writeLane(root, session, index, { name, iteration = 0, active = true, exitReason } = {}) {
+    const laneDir = path.join(root, `${session}--lane-${index}`);
+    fs.mkdirSync(laneDir, { recursive: true });
+    const state = { active, pid: process.pid, step: 'implement', iteration };
+    if (exitReason) state.exit_reason = exitReason;
+    fs.writeFileSync(path.join(laneDir, 'state.json'), JSON.stringify(state));
+    if (name) {
+        fs.writeFileSync(path.join(laneDir, 'anatomy-park.json'), JSON.stringify({ lanes: [{ name, dir: name, excludes: [] }] }));
+    }
+}
+
+function pointerLines(stdout) {
+    return stdout.split('\n').filter(l => l.startsWith('▸'));
+}
+
+test('subsystem-watcher: 3-lane session renders one line per lane with name, pass count and status', () => {
+    const root = makeLaneRoot();
+    try {
+        const sessionDir = path.join(root, 'sess');
+        fs.mkdirSync(sessionDir);
+        writeState(sessionDir, { active: false });
+        writeMicroverse(sessionDir, { status: 'iterating', current_subsystem: 'parent-only' });
+        writeLane(root, 'sess', 1, { name: 'extension/src/bin', iteration: 4 });
+        writeLane(root, 'sess', 2, { name: 'extension/src/services', iteration: 7 });
+        writeLane(root, 'sess', 3, { name: 'extension/tests/.', iteration: 2, active: false, exitReason: 'converged' });
+        const result = run([sessionDir]);
+        assert.notEqual(result.error?.code, 'ETIMEDOUT', `Watcher hung: ${result.stderr}`);
+        assert.equal(result.status, 0, `Expected exit 0, got: ${result.stderr}`);
+        const lines = pointerLines(result.stdout);
+        assert.equal(lines.length, 3, `Expected 3 lane lines, got: ${result.stdout}`);
+        assert.match(lines[0], /extension\/src\/bin.*4.*running/);
+        assert.match(lines[1], /extension\/src\/services.*7.*running/);
+        assert.match(lines[2], /extension\/tests\/\..*2.*converged/);
+        assert.ok(!result.stdout.includes('parent-only'), `Lane view must replace the single-subsystem line: ${result.stdout}`);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('subsystem-watcher: lanes order numerically and a lane with no state yet renders as starting', () => {
+    const root = makeLaneRoot();
+    try {
+        const sessionDir = path.join(root, 'sess');
+        fs.mkdirSync(sessionDir);
+        writeState(sessionDir, { active: false });
+        for (const i of [10, 2]) writeLane(root, 'sess', i, { name: `lane-name-${i}` });
+        fs.mkdirSync(path.join(root, 'sess--lane-3'));
+        const result = run([sessionDir]);
+        const lines = pointerLines(result.stdout);
+        assert.equal(lines.length, 3, `got: ${result.stdout}`);
+        assert.match(lines[0], /lane-name-2/);
+        assert.match(lines[1], /lane-3.*starting/);
+        assert.match(lines[2], /lane-name-10/);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('subsystem-watcher: a sibling lane of another session is not listed', () => {
+    const root = makeLaneRoot();
+    try {
+        const sessionDir = path.join(root, 'sess');
+        fs.mkdirSync(sessionDir);
+        writeState(sessionDir, { active: false });
+        writeLane(root, 'sess', 1, { name: 'mine-a' });
+        writeLane(root, 'sess', 2, { name: 'mine-b' });
+        writeLane(root, 'sess-other', 1, { name: 'theirs' });
+        writeLane(root, 'other-sess', 1, { name: 'theirs-too' });
+        const result = run([sessionDir]);
+        const lines = pointerLines(result.stdout);
+        assert.equal(lines.length, 2, `got: ${result.stdout}`);
+        assert.ok(!/theirs/.test(result.stdout), result.stdout);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('subsystem-watcher: a 1-lane session renders exactly today\'s single-subsystem output', () => {
+    const root = makeLaneRoot();
+    try {
+        const sessionDir = path.join(root, 'sess');
+        fs.mkdirSync(sessionDir);
+        writeState(sessionDir, { active: false });
+        writeMicroverse(sessionDir, { status: 'iterating', current_subsystem: 'auth-service' });
+        writeLane(root, 'sess', 1, { name: 'auth-service', iteration: 3 });
+        const result = run([sessionDir]);
+        assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+        assert.equal(result.stdout, '▸ auth-service\n');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test('subsystem-watcher: lane view renders without a parent microverse.json', () => {
+    const root = makeLaneRoot();
+    try {
+        const sessionDir = path.join(root, 'sess');
+        fs.mkdirSync(sessionDir);
+        writeState(sessionDir, { active: false });
+        writeLane(root, 'sess', 1, { name: 'a' });
+        writeLane(root, 'sess', 2, { name: 'b' });
+        const result = run([sessionDir]);
+        assert.equal(pointerLines(result.stdout).length, 2, `got: ${result.stdout}`);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

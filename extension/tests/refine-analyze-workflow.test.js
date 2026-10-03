@@ -39,8 +39,9 @@ function loadWorkflow() {
 }
 
 /** Build a deterministic harness: records analyst prompts/schemas, runs thunks, mocks agents. */
-function makeHarness(argsObj) {
+function makeHarness(argsObj, decomposeBehavior = 'ok') {
   const analystCalls = [];
+  const decomposeCalls = [];
   let synthSchema = null;
   let synthManifest = null;
 
@@ -58,6 +59,11 @@ function makeHarness(argsObj) {
       };
       analystCalls.push({ label: opts.label, prompt, schema: opts.schema, cycle, role, ret });
       return ret;
+    }
+    if (opts.phase === 'decompose') {
+      decomposeCalls.push({ prompt, schema: opts.schema });
+      if (decomposeBehavior === 'throw') throw new Error('decompose boom');
+      return { tickets: decomposeBehavior === 'empty' ? [] : [{ id: 'abcd1234', title: 'T' }] };
     }
     // synthesis call
     synthSchema = opts.schema;
@@ -91,6 +97,7 @@ function makeHarness(argsObj) {
   return {
     ambient: [agent, parallel, pipeline, phase, log, argsObj, {}],
     analystCalls,
+    decomposeCalls,
     get synthSchema() { return synthSchema; },
     get synthManifest() { return synthManifest; },
   };
@@ -211,4 +218,98 @@ test('workflow honors the dynamic-workflow primitive constraints (static)', () =
   assert.ok(!/Date\.now\s*\(/.test(src), 'no Date.now()');
   assert.ok(!/Math\.random\s*\(/.test(src), 'no Math.random()');
   assert.ok(!src.includes('loadPreviousAnalyses'), 'no legacy disk re-read helper reference');
+});
+
+async function runDecompose(behavior) {
+  const argsObj = defaultArgs(1);
+  const harness = makeHarness(argsObj, behavior);
+  const phases = [];
+  harness.ambient[3] = (name) => phases.push(name);
+  const result = await loadWorkflow()(...harness.ambient);
+  return { result, harness, phases };
+}
+
+test('E2-1: meta.phases is analyze, synthesize, decompose and the source calls phase(\'decompose\')', () => {
+  const src = readWorkflowSource();
+  assert.ok(/phases:\s*\['analyze', 'synthesize', 'decompose'\]/.test(src));
+  assert.ok((src.match(/phase\('decompose'\)/g) || []).length >= 1);
+});
+
+test('E2-2: decompose runs after synthesize, covers 7a-7e, forbids 7g and state.json', async () => {
+  const { result, harness, phases } = await runDecompose('ok');
+  assert.deepEqual(phases.slice(-2), ['synthesize', 'decompose']);
+  assert.equal(harness.decomposeCalls.length, 1);
+  const p = harness.decomposeCalls[0].prompt;
+  assert.match(p, /Step 7a through Step 7e/);
+  assert.match(p, /Do NOT run Step 7f or 7g/);
+  assert.deepEqual(result.decompose, { tickets: [{ id: 'abcd1234', title: 'T' }] });
+});
+
+test('E2-3: a throwing decompose agent yields a fallback reason, not a throw', async () => {
+  const { result } = await runDecompose('throw');
+  assert.equal(result.decompose.fallback, 'decompose boom');
+  assert.deepEqual(result.decompose.tickets, []);
+  assert.ok(result.manifest, 'earlier phases still return their results');
+});
+
+test('E2-4: 0 tickets yields a fallback reason', async () => {
+  const { result } = await runDecompose('empty');
+  assert.equal(result.decompose.fallback, '0 tickets returned');
+});
+
+test('E2-5: command doc and README name the fallback line and the decompose phase', () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const line = 'decompose phase: fallback to inline Step 7 (<reason>)';
+  for (const f of ['.claude/commands/pickle-refine-prd.md', 'README.md']) {
+    assert.ok(fs.readFileSync(path.join(root, f), 'utf-8').includes(line), f);
+  }
+});
+
+// C1+C2: both synthesis surfaces must ask for a `## Premises` ledger and an `## Open Decisions` table.
+const COMMAND_DOC_PATH = fileURLToPath(new URL('../../.claude/commands/pickle-refine-prd.md', import.meta.url));
+const commandDocLines = () => fs.readFileSync(COMMAND_DOC_PATH, 'utf-8').split('\n');
+/** The command doc's `## Step <n>:` section, cut at the next `## Step` heading (a step embeds `## ` FOM blocks). */
+function commandDocStep(n) {
+  const lines = commandDocLines();
+  const start = lines.findIndex((l) => l.startsWith(`## Step ${n}:`));
+  const end = lines.findIndex((l) => l.startsWith(`## Step ${n + 1}:`));
+  assert.ok(start > -1 && end > start, `## Step ${n}: and ## Step ${n + 1}: headings present (${start}, ${end})`);
+  return lines.slice(start + 1, end);
+}
+const LEDGER_RULES = [
+  /`## Premises` ledger/,
+  /`?\(verified\)`?\/`?\(hypothesis\)`? tag verbatim/,
+  /converging[^\n]*is not verification/,
+  /`## Open Decisions` table/,
+  /needs-human item\s+is never written under settled decisions\s+without a quoted human decision/,
+  /explicit (?:`none` row|row: `none`)/,
+];
+
+test('C1C2-1: the workflow synthesis prompt actually sent to the agent carries the Premises and Open Decisions rules', async () => {
+  const argsObj = defaultArgs(1);
+  const harness = makeHarness(argsObj);
+  const prompts = [];
+  const agent = harness.ambient[0];
+  harness.ambient[0] = (prompt, opts = {}) => {
+    if (opts.phase === 'synthesize') prompts.push(prompt);
+    return agent(prompt, opts);
+  };
+  await loadWorkflow()(...harness.ambient);
+  assert.equal(prompts.length, 1, 'one synthesis call');
+  for (const rule of LEDGER_RULES) assert.match(prompts[0], rule);
+});
+
+test('C1C2-2: the command doc writes both ledgers in Step 6 (Synthesize), not elsewhere', () => {
+  const step6 = commandDocStep(6).join('\n');
+  for (const rule of LEDGER_RULES) assert.match(step6, rule);
+});
+
+// C8b: every Test Expectations table in the refinement template gains a Source column, with a matching
+// five-cell separator row directly under each header.
+test('C8b-1: all six Test Expectations headers carry Source, none keeps the four-column form', () => {
+  const lines = commandDocLines();
+  const headers = lines.flatMap((l, i) => (l === '| Criterion | Test File | Description | Assertion | Source |' ? [i] : []));
+  assert.equal(headers.length, 6);
+  assert.equal(lines.filter((l) => l === '| Criterion | Test File | Description | Assertion |').length, 0);
+  for (const i of headers) assert.equal(lines[i + 1].split('|').length - 2, 5, `separator under line ${i + 1}: ${lines[i + 1]}`);
 });

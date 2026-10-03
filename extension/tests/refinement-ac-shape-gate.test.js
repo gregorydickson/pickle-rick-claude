@@ -354,7 +354,7 @@ test('AC-ACSG-2c: violation stderr contains ac_id+ticket and describe.each or --
 
   const output = stderrLines.join('');
   assert.match(output, /AC-ERR.*ticket/, 'output must name the failing ac_id (AC-ERR) and include "ticket"');
-  assert.match(output, /describe\.each\(\[|--skip-ac-shape-gate/, 'output must contain describe.each([ fix template OR --skip-ac-shape-gate override path');
+  assert.match(output, /describeEach\(\[/, 'output must contain the describeEach([ fix template');
 });
 
 // AC-ACSG-3a: LOA-727 attempt-2 regression fixture — loosened gate accepts the shape

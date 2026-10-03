@@ -20,7 +20,7 @@ import { execFileSync, spawn, spawnSync } from 'child_process';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
-import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, } from '../services/pickle-utils.js';
+import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 // B-NONSTOP WS-2 (AC-NS-6): reuse the T3 disposition map to classify a non-pickle
 // phase's `state.exit_reason` (no re-mapping — single source of truth in microverse-runner).
@@ -36,14 +36,16 @@ import { collapseAnalystTicketCopies } from './spawn-refinement-team.js';
 // Re-export the single cap literal so existing importers (tests, Module Export Catalog)
 // keep resolving it from pipeline-runner without a second definition.
 export { SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
-import { isGitIgnoredPath, gitReportedExitStatus, listWorkingTreeDirtyPaths, getDiffFiles, archiveBeforeDestructive, updateTicketStatus, ARCHIVE_UNTRACKED_BYTE_CAP, } from '../services/git-utils.js';
+import { isGitIgnoredPath, gitReportedExitStatus, listWorkingTreeDirtyPaths, getDiffFiles, archiveBeforeDestructive, updateTicketStatus, updateTicketFrontmatter, ARCHIVE_UNTRACKED_BYTE_CAP, } from '../services/git-utils.js';
 import { logActivity } from '../services/activity-logger.js';
 import { killProcessGroup } from '../services/orphan-reaper.js';
 import { emitBundleLinearComments } from '../services/linear-integration.js';
-import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES } from '../services/microverse-state.js';
+import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES, createMicroverseState, readMicroverseState, recordCapUnmeasured, writeMicroverseState, } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
+import { laneSessionDir, laneBranchName, unitSessionDir, unitBranchName, createLaneWorktree, replicateLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, laneCommits, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, RETAINED_BRANCH_MAX_AGE_MS, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
+import { planTicketWave, readParallelSafe } from '../services/ticket-waves.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
 import { isMechanicalCitadelFinding } from '../services/citadel/mechanical-finding-classifier.js';
 import { citadelFindingsToGateResult } from '../services/citadel/citadel-findings-to-gate-result.js';
@@ -120,6 +122,8 @@ export function parsePipelineConfig(raw) {
         // keys, and they used to disagree with that launch path. Raise them together or not at all.
         anatomy_max_iterations: parsePositiveInteger(raw.anatomy_max_iterations, 500),
         szechuan_max_iterations: parsePositiveInteger(raw.szechuan_max_iterations, 500),
+        anatomy_max_parallel_lanes: parsePositiveInteger(raw.anatomy_max_parallel_lanes, 1),
+        max_parallel_tickets: parsePositiveInteger(raw.max_parallel_tickets, 1),
         citadel_strict: raw.citadel_strict === true || raw.strict === true,
         backend,
         dirty_exempt_segments,
@@ -212,18 +216,21 @@ export function isTestFile(name) {
     const lower = name.toLowerCase();
     return TEST_PATTERNS.some(p => lower.includes(p));
 }
-function tallySourceEntry(child, tally) {
-    if (!child.isFile() || !SOURCE_EXTS.has(path.extname(child.name)))
-        return;
-    tally.sourceCount++;
-    if (isTestFile(child.name))
-        tally.testCount++;
-}
-function countSourceFiles(dir) {
-    const tally = { sourceCount: 0, testCount: 0 };
+/**
+ * B-LANES: a lane splits when at least two child directories each hold this
+ * many non-generated source files. Qualifying children become lanes
+ * (recursively) and the rest becomes the remainder lane `<dir>/.`.
+ */
+export const MIN_LANE_FILES = 20;
+/**
+ * Every file under `dir`, as a POSIX path relative to `target`, plus the
+ * directories holding a `tsconfig.json`. Unreadable directories contribute
+ * nothing; symlinked entries are never followed, and the realpath guard keeps
+ * a looping tree finite.
+ */
+function listTree(target, dir, listing) {
     const visited = new Set();
     const walk = (p) => {
-        // Resolve real path to detect symlink loops
         let realP;
         try {
             realP = fs.realpathSync(p);
@@ -242,14 +249,130 @@ function countSourceFiles(dir) {
             return;
         }
         for (const child of children) {
-            if (child.isDirectory() && !EXCLUDED_DIRS.has(child.name))
-                walk(path.join(p, child.name));
-            else
-                tallySourceEntry(child, tally);
+            const childPath = path.join(p, child.name);
+            if (child.isDirectory()) {
+                if (!EXCLUDED_DIRS.has(child.name))
+                    walk(childPath);
+            }
+            else if (child.isFile()) {
+                listing.files.push(toTargetRelative(target, childPath));
+                if (child.name === 'tsconfig.json')
+                    listing.tsconfigDirs.push(toTargetRelative(target, p));
+            }
         }
     };
     walk(dir);
-    return tally;
+}
+function toTargetRelative(target, p) {
+    return path.relative(target, p).replace(/\\/g, '/');
+}
+/** Drop `//` and block comments and trailing commas outside strings (tsconfig is JSONC). */
+function stripJsonc(text) {
+    let out = '';
+    let i = 0;
+    while (i < text.length) {
+        const ch = text[i];
+        if (ch === '"') {
+            const start = i++;
+            while (i < text.length && text[i] !== '"')
+                i += text[i] === '\\' ? 2 : 1;
+            out += text.slice(start, ++i);
+        }
+        else if (ch === '/' && text[i + 1] === '/') {
+            while (i < text.length && text[i] !== '\n')
+                i++;
+        }
+        else if (ch === '/' && text[i + 1] === '*') {
+            const end = text.indexOf('*/', i + 2);
+            i = end < 0 ? text.length : end + 2;
+        }
+        else if (ch === ',' && /^\s*[}\]]/.test(text.slice(i + 1))) {
+            i++;
+        }
+        else {
+            out += ch;
+            i++;
+        }
+    }
+    return out;
+}
+/** `compilerOptions.outDir` / `rootDir` of one tsconfig, or null on ANY read or parse failure. */
+function readTsEmitDirs(tsconfigPath) {
+    try {
+        const parsed = JSON.parse(stripJsonc(fs.readFileSync(tsconfigPath, 'utf-8')));
+        const options = parsed?.compilerOptions;
+        const outDir = options?.outDir;
+        const rootDir = options?.rootDir;
+        return typeof outDir === 'string' && typeof rootDir === 'string' ? { outDir, rootDir } : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Generated output is decided PER FILE, never per directory: `R/<outDir>/<p>.js`
+ * is generated iff `R/<rootDir>/<p>.ts` is present, for each `R` holding a
+ * readable `tsconfig.json`. A hand-written `.js` beside compiled output stays
+ * reviewable. Paths are target-relative POSIX.
+ */
+function collectGenerated(target, listing) {
+    const present = new Set(listing.files);
+    const generated = new Set();
+    for (const tsconfigDir of new Set(listing.tsconfigDirs)) {
+        const emit = readTsEmitDirs(path.join(target, tsconfigDir, 'tsconfig.json'));
+        if (!emit)
+            continue;
+        const outRel = toTargetRelative(target, path.resolve(target, tsconfigDir, emit.outDir));
+        const rootRel = toTargetRelative(target, path.resolve(target, tsconfigDir, emit.rootDir));
+        if (outRel.startsWith('..') || rootRel.startsWith('..'))
+            continue;
+        const outPrefix = outRel === '' ? '' : `${outRel}/`;
+        for (const file of listing.files) {
+            if (!file.endsWith('.js') || !file.startsWith(outPrefix))
+                continue;
+            const stem = file.slice(outPrefix.length, -'.js'.length);
+            if (present.has(path.posix.join(rootRel, `${stem}.ts`)))
+                generated.add(file);
+        }
+    }
+    return generated;
+}
+/**
+ * Split `dir` by the MIN_LANE_FILES rule over its non-generated source files
+ * (target-relative). An unsplit lane carries `testRatioApplies: isRoot`; every
+ * split product carries false. The remainder is emitted only when it holds a
+ * source file.
+ */
+function splitLane(dir, sourceFiles, isRoot) {
+    const byChild = new Map();
+    for (const file of sourceFiles) {
+        const rest = file.slice(dir.length + 1);
+        const slash = rest.indexOf('/');
+        if (slash < 0)
+            continue;
+        const child = `${dir}/${rest.slice(0, slash)}`;
+        const bucket = byChild.get(child);
+        if (bucket)
+            bucket.push(file);
+        else
+            byChild.set(child, [file]);
+    }
+    const qualifying = [...byChild.keys()].filter((child) => byChild.get(child).length >= MIN_LANE_FILES).sort();
+    if (qualifying.length < 2) {
+        return [{ name: dir, dir, excludes: [], testRatioApplies: isRoot, fileCount: sourceFiles.length }];
+    }
+    const splitCount = qualifying.reduce((sum, child) => sum + byChild.get(child).length, 0);
+    const remainder = sourceFiles.length > splitCount
+        ? [{ name: `${dir}/.`, dir, excludes: qualifying, testRatioApplies: false, fileCount: sourceFiles.length - splitCount }]
+        : [];
+    return [...qualifying.flatMap((child) => splitLane(child, byChild.get(child), false)), ...remainder];
+}
+const MIN_ROOT_SOURCE_FILES = 3;
+const MAX_ROOT_TEST_RATIO = 0.8;
+/** The pre-split admission rule, applied ONLY to an unsplit discovery root. */
+function clearsRootFloor(sourceFiles) {
+    const testCount = sourceFiles.filter((file) => isTestFile(path.posix.basename(file))).length;
+    return sourceFiles.length >= MIN_ROOT_SOURCE_FILES && testCount / sourceFiles.length <= MAX_ROOT_TEST_RATIO;
 }
 /**
  * ROOT W: resolve the absolute directories anatomy-park rotates over.
@@ -313,24 +436,35 @@ function targetTreeWasListed(target) {
         return false;
     }
 }
-export function discoverSubsystems(target) {
-    const subsystems = [];
-    for (const dir of subsystemRoots(target)) {
-        const { sourceCount, testCount } = countSourceFiles(dir);
-        // Exclude test-only directories (>80% test files) per anatomy-park spec
-        if (sourceCount >= 3 && testCount / sourceCount <= 0.8) {
-            // Name by the path RELATIVE to target, never the basename: filterBySubsystem
-            // resolves a name back through path.resolve(target, name), so a nested
-            // package named "a" would resolve to a directory that does not exist and be
-            // dropped by every scope filter. POSIX separators keep the persisted keys
-            // stable across platforms. The name is never empty: subsystemRoots already
-            // drops any root that resolves equal to target, so that invariant has ONE
-            // home rather than a second check here.
-            const name = path.relative(target, dir).replace(/\\/g, '/');
-            subsystems.push({ name, fileCount: sourceCount });
-        }
+/**
+ * B-LANES: the review-lane roster for `target`, plus the generated files that
+ * belong to no lane. Order: generated output is removed first, then each root
+ * splits by the MIN_LANE_FILES rule, and only an UNSPLIT root takes the 3-file
+ * floor and the >80% test-only filter — re-applying that filter per split child
+ * would drop nearly every test lane. Lane paths are relative to `target`, POSIX,
+ * never empty (subsystemRoots drops any root equal to target), so persisted
+ * keys are stable across platforms.
+ */
+export function discoverLanes(target) {
+    const roots = subsystemRoots(target).map((dir) => toTargetRelative(target, dir));
+    const listing = { files: [], tsconfigDirs: [] };
+    if (fs.existsSync(path.join(target, 'tsconfig.json')))
+        listing.tsconfigDirs.push('');
+    for (const root of roots)
+        listTree(target, path.join(target, root), listing);
+    const generated = collectGenerated(target, listing);
+    const lanes = [];
+    for (const root of roots) {
+        const sourceFiles = listing.files.filter((file) => file.startsWith(`${root}/`)
+            && SOURCE_EXTS.has(path.posix.extname(file)) && !generated.has(file));
+        const rootLanes = splitLane(root, sourceFiles, true);
+        if (rootLanes.length > 1 || clearsRootFloor(sourceFiles))
+            lanes.push(...rootLanes);
     }
-    return subsystems.sort((a, b) => a.name.localeCompare(b.name));
+    return { lanes: lanes.sort((a, b) => a.name.localeCompare(b.name)), generated };
+}
+export function discoverSubsystems(target) {
+    return discoverLanes(target).lanes;
 }
 // ---------------------------------------------------------------------------
 // Pre-flight: Clean Working Tree
@@ -519,6 +653,7 @@ function runGitString(args, cwd) {
         const out = execFileSync('git', ['-C', cwd, ...args], {
             encoding: 'utf-8',
             timeout: GIT_REPO_ROOT_TIMEOUT_MS,
+            stdio: ['ignore', 'pipe', 'ignore'],
         }).trim();
         return out || null;
     }
@@ -1092,6 +1227,9 @@ let activeChild = null;
 // R-OMTD: true when activeChild was spawned `detached:true` (leads its own
 // process group), so teardown must signal the whole group, not just the PID.
 let activeChildLeadsGroup = false;
+// B-LANES WS-3: concurrent anatomy-park lane runners, keyed by lane name. Each leads its own
+// process group, so every teardown path signals the group.
+const laneChildren = new Map();
 let spawnRunnerOverride = null;
 let _closerReleaseActionsForTests = null;
 let phaseRunnerContext = null;
@@ -1228,15 +1366,18 @@ export function armChildMuxRunnerHeartbeat(opts, deps = {}) {
  * into each handler is how the jar-runner's three settle copies drifted, one of them
  * silently ceasing to clear its timers (root CLAUDE.md § Complexity rule 2).
  */
-function makePhaseChildSettler(heartbeat) {
+function makePhaseChildSettler(child, heartbeat) {
     let settled = false;
     return (finish) => {
         if (settled)
             return;
         settled = true;
         heartbeat?.stop();
-        activeChild = null;
-        activeChildLeadsGroup = false;
+        // A lane ending must not clear the tracking of a sibling that spawned after it.
+        if (activeChild === child) {
+            activeChild = null;
+            activeChildLeadsGroup = false;
+        }
         finish();
     };
 }
@@ -1246,24 +1387,24 @@ function makePhaseChildSettler(heartbeat) {
  * `phaseRunnerContext` is installed by `main` alone, so an out-of-phase spawn has
  * nowhere to read the stall thresholds from.
  */
-function armPhaseChildMuxRunnerHeartbeat(child, args) {
+function armPhaseChildMuxRunnerHeartbeat(child, args, sessionDir, deps = {}) {
     if (!phaseRunnerContext || !isMuxRunnerInvocation(args))
         return null;
     return armChildMuxRunnerHeartbeat({
         child,
-        sessionDir: phaseRunnerContext.sessionDir,
+        sessionDir: sessionDir ?? phaseRunnerContext.sessionDir,
         heartbeatMs: phaseRunnerContext.childMuxRunnerHeartbeatMs,
         stallSeconds: phaseRunnerContext.childMuxRunnerStallSeconds,
-    });
+    }, deps);
 }
-function spawnRunner(cmd, args, env) {
+function spawnRunner(cmd, args, env, opts) {
     return new Promise((resolve, reject) => {
         let stdout = '';
         let stderr = '';
         // R-OMTD: spawn the mux-runner child in its OWN process group so a SIGTERM
         // to pipeline-runner can reap the whole subtree (mux-runner + its workers)
         // via the negative-PID group signal in handleShutdown / the heartbeat.
-        const leadsGroup = isMuxRunnerInvocation(args);
+        const leadsGroup = opts?.detached ?? isMuxRunnerInvocation(args);
         const child = spawn(cmd, args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: env ?? process.env,
@@ -1271,7 +1412,8 @@ function spawnRunner(cmd, args, env) {
         });
         activeChild = child;
         activeChildLeadsGroup = leadsGroup;
-        const heartbeat = armPhaseChildMuxRunnerHeartbeat(child, args);
+        opts?.onSpawn?.(child);
+        const heartbeat = armPhaseChildMuxRunnerHeartbeat(child, args, opts?.sessionDir);
         // `setEncoding` before the first read, NOT a per-chunk `toString()`: an OS pipe boundary
         // is a BYTE offset, so a multi-byte UTF-8 character straddles it and each half decodes to
         // U+FFFD — mojibake in the echoed phase output AND in the accumulated stdout/stderr this
@@ -1290,13 +1432,13 @@ function spawnRunner(cmd, args, env) {
             stderr += text;
             process.stderr.write(text);
         });
-        const settle = makePhaseChildSettler(heartbeat);
+        const settle = makePhaseChildSettler(child, heartbeat);
         child.on('exit', (code) => settle(() => resolve({ exitCode: code ?? 1, stdout, stderr })));
         child.on('error', (err) => settle(() => reject(err)));
     });
 }
-async function runSpawnRunner(cmd, args, env) {
-    const result = await (spawnRunnerOverride ?? spawnRunner)(cmd, args, env);
+async function runSpawnRunner(cmd, args, env, opts) {
+    const result = await (spawnRunnerOverride ?? spawnRunner)(cmd, args, env, opts);
     if (typeof result === 'number') {
         return { exitCode: result, stdout: '', stderr: '' };
     }
@@ -1307,6 +1449,12 @@ export function __setSpawnRunnerForTests(fn) {
 }
 export function __setCloserReleaseActionsForTests(actions) {
     _closerReleaseActionsForTests = actions;
+}
+export function __armPhaseChildMuxRunnerHeartbeatForTests(child, args, sessionDir, deps = {}) {
+    return armPhaseChildMuxRunnerHeartbeat(child, args, sessionDir, deps);
+}
+export function __setPhaseRunnerContextForTests(ctx) {
+    phaseRunnerContext = ctx;
 }
 /**
  * AP-EXT-ITER90-01: the persisted record MINUS the two fields the writer always re-authors.
@@ -1418,6 +1566,850 @@ export function claimPipelineRunnerActive(statePath) {
             s.exit_reason = null;
         }
     });
+}
+function readAnatomyMaxIterations(parentSessionDir) {
+    let raw = {};
+    try {
+        raw = readRecoverableJsonObject(path.join(parentSessionDir, 'pipeline.json')) ?? {};
+    }
+    catch { /* unreadable pipeline.json → compiled defaults */ }
+    return parsePipelineConfig(raw).anatomy_max_iterations;
+}
+/**
+ * B-LANES WS-3: create lane session `index` as a sibling of `parentSessionDir` — its own
+ * worktree on `pickle-lane/<session>/<index>` at `phaseStartSha`, `node_modules` linked from
+ * the main checkout, a `scope.json` fenced to the lane, and a `state.json` seeded from the
+ * parent whose `working_dir` is the worktree, so hooks run under
+ * `PICKLE_STATE_FILE=<statePath>` resolve the lane. Only this runner writes lane state.
+ * The one-lane `anatomy-park.json` is `setupAnatomyPark(..., { lanes: [lane] })`.
+ */
+export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, target) {
+    const laneDir = laneSessionDir(parentSessionDir, index);
+    const worktree = path.join(laneDir, 'wt');
+    const branch = laneBranchName(parentSessionDir, index);
+    const repoRoot = gitRepoRoot(target);
+    fs.mkdirSync(laneDir, { recursive: true });
+    createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
+    const { replicated: nodeModulesLinked, unreproducible: nodeModulesUnreproducible } = replicateLaneNodeModules(repoRoot, worktree);
+    const statePath = path.join(laneDir, 'state.json');
+    const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
+    // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing lane state to lock against
+    sm.forceWrite(statePath, { ...sm.read(path.join(parentSessionDir, 'state.json')), working_dir: workingDir, session_dir: laneDir, start_commit: phaseStartSha });
+    resetStateForPhase(statePath, 'anatomy-park.md', readAnatomyMaxIterations(parentSessionDir));
+    claimPipelineRunnerActive(statePath);
+    writeStateFile(path.join(laneDir, 'scope.json'), buildLaneScope(laneAllowedPaths(repoRoot, target, lane, phaseStartSha, discoverLanes(target).generated), phaseStartSha));
+    // setupAnatomyPark reads the citadel report from the session it is handed — here, the lane.
+    const citadelReport = path.join(parentSessionDir, 'citadel_report.json');
+    if (fs.existsSync(citadelReport))
+        fs.copyFileSync(citadelReport, path.join(laneDir, 'citadel_report.json'));
+    return { laneDir, worktree, branch, statePath, workingDir, nodeModulesLinked, nodeModulesUnreproducible };
+}
+/** Parent session files a build unit reads as-is; `scope.json` is the PARENT fence, not a lane's. */
+const UNIT_SEED_FILES = ['scope.json', 'prd.md', 'prd_refined.md'];
+/**
+ * B-PBUILD: create the build unit for `ticketId` as a sibling of `parentSessionDir` — its own
+ * worktree on `unitBranchName(...)` at `waveSha`, seeded from the parent state and carried
+ * through the SAME pickle transition the serial path runs. `start_commit` and `pinned_sha` are
+ * the wave sha and `pinned_branch` the unit branch, so `checkHeadPinMismatch` accepts the
+ * worktree and a zero-work `completion_commit` equal to the wave sha is rejected as a baseline.
+ * Only `<ticketId>/` is copied: a unit must not see — or pick — a sibling's ticket.
+ * Throws when the worktree cannot be created; the parent state is never written.
+ */
+export function createTicketUnitSession(parentSessionDir, ticketId, waveSha, target, backend) {
+    const unitDir = unitSessionDir(parentSessionDir, ticketId);
+    const worktree = path.join(unitDir, 'wt');
+    const branch = unitBranchName(parentSessionDir, ticketId);
+    const repoRoot = gitRepoRoot(target);
+    fs.mkdirSync(unitDir, { recursive: true });
+    createLaneWorktree(repoRoot, worktree, branch, waveSha);
+    const nodeModulesUnreproducible = replicateLaneNodeModules(repoRoot, worktree).unreproducible;
+    const statePath = path.join(unitDir, 'state.json');
+    const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
+    // Not `sm.read`: that heals and PERSISTS the parent's defaults, and the parent is never written here.
+    const parentRaw = readRecoverableJsonObject(path.join(parentSessionDir, 'state.json'));
+    if (!parentRaw)
+        throw new Error(`unit ${ticketId}: parent state ${parentSessionDir}/state.json is unreadable`);
+    const { 
+    // R-CNAR-8: the parent's per-ticket caches describe a different ticket than this unit's.
+    current_ticket_tier: _tier, current_ticket_budget: _budget, current_ticket_max_iterations: _maxIter, current_ticket_worker_timeout_seconds: _timeout, current_ticket_budget_start_iteration: _budgetStart, ...parentState } = parentRaw;
+    // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing unit state to lock against
+    sm.forceWrite(statePath, {
+        ...parentState,
+        working_dir: workingDir,
+        session_dir: unitDir,
+        start_commit: waveSha,
+        pinned_sha: waveSha,
+        pinned_branch: branch,
+        current_ticket: ticketId,
+        iteration: 0,
+        active: false,
+    });
+    const previousState = sm.read(statePath);
+    enterPicklePhase(unitDir, statePath, backend);
+    persistPhaseTransition({ statePath, sessionDir: unitDir }, { name: 'pickle' }, previousState);
+    claimPipelineRunnerActive(statePath);
+    for (const file of UNIT_SEED_FILES) {
+        const src = path.join(parentSessionDir, file);
+        if (fs.existsSync(src))
+            fs.copyFileSync(src, path.join(unitDir, file));
+    }
+    const ticketDir = path.join(parentSessionDir, ticketId);
+    if (fs.existsSync(ticketDir))
+        fs.cpSync(ticketDir, path.join(unitDir, ticketId), { recursive: true });
+    return { unitDir, worktree, branch, statePath, workingDir, nodeModulesUnreproducible };
+}
+const LANE_KILL_GRACE_MS = 2_000;
+const LANE_POLL_FALLBACK_MS = 60_000;
+/** The lane roster `setupAnatomyPark` persisted into the parent `anatomy-park.json`. */
+function readAnatomyLanes(sessionDir) {
+    let raw;
+    try {
+        raw = readRecoverableJsonObject(path.join(sessionDir, 'anatomy-park.json'))?.lanes;
+    }
+    catch {
+        return [];
+    }
+    if (!Array.isArray(raw))
+        return [];
+    return raw.filter((lane) => typeof lane?.name === 'string'
+        && typeof lane?.dir === 'string' && Array.isArray(lane?.excludes));
+}
+function deactivateLaneState(statePath, log) {
+    try {
+        sm.update(statePath, (s) => { s.active = false; });
+    }
+    catch (err) {
+        log(`anatomy lanes: could not mirror active=false into ${statePath}: ${safeErrorMessage(err)}`);
+    }
+}
+/** Cancel reaches every lane: mirror `active=false` into each lane state, then SIGTERM each group. */
+function cancelLaneRun(run) {
+    if (run.cancelledAtMs !== null)
+        return;
+    run.cancelledAtMs = Date.now();
+    run.runtime.log(`anatomy lanes: parent session inactive — cancelling ${run.statePaths.length} lane(s)`);
+    for (const statePath of run.statePaths)
+        deactivateLaneState(statePath, run.runtime.log);
+    for (const child of run.spawned)
+        reapChildSubtree(child, true, 'SIGTERM');
+}
+function parentSessionActive(statePath) {
+    try {
+        return sm.read(statePath).active === true;
+    }
+    catch {
+        return true; // an unreadable parent state is not a cancel
+    }
+}
+/**
+ * The reason for a lane that produced no verdict of its own: its session never started, or its
+ * runner ended without writing one. Deliberately in NO disposition table — the default
+ * disposition (`non-success`) withholds the phase's success without halting the pipeline, where
+ * `'error'` classifies `failure` and would halt every lane over one lane that measured nothing.
+ */
+const LANE_NO_VERDICT = 'lane_no_verdict';
+/** A lane's own verdict: its `exit_reason`, or — when it never wrote one — why it did not. */
+function readLaneEnd(run, statePath, startedAt) {
+    const end = {
+        reason: run.cancelledAtMs === null ? LANE_NO_VERDICT : 'stopped', passes: 0, started_at: startedAt, ended_at: new Date().toISOString(),
+        node_modules_linked: [], baseline_check_status: null,
+    };
+    try {
+        const state = sm.read(statePath);
+        if (typeof state.exit_reason === 'string' && state.exit_reason.length > 0)
+            end.reason = state.exit_reason;
+        if (typeof state.iteration === 'number')
+            end.passes = state.iteration;
+    }
+    catch { /* unreadable lane state → no verdict of its own */ }
+    return end;
+}
+const notStarted = (reason) => ({
+    reason, passes: 0, started_at: null, ended_at: null, node_modules_linked: [], baseline_check_status: null,
+});
+/** The `check_status` the lane's own runner captured at its first iteration; `null` when it wrote none. */
+function readLaneBaselineCheckStatus(laneDir) {
+    try {
+        const status = readRecoverableJsonObject(path.join(laneDir, 'gate', 'baseline.json'))?.check_status;
+        return typeof status === 'object' && status !== null && !Array.isArray(status) ? status : null;
+    }
+    catch {
+        return null;
+    }
+}
+async function runOneLane(run, lane, index) {
+    const { runtime } = run;
+    if (run.cancelledAtMs !== null)
+        return notStarted('stopped');
+    const startedAt = new Date().toISOString();
+    let session;
+    try {
+        session = createLaneSession(runtime.sessionDir, lane, index, run.sha, runtime.target);
+    }
+    catch (err) {
+        runtime.log(`anatomy lane ${lane.name}: session setup failed: ${safeErrorMessage(err)}`);
+        return notStarted(LANE_NO_VERDICT);
+    }
+    if (session.nodeModulesUnreproducible.length > 0) {
+        runtime.log(`anatomy lane ${lane.name}: node_modules not replicated: ${session.nodeModulesUnreproducible.join(', ')}`);
+    }
+    run.statePaths.push(session.statePath);
+    run.worktrees.push(session.worktree);
+    try {
+        const end = await runLaneSession(run, lane, session, startedAt);
+        return { ...end, node_modules_linked: session.nodeModulesLinked, baseline_check_status: readLaneBaselineCheckStatus(session.laneDir) };
+    }
+    finally {
+        // createLaneSession claimed the lane active; however the lane ended, it is not running now.
+        deactivateLaneState(session.statePath, runtime.log);
+    }
+}
+async function runLaneSession(run, lane, session, startedAt) {
+    const { runtime } = run;
+    const setup = setupAnatomyPark(session.laneDir, session.workingDir, runtime.config.anatomy_stall_limit, runtime.extensionRoot, runtime.log, undefined, runtime.designSafe, { lanes: [lane] });
+    if (setup !== true) {
+        runtime.log(`anatomy lane ${lane.name}: setup skipped (${setup.skipReason})`);
+        return notStarted(LANE_NO_VERDICT);
+    }
+    if (run.cancelledAtMs !== null)
+        return notStarted('stopped');
+    runtime.log(`anatomy lane ${lane.name}: started in ${session.laneDir}`);
+    try {
+        await runSpawnRunner('node', [
+            path.join(runtime.extensionRoot, 'extension', 'bin', 'microverse-runner.js'),
+            session.laneDir,
+        ], { ...runtime.phaseEnv, ...laneRunnerEnv(session.statePath, runtime.phaseEnv) }, {
+            detached: process.platform !== 'win32',
+            onSpawn: (child) => {
+                run.spawned.push(child);
+                laneChildren.set(lane.name, child);
+                if (run.cancelledAtMs !== null)
+                    reapChildSubtree(child, true, 'SIGTERM');
+            },
+        });
+    }
+    catch (err) {
+        runtime.log(`anatomy lane ${lane.name}: runner failed to start: ${safeErrorMessage(err)}`);
+    }
+    finally {
+        laneChildren.delete(lane.name);
+    }
+    const end = readLaneEnd(run, session.statePath, startedAt);
+    runtime.log(`anatomy lane ${lane.name}: ended (${end.reason})`);
+    return end;
+}
+/** SIGKILL every lane group once the 2 s grace after cancel has elapsed. */
+async function reapCancelledLanes(run) {
+    if (run.cancelledAtMs === null)
+        return;
+    const remainingMs = run.cancelledAtMs + LANE_KILL_GRACE_MS - Date.now();
+    if (remainingMs > 0)
+        await new Promise((resolve) => setTimeout(resolve, remainingMs));
+    for (const child of run.spawned)
+        reapChildSubtree(child, true, 'SIGKILL');
+}
+/**
+ * B-LANES WS-3: run the anatomy-park lane roster concurrently, at most `cap` lanes alive at
+ * once, starting the next lane as one ends. The parent `active` flag is polled at the
+ * heartbeat cadence and a cancel reaches every lane. After the last lane ends, ONE parent
+ * `exit_reason` is written — `converged` iff every lane converged, else the first
+ * non-success lane reason in roster order — so `finalizePhaseSuccess` reads the lanes'
+ * verdict through the same field it always has. Returns the phase exit code.
+ */
+export async function runAnatomyLanes(runtime, lanes, cap) {
+    const repoRoot = gitRepoRoot(runtime.target);
+    const run = {
+        runtime,
+        repoRoot,
+        sha: runGitString(['rev-parse', 'HEAD'], repoRoot) ?? '',
+        cancelledAtMs: null,
+        statePaths: [],
+        spawned: [],
+        worktrees: [],
+    };
+    reportLaneRecovery(run);
+    const ends = lanes.map(() => notStarted('stopped'));
+    const workers = Math.min(cap, lanes.length);
+    runtime.log(`anatomy lanes: ${lanes.length} lane(s), up to ${workers} at once`);
+    const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
+    const poll = setInterval(() => {
+        if (!parentSessionActive(runtime.statePath))
+            cancelLaneRun(run);
+    }, heartbeatMs > 0 ? heartbeatMs : LANE_POLL_FALLBACK_MS);
+    let next = 0;
+    const worker = async () => {
+        while (next < lanes.length) {
+            const index = next++;
+            if (!parentSessionActive(runtime.statePath))
+                cancelLaneRun(run);
+            ends[index] = await runOneLane(run, lanes[index], index + 1);
+        }
+    };
+    try {
+        await Promise.all(Array.from({ length: workers }, worker));
+    }
+    finally {
+        clearInterval(poll);
+    }
+    await reapCancelledLanes(run);
+    const stuck = removeLaneWorktrees(repoRoot, run.worktrees);
+    if (stuck.length > 0)
+        runtime.log(`anatomy lanes: could not remove worktree(s): ${stuck.join(', ')}`);
+    const outcomes = integrateLaneRun(run, lanes, ends);
+    discloseUnmeasuredIntegration(runtime, outcomes);
+    // A lane that converged but did not reach main reports WHY; every other lane reports its own reason.
+    const reasons = outcomes.map((o) => (isLaneSuccess(o.exit_reason) && o.outcome !== 'integrated' ? o.outcome : o.exit_reason));
+    const reason = aggregateLaneExitReason(reasons, isLaneSuccess);
+    recordExitReason(runtime.statePath, reason);
+    runtime.log(`anatomy lanes: verdict ${reason} (${reasons.join(', ')})`);
+    return reason === 'converged' ? 0 : 1;
+}
+const isLaneSuccess = (reason) => classifyMicroverseDisposition(reason).reportAs === 'success';
+/**
+ * An integrated lane lands on main with every hole it carried, so each one is DISCLOSED on the parent:
+ * `integration_typecheck` when no typecheck command could run, plus the lane's OWN `cap_unmeasured_checks`
+ * (its runner converged over a check it could not measure, and `readLaneEnd` reads only the exit reason).
+ * They join the parent `cap_unmeasured_checks`, which `reportConvergedWithUnmeasured` turns into
+ * `converged_with_unmeasured:` on the phase disposition. A lane that did not integrate discloses nothing:
+ * its work never reached main. `recordCapUnmeasured` replaces its list, so the existing entries are
+ * carried in. The parent file exists whenever `setupAnatomyPark` ran; it is created only for a caller
+ * that skipped that setup. The write is best-effort: a failed disclosure is logged and never ends the run.
+ */
+export function discloseUnmeasuredIntegration(runtime, outcomes) {
+    const holes = outcomes.flatMap((o, i) => (o.outcome !== 'integrated' ? [] : [
+        ...(o.integration_check === 'unavailable' ? ['integration_typecheck'] : []),
+        ...readCapUnmeasuredChecks(laneSessionDir(runtime.sessionDir, i + 1)),
+    ]));
+    if (holes.length === 0)
+        return;
+    try {
+        const parent = readMicroverseState(runtime.sessionDir) ?? createMicroverseState({
+            prdPath: runtime.target,
+            metric: { description: 'none', validation: 'none', type: 'none', timeout_seconds: 0, tolerance: 0, direction: 'lower' },
+            stallLimit: outcomes.length * 10,
+            convergenceMode: 'worker',
+            convergenceFile: 'anatomy-park.json',
+        });
+        writeMicroverseState(runtime.sessionDir, recordCapUnmeasured(parent, [...(parent.cap_unmeasured_checks ?? []), ...holes]));
+        runtime.log(`anatomy lanes: integrated lane(s) carried unmeasured checks — disclosed as ${[...new Set(holes)].join(', ')}`);
+    }
+    catch (err) {
+        runtime.log(`anatomy lanes: could not record the unmeasured integration: ${safeErrorMessage(err)}`);
+    }
+}
+function emitLaneEvent(event, sessionDir, gatePayload) {
+    try {
+        logActivity({ event, source: 'pickle', session: path.basename(sessionDir), gate_payload: gatePayload });
+    }
+    catch { /* best-effort telemetry */ }
+}
+/** Phase start: prune a crashed run's worktrees, report its unintegrated branches — never integrate them. */
+function reportLaneRecovery({ runtime, repoRoot }) {
+    const report = recoverLaneBranches(repoRoot, runtime.sessionDir);
+    if (report.staleWorktrees.length > 0)
+        runtime.log(`anatomy lanes: pruned stale worktree(s): ${report.staleWorktrees.join(', ')}`);
+    if (report.unintegrated.length > 0) {
+        runtime.log(`anatomy lanes: unintegrated lane branch(es) from a previous run, NOT integrated: ${report.unintegrated.join(', ')}`);
+    }
+    if (report.expired.length > 0)
+        runtime.log(`anatomy lanes: deleted retained lane branch(es) older than ${RETAINED_BRANCH_MAX_AGE_DAYS} days: ${report.expired.join(', ')}`);
+    if (report.unintegrated.length + report.expired.length + report.staleWorktrees.length > 0) {
+        emitLaneEvent('anatomy_lane_branches_reported', runtime.sessionDir, {
+            unintegrated: report.unintegrated, expired: report.expired, stale_worktrees: report.staleWorktrees,
+        });
+    }
+}
+const KEPT_LANE_SUBJECT_CAP = 5;
+/**
+ * One line per retained lane branch that holds commits, read back from `archive/lanes.json`: what is
+ * on it, why it was not integrated, and the date any later lanes run deletes it. The retention
+ * (`recoverLaneBranches`) is by tip commit date, so that is the clock the date counts from.
+ */
+export function reportKeptLaneBranches(runtime) {
+    let rows;
+    try {
+        rows = JSON.parse(fs.readFileSync(path.join(runtime.sessionDir, 'archive', 'lanes.json'), 'utf-8'));
+    }
+    catch {
+        return;
+    }
+    if (!Array.isArray(rows))
+        return;
+    const repoRoot = gitRepoRoot(runtime.target);
+    for (const row of rows) {
+        const commits = Array.isArray(row.commits) ? row.commits : [];
+        if (row.outcome === 'integrated' || commits.length === 0 || typeof row.branch !== 'string')
+            continue;
+        const subjects = commits.slice(0, KEPT_LANE_SUBJECT_CAP).map((sha) => runGitString(['log', '-1', '--format=%s', sha], repoRoot) ?? sha);
+        const more = commits.length - subjects.length;
+        const tipSeconds = Number(runGitString(['log', '-1', '--format=%ct', row.branch], repoRoot));
+        const recoverBefore = Number.isFinite(tipSeconds) && tipSeconds > 0
+            ? new Date(tipSeconds * 1000 + RETAINED_BRANCH_MAX_AGE_MS).toISOString() : 'unknown (tip date unreadable)';
+        runtime.log(`kept lane branch ${row.branch}: ${commits.length} commit(s), outcome ${row.outcome}, exit ${row.exit_reason} — ${subjects.join('; ')}${more > 0 ? `; … (+${more} more)` : ''} — recover before ${recoverBefore} (deleted by any later lanes run after ${RETAINED_BRANCH_MAX_AGE_DAYS} days)`);
+    }
+}
+const BASE_DRIFT_FETCH_TIMEOUT_MS = 15_000;
+const BASE_DRIFT_MERGE_TIMEOUT_MS = 30_000;
+const BASE_DRIFT_PATH_CAP = 5;
+/** Run git for the drift report; exit status and stdout survive a non-zero exit (`merge-tree` reports a conflict as exit 1). */
+function runGitForDrift(repoRoot, args, timeout) {
+    try {
+        const stdout = execFileSync('git', ['-C', repoRoot, ...args], {
+            encoding: 'utf-8', timeout, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        });
+        return { status: 0, stdout };
+    }
+    catch (err) {
+        const e = err;
+        return { status: typeof e.status === 'number' ? e.status : null, stdout: e.stdout ? String(e.stdout) : '' };
+    }
+}
+/**
+ * One line at the end of a run: does merging the run's HEAD into its base branch conflict? Fetches the
+ * single base ref (falling back to the local ref, labelled stale), then asks `merge-tree --write-tree`.
+ * Report only — never throws, never changes the exit code.
+ */
+export function reportBaseDrift(runtime) {
+    try {
+        const base = resolveSetupScopeBaseRef(runtime.repoRoot);
+        const remote = base.startsWith('origin/') ? base.slice('origin/'.length) : base;
+        const fetched = runGitForDrift(runtime.repoRoot, ['fetch', '--no-tags', 'origin', remote], BASE_DRIFT_FETCH_TIMEOUT_MS).status === 0;
+        const label = fetched ? base : `${base} (stale)`;
+        const comparand = fetched ? 'FETCH_HEAD' : base;
+        const merge = runGitForDrift(runtime.repoRoot, ['merge-tree', '--write-tree', 'HEAD', comparand], BASE_DRIFT_MERGE_TIMEOUT_MS);
+        if (merge.status === 0) {
+            runtime.log(`base drift: clean (${label})`);
+            return;
+        }
+        const conflicted = merge.status === 1 ? [...new Set([...merge.stdout.matchAll(/^\d+ [0-9a-f]+ [123]\t(.+)$/gm)].map((m) => m[1]))] : [];
+        if (conflicted.length === 0) {
+            runtime.log(`base drift: unmeasured (${label}: git merge-tree exit ${merge.status ?? 'none'}, no conflicted path)`);
+            return;
+        }
+        const shown = conflicted.slice(0, BASE_DRIFT_PATH_CAP).join(', ');
+        const more = conflicted.length - BASE_DRIFT_PATH_CAP;
+        runtime.log(`base drift: CONFLICT ${shown}${more > 0 ? ` (+${more} more)` : ''} (${label})`);
+    }
+    catch (err) {
+        try {
+            runtime.log(`base drift: unmeasured (${safeErrorMessage(err)})`);
+        }
+        catch { /* report only */ }
+    }
+}
+const DROPPED_FINDING_MIN_CONF = 25;
+const DROPPED_FINDING_FILE_CAP = 5;
+/**
+ * Every `dropped_findings.md` under `dir`, at any depth: the writer puts it at `<session>/<subsystem>/`
+ * and a subsystem is a repo path (`extension/src/bin`). A dir holding `.git` is a worktree checkout, not
+ * a subsystem dir, and is never entered — its tracked files are the repo's, not this run's drops.
+ */
+function droppedFindingFiles(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    if (entries.some((e) => e.name === '.git'))
+        return [];
+    return entries.flatMap((e) => {
+        const child = path.join(dir, e.name);
+        if (e.isDirectory())
+            return droppedFindingFiles(child);
+        return e.name === 'dropped_findings.md' ? [child] : [];
+    });
+}
+/**
+ * One line at the end of a run: how many findings anatomy-park dropped at conf>=25, counted over
+ * `<session>/<subsystem>/dropped_findings.md` under the parent and each `--lane-*` sibling. Report only.
+ */
+export function reportDroppedFindings(runtime) {
+    try {
+        const parent = path.resolve(runtime.sessionDir);
+        const siblings = fs.readdirSync(path.dirname(parent)).filter((n) => n.startsWith(`${path.basename(parent)}--lane-`));
+        const roots = [parent, ...siblings.map((n) => path.join(path.dirname(parent), n))];
+        const hits = [];
+        let total = 0;
+        for (const root of roots) {
+            for (const file of fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory())
+                .flatMap((e) => droppedFindingFiles(path.join(root, e.name)))) {
+                const n = fs.readFileSync(file, 'utf-8').split('\n')
+                    .filter((l) => Number(/\bconf=(\d+)/.exec(l)?.[1] ?? -1) >= DROPPED_FINDING_MIN_CONF).length;
+                if (n > 0) {
+                    total += n;
+                    hits.push(path.join(path.basename(root), path.relative(root, path.dirname(file))));
+                }
+            }
+        }
+        if (total === 0) {
+            runtime.log(`dropped findings (conf>=${DROPPED_FINDING_MIN_CONF}): 0`);
+            return;
+        }
+        const more = hits.length - DROPPED_FINDING_FILE_CAP;
+        runtime.log(`dropped findings (conf>=${DROPPED_FINDING_MIN_CONF}): ${total} in ${hits.slice(0, DROPPED_FINDING_FILE_CAP).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`);
+    }
+    catch (err) {
+        try {
+            runtime.log(`dropped findings: unmeasured (${safeErrorMessage(err)})`);
+        }
+        catch { /* report only */ }
+    }
+}
+/**
+ * Integrate the converged lanes, release every branch main now reaches, and write
+ * `archive/lanes.json`. Returns one row per lane in roster order.
+ */
+function integrateLaneRun(run, lanes, ends) {
+    const { runtime, repoRoot } = run;
+    const branches = lanes.map((_, i) => laneBranchName(runtime.sessionDir, i + 1));
+    const integration = integrateLanes({
+        repoRoot, target: runtime.target, sessionDir: runtime.sessionDir, phaseStartSha: run.sha, log: runtime.log,
+        lanes: branches.map((branch, i) => ({ branch, integrate: isLaneSuccess(ends[i].reason) })),
+    });
+    const outcomes = lanes.map((lane, i) => ({
+        name: lane.name, dir: lane.dir, excludes: [...lane.excludes], branch: branches[i],
+        worktree: path.join(laneSessionDir(runtime.sessionDir, i + 1), 'wt'),
+        started_at: ends[i].started_at, ended_at: ends[i].ended_at, passes: ends[i].passes, exit_reason: ends[i].reason,
+        outcome: integration.outcomes[i] ?? (run.cancelledAtMs === null ? 'non_convergent' : 'cancelled'),
+        integration_check: integration.checks[i],
+        // A lane that did not integrate is not handed to integrateLanes (its pick loop would PICK them),
+        // yet its commits are what a stranded lane leaves behind — listed here for the record only.
+        commits: integration.commits[i].length > 0 ? integration.commits[i] : laneCommits(repoRoot, run.sha, branches[i]),
+        node_modules_linked: ends[i].node_modules_linked,
+        baseline_check_status: ends[i].baseline_check_status,
+    }));
+    const integrated = new Set(outcomes.filter((o) => o.outcome === 'integrated').map((o) => o.branch));
+    const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, integrated);
+    if (retained.length > 0)
+        runtime.log(`anatomy lanes: kept lane branch(es): ${retained.join(', ')}`);
+    try {
+        fs.mkdirSync(path.join(runtime.sessionDir, 'archive'), { recursive: true });
+        writeStateFile(path.join(runtime.sessionDir, 'archive', 'lanes.json'), outcomes);
+    }
+    catch (err) {
+        runtime.log(`anatomy lanes: could not write archive/lanes.json: ${safeErrorMessage(err)}`);
+    }
+    const counts = {};
+    for (const o of outcomes)
+        counts[o.outcome] = (counts[o.outcome] ?? 0) + 1;
+    emitLaneEvent('anatomy_lanes_integrated', runtime.sessionDir, { outcomes: counts, retained_branches: retained });
+    return outcomes;
+}
+// ---------------------------------------------------------------------------
+// B-PBUILD: pickle as waves of unit sessions
+// ---------------------------------------------------------------------------
+const isTerminalTicketStatus = (status) => {
+    const s = (status ?? '').toLowerCase();
+    return s === 'done' || s === 'skipped';
+};
+/**
+ * The parent's non-terminal tickets as wave candidates; `parallel_safe` absent reads `false`.
+ * `order` is the ticket's position in `collectTickets`' dependency (topo) order, and a ticket
+ * waiting on a PENDING dependency is not parallel-safe — so it never shares a wave with it.
+ */
+function pendingWaveCandidates(sessionDir) {
+    const pending = collectTickets(sessionDir)
+        .filter((t) => typeof t.id === 'string' && !isTerminalTicketStatus(t.status));
+    const pendingIds = new Set(pending.map((t) => t.id));
+    return pending.map((t, order) => {
+        let content = '';
+        try {
+            content = fs.readFileSync(path.join(sessionDir, t.id, `rick_ticket_${t.id}.md`), 'utf-8');
+        }
+        catch { /* unreadable → not parallel-safe */ }
+        const waitsOnPending = t.depends_on.some((dep) => pendingIds.has(dep));
+        return { id: t.id, order, parallelSafe: !waitsOnPending && readParallelSafe(content), files: readDeclaredFilesForTicket(sessionDir, t.id) };
+    });
+}
+/** Run ticket `ticketId` as a unit session at the wave sha. A unit that cannot be created is not started. */
+async function runTicketUnit(run, ticketId) {
+    const { runtime } = run;
+    const notRun = { id: ticketId, done: false, status: null, started_at: null, ended_at: null };
+    if (run.cancelledAtMs !== null)
+        return notRun;
+    let unit;
+    try {
+        unit = createTicketUnitSession(runtime.sessionDir, ticketId, run.sha, runtime.target, runtime.backend);
+    }
+    catch (err) {
+        runtime.log(`pickle waves: unit ${ticketId}: session setup failed: ${safeErrorMessage(err)}`);
+        return notRun;
+    }
+    if (unit.nodeModulesUnreproducible.length > 0) {
+        runtime.log(`pickle waves: unit ${ticketId}: node_modules not replicated: ${unit.nodeModulesUnreproducible.join(', ')}`);
+    }
+    run.statePaths.push(unit.statePath);
+    run.worktrees.push(unit.worktree);
+    const startedAt = new Date().toISOString();
+    try {
+        await runSpawnRunner('node', [
+            path.join(runtime.extensionRoot, 'extension', 'bin', 'mux-runner.js'),
+            unit.unitDir,
+        ], { ...runtime.phaseEnv, ...laneRunnerEnv(unit.statePath, runtime.phaseEnv) }, {
+            detached: process.platform !== 'win32',
+            sessionDir: unit.unitDir,
+            onSpawn: (child) => {
+                run.spawned.push(child);
+                laneChildren.set(ticketId, child);
+                if (run.cancelledAtMs !== null)
+                    reapChildSubtree(child, true, 'SIGTERM');
+            },
+        });
+    }
+    catch (err) {
+        runtime.log(`pickle waves: unit ${ticketId}: runner failed to start: ${safeErrorMessage(err)}`);
+    }
+    finally {
+        laneChildren.delete(ticketId);
+        deactivateLaneState(unit.statePath, runtime.log);
+    }
+    const status = collectTickets(unit.unitDir).find((t) => t.id === ticketId)?.status ?? null;
+    return { id: ticketId, done: (status ?? '').toLowerCase() === 'done', status, started_at: startedAt, ended_at: new Date().toISOString() };
+}
+/**
+ * Picks land on the working branch in roster order, one run per integrated member, and a
+ * member that conflicted or redded contributes nothing — so `waveSha..HEAD` maps onto the
+ * integrated members positionally. Returns member index → the sha of its LAST picked commit.
+ * A count that does not add up proves nothing: an empty map, so every member writes back Todo.
+ */
+function integratedShas(repoRoot, waveSha, integrated, commits) {
+    const landed = (runGitString(['rev-list', '--reverse', `${waveSha}..HEAD`], repoRoot) ?? '').split('\n').filter(Boolean);
+    const shas = new Map();
+    let cursor = 0;
+    integrated.forEach((ok, i) => {
+        if (!ok || commits[i].length === 0)
+            return;
+        cursor += commits[i].length;
+        shas.set(i, landed[cursor - 1]);
+    });
+    return cursor === landed.length ? shas : new Map();
+}
+/**
+ * Write every member's chosen status back onto the PARENT ticket; an integrated member also
+ * gets its sha. A status the parent already carries is not rewritten. Returns the ids whose
+ * write-back FAILED — their parent ticket still carries its prior status.
+ */
+function writeBackWave(runtime, members, shas, statuses, prior) {
+    const failed = new Set();
+    members.forEach((id, i) => {
+        const sha = shas.get(i);
+        if (!sha && prior.get(id) === statuses[i].toLowerCase())
+            return;
+        try {
+            // completion_commit is written before the status flip, so a Done never exists without its evidence.
+            if (sha)
+                updateTicketFrontmatter(id, runtime.sessionDir, { completion_commit: sha });
+            if (writeTicketStatus(runtime.sessionDir, id, statuses[i]))
+                return;
+            runtime.log(`pickle waves: ${id}: status write-back failed`);
+        }
+        catch (err) {
+            runtime.log(`pickle waves: ${id}: write-back failed: ${safeErrorMessage(err)}`);
+        }
+        failed.add(id);
+    });
+    return failed;
+}
+const REQUEUE_OUTCOMES = new Set(['conflict', 'integration_red']);
+const FINAL_UNIT_STATUSES = new Set(['failed', 'skipped']);
+/**
+ * The parent status a member is written back with. Integrated → Done. A member already
+ * re-queued has had its one retry: its unit's Failed/Skipped stands, anything else is Todo.
+ * A unit Done that conflicted or redded at integration is re-queued ONCE (Todo). Else Todo.
+ */
+function waveStatusOf(end, outcome, requeued) {
+    if (outcome === 'integrated')
+        return 'Done';
+    const unitStatus = end.status ?? '';
+    if (requeued.has(end.id))
+        return FINAL_UNIT_STATUSES.has(unitStatus.toLowerCase()) ? unitStatus : 'Todo';
+    if (end.done && REQUEUE_OUTCOMES.has(outcome))
+        requeued.add(end.id);
+    return 'Todo';
+}
+/**
+ * Run one wave to its barrier, integrate the Done members in order, write back. A member
+ * that conflicted is added to `requeued` (once per run — see `waveStatusOf`).
+ */
+async function runTicketWave(run, members, wave, requeued) {
+    const { runtime, repoRoot } = run;
+    runtime.log(`pickle waves: wave ${wave} members=${members.join(',')} in_flight=${members.length}`);
+    const prior = new Map(collectTickets(runtime.sessionDir).map((t) => [t.id ?? '', (t.status ?? '').toLowerCase()]));
+    const ends = await Promise.all(members.map((id) => runTicketUnit(run, id)));
+    await reapCancelledLanes(run);
+    // Every member has ended: the next wave's cancel and reap must reach only ITS runners.
+    run.spawned.length = 0;
+    run.statePaths.length = 0;
+    const stuck = removeLaneWorktrees(repoRoot, run.worktrees.splice(0));
+    if (stuck.length > 0)
+        runtime.log(`pickle waves: could not remove worktree(s): ${stuck.join(', ')}`);
+    const branches = members.map((id) => unitBranchName(runtime.sessionDir, id));
+    const integration = integrateLanes({
+        repoRoot, target: runtime.target, sessionDir: runtime.sessionDir, phaseStartSha: run.sha, log: runtime.log,
+        lanes: branches.map((branch, i) => ({ branch, integrate: ends[i].done })),
+    });
+    const integrated = integration.outcomes.map((o) => o === 'integrated');
+    const shas = integratedShas(repoRoot, run.sha, integrated, integration.commits);
+    const outcomeOf = (i) => {
+        if (shas.has(i))
+            return 'integrated';
+        if (!ends[i].done)
+            return 'not_done';
+        // Picked, but no landed commit is provably its own (zero commits, or a count that did not add up).
+        return integration.outcomes[i] === 'integrated' ? 'unmapped' : (integration.outcomes[i] ?? 'not_integrated');
+    };
+    const memberOutcomes = members.map((_, i) => outcomeOf(i));
+    const wasRequeued = new Set(requeued);
+    const statuses = ends.map((end, i) => waveStatusOf(end, memberOutcomes[i], requeued));
+    const unwritten = writeBackWave(runtime, members, shas, statuses, prior);
+    const { retained } = releaseLaneBranches(repoRoot, runtime.sessionDir, branches, new Set(branches.filter((_, i) => shas.has(i))));
+    if (retained.length > 0)
+        runtime.log(`pickle waves: kept unit branch(es): ${retained.join(', ')}`);
+    const outcomes = members.map((id, i) => {
+        const requeueNote = requeued.has(id) && !wasRequeued.has(id) ? ' (re-queued)' : '';
+        const writeNote = unwritten.has(id) ? `write-back FAILED (wanted ${statuses[i]})` : `written back ${statuses[i]}`;
+        const note = shas.has(i) ? ` @ ${shas.get(i)}${unwritten.has(id) ? ` — ${writeNote}` : ''}` : ` — ${writeNote}${requeueNote}`;
+        const unmeasuredNote = shas.has(i) && integration.checks[i] === 'unavailable' ? ' (integration typecheck unavailable)' : '';
+        runtime.log(`pickle waves: wave ${wave} ${id}: ${memberOutcomes[i]}${note}${unmeasuredNote}`);
+        return { id, outcome: memberOutcomes[i], started_at: ends[i].started_at, ended_at: ends[i].ended_at };
+    });
+    emitLaneEvent('anatomy_lanes_integrated', runtime.sessionDir, { phase: 'pickle', wave, outcomes, retained_branches: retained });
+    // Only a WRITTEN Failed/Skipped is progress: an unwritten one leaves the ticket pending, to be planned again.
+    const terminalised = members.filter((id, i) => !unwritten.has(id)
+        && FINAL_UNIT_STATUSES.has(statuses[i].toLowerCase()) && prior.get(id) !== statuses[i].toLowerCase());
+    const unmeasured = members.filter((_, i) => shas.has(i) && integration.checks[i] === 'unavailable').length;
+    return { integrated: shas.size, terminalised: terminalised.length, reasons: members.map((id, i) => `${id}=${memberOutcomes[i]}`), unmeasured };
+}
+/** A re-queued ticket runs in a wave of ONE: not parallel-safe, it is never appended and plans alone when first. */
+function planPickleWave(sessionDir, cap, requeued) {
+    const candidates = pendingWaveCandidates(sessionDir).map((c) => (requeued.has(c.id) ? { ...c, parallelSafe: false } : c));
+    return planTicketWave(candidates, cap);
+}
+/**
+ * Units a crashed prior run left CLAIMED and ALIVE: a `<session>--unit-*` sibling whose state reads
+ * `active: true` with a live runner `pid` (stamped by `claimPipelineRunnerActive`, re-stamped by the
+ * unit's own mux-runner). Read without writing — `sm.read` would backfill and rewrite the file.
+ */
+function liveUnitRunners(sessionDir) {
+    const parent = path.resolve(sessionDir);
+    const prefix = `${path.basename(parent)}--unit-`;
+    let entries;
+    try {
+        entries = fs.readdirSync(path.dirname(parent));
+    }
+    catch {
+        return [];
+    }
+    return entries.filter((name) => name.startsWith(prefix)).flatMap((name) => {
+        const statePath = path.join(path.dirname(parent), name, 'state.json');
+        let state;
+        try {
+            state = readRecoverableJsonObject(statePath);
+        }
+        catch {
+            return [];
+        }
+        const pid = state?.pid;
+        const live = state?.active === true && typeof pid === 'number' && Number.isInteger(pid) && pid > 1
+            && pid !== process.pid && isProcessAlive(pid);
+        return live ? [{ statePath, pid }] : [];
+    });
+}
+/**
+ * Phase entry: a unit spawned detached outlives a SIGKILLed pipeline-runner and would race the new
+ * wave on the same ticket. Deactivate each live one, SIGTERM its group, and SIGKILL what outlives
+ * `LANE_KILL_GRACE_MS`. Only the GROUP the recorded pid leads is signalled — a unit runner always
+ * leads one, so a recycled pid that does not is never killed. Best-effort; never throws or halts.
+ */
+async function reapPriorUnitRunners(runtime) {
+    const live = liveUnitRunners(runtime.sessionDir);
+    if (live.length === 0)
+        return;
+    runtime.log(`pickle waves: reaping ${live.length} live unit runner(s) from a previous run: pid ${live.map((u) => u.pid).join(', ')}`);
+    for (const unit of live) {
+        deactivateLaneState(unit.statePath, runtime.log);
+        killProcessGroup(unit.pid, 'SIGTERM');
+    }
+    const deadline = Date.now() + LANE_KILL_GRACE_MS;
+    while (Date.now() < deadline && live.some((u) => isProcessAlive(u.pid))) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    for (const unit of live)
+        if (isProcessAlive(unit.pid))
+            killProcessGroup(unit.pid, 'SIGKILL');
+}
+/**
+ * B-PBUILD: run the pickle phase as waves of unit sessions, at most `cap` tickets per wave
+ * (`planTicketWave`). Each wave starts at the working branch's HEAD, runs every member in its
+ * own worktree, waits for all of them, fast-forwards the Done members' commits onto the
+ * working branch, and writes each member's outcome back onto the parent ticket. A member that
+ * conflicted is re-queued once, alone. Every wave integrates a ticket, moves one to
+ * Failed/Skipped, or ends parallel mode: a zero-progress wave hands the rest of the phase to
+ * the serial runner and returns its exit code. Otherwise ends when no parent ticket is pending
+ * or on cancel, returning 0 iff no parent ticket is left non-terminal.
+ */
+export async function runPickleWaves(runtime, cap, phaseConfig) {
+    const repoRoot = gitRepoRoot(runtime.target);
+    const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
+    if (headSha === null) {
+        recordExitReason(runtime.statePath, 'pipeline_phase_incomplete');
+        runtime.log('pickle waves: cannot resolve HEAD — no wave can start');
+        return 1;
+    }
+    const run = { runtime, repoRoot, sha: headSha, cancelledAtMs: null, statePaths: [], spawned: [], worktrees: [] };
+    // A crashed prior run's units are stopped BEFORE its worktrees and branches are recovered.
+    await reapPriorUnitRunners(runtime);
+    reportLaneRecovery(run);
+    const requeued = new Set();
+    let fallBackToSerial = false;
+    let unmeasured = 0;
+    const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
+    const poll = setInterval(() => {
+        if (!parentSessionActive(runtime.statePath))
+            cancelLaneRun(run);
+    }, heartbeatMs > 0 ? heartbeatMs : LANE_POLL_FALLBACK_MS);
+    try {
+        for (let wave = 1;; wave++) {
+            if (!parentSessionActive(runtime.statePath))
+                cancelLaneRun(run);
+            const members = run.cancelledAtMs === null ? planPickleWave(runtime.sessionDir, cap, requeued) : [];
+            if (members.length === 0)
+                break;
+            if (wave > 1)
+                reportLaneRecovery(run);
+            const waveSha = runGitString(['rev-parse', 'HEAD'], repoRoot);
+            if (waveSha === null) {
+                runtime.log(`pickle waves: cannot resolve HEAD before wave ${wave} — ending the wave run`);
+                break;
+            }
+            run.sha = waveSha;
+            const result = await runTicketWave(run, members, wave, requeued);
+            unmeasured += result.unmeasured;
+            if (result.integrated === 0 && result.terminalised === 0 && run.cancelledAtMs === null) {
+                runtime.log(`pickle waves: zero-progress wave — falling back to serial (${result.reasons.join(', ')})`);
+                fallBackToSerial = true;
+                break;
+            }
+        }
+    }
+    finally {
+        clearInterval(poll);
+    }
+    if (unmeasured > 0)
+        runtime.log(`pickle waves: ${unmeasured} member(s) integrated over an unavailable integration typecheck`);
+    return finishPickleWaves(runtime, phaseConfig, fallBackToSerial);
+}
+/** The wave phase's verdict: the serial runner's exit code after a fallback, else 0 iff nothing is pending. */
+async function finishPickleWaves(runtime, phaseConfig, fallBackToSerial) {
+    // `collectTickets` reads an unreadable dir or a dependency cycle as `[]`: zero pending over a roster
+    // never read is not success — the serial runner owns that case.
+    if (!fallBackToSerial && collectTickets(runtime.sessionDir).length === 0) {
+        runtime.log('pickle waves: ticket roster empty or unreadable — handing the phase to the serial runner');
+        fallBackToSerial = true;
+    }
+    if (fallBackToSerial)
+        return (await executePhaseRunner(phaseConfig, runtime.phaseEnv)).exitCode;
+    const pending = pendingWaveCandidates(runtime.sessionDir).length;
+    const reason = pending === 0 ? 'success' : 'pipeline_phase_incomplete';
+    recordExitReason(runtime.statePath, reason);
+    runtime.log(`pickle waves: ${reason} (${pending} ticket(s) pending)`);
+    return pending === 0 ? 0 : 1;
 }
 /**
  * AC-LPB-05: when pipeline-runner re-attaches to a session that already has
@@ -1809,7 +2801,7 @@ export function setupScope(args) {
  * The frame is HERE, at the function that claims to be observability, not at its one production
  * call site: the contract "an audit record never ends your run" belongs to the artifact's own
  * writer, so a future second caller inherits it instead of re-forking the guard. It also covers
- * `discoverSubsystems` / `filterBySubsystem` below, which read the target tree, by construction.
+ * `discoverLanes` / `filterBySubsystem` below, which read the target tree, by construction.
  *
  * Deliberately NOT a `DEGRADED_PHASE_SKIP_REASONS` member, and success is deliberately NOT
  * withheld: unlike a failed setup, NO WORK IS LOST — the phase runs in full, and this artifact
@@ -1824,8 +2816,9 @@ export function writeSkippedByScope(sessionDir, scopePhase, scope, target, worki
         fs.mkdirSync(archiveDir, { recursive: true });
         let payload;
         if (scopePhase === 'anatomy-park') {
-            const discovered = discoverSubsystems(target).map((s) => s.name);
-            const kept = filterBySubsystem(discovered, scope.allowed_paths, target, workingDir);
+            const { lanes, generated } = discoverLanes(target);
+            const discovered = lanes.map((s) => s.name);
+            const kept = filterBySubsystem(lanes, scope.allowed_paths, target, workingDir, generated).map((s) => s.name);
             const keptSet = new Set(kept);
             const skipped = discovered.filter((n) => !keptSet.has(n));
             payload = {
@@ -1835,6 +2828,7 @@ export function writeSkippedByScope(sessionDir, scopePhase, scope, target, worki
                 subsystems_discovered: discovered,
                 subsystems_kept: kept,
                 subsystems_skipped: skipped,
+                files_unmapped: unmappedCodePaths(lanes, scope.allowed_paths, target, workingDir, generated),
             };
         }
         else {
@@ -1904,18 +2898,86 @@ function readWorkingDirFromState(sessionDir, fallback) {
 // ---------------------------------------------------------------------------
 // Phase Setup: Anatomy Park
 // ---------------------------------------------------------------------------
-function buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport) {
+function formatLaneLine(lane, index) {
+    const excluding = lane.excludes.length > 0
+        ? ` — reviews ${lane.dir}/ EXCLUDING ${lane.excludes.map((dir) => `${dir}/`).join(', ')} (other lanes)`
+        : '';
+    return `${index + 1}. ${lane.name} (${lane.fileCount} files)${excluding}`;
+}
+/**
+ * B-LANES: where a lane writes its trap doors. The audit sweeps only catalogs that already exist
+ * as a directory's CLAUDE.md (`audit-trap-door-enforcement.sh` never sees a new `extension/tests/**`
+ * one), so a lane uses the nearest ancestor-or-self directory that holds one and falls back to its
+ * own only when no ancestor does. Paths are POSIX, relative to `target`.
+ */
+function laneCatalog(target, lane) {
+    for (let dir = lane.dir; dir !== '.'; dir = path.posix.dirname(dir)) {
+        const candidate = `${dir}/CLAUDE.md`;
+        if (fs.existsSync(path.join(target, candidate)))
+            return candidate;
+    }
+    return `${lane.dir}/CLAUDE.md`;
+}
+const LENS_PATH_TOKEN = /[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]+/g;
+function isWithinAllowedPaths(candidate, allowedPaths) {
+    return allowedPaths.some((allowed) => {
+        const base = allowed.replace(/^\.\//, '').replace(/\/+$/, '');
+        return candidate === base || candidate.startsWith(`${base}/`);
+    });
+}
+/**
+ * B1: parse the refined PRD's `## Premises` table and surface the premises that cite a file outside
+ * the run's allowed paths, so the review can see a dependency it may not edit. Review-only — a
+ * missing PRD, missing table or unscoped run yields zero rows, never a halt. An unscoped run has no
+ * allowed set, so nothing can be outside it.
+ */
+function buildDependencyLens(sessionDir, allowedPaths) {
+    let text;
+    try {
+        text = fs.readFileSync(path.join(sessionDir, 'prd_refined.md'), 'utf-8');
+    }
+    catch {
+        return { parsed: 0, outside: 0, lines: [] };
+    }
+    const section = text.split(/^## /m).find((part) => /^Premises\b/.test(part));
+    const rows = (section ?? '').split('\n').slice(1)
+        .filter((line) => line.trim().startsWith('|') && !/^\s*\|[\s:|-]+\|?\s*$/.test(line))
+        .slice(1) // header row
+        .filter((line) => line.split('|')[1]?.trim().toLowerCase() !== 'none');
+    const flagged = rows.flatMap((row) => {
+        const cited = Array.from(new Set((row.replace(/https?:\/\/\S+/g, '').match(LENS_PATH_TOKEN) ?? [])
+            .map((token) => token.replace(/^\.\//, ''))));
+        const outsidePaths = allowedPaths.length === 0 ? [] : cited.filter((c) => !isWithinAllowedPaths(c, allowedPaths));
+        return outsidePaths.length > 0 ? [`- ${row.trim()} (outside: ${outsidePaths.join(', ')})`] : [];
+    });
+    return { parsed: rows.length, outside: flagged.length, lines: flagged };
+}
+function renderDependencyLens(lens) {
+    if (lens.lines.length === 0)
+        return [];
+    return [
+        '',
+        '## Dependency Lens (review-only)',
+        'These premises cite files outside the allowed paths. Do not edit those files. Tag any finding about them `[report-only: dependency-lens]`.',
+        ...lens.lines,
+    ];
+}
+function buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport, lens) {
     return [
         '# Anatomy Park: Deep Subsystem Review',
         '',
         '## Objective',
-        `Systematically review and fix all subsystems in ${target} through phased review-fix-verify cycles. Catalog structural weaknesses as trap doors in subsystem CLAUDE.md files.`,
+        `Systematically review and fix all subsystems in ${target} through phased review-fix-verify cycles. Catalog structural weaknesses as trap doors in each lane's catalog (see Trap-Door Catalogs).`,
         '',
         '## Target',
         target,
         '',
         '## Subsystems',
-        ...subsystems.map((s, i) => `${i + 1}. ${s.name} (${s.fileCount} files)`),
+        ...subsystems.map(formatLaneLine),
+        '',
+        '## Trap-Door Catalogs',
+        'Write each lane\'s trap doors to the catalog named here. Never create a new CLAUDE.md for a lane whose catalog is an ancestor\'s file.',
+        ...subsystems.map((lane) => `- ${lane.name} → ${laneCatalog(target, lane)}`),
         '',
         '## Key Metric',
         '- **Type**: none (worker-managed convergence)',
@@ -1927,7 +2989,7 @@ function buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citad
         '2. Phase 1: Read-only review — trace data flows, rate all findings',
         '3. Phase 2: Fix the single highest-severity finding + write regression test',
         '4. Phase 3: Read-only self-review of the diff, revert if broken',
-        '5. Catalog trap doors in subsystem CLAUDE.md',
+        '5. Catalog trap doors in the lane\'s catalog (Trap-Door Catalogs above)',
         '6. Rotate to next subsystem',
         '',
         '## Rules',
@@ -1937,6 +2999,7 @@ function buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citad
         '- Revert on regression, defer to next iteration',
         `- Skip subsystem after ${stallLimit} consecutive failed fixes`,
         ...buildCitadelAnatomyContext(citadelReport),
+        ...renderDependencyLens(lens),
     ].join('\n');
 }
 // R-PSSS-1/2: file extensions that count as a reviewable code surface. A
@@ -1949,6 +3012,23 @@ const CODE_EXTENSIONS = new Set([
 function isCodePath(p) {
     const dot = p.lastIndexOf('.');
     return dot >= 0 && CODE_EXTENSIONS.has(p.slice(dot + 1).toLowerCase());
+}
+/**
+ * B-LANES: the in-scope code paths that NO lane admits (repo-root `install.sh` today). Asks the
+ * one membership function, `filterBySubsystem` -> `laneAdmits`, once per path, so it shares that
+ * function's target/repoRoot anchoring instead of restating it. Reporting only: the caller logs
+ * and records this, and neither skips nor halts on it.
+ */
+function unmappedCodePaths(lanes, allowedPaths, target, repoRoot, generated) {
+    return Array.from(new Set(allowedPaths))
+        .filter(isCodePath)
+        .filter((allowed) => filterBySubsystem(lanes, [allowed], target, repoRoot, generated).length === 0);
+}
+const UNMAPPED_LOG_LIMIT = 20;
+function formatUnmappedCodePaths(unmapped) {
+    const more = unmapped.length > UNMAPPED_LOG_LIMIT ? `, …(+${unmapped.length - UNMAPPED_LOG_LIMIT} more)` : '';
+    return `anatomy-park: ${unmapped.length} changed code path(s) belong to no lane (files_unmapped): `
+        + `${unmapped.slice(0, UNMAPPED_LOG_LIMIT).join(', ')}${more}`;
 }
 /**
  * R-PSSS-2: a resolved-but-code-free scope (a doc-only / fixture-only branch
@@ -2107,7 +3187,7 @@ function formatEmptyScopeWarn(phase, cause, inScopePaths, explain) {
     ].join('\n');
 }
 function resolveAnatomySubsystems(sessionDir, target, scope, log) {
-    const discovered = discoverSubsystems(target);
+    const { lanes: discovered, generated } = discoverLanes(target);
     if (discovered.length === 0) {
         // AP-EXT-ITER320-01: an UNLISTABLE target is a failed setup, not a repo with no
         // work in it. `setup_error` is the reason this same function already returns when
@@ -2136,8 +3216,11 @@ function resolveAnatomySubsystems(sessionDir, target, scope, log) {
         log(`Discovered ${discovered.length} subsystems: ${discovered.map(s => s.name).join(', ')}`);
         return discovered;
     }
-    const kept = new Set(filterBySubsystem(discovered.map(s => s.name), scope.allowedPaths, target, scope.repoRoot));
-    if (kept.size === 0) {
+    const filtered = filterBySubsystem(discovered, scope.allowedPaths, target, scope.repoRoot, generated);
+    const unmapped = unmappedCodePaths(discovered, scope.allowedPaths, target, scope.repoRoot, generated);
+    if (unmapped.length > 0)
+        log(formatUnmappedCodePaths(unmapped));
+    if (filtered.length === 0) {
         // R-PSSS-1: the scope filter excluding every subsystem is a real skip the
         // operator must see — not a silent `setup returned false`. Emit the
         // structured WARN plus an `anatomy_park_empty_scope_skip` activity event.
@@ -2153,7 +3236,6 @@ function resolveAnatomySubsystems(sessionDir, target, scope, log) {
         });
         return { skipReason: 'empty_scope' };
     }
-    const filtered = discovered.filter(s => kept.has(s.name));
     log(`anatomy-park: scope filtered ${discovered.length} → ${filtered.length} subsystems: ${filtered.map(s => s.name).join(', ')}`);
     return filtered;
 }
@@ -2204,13 +3286,16 @@ function readResumableAnatomyProgress(configPath, subsystemNames) {
 }
 function writeAnatomyConfig(sessionDir, subsystems, stallLimit) {
     const subsystemNames = subsystems.map(s => s.name);
+    // B-LANES: the lane geometry rides beside the name-keyed ledger. A roster change is a
+    // name change, which `readResumableAnatomyProgress` already answers with a fresh ledger.
     const resumable = readResumableAnatomyProgress(path.join(sessionDir, 'anatomy-park.json'), subsystemNames);
     if (resumable) {
-        writeStateFile(path.join(sessionDir, 'anatomy-park.json'), { ...resumable, stall_limit: stallLimit });
+        writeStateFile(path.join(sessionDir, 'anatomy-park.json'), { ...resumable, stall_limit: stallLimit, lanes: subsystems });
         return;
     }
     const apState = {
         subsystems: subsystemNames,
+        lanes: subsystems,
         current_index: 0,
         pass_counts: Object.fromEntries(subsystemNames.map(name => [name, 0])),
         consecutive_clean: Object.fromEntries(subsystemNames.map(name => [name, 0])),
@@ -2222,7 +3307,7 @@ function writeAnatomyConfig(sessionDir, subsystems, stallLimit) {
     };
     writeStateFile(path.join(sessionDir, 'anatomy-park.json'), apState);
 }
-export function setupAnatomyPark(sessionDir, target, stallLimit, extensionRoot, log, scope, designSafe) {
+function resolveAnatomyEffectiveScope(sessionDir, target, scope, log) {
     const persistedAllowedPaths = !scope || scope.allowedPaths.length === 0
         ? readPersistedAllowedPaths(sessionDir)
         : undefined;
@@ -2254,7 +3339,12 @@ export function setupAnatomyPark(sessionDir, target, stallLimit, extensionRoot, 
     if (!scope && effectiveScope) {
         log(`anatomy-park: reusing persisted scope.json with ${effectiveScope.allowedPaths.length} allowed path(s)`);
     }
-    const subsystems = resolveAnatomySubsystems(sessionDir, target, effectiveScope, log);
+    return effectiveScope;
+}
+export function setupAnatomyPark(sessionDir, target, stallLimit, extensionRoot, log, scope, designSafe, options) {
+    const effectiveScope = resolveAnatomyEffectiveScope(sessionDir, target, scope, log);
+    // B-LANES WS-3: a lane session reviews the roster it was given; only the parent discovers.
+    const subsystems = options?.lanes ?? resolveAnatomySubsystems(sessionDir, target, effectiveScope, log);
     if (!Array.isArray(subsystems))
         return subsystems;
     const citadelReport = readCitadelReport(sessionDir);
@@ -2286,8 +3376,10 @@ export function setupAnatomyPark(sessionDir, target, stallLimit, extensionRoot, 
         return { skipReason: 'setup_error' };
     }
     injectDesignSafeIntoMicroverse(sessionDir, designSafe, log);
+    const lens = buildDependencyLens(sessionDir, effectiveScope?.allowedPaths ?? []);
+    log(`dependency lens: ${lens.parsed} premises parsed (${lens.outside} outside allowed paths)`);
     archiveFile(sessionDir, 'prd.md', 'pickle');
-    fs.writeFileSync(path.join(sessionDir, 'prd.md'), buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport));
+    fs.writeFileSync(path.join(sessionDir, 'prd.md'), buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport, lens));
     log('Anatomy Park setup complete');
     return true;
 }
@@ -3225,6 +4317,20 @@ function runPhaseSetup(runtime, phaseConfig, scope) {
         return { skipReason: 'setup_error' };
     }
 }
+/**
+ * `unreproducibleNodeModulesCount`, where a count that cannot be taken reads as a gap (serial), never as
+ * none — and is logged as unmeasured, so the caller's "cannot reproduce 1" line is not the only record.
+ */
+export function unreproducibleNodeModulesGap(runtime) {
+    try {
+        return unreproducibleNodeModulesCount(gitRepoRoot(runtime.target));
+    }
+    catch (err) {
+        const reason = safeErrorMessage(err).replace(/\s+/g, ' ').trim();
+        runtime.log(`node_modules eligibility: unmeasured (${reason}) — treating as a gap`);
+        return 1;
+    }
+}
 async function runConfiguredPhase(runtime, phaseConfig, counters) {
     await postPhaseCleanup(phaseConfig.name, runtime.sessionDir);
     preparePhaseState(phaseConfig, runtime);
@@ -3235,6 +4341,22 @@ async function runConfiguredPhase(runtime, phaseConfig, counters) {
         return { skipped: true, skipReason: setupResult.skipReason, exitCode: null };
     if (phaseConfig.name === 'citadel')
         return { skipped: false, exitCode: (await executeCitadelPhase(runtime)).exitCode };
+    const cap = runtime.config.anatomy_max_parallel_lanes;
+    const lanes = phaseConfig.name === 'anatomy-park' && cap >= 2 ? readAnatomyLanes(runtime.sessionDir) : [];
+    const pickleWaves = phaseConfig.name === 'pickle' && runtime.config.max_parallel_tickets >= 2;
+    // One predicate guards both parallel arms: a lane or unit worktree gets only the `node_modules` it can link.
+    const missing = lanes.length >= 2 || pickleWaves ? unreproducibleNodeModulesGap(runtime) : 0;
+    if (lanes.length >= 2) {
+        if (missing === 0)
+            return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+        runtime.log(`anatomy lanes: disabled for this phase — lane worktrees cannot reproduce ${missing} node_modules dir(s); running serially`);
+    }
+    if (pickleWaves) {
+        if (missing === 0) {
+            return { skipped: false, exitCode: await runPickleWaves(runtime, runtime.config.max_parallel_tickets, phaseConfig) };
+        }
+        runtime.log(`pickle waves: disabled for this phase — lane worktrees cannot reproduce ${missing} node_modules dir(s); running serially`);
+    }
     const result = await executePhaseRunner(phaseConfig, runtime.phaseEnv);
     return { skipped: false, exitCode: result.exitCode, stderr: result.stderr };
 }
@@ -3433,6 +4555,8 @@ export function installShutdownHandlers(runtime, counters, cancelMarker) {
         catch { /* best effort */ }
         if (activeChild && !activeChild.killed)
             reapChildSubtree(activeChild, activeChildLeadsGroup, 'SIGTERM');
+        for (const lane of laneChildren.values())
+            reapChildSubtree(lane, true, 'SIGTERM');
         recordExitReason(runtime.statePath, `signal:${signal}`);
         safeDeactivate(runtime.statePath);
         logActivity({ event: 'session_end', source: 'pickle', session: path.basename(runtime.sessionDir), mode: 'tmux', backend: runtime.backend });
@@ -3568,6 +4692,9 @@ function logPhaseStart(runtime, phase, index) {
 }
 function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipelineFailed) {
     runtime.log(`Pipeline finished: ${phasesSummary} phases, ${formatTime(totalElapsed)}`);
+    reportKeptLaneBranches(runtime);
+    reportBaseDrift(runtime);
+    reportDroppedFindings(runtime);
     emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
     logActivity({
         event: 'session_end', source: 'pickle',
@@ -4875,6 +6002,11 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
     }
     catch { /* non-blocking */ }
 }
+/** A session's `cap_unmeasured_checks`; never throws — an absent or unparseable file reads as none. */
+function readCapUnmeasuredChecks(sessionDir) {
+    const raw = readRecoverableJsonObject(path.join(sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
+    return Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
+}
 /**
  * B-CAPGATE: a microverse phase that passed over a check nobody measured (`cap_unmeasured_checks`,
  * written by `recordCapUnmeasured` from the post-convergence cap OR from finalize-gate) passed over
@@ -4884,9 +6016,7 @@ function withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log) {
  * Unreadable or malformed microverse state reads as "no caveat", never as a fabricated one.
  */
 function reportConvergedWithUnmeasured(runtime, counters, rawPhase, log) {
-    // `readRecoverableJsonObject` never throws: an absent or unparseable file is `null`.
-    const raw = readRecoverableJsonObject(path.join(runtime.sessionDir, 'microverse.json'))?.cap_unmeasured_checks;
-    const checks = Array.isArray(raw) ? raw.filter((c) => typeof c === 'string' && c !== '') : [];
+    const checks = readCapUnmeasuredChecks(runtime.sessionDir);
     if (checks.length === 0)
         return false;
     const marker = `converged_with_unmeasured:${checks.join(',')}`;

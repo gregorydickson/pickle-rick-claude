@@ -1694,3 +1694,48 @@ test('R-MDS-6 crash recovery: missing monitor_panes field defaults to false (saf
       'crash-recovery default must be false for all panes');
   });
 });
+
+// F1 deleted the archaeology module but kept its state member and event names, so a
+// session written before the deletion must still load with those values intact.
+test('F1-1: a legacy state carrying archaeology metadata and archaeology activity loads intact', () => {
+  withDir((dir) => {
+    const sm = new StateManager();
+    const sp = path.join(dir, 'state.json');
+    const archaeology = {
+      project_context_path: path.join(dir, 'project-context.md'),
+      last_run_iso: '2026-05-01T00:00:00.000Z',
+      file_count: 42,
+      project_type: 'web',
+    };
+    const activity = [
+      { event: 'archaeology_complete', ts: '2026-05-01T00:00:00.000Z', source: 'pickle' },
+      { event: 'archaeology_skipped', ts: '2026-05-01T00:01:00.000Z', source: 'pickle' },
+    ];
+    writeStateFile(sp, makeState({ schema_version: LATEST_SCHEMA_VERSION, archaeology, activity }));
+
+    const result = sm.read(sp);
+
+    assert.deepEqual(result.archaeology, archaeology);
+    assert.deepEqual(result.activity.map((entry) => entry.event), ['archaeology_complete', 'archaeology_skipped']);
+  });
+});
+
+// F1 kept `archaeology` in V3_STATE_SHAPE_MARKERS: a schema-less legacy state whose ONLY v3 field is
+// its archaeology metadata must still be recognised as v3-shaped, not silently migrated to v1.
+test('F1-4: a schema-less state whose only v3 marker is archaeology still fails as SCHEMA_MISMATCH naming it', () => {
+  withDir((dir) => {
+    const sm = new StateManager({ schemaVersion: 2 });
+    const sp = path.join(dir, 'state.json');
+    const state = makeState({ archaeology: { file_count: 3, project_type: 'web' } });
+    delete state.schema_version;
+    fs.writeFileSync(sp, JSON.stringify(state, null, 2));
+
+    assert.throws(() => sm.read(sp), (err) => {
+      assert.ok(err instanceof StateError);
+      assert.equal(err.code, 'SCHEMA_MISMATCH');
+      assert.match(err.message, /schema v3 fields \(archaeology\)/);
+      return true;
+    });
+    assert.equal(JSON.parse(fs.readFileSync(sp, 'utf-8')).schema_version, undefined, 'not stamped v1');
+  });
+});

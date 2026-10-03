@@ -1,14 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { normalizeProjectContext, buildArchaeologyPrompt } from '../bin/archaeology.js';
 import { validateCourseCorrectionProposal } from '../bin/correct-course.js';
 import { extractAcceptanceCriteria, isMachineCheckable } from '../bin/check-readiness.js';
-import type { ProjectTypeClassification } from './project-type-classifier.js';
 import { readRecoverableJsonObject } from './recoverable-json.js';
 
-export type CalibrationSuite = 'readiness' | 'correct-course' | 'archaeology';
+export type CalibrationSuite = 'readiness' | 'correct-course';
 
-export const CALIBRATION_SUITES = ['readiness', 'correct-course', 'archaeology'] as const;
+export const CALIBRATION_SUITES = ['readiness', 'correct-course'] as const;
 export const CALIBRATION_SCHEMA_VERSION = 1;
 export const DEFAULT_CALIBRATION_DRIFT_THRESHOLD_PCT = 5;
 
@@ -57,10 +55,6 @@ const RECALIBRATION_TRIGGERS: Record<CalibrationSuite, string[]> = {
   'correct-course': [
     'extension/src/bin/correct-course.ts proposal validator changes',
     'course-correction proposal contract section changes',
-  ],
-  archaeology: [
-    'extension/src/bin/archaeology.ts prompt or context normalization changes',
-    'extension/data/project-types.csv category definition changes',
   ],
 };
 
@@ -184,8 +178,7 @@ function aggregateMetrics(results: CalibrationFixtureResult[]): Record<string, n
 
 function evaluateSuite(suite: CalibrationSuite, extensionRoot: string): CalibrationFixtureResult[] {
   if (suite === 'readiness') return evaluateReadinessFixtures();
-  if (suite === 'correct-course') return evaluateCorrectCourseFixtures(extensionRoot);
-  return evaluateArchaeologyFixtures(extensionRoot);
+  return evaluateCorrectCourseFixtures(extensionRoot);
 }
 
 function evaluateReadinessFixtures(): CalibrationFixtureResult[] {
@@ -279,54 +272,6 @@ function evaluateCorrectCourseFixtures(extensionRoot: string): CalibrationFixtur
       },
     };
   });
-}
-
-function evaluateArchaeologyFixtures(extensionRoot: string): CalibrationFixtureResult[] {
-  const classification: ProjectTypeClassification = {
-    category: 'web',
-    confidence: 'high',
-    reason: 'fixture web project',
-    registryPath: path.join(extensionRoot, 'data', 'project-types.csv'),
-    scores: [],
-  };
-  const raw = [
-    '## Architecture',
-    'Single page app.',
-    '## Trap Doors',
-    'Generated files are ignored.',
-    '## Unobvious Constraints',
-    'Keep tests deterministic.',
-    '## Key Entry Points',
-    'src/App.tsx',
-    '## Conventions',
-    'Use strict TypeScript.',
-    '## Data Model',
-    'No persistent data.',
-  ].join('\n');
-  const prompt = buildArchaeologyPrompt('/repo', classification, classification.registryPath);
-  const context = normalizeProjectContext(raw, classification);
-  return [
-    {
-      name: 'prompt-contract',
-      metrics: {
-        required_sections: countOccurrences(prompt, '## '),
-        mentions_registry: prompt.includes(classification.registryPath) ? 1 : 0,
-        mentions_project_type: prompt.includes('Detected project type: web') ? 1 : 0,
-      },
-    },
-    {
-      name: 'context-normalization',
-      metrics: {
-        required_sections: countOccurrences(context, '## '),
-        first_line_project_type: context.startsWith('> Project type: web') ? 1 : 0,
-        fallback_sections: countOccurrences(context, 'Not identified by archaeology worker'),
-      },
-    },
-  ];
-}
-
-function countOccurrences(value: string, needle: string): number {
-  return value.split(needle).length - 1;
 }
 
 function roundPct(value: number): number {

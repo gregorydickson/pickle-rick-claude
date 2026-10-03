@@ -982,7 +982,7 @@ test('spawn-refinement-team: manifest aggregates ac_shape_smells and tickets fro
     }
 });
 
-test('spawn-refinement-team: exits 2 when worker emits unjustified ac-shape fanout', () => {
+test('E3-1: spawn-refinement-team exits 0 with an advisory when worker emits unjustified ac-shape fanout', () => {
     const tmp = makeTmpDir();
     const fakeBin = makeTmpDir('fake-bin-');
     try {
@@ -1016,8 +1016,9 @@ process.exit(0);
             { PATH: `${fakeBin}:${process.env.PATH}` }
         );
 
-        assert.strictEqual(result.status, 2);
-        assert.match(result.stderr, /AC shape gate FAILED/);
+        assert.strictEqual(result.status, 0);
+        assert.match(result.stderr, /ac-shape gate advisory: exited 2/);
+        assert.match(result.stderr, /AC shape advisory/);
 
         const manifest = JSON.parse(fs.readFileSync(path.join(tmp, 'refinement_manifest.json'), 'utf-8'));
         assert.ok(manifest.ac_shape_smells.length >= 1);

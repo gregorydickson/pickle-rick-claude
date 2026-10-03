@@ -1,5 +1,6 @@
 {
   "subsystems": ["alpha", "beta", "gamma"],
+  "lanes": [{"name": "alpha", "dir": "alpha", "excludes": [], "testRatioApplies": true, "fileCount": 3}, {"name": "beta", "dir": "beta", "excludes": [], "testRatioApplies": true, "fileCount": 3}, {"name": "gamma", "dir": "gamma", "excludes": [], "testRatioApplies": true, "fileCount": 3}],
   "current_index": 0,
   "pass_counts": {"alpha": 0, "beta": 0, "gamma": 0},
   "consecutive_clean": {"alpha": 0, "beta": 0, "gamma": 0},

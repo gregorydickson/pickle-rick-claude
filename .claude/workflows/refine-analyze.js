@@ -1,7 +1,7 @@
 export const meta = {
   name: 'refine-prd',
   description: 'Decompose a PRD into atomic, verification-ready tickets via a parallel analyst team (3 roles × N cycles), then synthesize the refined PRD + manifest',
-  phases: ['analyze', 'synthesize'],
+  phases: ['analyze', 'synthesize', 'decompose'],
 };
 
 // ---------------------------------------------------------------------------
@@ -231,7 +231,48 @@ function synthPrompt(prdPath, sessionDir, refinementDir, analyses, cycles, maxTu
     `   workers[] has one entry per role (${ROLES.join(', ')}) with`,
     '     { role, success, output_file (absolute analysis_<role>.md), exists, log_file:"", cycle }.',
     '   completed_at is the current time as an ISO-8601 date-time string.',
+    '   prd_refined.md MUST contain a `## Premises` ledger (one row per premise: claim, tag, evidence).',
+    '   Copy each analyst (verified)/(hypothesis) tag verbatim; analysts converging is not verification.',
+    '   It MUST also contain an `## Open Decisions` table (decision, options, owner). A needs-human item',
+    '   is never written under settled decisions without a quoted human decision.',
+    '   An empty ledger or table is written as one explicit `none` row.',
     '3. Return that same manifest object as your structured result.',
+  ].join('\n');
+  return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
+}
+
+// E2 — decompose phase (Steps 7a–7e of the command). The agent writes the parent + child
+// rick_ticket_*.md files under the ABSOLUTE session dir; Step 7g (state handoff) stays with the
+// command because a workflow agent writing state.json is a Worker Forbidden Op.
+const DecomposeSchema = {
+  type: 'object',
+  required: ['tickets'],
+  properties: {
+    tickets: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'title'],
+        properties: { id: { type: 'string', minLength: 1 }, title: { type: 'string', minLength: 1 } },
+      },
+    },
+  },
+};
+
+function decomposePrompt(sessionDir, workingDir, commandDocPath) {
+  const body = [
+    'You are Pickle Rick decomposing the refined PRD into atomic, verification-ready tickets.',
+    '',
+    `Refined PRD (absolute path): ${sessionDir}/prd_refined.md`,
+    `Manifest (absolute path): ${sessionDir}/refinement_manifest.json`,
+    `Session dir (absolute): ${sessionDir}`,
+    `Working dir: ${workingDir}`,
+    '',
+    `Read ${commandDocPath} and execute its Step 7a through Step 7e EXACTLY: decompose, write`,
+    `${sessionDir}/rick_ticket_parent.md, then one ${sessionDir}/<hash>/rick_ticket_<hash>.md per`,
+    'ticket (with complexity_tier in the frontmatter), the wiring ticket and the hardening tickets.',
+    'Do NOT run Step 7f or 7g and do NOT write state.json — the launching command owns the state handoff.',
+    'Return { tickets: [{ id, title }] } listing every child ticket you wrote.',
   ].join('\n');
   return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
 }
@@ -245,6 +286,7 @@ const {
   refinementDir = `${sessionDir}/refinement`,
   cycles = 3,
   maxTurns = 100,
+  commandDocPath = '~/.claude/commands/pickle-refine-prd.md',
 } = args ?? {};
 
 // Fail-fast on missing required inputs. Without this guard, undefined prdPath /
@@ -286,7 +328,24 @@ const manifest = await agent(
   { label: 'synthesize', phase: 'synthesize', schema: ManifestSchema },
 );
 
+// The returned `{tickets}` is the agent's own report; the command verifies ticket files on disk.
+// A throw or 0 tickets is not a halt: `decompose.fallback` tells the command to run inline Step 7.
+phase('decompose');
+let decompose;
+try {
+  const out = await agent(decomposePrompt(sessionDir, workingDir, commandDocPath), {
+    label: 'decompose',
+    phase: 'decompose',
+    schema: DecomposeSchema,
+  });
+  const tickets = Array.isArray(out?.tickets) ? out.tickets : [];
+  decompose = tickets.length > 0 ? { tickets } : { tickets: [], fallback: '0 tickets returned' };
+} catch (err) {
+  decompose = { tickets: [], fallback: err instanceof Error ? err.message : String(err) };
+}
+
 return {
+  decompose,
   sessionDir,
   refinementDir,
   manifestPath: `${sessionDir}/refinement_manifest.json`,

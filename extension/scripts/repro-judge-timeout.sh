@@ -38,8 +38,10 @@ run_probe() {
   local start_s end_s elapsed_s output exit_code probe_kind probe_exit_reason
 
   start_s=$(date +%s)
-  # Capture both stdout and stderr; allow failure so we can inspect exit code
-  output=$(env PICKLE_JUDGE_PROBE_ALLOWED=1 "$@" timeout 30 node "$RUNNER" --judge-probe "$CWD" "$backend" 2>&1) && exit_code=0 || exit_code=$?
+  # Capture both stdout and stderr; allow failure so we can inspect exit code. No outer
+  # timeout(1): the probe bounds itself (PICKLE_JUDGE_PROBE_TIMEOUT_MS, clamped to 60s), and
+  # GNU timeout is absent on macOS, where it turned every probe into exit 127.
+  output=$(env PICKLE_JUDGE_PROBE_ALLOWED=1 "$@" node "$RUNNER" --judge-probe "$CWD" "$backend" 2>&1) && exit_code=0 || exit_code=$?
   end_s=$(date +%s)
   elapsed_s=$((end_s - start_s))
 

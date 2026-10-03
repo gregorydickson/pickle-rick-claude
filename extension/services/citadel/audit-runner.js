@@ -26,6 +26,7 @@ import { auditBannedCasts } from './banned-casts-audit.js';
 import { auditPatternConformance } from './pattern-conformance-audit.js';
 import { runSkepticLens } from './skeptic-lens.js';
 import { readRecoverableJsonObject } from '../recoverable-json.js';
+import { definedRequirementIdsInLine, requirementIdPatternFor } from '../requirement-ids.js';
 export async function runCitadelAudit(options) {
     const report = buildCitadelAuditReport(options);
     if (!options.sessionDir && !options.reportPath)
@@ -109,10 +110,7 @@ export function buildCitadelAuditReport(options) {
         ? path.resolve(repoRoot, options.prdPath)
         : undefined;
     const sections = runCitadelAnalyzers(options, repoRoot, resolvedPrdPath);
-    const decisionRequired = [
-        ...sections.ac_shape.decisionsRequired,
-        ...sections.divergence_reconciliation.decisionsRequired,
-    ];
+    const decisionRequired = Object.values(sections).flatMap((section) => ('decisionsRequired' in section ? section.decisionsRequired : []));
     const reporter = new Reporter();
     return reporter.build({
         prdPath: resolvedPrdPath ?? '',
@@ -254,8 +252,52 @@ function runCrossPhaseAnalyzers({ options, diff }) {
     return {
         diff_hygiene: auditDiffHygiene(diff, { szechuanFindings: crossPhase.szechuan_findings }),
         divergence_reconciliation: reconcileDivergences(diff),
+        prd_requirement_drops: reportDroppedRequirementIds(options.sessionDir),
         cross_phase: crossPhaseReport,
     };
+}
+function readSessionFile(sessionDir, name) {
+    try {
+        return readFileSync(path.join(sessionDir, name), 'utf-8');
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * D4b: requirement ids the source PRD defines that the refined PRD no longer mentions. The source
+ * is `prd-pickle.md` when present because anatomy/szechuan setup overwrites `prd.md`. A missing
+ * session, source or refined PRD yields no decisions; this section only reports, never throws.
+ */
+function reportDroppedRequirementIds(sessionDir) {
+    const none = { decisionsRequired: [], findings: [] };
+    if (!sessionDir)
+        return none;
+    const sourceName = existsSync(path.join(sessionDir, 'prd-pickle.md')) ? 'prd-pickle.md' : 'prd.md';
+    const source = readSessionFile(sessionDir, sourceName);
+    const refined = readSessionFile(sessionDir, 'prd_refined.md');
+    if (source === null || refined === null)
+        return none;
+    const idRe = requirementIdPatternFor(source);
+    const decisionsRequired = [];
+    const seen = new Set();
+    source.split(/\r?\n/).forEach((line, index) => {
+        for (const id of definedRequirementIdsInLine(line, idRe)) {
+            if (seen.has(id))
+                continue;
+            seen.add(id);
+            const mentioned = new RegExp(`(?<![A-Za-z0-9-])${id}(?![A-Za-z0-9-])`).test(refined);
+            if (mentioned)
+                continue;
+            decisionsRequired.push({
+                id: `${id}-dropped`,
+                severity: 'Medium',
+                message: `${id} is defined in ${sourceName} but absent from prd_refined.md`,
+                evidence: [{ file: sourceName, line: index + 1 }],
+            });
+        }
+    });
+    return { decisionsRequired, findings: [] };
 }
 function runPrdContractAnalyzers({ repoRoot, resolvedPrdPath, parsedPrd, prdUnresolved, diff, projectShapes }) {
     const acCoverage = resolvedPrdPath === undefined

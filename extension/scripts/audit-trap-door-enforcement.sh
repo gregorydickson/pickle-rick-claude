@@ -1191,10 +1191,14 @@ const [, , extensionRoot, ...targets] = process.argv;
   } else {
     const r = spawnSync(bin, ['-n', '-e', 'npm (ci|install)', ...targets], { encoding: 'utf8' });
     const spawnErrorText = r.error ? `${r.error.message}\n` : '';
-    result = { stdout: r.stdout ?? '', stderr: `${r.stderr ?? ''}${spawnErrorText}`, exitCode: r.status ?? 1 };
+    result = { stdout: r.stdout ?? '', stderr: `${r.stderr ?? ''}${spawnErrorText}`, exitCode: r.status };
   }
 
-  if (isUnrunnableCheckResult(result)) {
+  // rg answers only with 0 (matched) and 1 (searched every target, no match). Exit 2 is "a
+  // target could not be read" -- a renamed spawn-morty.ts / mux-runner.ts -- and rg spends it
+  // even when the OTHER target matched, so reading it as "no match" disarmed the guard over
+  // both files. A null status is a signal. Neither is a measurement.
+  if (isUnrunnableCheckResult(result) || (result.exitCode !== 0 && result.exitCode !== 1)) {
     process.stderr.write(`worker boot paths npm-install audit could not run (${result.stderr.trim() || 'unrunnable'}) — failing closed, not reporting OK\n`);
     process.exit(1);
   }

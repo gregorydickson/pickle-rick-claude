@@ -2,10 +2,9 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { AcceptanceCriterion } from './prd-parser.js';
 import { ChangedFileSummary, DiffSummary } from './diff-walker.js';
-import { escapeTableCell, uniqueSortedStrings } from './reporter.js';
+import { CitadelSeverity, escapeTableCell, uniqueSortedStrings } from './reporter.js';
 
 export type CoverageMatchType = 'ac_id' | 'keyword_anchor' | 'symbol' | 'llm_entity';
-export type CoverageSeverity = 'Critical' | 'High';
 
 export interface CoverageEvidence {
   file: string;
@@ -22,19 +21,24 @@ export interface AcCoverageRow {
   tested: boolean;
   acLine: number;
   acText: string;
-  keywordAnchors: string[];
   implementationSymbols: string[];
   implementationEvidence: CoverageEvidence[];
   testEvidence: CoverageEvidence[];
+  /**
+   * Keyword-anchor matches that no longer earn credit (D4a). Present only on a row that would
+   * have been credited by them: `implemented`/`tested` read the credited evidence alone, and
+   * `buildFindings` reports a non-empty list here as a `lexical-only:` Medium finding.
+   */
+  lexicalOnlyImplementation: CoverageEvidence[];
+  lexicalOnlyTest: CoverageEvidence[];
 }
 
 export interface AcCoverageFinding {
   id: string;
   acId: string;
-  severity: CoverageSeverity;
+  severity: CitadelSeverity;
   message: string;
   evidence: CoverageEvidence[];
-  keywordAnchors: string[];
 }
 
 export interface AcCoverageScorecard {
@@ -190,23 +194,16 @@ function buildRow(
   llmEntities: string[],
 ): AcCoverageRow {
   const keywordAnchors = extractKeywordAnchors(criterion.text);
-  const implementationEvidence = findProductionEvidence(
-    criterion,
-    keywordAnchors,
-    llmEntities,
-    productionFiles,
-    maxEvidencePerKind,
-  );
+  const findImplementation = (anchors: string[]) =>
+    findProductionEvidence(criterion, anchors, llmEntities, productionFiles, maxEvidencePerKind);
+  const implementationEvidence = findImplementation([]);
   const implementationSymbols = uniqueSortedStrings(
     implementationEvidence.map((evidence) => evidence.symbol).filter((symbol): symbol is string => Boolean(symbol)),
   );
-  const testEvidence = findTestEvidence(
-    criterion,
-    keywordAnchors,
-    uniqueSortedStrings([...implementationSymbols, ...llmEntities]),
-    testFiles,
-    maxEvidencePerKind,
-  );
+  const testSymbols = uniqueSortedStrings([...implementationSymbols, ...llmEntities]);
+  const findTests = (anchors: string[]) =>
+    findTestEvidence(criterion, anchors, testSymbols, testFiles, maxEvidencePerKind);
+  const testEvidence = findTests([]);
 
   return {
     id: criterion.id,
@@ -214,10 +211,11 @@ function buildRow(
     tested: testEvidence.length > 0,
     acLine: criterion.line,
     acText: criterion.text,
-    keywordAnchors,
     implementationSymbols,
     implementationEvidence,
     testEvidence,
+    lexicalOnlyImplementation: implementationEvidence.length > 0 ? [] : findImplementation(keywordAnchors),
+    lexicalOnlyTest: testEvidence.length > 0 ? [] : findTests(keywordAnchors),
   };
 }
 
@@ -284,26 +282,30 @@ function findTestEvidence(
 
 function buildFindings(row: AcCoverageRow): AcCoverageFinding[] {
   if (!row.implemented) {
+    const lexicalOnly = row.lexicalOnlyImplementation.length > 0;
     return [
       {
         id: `citadel-ac-coverage-${row.id}-implementation`,
         acId: row.id,
-        severity: 'Critical',
-        message: `${row.id} has no production implementation evidence in changed files.`,
-        evidence: [],
-        keywordAnchors: row.keywordAnchors,
+        severity: lexicalOnly ? 'Medium' : 'Critical',
+        message: lexicalOnly
+          ? `lexical-only: ${row.id} has only keyword-anchor implementation evidence in changed files (no AC id, declared symbol or mapped entity).`
+          : `${row.id} has no production implementation evidence in changed files.`,
+        evidence: row.lexicalOnlyImplementation,
       },
     ];
   }
   if (!row.tested) {
+    const lexicalOnly = row.lexicalOnlyTest.length > 0;
     return [
       {
         id: `citadel-ac-coverage-${row.id}-test`,
         acId: row.id,
-        severity: 'High',
-        message: `${row.id} has production evidence but no changed test evidence.`,
+        severity: lexicalOnly ? 'Medium' : 'High',
+        message: lexicalOnly
+          ? `lexical-only: ${row.id} has production evidence but only keyword-anchor test evidence in changed files.`
+          : `${row.id} has production evidence but no changed test evidence.`,
         evidence: row.implementationEvidence,
-        keywordAnchors: row.keywordAnchors,
       },
     ];
   }

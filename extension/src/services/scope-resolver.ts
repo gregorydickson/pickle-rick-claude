@@ -456,37 +456,67 @@ function anchorPair(repoRoot: string, target: string): { root: string; targetRoo
 }
 
 /**
- * Narrow a subsystem-name list to those whose directory (resolved relative
- * to `target`) contains at least one `allowedPaths` entry.
+ * B-LANES: one anatomy-park review lane. `dir` and every `excludes` entry are
+ * POSIX paths relative to the discovery target; `dir` is never `''`. A split
+ * lane's remainder is named `<dir>/.` and excludes its qualifying children, so
+ * lanes never admit the same file. `fileCount` counts non-generated source
+ * files; `testRatioApplies` is true only for an unsplit discovery root.
+ */
+export interface LaneRecord {
+  name: string;
+  dir: string;
+  excludes: string[];
+  testRatioApplies: boolean;
+  fileCount: number;
+}
+
+function isUnderDir(relPath: string, dir: string): boolean {
+  return relPath === dir || relPath.startsWith(`${dir}/`);
+}
+
+/**
+ * THE lane membership function — every consumer (discovery, the scope filter,
+ * the skipped-by-scope audit) asks this and nothing else. A target-relative
+ * POSIX path belongs to `lane` iff it lies under `lane.dir`, under none of its
+ * `excludes`, and is not generated output. Extension plays no part: source
+ * extensions only SIZE lanes.
+ */
+export function laneAdmits(lane: LaneRecord, relPath: string, generated: ReadonlySet<string>): boolean {
+  return lane.dir !== ''
+    && isUnderDir(relPath, lane.dir)
+    && !lane.excludes.some((excluded) => isUnderDir(relPath, excluded))
+    && !generated.has(relPath);
+}
+
+/**
+ * Narrow `lanes` to those admitting at least one `allowedPaths` entry under
+ * {@link laneAdmits}.
  *
- * `subsystems` are names relative to `target`; `allowedPaths` are
- * repo-relative POSIX paths; `target` and `repoRoot` are absolute and are put
- * into one symlink space by {@link anchorPair} before being compared, so a
- * caller cannot make the two disagree about it.
- * Returns sorted byte-order unique names.
+ * `allowedPaths` are repo-relative POSIX paths; lane paths are relative to
+ * `target`. `target` and `repoRoot` are absolute and are put into one symlink
+ * space by {@link anchorPair} before each allowed path is re-expressed relative
+ * to `target`, so a caller cannot make the two disagree about it; a path
+ * outside `target` admits nothing. `generated` holds target-relative generated
+ * files, which belong to no lane.
+ * Returns unique lanes sorted byte-order by name.
  */
 export function filterBySubsystem(
-  subsystems: string[],
+  lanes: LaneRecord[],
   allowedPaths: string[],
   target: string,
   repoRoot: string,
-): string[] {
-  if (subsystems.length === 0 || allowedPaths.length === 0) return [];
-  const kept = new Set<string>();
-  const allowedSet = new Set(allowedPaths.map(toPosix));
+  generated: ReadonlySet<string> = new Set(),
+): LaneRecord[] {
+  if (lanes.length === 0 || allowedPaths.length === 0) return [];
   const { root, targetRoot } = anchorPair(repoRoot, target);
-  for (const name of subsystems) {
-    const absDir = path.resolve(targetRoot, name);
-    const relDir = toPosix(path.relative(root, absDir));
-    const prefix = relDir.length === 0 ? '' : relDir.endsWith('/') ? relDir : `${relDir}/`;
-    for (const ap of allowedSet) {
-      if (prefix === '' || ap === relDir || ap.startsWith(prefix)) {
-        kept.add(name);
-        break;
-      }
-    }
+  const inTarget = Array.from(new Set(allowedPaths.map(toPosix)))
+    .map((ap) => toPosix(path.relative(targetRoot, path.resolve(root, ap))))
+    .filter((rel) => rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel));
+  const kept = new Map<string, LaneRecord>();
+  for (const lane of lanes) {
+    if (inTarget.some((rel) => laneAdmits(lane, rel, generated))) kept.set(lane.name, lane);
   }
-  return Array.from(kept).sort(byteOrder);
+  return Array.from(kept.values()).sort((a, b) => byteOrder(a.name, b.name));
 }
 
 /**

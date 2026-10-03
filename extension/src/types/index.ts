@@ -56,10 +56,6 @@ export interface State {
   judge_backend_resolved?: Extract<Backend, 'claude' | 'codex'>;
   /** When false, pipeline-runner halts on any non-zero non-citadel phase exit instead of continuing on recoverable failures. */
   pipeline_continue_on_phase_fail?: boolean;
-  /** When true, /pickle Phase 3 spawns workers via harness team primitives (TeamCreate + Agent + TaskUpdate) instead of `claude -p` subprocesses. claude backend only. */
-  teams_mode?: boolean;
-  /** Concurrency cap for parallel `morty-implementer` teammates when teams_mode is true. Default 5. v1 ships sequential; this field is plumbed for the parallel-fan-out follow-up. */
-  max_parallel?: number;
   /**
    * Count of consecutive false EPIC_COMPLETED emissions on the same `current_ticket`.
    * Reset to 0 whenever the manager genuinely advances to a new ticket OR succeeds.
@@ -911,6 +907,12 @@ export const VALID_ACTIVITY_EVENTS = [
   // complexity-rule count (eslint complexity / max-lines-per-function) over the
   // pass-start baseline — counted as a non-clean (regressing) pass, breadcrumb only.
   'anatomy_park_complexity_regression',
+  // B-LANES WS-3: after the last lane ends, the per-outcome counts of the integration and the
+  // lane branches kept because main does not reach them.
+  'anatomy_lanes_integrated',
+  // B-LANES WS-3: at lane phase start, a previous run's unintegrated lane branches (reported, never
+  // integrated), expired retained branches (deleted), and stale lane worktrees (pruned).
+  'anatomy_lane_branches_reported',
   'monitor_respawn_session_dir_invalid',
   'spawn_morty_invalid_ticket_path',
   'ticket_preskipped_already_terminal',

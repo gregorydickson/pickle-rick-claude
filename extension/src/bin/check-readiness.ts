@@ -12,6 +12,8 @@ import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 import type { ReadinessCycleHistoryEntry } from '../types/index.js';
 import { resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
+import { getWorkspacePackages } from '../services/convergence-gate.js';
+import { definedRequirementIdsInLine, requirementIdPatternFor } from '../services/requirement-ids.js';
 import { CallerGap, ResolverCache, SCOPE_AUTO_EXTEND_MAX, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
 
 export interface ReadinessArgs {
@@ -328,15 +330,31 @@ const EXTERNAL_DTS_FILE_CAP = 3_000;
 export const EXTERNAL_DTS_MAX_BYTES = 512 * 1024;
 
 /**
- * R-RCEX (Finding #65): declared dependency names from the target repo's
- * `package.json` (and the `extension/` sub-package, mirroring `resolvePathRef`
- * bases). `@types/*` stub packages are EXCLUDED here at the call site — a
- * ticket citing a stdlib type is a separate false-positive class handled by
- * `.readiness-allowlist.json`, and the TS lib `.d.ts` files are huge.
+ * R-RCEX (Finding #65): the package dirs whose `package.json` declares dependencies —
+ * the UNION (de-duplicated) of the target repo's root, its `extension/` sub-package
+ * (mirroring `resolvePathRef` bases) and every workspace package. The workspace
+ * enumerator alone returns `[]` on a repo with no workspace marker, which would drop
+ * `extension/`, so it only adds to the fixed pair and never replaces it.
  */
-function declaredDependencyNames(repoRoot: string): string[] {
+function declaredDependencyDirs(repoRoot: string): string[] {
+  let workspaces: string[] = [];
+  try {
+    workspaces = getWorkspacePackages(repoRoot);
+  } catch {
+    // Unreadable workspace manifest: the fixed pair still resolves.
+  }
+  return [...new Set([repoRoot, path.join(repoRoot, 'extension'), ...workspaces])];
+}
+
+/**
+ * Declared dependency names from those dirs' `package.json`. `@types/*` stub packages
+ * are EXCLUDED here at the call site — a ticket citing a stdlib type is a separate
+ * false-positive class handled by `.readiness-allowlist.json`, and the TS lib `.d.ts`
+ * files are huge.
+ */
+function declaredDependencyNames(dirs: string[]): string[] {
   const names = new Set<string>();
-  for (const dir of [repoRoot, path.join(repoRoot, 'extension')]) {
+  for (const dir of dirs) {
     const pkg = readJsonFile(path.join(dir, 'package.json'));
     if (!isRecord(pkg)) continue;
     for (const key of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
@@ -370,11 +388,11 @@ function collectDtsFilesUnder(dir: string, acc: string[]): void {
 
 export function collectExternalDtsFiles(repoRoot: string): string[] {
   const files: string[] = [];
-  const deps = declaredDependencyNames(repoRoot).filter((dep) => !dep.startsWith('@types/'));
-  const moduleRoots = [
-    path.join(repoRoot, 'node_modules'),
-    path.join(repoRoot, 'extension', 'node_modules'),
-  ].filter((root) => fs.existsSync(root));
+  const dirs = declaredDependencyDirs(repoRoot);
+  const deps = declaredDependencyNames(dirs).filter((dep) => !dep.startsWith('@types/'));
+  const moduleRoots = dirs
+    .map((dir) => path.join(dir, 'node_modules'))
+    .filter((root) => fs.existsSync(root));
   for (const root of moduleRoots) {
     for (const dep of deps) {
       if (files.length >= EXTERNAL_DTS_FILE_CAP) return files;
@@ -686,18 +704,36 @@ function resolvePeerPrdPath(parentPrdPath: string, peerPath: string, repoRoot: s
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-function requirementsFromPrd(filePath: string, sourcePrd: string, idPattern = /\bAC-[A-Za-z0-9-]+\b/g): SourceRequirement[] {
-  const requirements: SourceRequirement[] = [];
-  const lines = fs.readFileSync(filePath, 'utf-8').split(/\r?\n/);
+interface PrdDefinition extends SourceRequirement {
+  notInScope: boolean;
+}
+
+/** Every id the PRD defines (shared E4 rule), with its section and whether a `NOT in Scope` heading encloses it. */
+function prdDefinitions(content: string, sourcePrd: string, idRe: RegExp): PrdDefinition[] {
+  const definitions: PrdDefinition[] = [];
   let section = '';
-  for (const line of lines) {
-    const heading = /^#{1,6}\s+(.+?)\s*$/.exec(line);
-    if (heading) section = heading[1].trim();
-    for (const match of line.matchAll(idPattern)) {
-      requirements.push({ sourcePrd, sourceSection: section, requirementId: match[0] });
+  let notInScopeLevel = 0;
+  for (const line of content.split(/\r?\n/)) {
+    const heading = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    if (heading) {
+      section = heading[2].trim();
+      if (notInScopeLevel > 0 && heading[1].length <= notInScopeLevel) notInScopeLevel = 0;
+      if (notInScopeLevel === 0 && /not\s+in\s+scope/i.test(section)) notInScopeLevel = heading[1].length;
+    }
+    for (const requirementId of definedRequirementIdsInLine(line, idRe)) {
+      definitions.push({ sourcePrd, sourceSection: section, requirementId, notInScope: notInScopeLevel > 0 });
     }
   }
-  return requirements;
+  return definitions;
+}
+
+function requirementsFromPrd(filePath: string, sourcePrd: string, idPattern?: RegExp): SourceRequirement[] {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  // E4: the shared defines-vs-cites rule. A caller naming a pattern scopes WHICH ids (the parent
+  // bundle only owns `AC-DR-*`); absent one, the PRD's own spelling decides, once, for the whole file.
+  const idRe = idPattern ?? requirementIdPatternFor(content);
+  // C3: an id defined only under NOT in Scope is owed no ticket; findOwnershipAdvisories reports it.
+  return prdDefinitions(content, sourcePrd, idRe).filter((definition) => !definition.notInScope);
 }
 
 function sourceRequirementsFromParentPrd(parentPrdPath: string | undefined, repoRoot: string): SourceRequirement[] {
@@ -817,6 +853,38 @@ function findPrdMapFindings(tickets: TicketInfo[], manifest: unknown, sourceRequ
       analyst: 'gaps' as const,
       message: 'PRD requirement is not mapped to any ticket',
       detail: requirement,
+    }));
+}
+
+/**
+ * C3: advisory only (no new `kind`, so the blocking filter never sees it). Ids already in
+ * `sourceRequirements` belong to `prd_map`, which wins; this covers the rest of the PRD:
+ * an id owned by no ticket is `unmapped`, one defined only under NOT in Scope is `not-in-scope-only`.
+ */
+function findOwnershipAdvisories(prdPath: string | undefined, tickets: TicketInfo[], manifest: unknown, sourceRequirements: SourceRequirement[]): ReadinessFinding[] {
+  if (!prdPath || !fs.existsSync(prdPath)) return [];
+  const content = fs.readFileSync(prdPath, 'utf-8');
+  const idRe = requirementIdPatternFor(content);
+  const owned = ticketRequirementIds(manifest, tickets);
+  for (const ticket of tickets) {
+    for (const match of fs.readFileSync(ticket.file, 'utf-8').matchAll(new RegExp(idRe.source, 'g'))) owned.add(match[0]);
+  }
+  const prdMapDomain = new Set(sourceRequirements.map((requirement) => requirement.requirementId));
+  const inScope = new Map<string, boolean>();
+  for (const definition of prdDefinitions(content, prdPath, idRe)) {
+    inScope.set(definition.requirementId, (inScope.get(definition.requirementId) ?? false) || !definition.notInScope);
+  }
+  return [...inScope.entries()]
+    .filter(([id]) => !owned.has(id) && !prdMapDomain.has(id))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, isInScope]) => ({
+      ticket: 'manifest',
+      kind: 'advisory' as const,
+      analyst: 'gaps' as const,
+      message: isInScope
+        ? 'PRD requirement is owned by no ticket (advisory — never blocks readiness)'
+        : 'PRD requirement appears only under NOT in Scope and no ticket names it (advisory — never blocks readiness)',
+      detail: `${id}: ${isInScope ? 'unmapped' : 'not-in-scope-only'}`,
     }));
 }
 
@@ -1209,6 +1277,7 @@ export function runReadiness(args: ReadinessArgs): { exitCode: number; findings:
   }));
   const findings = [
     ...findPrdMapFindings(tickets, manifest, sourceRequirements),
+    ...findOwnershipAdvisories(resolveManifestPrdPath(manifest, args.sessionDir, args.repoRoot), tickets, manifest, sourceRequirements),
     ...tickets.flatMap((ticket) => findPathFindings(ticket, args.repoRoot, args.sessionDir, pathCache)),
     ...tickets.flatMap((ticket) => findDependencyFindings(ticket, refs)),
     ...selected.files.flatMap((file) => findReadinessFindings(file, args.repoRoot, { checkMachinability, checkContracts, cache: resolverCache, maxWallMs: args.maxWallMs, allowlist })),

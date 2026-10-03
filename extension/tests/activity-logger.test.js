@@ -209,6 +209,9 @@ test('types.activity-events: VALID_ACTIVITY_EVENTS contains all expected event t
         'anatomy_park_empty_scope_skip',
         'anatomy_park_non_convergent_halt',
         'anatomy_park_complexity_regression',
+        // B-LANES WS-3: lane integration outcome counts and a previous run's reported lane branches.
+        'anatomy_lanes_integrated',
+        'anatomy_lane_branches_reported',
         'szechuan_sauce_empty_scope_skip',
         // AC-V4 (dc205237): pickle exhausted its iteration cap with tickets unbuilt.
         'phase_cap_dropped_tickets',
@@ -917,4 +920,22 @@ test('logActivity: buffer capped at 100 events — excess events dropped', async
         _clearPendingBuffer();
         _setRetryDelayMs(500);
     }
+});
+
+// F1 deleted the archaeology module; activity logs written before the deletion still
+// carry its two event names and must keep reading back.
+test('F1-2: a legacy activity log carrying archaeology events still loads', () => {
+    withTempActivityDir((activityDir) => {
+        const day = new Date(2026, 4, 1, 12, 0, 0, 0);
+        fs.mkdirSync(activityDir, { recursive: true });
+        const lines = ['archaeology_complete', 'archaeology_skipped']
+            .map((event) => JSON.stringify({ event, source: 'pickle', ts: day.toISOString() }));
+        fs.writeFileSync(path.join(activityDir, `${formatLocalDateKey(day)}.jsonl`), `${lines.join('\n')}\n`);
+
+        const events = readActivityFiles(activityDir, new Date(2026, 4, 1), new Date(2026, 4, 2));
+
+        assert.deepEqual(events.map((entry) => entry.event), ['archaeology_complete', 'archaeology_skipped']);
+        assert.ok(VALID_ACTIVITY_EVENTS.includes('archaeology_complete'));
+        assert.ok(VALID_ACTIVITY_EVENTS.includes('archaeology_skipped'));
+    });
 });

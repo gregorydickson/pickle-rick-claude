@@ -6,7 +6,11 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { armChildMuxRunnerHeartbeat } from '../bin/pipeline-runner.js';
+import {
+  armChildMuxRunnerHeartbeat,
+  __armPhaseChildMuxRunnerHeartbeatForTests,
+  __setPhaseRunnerContextForTests,
+} from '../bin/pipeline-runner.js';
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-wedge-mtime-'));
@@ -164,5 +168,93 @@ describe('child-mux wedge detector keys on iteration-log mtime (AC-R-RESH-4)', (
     assert.equal(events.length, 0);
 
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('armPhaseChildMuxRunnerHeartbeat sessionDir override (AC-HEARTBEAT)', () => {
+  test('unit dir fresh, parent dir stale: sessionDir=unitDir -> no wedge; sessionDir omitted (parent) -> wedge', () => {
+    const parentDir = tmpDir();
+    const unitDir = tmpDir();
+    const now = Date.now();
+
+    // Parent session dir: state.json well past the stall window, no iteration logs of
+    // its own -> resolveChildMuxLivenessMtime falls back to the stale state.json mtime.
+    const parentStatePath = path.join(parentDir, 'state.json');
+    fs.writeFileSync(parentStatePath, JSON.stringify({ active: true }));
+    setMtime(parentStatePath, now - (STALL_SECONDS + 600) * 1000); // 40 min stale
+
+    // Unit session dir: its own state.json + a fresh iteration log -> liveness is fresh.
+    const unitStatePath = path.join(unitDir, 'state.json');
+    fs.writeFileSync(unitStatePath, JSON.stringify({ active: true }));
+    setMtime(unitStatePath, now - (STALL_SECONDS + 600) * 1000);
+    const unitLogPath = path.join(unitDir, 'tmux_iteration_1.log');
+    fs.writeFileSync(unitLogPath, '{}');
+    setMtime(unitLogPath, now - 5 * 1000); // 5s fresh
+
+    __setPhaseRunnerContextForTests({
+      sessionDir: parentDir,
+      extensionRoot: '/tmp',
+      childMuxRunnerHeartbeatMs: 60_000,
+      childMuxRunnerStallSeconds: STALL_SECONDS,
+    });
+
+    try {
+      // Armed with the unit dir override: liveness is fresh -> no wedge.
+      {
+        let tick = null;
+        const child = makeChild();
+        const events = [];
+        const handle = __armPhaseChildMuxRunnerHeartbeatForTests(
+          child,
+          ['mux-runner.js'],
+          unitDir,
+          {
+            setInterval: (fn) => { tick = fn; return 1; },
+            clearInterval: () => {},
+            now: () => now,
+            isProcessAlive: () => true,
+            emitActivity: (event) => { events.push(event); },
+          },
+        );
+        assert.equal(typeof tick, 'function');
+        tick();
+        handle.stop();
+
+        assert.equal(child.killed, false, 'unit dir liveness is fresh -> must not kill');
+        assert.equal(events.length, 0, 'no wedge event when the unit dir is fresh');
+      }
+
+      // Armed with no override (falls back to phaseRunnerContext.sessionDir, the stale
+      // parent dir): control proving the same setup DOES wedge without the override.
+      {
+        let tick = null;
+        const child = makeChild();
+        const events = [];
+        const handle = __armPhaseChildMuxRunnerHeartbeatForTests(
+          child,
+          ['mux-runner.js'],
+          undefined,
+          {
+            setInterval: (fn) => { tick = fn; return 1; },
+            clearInterval: () => {},
+            now: () => now,
+            isProcessAlive: () => true,
+            emitActivity: (event) => { events.push(event); },
+          },
+        );
+        assert.equal(typeof tick, 'function');
+        tick();
+        handle.stop();
+
+        assert.equal(child.signal, 'SIGTERM', 'parent dir liveness is stale -> must wedge');
+        assert.equal(child.killed, true);
+        assert.equal(events.length, 1);
+        assert.equal(events[0].event, 'child_mux_runner_wedge_detected');
+      }
+    } finally {
+      __setPhaseRunnerContextForTests(null);
+      fs.rmSync(parentDir, { recursive: true, force: true });
+      fs.rmSync(unitDir, { recursive: true, force: true });
+    }
   });
 });

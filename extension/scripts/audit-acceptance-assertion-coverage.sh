@@ -70,10 +70,13 @@ const refuse = (reason) => {
 };
 const errText = (err) => (err instanceof Error ? err.message : String(err));
 
-function walkTickets(dir) {
+// `depth` bounds how many directory levels the walk may descend. The session corpus passes 2 — the runtime's
+// own layout (`<session>/<ticket>/rick_ticket_*.md`, the shape collectTickets reads) — because a session may
+// hold a git worktree (`<session>/wt`) whose tracked fixture tickets are the git-index corpus, not live ones.
+function walkTickets(dir, depth = Infinity) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) return walkTickets(full);
+    if (entry.isDirectory()) return depth > 0 ? walkTickets(full, depth - 1) : [];
     return entry.isFile() && TICKET_NAME_RE.test(entry.name) ? [full] : [];
   });
 }
@@ -124,7 +127,7 @@ function resolveCorpus(getDataRoot) {
   let sessionFiles = [];
   if (fs.existsSync(sessionsDir)) {
     try {
-      sessionFiles = walkTickets(sessionsDir);
+      sessionFiles = walkTickets(sessionsDir, 2);
     } catch (err) {
       refuse(`cannot enumerate ${sessionsDir}: ${errText(err)}`);
     }

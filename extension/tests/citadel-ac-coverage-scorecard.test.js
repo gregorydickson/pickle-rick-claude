@@ -36,14 +36,14 @@ function diffSummary(repoRoot, changedFiles) {
 }
 
 describe('buildAcCoverageScorecard', () => {
-  test('matches implementation by keyword-anchor symbol and test by symbol reference', () => {
+  test('matches implementation by AC id on a declaration line and test by symbol reference', () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-scorecard-'));
     try {
       writeFile(
         repoRoot,
         'src/comparison-retry.ts',
         [
-          'export function buildComparisonRetryGuard() {',
+          'export function buildComparisonRetryGuard() { // AC-FF-01',
           '  return true;',
           '}',
           '',
@@ -80,7 +80,7 @@ describe('buildAcCoverageScorecard', () => {
       assert.equal(result.summary.implemented, 1);
       assert.equal(result.summary.tested, 1);
       assert.deepEqual(result.findings, []);
-      assert.equal(result.rows[0].implementationEvidence[0].match, 'comparison');
+      assert.equal(result.rows[0].implementationEvidence[0].match, 'AC-FF-01');
       assert.equal(result.rows[0].implementationEvidence[0].symbol, 'buildComparisonRetryGuard');
       assert.equal(result.rows[0].testEvidence[0].matchType, 'symbol');
       assert.match(result.markdownTable, /\| AC-FF-01 \| ✓ \| ✓ \| src\/comparison-retry\.ts:1 \+ tests\/comparison-retry\.test\.ts:1 \|/);
@@ -265,7 +265,7 @@ describe('buildAcCoverageScorecard', () => {
   test('AP-EXT-ITER286-01 control: a four-character declared symbol still carries the test axis', () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-scorecard-'));
     try {
-      writeFile(repoRoot, 'src/head.ts', ['export const head = (rows) => rows[0];', ''].join('\n'));
+      writeFile(repoRoot, 'src/head.ts', ['export const head = (rows) => rows[0]; // AC-XY-8', ''].join('\n'));
       writeFile(
         repoRoot,
         'tests/head.test.ts',
@@ -283,6 +283,110 @@ describe('buildAcCoverageScorecard', () => {
       assert.equal(row.tested, true);
       assert.equal(row.testEvidence[0].matchType, 'symbol');
       assert.deepEqual(result.findings, []);
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // D4a: keyword-anchor (lexical) matches are no longer credit. A row whose only evidence was
+  // lexical is reported at Medium with a `lexical-only:` prefix, below the remediation threshold.
+  const D4A_CRITERION = [{ id: 'AC-1', line: 3, text: '- **AC-1**: formatLabel trims the label.' }];
+
+  test('D4a-1: lexical-only implementation and test evidence earn no credit and emit one Medium finding', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-scorecard-'));
+    try {
+      writeFile(repoRoot, 'src/label.ts', 'export function formatLabel(s: string) { return s.trim(); }\n');
+      writeFile(repoRoot, 'src/other.test.ts', 'test("label is trimmed", () => {});\n');
+
+      const result = buildAcCoverageScorecard(
+        D4A_CRITERION,
+        diffSummary(repoRoot, [
+          changedFile('src/label.ts', 'production'),
+          changedFile('src/other.test.ts', 'test'),
+        ]),
+        { repoRoot },
+      );
+
+      const row = result.rows[0];
+      assert.equal(row.implemented, false);
+      assert.equal(row.tested, false);
+      assert.deepEqual(row.implementationEvidence, []);
+      assert.equal(result.findings.length, 1);
+      assert.equal(result.findings[0].severity, 'Medium');
+      assert.match(result.findings[0].message, /^lexical-only:/);
+      assert.equal(result.findings[0].acId, 'AC-1');
+      assert.equal(result.findings[0].evidence[0].matchType, 'keyword_anchor');
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('D4a-2 control: an AC id literal in a changed production line is still implementation credit', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-scorecard-'));
+    try {
+      writeFile(repoRoot, 'src/label.ts', 'export function formatLabel(s: string) { return s.trim(); } // AC-1\n');
+      writeFile(repoRoot, 'src/other.test.ts', 'import { formatLabel } from "./label";\ntest("x", () => formatLabel(" a "));\n');
+
+      const result = buildAcCoverageScorecard(
+        D4A_CRITERION,
+        diffSummary(repoRoot, [
+          changedFile('src/label.ts', 'production'),
+          changedFile('src/other.test.ts', 'test'),
+        ]),
+        { repoRoot },
+      );
+
+      assert.equal(result.rows[0].implemented, true);
+      assert.equal(result.rows[0].implementationEvidence[0].matchType, 'ac_id');
+      assert.equal(result.rows[0].tested, true);
+      assert.deepEqual(result.findings, []);
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('D4a-3: real implementation with a lexical-only test is untested and reported at Medium', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-scorecard-'));
+    try {
+      writeFile(repoRoot, 'src/label.ts', 'export function formatLabel(s: string) { return s.trim(); } // AC-1\n');
+      writeFile(repoRoot, 'src/other.test.ts', 'test("label is trimmed", () => {});\n');
+
+      const result = buildAcCoverageScorecard(
+        D4A_CRITERION,
+        diffSummary(repoRoot, [
+          changedFile('src/label.ts', 'production'),
+          changedFile('src/other.test.ts', 'test'),
+        ]),
+        { repoRoot },
+      );
+
+      assert.equal(result.rows[0].implemented, true);
+      assert.equal(result.rows[0].tested, false);
+      assert.deepEqual(result.rows[0].testEvidence, []);
+      assert.equal(result.findings.length, 1);
+      assert.equal(result.findings[0].severity, 'Medium');
+      assert.match(result.findings[0].message, /^lexical-only:/);
+      assert.equal(result.findings[0].id, 'citadel-ac-coverage-AC-1-test');
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('D4a-4: rows and findings no longer carry keywordAnchors, and no-evidence rows stay Critical', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'citadel-ac-scorecard-'));
+    try {
+      writeFile(repoRoot, 'src/unrelated.ts', 'export function zzz() { return 1; }\n');
+
+      const result = buildAcCoverageScorecard(
+        D4A_CRITERION,
+        diffSummary(repoRoot, [changedFile('src/unrelated.ts', 'production')]),
+        { repoRoot },
+      );
+
+      assert.equal('keywordAnchors' in result.rows[0], false);
+      assert.equal('keywordAnchors' in result.findings[0], false);
+      assert.equal(result.findings[0].severity, 'Critical');
+      assert.doesNotMatch(result.findings[0].message, /^lexical-only:/);
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
@@ -315,8 +419,13 @@ describe('ac_coverage section disclosure (T2 F2b)', () => {
     }
   }
 
-  test('FR-only PRD → skipped no_acceptance_criteria', () => {
+  test('E4-5: FR-only PRD is scored, not skipped no_acceptance_criteria', () => {
     const section = sectionFor('# PRD\n\n- FR-1: something happens\n');
+    assert.notEqual(section.skipped, 'no_acceptance_criteria');
+  });
+
+  test('PRD with no requirement ids at all → skipped no_acceptance_criteria', () => {
+    const section = sectionFor('# PRD\n\n- something happens\n');
     assert.equal(section.skipped, 'no_acceptance_criteria');
     assert.deepEqual(section.findings, []);
   });

@@ -265,18 +265,6 @@ export function resolveWorkerModelFromTierAndPersona(
   return personaModel ?? 'sonnet';
 }
 
-function readProjectContextBlock(sessionRoot: string): string {
-  try {
-    if (isArchaeologyDisabled(sessionRoot)) return '';
-    const projectContextPath = path.join(sessionRoot, 'project-context.md');
-    if (!fs.existsSync(projectContextPath)) return '';
-    const projectContext = fs.readFileSync(projectContextPath, 'utf-8').trim();
-    return projectContext ? `\n\n## Project Context\n${projectContext}` : '';
-  } catch {
-    return '';
-  }
-}
-
 function isLastToolErrorState(value: unknown): value is LastToolErrorState {
   if (!isRecord(value)) return false;
   return typeof value.ts === 'string'
@@ -348,15 +336,6 @@ function readHandoffNotesBlock(ticketPath: string): string {
     return notes ? `# PRIOR ITERATION HANDOFF\n${notes}\n\n` : '';
   } catch {
     return '';
-  }
-}
-
-function isArchaeologyDisabled(sessionRoot: string): boolean {
-  try {
-    const state = readRecoverableJsonObject(path.join(sessionRoot, 'state.json')) as State | null;
-    return state?.flags?.no_archaeology === true;
-  } catch {
-    return false;
   }
 }
 
@@ -532,6 +511,7 @@ export function buildTierLifecycleSections(phases: LifecyclePhase[], tier: strin
   const phaseSet = new Set<LifecyclePhase>(phases);
   const isReduced = phases.length < ALL_LIFECYCLE_PHASES.length;
   let out = `**Tier: ${tier} | Active phases: ${phases.join(', ')}**\n`;
+  out += `\n> **Expected-value source:** a count or literal you assert or check in an acceptance criterion comes from RUNNING its predicate at HEAD and reading the output — never from memory or from the spec's own prose. A predicate that already passes before your change verifies nothing.\n`;
 
   if (isReduced) {
     out += `\n> **Plan/Research source for skipped phases**: The ticket body (\`## Problem\`, \`## Solution\`, \`## Research Seeds\`) is the specification — read it directly in place of research/plan artifacts. No new artifact format is needed for skipped phases.\n`;
@@ -1176,7 +1156,6 @@ export function buildWorkerPrompt(opts: BuildWorkerPromptOptions): string {
     extensionRoot,
     agentsDir: opts.agentsDir,
   });
-  workerPrompt += readProjectContextBlock(ticket.sessionRoot);
   workerPrompt += `\n\n# TARGET TICKET CONTENT\n${ticket.ticketContent || 'N/A'}`;
   const firewallDetected = detectAgentsMdFirewall(opts.repoRoot ?? process.cwd());
   workerPrompt += `\n\n# EXECUTION CONTEXT\n- SESSION_ROOT: ${ticket.sessionRoot}\n- TICKET_ID: ${ticket.ticketId}\n- TICKET_DIR: ${ticket.ticketPath}`;

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { getDataRoot } from '../services/pickle-utils.js';
 
 function parseArgs(argv) {
   const opts = {
-    activityDir: path.join(process.env.PICKLE_DATA_ROOT || path.join(os.homedir(), '.codex', 'pickle-rick'), 'activity'),
+    activityDir: path.join(getDataRoot(), 'activity'),
     output: path.join(process.cwd(), 'bundle', 'wasted-iter-baseline.json'),
   };
   for (let i = 0; i < argv.length; i++) {

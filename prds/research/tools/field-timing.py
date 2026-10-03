@@ -49,12 +49,72 @@ def phase_minutes(sess):
     return out
 
 
+LINE_TS_RE = re.compile(r"^\[(?P<ts>[^\]]+)\] (?P<msg>.*)")
+WAVE_START_RE = re.compile(r"pickle waves: wave \d+ members=\S* in_flight=(?P<k>\d+)")
+WAVE_MEMBER_RE = re.compile(r"pickle waves: wave \d+ (?P<id>\w+): (?P<outcome>\w+)")
+DONE_GUARD_RE = re.compile(r"\[done-guard\] ticket (?P<id>\w+) is Done")
+
+
+def parallel_safe_ids(sess):
+    ids = set()
+    for d in os.listdir(sess):
+        p = os.path.join(sess, d, f"rick_ticket_{d}.md")
+        if os.path.isfile(p):
+            with open(p, errors="ignore") as fh:
+                if re.search(r"^parallel_safe:\s*true", fh.read(4000), re.M):
+                    ids.add(d)
+    return ids
+
+
+def wave_timing(sess):
+    """Wave widths, the parallel_safe implementation sub-phase (minutes, first to last Done) and the fake-red estimate."""
+    safe = parallel_safe_ids(sess)
+    widths, done_ts, failed, serial_done = [], [], set(), set()
+    for name in ("pipeline-runner.log", "mux-runner.log"):
+        path = os.path.join(sess, name)
+        if not os.path.exists(path):
+            continue
+        with open(path, errors="ignore") as fh:
+            for line in fh:
+                m = LINE_TS_RE.match(line)
+                ts = parse_ts(m.group("ts")) if m else None
+                if ts is None:
+                    continue
+                msg = m.group("msg")
+                w, mem, dg = WAVE_START_RE.search(msg), WAVE_MEMBER_RE.search(msg), DONE_GUARD_RE.search(msg)
+                if w:
+                    widths.append(int(w.group("k")))
+                elif mem and mem.group("id") in safe:
+                    if mem.group("outcome") == "integrated":
+                        done_ts.append(ts)
+                    else:
+                        failed.add(mem.group("id"))
+                elif dg and dg.group("id") in safe:
+                    done_ts.append(ts)
+                    serial_done.add(dg.group("id"))
+    span = round((max(done_ts) - min(done_ts)).total_seconds() / 60, 1) if done_ts else None
+    return widths, span, len(failed & serial_done)
+
+
+def family(root, name, kind):
+    """The session dir plus every sibling <name>--<kind>-N dir (lanes and wave units are never rows of their own)."""
+    return [name] + sorted(x for x in os.listdir(root) if x.startswith(f"{name}--{kind}-"))
+
+
+def lane_passes(root, name):
+    """Anatomy passes summed over the session's own file and every sibling <name>--lane-N dir."""
+    total = 0
+    for d in family(root, name, "lane"):
+        total += sum(((read_json(os.path.join(root, d, "anatomy-park.json")) or {}).get("pass_counts") or {}).values())
+    return total
+
+
 def birth(st):
     return getattr(st, "st_birthtime", None) or st.st_ctime
 
 
-def worker_minutes(sess):
-    """Sum of (last write - creation) over every worker_session_*.log: time spent inside worker spawns."""
+def worker_seconds(sess):
+    """Sum of (last write - creation) over every worker_session_*.log: time spent inside worker spawns, in seconds."""
     total, spawns = 0.0, 0
     for root, _dirs, files in os.walk(sess):
         if root.count(os.sep) - sess.count(os.sep) > 1:
@@ -64,7 +124,7 @@ def worker_minutes(sess):
                 st = os.stat(os.path.join(root, f))
                 total += max(0.0, st.st_mtime - birth(st))
                 spawns += 1
-    return round(total / 60, 1), spawns
+    return total, spawns
 
 
 def read_json(path):
@@ -89,12 +149,15 @@ def tickets(sess):
 
 
 def session_row(sess):
+    root, name = os.path.split(sess)
     state = read_json(os.path.join(sess, "state.json")) or {}
     wd = state.get("working_dir") or ""
     phases = phase_minutes(sess)
-    worker_min, spawns = worker_minutes(sess)
+    # A wave member's worker spawns run in its <name>--unit-N dir, which is not a row: count them here.
+    per_dir = [worker_seconds(os.path.join(root, d)) for d in family(root, name, "unit")]
+    worker_min, spawns = round(sum(t for t, _ in per_dir) / 60, 1), sum(n for _, n in per_dir)
     n_tickets, tiers = tickets(sess)
-    ap = read_json(os.path.join(sess, "anatomy-park.json")) or {}
+    widths, impl_span, failed_then_serial = wave_timing(sess)
     scope = read_json(os.path.join(sess, "scope.json"))
     lanes = read_json(os.path.join(sess, "archive", "lanes.json"))
     pickle_min = phases.get("pickle")
@@ -109,7 +172,10 @@ def session_row(sess):
         "tickets": n_tickets,
         "tiers": tiers,
         "iterations": sum(1 for f in os.listdir(sess) if f.startswith("tmux_iteration_") and f.endswith(".log")),
-        "anatomy_passes": ap.get("pass_counts") or {},
+        "anatomy_passes": lane_passes(root, name),
+        "wave_widths": widths,
+        "impl_subphase_min": impl_span,
+        "wave_member_failed_then_serial_done": failed_then_serial,
         "scoped": scope is not None,
         "scope_paths": len((scope or {}).get("allowed_paths") or []),
         "lane_outcomes": [l.get("outcome") for l in lanes] if isinstance(lanes, list) else None,
@@ -127,7 +193,7 @@ def main():
     rows = []
     for name in sorted(os.listdir(root)):
         sess = os.path.join(root, name)
-        if not os.path.isdir(sess) or (since and name[:10] < since):
+        if not os.path.isdir(sess) or "--unit-" in name or "--lane-" in name or (since and name[:10] < since):
             continue
         row = session_row(sess)
         if row["phases_min"] or row["tickets"]:
@@ -141,7 +207,7 @@ def main():
         print(f"{r['session']:<22} {str(r['repo_hash']):<8} {r['tickets']:>3} {str(p.get('pickle','-')):>7} "
               f"{r['worker_spawn_min']:>7} {str(r['outside_workers_min'] if r['outside_workers_min'] is not None else '-'):>7} "
               f"{str(p.get('anatomy-park','-')):>7} {str(p.get('szechuan-sauce','-')):>6} {str(r['scoped']):<6} "
-              f"{sum(r['anatomy_passes'].values()) if r['anatomy_passes'] else '-'}")
+              f"{r['anatomy_passes'] or '-'}")
     print(f"\n{len(rows)} sessions. Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')}. "
           "Numbers only: repo = sha256(working_dir)[:8]; no ticket text or paths.")
 

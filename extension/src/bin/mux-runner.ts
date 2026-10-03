@@ -5,6 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, buildPickleRickVersionTrailer, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES, type CompletionCommitEvidence, type TicketComplexityTier, type TicketInfo, type TicketStatus, type TicketTierBudget } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
+import { isLaneSessionDir } from '../services/anatomy-lanes.js';
 import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type RateLimitProbeVerdict, type WorkerRole, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState, type PostFinalVerdictDiagnostic } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
@@ -13340,11 +13341,15 @@ function bootstrapSessionResources(opts: {
 }): SessionResources {
   const { sessionDir, statePath, extensionRoot, ownerState, log } = opts;
 
-  try {
-    const result = ensureMonitorWindow({ sessionDir, extensionRoot, log });
-    log(`ensureMonitorWindow: ${result.status}${result.reason ? ` (${result.reason})` : ''}`);
-  } catch (err) {
-    log(`ensureMonitorWindow: threw (ignored): ${safeErrorMessage(err)}`);
+  // B-LANES WS-3: a lane/unit runner is one of several concurrent runners under one
+  // parent session; the parent's monitor window is the one the operator watches.
+  if (!isLaneSessionDir(sessionDir)) {
+    try {
+      const result = ensureMonitorWindow({ sessionDir, extensionRoot, log });
+      log(`ensureMonitorWindow: ${result.status}${result.reason ? ` (${result.reason})` : ''}`);
+    } catch (err) {
+      log(`ensureMonitorWindow: threw (ignored): ${safeErrorMessage(err)}`);
+    }
   }
 
   // R-PJV-2: one-shot package.json version drift detector.

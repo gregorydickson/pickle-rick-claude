@@ -239,6 +239,92 @@ test('check-readiness: R-RCEX (#65) external SDK symbol resolves against node_mo
     }
 }));
 
+test('check-readiness: E6-1 a dependency declared only in a workspace package is read', async () => {
+    const { collectExternalDtsFiles } = await import(BIN);
+    const repoRoot = tmpDir('pickle-readiness-ws-');
+    try {
+        fs.writeFileSync(
+            path.join(repoRoot, 'package.json'),
+            JSON.stringify({ name: 'e6-root', private: true, workspaces: ['packages/*'] }),
+        );
+        const pkgDir = path.join(repoRoot, 'packages', 'a');
+        fs.mkdirSync(pkgDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(pkgDir, 'package.json'),
+            JSON.stringify({ name: 'a', dependencies: { wsonlydep: '1.0.0' } }),
+        );
+        const depDir = path.join(repoRoot, 'node_modules', 'wsonlydep');
+        fs.mkdirSync(depDir, { recursive: true });
+        fs.writeFileSync(path.join(depDir, 'index.d.ts'), 'export interface WsOnly { x: string; }\n');
+
+        const files = collectExternalDtsFiles(repoRoot);
+        assert.equal(files.length, 1, `workspace-declared dep must be read; got ${JSON.stringify(files)}`);
+        assert.equal(files[0], path.join(depDir, 'index.d.ts'));
+    } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+});
+
+test('check-readiness: E6-2 a dependency declared by root and a workspace package is read once', async () => {
+    const { collectExternalDtsFiles } = await import(BIN);
+    const repoRoot = tmpDir('pickle-readiness-ws-');
+    try {
+        fs.writeFileSync(
+            path.join(repoRoot, 'package.json'),
+            JSON.stringify({ name: 'e6-root', workspaces: ['packages/*'], dependencies: { shareddep: '1.0.0' } }),
+        );
+        const pkgDir = path.join(repoRoot, 'packages', 'a');
+        fs.mkdirSync(pkgDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(pkgDir, 'package.json'),
+            JSON.stringify({ name: 'a', dependencies: { shareddep: '1.0.0' } }),
+        );
+        const depDir = path.join(repoRoot, 'node_modules', 'shareddep');
+        fs.mkdirSync(depDir, { recursive: true });
+        fs.writeFileSync(path.join(depDir, 'index.d.ts'), 'export interface Shared { x: string; }\n');
+
+        assert.equal(collectExternalDtsFiles(repoRoot).length, 1);
+    } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+});
+
+test('check-readiness: E6-3 a repo with no workspaces still reads root and extension dependencies', async () => {
+    const { collectExternalDtsFiles } = await import(BIN);
+    const repoRoot = tmpDir('pickle-readiness-flat-');
+    try {
+        fs.writeFileSync(path.join(repoRoot, 'package.json'), JSON.stringify({ name: 'flat', dependencies: { rootdep: '1.0.0' } }));
+        fs.mkdirSync(path.join(repoRoot, 'extension'), { recursive: true });
+        fs.writeFileSync(
+            path.join(repoRoot, 'extension', 'package.json'),
+            JSON.stringify({ name: 'ext', devDependencies: { extdep: '1.0.0' } }),
+        );
+        for (const [base, dep] of [['node_modules', 'rootdep'], [path.join('extension', 'node_modules'), 'extdep']]) {
+            const depDir = path.join(repoRoot, base, dep);
+            fs.mkdirSync(depDir, { recursive: true });
+            fs.writeFileSync(path.join(depDir, 'index.d.ts'), 'export interface X { x: string; }\n');
+        }
+        assert.equal(collectExternalDtsFiles(repoRoot).length, 2);
+    } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+});
+
+test('check-readiness: E6-4 the real repo enumeration reads only the pre-E6 [root, extension] pair', async () => {
+    const { collectExternalDtsFiles } = await import(BIN);
+    const repoRoot = path.resolve(__dirname, '../..');
+    const { getWorkspacePackages } = await import('../services/convergence-gate.js');
+    const files = collectExternalDtsFiles(repoRoot);
+    // Control: the pre-E6 resolver read [root, extension]; E6 adds getWorkspacePackages(root). This repo
+    // declares no workspaces, so the union IS the pre-E6 pair — asserted structurally, not as a file count
+    // (291 at E6 time), which any dependency bump would change without an E6 regression.
+    assert.deepEqual(getWorkspacePackages(repoRoot), [], 'no workspace package widens the union here');
+    const rel = files.map((f) => path.relative(repoRoot, f));
+    assert.ok(rel.length > 0, 'control enumeration must be non-empty');
+    assert.ok(rel.every((f) => f.startsWith(`node_modules${path.sep}`) || f.startsWith(path.join('extension', 'node_modules') + path.sep)));
+    assert.equal(new Set(rel).size, rel.length, 'the union is de-duplicated');
+});
+
 test('check-readiness: R-RCEX (#65) a symbol absent from every dependency still fails', () => runFixture((sessionDir) => {
     const repoRoot = tmpDir('pickle-readiness-repo-');
     try {
@@ -416,4 +502,26 @@ test('check-readiness: post-correction delta recovers dead-writer snapshot tmp',
     assert.equal(out.delta, true);
     assert.deepEqual(out.findings.map((finding) => path.basename(path.dirname(finding.ticket))), ['changed']);
     assert.equal(fs.existsSync(tmpSnapshotPath), false, 'dead-writer snapshot tmp should be promoted');
+}));
+
+test('E4-1: check-readiness reads a peer PRD that numbers requirements FR-n, and ignores AC ids it only cites', () => runFixture((sessionDir) => {
+    const parentPrd = path.join(sessionDir, 'bundle.md');
+    const peerPrd = path.join(sessionDir, 'peer.md');
+    fs.writeFileSync(parentPrd, ['---', 'peer_prds:', '  deferred:', '    - peer.md', '---', '# Bundle'].join('\n'));
+    fs.writeFileSync(peerPrd, [
+        '# Peer',
+        '',
+        '## Requirements',
+        '- FR-1 defined requirement',
+        'prose that mentions AC-CITED-1 mid-sentence',
+        '',
+    ].join('\n'));
+    writeTicket(sessionDir, 'e4peer01', { acIds: ['REQ-2'] });
+    writeManifest(sessionDir, { prd_path: parentPrd, tickets: [{ id: 'e4peer01', key: 'E4-1', ac_ids: ['REQ-2'] }] });
+
+    const result = runReadiness(sessionDir, sessionDir);
+    const out = JSON.parse(result.stdout);
+    const prdMap = out.findings.filter((finding) => finding.kind === 'prd_map').map((finding) => finding.detail);
+
+    assert.deepEqual(prdMap, ['FR-1']);
 }));

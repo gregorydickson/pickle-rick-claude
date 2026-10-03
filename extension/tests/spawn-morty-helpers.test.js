@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
 import {
+  buildTierLifecycleSections,
   buildWorkerPrompt,
   isPhasePersonasEnabled,
   resolveEffectiveTimeout,
@@ -69,19 +71,18 @@ function withPhasePersonaEnv(value, fn) {
   }
 }
 
-test('buildWorkerPrompt: injects project context before ticket content when available', () => {
+test('F1-3: buildWorkerPrompt no longer injects a legacy session project-context.md', () => {
   const repoRoot = makeTmpDir();
   try {
     fs.writeFileSync(path.join(repoRoot, 'project-context.md'), 'Architecture\n- Existing shape');
     const prompt = buildWorkerPrompt({ ticket: baseTicket(repoRoot), model: 'sonnet', repoRoot });
 
-    const contextIndex = prompt.indexOf('## Project Context\nArchitecture\n- Existing shape');
     const ticketIndex = prompt.indexOf('# TARGET TICKET CONTENT');
     const executionIndex = prompt.indexOf('# EXECUTION CONTEXT');
 
-    assert.ok(contextIndex > -1, 'should include project context block');
-    assert.ok(contextIndex < ticketIndex, 'project context should precede target ticket content');
-    assert.ok(ticketIndex < executionIndex, 'target ticket content should precede execution context');
+    assert.equal(prompt.includes('## Project Context'), false);
+    assert.equal(prompt.includes('- Existing shape'), false);
+    assert.ok(ticketIndex > -1 && ticketIndex < executionIndex, 'target ticket content should precede execution context');
   } finally {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
@@ -98,14 +99,13 @@ test('buildWorkerPrompt: includes acceptance-criteria ownership guidance', () =>
   }
 });
 
-test('buildWorkerPrompt: injects active persona between template and project context when enabled', () => {
+test('buildWorkerPrompt: injects active persona between template and ticket content when enabled', () => {
   const repoRoot = makeTmpDir();
   const extensionRoot = makeTmpDir('pickle-spawn-morty-extension-');
   const agentsDir = makeTmpDir('pickle-spawn-morty-agents-');
   try {
     writePhasePersonaFixture(extensionRoot, agentsDir);
     fs.writeFileSync(path.join(repoRoot, 'state.json'), JSON.stringify({ step: 'implement' }, null, 2));
-    fs.writeFileSync(path.join(repoRoot, 'project-context.md'), 'Architecture\n- Existing shape');
     const prompt = withPhasePersonaEnv('on', () => {
       return buildWorkerPrompt({
         ticket: baseTicket(repoRoot),
@@ -119,7 +119,6 @@ test('buildWorkerPrompt: injects active persona between template and project con
     const templateIndex = prompt.indexOf('implement helper tests');
     const personaIndex = prompt.indexOf('## Active Persona\nBase Rick voice.');
     const phaseIndex = prompt.indexOf('Phase implementer specialization.');
-    const contextIndex = prompt.indexOf('## Project Context\nArchitecture\n- Existing shape');
     const ticketIndex = prompt.indexOf('# TARGET TICKET CONTENT');
     const executionIndex = prompt.indexOf('# EXECUTION CONTEXT');
     const tailIndex = prompt.indexOf('**IMPORTANT**: You are a localized worker.');
@@ -127,8 +126,7 @@ test('buildWorkerPrompt: injects active persona between template and project con
     assert.ok(templateIndex > -1, 'should include template body');
     assert.ok(personaIndex > templateIndex, 'active persona should follow template body');
     assert.ok(phaseIndex > personaIndex, 'phase body should be inside active persona block');
-    assert.ok(contextIndex > phaseIndex, 'project context should follow active persona');
-    assert.ok(ticketIndex > contextIndex, 'target ticket content should follow project context');
+    assert.ok(ticketIndex > phaseIndex, 'target ticket content should follow active persona');
     assert.ok(executionIndex > ticketIndex, 'execution context should follow target ticket content');
     assert.ok(tailIndex > executionIndex, 'localized-worker tail should follow execution context');
   } finally {
@@ -230,22 +228,6 @@ test('buildWorkerPrompt: omits active persona when phase mapping is absent', () 
   }
 });
 
-test('buildWorkerPrompt: omits project context when session disables archaeology', () => {
-  const repoRoot = makeTmpDir();
-  try {
-    fs.writeFileSync(path.join(repoRoot, 'project-context.md'), 'Architecture\n- Existing shape');
-    fs.writeFileSync(path.join(repoRoot, 'state.json'), JSON.stringify({
-      flags: { no_archaeology: true },
-    }, null, 2));
-    const prompt = buildWorkerPrompt({ ticket: baseTicket(repoRoot), model: 'sonnet', repoRoot });
-
-    assert.equal(prompt.includes('## Project Context'), false);
-    assert.equal(prompt.includes('- Existing shape'), false);
-  } finally {
-    fs.rmSync(repoRoot, { recursive: true, force: true });
-  }
-});
-
 test('resolveEffectiveTimeout: clamps configured timeout to remaining wall-clock budget', () => {
   const startEpoch = 1_700_000_000;
   const nowMs = (startEpoch + 555) * 1000;
@@ -261,4 +243,42 @@ test('resolveWorkerModelFromTierAndPersona: ticket tier precedes persona default
   assert.equal(resolveWorkerModelFromTierAndPersona('large', 'sonnet'), 'opus');
   assert.equal(resolveWorkerModelFromTierAndPersona(undefined, 'opus'), 'opus');
   assert.equal(resolveWorkerModelFromTierAndPersona(undefined, undefined), 'sonnet');
+});
+
+// C8a: the shapes are DERIVED from TIER_LIFECYCLE (one tier per distinct phase list), never listed by hand.
+const lifecycleShapes = [...new Map(
+  Object.entries(TIER_LIFECYCLE).map(([tier, phases]) => [JSON.stringify(phases), { tier, phases }]),
+).values()];
+
+test('C8a-1: every lifecycle shape renders the Expected-value source rule', () => {
+  assert.ok(lifecycleShapes.length >= 2, 'fixture floor: more than one distinct lifecycle shape');
+  for (const { tier, phases } of lifecycleShapes) {
+    const out = buildTierLifecycleSections(phases, tier);
+    assert.match(out, /Expected-value source:/, `tier ${tier} (${phases.join(',')}) lacks the rule`);
+    assert.equal(out.split('Expected-value source:').length - 1, 1, `tier ${tier} renders the rule once`);
+  }
+});
+
+test('C8a-2: the rule sits outside the per-phase sections, so it cannot depend on a phase being active', () => {
+  const out = buildTierLifecycleSections(['implement', 'code_review'], 'trivial');
+  const ruleAt = out.indexOf('Expected-value source:');
+  const implementAt = out.indexOf('### 1. Implement');
+  assert.ok(ruleAt > -1 && implementAt > -1, `both markers render (rule ${ruleAt}, implement ${implementAt})`);
+  assert.ok(ruleAt < implementAt);
+});
+
+// F1: `git grep -l 'archaeology.js' -- extension/src` returned 2 at 1bacc67a (the module itself and
+// calibration-corpus.ts) and must return 0. Walked with fs so the fast tier spawns nothing; like git grep,
+// a comment naming the file counts.
+test('F1-4: no extension/src file references archaeology.js', () => {
+  const srcRoot = path.resolve(import.meta.dirname, '..', 'src');
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const child = path.join(dir, e.name);
+    return e.isDirectory() ? walk(child) : [child];
+  });
+  const files = walk(srcRoot);
+  assert.ok(files.includes(path.join(srcRoot, 'bin', 'spawn-morty.ts')), `walk floor: ${files.length} files, spawn-morty.ts not among them`);
+  const referencing = files.filter((f) => fs.readFileSync(f, 'utf-8').includes('archaeology.js'))
+    .map((f) => path.relative(srcRoot, f));
+  assert.deepEqual(referencing, []);
 });

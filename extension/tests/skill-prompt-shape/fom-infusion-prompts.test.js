@@ -67,7 +67,6 @@ const EXCLUDED = [
   { path: '.claude/agents/morty-phase-reviewer.md', reason: 'default-OFF (PICKLE_PHASE_PERSONAS); infuse when that flag graduates' },
   { path: '.claude/agents/morty-phase-simplifier.md', reason: 'default-OFF (PICKLE_PHASE_PERSONAS); infuse when that flag graduates' },
   { path: '.claude/agents/morty-phase-verifier.md', reason: 'default-OFF (PICKLE_PHASE_PERSONAS); infuse when that flag graduates; sole prose donor for FOM_HONEST_REPORTING_RULES' },
-  { path: 'extension/src/bin/archaeology.ts', reason: 'ANALYZE-class, user-invoked, not on the autonomous pipeline hot path' },
   { path: '.claude/agents/morty-debater-architect.md', reason: 'ANALYZE-class debate agent, user-invoked, not on the autonomous pipeline hot path' },
   { path: '.claude/agents/morty-debater-implementer.md', reason: 'ANALYZE-class debate agent, user-invoked, not on the autonomous pipeline hot path' },
   { path: '.claude/agents/morty-debater-researcher.md', reason: 'ANALYZE-class debate agent, user-invoked, not on the autonomous pipeline hot path' },

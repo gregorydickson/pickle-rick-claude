@@ -26,6 +26,7 @@ import { auditBannedCasts } from './banned-casts-audit.js';
 import { auditPatternConformance } from './pattern-conformance-audit.js';
 import { runSkepticLens } from './skeptic-lens.js';
 import { readRecoverableJsonObject } from '../recoverable-json.js';
+import { definedRequirementIdsInLine, requirementIdPatternFor } from '../requirement-ids.js';
 
 interface FindingLike extends CitadelFinding {
   id: string;
@@ -34,7 +35,21 @@ interface FindingLike extends CitadelFinding {
   [key: string]: unknown;
 }
 
-type DecisionRequired = AcShapeAuditReport['decisionsRequired'][number] | DivergenceDecisionRequired;
+type DecisionRequired = AcShapeAuditReport['decisionsRequired'][number]
+  | DivergenceDecisionRequired
+  | PrdRequirementDropDecision;
+
+interface PrdRequirementDropDecision {
+  id: string;
+  severity: 'Medium';
+  message: string;
+  evidence: Array<{ file: string; line: number }>;
+}
+
+interface PrdRequirementDropsReport {
+  decisionsRequired: PrdRequirementDropDecision[];
+  findings: [];
+}
 
 export interface CrossPhaseFinding extends FindingLike {
   source: 'anatomy-park' | 'szechuan-sauce';
@@ -171,10 +186,9 @@ export function buildCitadelAuditReport(options: CitadelAuditOptions): CitadelAu
     ? path.resolve(repoRoot, options.prdPath)
     : undefined;
   const sections = runCitadelAnalyzers(options, repoRoot, resolvedPrdPath);
-  const decisionRequired: DecisionRequired[] = [
-    ...sections.ac_shape.decisionsRequired,
-    ...sections.divergence_reconciliation.decisionsRequired,
-  ];
+  const decisionRequired: DecisionRequired[] = Object.values(sections).flatMap(
+    (section): DecisionRequired[] => ('decisionsRequired' in section ? section.decisionsRequired : []),
+  );
   const reporter = new Reporter();
   return reporter.build({
     prdPath: resolvedPrdPath ?? '',
@@ -359,8 +373,49 @@ function runCrossPhaseAnalyzers({ options, diff }: CitadelAnalyzerInputs) {
   return {
     diff_hygiene: auditDiffHygiene(diff, { szechuanFindings: crossPhase.szechuan_findings }),
     divergence_reconciliation: reconcileDivergences(diff),
+    prd_requirement_drops: reportDroppedRequirementIds(options.sessionDir),
     cross_phase: crossPhaseReport,
   };
+}
+
+function readSessionFile(sessionDir: string, name: string): string | null {
+  try {
+    return readFileSync(path.join(sessionDir, name), 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * D4b: requirement ids the source PRD defines that the refined PRD no longer mentions. The source
+ * is `prd-pickle.md` when present because anatomy/szechuan setup overwrites `prd.md`. A missing
+ * session, source or refined PRD yields no decisions; this section only reports, never throws.
+ */
+function reportDroppedRequirementIds(sessionDir: string | undefined): PrdRequirementDropsReport {
+  const none: PrdRequirementDropsReport = { decisionsRequired: [], findings: [] };
+  if (!sessionDir) return none;
+  const sourceName = existsSync(path.join(sessionDir, 'prd-pickle.md')) ? 'prd-pickle.md' : 'prd.md';
+  const source = readSessionFile(sessionDir, sourceName);
+  const refined = readSessionFile(sessionDir, 'prd_refined.md');
+  if (source === null || refined === null) return none;
+  const idRe = requirementIdPatternFor(source);
+  const decisionsRequired: PrdRequirementDropDecision[] = [];
+  const seen = new Set<string>();
+  source.split(/\r?\n/).forEach((line, index) => {
+    for (const id of definedRequirementIdsInLine(line, idRe)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const mentioned = new RegExp(`(?<![A-Za-z0-9-])${id}(?![A-Za-z0-9-])`).test(refined);
+      if (mentioned) continue;
+      decisionsRequired.push({
+        id: `${id}-dropped`,
+        severity: 'Medium',
+        message: `${id} is defined in ${sourceName} but absent from prd_refined.md`,
+        evidence: [{ file: sourceName, line: index + 1 }],
+      });
+    }
+  });
+  return { decisionsRequired, findings: [] };
 }
 
 function runPrdContractAnalyzers({ repoRoot, resolvedPrdPath, parsedPrd, prdUnresolved, diff, projectShapes }: CitadelAnalyzerInputs) {

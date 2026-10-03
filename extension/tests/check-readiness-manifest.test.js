@@ -82,3 +82,40 @@ test('check-readiness: manifest PRD map walks peer_prds.deferred source PRDs', (
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+function runC3(prdLines, ticketBody) {
+  const root = tmpDir();
+  const sessionDir = path.join(root, 'session');
+  fs.mkdirSync(sessionDir, { recursive: true });
+  const prd = path.join(root, 'bundle.md');
+  fs.writeFileSync(prd, prdLines.join('\n'));
+  const ticketDir = path.join(sessionDir, 'c3tick01');
+  fs.mkdirSync(ticketDir, { recursive: true });
+  fs.writeFileSync(path.join(ticketDir, 'rick_ticket_c3tick01.md'), ['---', 'id: c3tick01', 'key: C3-1', '---', '', '# Ticket', '', ticketBody].join('\n'));
+  fs.writeFileSync(path.join(sessionDir, 'decomposition_manifest.json'), JSON.stringify({ prd_path: prd, tickets: [{ id: 'c3tick01', key: 'C3-1' }] }));
+  const result = spawnSync(process.execPath, [BIN, '--session-dir', sessionDir, '--repo-root', root], { encoding: 'utf-8', timeout: 10000 });
+  fs.rmSync(root, { recursive: true, force: true });
+  return { result, out: JSON.parse(result.stdout) };
+}
+
+const C3_PRD = [
+  '# Bundle', '', '## Requirements', '', '- AC-1: something nobody owns', '- AC-2: owned requirement', '',
+  '## NOT in Scope', '', '- AC-DR-1: deferred thing', '- AC-DR-2: deferred but named by a ticket',
+];
+
+test('C3-1: unowned and NOT-in-scope-only ids are advisory and exit 0', () => {
+  const { result, out } = runC3(C3_PRD, 'AC-2 and AC-DR-2 are covered here.');
+  assert.equal(result.status, 0, result.stderr);
+  const details = out.findings.map((f) => f.detail);
+  assert.ok(details.includes('AC-DR-1: not-in-scope-only'), details.join(','));
+  assert.ok(details.includes('AC-1: unmapped'), details.join(','));
+  assert.ok(!details.some((d) => d.startsWith('AC-2:') || d.startsWith('AC-DR-2:')), 'owned ids are silent');
+  assert.ok(out.findings.filter((f) => /: (unmapped|not-in-scope-only)$/.test(f.detail)).every((f) => f.kind === 'advisory' && f.ticket === 'manifest' && f.analyst === 'gaps'));
+});
+
+test('C3-2: an in-scope AC-DR id owned by nothing stays a blocking prd_map finding, not an advisory', () => {
+  const { result, out } = runC3(['# Bundle', '', '## Requirements', '', '- AC-DR-9: unowned'], 'nothing relevant');
+  assert.equal(result.status, 2);
+  assert.ok(out.findings.some((f) => f.kind === 'prd_map' && f.detail === 'AC-DR-9'));
+  assert.ok(!out.findings.some((f) => /^AC-DR-9: /.test(f.detail)), 'prd_map only');
+});

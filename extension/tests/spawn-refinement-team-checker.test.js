@@ -30,6 +30,7 @@ import {
     computeRequirementCoverageGap,
 } from '../bin/spawn-refinement-team.js';
 import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { definedRequirementIdsInLine, requirementIdsInPrd } from '../services/requirement-ids.js';
 
 const Ajv = AjvModule.default || AjvModule;
 
@@ -1633,24 +1634,55 @@ test('AP-EXT-ITER91-01: the refinement handoff is emitted after the readiness ga
     );
 });
 
-test('AP-EXT-ITER91-01 (negative control): the AC-shape gate keeps its documented blocking contract', () => {
-    // Not a defect-asserting test: `.claude/commands/pickle-refine-prd.md` Step 5
-    // tells the operator that exit 2 means "stop and fix the PRD/ticket shape".
-    // If a later advisory sweep widens onto runAcShapeEnforcement, this reddens
-    // and forces the command doc to be updated in the same change.
+test('E3-2: the AC-shape gate verdict is reported advisory, not halted', () => {
     const source = readCode(REFINE_SRC_PATH);
     assert.match(
         source,
+        /reportAdvisoryGateVerdict\('ac-shape gate', acShapeStatus\);/,
+        'main() must route the AC-shape verdict through reportAdvisoryGateVerdict'
+    );
+    assert.doesNotMatch(
+        source,
         /if \(acShapeStatus !== 0\) process\.exit\(acShapeStatus\);/,
-        'the AC-shape gate must still halt — its exit 2 is a documented operator contract'
+        'the AC-shape verdict must not halt refinement'
     );
     const commandDoc = readCommandDoc();
     if (commandDoc !== null) {
-        assert.match(
-            commandDoc,
-            /exits `2` with an AC-shape collapse-or-justify failure/,
-            'the exit-2 contract must stay documented in /pickle-refine-prd Step 5'
+        assert.equal(commandDoc.includes('stop and fix'), false, 'Step 5 must no longer say "stop and fix"');
+        assert.match(commandDoc, /ac-shape gate advisory/, 'Step 5 must document the advisory');
+    }
+});
+
+test('E3-3 (control): a clean manifest emits no ac-shape gate advisory', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-e3-'));
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-e3-bin-'));
+    try {
+        const prd = path.join(tmp, 'prd.md');
+        fs.writeFileSync(prd, '# PRD\nContent');
+        fs.writeFileSync(path.join(fakeBin, 'claude'), `#!/usr/bin/env node
+const fs = require('fs');
+const idx = process.argv.indexOf('-p');
+const prompt = idx === -1 ? '' : process.argv[idx + 1];
+const match = /Write ALL findings to this file: (.+)/.exec(prompt);
+if (!match) process.exit(1);
+fs.writeFileSync(match[1], 'analysis\\n');
+process.stdout.write('<promise>ANALYSIS_DONE</promise>\\n');
+`);
+        fs.chmodSync(path.join(fakeBin, 'claude'), 0o755);
+        const result = spawnSync(
+            process.execPath,
+            [path.join(__dirname, '..', 'bin', 'spawn-refinement-team.js'), '--prd', prd, '--session-dir', tmp,
+                '--cycles', '1', '--max-turns', '15', '--timeout', '5'],
+            { encoding: 'utf-8', timeout: 60000, env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } }
         );
+        // The readiness gate runs AFTER the ac-shape verdict in main(), so its snapshot proves the run
+        // reached the gate — a run that died earlier would pass the absence check below vacuously.
+        assert.equal(result.status, 0, result.stderr);
+        assert.ok(fs.existsSync(path.join(tmp, 'readiness_snapshot.json')), 'the run reached the gates');
+        assert.doesNotMatch(result.stderr, /ac-shape gate advisory/);
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+        fs.rmSync(fakeBin, { recursive: true, force: true });
     }
 });
 
@@ -2649,4 +2681,82 @@ test('AP-EXT-ITER222-01: every markdown block lead this repo defines requirement
         'AC-BULLET-1', 'AC-CHECK-1', 'AC-HEAD-1', 'AC-MIXED-1', 'AC-NUMBER-1',
         'AC-PAIR-1', 'AC-PAIR-2', 'AC-QUOTE-1', 'AC-TABLE-1',
     ], 'every definition shape must be expected, and only the cited ids excluded');
+});
+
+// ─── E4: ONE requirement-id rule — an FR-only PRD is no longer invisible to the coverage gate ───
+//
+// `computeRequirementCoverageGap` only knew the `AC-*` spelling, so a PRD that numbers its
+// requirements `FR-1`, `REQ-2`, … expected NOTHING and a refinement that dropped every one of
+// them reported `all_success: true`. The shared rule decides the spelling ONCE per PRD: the
+// generic `<UPPER>-<n>` form applies only when the PRD defines no `AC-*` id, with no prefix list.
+
+test('E4-1: an FR-only PRD expects its defined FR ids, and a dropped one is reported', () => {
+    const dir = tmpDir('pickle-e4-fr-only-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, [
+        '# FR-only PRD',
+        '',
+        '## Requirements',
+        '- FR-1 first requirement',
+        '- **FR-2** second requirement',
+        '| REQ-3 | table-row requirement |',
+        'prose that cites FR-9 mid-sentence is not a definition',
+        '',
+    ].join('\n'));
+
+    const gap = computeRequirementCoverageGap(prdPath, [ticketCovering('T-1', ['FR-1', 'FR-2'])]);
+
+    assert.ok(gap.expectedRequirementIds.length >= 1, 'an FR-only PRD must expect at least one requirement');
+    assert.deepEqual(gap.expectedRequirementIds, ['FR-1', 'FR-2', 'REQ-3']);
+    assert.deepEqual(gap.missingRequirementIds, ['REQ-3'], 'the unmapped FR-style requirement must be flagged');
+});
+
+test('E4-2: an AC-* PRD expected set is byte-identical — FR-looking leads in it are NOT requirements', () => {
+    const dir = tmpDir('pickle-e4-ac-control-');
+    const prdPath = path.join(dir, 'prd.md');
+    fs.writeFileSync(prdPath, [
+        '## Acceptance Criteria',
+        '- AC-1 first',
+        '- AC-2 second',
+        '- FR-7 a generic-looking lead inside a PRD that defines AC ids',
+        'see UTF-8 handling and AC-OTHER-1 cited mid-sentence',
+        '',
+    ].join('\n'));
+
+    const gap = computeRequirementCoverageGap(prdPath, []);
+
+    assert.equal(JSON.stringify(gap.expectedRequirementIds), JSON.stringify(['AC-1', 'AC-2']));
+});
+
+test('E4-3: self-hosting control — AC ids a PRD only CITES in prose yield zero expected requirements', () => {
+    const dir = tmpDir('pickle-e4-self-hosting-');
+    const prdPath = path.join(dir, 'prd.md');
+    // Prose shape taken from a spec that talks ABOUT criteria: `AC-1`/`AC-3`/`AC-DR-1` mid-sentence.
+    fs.writeFileSync(prdPath, [
+        '# Spec about criteria',
+        '',
+        'The self-hosting control: this text mentions AC-1 and AC-3 and also AC-DR-1 in prose,',
+        'and none of them is a requirement of THIS document.',
+        '',
+    ].join('\n'));
+
+    const gap = computeRequirementCoverageGap(prdPath, []);
+
+    assert.deepEqual(gap.expectedRequirementIds, []);
+});
+
+test('E4-4: the shared service decides the spelling once per PRD and defined-vs-cited once per id', () => {
+    const generic = /\b[A-Z][A-Z0-9]*-\d+\b/g;
+
+    // defined-vs-cited: a prose word before the id makes it a citation; another id does not.
+    assert.deepEqual(definedRequirementIdsInLine('- **FR-1**, **FR-2**: lead', generic), ['FR-1', 'FR-2']);
+    assert.deepEqual(definedRequirementIdsInLine('see FR-1 for details', generic), []);
+    // a non-global pattern is accepted (no stateful lastIndex shared between calls).
+    assert.deepEqual(definedRequirementIdsInLine('- FR-3 x', /\b[A-Z][A-Z0-9]*-\d+\b/), ['FR-3']);
+
+    // spelling: generic only when the PRD defines no AC id.
+    assert.deepEqual(requirementIdsInPrd('- FR-1 a\n- REQ-2 b\n'), ['FR-1', 'REQ-2']);
+    assert.deepEqual(requirementIdsInPrd('- AC-1 a\n- FR-1 b\n'), ['AC-1']);
+    assert.deepEqual(requirementIdsInPrd('mentions AC-1 only in prose\n- FR-1 b\n'), ['FR-1']);
+    assert.deepEqual(requirementIdsInPrd(''), []);
 });
