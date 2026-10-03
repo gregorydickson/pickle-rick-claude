@@ -276,16 +276,21 @@ NO measured basis. Large PRDs are not constrained by the cap.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
      depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
 
-6. **Field-run issues #56–#67 — not yet queued (operator to order).** Consolidation by root/surface (no closures, all distinct):
-   - **Final-verdict honesty:** #56 (no review-convergence verdict; `post_final_verdict` is fast-tier only), #65 (Skipped ticket
-     counts as done; skip unsurfaced), #66 item 3 (unmeasured both sides → no `cap_unmeasured_checks`; HYPOTHESIS, needs a
-     fixture), #67 (`isConverged` reads the last ACCEPTED score, so a regressed iteration converges at metric 1; rollback guard
-     protects the iteration's own commit). One "disposition carries the degradation" ticket folds #65/#67's status fixes.
-   - **Target-repo contract:** #58 (tracker key), #59 (PRD ids leak into code), #62 (pickle conventions hardcoded), #64 (target
-     test rules, mutation proof; B-MEGA C8 covers only the source note). ONE target-facts resolver, not three.
-   - **Session-artifact integrity:** #60 (stale `_c3` archives counted as produced), #61 (Step 8 overwrites the source PRD in
-     `--resume` — now the common path after B-RUNREPORT-54 T5; breaks B-MEGA D4b's source).
-   - **Standalone:** #57 (scope refresh widens strict `allowed_paths` from the branch diff), #63 (`read -r _` in 5 launch templates).
+6. **Field-run issues #56–#67 — triaged by the operator's goal order (2026-10-03): (1) autonomy, (2) slow quality
+   ratchet, (3) multi-agent speed last. NO new gate, verdict or lint per finding; fixes correct a predicate, remove a
+   case, or add a disclosure line.**
+   - **Tier 1 — earns code (loop-stopping or false convergence):** #67 (correct `isConverged` to read the latest
+     iteration, let the rollback run), #65 (disclose a Skipped ticket in the final status line; no halt, no new state
+     field), #60 (count only analyses produced this cycle), #61 (freeze the source PRD at session creation), #63 (delete
+     `read -r _` from the 5 launch templates — subtraction).
+   - **Tier 2 — later, small steps, prefer subtraction:** #62 (stop hardcoding pickle conventions into target repos),
+     #58/#59/#64 (read the target's own conventions as worker INFORMATION; drop #64's mutation-proof and lint asks),
+     #66 (fix the misleading log text; item 3 is a hypothesis — one fixture before any code).
+   - **Record only (the next iteration covers it):** #56 (a review-convergence verdict would be a new gate; the external
+     review loop is the next iteration), #57 (tightening the fence adds enforcement; question instead whether strict
+     refresh is needed).
+   - **Tier 3 — speed:** B-MEGA measured no wave speedup (1/22 waves width 2; tickets overlapped on files). The lever is
+     bundle composition (file-disjoint tickets), not more runtime machinery — after tiers 1–2.
    - Cross-reference comments posted on #56, #61, #64, #66.
 
 **Before #54 the queue was drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
