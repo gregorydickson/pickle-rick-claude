@@ -6612,6 +6612,30 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
       fx.cleanup();
     }
   });
+
+  // CUJ-OP-1 step 3, end to end: the reporters are wired into the final activity block in order, each
+  // prints exactly once, and an unmeasurable drift (no origin remote here) does not fail the run.
+  test('CUJ-OP-1-3: a finished run logs Pipeline finished, then base drift, then dropped findings — once each', async () => {
+    const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: [''] });
+    try {
+      __setSpawnRunnerForTests(recordingRunner([]));
+      const exitCode = await runLaneMain(fx.sessionDir, fx.dataRoot);
+      const lines = readRunnerLog(fx.sessionDir).split('\n');
+      const at = (re) => {
+        const hits = lines.flatMap((l, i) => (re.test(l) ? [i] : []));
+        assert.equal(hits.length, 1, `${re} logged once: ${hits.length}`);
+        return hits[0];
+      };
+      const finished = at(/\] Pipeline finished: /);
+      const drift = at(/\] base drift: unmeasured \(/);
+      const dropped = at(/\] dropped findings \(conf>=25\): 0$/);
+      assert.ok(finished < drift && drift < dropped, `order ${finished} < ${drift} < ${dropped}`);
+      assert.ok(exitCode === null || exitCode === 0, `exit ${exitCode}`);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
 });
 
 describe('E1: reportBaseDrift reports drift against the base branch without touching the exit code', () => {
