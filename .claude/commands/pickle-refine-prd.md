@@ -106,8 +106,15 @@ variables — no `analysis_*.md` disk round-trip) and a synthesis agent that wri
 and `refinement_manifest.json` to `${SESSION_ROOT}` and returns:
 
 ```
-{ sessionDir, refinementDir, manifestPath, manifest, analyses, allSuccess }
+{ decompose, sessionDir, refinementDir, manifestPath, manifest, analyses, allSuccess }
 ```
+
+The workflow's third phase, `decompose`, runs Steps 7a–7e (parent, child, wiring and hardening tickets);
+Step 7g (state handoff) always stays with this command. `decompose` is `{ tickets }`, plus `fallback: <reason>`
+when the phase threw or reported 0 tickets. In that case log
+`decompose phase: fallback to inline Step 7 (<reason>)` and run Step 7 below inline. Otherwise treat
+`decompose.tickets` as the agent's report only: confirm at least one `${SESSION_ROOT}/*/rick_ticket_*.md` with
+`complexity_tier` exists on disk (else use the same fallback line), then continue at Step 7f.
 
 **Consume the returned `manifest` / `manifestPath` directly** in place of the legacy `MANIFEST=` /
 `REFINEMENT_DIR=` stdout parse. Then skip Steps 4a–4c and go to Step 5.
@@ -163,7 +170,7 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 <!-- END FOM_HONEST_REPORTING_RULES -->
 
 > **Workflow path:** `prd_refined.md` was already written by the workflow's synthesis agent in
-> Step 4-WF. Verify it exists and is non-empty, then continue to Step 7. Do NOT re-synthesize.
+> Step 4-WF. Verify it exists and is non-empty, then continue to Step 7 (skipped when the workflow's `decompose` phase succeeded — see Step 4-WF). Do NOT re-synthesize.
 
 **Legacy path:** Write `${SESSION_ROOT}/prd_refined.md`. Rules:
 1. Preserve structure, additive over rewriting

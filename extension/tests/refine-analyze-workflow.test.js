@@ -39,8 +39,9 @@ function loadWorkflow() {
 }
 
 /** Build a deterministic harness: records analyst prompts/schemas, runs thunks, mocks agents. */
-function makeHarness(argsObj) {
+function makeHarness(argsObj, decomposeBehavior = 'ok') {
   const analystCalls = [];
+  const decomposeCalls = [];
   let synthSchema = null;
   let synthManifest = null;
 
@@ -58,6 +59,11 @@ function makeHarness(argsObj) {
       };
       analystCalls.push({ label: opts.label, prompt, schema: opts.schema, cycle, role, ret });
       return ret;
+    }
+    if (opts.phase === 'decompose') {
+      decomposeCalls.push({ prompt, schema: opts.schema });
+      if (decomposeBehavior === 'throw') throw new Error('decompose boom');
+      return { tickets: decomposeBehavior === 'empty' ? [] : [{ id: 'abcd1234', title: 'T' }] };
     }
     // synthesis call
     synthSchema = opts.schema;
@@ -91,6 +97,7 @@ function makeHarness(argsObj) {
   return {
     ambient: [agent, parallel, pipeline, phase, log, argsObj, {}],
     analystCalls,
+    decomposeCalls,
     get synthSchema() { return synthSchema; },
     get synthManifest() { return synthManifest; },
   };
@@ -211,4 +218,49 @@ test('workflow honors the dynamic-workflow primitive constraints (static)', () =
   assert.ok(!/Date\.now\s*\(/.test(src), 'no Date.now()');
   assert.ok(!/Math\.random\s*\(/.test(src), 'no Math.random()');
   assert.ok(!src.includes('loadPreviousAnalyses'), 'no legacy disk re-read helper reference');
+});
+
+async function runDecompose(behavior) {
+  const argsObj = defaultArgs(1);
+  const harness = makeHarness(argsObj, behavior);
+  const phases = [];
+  harness.ambient[3] = (name) => phases.push(name);
+  const result = await loadWorkflow()(...harness.ambient);
+  return { result, harness, phases };
+}
+
+test('E2-1: meta.phases is analyze, synthesize, decompose and the source calls phase(\'decompose\')', () => {
+  const src = readWorkflowSource();
+  assert.ok(/phases:\s*\['analyze', 'synthesize', 'decompose'\]/.test(src));
+  assert.ok((src.match(/phase\('decompose'\)/g) || []).length >= 1);
+});
+
+test('E2-2: decompose runs after synthesize, covers 7a-7e, forbids 7g and state.json', async () => {
+  const { result, harness, phases } = await runDecompose('ok');
+  assert.deepEqual(phases.slice(-2), ['synthesize', 'decompose']);
+  assert.equal(harness.decomposeCalls.length, 1);
+  const p = harness.decomposeCalls[0].prompt;
+  assert.match(p, /Step 7a through Step 7e/);
+  assert.match(p, /Do NOT run Step 7f or 7g/);
+  assert.deepEqual(result.decompose, { tickets: [{ id: 'abcd1234', title: 'T' }] });
+});
+
+test('E2-3: a throwing decompose agent yields a fallback reason, not a throw', async () => {
+  const { result } = await runDecompose('throw');
+  assert.equal(result.decompose.fallback, 'decompose boom');
+  assert.deepEqual(result.decompose.tickets, []);
+  assert.ok(result.manifest, 'earlier phases still return their results');
+});
+
+test('E2-4: 0 tickets yields a fallback reason', async () => {
+  const { result } = await runDecompose('empty');
+  assert.equal(result.decompose.fallback, '0 tickets returned');
+});
+
+test('E2-5: command doc and README name the fallback line and the decompose phase', () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const line = 'decompose phase: fallback to inline Step 7 (<reason>)';
+  for (const f of ['.claude/commands/pickle-refine-prd.md', 'README.md']) {
+    assert.ok(fs.readFileSync(path.join(root, f), 'utf-8').includes(line), f);
+  }
 });
