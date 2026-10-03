@@ -2156,14 +2156,16 @@ async function runTicketWave(run, members, wave, requeued) {
         const requeueNote = requeued.has(id) && !wasRequeued.has(id) ? ' (re-queued)' : '';
         const writeNote = unwritten.has(id) ? `write-back FAILED (wanted ${statuses[i]})` : `written back ${statuses[i]}`;
         const note = shas.has(i) ? ` @ ${shas.get(i)}${unwritten.has(id) ? ` — ${writeNote}` : ''}` : ` — ${writeNote}${requeueNote}`;
-        runtime.log(`pickle waves: wave ${wave} ${id}: ${memberOutcomes[i]}${note}`);
+        const unmeasuredNote = shas.has(i) && integration.checks[i] === 'unavailable' ? ' (integration typecheck unavailable)' : '';
+        runtime.log(`pickle waves: wave ${wave} ${id}: ${memberOutcomes[i]}${note}${unmeasuredNote}`);
         return { id, outcome: memberOutcomes[i], started_at: ends[i].started_at, ended_at: ends[i].ended_at };
     });
     emitLaneEvent('anatomy_lanes_integrated', runtime.sessionDir, { phase: 'pickle', wave, outcomes, retained_branches: retained });
     // Only a WRITTEN Failed/Skipped is progress: an unwritten one leaves the ticket pending, to be planned again.
     const terminalised = members.filter((id, i) => !unwritten.has(id)
         && FINAL_UNIT_STATUSES.has(statuses[i].toLowerCase()) && prior.get(id) !== statuses[i].toLowerCase());
-    return { integrated: shas.size, terminalised: terminalised.length, reasons: members.map((id, i) => `${id}=${memberOutcomes[i]}`) };
+    const unmeasured = members.filter((_, i) => shas.has(i) && integration.checks[i] === 'unavailable').length;
+    return { integrated: shas.size, terminalised: terminalised.length, reasons: members.map((id, i) => `${id}=${memberOutcomes[i]}`), unmeasured };
 }
 /** A re-queued ticket runs in a wave of ONE: not parallel-safe, it is never appended and plans alone when first. */
 function planPickleWave(sessionDir, cap, requeued) {
@@ -2247,6 +2249,7 @@ export async function runPickleWaves(runtime, cap, phaseConfig) {
     reportLaneRecovery(run);
     const requeued = new Set();
     let fallBackToSerial = false;
+    let unmeasured = 0;
     const heartbeatMs = runtime.config.child_mux_runner_heartbeat_ms;
     const poll = setInterval(() => {
         if (!parentSessionActive(runtime.statePath))
@@ -2268,6 +2271,7 @@ export async function runPickleWaves(runtime, cap, phaseConfig) {
             }
             run.sha = waveSha;
             const result = await runTicketWave(run, members, wave, requeued);
+            unmeasured += result.unmeasured;
             if (result.integrated === 0 && result.terminalised === 0 && run.cancelledAtMs === null) {
                 runtime.log(`pickle waves: zero-progress wave — falling back to serial (${result.reasons.join(', ')})`);
                 fallBackToSerial = true;
@@ -2278,6 +2282,8 @@ export async function runPickleWaves(runtime, cap, phaseConfig) {
     finally {
         clearInterval(poll);
     }
+    if (unmeasured > 0)
+        runtime.log(`pickle waves: ${unmeasured} member(s) integrated over an unavailable integration typecheck`);
     return finishPickleWaves(runtime, phaseConfig, fallBackToSerial);
 }
 /** The wave phase's verdict: the serial runner's exit code after a fallback, else 0 iff nothing is pending. */

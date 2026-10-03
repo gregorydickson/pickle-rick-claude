@@ -6344,12 +6344,12 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
   };
 
   /** A workspace repo, a pickle-only pipeline and two parallel_safe Todo tickets declaring disjoint files. */
-  function makeWavesFixture({ pipeline = {}, nodeModules = [] } = {}) {
+  function makeWavesFixture({ pipeline = {}, nodeModules = [], scripts = undefined } = {}) {
     const repo = fs.realpathSync(tmpDir());
     const startCommit = initRepo(repo, {
       // No trailing slash: the unit worktree's linked node_modules is a symlink, which `node_modules/` never matches.
       '.gitignore': 'node_modules\n',
-      'package.json': JSON.stringify({ name: 'fx', private: true, workspaces: ['packages/*'] }),
+      'package.json': JSON.stringify({ name: 'fx', private: true, workspaces: ['packages/*'], scripts }),
       'packages/a/index.ts': 'export const a = 1;\n',
     });
     seedNodeModules(repo, ...nodeModules);
@@ -6437,6 +6437,36 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
       await runLaneMain(fx.sessionDir, fx.dataRoot);
       assert.deepEqual(calls, [fx.sessionDir]);
       assert.doesNotMatch(readRunnerLog(fx.sessionDir), /disabled for this phase/, 'the predicate is not even asked on a serial phase');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('A4-1: a wave over a target with no runnable typecheck marks each integrated member line and logs one phase-end count', async () => {
+    const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: [''] });
+    try {
+      __setSpawnRunnerForTests(recordingRunner([]));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      const log = readRunnerLog(fx.sessionDir);
+      for (const id of WAVE_IDS) {
+        assert.match(log, new RegExp(`pickle waves: wave 1 ${id}: integrated @ [0-9a-f]+ \\(integration typecheck unavailable\\)$`, 'm'));
+      }
+      assert.equal(log.match(/pickle waves: 2 member\(s\) integrated over an unavailable integration typecheck/g)?.length, 1);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('A4-2: control — a runnable green typecheck leaves the member lines and the phase end undisclosed', async () => {
+    const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: [''], scripts: { typecheck: 'true' } });
+    try {
+      __setSpawnRunnerForTests(recordingRunner([]));
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      const log = readRunnerLog(fx.sessionDir);
+      for (const id of WAVE_IDS) assert.match(log, new RegExp(`pickle waves: wave 1 ${id}: integrated @ `));
+      assert.doesNotMatch(log, /integration typecheck unavailable|unavailable integration typecheck/);
     } finally {
       __setSpawnRunnerForTests(null);
       fx.cleanup();
