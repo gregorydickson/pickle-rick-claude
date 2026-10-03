@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-03 17:45Z) — main = merged experimental work, gated 22/22 + pushed; B-MERGE-REL-1 RUNNING on main
+### ▶ STATE (2026-10-03 22:30Z) — B-MERGE-REL-1 built (19/19; szechuan stalled_below_target, non-fatal); gate 19/22 → B-MREL-FIX RUNNING
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | pushed **`fcec8f1d`** (merge of main; gate 22/22). **No longer the deployed runtime** while B-MEGA runs (see `exp/b-parallel-build`) |
 | `exp/b-parallel-build` | pushed **`d9767fcb`** = B-MEGA (session `2026-10-02-be104839`, 4/4 phases, 709.5 min, 52 commits). Gate `20261003T133052Z-29559` 22/22, soak 1803.9s. **DEPLOYED is still `1bacc67a`** (pre-B-MEGA); redeploying `d9767fcb` = operator decision |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-MERGE-REL-1** on `main`, session `2026-10-03-2868b847` (tmux `pipeline-2868b847`, 17:41Z). 19 tickets (A3 declared zero-diff), `paths:` scope 47 (all armed), lanes 2, tickets 1. Deployed runtime stays `1bacc67a` until it lands; then deploy merged main + Part 1 (decision 2) |
+| RUNNING | **B-MREL-FIX** on `main`, session `2026-10-03-4bb24aa9` (tmux `pipeline-4bb24aa9`, 22:28Z; 2 test-only tickets). LOCAL `main` holds B-MERGE-REL-1 (`7597dd0e`..`10bcb7d6`, 24 commits, session `2026-10-03-2868b847`, 203 min, 3/4 phases — szechuan `stalled_below_target`) + the fix PRD; UNPUSHED. Gate `20261003T213058Z-81054` at `10bcb7d6`: 19/22 — red `audit-subprocess-heavy-tests`, `test_fast_budget`, `test_integration`, from two test-side causes: a missing-timeout `spawn` in the MREL-A1B test, and the abort-site census still pinning the break MREL-A2 removed on purpose. Deploy waits for a green gate |
 | open issues | **#56–#67** (field-run reports 2026-10-03; no strict duplicates — consolidation below), #54/#55 (B-RUNREPORT-54 shipped on main; B-MEGA on exp/b-parallel-build covers #55 B/C/D), #52/#53 (fixed on branches; close at merge), #43, #5 |
 | client data | **Sanitized 2026-10-03 at operator request:** bodies of #54, #55, #56–#67 and the 2026-10-03 comments on #54/#55 rewritten generic (edit history keeps originals; deletion = operator, declined for now). **Still exposed:** bodies of #52 and #53 and one 2026-09-30 comment on #53; older closed issues (#9, #14, #15, #31, #48); 145 files at `origin/main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
