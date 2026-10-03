@@ -169,8 +169,11 @@ export function replicateLaneNodeModules(repoRoot: string, worktree: string): { 
   const replicated: string[] = [];
   const unreproducible: string[] = [];
   for (const rel of findNodeModulesDirs(repoRoot)) {
+    if (!isDirectory(path.join(worktree, parentOf(rel)))) {
+      unreproducible.push(rel);
+      continue;
+    }
     try {
-      if (!isDirectory(path.join(worktree, parentOf(rel)))) throw new Error(`no ${parentOf(rel) || '.'} in the worktree`);
       replicateDir(path.join(repoRoot, rel), path.join(worktree, rel), true);
       replicated.push(rel);
     } catch {
