@@ -42,6 +42,10 @@ const CITADEL_SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low']);
 // CLAUDE.md MUST live at extension/CLAUDE.md (pattern-conformance harvests only
 // <repoRoot>/extension/CLAUDE.md and <repoRoot>/extension/src/**/CLAUDE.md).
 const BASELINE_FILES = {
+  // banned-casts fires only where the file's nearest eslint config enables
+  // no-explicit-any (MREL-B2); without it the #9 floor defect is silently gated off.
+  'eslint.config.js':
+    "export default [{ rules: { '@typescript-eslint/no-explicit-any': 'error' } }];\n",
   'extension/CLAUDE.md':
     '# Target repo CLAUDE.md (synthetic)\n\n## Trap Doors\n\n'
     + '- `appraisal/jest-config-guard.ts` (LOA-MIG-1) — INVARIANT: a new migration spec '
