@@ -23,6 +23,7 @@ import * as path from 'node:path';
 import {
   __setSpawnRunnerForTests,
   __setCloserReleaseActionsForTests,
+  __setCitadelRemediationDepsForTests,
   main,
 } from '../bin/pipeline-runner.js';
 import { PipelineRunnerExitCode } from '../types/index.js';
@@ -388,7 +389,7 @@ test('TIER-1.2 gh-11: a manager_handoff_pending phase exit is NOT a pipeline han
   }
 });
 
-test('R-CCR-10: closer_handoff_terminal + unresolved tickets preserves handoff reason', async () => {
+test('MREL-A2-R-CCR-10: closer_handoff_terminal + unresolved tickets preserves handoff reason', async () => {
   const repo = tmpDir('pipe-ccr10-handoff-closer-repo-');
   const sessionDir = tmpDir('pipe-ccr10-handoff-closer-session-');
   try {
@@ -421,9 +422,15 @@ test('R-CCR-10: closer_handoff_terminal + unresolved tickets preserves handoff r
 
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.ok(
-      /stopped for manager handoff/.test(log),
-      `log must describe the handoff stop; got:\n${log.split('\n').slice(-10).join('\n')}`,
+      /handed off \(exit_reason=closer_handoff_terminal\) — withholding success verdict/.test(log),
+      `log must describe the handoff withhold; got:\n${log.split('\n').slice(-10).join('\n')}`,
     );
+    assert.ok(
+      !/stopped for manager handoff/.test(log),
+      'the handoff is no longer a stop',
+    );
+    const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.phase_dispositions.pickle, 'closer_handoff_terminal');
     assert.ok(
       !/tickets remain unresolved/.test(log),
       'log must NOT describe incomplete-ticket condition when handoff is present',
@@ -673,5 +680,84 @@ test('R-CMWL-2 branch 2: pickle with zero progress + pending tickets stamps term
     __setSpawnRunnerForTests(null);
     fs.rmSync(repo, { recursive: true, force: true });
     fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// MREL-A2: a closer handoff withholds success; it never ends the phase loop.
+// ---------------------------------------------------------------------------
+
+function citadelNoFindings() {
+  return {
+    schema: '1.0', schema_version: '1.0', prd_path: 'prd.md', diff_range: 'abc1234..HEAD',
+    exit_code: 0, exitCode: 0, header: { pickle_phase_failed: false, pickle_exit_code: 0 },
+    sections: {}, findings: [], decision_required: [], decisions: [],
+    summary: { findings: 0, critical: 0, high: 0, medium: 0, low: 0, decision_required: 0, decisions: 0, unguarded_trap_doors: 0 },
+    markdown: '', json: {},
+  };
+}
+
+const FOUR_PHASES = ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'];
+
+async function driveFourPhaseHandoff(pickleExit, pickleReason) {
+  const repo = tmpDir('mrel-a2-repo-');
+  const sessionDir = tmpDir('mrel-a2-session-');
+  const startCommit = initRepo(repo);
+  writeState(sessionDir, repo, startCommit);
+  writePipeline(sessionDir, repo, FOUR_PHASES);
+  fs.writeFileSync(path.join(sessionDir, 'prd.md'), '# prd\n');
+  writeTicket(sessionDir, 'aaa11111', 1, 'Done');
+  const calls = { install: 0, tag: 0, spawns: 0 };
+  __setCloserReleaseActionsForTests({ install: () => { calls.install++; }, tag: () => { calls.tag++; } });
+  __setCitadelRemediationDepsForTests({ runCitadelAudit: async () => citadelNoFindings() });
+  const statePath = path.join(sessionDir, 'state.json');
+  __setSpawnRunnerForTests(async () => {
+    calls.spawns++;
+    if (calls.spawns === 1) {
+      const s = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      s.exit_reason = pickleReason;
+      fs.writeFileSync(statePath, JSON.stringify(s, null, 2));
+      return { exitCode: pickleExit, stdout: '', stderr: '' };
+    }
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  const cleanup = () => {
+    __setSpawnRunnerForTests(null);
+    __setCloserReleaseActionsForTests(null);
+    __setCitadelRemediationDepsForTests(null);
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  };
+  return { sessionDir, statePath, calls, cleanup };
+}
+
+test('MREL-A2-a: a closer handoff on a 4-phase run continues, withholds success, skips install/tag', async () => {
+  const { sessionDir, calls, cleanup } = await driveFourPhaseHandoff(0, 'closer_handoff_terminal');
+  try {
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.Failure);
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.match(log, /PHASE 4\/4: SZECHUAN-SAUCE/, 'every phase after the handoff still runs');
+    const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.phase_dispositions.pickle, 'closer_handoff_terminal');
+    assert.equal(status.status, 'failed', 'success is withheld, not claimed');
+    assert.ok(status.non_convergent >= 1, 'the handoff phase is recorded non-convergent, not merely uncounted');
+    assert.equal(calls.install, 0, 'install must not run');
+    assert.equal(calls.tag, 0, 'tag must not run');
+  } finally {
+    cleanup();
+  }
+});
+
+test('MREL-A2-b-control: a crash-floor exit still halts the pipeline', async () => {
+  const { sessionDir, statePath, calls, cleanup } = await driveFourPhaseHandoff(1, 'toolchain_unavailable');
+  try {
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.Failure);
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.ok(!/PHASE 2\/4/.test(log), 'a crash-floor halt must not reach phase 2');
+    assert.equal(calls.spawns, 1);
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    assert.equal(state.exit_reason, 'toolchain_unavailable');
+  } finally {
+    cleanup();
   }
 });

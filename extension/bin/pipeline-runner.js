@@ -5727,6 +5727,33 @@ function resolvePhaseIncompleteOutcome(runtime, rawPhase, exitCode, log) {
     log(`Phase ${rawPhase}: PhaseIncomplete exit with no genuinely-unfinished and no runnable ticket remaining — graduating`);
     return null;
 }
+/**
+ * R-PRH / MREL-A2: a manager/closer handoff (exit 0 carrying a handoff `exit_reason`) is a documented
+ * clean stop — the worker shipped and a human must finish. It is not on the crash floor, so it
+ * WITHHOLDS success (`nonConvergent`) and the remaining phases still run; `claimPipelineRunnerActive`
+ * clears the reason at the next phase entry, so `nonConvergent` is what keeps the closer from
+ * releasing a multi-phase run. A pickle-only run keeps the reason to finalize (`computePipelineVerdict`).
+ * R-CCR-3: a non-zero exit carrying a stale handoff reason is a failure, not a handoff — the reason
+ * is cleared and the caller proceeds. Returns `null` when there is nothing to withhold.
+ */
+function withholdForCloserHandoff(runtime, counters, cancelMarker, rawPhase, exitCode, log) {
+    const handoffReason = readHandoffExitReason(runtime.statePath);
+    if (!handoffReason)
+        return null;
+    if (exitCode !== 0) {
+        clearExitReason(runtime.statePath);
+        return null;
+    }
+    counters.nonConvergent++;
+    counters.phaseDispositions[rawPhase] = handoffReason;
+    // Errors are non-blocking: a failed status write still reports the phase and continues.
+    try {
+        writeRunningStatus(runtime, counters, null);
+    }
+    catch { /* non-blocking */ }
+    log(`Phase ${rawPhase} handed off (exit_reason=${handoffReason}) — withholding success verdict, advancing`);
+    return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
+}
 async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, index, log) {
     logPhaseStart(runtime, rawPhase, index);
     writeRunningStatus(runtime, counters, rawPhase);
@@ -5743,21 +5770,9 @@ async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, inde
     }
     const exitCode = result.exitCode ?? 1;
     log(`Phase ${rawPhase} exited with code ${exitCode}`);
-    // R-PRH: a manager/closer handoff is a documented clean stop — the worker
-    // shipped and a human must finish. Stop the pipeline here, preserving the
-    // handoff exit_reason, instead of advancing or mislabeling it as 'failed'.
-    // R-CCR-3: gate the handoff break on exitCode === 0. A non-zero exit carrying
-    // a stale handoff reason must be treated as a failure, not a clean stop.
-    const handoffReason = readHandoffExitReason(runtime.statePath);
-    if (handoffReason) {
-        if (exitCode === 0) {
-            log(`Phase ${rawPhase} stopped for manager handoff (exit_reason=${handoffReason}) — pipeline paused for operator/closer work`);
-            return { action: 'break' };
-        }
-        // Non-zero exit — stale handoff reason must be cleared so finalizePipeline
-        // does not preserve it as a clean handoff (R-CCR-3 twin-read leak).
-        clearExitReason(runtime.statePath);
-    }
+    const handoffOutcome = withholdForCloserHandoff(runtime, counters, cancelMarker, rawPhase, exitCode, log);
+    if (handoffOutcome)
+        return handoffOutcome;
     const skipWarning = shouldSkipAnatomyPhaseWithWarning(rawPhase, {
         exitCode,
         stdout: '',
