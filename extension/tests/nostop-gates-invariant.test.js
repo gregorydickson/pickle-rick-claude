@@ -782,7 +782,10 @@ describe('AC-OA-FRB1 — the microverse arm derives halt-eligibility, never rest
  *     whether the pipeline halts" — so it now guards that gate instead of owning a second break.
  *     One disposition, one exit. Behaviour-identical; the site count is the whole point.
  *
- * The remaining six are the crash floor CLAUDE.md reserves halting for, plus two gate-red breaks
+ * MREL-A2 (`287baba0`) then removed `runPhaseIteration`'s `closer_handoff_terminal` break, taking the
+ * census from six to five and `runPhaseIteration` out of the map entirely.
+ *
+ * The remaining five are the crash floor CLAUDE.md reserves halting for, plus two gate-red breaks
  * that are pinned outside this file (`nostop-gates-sibling-parity.test.js`,
  * `oneabort-termination-invariant.test.js`) and could not be reduced from this ticket's fence.
  */
@@ -805,7 +808,7 @@ describe('AC-6 (0d579ec5) — the abort channel is bounded and the bound is meas
     assert.ok(Object.keys(abortSiteCensus()).length > 0, 'no abort site found — the scan drifted');
   });
 
-  test('the abort census is exactly the six surviving sites, named one by one', () => {
+  test('the abort census is exactly the five surviving sites, named one by one', () => {
     // Deliberately a per-producer MAP, not a total. A total-only assertion stays green when one
     // site is deleted and a new one is added somewhere else — which is precisely the regression
     // this ticket exists to make impossible. Re-measure with the probe in `conformance_*` before
@@ -816,19 +819,18 @@ describe('AC-6 (0d579ec5) — the abort channel is bounded and the bound is meas
       resolvePhaseIncompleteOutcome: 1,
       runAllBackendsExhaustedFinalizeGate: 1,
       runJudgeTimeoutFinalizeGate: 1,
-      runPhaseIteration: 1,
     });
   });
 
   test('the total moved DOWN from the pre-ticket 8 and no producer gained a site', () => {
     const census = abortSiteCensus();
     const total = Object.values(census).reduce((a, b) => a + b, 0);
-    assert.equal(total, 6, 'abort-site total changed — AC-6 forbids upward movement');
+    assert.equal(total, 5, 'abort-site total changed — AC-6 forbids upward movement');
     assert.ok(total < 8, 'AC-6 hard constraint: net movement must be downward');
     // The pre-ticket census had `dispatchHaltAction: 2` and `runPhaseIteration: 2`. Naming the two
     // that shrank keeps the reduction attributable instead of leaving it to the total.
     assert.equal(census.dispatchHaltAction, 1, 'dispatchHaltAction re-grew a second break');
-    assert.equal(census.runPhaseIteration, 1, 'runPhaseIteration re-grew a second break');
+    assert.equal(census.runPhaseIteration ?? 0, 0, 'runPhaseIteration re-grew a break (MREL-A2 removed its only one)');
   });
 
   test('the AC gate holds no break of its own — the reduction, read at the call site', () => {
