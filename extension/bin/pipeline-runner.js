@@ -4002,6 +4002,10 @@ function isMicroverseFatalReason(reason) {
 function isCrashFloorExitReason(reason) {
     return typeof reason === 'string' && CRASH_FLOOR_EXIT_REASON_SET.has(reason);
 }
+/** The phases microverse-runner drives: only these stamp a microverse disposition into `exit_reason`. */
+function isMicroversePhase(phase) {
+    return phase === 'anatomy-park' || phase === 'szechuan-sauce';
+}
 /**
  * Halt-eligibility for an anatomy-park / szechuan-sauce phase, keyed on the microverse exit reason.
  *
@@ -4062,7 +4066,7 @@ function isMicroverseArmFatal(reason) {
 export function isFatalPhaseFailure(phase, runtime) {
     try {
         const runnerState = sm.read(runtime.statePath);
-        if (phase === 'anatomy-park' || phase === 'szechuan-sauce') {
+        if (isMicroversePhase(phase)) {
             return isMicroverseArmFatal(runnerState.exit_reason);
         }
         // MREL-A12: every other phase (pickle, citadel, any future one) shares the crash floor — a
@@ -4120,7 +4124,7 @@ function getRecoverablePhaseFailureReason(phase, runtime) {
         }
         // R-HRP-1: citadel no longer halts, so it never produces a "recoverable phase failure" reason;
         // its branch (and the deleted High/Critical halt-threshold logic) is gone.
-        if (phase === 'anatomy-park' || phase === 'szechuan-sauce') {
+        if (isMicroversePhase(phase)) {
             const exitReason = typeof runnerState.exit_reason === 'string'
                 ? runnerState.exit_reason
                 : 'unknown';
@@ -6172,7 +6176,7 @@ export function withholdForFailedAcGate(runtime, counters, cancelMarker, rawPhas
  * be stale from an earlier phase and is never read.
  */
 function phaseDivergence(runtime, rawPhase, exitCode) {
-    if (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce') {
+    if (isMicroversePhase(rawPhase)) {
         let exitReason = null;
         try {
             exitReason = sm.read(runtime.statePath).exit_reason;
@@ -6218,7 +6222,7 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
     if (rawPhase !== 'pickle') {
         const disposition = phaseDivergence(runtime, rawPhase, exitCode);
         // One raise for both degraded arms; `??` keeps the unmeasured disclosure off a diverged phase.
-        const unmeasured = disposition === null && (rawPhase === 'anatomy-park' || rawPhase === 'szechuan-sauce')
+        const unmeasured = disposition === null && isMicroversePhase(rawPhase)
             && reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
         if (disposition !== null || unmeasured)
             counters.nonConvergent++;
