@@ -60,16 +60,20 @@ describe('parsePrdFile', () => {
 // `AC-*` scan byte-for-byte.
 describe('E4 shared requirement-id rule', () => {
   test('E4-1: an FR-only PRD yields its defined FR ids as acceptance criteria', async () => {
-    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
     const dir = mkdtempSync(path.join(tmpdir(), 'pickle-e4-prd-parser-'));
-    const prdPath = path.join(dir, 'prd.md');
-    writeFileSync(prdPath, '# PRD\n\n- FR-1 first\n- **FR-2** second\nprose citing FR-9 mid-sentence\n');
+    try {
+      const prdPath = path.join(dir, 'prd.md');
+      writeFileSync(prdPath, '# PRD\n\n- FR-1 first\n- **FR-2** second\nprose citing FR-9 mid-sentence\n');
 
-    const parsed = parsePrdFile(prdPath);
+      const parsed = parsePrdFile(prdPath);
 
-    assert.ok(parsed.acceptanceCriteria.length >= 1);
-    assert.deepEqual(parsed.acceptanceCriteria.map((criterion) => criterion.id), ['FR-1', 'FR-2']);
+      assert.ok(parsed.acceptanceCriteria.length >= 1);
+      assert.deepEqual(parsed.acceptanceCriteria.map((criterion) => criterion.id), ['FR-1', 'FR-2']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('E4-2: an AC-* PRD keeps the legacy scan — cited AC ids and FR-looking leads are unchanged', () => {
