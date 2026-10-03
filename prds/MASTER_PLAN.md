@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-03 18:30Z) — B-MERGE-REL planned by an agent team (7 agents + revision); awaiting operator decisions
+### ▶ STATE (2026-10-03 19:00Z) — B-MERGE-REL approved; exp/b-parallel-build MERGED into main (f61abc92); merged-tree gate next
 
 | | |
 |---|---|
@@ -280,9 +280,13 @@ NO measured basis. Large PRDs are not constrained by the cap.
    Plan: `prds/p0-b-merge-reliability-plan.md` (agent team: phase-failure forensics, merge analysis, issue inventory,
    reliability baseline → planner → complexity skeptic + measurement verifier → revision against every blocking finding).
    19 tickets, gate legs 22 → 22. Reliability now tracked as N1 hands-off completion (16/17) and N2 all-phases-converged
-   with nothing stranded (13/14; #53 is an N2 failure), both computed by `field-timing.py`. **Awaiting operator decisions:**
-   merge into main; deploy timing; version (flag removal = Major); reversing R-ORSR-6 (integrate non-convergent lanes);
-   deletions/closures. Supersedes step 6's tier-1 list (folded in as A6–A9).
+   with nothing stranded (13/14; #53 is an N2 failure), both computed by `field-timing.py`. **Operator decisions 2026-10-03 (all recommended options):** (1) merge into main now — DONE `f61abc92`,
+   B-LANES/B-PBUILD speed criteria waived, evidence collected on main; rollback ref `ddf071d4`; (2) deploy merged main +
+   Part 1 TOGETHER after the B-MERGE-REL-1 bundle lands (runtime stays `1bacc67a` until then; content check + rollback
+   trigger per plan Part 2 step 8); (3) next pre-release `3.0.0-beta.1` (flag removal is Major); (4) reverse R-ORSR-6 —
+   A4 integrates a non-convergent lane's commits through the main-checkout integration typecheck; (5) after the deploy:
+   retire both exp branches, delete the 3 never-run spec files, close #52/#53/#54/#55/#5 with evidence, remove client
+   identity from #52/#53. Next: gate merged main → push → B-MERGE-REL-1 (19 tickets) on main. Supersedes step 6's tier-1 list (folded in as A6–A9).
 
 6. **Field-run issues #56–#67 — triaged by the ratchet order (root `CLAUDE.md` "Ratchet order" and "A guard per finding";
    swarms sequenced last per "🐝 AGENT SWARMS" below).**
