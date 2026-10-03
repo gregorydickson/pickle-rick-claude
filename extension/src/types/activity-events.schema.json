@@ -1321,7 +1321,22 @@
           "type": "object",
           "required": ["outcomes", "retained_branches"],
           "properties": {
-            "outcomes": { "type": "object", "additionalProperties": { "type": "number" } },
+            "phase": { "type": "string" },
+            "wave": { "type": "integer" },
+            "outcomes": {
+              "type": ["object", "array"],
+              "additionalProperties": { "type": "number" },
+              "items": {
+                "type": "object",
+                "required": ["id", "outcome"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "outcome": { "type": "string" },
+                  "started_at": { "type": ["string", "null"] },
+                  "ended_at": { "type": ["string", "null"] }
+                }
+              }
+            },
             "retained_branches": { "type": "array", "items": { "type": "string" } }
           }
         }
