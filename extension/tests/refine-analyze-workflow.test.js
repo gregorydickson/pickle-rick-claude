@@ -304,3 +304,12 @@ test('C1C2-2: the command doc writes both ledgers in Step 6 (Synthesize), not el
   for (const rule of LEDGER_RULES) assert.match(step6, rule);
 });
 
+// C8b: every Test Expectations table in the refinement template gains a Source column, with a matching
+// five-cell separator row directly under each header.
+test('C8b-1: all six Test Expectations headers carry Source, none keeps the four-column form', () => {
+  const lines = commandDocLines();
+  const headers = lines.flatMap((l, i) => (l === '| Criterion | Test File | Description | Assertion | Source |' ? [i] : []));
+  assert.equal(headers.length, 6);
+  assert.equal(lines.filter((l) => l === '| Criterion | Test File | Description | Assertion |').length, 0);
+  for (const i of headers) assert.equal(lines[i + 1].split('|').length - 2, 5, `separator under line ${i + 1}: ${lines[i + 1]}`);
+});
