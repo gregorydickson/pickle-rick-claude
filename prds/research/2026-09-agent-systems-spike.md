@@ -47,7 +47,7 @@ Date: 2026-09-24 · Scope: ~75 min desk research + refinement ticks · Informs: 
 
 ### #43: parallel build workers, or finer review partitioning?
 
-**Status (2026-09-26).** `v2.2.0-beta.1` soak bundles run `anatomy_max_parallel_lanes: 2` (default 1); results: `prds/MASTER_PLAN.md` "2.2 beta soak ledger".
+**Status (2026-09-26).** `v2.2.0-beta.1` soak bundles run `anatomy_max_parallel_lanes: 2` (default 1); results: `prds/MASTER_PLAN.md` "2.2 completion ledger".
 
 **`--teams` is neither parallel nor runnable under the runner as built** [M, this repo, 2026-09-24].
 - *Runnable.* The manager runs in print mode (`backend-spawn.ts`, `args.push('-p', opts.prompt)`). Claude Code 2.1.281, `claude -p "reply ok" --output-format stream-json --verbose --max-turns 1 | head -1`: **`TeamCreate`, `TaskCreate`, `TaskUpdate`, `TaskList`, `Agent` absent** from `tools`, also with `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`.
