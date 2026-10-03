@@ -2073,8 +2073,9 @@ export function reportSkippedFailedTickets(runtime) {
             return;
         }
         const described = unfinished.slice(0, UNFINISHED_TICKETS_PRINT_CAP).map((t) => {
-            const reason = fs.existsSync(ticketFilePath(runtime.sessionDir, t.id ?? ''))
-                ? readFrontmatterField(fs.readFileSync(ticketFilePath(runtime.sessionDir, t.id ?? ''), 'utf-8'), 'failed_reason')
+            const ticketPath = ticketFilePath(runtime.sessionDir, t.id ?? '');
+            const reason = fs.existsSync(ticketPath)
+                ? readFrontmatterField(fs.readFileSync(ticketPath, 'utf-8'), 'failed_reason')
                 : null;
             return `${t.id} ${t.status} (${reason ?? 'no reason recorded'})`;
         });
