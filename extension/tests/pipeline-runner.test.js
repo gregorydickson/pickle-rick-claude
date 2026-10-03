@@ -48,6 +48,7 @@ import {
   runAnatomyLanes,
   reportKeptLaneBranches,
   reportBaseDrift,
+  reportDroppedFindings,
   discloseUnmeasuredIntegration,
 } from '../bin/pipeline-runner.js';
 import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir } from '../services/anatomy-lanes.js';
@@ -6571,5 +6572,50 @@ describe('E1: reportBaseDrift reports drift against the base branch without touc
     } finally {
       fx.cleanup();
     }
+  });
+});
+
+describe('D7b: the run summary reports dropped findings across parent and lane siblings', () => {
+  function fixture() {
+    const root = mkFixtureTmpDir('d7b-dropped-');
+    const sessionDir = path.join(root, 'session');
+    const lane = `${sessionDir}--lane-1`;
+    fs.mkdirSync(path.join(sessionDir, 'sub-a'), { recursive: true });
+    fs.mkdirSync(path.join(lane, 'sub-b'), { recursive: true });
+    const logs = [];
+    return { root, sessionDir, lane, runtime: { sessionDir, log: (m) => logs.push(m) }, logs };
+  }
+
+  test('D7b-1: a lane file with two conf>=25 lines is reported', () => {
+    const fx = fixture();
+    try {
+      fs.writeFileSync(path.join(fx.lane, 'sub-b', 'dropped_findings.md'), [
+        '2026-10-02 — one — conf=60 — cat=logic — reason',
+        '2026-10-02 — two — conf=25 — cat=perf — reason',
+        '2026-10-02 — three — conf=10 — cat=style — reason',
+      ].join('\n') + '\n');
+      reportDroppedFindings(fx.runtime);
+      assert.equal(fx.logs.length, 1);
+      assert.match(fx.logs[0], /^dropped findings \(conf>=25\): 2 in session--lane-1\/sub-b$/);
+    } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+  });
+
+  test('D7b-2: no dropped findings prints 0', () => {
+    const fx = fixture();
+    try {
+      reportDroppedFindings(fx.runtime);
+      assert.deepEqual(fx.logs, ['dropped findings (conf>=25): 0']);
+    } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+  });
+
+  test('D7b-3: parent and lane files are summed; the stray extension file is gone', () => {
+    const fx = fixture();
+    try {
+      fs.writeFileSync(path.join(fx.sessionDir, 'sub-a', 'dropped_findings.md'), 'x — conf=40 — y\n');
+      fs.writeFileSync(path.join(fx.lane, 'sub-b', 'dropped_findings.md'), 'x — conf=70 — y\n');
+      reportDroppedFindings(fx.runtime);
+      assert.match(fx.logs[0], /^dropped findings \(conf>=25\): 2 in session\/sub-a, session--lane-1\/sub-b$/);
+      assert.equal(execFileSync('git', ['ls-files', 'extension/dropped_findings.md'], { cwd: path.resolve(import.meta.dirname, '..', '..'), encoding: 'utf-8' }).trim(), '');
+    } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
   });
 });

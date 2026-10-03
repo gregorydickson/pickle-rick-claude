@@ -1994,6 +1994,46 @@ export function reportBaseDrift(runtime) {
         catch { /* report only */ }
     }
 }
+const DROPPED_FINDING_MIN_CONF = 25;
+const DROPPED_FINDING_FILE_CAP = 5;
+/**
+ * One line at the end of a run: how many findings anatomy-park dropped at conf>=25, counted over
+ * `<session>/<subsystem>/dropped_findings.md` under the parent and each `--lane-*` sibling. Report only.
+ */
+export function reportDroppedFindings(runtime) {
+    try {
+        const parent = path.resolve(runtime.sessionDir);
+        const siblings = fs.readdirSync(path.dirname(parent)).filter((n) => n.startsWith(`${path.basename(parent)}--lane-`));
+        const roots = [parent, ...siblings.map((n) => path.join(path.dirname(parent), n))];
+        const hits = [];
+        let total = 0;
+        for (const root of roots) {
+            for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+                const file = path.join(root, entry.name, 'dropped_findings.md');
+                if (!entry.isDirectory() || !fs.existsSync(file))
+                    continue;
+                const n = fs.readFileSync(file, 'utf-8').split('\n')
+                    .filter((l) => Number(/\bconf=(\d+)/.exec(l)?.[1] ?? -1) >= DROPPED_FINDING_MIN_CONF).length;
+                if (n > 0) {
+                    total += n;
+                    hits.push(`${path.basename(root)}/${entry.name}`);
+                }
+            }
+        }
+        if (total === 0) {
+            runtime.log(`dropped findings (conf>=${DROPPED_FINDING_MIN_CONF}): 0`);
+            return;
+        }
+        const more = hits.length - DROPPED_FINDING_FILE_CAP;
+        runtime.log(`dropped findings (conf>=${DROPPED_FINDING_MIN_CONF}): ${total} in ${hits.slice(0, DROPPED_FINDING_FILE_CAP).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`);
+    }
+    catch (err) {
+        try {
+            runtime.log(`dropped findings: unmeasured (${safeErrorMessage(err)})`);
+        }
+        catch { /* report only */ }
+    }
+}
 /**
  * Integrate the converged lanes, release every branch main now reaches, and write
  * `archive/lanes.json`. Returns one row per lane in roster order.
@@ -4582,6 +4622,7 @@ function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipeli
     runtime.log(`Pipeline finished: ${phasesSummary} phases, ${formatTime(totalElapsed)}`);
     reportKeptLaneBranches(runtime);
     reportBaseDrift(runtime);
+    reportDroppedFindings(runtime);
     emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
     logActivity({
         event: 'session_end', source: 'pickle',
