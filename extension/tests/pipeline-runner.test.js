@@ -7072,4 +7072,54 @@ describe('A3: field-timing.py reports wave widths, the implementation sub-phase 
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  const n1n2Session = (root, n, { starts = 1, finished = true, status, lanes, refine }) => {
+    const sess = path.join(root, `2026-10-01-0000000${n}`);
+    fs.mkdirSync(sess, { recursive: true });
+    if (starts !== null) {
+      const rows = Array.from({ length: starts }, () => ['2026-10-01T10:00:00.000Z', 'pipeline-runner started']);
+      if (finished) rows.push(['2026-10-01T10:01:00.000Z', 'Pipeline finished: 4/4 phases, 1m 0s']);
+      logLines(sess, 'pipeline-runner.log', rows);
+    }
+    if (status) fs.writeFileSync(path.join(sess, 'pipeline-status.json'), JSON.stringify(status));
+    if (lanes) {
+      fs.mkdirSync(path.join(sess, 'archive'), { recursive: true });
+      fs.writeFileSync(path.join(sess, 'archive', 'lanes.json'), JSON.stringify(lanes));
+    }
+    if (refine !== undefined) fs.writeFileSync(path.join(sess, 'spawn-refinement.out'), refine);
+  };
+  const st = (status, completed) => ({ status, completed_phases: completed, skipped_phases: 0, total_phases: 4 });
+  const textReport = (root) => execFileSync('python3', [TOOL, root], { encoding: 'utf-8', timeout: 60_000 });
+
+  test('MREL-A11-1: every session is a row and the text report prints N1 and N2 from the copied inputs', () => {
+    const root = mkFixtureTmpDir('mrel-a11-');
+    try {
+      n1n2Session(root, 1, { status: st('completed', 4) });
+      n1n2Session(root, 2, { status: st('failed', 3) });
+      n1n2Session(root, 3, { starts: 2, status: st('completed', 4) });
+      n1n2Session(root, 4, { status: st('completed', 4), lanes: [{ outcome: 'retained', commits: ['a', 'b'] }, { outcome: 'integrated', commits: ['c'] }] });
+      n1n2Session(root, 5, { starts: null, refine: 'starting\n' });
+      n1n2Session(root, 6, { starts: null, refine: 'MANIFEST=/x/refinement_manifest.json\n' });
+      const rows = fieldTiming(root);
+      assert.equal(rows.length, 6);
+      assert.equal(rows[4].refinement_manifest, false);
+      assert.equal(rows[2].launches, 2);
+      assert.equal(rows[3].stranded_lane_commits, 2);
+      const out = textReport(root);
+      assert.match(out, /^N1 4\/6$/m);
+      assert.match(out, /^N2 1\/4$/m);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('MREL-A11-2: a withheld success (status failed, 4/0/4, nothing stranded) is still an N2 success', () => {
+    const root = mkFixtureTmpDir('mrel-a11-');
+    try {
+      n1n2Session(root, 1, { status: st('failed', 4) });
+      assert.match(textReport(root), /^N2 1\/1$/m);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

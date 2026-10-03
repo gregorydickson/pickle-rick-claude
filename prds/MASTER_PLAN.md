@@ -335,18 +335,18 @@ collects `*.test.js` only).
   ≥ 25% lower than comparable pre-beta runs, and findings fixed not lower. Ending the soak and merging to `main` are
   the operator's decision.
 
-#### 2.2 beta soak ledger
+#### 2.2 completion ledger
 
-| session | changed files | lanes kept | anatomy min | passes/lane | findings fixed | lane outcomes | incidents |
-|---|---|---|---|---|---|---|---|
-| `2026-09-26-23989a13` B-FINALGATE | ~15 src/test | 5 (cap 2) | 13.9 | 2/4/3/2/2 | 2 lane commits | 5 integrated, 0 conflicts | pickle final tier red (2 stale test pins → B-FINALGATE-FIX); first REAL concurrent-lane run |
-| `2026-09-26-bcd24b6d` B-FINALGATE-FIX | 2 tests | **11 (UNSCOPED)** | **135** | 2×7, 3, 26, 9, 2 | 32 lane commits | 11 integrated, 0 conflicts | `SCOPE_EMPTY_DIFF` at setup (no-refine bundle) → no session scope → every lane reviewed; a new `prds` lane from research scripts |
-| `2026-09-26-e22412a9` B-LANES-FIX2 | 1 test | 1 (explicit `paths:` scope) | 1.6 | — | — | single lane | explicit path scope avoided the unscoped cost |
-| `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 2/3/2/2/5/2 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) |
-| `2026-10-01-face240c` B-ATTRIB-G (on `main`) | 17 (943+/127−) | 5 (cap 2, explicit `paths:` scope) | 26.0 | 4/2/3/2/2 | 3 lane commits | 5 integrated, 0 conflicts | none; pickle 74 min for 3 tickets; szechuan 5.8 min |
-| `2026-10-02-76f112c8` B-LANES-MERGE-G (on `exp/b-lanes`) | 1 test | 1 (explicit `paths:` scope) | 1.9 | 2 | 0 | single lane | none; pickle 17.5 min, szechuan 8.7 min (2 DRY/doc commits) |
-| `2026-10-02-1d45b656` B-ATTRIB-L (on `exp/b-lanes`) | 4 src/test (+2 catalogs) | 3 (cap 2, explicit `paths:` scope) | 11.7 | 4/5/6 | 2 lane commits | 3 integrated, 0 conflicts | none; pickle 78 min for 5 tickets; szechuan 23 min (2 DRY commits) |
-| `2026-10-02-be104839` B-MEGA (on `exp/b-parallel-build`, waves 2) | ~60 src/test/doc | 6 (cap 2, `branch` scope) | 59.9 | 13/3/2/2/2/3 | 11 lane commits | 6 integrated, 0 conflicts; integration_check green on all 3 committing lanes | none; pickle 636 min (23 tickets, 1 of 22 waves width 2); szechuan 13.3 min |
+| session | changed files | lanes kept | anatomy min | passes/lane | findings fixed | lane outcomes | incidents | population |
+|---|---|---|---|---|---|---|---|---|
+| `2026-09-26-23989a13` B-FINALGATE | ~15 src/test | 5 (cap 2) | 13.9 | 2/4/3/2/2 | 2 lane commits | 5 integrated, 0 conflicts | pickle final tier red (2 stale test pins → B-FINALGATE-FIX); first REAL concurrent-lane run | local |
+| `2026-09-26-bcd24b6d` B-FINALGATE-FIX | 2 tests | **11 (UNSCOPED)** | **135** | 2×7, 3, 26, 9, 2 | 32 lane commits | 11 integrated, 0 conflicts | `SCOPE_EMPTY_DIFF` at setup (no-refine bundle) → no session scope → every lane reviewed; a new `prds` lane from research scripts | local |
+| `2026-09-26-e22412a9` B-LANES-FIX2 | 1 test | 1 (explicit `paths:` scope) | 1.6 | — | — | single lane | explicit path scope avoided the unscoped cost | local |
+| `2026-09-27-03d1f8d2` B-PBUILD (on `exp/b-parallel-build`) | 13 tickets, ~15 src/test | 6 (cap 2, `branch` scope) | 14.7 | 2/3/2/2/5/2 | 4 lane commits | 6 integrated, 0 conflicts | pickle 220 min for 13 tickets; szechuan `stalled_below_target` (non-convergent, non-fatal); no livelock (#52) | local |
+| `2026-10-01-face240c` B-ATTRIB-G (on `main`) | 17 (943+/127−) | 5 (cap 2, explicit `paths:` scope) | 26.0 | 4/2/3/2/2 | 3 lane commits | 5 integrated, 0 conflicts | none; pickle 74 min for 3 tickets; szechuan 5.8 min | local |
+| `2026-10-02-76f112c8` B-LANES-MERGE-G (on `exp/b-lanes`) | 1 test | 1 (explicit `paths:` scope) | 1.9 | 2 | 0 | single lane | none; pickle 17.5 min, szechuan 8.7 min (2 DRY/doc commits) | local |
+| `2026-10-02-1d45b656` B-ATTRIB-L (on `exp/b-lanes`) | 4 src/test (+2 catalogs) | 3 (cap 2, explicit `paths:` scope) | 11.7 | 4/5/6 | 2 lane commits | 3 integrated, 0 conflicts | none; pickle 78 min for 5 tickets; szechuan 23 min (2 DRY commits) | local |
+| `2026-10-02-be104839` B-MEGA (on `exp/b-parallel-build`, waves 2) | ~60 src/test/doc | 6 (cap 2, `branch` scope) | 59.9 | 13/3/2/2/2/3 | 11 lane commits | 6 integrated, 0 conflicts; integration_check green on all 3 committing lanes | none; pickle 636 min (23 tickets, 1 of 22 waves width 2); szechuan 13.3 min | local |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 

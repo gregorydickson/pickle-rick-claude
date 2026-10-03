@@ -9,7 +9,13 @@ SESSIONS_DIR defaults to ~/.local/share/pickle-rick/sessions.
 
 Prints, per session: per-phase minutes (from pipeline-runner.log), the pickle phase split into worker-spawn
 minutes vs everything else (manager turns, gates, relaunches), ticket and iteration counts, anatomy passes per
-lane, and whether the run was scoped. The target repo is shown only as an 8-char hash of its path. Ticket text,
+lane, and whether the run was scoped. Every top-level session dir is a row (none is dropped for lacking phases).
+
+Each row also copies the reliability-metric inputs verbatim: finished (`Pipeline finished:` in pipeline-runner.log),
+launches (count of `pipeline-runner started` lines), status/completed_phases/skipped_phases/total_phases (from
+pipeline-status.json, None if absent), stranded_lane_commits (commits in archive/lanes.json rows whose outcome is not
+"integrated") and refinement_manifest (`MANIFEST=` in spawn-refinement.out). The text report prints `N1 a/b`
+(hands-off completion) and `N2 c/d` (converged, nothing stranded); --json stays a plain list of rows. The target repo is shown only as an 8-char hash of its path. Ticket text,
 file paths, log contents and finding text are never printed, so the output is safe to paste into a public repo.
 """
 import hashlib
@@ -148,6 +154,14 @@ def tickets(sess):
     return n, tiers
 
 
+def file_text(sess, name):
+    try:
+        with open(os.path.join(sess, name), errors="ignore") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
 def session_row(sess):
     root, name = os.path.split(sess)
     state = read_json(os.path.join(sess, "state.json")) or {}
@@ -161,6 +175,9 @@ def session_row(sess):
     scope = read_json(os.path.join(sess, "scope.json"))
     lanes = read_json(os.path.join(sess, "archive", "lanes.json"))
     pickle_min = phases.get("pickle")
+    plog = file_text(sess, "pipeline-runner.log")
+    pstatus = read_json(os.path.join(sess, "pipeline-status.json")) or {}
+    refine = file_text(sess, "spawn-refinement.out")
     return {
         "session": os.path.basename(sess),
         "repo_hash": hashlib.sha256(wd.encode()).hexdigest()[:8] if wd else None,
@@ -180,7 +197,27 @@ def session_row(sess):
         "scope_paths": len((scope or {}).get("allowed_paths") or []),
         "lane_outcomes": [l.get("outcome") for l in lanes] if isinstance(lanes, list) else None,
         "exit_reason": state.get("exit_reason"),
+        "has_pipeline_log": plog is not None,
+        "finished": plog is not None and "Pipeline finished:" in plog,
+        "launches": (plog or "").count("pipeline-runner started"),
+        "status": pstatus.get("status"),
+        "completed_phases": pstatus.get("completed_phases"),
+        "skipped_phases": pstatus.get("skipped_phases"),
+        "total_phases": pstatus.get("total_phases"),
+        "stranded_lane_commits": sum(len(l.get("commits") or []) for l in lanes if l.get("outcome") != "integrated") if isinstance(lanes, list) else 0,
+        "refinement_manifest": refine is not None and "MANIFEST=" in refine,
     }
+
+
+def n1_success(r):
+    if r["has_pipeline_log"]:
+        return r["finished"] and r["launches"] == 1
+    return r["refinement_manifest"]
+
+
+def n2_success(r):
+    done = (r["completed_phases"] or 0) + (r["skipped_phases"] or 0)
+    return n1_success(r) and r["completed_phases"] is not None and done == r["total_phases"] and r["stranded_lane_commits"] == 0
 
 
 def main():
@@ -195,11 +232,9 @@ def main():
         sess = os.path.join(root, name)
         if not os.path.isdir(sess) or "--unit-" in name or "--lane-" in name or (since and name[:10] < since):
             continue
-        row = session_row(sess)
-        if row["phases_min"] or row["tickets"]:
-            rows.append(row)
+        rows.append(session_row(sess))
     if "--json" in sys.argv:
-        print(json.dumps(rows, indent=1))
+        print(json.dumps([{k: v for k, v in r.items() if k != "has_pipeline_log"} for r in rows], indent=1))
         return
     print(f"{'session':<22} {'repo':<8} {'tix':>3} {'pickle':>7} {'workers':>7} {'outside':>7} {'anatomy':>7} {'szech':>6} scoped passes")
     for r in rows:
@@ -208,6 +243,9 @@ def main():
               f"{r['worker_spawn_min']:>7} {str(r['outside_workers_min'] if r['outside_workers_min'] is not None else '-'):>7} "
               f"{str(p.get('anatomy-park','-')):>7} {str(p.get('szechuan-sauce','-')):>6} {str(r['scoped']):<6} "
               f"{r['anatomy_passes'] or '-'}")
+    n2_rows = [r for r in rows if r["has_pipeline_log"]]
+    print(f"\nN1 {sum(n1_success(r) for r in rows)}/{len(rows)}")
+    print(f"N2 {sum(n2_success(r) for r in n2_rows)}/{len(n2_rows)}")
     print(f"\n{len(rows)} sessions. Generated {datetime.now(timezone.utc).isoformat(timespec='seconds')}. "
           "Numbers only: repo = sha256(working_dir)[:8]; no ticket text or paths.")
 
