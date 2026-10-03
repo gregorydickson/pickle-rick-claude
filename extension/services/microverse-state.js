@@ -509,13 +509,26 @@ export function deriveStallCause(state, iteration) {
     const cause = signal ?? 'unknown';
     return { cause, inputs: { last_stall_signal: signal, iteration } };
 }
-export function isConverged(state) {
+/**
+ * The score the working tree actually carries. A `revert` entry whose `pre_iteration_sha` differs
+ * from `headSha` means the rollback was refused (`guardedMicroverseRollback` preserves a HEAD the
+ * worker committed to), so HEAD still carries that entry's score, not the last accepted one. An
+ * absent `headSha` or an empty (legacy) `pre_iteration_sha` is unknown, never evidence of a refusal.
+ */
+function scoreCarriedByHead(state, headSha) {
+    const last = state.convergence?.history?.at(-1);
+    if (headSha && last?.action === 'revert' && last.pre_iteration_sha && headSha !== last.pre_iteration_sha) {
+        return last.score;
+    }
+    return getLastAcceptedScore(state);
+}
+export function isConverged(state, headSha) {
     if (state.convergence.stall_counter >= state.convergence.stall_limit)
         return 'stall';
     // Early exit: if a convergence_target is set and score has reached (or passed) it, we're done.
     // Direction-aware: for 'lower', score <= target; for 'higher', score >= target.
     if (state.convergence_target != null) {
-        const currentScore = getLastAcceptedScore(state);
+        const currentScore = scoreCarriedByHead(state, headSha);
         const direction = state.key_metric.direction ?? 'higher';
         if (direction === 'lower'
             ? currentScore <= state.convergence_target

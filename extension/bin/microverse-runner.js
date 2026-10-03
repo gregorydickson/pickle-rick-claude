@@ -4585,7 +4585,7 @@ export async function handleNoCommitStall(state, ctx, iterLogFile) {
     }));
     replaceMicroverseState(state, recordStall(state, 'no-commit'));
     writeMicroverseState(ctx.sessionDir, state);
-    const convergedBranch = isConverged(state);
+    const convergedBranch = isConverged(state, _deps.getHeadSha(ctx.workingDir) ?? undefined);
     if (convergedBranch) {
         const exitReason = convergenceExitReason(convergedBranch, state, ctx);
         recordStallDisposition(exitReason, state, ctx);
@@ -5323,7 +5323,7 @@ async function handleMetricMode(state, baseline, ctx, iterLogFile) {
     if (failureExit)
         return failureExit;
     maybeEmitConsecutiveNoProgressWarning(state, ctx.sessionDir);
-    const convergedBranch = isConverged(state);
+    const convergedBranch = isConverged(state, _deps.getHeadSha(ctx.workingDir) ?? undefined);
     if (!convergedBranch)
         return null;
     const exitReason = convergenceExitReason(convergedBranch, state, ctx);

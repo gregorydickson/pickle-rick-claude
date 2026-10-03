@@ -2950,3 +2950,37 @@ test('AP-EXT-ITER303-01: the gap-analysis worker spawn stamps a -worker PICKLE_R
         `the worker spawn must stamp a role config-protection reads as worker-class, got ${JSON.stringify(role)}`,
     );
 });
+
+// MREL-A6: a refused rollback leaves HEAD carrying the regressed commit; convergence must
+// read the score HEAD carries, not an older accepted/baseline score.
+function mrelA6State(preIterSha = 'X') {
+    return {
+        convergence_target: 0,
+        key_metric: { direction: 'lower' },
+        baseline_score: 0,
+        convergence: {
+            stall_counter: 0,
+            stall_limit: 5,
+            history: [{
+                iteration: 1, metric_value: '1', score: 1, action: 'revert',
+                classification: 'regressed', description: '', pre_iteration_sha: preIterSha, timestamp: 't',
+            }],
+        },
+    };
+}
+
+test('MREL-A6-1: refused rollback (HEAD !== pre_iteration_sha) does not converge on the baseline score', () => {
+    assert.equal(isConverged(mrelA6State(), 'Y'), null);
+});
+
+test('MREL-A6-2: executed rollback (HEAD === pre_iteration_sha) still converges on the accepted score', () => {
+    assert.equal(isConverged(mrelA6State(), 'X'), 'target');
+});
+
+test('MREL-A6-3: no headSha given keeps one-arg behaviour', () => {
+    assert.equal(isConverged(mrelA6State()), 'target');
+});
+
+test('MREL-A6-4: legacy empty pre_iteration_sha is treated as unknown, not as a refused rollback', () => {
+    assert.equal(isConverged(mrelA6State(''), 'Y'), 'target');
+});
