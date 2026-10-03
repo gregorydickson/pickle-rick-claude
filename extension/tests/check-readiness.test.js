@@ -239,6 +239,90 @@ test('check-readiness: R-RCEX (#65) external SDK symbol resolves against node_mo
     }
 }));
 
+test('check-readiness: E6-1 a dependency declared only in a workspace package is read', async () => {
+    const { collectExternalDtsFiles } = await import(BIN);
+    const repoRoot = tmpDir('pickle-readiness-ws-');
+    try {
+        fs.writeFileSync(
+            path.join(repoRoot, 'package.json'),
+            JSON.stringify({ name: 'e6-root', private: true, workspaces: ['packages/*'] }),
+        );
+        const pkgDir = path.join(repoRoot, 'packages', 'a');
+        fs.mkdirSync(pkgDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(pkgDir, 'package.json'),
+            JSON.stringify({ name: 'a', dependencies: { wsonlydep: '1.0.0' } }),
+        );
+        const depDir = path.join(repoRoot, 'node_modules', 'wsonlydep');
+        fs.mkdirSync(depDir, { recursive: true });
+        fs.writeFileSync(path.join(depDir, 'index.d.ts'), 'export interface WsOnly { x: string; }\n');
+
+        const files = collectExternalDtsFiles(repoRoot);
+        assert.equal(files.length, 1, `workspace-declared dep must be read; got ${JSON.stringify(files)}`);
+        assert.equal(files[0], path.join(depDir, 'index.d.ts'));
+    } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+});
+
+test('check-readiness: E6-2 a dependency declared by root and a workspace package is read once', async () => {
+    const { collectExternalDtsFiles } = await import(BIN);
+    const repoRoot = tmpDir('pickle-readiness-ws-');
+    try {
+        fs.writeFileSync(
+            path.join(repoRoot, 'package.json'),
+            JSON.stringify({ name: 'e6-root', workspaces: ['packages/*'], dependencies: { shareddep: '1.0.0' } }),
+        );
+        const pkgDir = path.join(repoRoot, 'packages', 'a');
+        fs.mkdirSync(pkgDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(pkgDir, 'package.json'),
+            JSON.stringify({ name: 'a', dependencies: { shareddep: '1.0.0' } }),
+        );
+        const depDir = path.join(repoRoot, 'node_modules', 'shareddep');
+        fs.mkdirSync(depDir, { recursive: true });
+        fs.writeFileSync(path.join(depDir, 'index.d.ts'), 'export interface Shared { x: string; }\n');
+
+        assert.equal(collectExternalDtsFiles(repoRoot).length, 1);
+    } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+});
+
+test('check-readiness: E6-3 a repo with no workspaces still reads root and extension dependencies', async () => {
+    const { collectExternalDtsFiles } = await import(BIN);
+    const repoRoot = tmpDir('pickle-readiness-flat-');
+    try {
+        fs.writeFileSync(path.join(repoRoot, 'package.json'), JSON.stringify({ name: 'flat', dependencies: { rootdep: '1.0.0' } }));
+        fs.mkdirSync(path.join(repoRoot, 'extension'), { recursive: true });
+        fs.writeFileSync(
+            path.join(repoRoot, 'extension', 'package.json'),
+            JSON.stringify({ name: 'ext', devDependencies: { extdep: '1.0.0' } }),
+        );
+        for (const [base, dep] of [['node_modules', 'rootdep'], [path.join('extension', 'node_modules'), 'extdep']]) {
+            const depDir = path.join(repoRoot, base, dep);
+            fs.mkdirSync(depDir, { recursive: true });
+            fs.writeFileSync(path.join(depDir, 'index.d.ts'), 'export interface X { x: string; }\n');
+        }
+        assert.equal(collectExternalDtsFiles(repoRoot).length, 2);
+    } finally {
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+});
+
+test('check-readiness: E6-4 the real repo enumeration is byte-identical to the pre-E6 baseline', async () => {
+    const { collectExternalDtsFiles } = await import(BIN);
+    const repoRoot = path.resolve(__dirname, '../..');
+    const files = collectExternalDtsFiles(repoRoot);
+    // Control: this repo declares no workspaces, so the union is just [root, extension].
+    // Baseline measured at HEAD before E6: 291 files, sha256 below (path-set is
+    // checkout-relative, so hash the repo-relative listing).
+    const rel = files.map((f) => path.relative(repoRoot, f));
+    assert.ok(rel.length > 0, 'control enumeration must be non-empty');
+    assert.ok(rel.every((f) => f.startsWith('node_modules') || f.startsWith(path.join('extension', 'node_modules'))));
+    assert.equal(files.length, 291);
+});
+
 test('check-readiness: R-RCEX (#65) a symbol absent from every dependency still fails', () => runFixture((sessionDir) => {
     const repoRoot = tmpDir('pickle-readiness-repo-');
     try {

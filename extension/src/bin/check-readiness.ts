@@ -12,6 +12,7 @@ import { readRecoverableJsonObject } from '../services/recoverable-json.js';
 import type { ReadinessCycleHistoryEntry } from '../types/index.js';
 import { resolveExtensionDir } from '../services/forward-ref-annotation.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
+import { getWorkspacePackages } from '../services/convergence-gate.js';
 import { definedRequirementIdsInLine, requirementIdPatternFor } from '../services/requirement-ids.js';
 import { CallerGap, ResolverCache, SCOPE_AUTO_EXTEND_MAX, createResolverCache, detectSignatureCallerGaps } from '../services/signature-caller-gap.js';
 
@@ -329,15 +330,31 @@ const EXTERNAL_DTS_FILE_CAP = 3_000;
 export const EXTERNAL_DTS_MAX_BYTES = 512 * 1024;
 
 /**
- * R-RCEX (Finding #65): declared dependency names from the target repo's
- * `package.json` (and the `extension/` sub-package, mirroring `resolvePathRef`
- * bases). `@types/*` stub packages are EXCLUDED here at the call site — a
- * ticket citing a stdlib type is a separate false-positive class handled by
- * `.readiness-allowlist.json`, and the TS lib `.d.ts` files are huge.
+ * R-RCEX (Finding #65): the package dirs whose `package.json` declares dependencies —
+ * the UNION (de-duplicated) of the target repo's root, its `extension/` sub-package
+ * (mirroring `resolvePathRef` bases) and every workspace package. The workspace
+ * enumerator alone returns `[]` on a repo with no workspace marker, which would drop
+ * `extension/`, so it only adds to the fixed pair and never replaces it.
  */
-function declaredDependencyNames(repoRoot: string): string[] {
+function declaredDependencyDirs(repoRoot: string): string[] {
+  let workspaces: string[] = [];
+  try {
+    workspaces = getWorkspacePackages(repoRoot);
+  } catch {
+    // Unreadable workspace manifest: the fixed pair still resolves.
+  }
+  return [...new Set([repoRoot, path.join(repoRoot, 'extension'), ...workspaces])];
+}
+
+/**
+ * Declared dependency names from those dirs' `package.json`. `@types/*` stub packages
+ * are EXCLUDED here at the call site — a ticket citing a stdlib type is a separate
+ * false-positive class handled by `.readiness-allowlist.json`, and the TS lib `.d.ts`
+ * files are huge.
+ */
+function declaredDependencyNames(dirs: string[]): string[] {
   const names = new Set<string>();
-  for (const dir of [repoRoot, path.join(repoRoot, 'extension')]) {
+  for (const dir of dirs) {
     const pkg = readJsonFile(path.join(dir, 'package.json'));
     if (!isRecord(pkg)) continue;
     for (const key of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
@@ -371,11 +388,11 @@ function collectDtsFilesUnder(dir: string, acc: string[]): void {
 
 export function collectExternalDtsFiles(repoRoot: string): string[] {
   const files: string[] = [];
-  const deps = declaredDependencyNames(repoRoot).filter((dep) => !dep.startsWith('@types/'));
-  const moduleRoots = [
-    path.join(repoRoot, 'node_modules'),
-    path.join(repoRoot, 'extension', 'node_modules'),
-  ].filter((root) => fs.existsSync(root));
+  const dirs = declaredDependencyDirs(repoRoot);
+  const deps = declaredDependencyNames(dirs).filter((dep) => !dep.startsWith('@types/'));
+  const moduleRoots = dirs
+    .map((dir) => path.join(dir, 'node_modules'))
+    .filter((root) => fs.existsSync(root));
   for (const root of moduleRoots) {
     for (const dep of deps) {
       if (files.length >= EXTERNAL_DTS_FILE_CAP) return files;
