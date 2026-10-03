@@ -633,22 +633,33 @@ function resolvePeerPrdPath(parentPrdPath, peerPath, repoRoot) {
     ];
     return candidates.find((candidate) => fs.existsSync(candidate));
 }
+/** Every id the PRD defines (shared E4 rule), with its section and whether a `NOT in Scope` heading encloses it. */
+function prdDefinitions(content, sourcePrd, idRe) {
+    const definitions = [];
+    let section = '';
+    let notInScopeLevel = 0;
+    for (const line of content.split(/\r?\n/)) {
+        const heading = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+        if (heading) {
+            section = heading[2].trim();
+            if (notInScopeLevel > 0 && heading[1].length <= notInScopeLevel)
+                notInScopeLevel = 0;
+            if (notInScopeLevel === 0 && /not\s+in\s+scope/i.test(section))
+                notInScopeLevel = heading[1].length;
+        }
+        for (const requirementId of definedRequirementIdsInLine(line, idRe)) {
+            definitions.push({ sourcePrd, sourceSection: section, requirementId, notInScope: notInScopeLevel > 0 });
+        }
+    }
+    return definitions;
+}
 function requirementsFromPrd(filePath, sourcePrd, idPattern) {
-    const requirements = [];
     const content = fs.readFileSync(filePath, 'utf-8');
     // E4: the shared defines-vs-cites rule. A caller naming a pattern scopes WHICH ids (the parent
     // bundle only owns `AC-DR-*`); absent one, the PRD's own spelling decides, once, for the whole file.
     const idRe = idPattern ?? requirementIdPatternFor(content);
-    let section = '';
-    for (const line of content.split(/\r?\n/)) {
-        const heading = /^#{1,6}\s+(.+?)\s*$/.exec(line);
-        if (heading)
-            section = heading[1].trim();
-        for (const requirementId of definedRequirementIdsInLine(line, idRe)) {
-            requirements.push({ sourcePrd, sourceSection: section, requirementId });
-        }
-    }
-    return requirements;
+    // C3: an id defined only under NOT in Scope is owed no ticket; findOwnershipAdvisories reports it.
+    return prdDefinitions(content, sourcePrd, idRe).filter((definition) => !definition.notInScope);
 }
 function sourceRequirementsFromParentPrd(parentPrdPath, repoRoot) {
     if (!parentPrdPath || !fs.existsSync(parentPrdPath))
@@ -771,6 +782,39 @@ function findPrdMapFindings(tickets, manifest, sourceRequirements) {
         analyst: 'gaps',
         message: 'PRD requirement is not mapped to any ticket',
         detail: requirement,
+    }));
+}
+/**
+ * C3: advisory only (no new `kind`, so the blocking filter never sees it). Ids already in
+ * `sourceRequirements` belong to `prd_map`, which wins; this covers the rest of the PRD:
+ * an id owned by no ticket is `unmapped`, one defined only under NOT in Scope is `not-in-scope-only`.
+ */
+function findOwnershipAdvisories(prdPath, tickets, manifest, sourceRequirements) {
+    if (!prdPath || !fs.existsSync(prdPath))
+        return [];
+    const content = fs.readFileSync(prdPath, 'utf-8');
+    const idRe = requirementIdPatternFor(content);
+    const owned = ticketRequirementIds(manifest, tickets);
+    for (const ticket of tickets) {
+        for (const match of fs.readFileSync(ticket.file, 'utf-8').matchAll(new RegExp(idRe.source, 'g')))
+            owned.add(match[0]);
+    }
+    const prdMapDomain = new Set(sourceRequirements.map((requirement) => requirement.requirementId));
+    const inScope = new Map();
+    for (const definition of prdDefinitions(content, prdPath, idRe)) {
+        inScope.set(definition.requirementId, (inScope.get(definition.requirementId) ?? false) || !definition.notInScope);
+    }
+    return [...inScope.entries()]
+        .filter(([id]) => !owned.has(id) && !prdMapDomain.has(id))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([id, isInScope]) => ({
+        ticket: 'manifest',
+        kind: 'advisory',
+        analyst: 'gaps',
+        message: isInScope
+            ? 'PRD requirement is owned by no ticket (advisory — never blocks readiness)'
+            : 'PRD requirement appears only under NOT in Scope and no ticket names it (advisory — never blocks readiness)',
+        detail: `${id}: ${isInScope ? 'unmapped' : 'not-in-scope-only'}`,
     }));
 }
 function findPathFindings(ticket, repoRoot, sessionDir, cache) {
@@ -1098,6 +1142,7 @@ export function runReadiness(args) {
     }));
     const findings = [
         ...findPrdMapFindings(tickets, manifest, sourceRequirements),
+        ...findOwnershipAdvisories(resolveManifestPrdPath(manifest, args.sessionDir, args.repoRoot), tickets, manifest, sourceRequirements),
         ...tickets.flatMap((ticket) => findPathFindings(ticket, args.repoRoot, args.sessionDir, pathCache)),
         ...tickets.flatMap((ticket) => findDependencyFindings(ticket, refs)),
         ...selected.files.flatMap((file) => findReadinessFindings(file, args.repoRoot, { checkMachinability, checkContracts, cache: resolverCache, maxWallMs: args.maxWallMs, allowlist })),
