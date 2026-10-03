@@ -797,6 +797,22 @@ Both modes honor `--backend claude|codex`. On `--backend codex`, `/death-crystal
 
 ---
 
+### What changed on main (merge of the parallel-build line)
+
+User-visible changes for someone who sets nothing:
+
+- **`--teams` and `--max-parallel` are removed (breaking CLI-args change).** `setup.js` refuses them at launch with `removedFlagMessage`: "`<flag>` was removed (B-LANES): teams mode never ran under claude -p. Run /pickle-tmux without it." Any script passing them stops at launch, before any work.
+- **anatomy-park discovers finer review lanes.** An unscoped run reviews ~11 lanes serially instead of ~2 subsystems. Scope the run (`scope: branch` / `paths:`) to avoid the cost.
+- **Parallelism stays off by default**: `anatomy_max_parallel_lanes = 1`, `max_parallel_tickets = 1` (see the "Concurrent lanes" and "Concurrent build tickets" paragraphs above).
+- **Default-on behaviour changes (B-MEGA):**
+  - Refinement's AC-shape gate reports advisory instead of exiting 2, and readiness reports unowned/unmapped acceptance criteria as advisory findings.
+  - Refinement synthesis writes `## Premises` and `## Open Decisions`; workers get an "Expected-value source" rule; Test Expectations tables gain a Source column.
+  - Citadel AC coverage no longer credits keyword matches (lexical-only losses report at Medium, advisory) and reports requirement ids the refined PRD dropped (`decision_required`). One shared requirement-id rule now applies, so FR-only PRDs yield criteria.
+  - The run summary's `base drift:` line runs a bounded `git fetch --no-tags origin <ref>` (writes only FETCH_HEAD); see the existing `base drift:` paragraph.
+  - The review rubric adds an existing-writers protocol check and tags PRD-says-so exonerations `[report-only: spec-suspect]`.
+  - The never-run archaeology module and its calibration suite are deleted.
+- **tmux runners now exit when finished.** The pane hold is removed; completion is read from the `Pipeline finished:` line in `pipeline-runner.log` (or the runner's own log).
+
 ## 🚀 Command & Flag Reference
 
 Every slash command and flag — including command-scoped families and the `†`/Codex notes — lives in **[COMMANDS.md](COMMANDS.md)**.
