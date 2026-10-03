@@ -6723,3 +6723,50 @@ describe('D7b: the run summary reports dropped findings across parent and lane s
     } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
   });
 });
+
+describe('B1 anatomy-park Dependency Lens', () => {
+  function runLens(premisesSection) {
+    const repo = tmpDir();
+    initRepo(repo);
+    const target = path.join(repo, 'src');
+    fs.mkdirSync(path.join(target, 'alpha'), { recursive: true });
+    for (let i = 0; i < 3; i++) fs.writeFileSync(path.join(target, 'alpha', `s${i}.ts`), `export const s${i} = ${i};\n`);
+    const sessionDir = makeAnatomySessionDir(repo);
+    if (premisesSection !== null) {
+      fs.writeFileSync(path.join(sessionDir, 'prd_refined.md'), `# Refined\n\n${premisesSection}\n\n## Other\nx\n`);
+    }
+    const logs = [];
+    try {
+      setupAnatomyPark(sessionDir, target, 3, AP_REPO_ROOT, (m) => logs.push(m), { allowedPaths: ['src/alpha'], repoRoot: repo });
+      return { prd: fs.readFileSync(path.join(sessionDir, 'prd.md'), 'utf-8'), logs };
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  }
+
+  test('B1-1: a premise citing a path outside the allowed paths is rendered in the lens', () => {
+    const { prd, logs } = runLens('## Premises\n| Claim | Tag | Evidence |\n|---|---|---|\n| beta stays stable | (verified) | `src/beta/x.ts:12` |\n| alpha ok | (verified) | src/alpha/a.ts |');
+    assert.ok(prd.includes('## Dependency Lens (review-only)'));
+    assert.ok((prd.match(/src\/beta/g) ?? []).length >= 1);
+    assert.ok(prd.includes('[report-only: dependency-lens]'));
+    assert.ok(logs.includes('dependency lens: 2 premises parsed (1 outside allowed paths)'), logs.join('\n'));
+  });
+
+  test('B1-2: no Premises table logs N=0 and renders no lens', () => {
+    const { prd, logs } = runLens(null);
+    assert.ok(!prd.includes('Dependency Lens'));
+    assert.ok(logs.includes('dependency lens: 0 premises parsed (0 outside allowed paths)'));
+  });
+
+  test('B1-3: an explicit `none` row counts zero premises', () => {
+    const { prd, logs } = runLens('## Premises\n| Claim | Tag | Evidence |\n|---|---|---|\n| none | | |');
+    assert.ok(!prd.includes('Dependency Lens'));
+    assert.ok(logs.includes('dependency lens: 0 premises parsed (0 outside allowed paths)'));
+  });
+
+  test('B1-4: the rubric carries the dependency-lens exception', () => {
+    const rubric = fs.readFileSync(path.join(AP_REPO_ROOT, 'extension', 'szechuan-sauce-principles.md'), 'utf-8');
+    assert.ok(rubric.includes('dependency-lens'));
+  });
+});

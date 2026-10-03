@@ -2898,7 +2898,51 @@ function laneCatalog(target, lane) {
     }
     return `${lane.dir}/CLAUDE.md`;
 }
-function buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport) {
+const LENS_PATH_TOKEN = /[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]+/g;
+function isWithinAllowedPaths(candidate, allowedPaths) {
+    return allowedPaths.some((allowed) => {
+        const base = allowed.replace(/^\.\//, '').replace(/\/+$/, '');
+        return candidate === base || candidate.startsWith(`${base}/`);
+    });
+}
+/**
+ * B1: parse the refined PRD's `## Premises` table and surface the premises that cite a file outside
+ * the run's allowed paths, so the review can see a dependency it may not edit. Review-only — a
+ * missing PRD, missing table or unscoped run yields zero rows, never a halt. An unscoped run has no
+ * allowed set, so nothing can be outside it.
+ */
+function buildDependencyLens(sessionDir, allowedPaths) {
+    let text;
+    try {
+        text = fs.readFileSync(path.join(sessionDir, 'prd_refined.md'), 'utf-8');
+    }
+    catch {
+        return { parsed: 0, outside: 0, lines: [] };
+    }
+    const section = text.split(/^## /m).find((part) => /^Premises\b/.test(part));
+    const rows = (section ?? '').split('\n').slice(1)
+        .filter((line) => line.trim().startsWith('|') && !/^\s*\|[\s:|-]+\|?\s*$/.test(line))
+        .slice(1) // header row
+        .filter((line) => line.split('|')[1]?.trim().toLowerCase() !== 'none');
+    const flagged = rows.flatMap((row) => {
+        const cited = Array.from(new Set((row.replace(/https?:\/\/\S+/g, '').match(LENS_PATH_TOKEN) ?? [])
+            .map((token) => token.replace(/^\.\//, ''))));
+        const outsidePaths = allowedPaths.length === 0 ? [] : cited.filter((c) => !isWithinAllowedPaths(c, allowedPaths));
+        return outsidePaths.length > 0 ? [`- ${row.trim()} (outside: ${outsidePaths.join(', ')})`] : [];
+    });
+    return { parsed: rows.length, outside: flagged.length, lines: flagged };
+}
+function renderDependencyLens(lens) {
+    if (lens.lines.length === 0)
+        return [];
+    return [
+        '',
+        '## Dependency Lens (review-only)',
+        'These premises cite files outside the allowed paths. Do not edit those files. Tag any finding about them `[report-only: dependency-lens]`.',
+        ...lens.lines,
+    ];
+}
+function buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport, lens) {
     return [
         '# Anatomy Park: Deep Subsystem Review',
         '',
@@ -2935,6 +2979,7 @@ function buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citad
         '- Revert on regression, defer to next iteration',
         `- Skip subsystem after ${stallLimit} consecutive failed fixes`,
         ...buildCitadelAnatomyContext(citadelReport),
+        ...renderDependencyLens(lens),
     ].join('\n');
 }
 // R-PSSS-1/2: file extensions that count as a reviewable code surface. A
@@ -3311,8 +3356,10 @@ export function setupAnatomyPark(sessionDir, target, stallLimit, extensionRoot, 
         return { skipReason: 'setup_error' };
     }
     injectDesignSafeIntoMicroverse(sessionDir, designSafe, log);
+    const lens = buildDependencyLens(sessionDir, effectiveScope?.allowedPaths ?? []);
+    log(`dependency lens: ${lens.parsed} premises parsed (${lens.outside} outside allowed paths)`);
     archiveFile(sessionDir, 'prd.md', 'pickle');
-    fs.writeFileSync(path.join(sessionDir, 'prd.md'), buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport));
+    fs.writeFileSync(path.join(sessionDir, 'prd.md'), buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport, lens));
     log('Anatomy Park setup complete');
     return true;
 }

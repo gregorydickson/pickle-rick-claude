@@ -85,7 +85,7 @@ Every finding carries a confidence score alongside its severity — severity say
 
 The following categories are noise. Exclude them regardless of severity or how confident the finding feels.
 
-- Pre-existing issues on lines the current change did not touch — unless this change caused a regression, not the reviewer's problem this pass
+- Pre-existing issues on lines the current change did not touch — unless this change caused a regression, not the reviewer's problem this pass. Exception: a premise the PRD's Dependency Lens lists as outside the allowed paths is kept as `[report-only: dependency-lens]`, not dropped
 - Anything a linter, typechecker, or compiler surfaces on the next build — CI is the filter for that class of error, not a Rick
 - Missing imports, type errors, broken tests, formatting drift, trailing newlines — tooling catches these in milliseconds, don't waste a finding slot
 - Generic "needs more test coverage" hand-wringing, unless CLAUDE.md or a principle in this doc names a specific coverage target
