@@ -6616,7 +6616,7 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
 
 describe('E1: reportBaseDrift reports drift against the base branch without touching the exit code', () => {
   const g = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'user.email=e@e', '-c', 'user.name=e', ...args], {
-    cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+    cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000,
   }).trim();
 
   /** A repo whose `origin` is a bare sibling; `upstream` edits land on origin/main via a second clone. */
@@ -6753,7 +6753,7 @@ describe('D7b: the run summary reports dropped findings across parent and lane s
       fs.writeFileSync(path.join(fx.lane, 'sub-b', 'dropped_findings.md'), 'x — conf=70 — y\n');
       reportDroppedFindings(fx.runtime);
       assert.match(fx.logs[0], /^dropped findings \(conf>=25\): 2 in session\/sub-a, session--lane-1\/sub-b$/);
-      assert.equal(execFileSync('git', ['ls-files', 'extension/dropped_findings.md'], { cwd: path.resolve(import.meta.dirname, '..', '..'), encoding: 'utf-8' }).trim(), '');
+      assert.equal(execFileSync('git', ['ls-files', 'extension/dropped_findings.md'], { cwd: path.resolve(import.meta.dirname, '..', '..'), encoding: 'utf-8', timeout: 30_000 }).trim(), '');
     } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
   });
 });
