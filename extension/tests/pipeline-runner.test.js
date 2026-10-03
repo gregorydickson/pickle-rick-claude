@@ -6852,3 +6852,61 @@ describe('B2D7a: review rubric — existing writers and spec-suspect exoneration
     assert.match(bullet[0], /correctness or concurrency finding[^\n]*`\[report-only: spec-suspect\]`/);
   });
 });
+
+// A3: prds/research/tools/field-timing.py reads the lines this runner writes. The committed `lanes` and
+// `units` fixtures are asserted as committed; the wave/serial arithmetic is asserted over in-test sessions
+// whose log lines use the producer formats (`pickle waves: wave N members=… in_flight=K`, the member outcome
+// line, mux-runner's `[done-guard] ticket <id> is Done`), so a format drift on either side reds here.
+describe('A3: field-timing.py reports wave widths, the implementation sub-phase and lane-summed anatomy passes', () => {
+  const TOOL = path.join(AP_REPO_ROOT, 'prds', 'research', 'tools', 'field-timing.py');
+  const FIXTURES = path.join(AP_REPO_ROOT, 'prds', 'research', 'tools', 'fixtures');
+  const fieldTiming = (root) => JSON.parse(execFileSync('python3', [TOOL, root, '--json'], { encoding: 'utf-8', timeout: 60_000 }));
+  const ticket = (sess, id, parallelSafe) => {
+    fs.mkdirSync(path.join(sess, id), { recursive: true });
+    fs.writeFileSync(path.join(sess, id, `rick_ticket_${id}.md`), `---\nid: ${id}\n${parallelSafe ? 'parallel_safe: true\n' : ''}---\n`);
+  };
+  const logLines = (sess, file, rows) => fs.writeFileSync(path.join(sess, file), rows.map(([ts, msg]) => `[${ts}] ${msg}\n`).join(''));
+
+  test('A3-1: the committed lanes fixture sums anatomy passes over the session and its --lane-N siblings', () => {
+    const rows = fieldTiming(path.join(FIXTURES, 'lanes'));
+    assert.deepEqual(rows.map((r) => [r.session, r.anatomy_passes]), [['2026-10-01-cccc0003', 13]]);
+  });
+
+  test('A3-2: the committed units fixture reports the parent session only, never a --unit- dir', () => {
+    assert.deepEqual(fieldTiming(path.join(FIXTURES, 'units')).map((r) => r.session), ['2026-10-01-dddd0004']);
+  });
+
+  test('A3-3: wave widths, the parallel_safe Done span and the failed-then-serial estimate come from the producer lines', () => {
+    const root = mkFixtureTmpDir('a3-field-timing-');
+    try {
+      const waves = path.join(root, '2026-10-01-aaaa0001');
+      ['t1', 't2'].forEach((id) => ticket(waves, id, true));
+      logLines(waves, 'pipeline-runner.log', [
+        ['2026-10-01T10:00:00.000Z', 'pickle waves: wave 1 members=t1,t2 in_flight=2'],
+        ['2026-10-01T10:05:00.000Z', 'pickle waves: wave 1 t1: integrated @ 1111111'],
+        ['2026-10-01T10:17:00.000Z', 'pickle waves: wave 1 t2: integrated @ 2222222'],
+      ]);
+      // t4 fails as a wave member and is then finished serially; t5 is not parallel_safe, so its Done is ignored.
+      const mixed = path.join(root, '2026-10-01-bbbb0002');
+      ['t3', 't4'].forEach((id) => ticket(mixed, id, true));
+      ticket(mixed, 't5', false);
+      logLines(mixed, 'pipeline-runner.log', [
+        ['2026-10-01T10:00:00.000Z', 'pickle waves: wave 1 members=t3,t4 in_flight=2'],
+        ['2026-10-01T10:00:00.000Z', 'pickle waves: wave 1 t3: integrated @ 3333333'],
+        ['2026-10-01T10:02:00.000Z', 'pickle waves: wave 1 t4: failed'],
+      ]);
+      logLines(mixed, 'mux-runner.log', [
+        ['2026-10-01T10:30:00.000Z', '[done-guard] ticket t4 is Done with completion evidence — counter reset, advancing without charge'],
+        ['2026-10-01T11:00:00.000Z', '[done-guard] ticket t5 is Done with completion evidence — counter reset, advancing without charge'],
+      ]);
+      const pick = ({ session, wave_widths, impl_subphase_min, wave_member_failed_then_serial_done }) =>
+        ({ session, wave_widths, impl_subphase_min, wave_member_failed_then_serial_done });
+      assert.deepEqual(fieldTiming(root).map(pick), [
+        { session: '2026-10-01-aaaa0001', wave_widths: [2], impl_subphase_min: 12, wave_member_failed_then_serial_done: 0 },
+        { session: '2026-10-01-bbbb0002', wave_widths: [2], impl_subphase_min: 30, wave_member_failed_then_serial_done: 1 },
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
