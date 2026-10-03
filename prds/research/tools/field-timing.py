@@ -96,10 +96,15 @@ def wave_timing(sess):
     return widths, span, len(failed & serial_done)
 
 
+def family(root, name, kind):
+    """The session dir plus every sibling <name>--<kind>-N dir (lanes and wave units are never rows of their own)."""
+    return [name] + sorted(x for x in os.listdir(root) if x.startswith(f"{name}--{kind}-"))
+
+
 def lane_passes(root, name):
     """Anatomy passes summed over the session's own file and every sibling <name>--lane-N dir."""
     total = 0
-    for d in [name] + sorted(x for x in os.listdir(root) if x.startswith(name + "--lane-")):
+    for d in family(root, name, "lane"):
         total += sum(((read_json(os.path.join(root, d, "anatomy-park.json")) or {}).get("pass_counts") or {}).values())
     return total
 
@@ -108,8 +113,8 @@ def birth(st):
     return getattr(st, "st_birthtime", None) or st.st_ctime
 
 
-def worker_minutes(sess):
-    """Sum of (last write - creation) over every worker_session_*.log: time spent inside worker spawns."""
+def worker_seconds(sess):
+    """Sum of (last write - creation) over every worker_session_*.log: time spent inside worker spawns, in seconds."""
     total, spawns = 0.0, 0
     for root, _dirs, files in os.walk(sess):
         if root.count(os.sep) - sess.count(os.sep) > 1:
@@ -119,7 +124,7 @@ def worker_minutes(sess):
                 st = os.stat(os.path.join(root, f))
                 total += max(0.0, st.st_mtime - birth(st))
                 spawns += 1
-    return round(total / 60, 1), spawns
+    return total, spawns
 
 
 def read_json(path):
@@ -148,7 +153,9 @@ def session_row(sess):
     state = read_json(os.path.join(sess, "state.json")) or {}
     wd = state.get("working_dir") or ""
     phases = phase_minutes(sess)
-    worker_min, spawns = worker_minutes(sess)
+    # A wave member's worker spawns run in its <name>--unit-N dir, which is not a row: count them here.
+    per_dir = [worker_seconds(os.path.join(root, d)) for d in family(root, name, "unit")]
+    worker_min, spawns = round(sum(t for t, _ in per_dir) / 60, 1), sum(n for _, n in per_dir)
     n_tickets, tiers = tickets(sess)
     widths, impl_span, failed_then_serial = wave_timing(sess)
     scope = read_json(os.path.join(sess, "scope.json"))
