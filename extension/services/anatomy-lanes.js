@@ -82,12 +82,14 @@ function isDirectory(p) {
 }
 /**
  * Checkout-relative git-ignored `node_modules` dirs at any depth, from the git ignored listing. A `node_modules`
- * that is a symlink to a dir counts too (stat follows it). A `node_modules` that is not git-ignored is not found,
- * and one inside a wholly-ignored directory is listed only as that ancestor, so it is not found either.
+ * that is a symlink to a dir counts too (stat follows it): git sees a symlink as a file, so a dir-only rule
+ * (`node_modules/`) leaves it untracked-but-not-ignored and only the plain untracked listing names it. A real-dir
+ * `node_modules` that is not git-ignored is not found, and one inside a wholly-ignored directory is listed only as
+ * that ancestor, so it is not found either.
  */
 export function findNodeModulesDirs(repoRoot) {
-    return laneGit(repoRoot, ['ls-files', '-z', '-o', '-i', '--exclude-standard', '--directory'])
-        .split('\0')
+    const untracked = (args) => laneGit(repoRoot, ['ls-files', '-z', '-o', '--exclude-standard', ...args]).split('\0');
+    return [...untracked(['-i', '--directory']), ...untracked([])]
         .map((entry) => entry.replace(/\/$/, ''))
         .filter((rel) => rel !== '' && path.basename(rel) === 'node_modules' && isDirectory(path.join(repoRoot, rel)));
 }
