@@ -6811,6 +6811,23 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
       fx.cleanup();
     }
   });
+
+  test('MREL-B6-1: a finished run discloses review convergence as not measured, once, after dropped findings', async () => {
+    const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: [''] });
+    try {
+      __setSpawnRunnerForTests(recordingRunner([]));
+      const exitCode = await runLaneMain(fx.sessionDir, fx.dataRoot);
+      const lines = readRunnerLog(fx.sessionDir).split('\n');
+      const hits = lines.flatMap((l, i) => (/\] review convergence: not measured$/.test(l) ? [i] : []));
+      assert.equal(hits.length, 1, `disclosure logged once: ${hits.length}`);
+      const dropped = lines.findIndex((l) => /\] dropped findings \(conf>=25\): /.test(l));
+      assert.ok(dropped >= 0 && hits[0] > dropped, `disclosure ${hits[0]} after dropped findings ${dropped}`);
+      assert.ok(exitCode === null || exitCode === 0, `exit ${exitCode}`);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
 });
 
 describe('E1: reportBaseDrift reports drift against the base branch without touching the exit code', () => {

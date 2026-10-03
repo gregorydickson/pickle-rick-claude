@@ -4741,6 +4741,7 @@ function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipeli
     reportBaseDrift(runtime);
     reportDroppedFindings(runtime);
     reportSkippedFailedTickets(runtime);
+    runtime.log('review convergence: not measured');
     emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
     logActivity({
         event: 'session_end', source: 'pickle',
