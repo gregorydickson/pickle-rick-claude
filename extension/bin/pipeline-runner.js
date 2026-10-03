@@ -43,7 +43,7 @@ import { emitBundleLinearComments } from '../services/linear-integration.js';
 import { readRecoverableJsonObject, ANATOMY_CONVERGED_CLEAN_PASSES, createMicroverseState, readMicroverseState, recordCapUnmeasured, writeMicroverseState, } from '../services/microverse-state.js';
 import { runAcPhaseGate } from '../services/ac-phase-gate.js';
 import { resolveScope, refreshScope, filterBySubsystem, computeReviewBase, parseScope, ScopeError, } from '../services/scope-resolver.js';
-import { laneSessionDir, laneBranchName, unitSessionDir, unitBranchName, createLaneWorktree, symlinkLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, laneCommits, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, RETAINED_BRANCH_MAX_AGE_MS, } from '../services/anatomy-lanes.js';
+import { laneSessionDir, laneBranchName, unitSessionDir, unitBranchName, createLaneWorktree, replicateLaneNodeModules, unreproducibleNodeModulesCount, laneAllowedPaths, buildLaneScope, laneRunnerEnv, removeLaneWorktrees, aggregateLaneExitReason, integrateLanes, laneCommits, releaseLaneBranches, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, RETAINED_BRANCH_MAX_AGE_MS, } from '../services/anatomy-lanes.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { planTicketWave, readParallelSafe } from '../services/ticket-waves.js';
 import { runCitadelAudit } from '../services/citadel/audit-runner.js';
@@ -1590,7 +1590,7 @@ export function createLaneSession(parentSessionDir, lane, index, phaseStartSha, 
     const repoRoot = gitRepoRoot(target);
     fs.mkdirSync(laneDir, { recursive: true });
     createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
-    const nodeModulesLinked = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
+    const nodeModulesLinked = replicateLaneNodeModules(repoRoot, worktree).replicated;
     const statePath = path.join(laneDir, 'state.json');
     const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
     // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing lane state to lock against
@@ -1622,7 +1622,7 @@ export function createTicketUnitSession(parentSessionDir, ticketId, waveSha, tar
     const repoRoot = gitRepoRoot(target);
     fs.mkdirSync(unitDir, { recursive: true });
     createLaneWorktree(repoRoot, worktree, branch, waveSha);
-    symlinkLaneNodeModules(repoRoot, worktree);
+    replicateLaneNodeModules(repoRoot, worktree);
     const statePath = path.join(unitDir, 'state.json');
     const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
     // Not `sm.read`: that heals and PERSISTS the parent's defaults, and the parent is never written here.

@@ -92,7 +92,7 @@ import {
   unitSessionDir,
   unitBranchName,
   createLaneWorktree,
-  symlinkLaneNodeModules,
+  replicateLaneNodeModules,
   unreproducibleNodeModulesCount,
   laneAllowedPaths,
   buildLaneScope,
@@ -1990,7 +1990,7 @@ export function createLaneSession(
   const repoRoot = gitRepoRoot(target);
   fs.mkdirSync(laneDir, { recursive: true });
   createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
-  const nodeModulesLinked = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
+  const nodeModulesLinked = replicateLaneNodeModules(repoRoot, worktree).replicated;
 
   const statePath = path.join(laneDir, 'state.json');
   const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));
@@ -2034,7 +2034,7 @@ export function createTicketUnitSession(
   const repoRoot = gitRepoRoot(target);
   fs.mkdirSync(unitDir, { recursive: true });
   createLaneWorktree(repoRoot, worktree, branch, waveSha);
-  symlinkLaneNodeModules(repoRoot, worktree);
+  replicateLaneNodeModules(repoRoot, worktree);
 
   const statePath = path.join(unitDir, 'state.json');
   const workingDir = path.join(fs.realpathSync(worktree), path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target)));

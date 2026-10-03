@@ -51,7 +51,7 @@ import {
   reportDroppedFindings,
   discloseUnmeasuredIntegration,
 } from '../bin/pipeline-runner.js';
-import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir } from '../services/anatomy-lanes.js';
+import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
@@ -4849,7 +4849,8 @@ describe('B-LANES 13h lane session placement', () => {
         assert.equal(lane.branch, `pickle-lane/2026-09-24-placement/${i + 1}`);
         assert.equal(git(worktree, 'rev-parse', 'HEAD'), sha);
         assert.equal(git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD'), lane.branch);
-        assert.ok(fs.lstatSync(path.join(worktree, 'extension', 'node_modules')).isSymbolicLink());
+        assert.ok(fs.lstatSync(path.join(worktree, 'extension', 'node_modules')).isDirectory(), 'a replica dir, not an alias');
+        assert.equal(fs.readlinkSync(path.join(worktree, 'extension', 'node_modules', 'dep')), path.join(target, 'extension', 'node_modules', 'dep'));
         const state = JSON.parse(fs.readFileSync(lane.statePath, 'utf-8'));
         assert.equal(state.working_dir, worktree);
         assert.equal(state.session_dir, lane.laneDir);
@@ -5173,23 +5174,29 @@ describe('B-LANES WS-3: lane integration', () => {
   // Red iff alpha/a.ts AND beta/a.ts both say RED, or the linked node_modules is gone.
   const CHECK_JS = "const fs=require('fs');"
     + "if(!fs.existsSync('node_modules/marker.txt')){console.error('node_modules link missing');process.exit(1)}"
+    + "if(fs.existsSync('packages/a/index.ts')&&!fs.existsSync('packages/a/node_modules/marker.txt')){console.error('nested node_modules replica missing');process.exit(1)}"
     + "process.exit(['alpha/a.ts','beta/a.ts'].every((f)=>fs.readFileSync(f,'utf8').includes('RED'))?1:0)";
 
   // `typecheck: false` ships no package.json/check.js, so no integration typecheck command is discoverable.
-  function makeFixture({ typecheck = true, redAtBase = false } = {}) {
+  // `workspace: true` adds a tracked `packages/a` whose nested node_modules the typecheck also requires.
+  function makeFixture({ typecheck = true, redAtBase = false, workspace = false } = {}) {
     const repo = fs.realpathSync(tmpDir());
     initRepo(repo, {
       ...laneSeedFiles(LANES.map(({ name }) => name)),
+      ...(workspace ? { 'packages/a/index.ts': 'export const p = 1;\n' } : {}),
       'CLAUDE.md': '# Trap doors\n- entry one\n- entry two\n',
       ...(typecheck ? {
         'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
         'check.js': CHECK_JS,
       } : {}),
       ...(redAtBase ? { 'alpha/a.ts': 'export const a = "RED";\n', 'beta/a.ts': 'export const a = "RED";\n' } : {}),
-      '.gitignore': 'node_modules/\n',
+      // Anchored in workspace mode: the nested replica is then untracked, so only `preserve` keeps it through a reset.
+      '.gitignore': workspace ? '/node_modules/\n' : 'node_modules/\n',
     }, { branch: 'work' });
-    fs.mkdirSync(path.join(repo, 'node_modules'));
-    fs.writeFileSync(path.join(repo, 'node_modules', 'marker.txt'), 'x');
+    for (const dir of workspace ? ['', path.join('packages', 'a')] : ['']) {
+      fs.mkdirSync(path.join(repo, dir, 'node_modules'));
+      fs.writeFileSync(path.join(repo, dir, 'node_modules', 'marker.txt'), 'x');
+    }
     const dataRoot = fs.realpathSync(tmpDir());
     const sessionDir = path.join(dataRoot, 'sessions', '2026-09-24-integ');
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -5264,6 +5271,27 @@ describe('B-LANES WS-3: lane integration', () => {
       for (const key of ['name', 'dir', 'excludes', 'branch', 'worktree', 'started_at', 'ended_at', 'passes', 'exit_reason', 'outcome', 'commits']) {
         assert.ok(key in lanes.alpha, `lanes.json row carries ${key}`);
       }
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  // The check needs `packages/a/node_modules/marker.txt`: the base is green only if the integration worktree got
+  // the nested replica (a red base maps beta's red pick to `unavailable`), and gamma — picked after beta's
+  // reset — is green only if that reset preserved it (the replica is untracked here, so `git clean` would take it).
+  test('A2-4: the integration worktree replicates a nested node_modules — a green base lets the red lane read integration_red', async () => {
+    const fx = makeFixture({ workspace: true });
+    try {
+      __setSpawnRunnerForTests(committingRunner([
+        { 'alpha/a.ts': 'export const a = "RED";\n' },
+        { 'beta/a.ts': 'export const a = "RED";\n' },
+        { 'gamma/a.ts': 'export const a = 3;\n' },
+      ]));
+      await runAnatomyLanes(fx.runtime, LANES, 3);
+      const lanes = byName(fx.sessionDir);
+      assert.deepEqual([lanes.alpha.outcome, lanes.beta.outcome, lanes.gamma.outcome],
+        ['integrated', 'integration_red', 'integrated'], fx.logs.join('\n'));
+      assert.deepEqual(lanes.alpha.node_modules_linked.sort(), ['node_modules', path.join('packages', 'a', 'node_modules')]);
     } finally {
       fx.cleanup();
     }
@@ -6346,13 +6374,13 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
   };
 
   /** A workspace repo, a pickle-only pipeline and two parallel_safe Todo tickets declaring disjoint files. */
-  function makeWavesFixture({ pipeline = {}, nodeModules = [], scripts = undefined } = {}) {
+  function makeWavesFixture({ pipeline = {}, nodeModules = [], scripts = undefined, files = {} } = {}) {
     const repo = fs.realpathSync(tmpDir());
     const startCommit = initRepo(repo, {
-      // No trailing slash: the unit worktree's linked node_modules is a symlink, which `node_modules/` never matches.
       '.gitignore': 'node_modules\n',
       'package.json': JSON.stringify({ name: 'fx', private: true, workspaces: ['packages/*'], scripts }),
       'packages/a/index.ts': 'export const a = 1;\n',
+      ...files,
     });
     seedNodeModules(repo, ...nodeModules);
     const dataRoot = fs.realpathSync(tmpDir());
@@ -6401,8 +6429,9 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
     };
   }
 
-  test('A1-1: a node_modules below depth 1 sends the pickle phase to ONE serial runner, no unit session, waves line logged', async () => {
-    const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: ['', path.join('packages', 'a')] });
+  // `packages/c` holds no tracked file, so no worktree has the directory its node_modules would live in.
+  test('A1-1: a node_modules the replica cannot create sends the pickle phase to ONE serial runner, no unit session, waves line logged', async () => {
+    const fx = makeWavesFixture({ pipeline: { max_parallel_tickets: 2 }, nodeModules: ['', path.join('packages', 'c')] });
     const calls = [];
     try {
       __setSpawnRunnerForTests(recordingRunner(calls));
@@ -6432,7 +6461,7 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
   });
 
   test('A1-3: control — a serial pickle phase over the same workspace logs neither disabled line', async () => {
-    const fx = makeWavesFixture({ nodeModules: ['', path.join('packages', 'a')] });
+    const fx = makeWavesFixture({ nodeModules: ['', path.join('packages', 'c')] });
     const calls = [];
     try {
       __setSpawnRunnerForTests(recordingRunner(calls));
@@ -6441,6 +6470,81 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
       assert.doesNotMatch(readRunnerLog(fx.sessionDir), /disabled for this phase/, 'the predicate is not even asked on a serial phase');
     } finally {
       __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  /** A1's workspace plus a tracked `packages/b`, the relative workspace link `packages/a/node_modules/@s/b → ../../../b`, and a root dep. */
+  function makeWorkspaceFixture(pipeline = {}) {
+    const fx = makeWavesFixture({
+      pipeline, nodeModules: ['', path.join('packages', 'a')], files: { 'packages/b/index.ts': 'export const b = 2;\n' },
+    });
+    fs.mkdirSync(path.join(fx.repo, 'packages', 'a', 'node_modules', '@s'));
+    fs.symlinkSync(path.join('..', '..', '..', 'b'), path.join(fx.repo, 'packages', 'a', 'node_modules', '@s', 'b'));
+    fs.mkdirSync(path.join(fx.repo, 'node_modules', 'dep'));
+    fs.writeFileSync(path.join(fx.repo, 'node_modules', 'dep', 'index.js'), 'module.exports = 1;\n');
+    return fx;
+  }
+  const isUnder = (child, parent) => {
+    const rel = path.relative(parent, child);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  const LINKED_B = path.join('packages', 'a', 'node_modules', '@s', 'b', 'index.ts');
+  /** What a worktree's replica resolves to, read while the worktree exists. */
+  const replicaFacts = (wt) => ({
+    linkedBUnderWorktree: isUnder(fs.realpathSync(path.join(wt, LINKED_B)), fs.realpathSync(wt)),
+    nestedIsRealDir: fs.lstatSync(path.join(wt, 'packages', 'a', 'node_modules')).isDirectory(),
+    workspaceLinkText: fs.readlinkSync(path.join(wt, 'packages', 'a', 'node_modules', '@s', 'b')),
+    depTarget: fs.readlinkSync(path.join(wt, 'node_modules', 'dep')),
+  });
+  const expectedFacts = (repo) => ({
+    linkedBUnderWorktree: true,
+    nestedIsRealDir: true,
+    workspaceLinkText: path.join('..', '..', '..', 'b'),
+    depTarget: path.join(repo, 'node_modules', 'dep'),
+  });
+
+  test('A2-1: the predicate counts only node_modules the replica cannot create — 0 for tracked parents, 1 per untracked one', () => {
+    const fx = makeWorkspaceFixture();
+    try {
+      assert.ok(isUnder(fs.realpathSync(path.join(fx.repo, LINKED_B)), fx.repo), 'fixture precondition: the link resolves in main');
+      assert.equal(unreproducibleNodeModulesCount(fx.repo), 0, 'root and packages/a node_modules are both reproducible');
+      seedNodeModules(fx.repo, path.join('packages', 'c'));
+      assert.equal(unreproducibleNodeModulesCount(fx.repo), 1, 'packages/c holds no tracked file, so no worktree has it');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('A2-2: a workspace with tracked parents runs the waves, and each unit worktree resolves the workspace link inside itself', async () => {
+    const fx = makeWorkspaceFixture({ max_parallel_tickets: 2 });
+    const calls = [];
+    const facts = [];
+    const record = recordingRunner(calls);
+    try {
+      __setSpawnRunnerForTests(async (cmd, args) => {
+        if (/--unit-/.test(args[1])) facts.push(replicaFacts(readJson(path.join(args[1], 'state.json')).working_dir));
+        return record(cmd, args);
+      });
+      await runLaneMain(fx.sessionDir, fx.dataRoot);
+      assert.deepEqual(calls.sort(), WAVE_IDS.map((id) => `${fx.sessionDir}--unit-${id}`), 'one unit per ticket, no serial runner');
+      assert.doesNotMatch(readRunnerLog(fx.sessionDir), /disabled for this phase/);
+      assert.deepEqual(facts, WAVE_IDS.map(() => expectedFacts(fx.repo)));
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('A2-3: a lane worktree replicates both node_modules, records them, and resolves the workspace link inside itself', () => {
+    const fx = makeWorkspaceFixture();
+    try {
+      const lane = { name: 'packages', dir: 'packages', excludes: [], testRatioApplies: false, fileCount: 2 };
+      const session = createLaneSession(fx.sessionDir, lane, 1, git(fx.repo, 'rev-parse', 'HEAD'), fx.repo);
+      assert.deepEqual([...session.nodeModulesLinked].sort(), ['node_modules', path.join('packages', 'a', 'node_modules')]);
+      assert.deepEqual(replicaFacts(session.worktree), expectedFacts(fx.repo));
+      assert.equal(git(session.worktree, 'status', '--porcelain'), '', 'the replica adds nothing to the worktree status');
+    } finally {
       fx.cleanup();
     }
   });

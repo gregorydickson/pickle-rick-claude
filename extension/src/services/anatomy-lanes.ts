@@ -90,54 +90,94 @@ function isDirectory(p: string): boolean {
   }
 }
 
-/** Checkout-relative `node_modules` dirs a lane worktree links: the root's and each direct child's. */
-function laneLinkableNodeModules(repoRoot: string): string[] {
-  return ['', ...fs.readdirSync(repoRoot)]
-    .map((rel) => path.join(rel, 'node_modules'))
-    .filter((rel) => isDirectory(path.join(repoRoot, rel)));
+/** Checkout-relative `node_modules` dirs within `maxDepth` levels; never descends into one. */
+export function findNodeModulesDirs(repoRoot: string, maxDepth = 3): string[] {
+  const walk = (rel: string, depth: number): string[] => {
+    if (depth > maxDepth) return [];
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    return entries
+      .filter((e) => e.isDirectory() && e.name !== '.git')
+      .flatMap((e) => {
+        const child = path.join(rel, e.name);
+        return e.name === 'node_modules' ? [child] : walk(child, depth + 1);
+      });
+  };
+  return walk('', 0);
 }
 
-const NODE_MODULES_WALK_DEPTH = 3;
+/** The checkout-relative dir holding `rel` (`''` for the root). */
+function parentOf(rel: string): string {
+  const dir = path.dirname(rel);
+  return dir === '.' ? '' : dir;
+}
 
-/** Checkout-relative `node_modules` dirs within `NODE_MODULES_WALK_DEPTH` levels; never descends into one. */
-function findNodeModulesDirs(repoRoot: string, rel = '', depth = 0): string[] {
-  if (depth > NODE_MODULES_WALK_DEPTH) return [];
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(path.join(repoRoot, rel), { withFileTypes: true });
-  } catch {
-    return [];
+/** Every dir that holds a tracked file, root included: the dirs a fresh worktree of this checkout has. */
+function trackedDirs(repoRoot: string): Set<string> {
+  const dirs = new Set(['']);
+  for (const file of laneGit(repoRoot, ['ls-files', '-z']).split('\0').filter(Boolean)) {
+    for (let dir = parentOf(file); !dirs.has(dir); dir = parentOf(dir)) dirs.add(dir);
   }
-  return entries
-    .filter((e) => e.isDirectory() && e.name !== '.git')
-    .flatMap((e) => {
-      const child = path.join(rel, e.name);
-      return e.name === 'node_modules' ? [child] : findNodeModulesDirs(repoRoot, child, depth + 1);
-    });
+  return dirs;
 }
 
 /**
- * How many `node_modules` dirs the checkout has that a lane worktree would NOT get linked
- * (no worktree is created: this shares its source enumeration with `symlinkLaneNodeModules`).
+ * How many `node_modules` dirs the checkout has that a lane worktree's replica cannot create — those whose
+ * parent holds no tracked file, so a fresh worktree has nowhere to put them. Dry: no worktree is created, and
+ * the enumeration is the one `replicateLaneNodeModules` walks.
  */
 export function unreproducibleNodeModulesCount(repoRoot: string): number {
-  const linkable = new Set(laneLinkableNodeModules(repoRoot));
-  return findNodeModulesDirs(repoRoot).filter((rel) => !linkable.has(rel)).length;
+  const tracked = trackedDirs(repoRoot);
+  return findNodeModulesDirs(repoRoot).filter((rel) => !tracked.has(parentOf(rel))).length;
+}
+
+function isPresent(p: string): boolean {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Recreate `src` as a real dir at `dest`: symlinks keep their link text, everything else links to `src`. */
+function replicateDir(src: string, dest: string, recreateScopes: boolean): void {
+  fs.mkdirSync(dest, { recursive: true });
+  // A dest that already exists as a link would route the writes below into whatever it points at.
+  if (!fs.lstatSync(dest).isDirectory()) throw new Error(`${dest} is not a directory`);
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (isPresent(to)) continue;
+    if (recreateScopes && entry.isDirectory() && entry.name.startsWith('@')) replicateDir(from, to, false);
+    else fs.symlinkSync(entry.isSymbolicLink() ? fs.readlinkSync(from) : from, to);
+  }
 }
 
 /**
- * Lane workers never install: every `node_modules` the main checkout has at its root or
- * one level down is symlinked into the same place in the worktree. Returns the links made.
+ * Lane workers never install. Every `node_modules` dir the checkout has is recreated as a real dir in the
+ * worktree, and so is each `@scope` dir inside it (npm's own naming rule, not a list). Inside them a symlink
+ * entry keeps its link text, so a relative workspace link resolves inside the worktree; every other entry is
+ * symlinked absolute to the main checkout. Returns checkout-relative dirs. Never throws: a dir the worktree has
+ * no parent for, or that fails part-way, is `unreproducible`.
  */
-export function symlinkLaneNodeModules(repoRoot: string, worktree: string): string[] {
-  const linked: string[] = [];
-  for (const rel of laneLinkableNodeModules(repoRoot)) {
-    const dest = path.join(worktree, rel);
-    if (!isDirectory(path.dirname(dest)) || fs.existsSync(dest)) continue;
-    fs.symlinkSync(path.join(repoRoot, rel), dest, 'dir');
-    linked.push(dest);
+export function replicateLaneNodeModules(repoRoot: string, worktree: string): { replicated: string[]; unreproducible: string[] } {
+  const replicated: string[] = [];
+  const unreproducible: string[] = [];
+  for (const rel of findNodeModulesDirs(repoRoot)) {
+    try {
+      if (!isDirectory(path.join(worktree, parentOf(rel)))) throw new Error(`no ${parentOf(rel) || '.'} in the worktree`);
+      replicateDir(path.join(repoRoot, rel), path.join(worktree, rel), true);
+      replicated.push(rel);
+    } catch {
+      unreproducible.push(rel);
+    }
   }
-  return linked;
+  return { replicated, unreproducible };
 }
 
 /**
@@ -395,7 +435,7 @@ export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult
   const carried = (i: number): boolean => outcomes[i] === 'integrated' && commits[i].length > 0;
   try {
     createLaneWorktree(repoRoot, worktree, branch, phaseStartSha);
-    const preserve = symlinkLaneNodeModules(repoRoot, worktree).map((link) => path.relative(worktree, link));
+    const preserve = replicateLaneNodeModules(repoRoot, worktree).replicated;
     const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
     const baseRed = runIntegrationTypecheck(targetDir) === 'red';
     commits.forEach((laneCommitList, i) => {
