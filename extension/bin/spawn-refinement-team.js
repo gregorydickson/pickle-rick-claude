@@ -1193,10 +1193,14 @@ function killSiblingWorkers(result) {
         terminateWorkerProcess(sibling, 'SIGTERM');
     }
 }
-function archiveCycleResults(refinementDir, cycles, cycle) {
+// Archives only roles that succeeded THIS cycle: a failed role's canonical file is stale
+// (an earlier cycle's content), and copying it would label it with the newer cycle.
+export function archiveCycleResults(refinementDir, cycles, cycle, results) {
     if (cycles <= 1)
         return;
     for (const { id } of WORKER_ROLES) {
+        if (!results.some((r) => r.roleId === id && r.success))
+            continue;
         const canonical = path.join(refinementDir, `analysis_${id}.md`);
         const cycleArchive = path.join(refinementDir, `analysis_${id}_c${cycle}.md`);
         if (fs.existsSync(canonical)) {
@@ -1245,7 +1249,7 @@ export async function orchestrateCycles(args, settings, prd) {
             portalContext,
             sessionDir: args.sessionDir,
         });
-        archiveCycleResults(refinementDir, runtime.cycles, cycle);
+        archiveCycleResults(refinementDir, runtime.cycles, cycle, results);
         allCycleResults.push(results);
         printCycleSummary(results, runtime.cycles, cycle);
         if (results.every((r) => !r.success))
@@ -2419,9 +2423,11 @@ export function resolveRefinementDisposition(cycleResults) {
         };
     }
     const noun = producedCount === 1 ? 'analysis' : 'analyses';
+    const { finalResults } = cycleResults;
+    const succeeded = finalResults.filter((r) => r.success).length;
     return {
         exitCode: 0,
-        message: `${Style.YELLOW}⚠️  Workers failed: ${failed.join(', ')}. Synthesis will proceed with ${producedCount} produced ${noun}.${Style.RESET}`,
+        message: `${Style.YELLOW}⚠️  Workers failed: ${failed.join(', ')}. Synthesis will proceed with ${producedCount} ${noun} on disk; ${succeeded} of ${finalResults.length} produced this cycle.${Style.RESET}`,
     };
 }
 export function scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir) {

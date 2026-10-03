@@ -17,6 +17,7 @@ const {
   isParametrizedTicket,
   countWrittenAnalyses,
   resolveRefinementDisposition,
+  archiveCycleResults,
   ZERO_ANALYSES_EXIT_CODE,
 } = await import('../bin/spawn-refinement-team.js');
 
@@ -844,7 +845,8 @@ test('eb189d66 (over-trigger control): partial success still exits 0 and still w
     assert.match(disposition.message, /⚠/u, 'partial success must still warn');
     // Bounded to the word it counts, matching the binary row's idiom below: a bare /\b3\b/ would
     // accept the digit from anywhere in the message.
-    assert.match(disposition.message, /\b3 produced analyses\b/, 'the warning must state the produced count (3), not the succeeded-role count (2)');
+    assert.match(disposition.message, /\b3 analyses on disk\b/, 'the warning must state what synthesis reads from disk (3)');
+    assert.match(disposition.message, /\b2 of 3 produced this cycle\b/, 'the produced claim comes from this cycle\'s successes (2)');
     assert.match(disposition.message, /requirements/, 'the warning must still name the failed role');
     assert.doesNotMatch(disposition.message, /available analyses/, 'the false "available analyses" claim must be gone');
   } finally {
@@ -946,7 +948,7 @@ test('a695505e: zero analyses exits ZERO_ANALYSES_EXIT_CODE through main() — t
   }
 });
 
-test('a695505e (over-trigger control): partial success exits 0 through main(), naming the produced count', () => {
+test('a695505e (over-trigger control): partial success exits 0 through main(), naming the on-disk and produced counts', () => {
   const sandbox = makeRefinementSandbox('a695505e-partial-');
   try {
     // Written BEFORE the run, so their mtime predates each analyst's startTime: every role still
@@ -960,8 +962,65 @@ test('a695505e (over-trigger control): partial success exits 0 through main(), n
     assert.equal(result.status, 0, 'some-but-not-all analyses must still exit 0 through main()');
     // stdout, not stderr: main() routes the two dispositions to different streams — `console.error`
     // before the non-zero exit, `console.log` for the warn-and-proceed case (:3010 vs :3012).
-    assert.match(result.stdout, /2 produced analyses/, 'the warning must state the count that was observed');
+    assert.match(result.stdout, /2 analyses on disk/, 'the warning must state the count that was observed on disk');
+    assert.match(result.stdout, /0 of 3 produced this cycle/, 'every role failed this cycle');
   } finally {
     fs.rmSync(sandbox.root, { recursive: true, force: true });
+  }
+});
+
+function seedCanonical(dir, ids) {
+  for (const id of ids) fs.writeFileSync(path.join(dir, `analysis_${id}.md`), `# ${id}\n`);
+}
+
+test('MREL-B5-1: archiveCycleResults skips a role that failed this cycle', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mrel-b5-1-'));
+  try {
+    seedCanonical(dir, ['requirements', 'codebase', 'risk-scope']);
+    archiveCycleResults(dir, 3, 2, [
+      makeWorkerResult('requirements', false),
+      makeWorkerResult('codebase', true),
+      makeWorkerResult('risk-scope', true),
+    ]);
+    assert.ok(fs.existsSync(path.join(dir, 'analysis_codebase_c2.md')));
+    assert.ok(fs.existsSync(path.join(dir, 'analysis_risk-scope_c2.md')));
+    assert.ok(!fs.existsSync(path.join(dir, 'analysis_requirements_c2.md')), 'stale canonical must not be archived as c2');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('MREL-B5-2: archiveCycleResults writes nothing for a single-cycle run', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mrel-b5-2-'));
+  try {
+    seedCanonical(dir, ['requirements', 'codebase', 'risk-scope']);
+    archiveCycleResults(dir, 1, 1, ['requirements', 'codebase', 'risk-scope'].map((id) => makeWorkerResult(id, true)));
+    assert.deepEqual(fs.readdirSync(dir).filter((f) => /_c\d+\.md$/.test(f)), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('MREL-B5-3: two-cycle partial failure reports this cycle\'s successes beside the on-disk count', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-mrel-b5-3-'));
+  try {
+    seedCanonical(dir, ['requirements', 'codebase', 'risk-scope']);
+    const cycle1 = ['requirements', 'codebase', 'risk-scope'].map((id) => makeWorkerResult(id, true));
+    const cycle2 = [
+      { ...makeWorkerResult('requirements', false), cycle: 2 },
+      { ...makeWorkerResult('codebase', true), cycle: 2 },
+      { ...makeWorkerResult('risk-scope', true), cycle: 2 },
+    ];
+    const cycleResults = {
+      ...makeCycleResults(dir, { allSuccess: false, finalResults: cycle2 }),
+      cyclesRequested: 2,
+      allCycleResults: [cycle1, cycle2],
+    };
+    const disposition = resolveRefinementDisposition(cycleResults);
+    assert.equal(disposition.exitCode, 0);
+    assert.match(disposition.message, /\b2 of 3 produced this cycle\b/);
+    assert.match(disposition.message, /\b3 analyses on disk\b/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

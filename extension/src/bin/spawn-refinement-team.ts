@@ -957,7 +957,7 @@ ${prdContent}
 ${outputInstructions}`;
 }
 
-interface WorkerResult {
+export interface WorkerResult {
   roleId: RoleId;
   success: boolean;
   logPath: string;
@@ -1571,9 +1571,17 @@ function killSiblingWorkers(result: WorkerResult): void {
   }
 }
 
-function archiveCycleResults(refinementDir: string, cycles: number, cycle: number): void {
+// Archives only roles that succeeded THIS cycle: a failed role's canonical file is stale
+// (an earlier cycle's content), and copying it would label it with the newer cycle.
+export function archiveCycleResults(
+  refinementDir: string,
+  cycles: number,
+  cycle: number,
+  results: readonly WorkerResult[],
+): void {
   if (cycles <= 1) return;
   for (const { id } of WORKER_ROLES) {
+    if (!results.some((r) => r.roleId === id && r.success)) continue;
     const canonical = path.join(refinementDir, `analysis_${id}.md`);
     const cycleArchive = path.join(refinementDir, `analysis_${id}_c${cycle}.md`);
     if (fs.existsSync(canonical)) {
@@ -1624,7 +1632,7 @@ export async function orchestrateCycles(
       portalContext,
       sessionDir: args.sessionDir,
     });
-    archiveCycleResults(refinementDir, runtime.cycles, cycle);
+    archiveCycleResults(refinementDir, runtime.cycles, cycle, results);
     allCycleResults.push(results);
     printCycleSummary(results, runtime.cycles, cycle);
     if (results.every((r) => !r.success)) break;
@@ -2871,9 +2879,11 @@ export function resolveRefinementDisposition(cycleResults: CycleResults): Refine
     };
   }
   const noun = producedCount === 1 ? 'analysis' : 'analyses';
+  const { finalResults } = cycleResults;
+  const succeeded = finalResults.filter((r) => r.success).length;
   return {
     exitCode: 0,
-    message: `${Style.YELLOW}⚠️  Workers failed: ${failed.join(', ')}. Synthesis will proceed with ${producedCount} produced ${noun}.${Style.RESET}`,
+    message: `${Style.YELLOW}⚠️  Workers failed: ${failed.join(', ')}. Synthesis will proceed with ${producedCount} ${noun} on disk; ${succeeded} of ${finalResults.length} produced this cycle.${Style.RESET}`,
   };
 }
 
