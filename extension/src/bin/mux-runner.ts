@@ -4054,28 +4054,26 @@ export function loadRateLimitSettings(extensionRoot: string): { waitMinutes: num
 
 export function detectRateLimitInLog(logFile: string): RateLimitInfo {
   const result: RateLimitInfo = { limited: false, sawEvents: false };
+  // The LAST event decides: a warning or rejection is limited, anything later clears it.
+  let deciding: { status?: unknown; resetsAt?: unknown; rateLimitType?: unknown } | undefined;
   try {
     const content = fs.readFileSync(logFile, 'utf-8');
     for (const line of content.split('\n')) {
       try {
         const parsed = JSON.parse(line);
         if (parsed.type !== 'rate_limit_event') continue;
-        result.sawEvents = true;
         // Real API nests under rate_limit_info; check both paths for robustness
-        const info = parsed.rate_limit_info ?? parsed;
-        // The LAST event decides: a warning or rejection is limited, anything later clears it.
-        const limited = info.status === 'rejected' || info.status === 'allowed_warning';
-        result.limited = limited;
-        delete result.resetsAt;
-        delete result.rateLimitType;
-        delete result.status;
-        if (!limited) continue;
-        result.status = info.status;
-        if (typeof info.resetsAt === 'number') result.resetsAt = info.resetsAt;
-        if (typeof info.rateLimitType === 'string') result.rateLimitType = info.rateLimitType;
+        deciding = parsed.rate_limit_info ?? parsed;
       } catch { /* not JSON */ }
     }
   } catch { /* file missing */ }
+  if (!deciding) return result;
+  result.sawEvents = true;
+  if (deciding.status !== 'rejected' && deciding.status !== 'allowed_warning') return result;
+  result.limited = true;
+  result.status = deciding.status;
+  if (typeof deciding.resetsAt === 'number') result.resetsAt = deciding.resetsAt;
+  if (typeof deciding.rateLimitType === 'string') result.rateLimitType = deciding.rateLimitType;
   return result;
 }
 
