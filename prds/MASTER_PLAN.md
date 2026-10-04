@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-04 03:10Z) — B-MERGE-REL DONE: merged main + Part 1 gated 22/22 and DEPLOYED; exp branches retired
+### ▶ STATE (2026-10-04 03:35Z) — B-MERGE-REL complete; main deployed; queue holds only operator-gated or tier-2 items
 
 | | |
 |---|---|
@@ -276,7 +276,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
      depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
 
-7. **B-MERGE-REL — job 1: close every phase-failure path, merge the experimental work, then ratchet** (operator, 2026-10-03). **DONE 2026-10-04: merged, built, gated 22/22, deployed. Remaining from decision 5: delete the 3 never-run `bin/__tests__/*.spec.ts` files (needs a small pipeline). Ledger rows below.**
+7. **B-MERGE-REL — job 1: close every phase-failure path, merge the experimental work, then ratchet** (operator, 2026-10-03). **DONE 2026-10-04: merged, built, gated 22/22, deployed. Decision 5's "delete the 3 never-run spec files" CLOSED as already-satisfied (2026-10-04): the premise is false — each `bin/__tests__/*.spec.js` is imported by a tier wrapper (`tests/microverse-runner.handleIterationOutcome.test.js` 13 tests fast, `tests/microverse-runner.notify-operator.test.js` 4 fast, `tests/mux-runner.output-stall.test.js` 5 integration; 22/22 pass). Deleting them would delete live coverage; nothing to do. Ledger rows below.**
    Plan: `prds/p0-b-merge-reliability-plan.md` (agent team: phase-failure forensics, merge analysis, issue inventory,
    reliability baseline → planner → complexity skeptic + measurement verifier → revision against every blocking finding).
    19 tickets, gate legs 22 → 22. Reliability now tracked as N1 hands-off completion (16/17) and N2 all-phases-converged
@@ -319,8 +319,7 @@ merge `exp/b-lanes` into `main` (the ledger now has 7 sessions); deploy or merge
 - L2 departs from the analysts' per-lane refusal. In a pnpm workspace every lane would be refused and nothing
   reviewed, so the whole phase runs serially instead.
 
-**Recorded, not filed:** `extension/src/bin/__tests__/*.spec.ts` are never run by any tier (`discoverTestFiles`
-collects `*.test.js` only).
+**Corrected 2026-10-04:** the `bin/__tests__/*.spec.ts` files DO run, through `tests/*.test.js` wrappers that import them.
 
 ### ▶ 2.2 BETA SOAK ACTIVE — `v2.2.0-beta.1` DEPLOYED FROM `exp/b-lanes` (2026-09-26)
 
