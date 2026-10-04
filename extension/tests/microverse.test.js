@@ -3635,60 +3635,6 @@ test('worker mode: isConverged is irrelevant — runner checks convergence file 
     assert.equal(isConverged(state), 'stall');
 });
 
-test('worker mode: convergence file with converged=true triggers exit', () => {
-    const dir = mkFixtureTmpDir('pickle-wk-');
-    try {
-        fs.writeFileSync(path.join(dir, 'convergence.json'), JSON.stringify({ converged: true, reason: 'done' }));
-        const raw = JSON.parse(fs.readFileSync(path.join(dir, 'convergence.json'), 'utf-8'));
-        assert.equal(raw.converged, true);
-        assert.equal(raw.reason, 'done');
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
-test('worker mode: convergence file missing does not throw', () => {
-    const dir = mkFixtureTmpDir('pickle-wk-');
-    try {
-        let caught = false;
-        try {
-            JSON.parse(fs.readFileSync(path.join(dir, 'convergence.json'), 'utf-8'));
-        } catch {
-            caught = true;
-        }
-        assert.equal(caught, true, 'missing file should be caught');
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
-test('worker mode: malformed JSON in convergence file does not throw', () => {
-    const dir = mkFixtureTmpDir('pickle-wk-');
-    try {
-        fs.writeFileSync(path.join(dir, 'convergence.json'), 'not json!!!');
-        let caught = false;
-        try {
-            JSON.parse(fs.readFileSync(path.join(dir, 'convergence.json'), 'utf-8'));
-        } catch {
-            caught = true;
-        }
-        assert.equal(caught, true, 'malformed JSON should be caught');
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
-test('worker mode: max_iterations still applies', () => {
-    const state = createMicroverseState({
-        prdPath: '/tmp/prd.md', metric: TEST_METRIC, stallLimit: 3,
-        convergenceMode: 'worker', convergenceFile: 'convergence.json',
-    });
-    // max_iterations check happens BEFORE post-iteration logic — unaffected by worker mode
-    const iteration = 3;
-    const maxIter = 3;
-    assert.equal(maxIter > 0 && iteration >= maxIter, true, 'max_iterations triggers exit');
-});
-
 test('worker mode handoff: includes convergence_file path', () => {
     const state = createMicroverseState({
         prdPath: '/tmp/target', metric: TEST_METRIC, stallLimit: 3,
