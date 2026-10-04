@@ -68,6 +68,9 @@ function writeState(statePath, iteration = 1, activity = []) {
 // appended to `state.json.activity`. A red ticket corroborated by a non-empty failure list
 // there is a MEASURED red; every fixture below that means "this ticket really failed its
 // gate" must carry one, or the withhold this suite exists to prove now correctly declines.
+// One genuine test failure: the shape a red `worker_gate_tests_verdict` is derived from.
+const REAL_FAILURE = { name: 'not ok 1 - real test', file: 'foo.test.js', message: 'AssertionError' };
+
 function workerGateFailedEvent(ticketId, failures) {
   return {
     event: 'worker_gate_failed',
@@ -138,7 +141,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const dir = tmpDir();
     const { statePath } = makeRuntime(dir);
     writeState(statePath, 1, [
-      workerGateFailedEvent('aaaaaaaa', [{ name: 'not ok 1 - real test', file: 'foo.test.js', message: 'AssertionError' }]),
+      workerGateFailedEvent('aaaaaaaa', [REAL_FAILURE]),
     ]);
     writeTicket(dir, 'aaaaaaaa', { status: 'Done', testsVerdict: 'red', title: 'red ticket' });
 
@@ -163,7 +166,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const dir = tmpDir();
     const { runtime, statePath, cancelMarker } = makeRuntime(dir);
     writeState(statePath, 1, [
-      workerGateFailedEvent('bbbbbbbb', [{ name: 'not ok 1 - real test', file: 'foo.test.js', message: 'AssertionError' }]),
+      workerGateFailedEvent('bbbbbbbb', [REAL_FAILURE]),
     ]);
     writeTicket(dir, 'bbbbbbbb', { status: 'Done', testsVerdict: 'red' });
     const counters = makeCounters();
@@ -184,7 +187,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const dir = tmpDir();
     const { runtime, statePath, cancelMarker } = makeRuntime(dir);
     writeState(statePath, 1, [
-      workerGateFailedEvent('cccccccc', [{ name: 'not ok 1 - real test', file: 'foo.test.js', message: 'AssertionError' }]),
+      workerGateFailedEvent('cccccccc', [REAL_FAILURE]),
     ]);
     writeTicket(dir, 'cccccccc', { status: 'Done', testsVerdict: 'red' });
     const counters = makeCounters();
@@ -201,7 +204,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const dir = tmpDir();
     const { runtime, statePath, cancelMarker } = makeRuntime(dir);
     writeState(statePath, 1, [
-      workerGateFailedEvent('dddddddd', [{ name: 'not ok 1 - real test', file: 'foo.test.js', message: 'AssertionError' }]),
+      workerGateFailedEvent('dddddddd', [REAL_FAILURE]),
     ]);
     writeTicket(dir, 'dddddddd', { status: 'Done', testsVerdict: 'red' });
     const counters = makeCounters();
@@ -224,7 +227,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const dir = tmpDir();
     const { runtime, statePath, cancelMarker } = makeRuntime(dir);
     writeState(statePath, 1, [
-      workerGateFailedEvent('eeee1111', [{ name: 'not ok 1 - real test', file: 'foo.test.js', message: 'AssertionError' }]),
+      workerGateFailedEvent('eeee1111', [REAL_FAILURE]),
     ]);
     writeTicket(dir, 'eeee1111', { status: 'Done', testsVerdict: 'red' });
     const boundary = makeCounters();
@@ -274,8 +277,8 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const dir = tmpDir();
     const { statePath } = makeRuntime(dir);
     writeState(statePath, 1, [
-      workerGateFailedEvent('eeeeeeee', [{ name: 'not ok 1 - real test', file: 'foo.test.js', message: 'AssertionError' }]),
-      workerGateFailedEvent('ffffffff', [{ name: 'not ok 1 - real test', file: 'bar.test.js', message: 'AssertionError' }]),
+      workerGateFailedEvent('eeeeeeee', [REAL_FAILURE]),
+      workerGateFailedEvent('ffffffff', [{ ...REAL_FAILURE, file: 'bar.test.js' }]),
     ]);
     writeTicket(dir, 'eeeeeeee', { status: 'Done', testsVerdict: 'red' });
     writeTicket(dir, 'ffffffff', { status: 'Done', testsVerdict: 'red' });
@@ -308,7 +311,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const dir = tmpDir();
     const { statePath } = makeRuntime(dir);
     writeState(statePath, 1, [
-      workerGateFailedEvent('iiiiiiii', [{ name: 'not ok 1 - real test', file: 'foo.test.js', message: 'AssertionError' }]),
+      workerGateFailedEvent('iiiiiiii', [REAL_FAILURE]),
     ]);
     writeTicket(dir, 'iiiiiiii', { status: 'Done', testsVerdict: 'red' });
     const phases = ['anatomy-park', 'szechuan-sauce'];
