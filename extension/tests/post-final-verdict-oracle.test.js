@@ -150,7 +150,7 @@ test('b88a6603 shape: 8/8 Done, final commit reddens, run completes without repo
     runtime.log = (m) => finalizeLogs.push(m);
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-    const outcome = finalizePhaseSuccess(runtime, counters, path.join(sessionDir, 'pipeline-cancel'), 'pickle', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, path.join(sessionDir, 'pipeline-cancel'), 'pickle', 0);
 
     // The run COMPLETES — it is never halted or broken. Output-with-flags, not no-output.
     assert.equal(outcome.action, 'continue', 'a degraded post-final verdict must never break the phase loop');
@@ -214,7 +214,7 @@ test('manager-token completion seam: runManagerTokenPostFinalMeasurement records
     const finalizeLogs = [];
     runtime.log = (m) => finalizeLogs.push(m);
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
-    const outcome = finalizePhaseSuccess(runtime, counters, path.join(sessionDir, 'pipeline-cancel'), 'pickle', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, path.join(sessionDir, 'pipeline-cancel'), 'pickle', 0);
 
     assert.equal(outcome.action, 'continue', 'a degraded post-final verdict must never break the phase loop');
     assert.equal(counters.nonConvergent, 1, 'a red post-final verdict reached via the manager-token seam must withhold success too');

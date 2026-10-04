@@ -5971,7 +5971,7 @@ async function runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, 
     const acGateWithhold = withholdForFailedAcGate(runtime, counters, cancelMarker, rawPhase, acGate, log);
     if (acGateWithhold)
         return acGateWithhold;
-    return finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode, log);
+    return finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode);
 }
 export function classifyMicroverseHaltDecision(rawExitReason) {
     // B-ONEABORT AC-OA-1a: a halted run has no output, and no output has no quality — the abort
@@ -6309,7 +6309,8 @@ function phaseDivergence(runtime, rawPhase, exitCode) {
  * "not success" and "did not exit clean" are the same set — one comparison against the single
  * success value needs no list, and a future reason can only be caught by it, never missed.
  */
-export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode, log) {
+export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode) {
+    const { log } = runtime;
     // B-RRH C1: strict roster+sentinel gate runs FIRST — do not trust exit code 0.
     const robustBreak = maybeStampPickleIncompleteRobust(runtime, rawPhase, log);
     if (robustBreak)

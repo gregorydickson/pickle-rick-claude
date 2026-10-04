@@ -6913,7 +6913,7 @@ async function runPhaseIterationBody(
   });
   const acGateWithhold = withholdForFailedAcGate(runtime, counters, cancelMarker, rawPhase, acGate, log);
   if (acGateWithhold) return acGateWithhold;
-  return finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode, log);
+  return finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, exitCode);
 }
 
 export interface MicroverseHaltDecision {
@@ -7271,8 +7271,8 @@ export function finalizePhaseSuccess(
   cancelMarker: string,
   rawPhase: PhaseName,
   exitCode: number,
-  log: (msg: string) => void,
 ): PhaseIterationOutcome {
+  const { log } = runtime;
   // B-RRH C1: strict roster+sentinel gate runs FIRST — do not trust exit code 0.
   const robustBreak = maybeStampPickleIncompleteRobust(runtime, rawPhase, log);
   if (robustBreak) return robustBreak;

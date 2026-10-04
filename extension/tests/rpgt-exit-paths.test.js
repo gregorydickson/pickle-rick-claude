@@ -548,7 +548,7 @@ function phaseCountersAfterConverge(sessionDir, state) {
     }));
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
     const runtime = { sessionDir, statePath: path.join(sessionDir, 'state.json'), workingDir: '/tmp', config: { phases: [{}, {}] }, log: () => {} };
-    finalizePhaseSuccess(runtime, counters, path.join(sessionDir, 'pipeline-cancel'), 'anatomy-park', 0, () => {});
+    finalizePhaseSuccess(runtime, counters, path.join(sessionDir, 'pipeline-cancel'), 'anatomy-park', 0);
     return counters;
 }
 

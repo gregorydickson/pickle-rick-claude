@@ -88,7 +88,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     runtime.log = (m) => logs.push(m);
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 1, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 1);
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.completed, 0, 'must NOT count a non-convergent phase as completed');
@@ -121,7 +121,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
     // Only exitCode differs from the exit-1 case above — the verdict must not.
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 0);
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.completed, 0, 'a zero exit code must not launder a give-up into a completion');
@@ -141,7 +141,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
     // The mirror image: a non-zero exit does not by itself make a converged phase dishonest.
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 1, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 1);
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.completed, 1, 'convergence is decided by exit_reason, not the exit code');
@@ -162,7 +162,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     runtime.log = (m) => logs.push(m);
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 0);
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.completed, 1, 'genuine convergence still counts');
@@ -185,7 +185,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     runtime.log = (m) => logs.push(m);
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'citadel', 1, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'citadel', 1);
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.completed, 0, 'a failed citadel must not be counted completed');
@@ -203,7 +203,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     fs.writeFileSync(cancelMarker, 'SIGINT'); // operator cancelled mid-phase
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 1, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 1);
 
     assert.equal(outcome.action, 'break', 'cancelled pipeline must not advance to the next phase');
     // The phase is still reported non-convergent before the break.
@@ -244,7 +244,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
       runtime.log = (m) => logs.push(m);
       const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 1, runtime.log);
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 1);
 
       assert.equal(outcome.action, 'continue', 'the phase loop still advances — this withholds a verdict, it does not halt');
       assert.equal(counters.completed, 0, `a phase that exited '${reason}' must not be counted completed`);
@@ -266,7 +266,7 @@ describe('finalizePhaseSuccess non-pickle honesty gate', () => {
     runtime.log = (m) => logs.push(m);
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0);
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.completed, 1, 'a genuinely converged phase still counts completed');
@@ -448,7 +448,7 @@ describe('R-NOPOSTTIER: a degraded post-final verdict withholds the success verd
     const logs = [];
     runtime.log = (m) => logs.push(m);
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
     return { outcome, counters, logs };
   }
 
@@ -559,7 +559,7 @@ describe('R-NOPOSTTIER: a degraded post-final verdict withholds the success verd
       phaseDispositions: { pickle: 'done_over_red_worker_gate_tests:aaa11111' },
     };
 
-    finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, () => {});
+    finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
 
     assert.equal(
       counters.phaseDispositions.pickle,
@@ -891,7 +891,7 @@ describe('AP-EXT-ITER90-01: writePipelineStatus carries the record; callers name
     seedFullStatus(dir);
 
     const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'szechuan-sauce', 0);
     assert.equal(outcome.action, 'continue');
 
     const status = readStatus(dir);
@@ -1055,7 +1055,7 @@ describe('R-NOPOSTTIER: withholding never writes exit_reason', () => {
       writeState(statePath, seededReason, { state: 'red', degraded: true, dimensions: [] });
       const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
 
       // The reporting wire moved: success is withheld and the cause is named.
       assert.equal(counters.nonConvergent, 1, 'the red verdict must withhold the success verdict');

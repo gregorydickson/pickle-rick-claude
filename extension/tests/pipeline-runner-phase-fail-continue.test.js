@@ -1212,7 +1212,7 @@ test('B-LANES 13d/13g: one non-convergent lane of three makes the phase non-conv
   const parent = JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8'));
   assert.equal(parent.exit_reason, 'anatomy_non_convergent', 'ONE parent verdict carries the lane that failed');
   const counters = freshCounters();
-  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode, () => {});
+  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode);
   assert.equal(counters.nonConvergent, 1);
   assert.equal(counters.completed, 0);
   assert.equal(counters.phaseDispositions['anatomy-park'], 'anatomy_non_convergent');
@@ -1227,7 +1227,7 @@ test('B-LANES 13d/13g control: all lanes converged — the phase completes', asy
   assert.equal(exitCode, 0);
   assert.equal(JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8')).exit_reason, 'converged');
   const counters = freshCounters();
-  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode, () => {});
+  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode);
   assert.equal(counters.completed, 1);
   assert.equal(counters.nonConvergent, 0);
 });
@@ -1244,7 +1244,7 @@ test('B-LANES 13g falsifying control: without the aggregation write the same lan
   const parent = JSON.parse(fs.readFileSync(runtime.statePath, 'utf-8'));
   fs.writeFileSync(runtime.statePath, JSON.stringify({ ...parent, exit_reason: null }));
   const counters = freshCounters();
-  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', 0, () => {});
+  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', 0);
   assert.equal(counters.completed, 1, 'no aggregation → the non-convergent lane is reported as completed');
   assert.equal(counters.nonConvergent, 0);
 });
@@ -1289,7 +1289,7 @@ function assertLaneRunDoesNotHalt(runtime, exitCode) {
   assert.equal(shouldHaltAfterPhase('anatomy-park', exitCode, runtime), false,
     `a lane-local failure (${reason}) must not halt the pipeline`);
   const counters = freshCounters();
-  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode, () => {});
+  finalizePhaseSuccess(runtime, counters, noCancelMarker(runtime), 'anatomy-park', exitCode);
   assert.equal(counters.nonConvergent, 1);
   assert.equal(counters.completed, 0);
 }
@@ -1373,7 +1373,7 @@ test('MREL-A12-c: a non-zero citadel exit is never counted completed — it is n
   const { runtime } = makeRuntime({ createFollowupCommit: true });
   const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-  const outcome = finalizePhaseSuccess(runtime, counters, '__no_cancel__', 'citadel', 1, () => {});
+  const outcome = finalizePhaseSuccess(runtime, counters, '__no_cancel__', 'citadel', 1);
 
   assert.equal(outcome.action, 'continue');
   assert.equal(counters.completed, 0);

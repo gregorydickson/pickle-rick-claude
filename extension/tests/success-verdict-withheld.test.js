@@ -171,7 +171,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     writeTicket(dir, 'bbbbbbbb', { status: 'Done', testsVerdict: 'red' });
     const counters = makeCounters();
 
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
 
     assert.equal(outcome.action, 'continue', 'the run must still execute every remaining phase');
     assert.equal(counters.completed, 1, 'the pickle phase still counts completed — no new abort');
@@ -192,7 +192,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     writeTicket(dir, 'cccccccc', { status: 'Done', testsVerdict: 'red' });
     const counters = makeCounters();
 
-    finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+    finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
     counters.completed = PHASES.length;
     const { verdict } = finalize(dir, { counters });
 
@@ -210,7 +210,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const counters = makeCounters();
 
     // Phase 1 of 4: the ticket IS red here. This is the moment the old code latched.
-    finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+    finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
     assert.equal(counters.nonConvergent, 0, 'precondition: nothing was latched at the flip');
 
     // The ticket is repaired during a later phase — the case all four live bundles hit.
@@ -231,7 +231,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     ]);
     writeTicket(dir, 'eeee1111', { status: 'Done', testsVerdict: 'red' });
     const boundary = makeCounters();
-    finalizePhaseSuccess(runtime, boundary, cancelMarker, 'pickle', 0, runtime.log);
+    finalizePhaseSuccess(runtime, boundary, cancelMarker, 'pickle', 0);
 
     // The crash lands mid-run: rewrite the persisted status as the resume reader needs it,
     // carrying forward whatever dispositions the pickle boundary actually wrote.
@@ -261,7 +261,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     writeTicket(dir, 'dddddddd', { status: 'Done' }); // no verdict field at all
     const counters = makeCounters();
 
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.completed, 1);
     assert.equal(readStatus(dir).status, 'running');
@@ -301,7 +301,7 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
 
     // citadel has its own exit-code-only path and never scans tickets for this check.
     // Exit 0 isolates the ticket scan; MREL-A12's non-zero non-pickle rule is pinned elsewhere.
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'citadel', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'citadel', 0);
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.nonConvergent, 0);

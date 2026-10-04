@@ -2164,7 +2164,7 @@ describe('B1: pipeline-cancel marker is cleared at startup', () => {
       };
       const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
 
-      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
 
       assert.deepEqual(outcome, { action: 'break' }, 'a marker present when finalizePhaseSuccess runs must still break the loop');
     } finally {
@@ -6198,7 +6198,7 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
     try {
       const { runtime, cancelMarker } = convergedRuntime(dir, ['typecheck', 'lint']);
       const counters = freshCounters();
-      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0);
       assert.deepEqual(outcome, { action: 'continue' });
       assert.equal(counters.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:typecheck,lint');
       assert.equal(counters.nonConvergent, 1, 'unmeasured checks degrade the phase, withholding success');
@@ -6216,7 +6216,7 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
     try {
       const { runtime, cancelMarker } = convergedRuntime(dir, null);
       const counters = freshCounters();
-      finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0);
       assert.equal(counters.phaseDispositions['anatomy-park'], undefined);
       assert.equal(counters.nonConvergent, 0);
       assert.equal(counters.completed, 1);
@@ -6247,7 +6247,7 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       const { runtime, cancelMarker } = convergedRuntime(dir, null);
       fs.writeFileSync(path.join(dir, 'microverse.json'), '{ not json');
       const counters = freshCounters();
-      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'anatomy-park', 0);
       assert.deepEqual(outcome, { action: 'continue' });
       assert.equal(counters.phaseDispositions['anatomy-park'], undefined);
       assert.equal(counters.completed, 1);
@@ -6264,11 +6264,11 @@ describe('finalizePhaseSuccess converged_with_unmeasured disposition', () => {
       const mv = JSON.parse(fs.readFileSync(mvPath, 'utf-8'));
       fs.writeFileSync(mvPath, JSON.stringify({ ...mv, cap_unmeasured_checks: 'lint' }));
       const scalarCounters = freshCounters();
-      finalizePhaseSuccess(runtime, scalarCounters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      finalizePhaseSuccess(runtime, scalarCounters, cancelMarker, 'anatomy-park', 0);
       assert.equal(scalarCounters.phaseDispositions['anatomy-park'], undefined);
       fs.writeFileSync(mvPath, JSON.stringify({ ...mv, cap_unmeasured_checks: [1, '', 'lint', null] }));
       const mixedCounters = freshCounters();
-      finalizePhaseSuccess(runtime, mixedCounters, cancelMarker, 'anatomy-park', 0, runtime.log);
+      finalizePhaseSuccess(runtime, mixedCounters, cancelMarker, 'anatomy-park', 0);
       assert.equal(mixedCounters.phaseDispositions['anatomy-park'], 'converged_with_unmeasured:lint');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

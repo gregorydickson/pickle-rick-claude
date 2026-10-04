@@ -151,7 +151,7 @@ function runPhaseExit(exitReason) {
     const logs = [];
     runtime.log = (m) => logs.push(m);
     const counters = makeCounters();
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0, runtime.log);
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', 0);
     return { outcome, counters, logs, events: readActivityEvents() };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
