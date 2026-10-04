@@ -4611,7 +4611,7 @@ test('writeHandoffAtomic: unlink EACCES on tmp cleanup logs warning', () => {
 
     const tmpRoot = makeTmpRoot();
     try {
-        writeHandoffAtomic(tmpRoot, 'content', 9999, log, fsOps);
+        writeHandoffAtomic(tmpRoot, 'content', log, fsOps);
         assert.ok(
             logs.some(l => l.includes('WARNING') && l.includes('EACCES')),
             `Expected EACCES warning in logs, got: ${JSON.stringify(logs)}`
@@ -4634,7 +4634,7 @@ test('writeHandoffAtomic: rename fail falls back to direct writeFileSync', () =>
 
     const tmpRoot = makeTmpRoot();
     try {
-        writeHandoffAtomic(tmpRoot, 'handoff content', 1234, log, fsOps);
+        writeHandoffAtomic(tmpRoot, 'handoff content', log, fsOps);
 
         assert.ok(
             logs.some(l => l.includes('WARNING') && l.includes('rename failed')),
@@ -4669,7 +4669,7 @@ test('writeHandoffAtomic: both rename and fallback fail, error logged, does not 
     try {
         // Must NOT throw
         assert.doesNotThrow(() => {
-            writeHandoffAtomic(tmpRoot, 'content', 5678, log, fsOps);
+            writeHandoffAtomic(tmpRoot, 'content', log, fsOps);
         });
         assert.ok(
             logs.some(l => l.includes('ERROR') && l.includes('handoff.txt write failed')),

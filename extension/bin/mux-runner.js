@@ -4258,12 +4258,11 @@ export async function runIteration(sessionDir, iterationNum, extensionRoot, qual
  *
  * @param sessionDir  - session directory path
  * @param content     - handoff content to write
- * @param pid         - process id used to make tmp filename unique
  * @param log         - logging function (e.g. the runner's log() closure)
  * @param fsOps       - injectable fs subset (default: real fs — override in tests)
  */
-export function writeHandoffAtomic(sessionDir, content, pid, log, fsOps = fs) {
-    const handoffTmp = path.join(sessionDir, `handoff.txt.tmp.${pid}`);
+export function writeHandoffAtomic(sessionDir, content, log, fsOps = fs) {
+    const handoffTmp = path.join(sessionDir, `handoff.txt.tmp.${process.pid}`);
     const handoffPath = path.join(sessionDir, 'handoff.txt');
     // Step 1: write to tmp
     try {
@@ -4368,7 +4367,7 @@ After committing, emit \`<promise>${PromiseTokens.WORKER_DONE}</promise>\` as us
  * effort. Returns a string status for tests/logs.
  */
 export function commitPendingProbe(input) {
-    const { sessionDir, workingDir, backend, iteration, lastProgressIteration, threshold, pid, log } = input;
+    const { sessionDir, workingDir, backend, iteration, lastProgressIteration, threshold, log } = input;
     if (backend !== 'codex')
         return 'skipped:not-codex';
     const stagnation = iteration - lastProgressIteration;
@@ -4400,7 +4399,7 @@ export function commitPendingProbe(input) {
     if (!hasUncommitted)
         return 'skipped:no-uncommitted';
     const content = COMMIT_PENDING_HANDOFF_TEXT.replace('N iterations', `${stagnation} iterations`);
-    writeHandoffAtomic(sessionDir, content, pid, log);
+    writeHandoffAtomic(sessionDir, content, log);
     log(`commit-pending probe FIRED: stagnation=${stagnation} (>= threshold ${threshold}), uncommitted edits present — handoff.txt written`);
     return 'fired';
 }
@@ -8154,7 +8153,7 @@ async function processRateLimitWait(state, ctx, exitResult, rlAction, consecutiv
         `NOTE: Resumed after ${parkedMinutes}-minute API rate limit park (source: ${waitSource}).`,
         'Resume from current phase — do not repeat the rate-limited iteration.',
     ].join('\n');
-    (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffContent, process.pid, ctx.log);
+    (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffContent, ctx.log);
     return { kind: 'continue', consecutiveRateLimits: nextConsecutive };
 }
 /**
@@ -8862,7 +8861,7 @@ function refuseEpicFinalizeWhileWorkPending(state, ctx, curState) {
         return null;
     ctx.log(`no-premature-drain: ${nonFailedPending.length} non-Failed Todo/In-Progress ticket(s) remain — refusing EPIC finalize, keep draining`);
     const handoffSummary = buildIterationHandoffSummary(state, ctx.sessionDir, ctx.iteration + 1);
-    (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, process.pid, ctx.log);
+    (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, ctx.log);
     return { kind: 'continue', resetStall: true };
 }
 function processTaskCompleted(state, ctx) {
@@ -8899,7 +8898,7 @@ function processTaskCompleted(state, ctx) {
     }
     if (decision.kind === 'recover_advance' || decision.kind === 'recover_retry') {
         const handoffSummary = buildIterationHandoffSummary(state, ctx.sessionDir, ctx.iteration + 1);
-        (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, process.pid, ctx.log);
+        (ctx.writeHandoff || writeHandoffAtomic)(ctx.sessionDir, handoffSummary, ctx.log);
         return { kind: 'continue', resetStall: true };
     }
     // TIER-1.2 gh-11: manager_handoff_pending no longer halts — this is park-and-flag
@@ -11788,7 +11787,6 @@ function runPreSpawnCommitPendingProbe(input) {
             iteration,
             lastProgressIteration: input.lastProgressIteration,
             threshold: input.threshold,
-            pid: process.pid,
             log,
         });
         if (probeResult === 'fired') {
@@ -11852,7 +11850,7 @@ async function applyRateLimitCycleOutcome(input) {
         if (park.kind === 'exit') {
             return { kind: 'exit', exitReason: park.exitReason };
         }
-        writeHandoffAtomic(input.sessionDir, park.handoffContent, process.pid, input.log);
+        writeHandoffAtomic(input.sessionDir, park.handoffContent, input.log);
         return { kind: 'parked', consecutiveRateLimits: park.consecutiveRateLimits };
     }
     if (exitType === 'success') {
@@ -12579,7 +12577,7 @@ function writeFalseEpicRetryBrief(input) {
         `Use ${PromiseTokens.TASK_COMPLETED} for single-ticket completions; reserve ${PromiseTokens.EPIC_COMPLETED} for the moment all tickets are Done.`,
     ].filter(Boolean).join('\n');
     const handoffSummary = buildIterationHandoffSummary(input.state, input.sessionDir, input.iteration + 1);
-    writeHandoffAtomic(input.sessionDir, `${handoffSummary}\n\n${retryBrief}`, process.pid, input.log);
+    writeHandoffAtomic(input.sessionDir, `${handoffSummary}\n\n${retryBrief}`, input.log);
 }
 /**
  * R2c: a recoverable false EPIC_COMPLETED — log it, close out an already-Done `current_ticket` through the Done-flip
