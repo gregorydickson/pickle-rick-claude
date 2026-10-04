@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFileSync, spawn, spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, getDataRoot, safeErrorMessage, classifyTicketTier, loadPickleSettingsBag, VALID_TICKET_COMPLEXITY_TIERS, } from '../services/pickle-utils.js';
 import { StateManager, writeActivityEntry } from '../services/state-manager.js';
 import { buildWorkerInvocation, isBackend } from '../services/backend-spawn.js';
@@ -302,21 +302,6 @@ export function extractAnchorCitations(prdContent) {
 function normalizeCitationPath(filePath) {
     return filePath.replace(/^\.\//, '').replace(/\\/g, '/');
 }
-const GIT_SHOW_HEAD_TIMEOUT_MS = 30_000;
-function readHeadFile(workingDir, filePath) {
-    try {
-        return execFileSync('git', ['show', `HEAD:${filePath}`], {
-            cwd: workingDir,
-            encoding: 'utf-8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-            maxBuffer: 20 * 1024 * 1024,
-            timeout: GIT_SHOW_HEAD_TIMEOUT_MS,
-        });
-    }
-    catch {
-        return undefined;
-    }
-}
 /**
  * AP-RMS-10: the ONE line-count oracle for citation staleness checks.
  * A POSIX file ends in a newline, so a bare `split(/\r?\n/).length` counts a
@@ -331,23 +316,21 @@ export function countContentLines(content) {
 }
 export function findStaleAnchorWarnings(prdContent, workingDir) {
     return extractAnchorCitations(prdContent).flatMap((citation) => {
-        const headContent = readHeadFile(workingDir, citation.filePath);
-        if (headContent === undefined) {
-            return [{
-                    citation,
-                    reason: 'missing-file',
-                    detail: `not found at HEAD:${citation.filePath}`,
-                }];
+        const verdict = classifyCitation(workingDir, citation.filePath, citation.lineNumber);
+        switch (verdict.kind) {
+            case 'missing':
+                return [{ citation, reason: 'missing-file', detail: `no tracked file matches ${citation.filePath}` }];
+            case 'ambiguous':
+                return [{ citation, reason: 'ambiguous', detail: `${verdict.matchCount} tracked files match ${citation.filePath}` }];
+            case 'line-out-of-range':
+                return [{
+                        citation,
+                        reason: 'line-out-of-range',
+                        detail: `line ${citation.lineNumber} exceeds line count ${verdict.lineCount} (${verdict.resolvedPath})`,
+                    }];
+            default:
+                return [];
         }
-        const lineCount = countContentLines(headContent);
-        if (citation.lineNumber > lineCount) {
-            return [{
-                    citation,
-                    reason: 'line-out-of-range',
-                    detail: `line ${citation.lineNumber} exceeds HEAD line count ${lineCount}`,
-                }];
-        }
-        return [];
     });
 }
 export function emitStaleAnchorWarnings(warnings) {
@@ -389,8 +372,8 @@ export function __resetGitLsFilesSuffixCacheForTests() {
 // Suffix-based resolution: a citation resolves if ANY tracked file ends with
 // it. This deletes the root-anchoring assumption on purpose — the checker
 // runs inside the shared refinement runtime against whichever repo is being
-// refined (octy, loanlight-api, ...), so a hardcoded `extension/`-relative
-// fallback would be a repo-specific defect baked into a repo-agnostic core.
+// refined, so a hardcoded root-relative fallback would bake one repo's layout
+// into a repo-agnostic core.
 // AP-RMS-12: the `*<token>` pathspec is a cheap git-side PREFILTER, not the
 // resolution rule. Git's wildmatch runs without WM_PATHNAME here, so `*` crosses
 // `/` and `manager.ts` matches `services/state-manager.ts`. A citation resolves
@@ -469,8 +452,28 @@ export function resolveTrackedSuffixMatches(workingDir, token, spawnSyncFn = spa
     gitLsFilesSuffixCache.set(cacheKey, matches);
     return matches;
 }
-// Parses analyst output for backticked file citations, resolves each via a
-// suffix-based git ls-files match, and emits a specific defect_class per
+// The ONE citation classifier, shared by the PRD-anchor check and the analyst
+// output check: resolve the cited path through the tracked-suffix listing, then
+// (when a line is cited) compare it against the resolved file's line count.
+// An unreadable resolved file is advisory-silent: the verdict is `ok`.
+function classifyCitation(workingDir, citedPath, line) {
+    const matches = resolveTrackedSuffixMatches(workingDir, citedPath);
+    if (matches.length === 0)
+        return { kind: 'missing' };
+    if (matches.length > 1)
+        return { kind: 'ambiguous', matchCount: matches.length };
+    if (line === undefined)
+        return { kind: 'ok' };
+    try {
+        const lineCount = countContentLines(fs.readFileSync(path.join(workingDir, matches[0]), 'utf-8'));
+        return line > lineCount ? { kind: 'line-out-of-range', resolvedPath: matches[0], lineCount } : { kind: 'ok' };
+    }
+    catch {
+        return { kind: 'ok' };
+    }
+}
+// Parses analyst output for backticked file citations, classifies each via
+// `classifyCitation`, and emits a specific defect_class per
 // unresolved/ambiguous/out-of-range citation. Section I lands these in
 // refinement_manifest.json.ticket_quality_warnings[]. ADVISORY ONLY: never
 // throws, never blocks — a git failure just yields a path_not_found warning.
@@ -481,32 +484,21 @@ export function checkAnalystOutputPaths(content, workingDir) {
     while ((match = BACKTICK_CITATION_RE.exec(content)) !== null) {
         const citedPath = match[1];
         const citedLine = match[2] !== undefined ? Number(match[2]) : undefined;
-        const matches = resolveTrackedSuffixMatches(workingDir, citedPath);
-        if (matches.length > 1) {
+        const verdict = classifyCitation(workingDir, citedPath, citedLine);
+        if (verdict.kind === 'ambiguous') {
             warnings.push({ defect_class: 'ambiguous_citation', path: citedPath, line: citedLine });
-            process.stderr.write(`[pickle-rick] ambiguous_citation: ${citedPath} (${matches.length} matches)\n`);
-            continue;
+            process.stderr.write(`[pickle-rick] ambiguous_citation: ${citedPath} (${verdict.matchCount} matches)\n`);
         }
-        if (matches.length === 0) {
+        else if (verdict.kind === 'missing') {
             const defectClass = looksForwardCreated(content, match.index, match.index + match[0].length)
                 ? 'not_tracked_forward_created'
                 : 'path_not_found';
             warnings.push({ defect_class: defectClass, path: citedPath, line: citedLine });
             process.stderr.write(`[pickle-rick] ${defectClass}: ${citedPath}\n`);
-            continue;
         }
-        if (citedLine !== undefined) {
-            try {
-                const fileContent = fs.readFileSync(path.join(workingDir, matches[0]), 'utf-8');
-                const lineCount = countContentLines(fileContent);
-                if (citedLine > lineCount) {
-                    warnings.push({ defect_class: 'line_out_of_range', path: citedPath, line: citedLine });
-                    process.stderr.write(`[pickle-rick] line_out_of_range: ${citedPath}:${citedLine} exceeds ${lineCount}\n`);
-                }
-            }
-            catch {
-                // best-effort: unreadable resolved file — advisory checker never throws
-            }
+        else if (verdict.kind === 'line-out-of-range') {
+            warnings.push({ defect_class: 'line_out_of_range', path: citedPath, line: citedLine });
+            process.stderr.write(`[pickle-rick] line_out_of_range: ${citedPath}:${citedLine} exceeds ${verdict.lineCount}\n`);
         }
     }
     return warnings;

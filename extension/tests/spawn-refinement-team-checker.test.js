@@ -441,8 +441,8 @@ test('AC-FOMC-14: repeating the same token spawns git ls-files exactly once', ()
 // bin/CLAUDE.md contract #3: every subprocess spawn passes a finite `timeout`.
 // This replaces the two hand-enumerated per-callsite assertions (git ls-files,
 // runReadinessGate). Enumerating call sites by hand is exactly why the third
-// one — `readHeadFile`'s `git show HEAD:<path>`, on the main refinement path,
-// once per PRD citation — shipped unbounded: no assertion named it, so nothing
+// one — the per-citation `git show` read on the main refinement path (since
+// deleted) — shipped unbounded: no assertion named it, so nothing
 // went red. A per-callsite pin can only defend the callsites someone
 // remembered. This scans them all, so a NEW spawn is red by default.
 //
@@ -499,7 +499,7 @@ function syncSpawnCallSites(source) {
 test('AP-RMS-9: EVERY synchronous subprocess spawn carries a finite timeout', () => {
     const source = readRefinementSource();
     const sites = syncSpawnCallSites(source);
-    assert.ok(sites.length >= 3, `expected the known sync spawn sites, found ${sites.length}`);
+    assert.ok(sites.length >= 2, `expected the known sync spawn sites, found ${sites.length}`);
     const unbounded = sites
         .filter((s) => !/\btimeout:\s*[A-Za-z0-9_]/.test(s.text))
         .map((s) => `${s.fn} at spawn-refinement-team.ts:${s.line}`);
@@ -1058,10 +1058,57 @@ test('AP-RMS-10: anchor path (findStaleAnchorWarnings) flags one-past-EOF and re
         assert.equal(boundary.length, 1, 'one-past-EOF must be line-out-of-range at the anchor site too');
         assert.equal(boundary[0].reason, 'line-out-of-range');
         // the operator-facing detail must cite 3, not the inflated 4
-        assert.match(boundary[0].detail, /HEAD line count 3\b/);
+        assert.match(boundary[0].detail, /line count 3\b/);
 
         const lastReal = findStaleAnchorWarnings('See `src/short.ts:3` here.\n', workingDir);
         assert.equal(lastReal.length, 0, 'the final real line is in range');
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+function commitTrackedFiles(workingDir, files) {
+    initGitRepo(workingDir);
+    for (const [rel, body] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(workingDir, rel)), { recursive: true });
+        fs.writeFileSync(path.join(workingDir, rel), body);
+    }
+    spawnSync('git', ['add', '.'], { cwd: workingDir });
+    spawnSync('git', ['commit', '-q', '-m', 'add files'], { cwd: workingDir });
+    __resetGitLsFilesSuffixCacheForTests();
+}
+
+test('F75-ANCHOR-1: a package-relative citation resolves through the tracked suffix, only the out-of-range line warns', () => {
+    const workingDir = tmpDir('pickle-f75-anchor-');
+    try {
+        commitTrackedFiles(workingDir, { 'packages/pkg/src/modules/foo/bar.ts': 'a\nb\nc\n' });
+        const warnings = findStaleAnchorWarnings('See `modules/foo/bar.ts:3` and `modules/foo/bar.ts:9`.\n', workingDir);
+        assert.deepEqual(warnings.map((w) => [w.citation.lineNumber, w.reason]), [[9, 'line-out-of-range']]);
+        assert.match(warnings[0].detail, /line 9 exceeds line count 3 \(packages\/pkg\/src\/modules\/foo\/bar\.ts\)/);
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('F75-ANCHOR-2: a suffix matching two tracked files is ambiguous, not missing', () => {
+    const workingDir = tmpDir('pickle-f75-anchor-');
+    try {
+        commitTrackedFiles(workingDir, { 'a/x.ts': 'one\n', 'b/x.ts': 'two\n' });
+        const warnings = findStaleAnchorWarnings('See `x.ts:1`.\n', workingDir);
+        assert.deepEqual(warnings.map((w) => w.reason), ['ambiguous']);
+        assert.match(warnings[0].detail, /2 tracked files match x\.ts/);
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('F75-ANCHOR-3: a genuinely missing file stays missing-file', () => {
+    const workingDir = tmpDir('pickle-f75-anchor-');
+    try {
+        commitTrackedFiles(workingDir, { 'a/x.ts': 'one\n' });
+        const warnings = findStaleAnchorWarnings('See `nope.ts:1`.\n', workingDir);
+        assert.deepEqual(warnings.map((w) => w.reason), ['missing-file']);
+        assert.match(warnings[0].detail, /no tracked file matches nope\.ts/);
     } finally {
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
@@ -1074,7 +1121,7 @@ test('AP-RMS-10: neither staleness site hand-rolls its own line count', () => {
     assert.equal(handRolled.length, 0, `line-count logic re-forked: ${JSON.stringify(handRolled)}`);
     // both consumers route through the oracle
     const oracleUses = src.match(/countContentLines\(/g) ?? [];
-    assert.ok(oracleUses.length >= 3, `expected 1 definition + 2 call sites, saw ${oracleUses.length}`);
+    assert.ok(oracleUses.length >= 2, `expected 1 definition + 1 shared call site, saw ${oracleUses.length}`);
 });
 
 // --- AP-EXT-ITER56-01: the suffix listing is a VERDICT input, so cap it ------

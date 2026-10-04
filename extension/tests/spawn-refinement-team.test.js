@@ -734,8 +734,8 @@ test('spawn-refinement-team: emits stale-anchor warnings before refinement worke
 
         assert.equal(result.status, ZERO_ANALYSES_EXIT_CODE, `expected zero-analyses exit, got: ${(result.stdout || '') + (result.stderr || '')}`);
         assert.match(result.stderr, /stale-anchor warning: 2 PRD citation\(s\) no longer resolve against HEAD/);
-        assert.match(result.stderr, /stale-anchor tracked\.ts:9 \(PRD line 3\): line 9 exceeds HEAD line count/);
-        assert.match(result.stderr, /stale-anchor missing\.ts:1 \(PRD line 3\): not found at HEAD:missing\.ts/);
+        assert.match(result.stderr, /stale-anchor tracked\.ts:9 \(PRD line 3\): line 9 exceeds line count \d+ \(tracked\.ts\)/);
+        assert.match(result.stderr, /stale-anchor missing\.ts:1 \(PRD line 3\): no tracked file matches missing\.ts/);
         assert.ok(fs.existsSync(logPath), 'refinement workers should still run after stale-anchor warnings');
     } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
