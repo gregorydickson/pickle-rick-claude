@@ -11,7 +11,7 @@
 // The counter is a one-way latch (5 raise sites, 0 decrements), and a red test verdict
 // is a per-ticket, REPAIRABLE fact — latched at phase 1 of 4, one ticket repaired later
 // still doomed the whole run. The trigger is unchanged: only a MEASURED red withholds.
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -28,8 +28,16 @@ import {
 // for a run that HAS a pickle phase, which is exactly when the old boundary check ran.
 const PHASES = ['pickle', 'citadel', 'anatomy-park', 'szechuan-sauce'];
 
+// Every tmpdir is removed in one root `after`, so a failing assertion cannot leak it.
+const createdDirs = [];
+after(() => {
+  for (const dir of createdDirs) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'success-verdict-withheld-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'success-verdict-withheld-'));
+  createdDirs.push(dir);
+  return dir;
 }
 
 function writeState(statePath, iteration = 1, activity = []) {
@@ -149,8 +157,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
       logs.some((l) => l.includes('aaaaaaaa') && l.includes('red')),
       'the run summary log must name the offending ticket and its verdict',
     );
-
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('AC-B2: the pickle boundary counts the phase completed and latches nothing', () => {
@@ -172,7 +178,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     // done-over-red marker written here would re-latch a repaired ticket across a crash-resume.
     // `phase_dispositions` is additive-optional: absent entirely when nothing was recorded.
     assert.equal(readStatus(dir).phase_dispositions?.pickle, undefined);
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('V1-2 positive control: red at the flip AND still red at finalize withholds exactly as before', () => {
@@ -190,7 +195,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
 
     assert.equal(verdict.unsuccessful, true, 'a bundle still red at finalize must not report success');
     assert.equal(counters.phaseDispositions.pickle, 'done_over_red_worker_gate_tests:cccccccc');
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('V1-3 negative control: red at the flip, measurably green at finalize, reports success', () => {
@@ -214,7 +218,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     assert.equal(verdict.unsuccessful, false, 'V1-3: a repaired bundle must report success');
     assert.equal(verdict.effectiveFailed, false, 'closer-release is not skipped');
     assert.equal(counters.phaseDispositions.pickle, undefined, 'no stale done-over-red attribution');
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('V1-3 (resume): the seeded counter carries no done-over-red latch across a crash boundary', () => {
@@ -245,7 +248,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     writeTicket(dir, 'eeee1111', { status: 'Done', testsVerdict: 'green' });
     const counters = { ...plan.counters, completed: PHASES.length };
     assert.equal(finalize(dir, { counters }).verdict.unsuccessful, false);
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('AC-B4: a bundle with no red test verdicts is unaffected — success reported, release plan runs', () => {
@@ -266,7 +268,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     assert.equal(verdict.unsuccessful, false, 'a clean run must not be flagged');
     assert.equal(counters.phaseDispositions.pickle, undefined);
     assert.equal(counters.nonConvergent, 0);
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('multiple red-test Done tickets are all named and withhold once', () => {
@@ -286,7 +287,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     assert.ok(counters.phaseDispositions.pickle.includes('eeeeeeee'));
     assert.ok(counters.phaseDispositions.pickle.includes('ffffffff'));
     assert.ok(!counters.phaseDispositions.pickle.includes('gggggggg'));
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('non-pickle phases are unaffected by the red-test check', () => {
@@ -302,7 +302,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.nonConvergent, 0);
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('a run with no pickle phase never asks the question (the trigger is unchanged)', () => {
@@ -321,7 +320,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
 
     assert.equal(verdict.unsuccessful, false);
     assert.equal(counters.phaseDispositions.pickle, undefined);
-    fs.rmSync(dir, { recursive: true });
   });
 
   // The OTHER withholding sources still ride the counter. Collapsing the done-over-red term
@@ -342,7 +340,6 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
 
     assert.equal(verdict.pipelineFailed, false);
     assert.equal(verdict.unsuccessful, true, 'the counter term is untouched by V1');
-    fs.rmSync(dir, { recursive: true });
   });
 });
 
@@ -366,7 +363,6 @@ describe('ROOT G2: an empty worker gate failure list may not read as red', () =>
     assert.equal(verdict.unsuccessful, true, 'a measured red must still withhold the success verdict');
     assert.equal(counters.phaseDispositions.pickle, 'done_over_red_worker_gate_tests:aaa11111');
     assert.equal(verdict.pipelineFailed, false, 'withholding is not a phase shortfall');
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('negative control: a red with NO corroborating worker_gate_failed event does not withhold', () => {
@@ -379,7 +375,6 @@ describe('ROOT G2: an empty worker gate failure list may not read as red', () =>
 
     assert.equal(verdict.unsuccessful, false, 'an unmeasured red must not withhold the success verdict');
     assert.equal(counters.phaseDispositions.pickle, 'done_over_unmeasured_worker_gate_tests:bbb22222');
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('negative control: a red whose worker_gate_failed event carries an EMPTY failure list does not withhold', () => {
@@ -392,7 +387,6 @@ describe('ROOT G2: an empty worker gate failure list may not read as red', () =>
 
     assert.equal(verdict.unsuccessful, false, 'an empty failure list must not read as a measured red');
     assert.equal(counters.phaseDispositions.pickle, 'done_over_unmeasured_worker_gate_tests:ccc33333');
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('the LATEST worker_gate_failed entry for a ticket is authoritative, not the first', () => {
@@ -410,7 +404,6 @@ describe('ROOT G2: an empty worker gate failure list may not read as red', () =>
 
     assert.equal(verdict.unsuccessful, false, 'the latest (empty) entry must govern, not the earlier measured one');
     assert.equal(counters.phaseDispositions.pickle, 'done_over_unmeasured_worker_gate_tests:ddd44444');
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('mixed roster: measured and unmeasured offenders are reported distinctly, and only the measured one withholds', () => {
@@ -431,7 +424,6 @@ describe('ROOT G2: an empty worker gate failure list may not read as red', () =>
       'done_over_unmeasured_worker_gate_tests:fff66666; done_over_red_worker_gate_tests:eee55555',
       'both dispositions must be named, distinctly',
     );
-    fs.rmSync(dir, { recursive: true });
   });
 
   test('a green or not_run verdict is unaffected by activity contents', () => {
@@ -444,7 +436,6 @@ describe('ROOT G2: an empty worker gate failure list may not read as red', () =>
 
     assert.equal(verdict.unsuccessful, false);
     assert.equal(counters.phaseDispositions.pickle, undefined);
-    fs.rmSync(dir, { recursive: true });
   });
 });
 
