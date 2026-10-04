@@ -304,6 +304,24 @@ NO measured basis. Large PRDs are not constrained by the cap.
      bundle composition (file-disjoint tickets), not more runtime machinery — after tiers 1–2.
    - Cross-reference comments posted on #56, #61, #64, #66.
 
+8. **Field-run issues #68–#75 (2026-10-04) — sanitized (#68/#69/#70/#75 rewritten; #71–#74 had no client data); triaged by the
+   ratchet order; no duplicates.**
+   - **Tier 1:** #75 — refinement's `## Open Decisions` table (B-MEGA C2) is written but read by nothing, so escalated
+     questions were answered and the build ran. Smallest fix: read it, print open decisions at run start and end, and
+     WITHHOLD the success verdict while any remain (report only; no halt, no build gate).
+   - **Tier 2:** #74 (stale-anchor check resolves package-relative paths from the repo root — route it through the
+     existing `resolveTrackedSuffixMatches`, delete the root-only path); #71 (add parent-ancestry to the existing
+     base-drift line; disclosure); #68 (a "reviewed by:" line; per-phase backend = operator); #69 (sibling sweep fires
+     only for CRITICAL `pattern` findings — fire it for every fix; prompt-only, tier 3/2).
+   - **Record-only:** #72 (warnings ignored by design; `rejected` parks). **Risk to measure first:** a 7-day limit outlasts
+     the 360-min park cap → review phases may read empty runs as clean (false convergence) — one `main()` fixture before
+     any code.
+   - **Operator questions:** #70 (should pickle own review-fix loops on an existing branch/PR?), #73 (completion hook /
+     stall notifications?), #68 (per-phase backend for a Codex pass?), #72 (pause/budget on warnings?), #71 (auto-restack?),
+     #75 (withhold success while decisions are open — report-only — OK?).
+   - **Proposed bundle:** #75 + #71 line + #68 line (same report block in `pipeline-runner.ts`) + the #72 fixture + #69 +
+     #74. Also reword a client-naming code comment in `spawn-refinement-team.ts` (~:601) while #74 is in that file.
+
 **Before #54 the queue was drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
 merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
 merge `exp/b-lanes` into `main` (the ledger now has 7 sessions); deploy or merge `exp/b-parallel-build`; close #52/#53.
