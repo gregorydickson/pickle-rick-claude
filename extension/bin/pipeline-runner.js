@@ -104,6 +104,10 @@ export function parsePipelineConfig(raw) {
     const dirty_exempt_segments = Array.isArray(rawExempt) && rawExempt.every((p) => typeof p === 'string')
         ? rawExempt
         : [...DEFAULT_DIRTY_EXEMPT_SEGMENTS];
+    const rawPhaseBackends = raw.phase_backends;
+    const phase_backends = rawPhaseBackends !== null && typeof rawPhaseBackends === 'object' && !Array.isArray(rawPhaseBackends)
+        ? Object.fromEntries(Object.entries(rawPhaseBackends).filter(([, b]) => isBackend(b)))
+        : {};
     return {
         phases: normalizePipelinePhases(raw.phases),
         target: raw.target || '',
@@ -126,6 +130,7 @@ export function parsePipelineConfig(raw) {
         max_parallel_tickets: parsePositiveInteger(raw.max_parallel_tickets, 1),
         citadel_strict: raw.citadel_strict === true || raw.strict === true,
         backend,
+        phase_backends,
         dirty_exempt_segments,
     };
 }
@@ -4816,6 +4821,11 @@ function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipeli
     reportDroppedFindings(runtime);
     reportSkippedFailedTickets(runtime);
     runtime.log('review convergence: not measured');
+    const reviewedBy = runtime.config.phases
+        .filter((p) => p !== 'pickle')
+        .map((p) => `${p}=${runtime.config.phase_backends[p] ?? runtime.backend}`);
+    if (reviewedBy.length > 0)
+        runtime.log(`reviewed by: ${reviewedBy.join(', ')}`);
     emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
     logActivity({
         event: 'session_end', source: 'pickle',
@@ -5871,6 +5881,23 @@ function withholdForCloserHandoff(runtime, counters, cancelMarker, rawPhase, exi
     return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
 }
 async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, index, log) {
+    const override = runtime.config.phase_backends[rawPhase];
+    if (!override || override === runtime.backend) {
+        return runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index, log);
+    }
+    const phaseRuntime = {
+        ...runtime,
+        backend: override,
+        phaseEnv: { ...process.env, ...backendEnvOverrides(override) },
+    };
+    try {
+        return await runPhaseIterationBody(phaseRuntime, counters, cancelMarker, rawPhase, index, log);
+    }
+    finally {
+        restampBackendIfNeeded(runtime.statePath, runtime.backend);
+    }
+}
+async function runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index, log) {
     logPhaseStart(runtime, rawPhase, index);
     writeRunningStatus(runtime, counters, rawPhase);
     const result = await runConfiguredPhase(runtime, setupPhase(rawPhase, runtime.config));

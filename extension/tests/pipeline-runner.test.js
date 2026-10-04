@@ -7489,3 +7489,102 @@ test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gat
     for (const d of [repo, sessionDir, dataRoot]) fs.rmSync(d, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// F75-BACKEND: opt-in `phase_backends` override in pipeline.json reaches the phase's spawn env
+// and state.backend, is disclosed in a `reviewed by:` line, and leaves absent/invalid input alone.
+// ---------------------------------------------------------------------------
+
+describe('F75-BACKEND: phase_backends override', () => {
+  class ExitIntercept extends Error {
+    constructor(code) {
+      super(`process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  async function driveBackendRun(phaseBackends) {
+    const repo = tmpDir();
+    const sessionDir = tmpDir();
+    const dataRoot = tmpDir();
+    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    const spawns = [];
+    const statePath = path.join(sessionDir, 'state.json');
+    try {
+      const startCommit = initRepo(repo, {
+        'services/a.ts': 'export const a = 1;\n',
+        'services/b.ts': 'export const b = 2;\n',
+        'services/c.ts': 'export const c = 3;\n',
+      });
+      fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-q', '-m', 'followup');
+      writeStateFile(statePath, {
+        working_dir: repo, step: 'implement', max_iterations: 100, original_prompt: 'F75 backend',
+        schema_version: 3, tmux_mode: false, chain_meeseeks: false, backend: 'claude',
+        start_commit: startCommit, exit_reason: null, activity: [],
+      });
+      const pipeline = {
+        phases: ['anatomy-park', 'szechuan-sauce'], target: repo,
+        anatomy_stall_limit: 3, szechuan_stall_limit: 5, anatomy_max_iterations: 1, szechuan_max_iterations: 1,
+        dirty_exempt_segments: ['prds', 'docs'],
+      };
+      if (phaseBackends !== undefined) pipeline.phase_backends = phaseBackends;
+      fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify(pipeline, null, 2));
+      __setSpawnRunnerForTests(async (_cmd, _args, env) => {
+        const cur = readJson(statePath);
+        spawns.push({ env: env?.PICKLE_BACKEND, state: cur.backend });
+        fs.writeFileSync(statePath, JSON.stringify({ ...cur, exit_reason: 'converged' }));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+      delete process.env.TMUX;
+      process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
+      try { await main(sessionDir); } catch (err) {
+        if (!(err instanceof ExitIntercept)) throw err;
+      }
+      return {
+        spawns,
+        finalBackend: readJson(statePath).backend,
+        log: fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8'),
+      };
+    } finally {
+      process.exit = originalExit;
+      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
+      __setSpawnRunnerForTests(null);
+      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+      for (const dir of [repo, sessionDir, dataRoot]) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const reviewedLines = (log) => log.split('\n').filter((l) => l.includes('reviewed by:'));
+
+  test('F75-BACKEND-1: an override reaches its phase only, state.backend is restored, and the run discloses it', async () => {
+    const run = await driveBackendRun({ 'anatomy-park': 'codex' });
+    assert.deepEqual(run.spawns.map((s) => s.env), ['codex', 'claude']);
+    assert.equal(run.spawns[0].state, 'codex');
+    assert.equal(run.spawns[1].state, 'claude');
+    assert.equal(run.finalBackend, 'claude');
+    const lines = reviewedLines(run.log);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /reviewed by: anatomy-park=codex, szechuan-sauce=claude$/);
+  });
+
+  test('F75-BACKEND-2: absent phase_backends keeps every spawn on the runtime backend', async () => {
+    const run = await driveBackendRun(undefined);
+    assert.deepEqual(run.spawns.map((s) => s.env), ['claude', 'claude']);
+    assert.match(reviewedLines(run.log)[0], /reviewed by: anatomy-park=claude, szechuan-sauce=claude$/);
+  });
+
+  test('F75-BACKEND-3: invalid entries are dropped by parsePipelineConfig', () => {
+    assert.deepEqual(parsePipelineConfig({ phase_backends: { 'anatomy-park': 'gpt9' } }).phase_backends, {});
+    assert.deepEqual(parsePipelineConfig({ phase_backends: ['codex'] }).phase_backends, {});
+    assert.deepEqual(parsePipelineConfig({}).phase_backends, {});
+    assert.deepEqual(
+      parsePipelineConfig({ phase_backends: { 'anatomy-park': 'codex', 'szechuan-sauce': 'nope' } }).phase_backends,
+      { 'anatomy-park': 'codex' },
+    );
+  });
+});

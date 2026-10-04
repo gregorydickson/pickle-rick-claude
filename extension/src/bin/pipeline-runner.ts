@@ -159,6 +159,9 @@ interface PipelineConfig {
   // exitCodeFor: High+ fails that report when true, Critical-only when false).
   citadel_strict: boolean;
   backend?: Backend;
+  // Opt-in per-phase backend override (phase name → backend). Absent means every phase runs on the
+  // pipeline backend.
+  phase_backends: Partial<Record<PipelinePhase, Backend>>;
   // W1d: path SEGMENTS (e.g. 'prds','docs') exempt from the dirty-tree preflight at any depth.
   // This is the single migrated dirty-exemption config input, folded into the one scope-aware dirty
   // resolver alongside the `.pipeline-runner-dirty-allowed.json` allowlist and `allowed_paths` scope.
@@ -306,6 +309,11 @@ export function parsePipelineConfig(raw: Record<string, unknown>): PipelineConfi
   const dirty_exempt_segments = Array.isArray(rawExempt) && rawExempt.every((p) => typeof p === 'string')
     ? (rawExempt as string[])
     : [...DEFAULT_DIRTY_EXEMPT_SEGMENTS];
+  const rawPhaseBackends = raw.phase_backends;
+  const phase_backends: Partial<Record<PipelinePhase, Backend>> =
+    rawPhaseBackends !== null && typeof rawPhaseBackends === 'object' && !Array.isArray(rawPhaseBackends)
+      ? Object.fromEntries(Object.entries(rawPhaseBackends).filter(([, b]) => isBackend(b)))
+      : {};
   return {
     phases: normalizePipelinePhases(raw.phases),
     target: (raw.target as string) || '',
@@ -328,6 +336,7 @@ export function parsePipelineConfig(raw: Record<string, unknown>): PipelineConfi
     max_parallel_tickets: parsePositiveInteger(raw.max_parallel_tickets, 1),
     citadel_strict: raw.citadel_strict === true || raw.strict === true,
     backend,
+    phase_backends,
     dirty_exempt_segments,
   };
 }
@@ -5655,6 +5664,10 @@ function writeFinalPipelineActivity(
   reportDroppedFindings(runtime);
   reportSkippedFailedTickets(runtime);
   runtime.log('review convergence: not measured');
+  const reviewedBy = runtime.config.phases
+    .filter((p) => p !== 'pickle')
+    .map((p) => `${p}=${runtime.config.phase_backends[p] ?? runtime.backend}`);
+  if (reviewedBy.length > 0) runtime.log(`reviewed by: ${reviewedBy.join(', ')}`);
   emitBundleLinearComments(runtime.sessionDir, path.join(runtime.sessionDir, 'pipeline-runner.log'));
   logActivity({
     event: 'session_end', source: 'pickle',
@@ -6805,6 +6818,30 @@ function withholdForCloserHandoff(
 }
 
 async function runPhaseIteration(
+  runtime: PipelineRuntime,
+  counters: PhaseCounters,
+  cancelMarker: string,
+  rawPhase: PhaseName,
+  index: number,
+  log: (msg: string) => void,
+): Promise<PhaseIterationOutcome> {
+  const override = runtime.config.phase_backends[rawPhase];
+  if (!override || override === runtime.backend) {
+    return runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index, log);
+  }
+  const phaseRuntime: PipelineRuntime = {
+    ...runtime,
+    backend: override,
+    phaseEnv: { ...process.env, ...backendEnvOverrides(override) },
+  };
+  try {
+    return await runPhaseIterationBody(phaseRuntime, counters, cancelMarker, rawPhase, index, log);
+  } finally {
+    restampBackendIfNeeded(runtime.statePath, runtime.backend);
+  }
+}
+
+async function runPhaseIterationBody(
   runtime: PipelineRuntime,
   counters: PhaseCounters,
   cancelMarker: string,
