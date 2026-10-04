@@ -297,7 +297,8 @@ describe('WS-B success-verdict-withheld (Done over a red test verdict, derived a
     const counters = makeCounters();
 
     // citadel has its own exit-code-only path and never scans tickets for this check.
-    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'citadel', 1, runtime.log);
+    // Exit 0 isolates the ticket scan; MREL-A12's non-zero non-pickle rule is pinned elsewhere.
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'citadel', 0, runtime.log);
 
     assert.equal(outcome.action, 'continue');
     assert.equal(counters.nonConvergent, 0);
@@ -495,7 +496,7 @@ describe('V1-4: the nonConvergent raise sites are enumerated', () => {
     return sites;
   }
 
-  test('exactly five raise sites survive, one per named withholding path', () => {
+  test('exactly seven raise sites survive across six named withholding paths', () => {
     const tally = {};
     for (const site of collectRaiseSites()) tally[site] = (tally[site] ?? 0) + 1;
     assert.deepEqual(
@@ -506,6 +507,8 @@ describe('V1-4: the nonConvergent raise sites are enumerated', () => {
         // B-FINALGATE: two mutually exclusive arms — a pass that disclosed an unmeasured check,
         // and a failed gate — so one call raises at most once.
         runJudgeTimeoutFinalizeGate: 2,
+        // MREL-A2 287baba0 replaced the closer-handoff break with this withhold (operator-approved).
+        withholdForCloserHandoff: 1,
         withholdForDegradedPostFinalVerdict: 1,
         withholdForFailedAcGate: 1,
       },
