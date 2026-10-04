@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-04 03:35Z) — B-MERGE-REL complete; main deployed; queue holds only operator-gated or tier-2 items
+### ▶ STATE (2026-10-04 17:15Z) — v2.2.0-beta.2 RELEASED + deployed; CI red on Linux since ~09-26 (fixture-size defect) → B-FIXTURE-ENV RUNNING
 
 | | |
 |---|---|
-| `main` | pushed **`55ab746c`** = merged experimental work + B-MERGE-REL-1 (19 tickets, session `2026-10-03-2868b847`) + B-MREL-FIX (`2026-10-03-4bb24aa9`) + B-MREL-FIX2 (`2026-10-04-72b78a7d`). Gate `20261004T013053Z-20833` 22/22 at `fc850787`, soak 1804.2s. **DEPLOYED 2026-10-04 ~02:55Z**, verified by content: `unreproducibleNodeModulesGap` 0→2, `replicateLaneNodeModules` 0→3, `throwOnEmptyScope` 5→0; `bin/`, `services/`, `.claude/commands` diffs = 0; runners import. Rollback: `git checkout 1bacc67a && bash install.sh` (reachable from main). Version still `2.2.0-beta.1`; next pre-release `3.0.0-beta.1` (operator decision 3) |
+| `main` | **`v2.2.0-beta.2` tagged at `aeb3af77`** (operator: next 2.x beta; notes name the `--teams`/`--max-parallel` removal as breaking). Release gate `20261004T154702Z-93411` 22/22, soak 1803.7s; `verify-release-tag.sh` OK. OS axis UNRUN locally (no docker on this host). **DEPLOYED**: version `2.2.0-beta.2`, `bin/`/`services/`/`.claude/commands` diffs 0, runners import. Local `main` adds the B-FIXTURE-ENV PRD (`4e956400`) |
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **nothing** (as of 03:10Z) |
+| RUNNING | **B-FIXTURE-ENV** on `main`, session `2026-10-04-b0e650dd` (tmux `pipeline-b0e650dd`, 17:09Z; 1 test-only ticket). **CI (Linux, Node 22) has been red on every `main` push since ~2026-09-26** (last green `b19f391c`) on ONE test: `tests/microverse.test.js:302` — its remediation-brief fixture straddles the 98304-byte budget depending on TMPDIR length (Linux 86116, macOS standalone 98146, short TMPDIR 81705); the LOCAL gate passed only because its per-run tmp path is long. The OS-axis gap CLAUDE.md warns about, realised |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
