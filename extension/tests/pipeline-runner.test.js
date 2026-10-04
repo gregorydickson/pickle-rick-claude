@@ -7221,3 +7221,120 @@ describe('A3: field-timing.py reports wave widths, the implementation sub-phase 
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// F75-OPENDEC: the refined PRD's `## Open Decisions` table is read at run start and
+// at the summary; an open row withholds the success verdict while every phase still
+// runs and `exit_reason` stays `completed`.
+// ---------------------------------------------------------------------------
+
+describe('F75-OPENDEC: open decisions are disclosed twice and withhold success', () => {
+  class ExitIntercept extends Error {
+    constructor(code) {
+      super(`process.exit(${code})`);
+      this.code = code;
+    }
+  }
+
+  const TABLE_WITH_STATUS = (rows) => [
+    '# Refined PRD', '', '## Open Decisions', '',
+    '| decision | options | default | owner | status |',
+    '|---|---|---|---|---|',
+    ...rows, '',
+  ].join('\n');
+
+  // Drives the real main() over anatomy-park + szechuan-sauce, both stamped `converged`.
+  async function driveRun(prdRefined) {
+    const repo = tmpDir();
+    const sessionDir = tmpDir();
+    const dataRoot = tmpDir();
+    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    const originalExit = process.exit;
+    const originalTmux = process.env.TMUX;
+    const runners = [];
+    try {
+      const startCommit = initRepo(repo, {
+        'services/a.ts': 'export const a = 1;\n',
+        'services/b.ts': 'export const b = 2;\n',
+        'services/c.ts': 'export const c = 3;\n',
+      });
+      fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-q', '-m', 'followup');
+      writeStateFile(path.join(sessionDir, 'state.json'), {
+        working_dir: repo, step: 'implement', max_iterations: 100, original_prompt: 'F75 open decisions',
+        schema_version: 3, tmux_mode: false, chain_meeseeks: false, backend: 'claude',
+        start_commit: startCommit, exit_reason: null, activity: [],
+      });
+      fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+        phases: ['anatomy-park', 'szechuan-sauce'], target: repo,
+        anatomy_stall_limit: 3, szechuan_stall_limit: 5, anatomy_max_iterations: 1, szechuan_max_iterations: 1,
+        dirty_exempt_segments: ['prds', 'docs'],
+      }, null, 2));
+      if (prdRefined !== null) fs.writeFileSync(path.join(sessionDir, 'prd_refined.md'), prdRefined);
+      __setSpawnRunnerForTests(async () => {
+        runners.push(1);
+        const statePath = path.join(sessionDir, 'state.json');
+        fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: 'converged' }));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      });
+      delete process.env.TMUX;
+      process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
+      let exitCode = null;
+      try { await main(sessionDir); } catch (err) {
+        if (!(err instanceof ExitIntercept)) throw err;
+        exitCode = err.code;
+      }
+      const status = readJson(path.join(sessionDir, 'pipeline-status.json'));
+      const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+      return {
+        exitCode, status, log, phasesSpawned: runners.length,
+        exitReason: readJson(path.join(sessionDir, 'state.json')).exit_reason,
+      };
+    } finally {
+      process.exit = originalExit;
+      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
+      __setSpawnRunnerForTests(null);
+      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+      for (const dir of [repo, sessionDir, dataRoot]) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const openLines = (log) => log.split('\n').filter((l) => /open decisions: \d+/.test(l));
+
+  test('F75-OPENDEC-1: an open row withholds success, both phases run, and the row is disclosed at start and end', async () => {
+    const run = await driveRun(TABLE_WITH_STATUS(['| pick cache | redis, lru | lru | operator | open |']));
+    assert.equal(run.phasesSpawned, 2, 'withholding is not halting — both phases ran');
+    assert.equal(run.exitCode, 1);
+    assert.equal(run.status.status, 'failed');
+    assert.equal(run.status.completed_phases, 2);
+    assert.equal(run.exitReason, 'completed', 'no new exit_reason — the run reached completion');
+    assert.equal(openLines(run.log).length, 2, 'once at start, once in the summary');
+    assert.ok(openLines(run.log).every((l) => /open decisions: 1$/.test(l)));
+    assert.equal(run.log.split('\n').filter((l) => l.includes('- pick cache (default: lru, owner: operator)')).length, 2);
+  });
+
+  test('F75-OPENDEC-2: decided, none and absent do not withhold', async () => {
+    const decided = await driveRun(TABLE_WITH_STATUS(['| pick cache | redis, lru | lru | operator | decided: "use lru" |']));
+    const none = await driveRun(TABLE_WITH_STATUS(['| none | | | | |']));
+    const absent = await driveRun(null);
+    for (const run of [decided, none, absent]) {
+      assert.equal(run.exitCode, 0);
+      assert.equal(run.status.status, 'completed');
+      assert.ok(openLines(run.log).every((l) => /open decisions: 0$/.test(l)));
+      assert.equal(openLines(run.log).length, 2);
+    }
+  });
+
+  test('F75-OPENDEC-3: a pre-status table (no status column) counts every row open; a status other than decided stays open', async () => {
+    const legacy = await driveRun([
+      '## Open Decisions', '', '| decision | options | owner |', '|---|---|---|', '| pick cache | redis, lru | operator |', '',
+    ].join('\n'));
+    assert.equal(legacy.exitCode, 1);
+    assert.ok(openLines(legacy.log).every((l) => /open decisions: 1$/.test(l)));
+    assert.match(legacy.log, /- pick cache \(default: \?, owner: operator\)/);
+    const pending = await driveRun(TABLE_WITH_STATUS(['| pick cache | redis, lru | lru | operator | pending review |']));
+    assert.equal(pending.exitCode, 1, 'only a status starting with `decided` settles a row');
+  });
+});

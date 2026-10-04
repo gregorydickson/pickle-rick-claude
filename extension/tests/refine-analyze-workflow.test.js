@@ -313,3 +313,24 @@ test('C8b-1: all six Test Expectations headers carry Source, none keeps the four
   assert.equal(lines.filter((l) => l === '| Criterion | Test File | Description | Assertion |').length, 0);
   for (const i of headers) assert.equal(lines[i + 1].split('|').length - 2, 5, `separator under line ${i + 1}: ${lines[i + 1]}`);
 });
+
+test('F75-OPENDEC-prompt: both synthesis surfaces name the five Open Decisions columns and keep the ledger rules', async () => {
+  const columns = 'decision, options, default, owner, status';
+  const harness = makeHarness(defaultArgs(1));
+  const prompts = [];
+  const agent = harness.ambient[0];
+  harness.ambient[0] = (prompt, opts = {}) => {
+    if (opts.phase === 'synthesize') prompts.push(prompt);
+    return agent(prompt, opts);
+  };
+  await loadWorkflow()(...harness.ambient);
+  assert.equal(prompts.length, 1, 'one synthesis call');
+  assert.ok(prompts[0].includes(columns), 'workflow synthesis prompt names the columns');
+  const step6 = commandDocStep(6).join('\n');
+  assert.ok(step6.includes(columns), 'command doc Step 6 names the columns');
+  for (const surface of [prompts[0], step6]) {
+    assert.match(surface, /`default` is the option the build proceeds on/);
+    assert.match(surface, /`status` is `open` until a quoted human decision is\s+recorded, then `decided: <quote>`/);
+    for (const rule of LEDGER_RULES) assert.match(surface, rule);
+  }
+});

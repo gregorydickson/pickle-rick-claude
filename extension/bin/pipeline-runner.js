@@ -2990,25 +2990,58 @@ function isWithinAllowedPaths(candidate, allowedPaths) {
  * allowed set, so nothing can be outside it.
  */
 function buildDependencyLens(sessionDir, allowedPaths) {
+    const rows = readRefinedPrdTable(sessionDir, 'Premises').rows
+        .filter((row) => row.cells[0]?.toLowerCase() !== 'none');
+    const flagged = rows.flatMap(({ raw }) => {
+        const cited = Array.from(new Set((raw.replace(/https?:\/\/\S+/g, '').match(LENS_PATH_TOKEN) ?? [])
+            .map((token) => token.replace(/^\.\//, ''))));
+        const outsidePaths = allowedPaths.length === 0 ? [] : cited.filter((c) => !isWithinAllowedPaths(c, allowedPaths));
+        return outsidePaths.length > 0 ? [`- ${raw.trim()} (outside: ${outsidePaths.join(', ')})`] : [];
+    });
+    return { parsed: rows.length, outside: flagged.length, lines: flagged };
+}
+/**
+ * Read one named `## <heading>` table out of `<session>/prd_refined.md`: its header cells and its data
+ * rows (separator and header rows excluded, raw line kept beside the split cells). A missing file or
+ * section yields an empty table, never a throw — every reader of the refined PRD is report-only.
+ */
+function readRefinedPrdTable(sessionDir, heading) {
     let text;
     try {
         text = fs.readFileSync(path.join(sessionDir, 'prd_refined.md'), 'utf-8');
     }
     catch {
-        return { parsed: 0, outside: 0, lines: [] };
+        return { header: [], rows: [] };
     }
-    const section = text.split(/^## /m).find((part) => /^Premises\b/.test(part));
-    const rows = (section ?? '').split('\n').slice(1)
-        .filter((line) => line.trim().startsWith('|') && !/^\s*\|[\s:|-]+\|?\s*$/.test(line))
-        .slice(1) // header row
-        .filter((line) => line.split('|')[1]?.trim().toLowerCase() !== 'none');
-    const flagged = rows.flatMap((row) => {
-        const cited = Array.from(new Set((row.replace(/https?:\/\/\S+/g, '').match(LENS_PATH_TOKEN) ?? [])
-            .map((token) => token.replace(/^\.\//, ''))));
-        const outsidePaths = allowedPaths.length === 0 ? [] : cited.filter((c) => !isWithinAllowedPaths(c, allowedPaths));
-        return outsidePaths.length > 0 ? [`- ${row.trim()} (outside: ${outsidePaths.join(', ')})`] : [];
-    });
-    return { parsed: rows.length, outside: flagged.length, lines: flagged };
+    const section = text.split(/^## /m).find((part) => part.startsWith(heading) && !/\w/.test(part.charAt(heading.length)));
+    const tableLines = (section ?? '').split('\n').slice(1)
+        .filter((line) => line.trim().startsWith('|') && !/^\s*\|[\s:|-]+\|?\s*$/.test(line));
+    const toCells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+    return {
+        header: tableLines.length > 0 ? toCells(tableLines[0]) : [],
+        rows: tableLines.slice(1).map((raw) => ({ raw, cells: toCells(raw) })),
+    };
+}
+/**
+ * Rows of the refined PRD's `## Open Decisions` table that are not settled. A row is settled ONLY when
+ * the table has a `status` column and that cell starts with `decided`; every other row — including every
+ * row of a table with no status column — is open, as is any row whose status says anything else.
+ */
+function readOpenDecisions(sessionDir) {
+    const { header, rows } = readRefinedPrdTable(sessionDir, 'Open Decisions');
+    const column = (name) => header.findIndex((h) => h.toLowerCase() === name);
+    const [statusAt, defaultAt, ownerAt] = [column('status'), column('default'), column('owner')];
+    const cell = (cells, at) => (at >= 0 ? cells[at] : '') || '?';
+    return rows
+        .filter(({ cells }) => cells[0]?.toLowerCase() !== 'none')
+        .filter(({ cells }) => statusAt < 0 || !/^decided/i.test(cells[statusAt] ?? ''))
+        .map(({ cells }) => ({ decision: cells[0] ?? '?', default: cell(cells, defaultAt), owner: cell(cells, ownerAt) }));
+}
+function discloseOpenDecisions(runtime) {
+    const open = readOpenDecisions(runtime.sessionDir);
+    runtime.log(`open decisions: ${open.length}`);
+    for (const d of open)
+        runtime.log(`- ${d.decision} (default: ${d.default}, owner: ${d.owner})`);
 }
 function renderDependencyLens(lens) {
     if (lens.lines.length === 0)
@@ -4744,6 +4777,7 @@ function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipeli
     runtime.log(`Pipeline finished: ${phasesSummary} phases, ${formatTime(totalElapsed)}`);
     reportKeptLaneBranches(runtime);
     reportBaseDrift(runtime);
+    discloseOpenDecisions(runtime);
     reportDroppedFindings(runtime);
     reportSkippedFailedTickets(runtime);
     runtime.log('review convergence: not measured');
@@ -5317,7 +5351,8 @@ export function computePipelineVerdict(runtime, counters) {
     const doneOverRed = runtime.config.phases.includes('pickle')
         && reportDoneOverRedTestVerdict(runtime, counters, runtime.log);
     const degradedSkip = Object.values(counters.phaseSkips).some(r => DEGRADED_PHASE_SKIP_REASONS.has(r));
-    const unsuccessful = pipelineFailed || counters.nonConvergent > 0 || doneOverRed || degradedSkip;
+    const openDecisions = readOpenDecisions(runtime.sessionDir).length > 0;
+    const unsuccessful = pipelineFailed || counters.nonConvergent > 0 || doneOverRed || degradedSkip || openDecisions;
     const handoffStop = !!readHandoffExitReason(runtime.statePath);
     return { pipelineFailed, unsuccessful, handoffStop, effectiveFailed: unsuccessful && !handoffStop };
 }
@@ -6401,6 +6436,7 @@ export async function main(sessionDir, opts = {}) {
         childMuxRunnerStallSeconds: runtime.config.child_mux_runner_stall_seconds,
     };
     const resumeStartIndex = seedResumePhaseCounters(runtime, counters, log);
+    discloseOpenDecisions(runtime);
     writeRunningStatus(runtime, counters, null);
     let loop;
     try {

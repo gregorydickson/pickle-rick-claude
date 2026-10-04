@@ -185,7 +185,7 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 10. Test expectations: file paths, descriptions, assertions per requirement
 11. LLM conformance-ready: requirements phrased for yes/no answer. Rewrite ambiguous ones.
 12. `## Premises` ledger: one row per premise the PRD rests on — claim, tag, evidence. Copy each analyst `(verified)`/`(hypothesis)` tag verbatim; analysts converging on a claim is not verification. No premises → write one explicit row: `none`.
-13. `## Open Decisions` table: one row per unresolved or needs-human item — decision, options, owner. A needs-human item is never written under settled decisions without a quoted human decision. No open decisions → write one explicit row: `none`.
+13. `## Open Decisions` table: one row per unresolved or needs-human item, columns exactly `decision, options, default, owner, status`. `default` is the option the build proceeds on; `status` is `open` until a quoted human decision is recorded, then `decided: <quote>`. A needs-human item is never written under settled decisions without a quoted human decision. No open decisions → write one explicit row: `none`.
 
 ## Step 7: Task Decomposition
 
