@@ -423,7 +423,7 @@ Independent of `design_safe`, never select a finding tagged `[report-only: depen
 
 Run this after Phase 2 tests pass and before trap-door cataloging.
 
-For every Phase 2 finding with `severity: CRITICAL` AND `category: pattern`:
+For EVERY Phase 2 fix, whatever its severity or category, name the discriminating principle of the defect in `pattern_shape`:
 
 1. **Articulate the structural shape** in deterministic terms:
    - File shape: path/glob and neighboring declarations that define the risky pattern
@@ -431,12 +431,14 @@ For every Phase 2 finding with `severity: CRITICAL` AND `category: pattern`:
    - Grep shape: exact regex or ripgrep command that finds candidates
 2. **Re-grep or re-walk the full diff scope** for additional matches of that shape. Use the active scope when `${SESSION_ROOT}/scope.json` exists; otherwise use the branch diff scope under review.
 3. **Verify mitigation** for every additional match. A mitigation must be an actual guard, validation, regression test, or type-level impossibility tied to the matched code path.
-4. **Emit unguarded additional matches** as new CRITICAL findings in `anatomy-park.json` with:
-   - `category: "pattern"`
-   - `phase: "replay"`
-   - `original_finding_id: "<discovery finding id>"`
-   - `pattern_shape: "<regex, file shape, or AST description>"`
-   - evidence lines for the replay match and the missing mitigation
+4. **Split unguarded additional matches by lane.**
+   - **In the current lane** (inside this subsystem's scope): FIX the sibling in the same commit as the original fix, with one regression test per sibling.
+   - **Outside the lane**: emit as new CRITICAL findings in `anatomy-park.json` with:
+     - `category: "pattern"`
+     - `phase: "replay"`
+     - `original_finding_id: "<discovery finding id>"`
+     - `pattern_shape: "<regex, file shape, or AST description>"`
+     - evidence lines for the replay match and the missing mitigation
 
 The original Phase 2 finding remains `phase: "discovery"`. Example: `createUpdatedRun` is the discovery finding; an unguarded `retryChildExtraction` match of the same rollback/race shape is emitted as a replay finding.
 

@@ -54,14 +54,30 @@ test('anatomy-park documents phase-2.5 pattern replay sweep', () => {
 
     assert.ok(replayIdx > phase2Idx, 'Phase 2.5 must appear after Phase 2');
     assert.ok(replayIdx < phase3Idx, 'Phase 2.5 must appear before Phase 3');
+    const section = content.slice(replayIdx, phase3Idx);
     assert.ok(
-        content.includes('severity: CRITICAL') && content.includes('category: pattern'),
-        'Phase 2.5 must trigger on CRITICAL pattern findings'
+        section.includes('For EVERY Phase 2 fix') && !section.includes('`category: pattern`:'),
+        'Phase 2.5 must trigger on every Phase 2 fix'
     );
     assert.ok(
         content.includes('Re-grep or re-walk the full diff scope'),
         'Phase 2.5 must replay the structural shape across the diff scope'
     );
+});
+
+test('F75-SWEEP-: PHASE 2.5 fixes in-lane siblings in the same commit and replays only out-of-lane', () => {
+    const content = readCommand();
+    const section = content.slice(
+        content.indexOf('#### PHASE 2.5: PATTERN REPLAY SWEEP'),
+        content.indexOf('#### PHASE 3: VERIFY')
+    );
+    assert.ok(section.includes('For EVERY Phase 2 fix'), 'every-fix trigger');
+    assert.ok(!section.includes('severity: CRITICAL` AND `category: pattern'), 'no CRITICAL+pattern-only trigger');
+    assert.ok(/In the current lane[\s\S]*same commit[\s\S]*one regression test per sibling/.test(section), 'in-lane siblings fixed in same commit');
+    assert.ok(/Outside the lane[\s\S]*phase: "replay"/.test(section), 'replay only out-of-lane');
+    for (const tok of ['original_finding_id', 'pattern_shape', 'PATTERN_SHAPE:']) {
+        assert.ok(section.includes(tok), tok);
+    }
 });
 
 test('anatomy-park replay findings and trap doors carry pattern metadata', () => {
