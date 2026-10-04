@@ -2954,32 +2954,6 @@ test('recordIteration falls back to internal classification when param omitted',
     assert.equal(state.convergence.stall_counter, 0, 'backward compat: improved without classification param');
 });
 
-test('worker_timeout_seconds=0 is re-enforced after state re-read', () => {
-    // Simulate the runner's guard: if external edit restores timeout, re-zero it
-    const dir = createTempGitRepo();
-    try {
-        const { dir: sessionDir } = createSessionDir(dir);
-        const statePath = path.join(sessionDir, 'state.json');
-
-        // Simulate external edit that restores timeout
-        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-        state.worker_timeout_seconds = 1200;
-        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-
-        // Replicate the runner's guard logic
-        const reRead = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-        if (reRead.worker_timeout_seconds !== 0) {
-            reRead.worker_timeout_seconds = 0;
-            fs.writeFileSync(statePath, JSON.stringify(reRead, null, 2));
-        }
-
-        const final = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-        assert.equal(final.worker_timeout_seconds, 0, 'timeout should be re-zeroed');
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
 test('auto-rescue: dirty tree gets auto-committed when no commits detected', () => {
     const dir = createTempGitRepo();
     const sessionDir = mkFixtureTmpDir('pickle-microverse-session-');
@@ -3303,96 +3277,6 @@ test('AP-EXT-ITER25-02: rollback restores a non-UTF-8 TEXT staged file byte-exac
             stagedAfter.equals(original),
             `staged blob must round-trip byte-exactly: ${stagedAfter.toString('hex')} !== ${original.toString('hex')}`,
         );
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
-test('metric retry: second attempt succeeds after first failure', () => {
-    const dir = mkFixtureTmpDir('pickle-metric-retry-');
-    try {
-        let callCount = 0;
-        const measureFn = () => {
-            callCount++;
-            if (callCount === 1) return null; // first call fails
-            return { raw: '75', score: 75 };  // second call succeeds
-        };
-
-        let result = measureFn();
-        if (!result) {
-            // In real code there's a 10s sleep here; skip in test
-            result = measureFn();
-        }
-
-        assert.equal(callCount, 2, 'should retry once');
-        assert.ok(result, 'second attempt should succeed');
-        assert.equal(result.score, 75);
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
-test('metric retry: both attempts fail → null', () => {
-    let callCount = 0;
-    const measureFn = () => {
-        callCount++;
-        return null;
-    };
-
-    let result = measureFn();
-    if (!result) result = measureFn();
-
-    assert.equal(callCount, 2, 'should attempt twice');
-    assert.equal(result, null, 'both failures → null');
-});
-
-// --- F13: worker_timeout_seconds string coercion ---
-
-test('F13: worker_timeout_seconds string "0" does not trigger re-enforce write', () => {
-    // When state.json is read back from disk, JSON.parse always yields a number.
-    // This test guards against the edge case where the value is somehow a string,
-    // verifying that Number() coercion prevents a spurious write on every loop tick.
-    const strZero = '0';
-    // Without coercion: '0' !== 0 → true (would trigger spurious write — the bug)
-    assert.equal(strZero !== 0, true, 'uncoerced string "0" !== 0 is truthy (the bug)');
-    // With coercion: Number('0') !== 0 → false (no write — the fix)
-    assert.equal(Number(strZero) !== 0, false, 'Number("0") !== 0 is false (no spurious write)');
-});
-
-test('F13: worker_timeout_seconds numeric 0 is always safe', () => {
-    // Numeric 0 from JSON.parse behaves correctly regardless of coercion
-    assert.equal(Number(0) !== 0, false, 'numeric 0 remains safe after coercion');
-});
-
-// --- F14: auto-commit .git validation ---
-
-test('F14: non-git workingDir is detected before auto-commit git commands', () => {
-    const nonGitDir = mkFixtureTmpDir('pickle-nongit-');
-    try {
-        // No .git directory — the runner should log 'not a git repository' and skip git ops
-        const isGitRepo = fs.existsSync(path.join(nonGitDir, '.git'));
-        assert.equal(isGitRepo, false, 'should not have .git directory');
-
-        // Simulate what the fixed runner does: build the error message
-        const messages = [];
-        if (!isGitRepo) {
-            messages.push(`Auto-commit skipped: not a git repository (${nonGitDir})`);
-        }
-
-        assert.equal(messages.length, 1, 'should produce one error log entry');
-        assert.ok(messages[0].includes('not a git repository'), 'message should state the reason');
-        assert.ok(messages[0].includes(nonGitDir), 'message should include the offending path');
-    } finally {
-        fs.rmSync(nonGitDir, { recursive: true });
-    }
-});
-
-test('F14: valid git repo passes the .git existence check', () => {
-    const dir = createTempGitRepo();
-    try {
-        const isGitRepo = fs.existsSync(path.join(dir, '.git'));
-        assert.equal(isGitRepo, true, 'git repo should have .git directory');
-        // In the runner, this means auto-commit proceeds normally (no early-return)
     } finally {
         fs.rmSync(dir, { recursive: true });
     }
