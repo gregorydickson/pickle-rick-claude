@@ -2,7 +2,7 @@
 
 Date: 2026-09-24 · Scope: desk research + refinements · Informs: GitHub #43 (`--teams` / review partitioning), GitHub #5 (persistent knowledge, worktree-as-proposal, state-from-git)
 
-**⚠ Corpus bias (operator, 2026-09-26): every [M, this repo] TIMING is Pickle Rick building ITSELF; field pickle phases last HOURS. Timing decisions need field data (`prds/research/tools/field-timing.py`, `field-timing-results-2026-09-26.md`).**
+**⚠ Corpus bias (operator, 2026-09-26): every [M, this repo] TIMING is Pickle Rick building ITSELF; field pickle phases last HOURS. Timing decisions need field data (`prds/research/tools/field-timing.py`).**
 
 **Evidence labels:** **[M]** paper or independent benchmark · **[M, this repo]** measured here, command given · **[Mv]** vendor-measured on its own system · **[C]** claim, no method · **[D]** design description.
 
@@ -39,6 +39,7 @@ Date: 2026-09-24 · Scope: desk research + refinements · Informs: GitHub #43 (`
 | **SWE-agent** (arXiv 2405.15793; NeurIPS 2024) | One agent; LM-tailored view/search/edit commands | None | Trajectory | **Edit rejected if lint fails** | Unresolved (n=248): 52.0% wrong/too-specific fix, 23.4% cascading failed edits | 12.47% of 2,294 (GPT-4 Turbo); Lite (n=300) 18.0% vs shell-only 11.0%; no linting −3.0 [M] |
 | **CrewAI** (docs, 2026-10) | Ordered tasks, or **hierarchical manager assigns and reviews** | Per-task `async_execution`; no shared-write rule | One `Memory` store (LanceDB, `./.crewai/memory`) | Task guardrails: failure returned, retried ≤3 | — | None [D] |
 | **AutoGen 0.4+ AgentChat/Core** (docs; maintenance mode) | Teams: round-robin, selector, swarm, Magentic-One, graph | **Turn-taking over one shared context** | `save_state()` → JSON per agent/team | Termination conditions | — | None [D]; successor: Microsoft Agent Framework |
+| **Microsoft Agent Framework** (1.0 GA; docs 2026-09) | Executor graph; sequential, concurrent, handoff, group chat, Magentic | Concurrent = **same input to all, answers aggregated**; barrier per superstep; shared state visible next superstep; no writer integration | **Checkpoint per superstep** (executors, pending messages, shared state); rehydration needs identical topology and executor ids | Approval-gated tools; human plan review | Magentic: stall limit → **reset and replan**; "untested" beyond Magentic-One | None found [D] |
 | **Magentic-One** (2024-11-04) | Orchestrator task/progress ledgers | Sequential delegation | Ledgers in context | Self-reflection | **Stall counter > 2 → replan**, not halt | ≈ SOTA on GAIA [Mv] |
 | **MetaGPT** (ICLR 2024) | SOP roles, structured documents | Largely sequential | Documents | Runs code, feeds errors back | — | +4.2 pts HumanEval; human fixes 2.5 → 0.83 [M, older models] |
 | **LangGraph** (docs) | Graph nodes | Parallel branches per step | **Checkpoint per step by `thread_id`** | User-defined | Interrupt → persist → resume | None [D] |
@@ -71,7 +72,7 @@ Date: 2026-09-24 · Scope: desk research + refinements · Informs: GitHub #43 (`
 
 Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only sessions excluded); whole-field parsing and `completion_commit` agree (**≤3×, median ~1.5–2×**). Hardening stays serial: 1277 → 1031 min (−19%) at best, #43's worst bundle.
 
-**Do declared lists predict diffs? Yes, conservatively** [M, this repo, 2026-09-26]. 16 sessions; 27/36 non-hardening tickets declare paths. Actual = `git show --name-only` over `completion_commit` plus commits naming the id, minus mirrors/artifacts.
+**Do declared lists predict diffs? Yes, conservatively** [M, this repo, 2026-09-26]. 16 sessions; 27/36 non-hardening tickets declare paths. Actual = `git show --name-only` over `completion_commit` plus commits naming the id.
 
 | Measure (27 tickets) | Value |
 |---|---|
@@ -87,7 +88,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 - **Reliability.** 22/23 members integrated; 1/23 had no attributable commit (`unmapped`); serial fallback finished it (44 min). 0 conflicts, 0 halts; `wave_member_failed_then_serial_done` 0 (counts `parallel_safe` members only).
 - **Why width stayed 1.** Deployed `planTicketWave`, replayed over declared files, reproduces all 22 widths. Of 22 adjacent pairs, 19 overlap (11 only via the global markers `.claude/**`, `CLAUDE.md`), 2 lack `parallel_safe` (absent on 14/23), 1 eligible. All-safe ceiling: 21 waves (1.10×), as the §3 greedy method.
 - **Speed.** **27.7 min/ticket** (636.0 min; serial: E2 bar <27, field 20–27, `2026-10-03-2868b847` 8.3); decomposed below ("Where the rest…").
-- **Read-out.** Reliability held; composing by shared surface packs exactly the tickets waves cannot split.
+- **Read-out.** Reliability held; composing by shared surface packs the tickets waves cannot split.
 
 **How many concurrent units? The knee** (primary sources, 2026-09-26):
 - **CooperBench (Khatua et al., 2026-01-19)** [M]. ~30% below one agent; 46 tasks, 2 → 4 agents as above, *coupled* work.
@@ -95,20 +96,20 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 - **Claim Plane (Nikolaev, 2026-08-02)** [M, single author]. 30 CooperBench pairs: pre-write admission 23.3% → 50.0% success, serializing 96.7% of executions.
 - **Passes Alone, Fails Together (Xia, Wu & Park, 2026-09-21)** [M]. 417 real Django PR pairs, two agents: 1 interference in 834 runs; 97% of tasks share helpers.
 - **Destefanis & Aste** [M]: messaging grows "close to quadratically". **Kim et al.** [M]: +80.8% (decomposable) to −70.0% (sequential). **AgenticFlict** [M]: 27.67% of simulated agent-PR merges conflict; **Xu et al.** [M]: 19.8% intra- vs 41.7% cross-agent, 747 co-active PR pairs.
-- **Anthropic research system (2025-06-13)** [Mv; eval unpublished]. Beat single-agent Opus 4 "by 90.2%" at "about 15× more tokens than chats"; tokens "explain 80% of the variance"; coding has "fewer truly parallelizable tasks than research".
-- **Read-out for lanes.** Every measured 2→3 curve on *coupled* work declines (CAID peaked at 2 on one benchmark); none measures **cherry-picked review lanes**. **Start at 2; go to 3 only on the soak's own conflict and dropped-lane rate** (below).
+- **Anthropic research system (2025-06-13)** [Mv; eval unpublished]. Beat single-agent Opus 4 "by 90.2%" at "about 15× more tokens than chats"; tokens "explain 80% of the variance"; coding is less parallelizable.
+- **Read-out for lanes.** Every measured 2→3 curve on *coupled* work declines (CAID peaked at 2 on one benchmark); none measures **cherry-picked review lanes**. **Start at 2; go to 3 only on the soak's own conflict and dropped-lane rate**.
 
 **Cherry-pick integration: 0 conflicts, 0 dropped lanes, small n** [M, this repo, 2026-10-04]. All `archive/lanes.json` (11 on disk, 09-27 → 10-03), `anatomy lanes:` log lines, and `2026-09-26-23989a13`/`-bcd24b6d` (16 lanes, 34 commits; pruned, carried from the 10-02 census): 13 sessions, cap 2.
 - **Outcomes, 60 lane runs:** integrated 60; every failure outcome 0 (logs agree; no kept branch).
 - **Committed vs integrated:** 18/60 lanes committed (59 commits), 18/18 integrated; 59/59 have a `git patch-id` match off-lane (25 re-checked). Dropped-lane rate **0/18** (one-sided 95% upper bound 15%).
-- **Contested picks** (onto a tree an earlier pick moved; 6 sessions): 0/9 conflicts (upper bound 28%). Not disjoint: 30/114 file touches fell outside the lane directory; three `bcd24b6d` lanes edited one CLAUDE.md.
+- **Contested picks** (onto a tree an earlier pick moved; 6 sessions): 0/9 conflicts (upper bound 28%). Not disjoint: 30/114 file touches fell outside the lane directory.
 - **`integration_check`** exists from `2026-10-01-face240c` (6 sessions, 29 lanes): green 10 (every committing lane), null 19 (no commits), unavailable 0. The 31 earlier lanes lack it: **a measurement gap, not 31 greens**.
-- **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s over 9 picking sessions (median 6.2 s); 0.4 s without picks (4); ≤0.81% of the lanes span. **Negligible at N=2; bounds of 15% / 28% do not yet license N=3.**
+- **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s over 9 picking sessions (median 6.2 s); 0.4 s without picks (4); ≤0.81% of the lanes span. **Negligible at N=2; bounds 15% / 28% do not license N=3.**
 
-**The anatomy-park stall is the C-compiler stall.** `discoverSubsystems` (`pipeline-runner.ts:471`) makes all of `extension/` one lane on `main`.
+**The anatomy-park stall is the C-compiler stall.** `discoverSubsystems` (`pipeline-runner.ts:471`) makes `extension/` one lane.
 
 **Review-size literature** (primary sources re-read 2026-09-24):
-- **Kumar et al. (2026-04-09): confounded.** <10-line bin (n=92) synthetic, >50-line bins (n=34, 14) real; F1 0.847 vs 0.066; one model. **Not used.**
+- **Kumar et al. (2026-04-09): confounded.** <10-line bin (n=92) synthetic, >50-line bins (n=34, 14) real; F1 0.847 vs 0.066. **Not used.**
 - **SWR-Bench (Zeng et al., 2025-09-01; FSE 2026): clean.** Recall 38.35% (N=1 issue, 266 PRs) → **8.88% (N≥5, 22 PRs)**, precision flat [M]: ~0.4–0.5 finds per PR at every N; our diffs are the many-issue case.
 - **Sense and Sensitivity (Štorek et al., v5 2026-07-10; ACL 2026): mechanism.** 10 LLMs: semantic code recall drops a median 92.73% mid-context [M; not review].
 - **Implication.** Direction supported twice; magnitude does not. If finds per pass are fixed, **passes-to-clean scale with defect count, not partition size**; finer partitions save only wall-clock.
@@ -117,13 +118,13 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 
 ### #5 Move 4: worktree-as-proposal
 
-- **Evidence.** Design convergence [D]. CAID's **manager-owned merge** ≈ #5's accept/reject gate; the C compiler uses git's push conflict *as the lock* [Mv].
-- **What nobody claims.** No source measures isolation reducing defects versus trunk plus scope fences; the benefit is structural (free rejection). Costs: CAID slower, dearer; Claim Plane serialized nearly everything [M].
+- **Evidence.** Design convergence [D]. CAID's **manager-owned merge** ≈ #5's accept/reject gate; the C compiler uses push conflicts *as the lock* [Mv].
+- **What nobody claims.** No source measures isolation reducing defects versus trunk plus scope fences; the benefit is structural (free rejection). Costs: CAID slower, dearer; Claim Plane serialized ~all [M].
 - **Strength.** Consensus plus cost data; "it deletes our five enforcement mechanisms" is HYPOTHESIS.
 
 ### #5 Move 5: state from git
 
-- **Evidence.** Durable systems keep **one** authoritative record and derive the rest [D]; none duplicates git in a 47-field blob. Smallest Move 5: current ticket from trailers + frontmatter (E4).
+- **Evidence.** Durable systems keep **one** authoritative record [D]; none duplicates git in a 47-field blob. Smallest Move 5: E4.
 
 ### #5 Moves 1–2: persistent knowledge
 
@@ -132,7 +133,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 
 ### The ~300-minute review toll
 
-- **Separate reviewers work** (Anthropic, Cognition, MAST) [Mv/M]; ours review an accumulated subsystem diff serially.
+- **Separate reviewers work** (Anthropic, Cognition, MAST) [Mv/M]; ours review an accumulated diff serially.
 - **Supported cuts:** smaller concurrent units at small N; per-unit stop conditions (MAST).
 
 **Does each worker phase earn its time? The review phases are nearly free** [M, this repo, 2026-09-26]. 65 tickets, 10 sessions (09-19 → 09-25). Phase = gap between consecutive artifact *birth* times from the first `worker_session_*.log`; respawn-spanning intervals dropped (12 tickets). "Changed" = review artifacts read by hand plus post-review source edits.
@@ -162,7 +163,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 
 - **Fixed costs.** Tail gate (between-ticket `test:fast` + post-final tier): 7.1–7.7 min per runner session, all 13 serial sessions; each wave unit is one (24 runs, median 7.6). Worker gate: median 7.4–7.9 min per medium/large ticket, ~0 for small (`test:fast` tier-skipped). Gaps ≤0.2 min per session; unit create/integrate 2.1 min over 22 waves.
 - **27.7 vs 8.3.** Of the 19.3 min/ticket gap: worker +7.9 (large median 19.3 min vs 7.3 elsewhere, n=5 / 9; three empty-log spawns, 17.8 min each; non-empty logs 184.9 min), tail gate +7.0 (one per unit), manager +2.3, worker gate +2.0 (non-small 78% vs 47%), create/integrate +0.1. **Tier mix plus per-unit tail gates; not manager or worktree time.** HYPOTHESIS: serial B-MEGA ≈ 20 min/ticket (636 − 181 + 7.5), near 03d1f8d2's 16.9.
-- **Falsified by** a wave run whose per-unit tail gate is not ≈7.5 min, or a serial bundle ≥75% non-small at ≤10 min/ticket. **Limits:** later phases overwrite main-session `tmux_iteration_*.log` (manager is a residual); mtime matched the stop-hook 6/6; one wave run.
+- **Falsified by** a wave run whose per-unit tail gate is not ≈7.5 min, or a serial bundle ≥75% non-small at ≤10 min/ticket. **Limits:** later phases overwrite `tmux_iteration_*.log` (manager is a residual); mtime matched the stop-hook 6/6; one wave run.
 - **Lever.** A width-1 wave pays a ~7.6 min tail gate for no concurrency.
 
 ## 4. Experiments (measurement only)
@@ -170,7 +171,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 **E3. Offline review-recall probe — run 2026-09-24: INCONCLUSIVE, saturated** [M, this repo; `prds/research/e3/E3-results.md`].
 - **Design.** B-INVENTED diff `f36ea11e..3ae1d57a` (7,083 lines), anatomy-park Phase-1 prompt, `claude-opus-5-5`, 20 one-line mutations. Arms: (a) whole, k=20; (b) four directory partitions; (c) whole, k=5; 3 repeats. **Bar:** (b)/(a) recall ≥1.5× at ≤1.25× false positives.
 - **Result.** Recall (a) 0.80, (b) 0.90, (c) 1.00, zero false positives; b/a = 1.125×, below the bar; one pass found 14–19/20.
-- **Signal: tests.** Whole-diff passes reported nothing in `extension/tests` in 2/3 repeats (4/15 hits); the tests partition recovered 12/15 (B-LANES constraint 2).
+- **Signal: tests.** Whole-diff passes reported nothing in `extension/tests` in 2/3 repeats (4/15 hits); the tests partition recovered 12/15.
 
 **E3b. Real reverted defects — run 2026-09-26: INCONCLUSIVE, floored** [M, this repo; `prds/research/e3b/E3b-results.md`].
 - **Design.** 12 real single-file fixes reversed into `12ffe132..1ad3f505` (14,812 lines). E3's prompt, model, bar; (b) = `resolve-scope` lanes; 16 calls, 0 refusals; k=0 silent.
@@ -179,9 +180,9 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 
 **E1. Finer anatomy-park partition.** Roster one level deeper on a findings-heavy bundle vs B-INVENTED (34 passes / 995 min, one lane). **Success:** largest lane ≤ 50% of baseline passes, wall-clock ≤ −25%, findings fixed not lower. **Falsified if** Σ passes ≈ 34+ with no wall-clock drop. The soak runs it at 2 lanes.
 
-**E2. `--teams` — blocked** under the `-p` manager. Bar: < 27 min/ticket, zero interventions, `--max-parallel` ≤ 3.
+**E2. `--teams` — blocked** under `-p`. Bar: < 27 min/ticket, zero interventions, `--max-parallel` ≤ 3.
 
-**E4. Derive current ticket from git.** `git log` trailers plus frontmatter status vs `state.json.current_ticket` per iteration. **Success:** ≥ 95% agreement, each miss a known drift bug. **Falsified if** git lacks needed state (name the minimum log).
+**E4. Derive current ticket from git.** Trailers plus frontmatter status vs `state.json.current_ticket` per iteration. **Success:** ≥ 95% agreement, each miss a known drift bug. **Falsified if** git lacks needed state.
 
 ## 5. Sources (publication date; living docs accessed 2026-09-24 unless noted)
 
@@ -216,7 +217,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 - GitHub Copilot agent — https://github.blog/news-insights/product-news/github-copilot-meet-the-new-coding-agent/ (2025-05); https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-cloud-agent
 - Cursor worktrees docs — https://cursor.com/docs/configuration/worktrees
 - Yang et al., "SWE-agent" — https://arxiv.org/abs/2405.15793 (v3 2024-11-11; NeurIPS 2024; Table 1, §5 read 2026-10-04)
-- Accessed 2026-10-04: CrewAI https://docs.crewai.com/en/concepts/processes (+ tasks, memory); AutoGen https://github.com/microsoft/autogen, https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/teams.html (+ state.html); Sweep https://github.com/sweepai/sweep
+- Accessed 2026-10-04: CrewAI https://docs.crewai.com/en/concepts/processes (+ tasks, memory); AutoGen https://github.com/microsoft/autogen, https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/teams.html (+ state.html); Sweep https://github.com/sweepai/sweep; Microsoft Agent Framework https://github.com/microsoft/agent-framework, https://learn.microsoft.com/en-us/agent-framework/workflows/checkpoints (+ orchestrations/concurrent, orchestrations/magentic, concepts/workflows/builder-and-execution, state)
 - Magentic-One — https://www.microsoft.com/en-us/research/articles/magentic-one-a-generalist-multi-agent-system-for-solving-complex-tasks/ (2024-11-04)
 - Hong et al., "MetaGPT" — https://arxiv.org/abs/2308.00352 (ICLR 2024)
 - LangGraph docs — https://docs.langchain.com/oss/python/langgraph/interrupts
@@ -226,18 +227,19 @@ Figures checked against primary text.
 
 ## 6. Open research gaps
 
-- **Gap 1.** **(Narrowed 2026-10-04.)** SWE-agent checked against the paper (§2; the abstract's "+10.7 points" is vs shell-only *without demonstrations*, 7.33%). CrewAI, AutoGen 0.4+: no measurements, no concurrent-writer integration [D]. Sweep: pivoted to JetBrains, last push 2025-09-18; irrelevant. Open: Microsoft Agent Framework; SWE-agent used 2024 models.
-- **Gap 3.** **(Narrowed 2026-10-04.) The knee is multi-study; our units barely measured.** CAID, CooperBench, Cursor: 2–4 for *coupled writers*; review lanes: Gap 7; one build-wave run, width 2 in 1/22 waves (1/23 serial fallback). Open: build-wave speed, which needs disjoint declared files.
+- **Gap 1.** **(Closed 2026-10-04.)** SWE-agent checked against the paper (§2; the abstract's "+10.7 points" is vs shell-only *without demonstrations*, 7.33%). CrewAI, AutoGen 0.4+, Microsoft Agent Framework: no measurements, no concurrent-writer integration [D]. Sweep pivoted to JetBrains (last push 2025-09-18); irrelevant. Caveat, not a gap: SWE-agent used 2024 models.
+- **Gap 3.** **(Narrowed 2026-10-04.) The knee is multi-study; our units barely measured.** CAID, CooperBench, Cursor: 2–4 for *coupled writers*; review lanes: Gap 7; one build-wave run, width 2 in 1/22 waves. Open: build-wave speed, which needs disjoint declared files.
 - **Gap 4.** **(Narrowed 2026-09-26.) Review-unit size vs defect count.** No study varies diff size at fixed real-defect count. Probes bracket it: planted mutations saturate (E3, 14–19/20), real reverted defects floor (E3b, 0/12). Open: a tool-using, multi-pass reviewer on real defects.
 - **Gap 5.** **Single-study [M]:** subtask memory (+4.7), VibeMemBench 11/12, MetaGPT (older models), Sun et al. (confounded), Claim Plane (30 pairs), CooperBench 2/3/4 (46 tasks).
-- **Gap 6.** **(Narrowed 2026-10-04.) Unmeasured repo claims.** Measured: declared lists vs diffs, per-phase cost, the non-worker half (§3: test gates, ~7.5 min per medium/large ticket and per runner session). Open: what main-session manager time contains; a wave run at width >1; whether a `-p` teams path survives `/resume`.
+- **Gap 6.** **(Narrowed 2026-10-04.) Unmeasured repo claims.** Measured (§3): declared lists vs diffs, per-phase cost, the non-worker half (test gates). Open: what main-session manager time contains; a wave run at width >1; whether a `-p` teams path survives `/resume`.
 - **Gap 7.** **(Narrowed 2026-10-04, not closed.) Cherry-pick integration cost.** 60 lane runs, 13 sessions: 0 conflicts, 0/18 committing lanes dropped, ≤11.3 s [M, this repo]. Open: small n (upper bounds 15%; 28% over 9 contested picks), one repo at N=2, 31 pre-10-01 lanes lack `integration_check`.
 
 ## Changelog
 
-- 2026-09-24 — Added §6; `--teams` unrunnable under `-p`; wave speedup 2.0×; F1 replaced; E2 blocked. E3: saturated; whole-diff missed tests 2/3.
+- 2026-09-24 — Added §6; `--teams` unrunnable under `-p`; wave speedup 2.0×; F1 replaced; E3 saturated.
 - 2026-09-26 — Gap 3 narrowed (seven sources): start at 2 lanes; E2 cap 3; Gap 7 added. Gap 2 closed [Mv]. Gap 6 narrowed: declared lists, 27 tickets (1.5–2× holds); per-phase cost, 65 tickets (review/simplify <1 min of 6.7). E3b: recall 0.00 on 12 real defects; Gap 4 narrowed.
 - 2026-10-02 — Gap 7 narrowed: 39 lane runs / 9 sessions, 0 conflicts, 0/11 dropped, 3.4–11.2 s; pre-10-01 rows lack `integration_check`. Added Xu et al.
 - 2026-10-04 — Gap 7: 60 lane runs / 13 sessions, 0 conflicts, 0/18 dropped (≤15%). Gap 3 narrowed: first wave run, width 2 in 1/22 waves (declared files overlap), 27.7 min/ticket.
 - 2026-10-04 — Gap 6 narrowed: pickle phase decomposed, 15 sessions; 27.7 vs 8.3 min/ticket = tier mix + a ~7.6 min tail gate per wave unit.
 - 2026-10-04 — Gap 1 narrowed: SWE-agent, CrewAI, AutoGen 0.4+ rows; Sweep irrelevant.
+- 2026-10-04 — Gap 1 closed: Microsoft Agent Framework row; no writer integration, no measurement [D].
