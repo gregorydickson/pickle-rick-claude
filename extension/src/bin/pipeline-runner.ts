@@ -2407,25 +2407,59 @@ function runGitForDrift(repoRoot: string, args: string[], timeout: number): { st
   }
 }
 
+/** Read a session JSON artifact through the recovery layer; absent, unreadable or non-object all read `null`. */
+function readDriftArtifact(file: string): Record<string, unknown> | null {
+  try {
+    return readRecoverableJsonObject(file) as Record<string, unknown> | null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * One line at the end of a run: does merging the run's HEAD into its base branch conflict? Fetches the
- * single base ref (falling back to the local ref, labelled stale), then asks `merge-tree --write-tree`.
+ * The branch the run was launched against and the sha it pinned there. `scope.json` carries both for a
+ * stacked child (`base_ref` = the parent branch, `base_sha` = the merge-base at launch); `start_commit` is
+ * the fallback only when no branch scope was pinned, because it can sit on the child's own pre-launch commits.
+ */
+function readDriftPins(runtime: PipelineRuntime): { baseRef: string | undefined; pinned: string | undefined } {
+  const text = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
+  const scope = readDriftArtifact(path.join(runtime.sessionDir, 'scope.json'));
+  const state = readDriftArtifact(runtime.statePath ?? path.join(runtime.sessionDir, 'state.json'));
+  return { baseRef: text(scope?.base_ref), pinned: text(scope?.base_sha) ?? text(state?.start_commit) };
+}
+
+/** Is the pinned base still an ancestor of the comparand the drift check just used? Report only. */
+function describeBaseAncestry(repoRoot: string, pinned: string | undefined, comparand: string, label: string): string {
+  if (!pinned) return '; ancestry: unmeasured (no pinned base)';
+  const probe = runGitForDrift(repoRoot, ['merge-base', '--is-ancestor', pinned, comparand], BASE_DRIFT_MERGE_TIMEOUT_MS);
+  const sha7 = pinned.slice(0, 7);
+  if (probe.status === 0) return `; ancestry: ${sha7} on ${label}`;
+  if (probe.status === 1) return `; ancestry: ${sha7} NOT on ${label} (base rewritten?)`;
+  return `; ancestry: unmeasured (git merge-base exit ${probe.status ?? 'none'})`;
+}
+
+/**
+ * One line at the end of a run: does merging the run's HEAD into its base branch conflict, and is the
+ * base the run pinned still on that branch? Fetches the single base ref (falling back to the local ref,
+ * labelled stale), then asks `merge-tree --write-tree` and `merge-base --is-ancestor` of the same comparand.
  * Report only — never throws, never changes the exit code.
  */
 export function reportBaseDrift(runtime: PipelineRuntime): void {
   try {
-    const base = resolveSetupScopeBaseRef(runtime.repoRoot);
+    const { baseRef, pinned } = readDriftPins(runtime);
+    const base = resolveSetupScopeBaseRef(runtime.repoRoot, baseRef);
     const remote = base.startsWith('origin/') ? base.slice('origin/'.length) : base;
     const fetched = runGitForDrift(runtime.repoRoot, ['fetch', '--no-tags', 'origin', remote], BASE_DRIFT_FETCH_TIMEOUT_MS).status === 0;
     const label = fetched ? base : `${base} (stale)`;
     const comparand = fetched ? 'FETCH_HEAD' : base;
+    const ancestry = describeBaseAncestry(runtime.repoRoot, pinned, comparand, label);
     const merge = runGitForDrift(runtime.repoRoot, ['merge-tree', '--write-tree', 'HEAD', comparand], BASE_DRIFT_MERGE_TIMEOUT_MS);
-    if (merge.status === 0) { runtime.log(`base drift: clean (${label})`); return; }
+    if (merge.status === 0) { runtime.log(`base drift: clean (${label})${ancestry}`); return; }
     const conflicted = merge.status === 1 ? [...new Set([...merge.stdout.matchAll(/^\d+ [0-9a-f]+ [123]\t(.+)$/gm)].map((m) => m[1]))] : [];
-    if (conflicted.length === 0) { runtime.log(`base drift: unmeasured (${label}: git merge-tree exit ${merge.status ?? 'none'}, no conflicted path)`); return; }
+    if (conflicted.length === 0) { runtime.log(`base drift: unmeasured (${label}: git merge-tree exit ${merge.status ?? 'none'}, no conflicted path)${ancestry}`); return; }
     const shown = conflicted.slice(0, BASE_DRIFT_PATH_CAP).join(', ');
     const more = conflicted.length - BASE_DRIFT_PATH_CAP;
-    runtime.log(`base drift: CONFLICT ${shown}${more > 0 ? ` (+${more} more)` : ''} (${label})`);
+    runtime.log(`base drift: CONFLICT ${shown}${more > 0 ? ` (+${more} more)` : ''} (${label})${ancestry}`);
   } catch (err) {
     try { runtime.log(`base drift: unmeasured (${safeErrorMessage(err)})`); } catch { /* report only */ }
   }

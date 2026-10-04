@@ -6877,7 +6877,7 @@ describe('E1: reportBaseDrift reports drift against the base branch without touc
       assert.equal(reportBaseDrift(fx.runtime), undefined);
       const lines = driftLines(fx);
       assert.equal(lines.length, 1, fx.logs.join('\n'));
-      assert.match(lines[0], /^base drift: CONFLICT f\.txt \(origin\/main\)$/);
+      assert.match(lines[0], /^base drift: CONFLICT f\.txt \(origin\/main\); ancestry: unmeasured \(no pinned base\)$/);
     } finally {
       fx.cleanup();
     }
@@ -6889,7 +6889,7 @@ describe('E1: reportBaseDrift reports drift against the base branch without touc
       fx.pushUpstream('other.txt', 'x\n');
       fx.commitLocal('f.txt', 'local\n');
       reportBaseDrift(fx.runtime);
-      assert.deepEqual(driftLines(fx), ['base drift: clean (origin/main)']);
+      assert.deepEqual(driftLines(fx), ['base drift: clean (origin/main); ancestry: unmeasured (no pinned base)']);
     } finally {
       fx.cleanup();
     }
@@ -6913,7 +6913,87 @@ describe('E1: reportBaseDrift reports drift against the base branch without touc
       fx.commitLocal('f.txt', 'local\n');
       g(fx.repo, 'remote', 'set-url', 'origin', path.join(fx.root, 'missing.git'));
       reportBaseDrift(fx.runtime);
-      assert.deepEqual(driftLines(fx), ['base drift: clean (origin/main (stale))']);
+      assert.deepEqual(driftLines(fx), ['base drift: clean (origin/main (stale)); ancestry: unmeasured (no pinned base)']);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  /** A stacked child: `parent` = main + p1 on origin, `child` = parent + a pre-launch commit; scope pinned at launch. */
+  function makeStackFixture() {
+    const fx = makeDriftFixture();
+    const { repo, root } = fx;
+    g(repo, 'checkout', '-q', '-b', 'parent');
+    fx.commitLocal('p1.txt', 'p1\n');
+    g(repo, 'push', '-q', 'origin', 'parent');
+    const baseSha = g(repo, 'rev-parse', 'HEAD');
+    g(repo, 'checkout', '-q', '-b', 'child');
+    fx.commitLocal('prd.txt', 'prd\n');
+    const startCommit = g(repo, 'rev-parse', 'HEAD');
+    fs.mkdirSync(fx.runtime.sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(fx.runtime.sessionDir, 'scope.json'), JSON.stringify({ base_ref: 'origin/parent', base_sha: baseSha }));
+    fs.writeFileSync(path.join(fx.runtime.sessionDir, 'state.json'), JSON.stringify({ start_commit: startCommit }));
+    const restackParent = () => {
+      const other = path.join(root, 'other');
+      g(root, 'clone', '-q', path.join(root, 'origin.git'), 'other');
+      g(other, 'checkout', '-q', '-B', 'parent', 'origin/main');
+      fs.writeFileSync(path.join(other, 'p1-restacked.txt'), 'p1\n');
+      g(other, 'add', '.');
+      g(other, 'commit', '-q', '-m', 'p1 restacked');
+      g(other, 'push', '-q', '-f', 'origin', 'parent');
+    };
+    return { ...fx, baseSha, startCommit, restackParent };
+  }
+
+  test('F75-ANCESTRY-1: a parent rebased and force-pushed reports the pinned base NOT on it', () => {
+    const fx = makeStackFixture();
+    try {
+      fx.restackParent();
+      assert.equal(reportBaseDrift(fx.runtime), undefined);
+      const lines = driftLines(fx);
+      assert.equal(lines.length, 1, fx.logs.join('\n'));
+      assert.ok(lines[0].includes(`ancestry: ${fx.baseSha.slice(0, 7)} NOT on origin/parent (base rewritten?)`), lines[0]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('F75-ANCESTRY-2: an unchanged parent reports base_sha on it, not the child pre-launch start_commit', () => {
+    const fx = makeStackFixture();
+    try {
+      assert.notEqual(fx.baseSha, fx.startCommit);
+      reportBaseDrift(fx.runtime);
+      const lines = driftLines(fx);
+      assert.equal(lines.length, 1, fx.logs.join('\n'));
+      assert.match(lines[0], /^base drift: clean \(origin\/parent\); ancestry: /);
+      assert.ok(lines[0].endsWith(`ancestry: ${fx.baseSha.slice(0, 7)} on origin/parent`), lines[0]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('F75-ANCESTRY-3: with no scope.json the base is unchanged and start_commit is the pinned sha', () => {
+    const fx = makeDriftFixture();
+    try {
+      const startCommit = g(fx.repo, 'rev-parse', 'HEAD');
+      fs.mkdirSync(fx.runtime.sessionDir, { recursive: true });
+      fs.writeFileSync(path.join(fx.runtime.sessionDir, 'state.json'), JSON.stringify({ start_commit: startCommit }));
+      fx.commitLocal('f.txt', 'local\n');
+      reportBaseDrift(fx.runtime);
+      assert.deepEqual(driftLines(fx), [`base drift: clean (origin/main); ancestry: ${startCommit.slice(0, 7)} on origin/main`]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('F75-ANCESTRY-4: an unresolvable pinned sha reads unmeasured, never throws', () => {
+    const fx = makeStackFixture();
+    try {
+      fs.writeFileSync(path.join(fx.runtime.sessionDir, 'scope.json'), JSON.stringify({ base_ref: 'origin/parent', base_sha: 'deadbeefdeadbeef' }));
+      assert.doesNotThrow(() => reportBaseDrift(fx.runtime));
+      const lines = driftLines(fx);
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /; ancestry: unmeasured \(git merge-base exit \d+\)$/);
     } finally {
       fx.cleanup();
     }
