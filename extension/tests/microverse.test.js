@@ -327,14 +327,15 @@ test('runRemediatorForIteration bounds the prompt it hands to execve, not just i
         );
         process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ''}`;
 
-        // 200 failures render a ~363 KB brief: 2.8x Linux MAX_ARG_STRLEN and well over
-        // REMEDIATION_PROMPT_MAX_BYTES, so the bound has to do real work to pass this.
+        // 200 failures render a ~298-314 KB brief (the range is the temp-dir path length baked
+        // into each failure's file): 2.3x Linux MAX_ARG_STRLEN and 3x REMEDIATION_PROMPT_MAX_BYTES
+        // even with a minimal path, so the bound has to do real work to pass this.
         const failures = Array.from({ length: 200 }, (_, i) => ({
             check: 'tests',
             file: path.join(workingDir, `broken${i}.test.js`),
             line: i + 1,
             ruleOrCode: 'simulated',
-            message: `simulated failure ${i} ${'x'.repeat(120)}`,
+            message: `simulated failure ${i} ${'x'.repeat(1200)}`,
             severity: 'error',
             occurrence_index: i,
         }));
