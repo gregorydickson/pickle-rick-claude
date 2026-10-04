@@ -2503,10 +2503,8 @@ test('measureLlmMetric defaults to claude-sonnet-4-6 model', async () => {
 });
 
 test('LLM baseline ETIMEDOUT exits judge_timeout instead of defaulting to 0', async () => {
-    const origExec = _deps.execFileSync;
     const origSleep = _deps.sleep;
     const origRunIteration = _deps.runIteration;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     const dir = createTempGitRepo();
     const { dir: sessionDir } = createSessionDir(dir, {
         status: 'gap_analysis',
@@ -2524,7 +2522,7 @@ test('LLM baseline ETIMEDOUT exits judge_timeout instead of defaulting to 0', as
         backend: 'codex',
     });
     const sleeps = [];
-    _deps.execFileSync = (_cmd, args) => {
+    const judgeExec = (_cmd, args) => {
         if (Array.isArray(args) && args[0] === '--version') return 'codex 0.128.0';
         const err = new Error('spawnSync codex ETIMEDOUT');
         err.code = 'ETIMEDOUT';
@@ -2538,17 +2536,17 @@ test('LLM baseline ETIMEDOUT exits judge_timeout instead of defaulting to 0', as
         wallSeconds: 1,
     });
     try {
-        await assert.rejects(
-            executeGapAnalysis(readMicroverseState(sessionDir), ctx),
-            (err) => err?.name === 'MicroverseExitError' && err?.exitReason === 'judge_timeout',
-        );
-        const persisted = readMicroverseState(sessionDir);
-        assert.equal(persisted.exit_reason, 'judge_timeout');
-        assert.equal(persisted.status, 'stopped');
-        assert.deepEqual(sleeps, [10_000, 30_000, 60_000]);
+        await withLegacyJudgeSpawn(judgeExec, async () => {
+            await assert.rejects(
+                executeGapAnalysis(readMicroverseState(sessionDir), ctx),
+                (err) => err?.name === 'MicroverseExitError' && err?.exitReason === 'judge_timeout',
+            );
+            const persisted = readMicroverseState(sessionDir);
+            assert.equal(persisted.exit_reason, 'judge_timeout');
+            assert.equal(persisted.status, 'stopped');
+            assert.deepEqual(sleeps, [10_000, 30_000, 60_000]);
+        });
     } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = origExec;
         _deps.sleep = origSleep;
         _deps.runIteration = origRunIteration;
         fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -2559,9 +2557,7 @@ test('LLM baseline ETIMEDOUT exits judge_timeout instead of defaulting to 0', as
 // --- M2 (GitHub #20): baseline scores violations.length and seeds the violation ledger ---
 
 test('M2-1/M2-2: a full-shape LLM baseline answer is scored by violations.length and seeds the violation ledger', async () => {
-    const origExec = _deps.execFileSync;
     const origRunIteration = _deps.runIteration;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     const dir = createTempGitRepo();
     const violationIds = ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'];
     const judgeAnswer = {
@@ -2589,7 +2585,7 @@ test('M2-1/M2-2: a full-shape LLM baseline answer is scored by violations.length
     const ctx = makeMicroverseLoopContext({ dir: sessionDir, state: JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8')) }, dir, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), {
         backend: 'claude',
     });
-    _deps.execFileSync = (_cmd, args) => {
+    const judgeExec = (_cmd, args) => {
         if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
         return JSON.stringify(judgeAnswer);
     };
@@ -2600,19 +2596,19 @@ test('M2-1/M2-2: a full-shape LLM baseline answer is scored by violations.length
         wallSeconds: 1,
     });
     try {
-        const { baseline } = await executeGapAnalysis(readMicroverseState(sessionDir), ctx);
-        assert.equal(baseline.score, 6, 'baseline score must be violations.length (6), not the self-reported 2');
-        const persisted = readMicroverseState(sessionDir);
-        assert.equal(persisted.baseline_score, 6, 'persisted baseline_score must carry the derived score');
-        assert.equal(persisted.violation_ledger.length, 6, 'the baseline must seed the violation ledger');
-        assert.deepEqual(
-            persisted.violation_ledger.map(v => v.description).sort(),
-            [...violationIds].sort(),
-            'each seeded ledger entry must correspond to a reported violation',
-        );
+        await withLegacyJudgeSpawn(judgeExec, async () => {
+            const { baseline } = await executeGapAnalysis(readMicroverseState(sessionDir), ctx);
+            assert.equal(baseline.score, 6, 'baseline score must be violations.length (6), not the self-reported 2');
+            const persisted = readMicroverseState(sessionDir);
+            assert.equal(persisted.baseline_score, 6, 'persisted baseline_score must carry the derived score');
+            assert.equal(persisted.violation_ledger.length, 6, 'the baseline must seed the violation ledger');
+            assert.deepEqual(
+                persisted.violation_ledger.map(v => v.description).sort(),
+                [...violationIds].sort(),
+                'each seeded ledger entry must correspond to a reported violation',
+            );
+        });
     } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = origExec;
         _deps.runIteration = origRunIteration;
         fs.rmSync(sessionDir, { recursive: true, force: true });
         fs.rmSync(dir, { recursive: true, force: true });
@@ -2620,9 +2616,7 @@ test('M2-1/M2-2: a full-shape LLM baseline answer is scored by violations.length
 });
 
 test('M2-3 (back-compat): a legacy bare-integer LLM baseline answer still scores its integer and seeds nothing', async () => {
-    const origExec = _deps.execFileSync;
     const origRunIteration = _deps.runIteration;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     const dir = createTempGitRepo();
     const { dir: sessionDir } = createSessionDir(dir, {
         status: 'gap_analysis',
@@ -2640,7 +2634,7 @@ test('M2-3 (back-compat): a legacy bare-integer LLM baseline answer still scores
     const ctx = makeMicroverseLoopContext({ dir: sessionDir, state: JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8')) }, dir, path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), {
         backend: 'claude',
     });
-    _deps.execFileSync = (_cmd, args) => {
+    const judgeExec = (_cmd, args) => {
         if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
         return '7';
     };
@@ -2651,14 +2645,14 @@ test('M2-3 (back-compat): a legacy bare-integer LLM baseline answer still scores
         wallSeconds: 1,
     });
     try {
-        const { baseline } = await executeGapAnalysis(readMicroverseState(sessionDir), ctx);
-        assert.equal(baseline.score, 7, 'a bare-integer baseline answer must still score its own integer');
-        const persisted = readMicroverseState(sessionDir);
-        assert.equal(persisted.baseline_score, 7);
-        assert.equal(persisted.violation_ledger.length, 0, 'a bare-integer answer carries no structured violations to seed');
+        await withLegacyJudgeSpawn(judgeExec, async () => {
+            const { baseline } = await executeGapAnalysis(readMicroverseState(sessionDir), ctx);
+            assert.equal(baseline.score, 7, 'a bare-integer baseline answer must still score its own integer');
+            const persisted = readMicroverseState(sessionDir);
+            assert.equal(persisted.baseline_score, 7);
+            assert.equal(persisted.violation_ledger.length, 0, 'a bare-integer answer carries no structured violations to seed');
+        });
     } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = origExec;
         _deps.runIteration = origRunIteration;
         fs.rmSync(sessionDir, { recursive: true, force: true });
         fs.rmSync(dir, { recursive: true, force: true });
@@ -2738,9 +2732,7 @@ test('command baseline missing CLI exits judge_cli_missing instead of defaulting
 });
 
 test('LLM iteration timeout exits judge_timeout instead of recording a stall', async () => {
-    const origExec = _deps.execFileSync;
     const origSleep = _deps.sleep;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     const dir = createTempGitRepo();
     const LLM_METRIC = {
         description: 'code quality',
@@ -2765,7 +2757,7 @@ test('LLM iteration timeout exits judge_timeout instead of recording a stall', a
     ctx.preIterSha = 'a'.repeat(40);
     ctx.postIterSha = 'b'.repeat(40);
     const sleeps = [];
-    _deps.execFileSync = (_cmd, args) => {
+    const judgeExec = (_cmd, args) => {
         if (Array.isArray(args) && args[0] === '--version') return 'Claude Code 2.1.126';
         const err = new Error('spawnSync claude ETIMEDOUT');
         err.code = 'ETIMEDOUT';
@@ -2773,13 +2765,13 @@ test('LLM iteration timeout exits judge_timeout instead of recording a stall', a
     };
     _deps.sleep = async (ms) => { sleeps.push(ms); };
     try {
-        const result = await measureAndClassifyIteration(state, { raw: '40', score: 40 }, ctx);
-        assert.deepEqual(result, { kind: 'failed', exitReason: 'judge_timeout' });
-        assert.equal(state.convergence.stall_counter, 0, 'judge timeout must not be translated into stall convergence');
-        assert.deepEqual(sleeps, [10_000, 30_000, 60_000]);
+        await withLegacyJudgeSpawn(judgeExec, async () => {
+            const result = await measureAndClassifyIteration(state, { raw: '40', score: 40 }, ctx);
+            assert.deepEqual(result, { kind: 'failed', exitReason: 'judge_timeout' });
+            assert.equal(state.convergence.stall_counter, 0, 'judge timeout must not be translated into stall convergence');
+            assert.deepEqual(sleeps, [10_000, 30_000, 60_000]);
+        });
     } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = origExec;
         _deps.sleep = origSleep;
         fs.rmSync(session.dir, { recursive: true, force: true });
         fs.rmSync(dir, { recursive: true, force: true });
