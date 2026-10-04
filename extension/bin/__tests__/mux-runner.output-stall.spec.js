@@ -4,6 +4,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { conformanceVerdictIsFail, runIteration } from '../../bin/mux-runner.js';
+import { installShutdownHandlers, resolveBackendWithSource } from '../../bin/pipeline-runner.js';
+import { StateManager } from '../../services/state-manager.js';
 function makeExecutableNodeScript(filePath, source) {
     fs.writeFileSync(filePath, `#!/usr/bin/env node\n${source}`);
     fs.chmodSync(filePath, 0o755);
@@ -250,4 +252,44 @@ test('AP-BIN-ITER257-01: a verdict separated from its heading by blank lines is 
     assert.equal(conformanceVerdictIsFail('# Conformance\n\n## 6. Verdict\n\n**ALL_PASS**\n'), false);
     assert.equal(conformanceVerdictIsFail('6. **Verdict**: ALL_PASS / FAIL (failures with file:line refs)\n'), false);
     assert.equal(conformanceVerdictIsFail('## Verdict\n\nSee notes.\n\nFAIL\n'), false);
+});
+// F75-BACKEND-4: a phase_backends override stamps state.backend for its phase and restores it in
+// runPhaseIteration's finally, which process.exit skips. A SIGHUP/SIGTERM/SIGINT mid-phase left the
+// override persisted, so --resume (state.backend wins resolution) ran every later phase on it.
+test('F75-BACKEND-4: a signal during a phase_backends override restores the pipeline backend', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-f75-backend-4-'));
+    const statePath = path.join(dir, 'state.json');
+    // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing state to lock against
+    new StateManager().forceWrite(statePath, {
+        active: true, working_dir: dir, step: 'implement', iteration: 0, max_iterations: 50,
+        worker_timeout_seconds: 1200, start_time_epoch: 1000, completion_promise: null,
+        original_prompt: 'f75', current_ticket: null, history: [], started_at: new Date().toISOString(),
+        session_dir: dir, tmux_mode: true, backend: 'codex',
+    });
+    const runtime = {
+        sessionDir: dir, extensionRoot: dir, statePath, config: { phases: ['anatomy-park'] },
+        target: dir, workingDir: dir, backend: 'claude', phaseEnv: process.env, log: () => { },
+    };
+    const oldExit = process.exit;
+    const oldDataRoot = process.env.PICKLE_DATA_ROOT;
+    const exitSentinel = new Error('process.exit intercepted');
+    let cleanup = () => { };
+    try {
+        process.env.PICKLE_DATA_ROOT = path.join(dir, 'data-root');
+        process.exit = (() => { throw exitSentinel; });
+        cleanup = installShutdownHandlers(runtime, { completed: 0, skipped: 0 }, path.join(dir, 'pipeline-cancel'));
+        assert.throws(() => process.emit('SIGHUP'), exitSentinel);
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        assert.equal(state.backend, 'claude');
+        assert.deepEqual(resolveBackendWithSource(state, undefined, undefined), { backend: 'claude', source: 'state.json' });
+    }
+    finally {
+        cleanup();
+        process.exit = oldExit;
+        if (oldDataRoot === undefined)
+            delete process.env.PICKLE_DATA_ROOT;
+        else
+            process.env.PICKLE_DATA_ROOT = oldDataRoot;
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });

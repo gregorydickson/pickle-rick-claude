@@ -5475,6 +5475,8 @@ export function installShutdownHandlers(runtime: PipelineRuntime, counters: Phas
     if (activeChild && !activeChild.killed) reapChildSubtree(activeChild, activeChildLeadsGroup, 'SIGTERM');
     for (const lane of laneChildren.values()) reapChildSubtree(lane, true, 'SIGTERM');
     recordExitReason(runtime.statePath, `signal:${signal}`);
+    // process.exit skips runPhaseIteration's finally: put back the pipeline backend a phase override stamped.
+    try { restampBackendIfNeeded(runtime.statePath, runtime.backend); } catch { /* best effort */ }
     safeDeactivate(runtime.statePath);
     logActivity({ event: 'session_end', source: 'pickle', session: path.basename(runtime.sessionDir), mode: 'tmux', backend: runtime.backend });
     process.exit(1);
