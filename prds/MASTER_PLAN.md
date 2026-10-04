@@ -232,8 +232,8 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
 | RUNNING | **nothing** (as of 03:10Z) |
-| open issues | Closed with evidence 2026-10-04: #54, #55, #5, #63. Status comments (what shipped / what was deliberately not built) on #56, #58–#62, #64–#67. Still open: #52/#53 (close after their text is sanitized — in progress), #43, #56–#62, #64–#67 |
-| client data | **Sanitized 2026-10-03 at operator request:** bodies of #54, #55, #56–#67 and the 2026-10-03 comments on #54/#55 rewritten generic (edit history keeps originals; deletion = operator, declined for now). **Still exposed:** bodies of #52 and #53 and one 2026-09-30 comment on #53; older closed issues (#9, #14, #15, #31, #48); 145 files at `origin/main` (the #31 leak) |
+| open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
+| client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
 | exocortex | integration DEFERRED until memory-graph/exocortex#1 (reads drop `content`) is fixed. The runner-only plan is in auto-memory |
@@ -276,7 +276,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
      depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
 
-7. **B-MERGE-REL — job 1: close every phase-failure path, merge the experimental work, then ratchet** (operator, 2026-10-03). **DONE 2026-10-04: merged, built, gated 22/22, deployed. Remaining from decision 5: sanitize + close #52/#53; delete the 3 never-run `bin/__tests__/*.spec.ts` files (needs a small pipeline). Ledger rows below.**
+7. **B-MERGE-REL — job 1: close every phase-failure path, merge the experimental work, then ratchet** (operator, 2026-10-03). **DONE 2026-10-04: merged, built, gated 22/22, deployed. Remaining from decision 5: delete the 3 never-run `bin/__tests__/*.spec.ts` files (needs a small pipeline). Ledger rows below.**
    Plan: `prds/p0-b-merge-reliability-plan.md` (agent team: phase-failure forensics, merge analysis, issue inventory,
    reliability baseline → planner → complexity skeptic + measurement verifier → revision against every blocking finding).
    19 tickets, gate legs 22 → 22. Reliability now tracked as N1 hands-off completion (16/17) and N2 all-phases-converged
