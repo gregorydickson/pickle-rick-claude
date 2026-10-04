@@ -223,16 +223,16 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-04 00:40Z) — B-MERGE-REL-1 + B-MREL-FIX built; gate 21/22 → B-MREL-FIX2 RUNNING (last two stale pins)
+### ▶ STATE (2026-10-04 03:10Z) — B-MERGE-REL DONE: merged main + Part 1 gated 22/22 and DEPLOYED; exp branches retired
 
 | | |
 |---|---|
-| `main` | pushed **`7597dd0e`** = merge `f61abc92` of `exp/b-parallel-build@d9767fcb` + decisions. Gate `20261003T162026Z-8342` 22/22, soak 1804.0s. Rollback ref `ddf071d4`. Version still `2.2.0-beta.1` (next pre-release `3.0.0-beta.1`, operator decision 3) |
-| `exp/b-lanes` | pushed **`fcec8f1d`** (merge of main; gate 22/22). **No longer the deployed runtime** while B-MEGA runs (see `exp/b-parallel-build`) |
-| `exp/b-parallel-build` | pushed **`d9767fcb`** = B-MEGA (session `2026-10-02-be104839`, 4/4 phases, 709.5 min, 52 commits). Gate `20261003T133052Z-29559` 22/22, soak 1803.9s. **DEPLOYED is still `1bacc67a`** (pre-B-MEGA); redeploying `d9767fcb` = operator decision |
+| `main` | pushed **`55ab746c`** = merged experimental work + B-MERGE-REL-1 (19 tickets, session `2026-10-03-2868b847`) + B-MREL-FIX (`2026-10-03-4bb24aa9`) + B-MREL-FIX2 (`2026-10-04-72b78a7d`). Gate `20261004T013053Z-20833` 22/22 at `fc850787`, soak 1804.2s. **DEPLOYED 2026-10-04 ~02:55Z**, verified by content: `unreproducibleNodeModulesGap` 0→2, `replicateLaneNodeModules` 0→3, `throwOnEmptyScope` 5→0; `bin/`, `services/`, `.claude/commands` diffs = 0; runners import. Rollback: `git checkout 1bacc67a && bash install.sh` (reachable from main). Version still `2.2.0-beta.1`; next pre-release `3.0.0-beta.1` (operator decision 3) |
+| `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
+| `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-MREL-FIX2** on `main`, session `2026-10-04-72b78a7d` (tmux `pipeline-72b78a7d`, 00:38Z; 1 test-only ticket). LOCAL `main` = B-MERGE-REL-1 + B-MREL-FIX (`e5a9bab9`, `b3e50edc`) + PRDs, UNPUSHED. Gate `20261003T233050Z-98472` at `b3e50edc`: 21/22 — `test_fast_budget` red on 2 tests in `success-verdict-withheld.test.js` (raise-site census lacks MREL-A2's `withholdForCloserHandoff`; a citadel test passes exit 1, which MREL-A12 now counts non-convergent). Both were red at `10bcb7d6` too; the first triage read a truncated failure list. Deploy waits for a green gate |
-| open issues | **#56–#67** (field-run reports 2026-10-03; no strict duplicates — consolidation below), #54/#55 (B-RUNREPORT-54 shipped on main; B-MEGA on exp/b-parallel-build covers #55 B/C/D), #52/#53 (fixed on branches; close at merge), #43, #5 |
+| RUNNING | **nothing** (as of 03:10Z) |
+| open issues | Closed with evidence 2026-10-04: #54, #55, #5, #63. Status comments (what shipped / what was deliberately not built) on #56, #58–#62, #64–#67. Still open: #52/#53 (close after their text is sanitized — in progress), #43, #56–#62, #64–#67 |
 | client data | **Sanitized 2026-10-03 at operator request:** bodies of #54, #55, #56–#67 and the 2026-10-03 comments on #54/#55 rewritten generic (edit history keeps originals; deletion = operator, declined for now). **Still exposed:** bodies of #52 and #53 and one 2026-09-30 comment on #53; older closed issues (#9, #14, #15, #31, #48); 145 files at `origin/main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
@@ -276,7 +276,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
      depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
 
-7. **B-MERGE-REL — job 1: close every phase-failure path, merge the experimental work, then ratchet** (operator, 2026-10-03).
+7. **B-MERGE-REL — job 1: close every phase-failure path, merge the experimental work, then ratchet** (operator, 2026-10-03). **DONE 2026-10-04: merged, built, gated 22/22, deployed. Remaining from decision 5: sanitize + close #52/#53; delete the 3 never-run `bin/__tests__/*.spec.ts` files (needs a small pipeline). Ledger rows below.**
    Plan: `prds/p0-b-merge-reliability-plan.md` (agent team: phase-failure forensics, merge analysis, issue inventory,
    reliability baseline → planner → complexity skeptic + measurement verifier → revision against every blocking finding).
    19 tickets, gate legs 22 → 22. Reliability now tracked as N1 hands-off completion (16/17) and N2 all-phases-converged
@@ -347,6 +347,7 @@ collects `*.test.js` only).
 | `2026-10-02-76f112c8` B-LANES-MERGE-G (on `exp/b-lanes`) | 1 test | 1 (explicit `paths:` scope) | 1.9 | 2 | 0 | single lane | none; pickle 17.5 min, szechuan 8.7 min (2 DRY/doc commits) | local |
 | `2026-10-02-1d45b656` B-ATTRIB-L (on `exp/b-lanes`) | 4 src/test (+2 catalogs) | 3 (cap 2, explicit `paths:` scope) | 11.7 | 4/5/6 | 2 lane commits | 3 integrated, 0 conflicts | none; pickle 78 min for 5 tickets; szechuan 23 min (2 DRY commits) | local |
 | `2026-10-02-be104839` B-MEGA (on `exp/b-parallel-build`, waves 2) | ~60 src/test/doc | 6 (cap 2, `branch` scope) | 59.9 | 13/3/2/2/2/3 | 11 lane commits | 6 integrated, 0 conflicts; integration_check green on all 3 committing lanes | none; pickle 636 min (23 tickets, 1 of 22 waves width 2); szechuan 13.3 min | local |
+| `2026-10-03-2868b847` B-MERGE-REL-1 (on merged `main`) | 47 paths | 7 (cap 2, explicit `paths:`) | 25.6 | — | — | 7 converged | szechuan `stalled_below_target` (non-fatal, 3/4); 203 min for 19 tickets |
 
 ### ▶ B-UPGRADE-ISO shipped + B-LANES status (2026-09-25)
 
