@@ -836,6 +836,18 @@ async function withMicroverseLoopDeps(overrides, fn) {
     }
 }
 
+async function withLegacyJudgeSpawn(execFileSync, fn) {
+    const original = _deps.execFileSync;
+    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
+    _deps.execFileSync = execFileSync;
+    try {
+        return await fn();
+    } finally {
+        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
+        _deps.execFileSync = original;
+    }
+}
+
 function makeMicroverseLoopContext(session, workingDir, extensionRoot, stateOverrides = {}) {
     const statePath = path.join(session.dir, 'state.json');
     const state = { ...session.state, ...stateOverrides };
@@ -2223,14 +2235,12 @@ test('parseLlmJudgeOutput: leaves Violation.path/.line/.rule as undefined when a
 // silently fell back to priorViolations=[].
 test('measureLlmMetric: passes priorViolations into buildJudgePrompt prior-violations section (ticket 98dc9bed)', async () => {
     let capturedPrompt = '';
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
-    _deps.execFileSync = (_cmd, args) => {
+    const judgeExec = (_cmd, args) => {
         const idx = args.indexOf('-p');
         if (idx !== -1) capturedPrompt = args[idx + 1] || '';
         return '8';
     };
-    try {
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         const prior = [
             { id: 'abc12345', severity: 'high', description: 'leaky abstraction', first_seen_iter: 1, last_seen_iter: 3 },
         ];
@@ -2241,37 +2251,27 @@ test('measureLlmMetric: passes priorViolations into buildJudgePrompt prior-viola
         );
         assert.ok(capturedPrompt.includes('[abc12345]'), 'prompt must include violation id');
         assert.ok(capturedPrompt.includes('leaky abstraction'), 'prompt must include violation description');
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 // --- measureLlmMetric + buildJudgePrompt tests ---
 
 test('measureLlmMetric extracts numeric score from last line', async () => {
     const mockOutput = 'analysis of codebase...\n42';
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
-    _deps.execFileSync = () => mockOutput;
-    try {
+    const judgeExec = () => mockOutput;
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         const result = await measureLlmMetric('fix bugs', 30, '/tmp');
         assert.deepEqual(result, { raw: mockOutput, score: 42 });
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('measureLlmMetric spawns claude with --system-prompt and --allowedTools', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     let capturedArgs;
-    _deps.execFileSync = (cmd, args) => {
+    const judgeExec = (cmd, args) => {
         capturedArgs = { cmd, args };
         return '75';
     };
-    try {
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         await measureLlmMetric('fix bugs', 30, '/tmp', 'claude-opus-4-6');
         assert.equal(capturedArgs.cmd, 'claude');
         assert.ok(capturedArgs.args.includes('-p'));
@@ -2282,101 +2282,68 @@ test('measureLlmMetric spawns claude with --system-prompt and --allowedTools', a
         assert.ok(capturedArgs.args.includes('--allowedTools'), 'should include --allowedTools');
         assert.ok(capturedArgs.args.includes('Read,Glob,Grep'), 'should restrict to read-only tools');
         assert.ok(capturedArgs.args.includes('--no-session-persistence'), 'should not persist judge sessions');
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('measureLlmMetric enforces minimum 180s timeout', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     let capturedOpts;
-    _deps.execFileSync = (_cmd, _args, opts) => {
+    const judgeExec = (_cmd, _args, opts) => {
         capturedOpts = opts;
         return '50';
     };
-    try {
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         await measureLlmMetric('fix bugs', 30, '/tmp');
         assert.equal(capturedOpts.timeout, 180 * 1000, 'should floor timeout to 180s');
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('measureLlmMetric respects timeout above 180s', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     let capturedOpts;
-    _deps.execFileSync = (_cmd, _args, opts) => {
+    const judgeExec = (_cmd, _args, opts) => {
         capturedOpts = opts;
         return '50';
     };
-    try {
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         await measureLlmMetric('fix bugs', 300, '/tmp');
         assert.equal(capturedOpts.timeout, 300 * 1000, 'should use provided timeout when above floor');
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('measureLlmMetric returns null on timeout', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
-    _deps.execFileSync = () => {
+    const judgeExec = () => {
         const err = new Error('Command timed out');
         err.code = 'ETIMEDOUT';
         throw err;
     };
-    try {
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         const result = await measureLlmMetric('fix bugs', 1, '/tmp');
         assert.equal(result, null);
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('measureLlmMetric returns null on subprocess error', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
-    _deps.execFileSync = () => { throw new Error('subprocess failed'); };
-    try {
+    const judgeExec = () => { throw new Error('subprocess failed'); };
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         const result = await measureLlmMetric('fix bugs', 30, '/tmp');
         assert.equal(result, null);
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('measureLlmMetric returns null on non-numeric output', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
-    _deps.execFileSync = () => 'great job!';
-    try {
+    const judgeExec = () => 'great job!';
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         const result = await measureLlmMetric('fix bugs', 30, '/tmp');
         assert.equal(result, null);
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('measureLlmMetric extracts score from markdown-formatted output', async () => {
     const mockOutput = 'I found several issues.\n\nHere is my score:\n\n**5**';
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
-    _deps.execFileSync = () => mockOutput;
-    try {
+    const judgeExec = () => mockOutput;
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         const result = await measureLlmMetric('fix bugs', 30, '/tmp');
         assert.deepEqual(result, { raw: mockOutput, score: 5 });
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('buildJudgePrompt includes goal, cwd, and scoring format instructions', () => {
@@ -2419,22 +2386,17 @@ test('buildJudgePrompt omits target file when prdPath not provided', () => {
 });
 
 test('measureLlmMetric passes prdPath to buildJudgePrompt', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     let capturedArgs;
-    _deps.execFileSync = (_cmd, args) => {
+    const judgeExec = (_cmd, args) => {
         capturedArgs = args;
         return '50';
     };
-    try {
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         await measureLlmMetric('fix bugs', 30, '/tmp', undefined, undefined, '/tmp/prds/test.md');
         // The prompt (second arg after -p) should contain the prd path
         const promptIdx = capturedArgs.indexOf('-p') + 1;
         assert.ok(capturedArgs[promptIdx].includes('/tmp/prds/test.md'), 'prompt should contain prd path');
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('buildJudgePrompt includes judgeContextPath when provided', () => {
@@ -2514,40 +2476,30 @@ test('buildJudgePrompt with empty allowedPaths falls back to whole-tree Target p
 });
 
 test('measureLlmMetric passes judgeContextPath to buildJudgePrompt', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     let capturedArgs;
-    _deps.execFileSync = (_cmd, args) => {
+    const judgeExec = (_cmd, args) => {
         capturedArgs = args;
         return '5';
     };
-    try {
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         await measureLlmMetric('fix bugs', 30, '/tmp', undefined, undefined, '/tmp/target', '/tmp/principles.md');
         const promptIdx = capturedArgs.indexOf('-p') + 1;
         assert.ok(capturedArgs[promptIdx].includes('/tmp/principles.md'), 'prompt should contain judge context path');
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('measureLlmMetric defaults to claude-sonnet-4-6 model', async () => {
-    const orig = _deps.execFileSync;
-    process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
     let capturedArgs;
-    _deps.execFileSync = (_cmd, args) => {
+    const judgeExec = (_cmd, args) => {
         capturedArgs = args;
         return '50';
     };
-    try {
+    await withLegacyJudgeSpawn(judgeExec, async () => {
         await measureLlmMetric('fix bugs', 30, '/tmp');
         const modelIndex = capturedArgs.indexOf('--model');
         assert.notEqual(modelIndex, -1, `expected --model in args: ${capturedArgs.join(' ')}`);
         assert.equal(capturedArgs[modelIndex + 1], 'claude-sonnet-4-6');
-    } finally {
-        delete process.env['PICKLE_JUDGE_LEGACY_SPAWN'];
-        _deps.execFileSync = orig;
-    }
+    });
 });
 
 test('LLM baseline ETIMEDOUT exits judge_timeout instead of defaulting to 0', async () => {
