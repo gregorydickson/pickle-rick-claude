@@ -1915,30 +1915,6 @@ test('regressed metric triggers git reset', () => {
     }
 });
 
-// --- Final report ---
-
-test('final report written to memory directory', () => {
-    const dir = createTempGitRepo();
-    try {
-        const { dir: sessionDir } = createSessionDir(dir, {
-            convergence: {
-                stall_limit: 3, stall_counter: 3,
-                history: [
-                    { iteration: 1, metric_value: '50', score: 50, action: 'accept', description: 'improved', pre_iteration_sha: 'a'.repeat(40), timestamp: new Date().toISOString() },
-                ],
-            },
-        });
-        // Simulate report writing by checking the function exists
-        const memoryDir = path.join(sessionDir, 'memory');
-        fs.mkdirSync(memoryDir, { recursive: true });
-        const reportPath = path.join(memoryDir, 'microverse_report_test.md');
-        fs.writeFileSync(reportPath, '# Test Report\n');
-        assert.ok(fs.existsSync(reportPath), 'report should exist in memory dir');
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
 // --- State sync ---
 
 test('runner reads state.json and microverse.json on startup', () => {
