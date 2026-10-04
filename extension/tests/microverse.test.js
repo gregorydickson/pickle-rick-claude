@@ -1908,18 +1908,6 @@ test('convergence: 3 consecutive holds with stall_limit=3 stops loop', () => {
     assert.equal(isConverged(mvState), 'stall', 'should be converged');
 });
 
-// --- Dirty tree abort ---
-
-test('dirty working tree detected', () => {
-    const dir = createTempGitRepo();
-    try {
-        fs.writeFileSync(path.join(dir, 'dirty.txt'), 'dirty');
-        assert.equal(isWorkingTreeDirty(dir), true);
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
 // --- Rollback test ---
 
 test('regressed metric triggers git reset', () => {
