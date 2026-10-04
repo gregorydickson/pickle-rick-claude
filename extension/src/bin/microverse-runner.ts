@@ -82,6 +82,7 @@ import {
   classifyMuxIteration,
   isParkExhausted,
   foldParkIntoEpisode,
+  isUsageWarning,
 } from './mux-runner.js';
 import { resolveCodexModel } from './spawn-morty.js';
 import { checkScopeDiff, isUnevaluableScopeStatus } from './check-scope-diff.js';
@@ -5012,6 +5013,7 @@ async function runRateLimitWaitLoop(
   signal: AbortSignal,
   waitStart: number,
   waitEnd: number,
+  warning: boolean,
 ): Promise<void> {
   const probeIntervalMs = resolveRateLimitProbeIntervalMs();
   // First probe fires one full interval in: we were rejected a moment ago, so re-asking
@@ -5028,7 +5030,8 @@ async function runRateLimitWaitLoop(
     }
     const remainingPoll = remainingSessionSeconds(ctx.currentRunnerState);
     if (remainingPoll !== null && remainingPoll <= 0) { ctx.rateLimitExitReason = 'limit_reached'; return; }
-    if (_deps.now() - lastProbeMs < probeIntervalMs) continue;
+    // A warning means the API still serves, so a probe would read it as cleared: wait out the reset.
+    if (warning || _deps.now() - lastProbeMs < probeIntervalMs) continue;
     lastProbeMs = _deps.now();
     if (await rateLimitWaitClearedByProbe(ctx)) return;
   }
@@ -5043,6 +5046,7 @@ export async function handleRateLimit(
     rateLimitType?: string | null;
     resetsAt?: number | null;
     waitSource?: string | null;
+    warning?: boolean;
   } = {},
 ): Promise<void> {
   signal.throwIfAborted();
@@ -5065,7 +5069,7 @@ export async function handleRateLimit(
     wait_source: waitMetadata.waitSource ?? null,
   });
 
-  await runRateLimitWaitLoop(ctx, signal, waitStart, waitEnd);
+  await runRateLimitWaitLoop(ctx, signal, waitStart, waitEnd, waitMetadata.warning === true);
 
   if (!ctx.rateLimitExitReason) {
     clearRateLimitWaitFile(ctx.sessionDir);
@@ -6597,6 +6601,7 @@ export async function handleRateLimitExit(
     rateLimitType: exitResult.rateLimitInfo?.rateLimitType ?? null,
     resetsAt: exitResult.rateLimitInfo?.resetsAt ?? null,
     waitSource: action.waitSource,
+    warning: isUsageWarning(exitResult.rateLimitInfo),
   });
   sm.update(ctx.statePath, s => {
     s.rate_limit_park = foldParkIntoEpisode(priorPark, _deps.now() - parkStartMs, consecutiveAtParkStart, _deps.now());

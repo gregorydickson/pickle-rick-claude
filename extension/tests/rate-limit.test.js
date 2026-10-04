@@ -10,6 +10,7 @@ import {
     detectRateLimitInText,
     classifyIterationExit,
     computeRateLimitAction,
+    isUsageWarning,
 } from '../bin/mux-runner.js';
 
 function makeTmpDir(prefix = 'rl-test-') {
@@ -94,7 +95,7 @@ test('detectRateLimitInLog: returns limited=false for rate_limit_event with non-
     }
 });
 
-test('detectRateLimitInLog: returns limited=false for allowed_warning status', () => {
+test('detectRateLimitInLog: allowed_warning is limited and carries status, resetsAt and rateLimitType', () => {
     const tmpDir = makeTmpDir();
     const logFile = path.join(tmpDir, 'iter.log');
     try {
@@ -106,10 +107,39 @@ test('detectRateLimitInLog: returns limited=false for allowed_warning status', (
         ];
         fs.writeFileSync(logFile, lines.join('\n'));
         const info = detectRateLimitInLog(logFile);
-        assert.equal(info.limited, false);
+        assert.equal(info.limited, true);
+        assert.equal(info.status, 'allowed_warning');
+        assert.equal(info.resetsAt, 1772816400);
+        assert.equal(info.rateLimitType, 'seven_day');
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+});
+
+test('F75-RLWARN-: a warning at line 4 of a 150-line log classifies as api_limit with its reset carried', () => {
+    const tmpDir = makeTmpDir();
+    const logFile = path.join(tmpDir, 'iter.log');
+    try {
+        const lines = ['{"type":"system"}', '{"type":"assistant"}', '{"type":"assistant"}'];
+        lines.push(JSON.stringify({
+            type: 'rate_limit_event',
+            rate_limit_info: { status: 'allowed_warning', resetsAt: 1772816400, rateLimitType: 'five_hour', utilization: 0.9 },
+        }));
+        for (let i = 0; i < 146; i++) lines.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `line ${i}` }] } }));
+        fs.writeFileSync(logFile, lines.join('\n'));
+        const result = classifyIterationExit('continue', logFile);
+        assert.equal(result.type, 'api_limit');
+        assert.equal(result.rateLimitInfo.status, 'allowed_warning');
+        assert.equal(result.rateLimitInfo.resetsAt, 1772816400);
+        assert.equal(isUsageWarning(result.rateLimitInfo), true);
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('F75-RLWARN-: a rejection is not a warning', () => {
+    assert.equal(isUsageWarning({ limited: true, status: 'rejected' }), false);
+    assert.equal(isUsageWarning(undefined), false);
 });
 
 test('detectRateLimitInLog: handles non-JSON lines gracefully', () => {
@@ -135,17 +165,23 @@ test('detectRateLimitInLog: returns limited=false for missing file', () => {
     assert.equal(info.limited, false);
 });
 
-test('detectRateLimitInLog: only scans last 100 lines', () => {
+test('detectRateLimitInLog: a crossing anywhere in the log counts; a LATER allowed event clears it', () => {
     const tmpDir = makeTmpDir();
     const logFile = path.join(tmpDir, 'iter.log');
     try {
-        const lines = [JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1772229600 } })];
-        for (let i = 0; i < 150; i++) {
-            lines.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `line ${i}` }] } }));
-        }
-        fs.writeFileSync(logFile, lines.join('\n'));
-        const info = detectRateLimitInLog(logFile);
-        assert.equal(info.limited, false);
+        const event = (status) => JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status, resetsAt: 1772229600 } });
+        const filler = [];
+        for (let i = 0; i < 150; i++) filler.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `line ${i}` }] } }));
+        fs.writeFileSync(logFile, [event('rejected'), ...filler].join('\n'));
+        assert.equal(detectRateLimitInLog(logFile).limited, true);
+        fs.writeFileSync(logFile, [event('rejected'), ...filler, event('allowed')].join('\n'));
+        const cleared = detectRateLimitInLog(logFile);
+        assert.equal(cleared.limited, false);
+        assert.equal(cleared.sawEvents, true);
+        assert.equal(cleared.resetsAt, undefined);
+        // F75-RLWARN-: same clearing rule for a warning
+        fs.writeFileSync(logFile, [event('allowed_warning'), ...filler, event('allowed')].join('\n'));
+        assert.equal(detectRateLimitInLog(logFile).limited, false);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }

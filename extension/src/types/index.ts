@@ -1112,6 +1112,7 @@ export interface RateLimitInfo {
   sawEvents?: boolean;     // true if structured rate_limit_event lines were found (even if not rejected)
   resetsAt?: number;       // Unix epoch seconds from API
   rateLimitType?: string;  // 'five_hour' | 'seven_day' etc.
+  status?: string;         // status of the deciding rate_limit_event: 'rejected' | 'allowed_warning'
 }
 
 export type IterationExitResult =

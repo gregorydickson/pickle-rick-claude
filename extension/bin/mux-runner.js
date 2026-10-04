@@ -3432,9 +3432,7 @@ export function detectRateLimitInLog(logFile) {
     const result = { limited: false, sawEvents: false };
     try {
         const content = fs.readFileSync(logFile, 'utf-8');
-        const lines = content.split('\n');
-        const tail = lines.slice(-100);
-        for (const line of tail) {
+        for (const line of content.split('\n')) {
             try {
                 const parsed = JSON.parse(line);
                 if (parsed.type !== 'rate_limit_event')
@@ -3442,20 +3440,29 @@ export function detectRateLimitInLog(logFile) {
                 result.sawEvents = true;
                 // Real API nests under rate_limit_info; check both paths for robustness
                 const info = parsed.rate_limit_info ?? parsed;
-                const status = info.status;
-                if (status === 'rejected') {
-                    result.limited = true;
-                    if (typeof info.resetsAt === 'number')
-                        result.resetsAt = info.resetsAt;
-                    if (typeof info.rateLimitType === 'string')
-                        result.rateLimitType = info.rateLimitType;
-                }
+                // The LAST event decides: a warning or rejection is limited, anything later clears it.
+                const limited = info.status === 'rejected' || info.status === 'allowed_warning';
+                result.limited = limited;
+                delete result.resetsAt;
+                delete result.rateLimitType;
+                delete result.status;
+                if (!limited)
+                    continue;
+                result.status = info.status;
+                if (typeof info.resetsAt === 'number')
+                    result.resetsAt = info.resetsAt;
+                if (typeof info.rateLimitType === 'string')
+                    result.rateLimitType = info.rateLimitType;
             }
             catch { /* not JSON */ }
         }
     }
     catch { /* file missing */ }
     return result;
+}
+/** True when the park was entered on a usage-limit WARNING (the API still serves), not a rejection. */
+export function isUsageWarning(info) {
+    return info?.status === 'allowed_warning';
 }
 export function detectRateLimitInText(logFile) {
     try {
@@ -8264,6 +8271,9 @@ async function probeMuxRateLimitCleared(input) {
  */
 async function waitOutRateLimitParkWithProbe(input, now, sleepFn, parkStartMs, resumeTargetMs) {
     const { statePath, sessionDir, state } = input;
+    // Under a warning the API still serves, so a probe maps "served" to `cleared` and would
+    // release the park early: wait out the known reset instead.
+    const probing = !isUsageWarning(input.exitResult.rateLimitInfo);
     const probeFn = input.probeApiCleared ?? probeMuxRateLimitCleared;
     const probeIntervalMs = input.probeIntervalMs ?? resolveRateLimitProbeIntervalMs();
     let lastProbeMs = parkStartMs;
@@ -8274,7 +8284,7 @@ async function waitOutRateLimitParkWithProbe(input, now, sleepFn, parkStartMs, r
                 return true;
         }
         catch { /* proceed */ }
-        if (now() - lastProbeMs < probeIntervalMs)
+        if (!probing || now() - lastProbeMs < probeIntervalMs)
             continue;
         lastProbeMs = now();
         const verdict = await probeFn({

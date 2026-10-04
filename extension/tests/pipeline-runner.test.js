@@ -7338,3 +7338,74 @@ describe('F75-OPENDEC: open decisions are disclosed twice and withhold success',
     assert.equal(pending.exitCode, 1, 'only a status starting with `decided` settles a row');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #72: both review runners exhausting their rate-limit retries is NOT a false
+// convergence. Regression control of today's behaviour: the pipeline runs
+// finalize-gate (which passes), still ends failed, exits 1, and never claims
+// any review phase completed successfully.
+// ---------------------------------------------------------------------------
+test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gate end failed, never converged', async () => {
+  class ExitIntercept extends Error {
+    constructor(code) { super(`process.exit(${code})`); this.code = code; }
+  }
+  const repo = mkFixtureTmpDir('f75-rlfar-repo-');
+  const sessionDir = mkFixtureTmpDir('f75-rlfar-session-');
+  const dataRoot = mkFixtureTmpDir('f75-rlfar-data-');
+  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  const originalExit = process.exit;
+  const originalTmux = process.env.TMUX;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  try {
+    const startCommit = initRepo(repo, Object.fromEntries(['a', 'b', 'c'].map((f) => [`services/${f}.ts`, `export const ${f} = 1;\n`])));
+    // A follow-up commit keeps the branch diff non-empty so the review phases run.
+    fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
+    execFileSync('git', ['add', '.'], { cwd: repo, timeout: 10_000 });
+    execFileSync('git', ['commit', '-q', '-m', 'followup'], { cwd: repo, timeout: 10_000 });
+    writeStateFile(path.join(sessionDir, 'state.json'), {
+      active: false, working_dir: repo, step: 'implement', iteration: 0, max_iterations: 100,
+      max_time_minutes: 720, worker_timeout_seconds: 1200, start_time_epoch: 1000,
+      completion_promise: null, original_prompt: 'F75 rate-limit exhaustion', current_ticket: null,
+      history: [], started_at: new Date().toISOString(), session_dir: sessionDir, schema_version: 3,
+      backend: 'claude', start_commit: startCommit, tmux_mode: true, chain_meeseeks: false,
+      pipeline_continue_on_phase_fail: true,
+    });
+    fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+      phases: ['anatomy-park', 'szechuan-sauce'], target: repo, anatomy_stall_limit: 3,
+      szechuan_stall_limit: 5, anatomy_max_iterations: 100, szechuan_max_iterations: 50,
+      dirty_exempt_segments: ['prds', 'docs'],
+    }, null, 2));
+
+    const runners = [];
+    __setSpawnRunnerForTests(async (_cmd, args) => {
+      const script = path.basename(String(args[0]));
+      runners.push(script);
+      if (script === 'microverse-runner.js') {
+        const statePath = path.join(sessionDir, 'state.json');
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+        state.exit_reason = 'rate_limit_exhausted';
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        return { exitCode: 1, stdout: '', stderr: '' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    delete process.env.TMUX;
+    process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
+    await assert.rejects(() => main(sessionDir), (err) => err instanceof ExitIntercept && err.code === 1);
+    process.exit = originalExit;
+
+    assert.ok(runners.filter((s) => s === 'microverse-runner.js').length >= 2, `both review phases must run: ${runners.join(',')}`);
+    assert.ok(runners.includes('finalize-gate.js'), 'finalize-gate runs and passes');
+    const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(status.status, 'failed');
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.equal((log.match(/completed successfully/g) ?? []).length, 0, 'no review phase may claim success');
+  } finally {
+    process.exit = originalExit;
+    __setSpawnRunnerForTests(null);
+    if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
+    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    for (const d of [repo, sessionDir, dataRoot]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});

@@ -2653,15 +2653,15 @@ test('detectRateLimitInLog: returns limited=false for missing file', () => {
     assert.equal(detectRateLimitInLog('/nonexistent/file.log').limited, false);
 });
 
-test('detectRateLimitInLog: only checks last 100 lines', () => {
+test('detectRateLimitInLog: a rejection beyond the last 100 lines still counts', () => {
     const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-rl-')));
     try {
         const logFile = path.join(tmpDir, 'test.log');
-        // Place rate limit event beyond the last 100 lines
+        // The whole log is scanned: the last rate_limit_event decides, wherever it sits.
         const lines = [JSON.stringify({ type: 'rate_limit_event', status: 'rejected' })];
         for (let i = 0; i < 110; i++) lines.push('filler line');
         fs.writeFileSync(logFile, lines.join('\n'));
-        assert.equal(detectRateLimitInLog(logFile).limited, false);
+        assert.equal(detectRateLimitInLog(logFile).limited, true);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -7737,4 +7737,93 @@ test('Z1-6 (B-RUNREPORT-54 T1): the verdict token on the line AFTER the heading 
     }));
 
     assert.equal(isAcceptanceAssertionRefusal(guard), true);
+});
+
+// ---------------------------------------------------------------------------
+// #72: a usage-limit WARNING parks through the existing rate-limit park and
+// never probes (the API still serves, so a probe reads "cleared" and would
+// release the park early); a far-off reset parks to the known reset.
+// `resetsAt` anchors on the real clock because computeRateLimitAction reads it.
+// ---------------------------------------------------------------------------
+const DAY_MS = 24 * 60 * MIN_MS;
+
+function f75ParkInput(tmpDir, statePath, overrides) {
+    return {
+        consecutiveRateLimits: 1,
+        maxRateLimitRetries: 3,
+        rateLimitWaitMinutes: 5,
+        maxParkMinutes: 360,
+        statePath,
+        sessionDir: tmpDir,
+        state: { current_ticket: 't1', working_dir: tmpDir },
+        iteration: 3,
+        log: () => {},
+        jitterMs: 0,
+        ...overrides,
+    };
+}
+
+test('F75-RLWARN-: a warning park never probes and resumes at the known reset', async () => {
+    const { tmpDir, statePath } = b2Fixture();
+    try {
+        const startMs = Date.now();
+        let now = startMs;
+        let probeCalls = 0;
+        const resetsAtSec = Math.floor(startMs / 1000) + 3600;
+        const outcome = await runMainLoopRateLimitPark(f75ParkInput(tmpDir, statePath, {
+            exitResult: { type: 'api_limit', rateLimitInfo: { limited: true, status: 'allowed_warning', resetsAt: resetsAtSec, rateLimitType: 'five_hour' } },
+            now: () => now,
+            sleep: async () => { now += 10 * MIN_MS; },
+            probeIntervalMs: 1_000,
+            probeApiCleared: async () => { probeCalls += 1; return 'cleared'; },
+        }));
+        assert.equal(outcome.kind, 'resume');
+        assert.equal(probeCalls, 0, 'a warning park must never ask the probe — a served API reads as cleared');
+        assert.ok(now >= resetsAtSec * 1000, `resumed at ${now}, before the known reset ${resetsAtSec * 1000}`);
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('F75-RLWARN-: the same park entered on a REJECTION still probes and releases early (control)', async () => {
+    const { tmpDir, statePath } = b2Fixture();
+    try {
+        const startMs = Date.now();
+        let now = startMs;
+        let probeCalls = 0;
+        const resetsAtSec = Math.floor(startMs / 1000) + 3600;
+        const outcome = await runMainLoopRateLimitPark(f75ParkInput(tmpDir, statePath, {
+            exitResult: { type: 'api_limit', rateLimitInfo: { limited: true, status: 'rejected', resetsAt: resetsAtSec } },
+            now: () => now,
+            sleep: async () => { now += 10 * MIN_MS; },
+            probeIntervalMs: 1_000,
+            probeApiCleared: async () => { probeCalls += 1; return 'cleared'; },
+        }));
+        assert.equal(outcome.kind, 'resume');
+        assert.ok(probeCalls >= 1, 'a rejection park keeps probing');
+        assert.ok(now < resetsAtSec * 1000, 'the cleared probe releases the park before the reset');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('F75-RLFAR-: a rejected seven_day limit 5 days out parks the full 5 days; a second rejection right after waking exits rate_limit_exhausted', async () => {
+    const { tmpDir, statePath } = b2Fixture();
+    try {
+        const startMs = Date.now();
+        let now = startMs;
+        const resetsAtSec = Math.floor(startMs / 1000) + 5 * 24 * 3600;
+        const exitResult = { type: 'api_limit', rateLimitInfo: { limited: true, status: 'rejected', resetsAt: resetsAtSec, rateLimitType: 'seven_day' } };
+        const common = { now: () => now, sleep: async () => { now += 60 * MIN_MS; }, probeApiCleared: async () => 'unknown' };
+
+        const first = await runMainLoopRateLimitPark(f75ParkInput(tmpDir, statePath, { exitResult, ...common }));
+        assert.equal(first.kind, 'resume');
+        assert.ok(now - startMs >= 5 * DAY_MS, `parked ${(now - startMs) / DAY_MS} days, expected the full 5`);
+
+        const second = await runMainLoopRateLimitPark(f75ParkInput(tmpDir, statePath, { exitResult, consecutiveRateLimits: 2, ...common }));
+        assert.equal(second.kind, 'exit');
+        assert.equal(second.exitReason, 'rate_limit_exhausted');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
 });

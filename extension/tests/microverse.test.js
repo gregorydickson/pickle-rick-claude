@@ -3981,3 +3981,104 @@ test('R-MVPARK: handleRateLimitExit passes ctx.maxParkMinutes into computeRateLi
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });
+
+// ---------------------------------------------------------------------------
+// #72: a usage-limit WARNING waits out the known reset without probing (a probe
+// reads a still-serving API as cleared and would release the park early); a far
+// reset parks the clamped ceiling and then exhausts cleanly.
+// ---------------------------------------------------------------------------
+
+function f75MicroverseCtx(sessionDir, statePath, workingDir, state, overrides = {}) {
+    return {
+        sessionDir,
+        statePath,
+        workingDir,
+        currentRunnerState: state,
+        consecutiveRateLimits: 1,
+        maxRateLimitRetries: 5,
+        rateLimitWaitMinutes: 15,
+        maxParkMinutes: 360,
+        log: () => {},
+        ...overrides,
+    };
+}
+
+test('F75-RLWARN-: handleRateLimitExit on a warning never calls the probe and returns continue', async () => {
+    const workingDir = createTempGitRepo();
+    try {
+        await withRateLimitClockDeps(async () => {
+            const { dir: sessionDir, state } = createSessionDir(workingDir);
+            const statePath = path.join(sessionDir, 'state.json');
+            let clock = Date.now();
+            let probeCalls = 0;
+            _deps.now = () => clock;
+            _deps.sleep = async () => { clock += 11 * 60 * 1000; };
+            _deps.probeRateLimitCleared = async () => { probeCalls += 1; return 'cleared'; };
+            const startMs = clock;
+            const resetsAtSec = Math.floor(startMs / 1000) + 60 * 60;
+            const result = await handleRateLimitExit({}, f75MicroverseCtx(sessionDir, statePath, workingDir, state), {
+                type: 'api_limit',
+                rateLimitInfo: { limited: true, status: 'allowed_warning', resetsAt: resetsAtSec, rateLimitType: 'five_hour' },
+            });
+            assert.equal(result, 'continue');
+            assert.equal(probeCalls, 0, 'a warning wait must not probe');
+            assert.ok(clock - startMs >= 55 * 60 * 1000, `waited ${(clock - startMs) / 60000}min, expected to run out the reset`);
+        });
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('F75-RLWARN-: the same wait on a REJECTION probes and releases early (control)', async () => {
+    const workingDir = createTempGitRepo();
+    try {
+        await withRateLimitClockDeps(async () => {
+            const { dir: sessionDir, state } = createSessionDir(workingDir);
+            const statePath = path.join(sessionDir, 'state.json');
+            let clock = Date.now();
+            let probeCalls = 0;
+            _deps.now = () => clock;
+            _deps.sleep = async () => { clock += 11 * 60 * 1000; };
+            _deps.probeRateLimitCleared = async () => { probeCalls += 1; return 'cleared'; };
+            const startMs = clock;
+            const resetsAtSec = Math.floor(startMs / 1000) + 60 * 60;
+            const result = await handleRateLimitExit({}, f75MicroverseCtx(sessionDir, statePath, workingDir, state), {
+                type: 'api_limit',
+                rateLimitInfo: { limited: true, status: 'rejected', resetsAt: resetsAtSec, rateLimitType: 'five_hour' },
+            });
+            assert.equal(result, 'continue');
+            assert.ok(probeCalls >= 1, 'a rejection wait probes');
+            assert.ok(clock - startMs < 55 * 60 * 1000, 'the cleared probe ends the wait before the reset');
+        });
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});
+
+test('F75-RLFAR-: a reset 5 days out parks the clamped ceiling, then the same input exhausts', async () => {
+    const workingDir = createTempGitRepo();
+    try {
+        await withRateLimitClockDeps(async () => {
+            const { dir: sessionDir, state } = createSessionDir(workingDir);
+            const statePath = path.join(sessionDir, 'state.json');
+            let clock = Date.now();
+            _deps.now = () => clock;
+            _deps.sleep = async () => { clock += 60 * 1000; };
+            _deps.probeRateLimitCleared = async () => 'limited';
+            const startMs = clock;
+            const exitResult = {
+                type: 'api_limit',
+                rateLimitInfo: { limited: true, status: 'rejected', resetsAt: Math.floor(startMs / 1000) + 5 * 24 * 3600, rateLimitType: 'seven_day' },
+            };
+            // No session wall-clock cap, so only the park ceiling bounds the wait.
+            const ctx = f75MicroverseCtx(sessionDir, statePath, workingDir, { ...state, max_time_minutes: 0 });
+            assert.equal(await handleRateLimitExit({}, ctx, exitResult), 'continue');
+            const parkedMin = (clock - startMs) / 60000;
+            assert.ok(parkedMin >= 360 && parkedMin <= 370, `parked ${parkedMin}min, expected the clamped ~363`);
+            ctx.consecutiveRateLimits = 1;
+            assert.equal(await handleRateLimitExit({}, ctx, exitResult), 'rate_limit_exhausted');
+        });
+    } finally {
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    }
+});

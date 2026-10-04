@@ -18,7 +18,7 @@ import { writeStateFile, getExtensionRoot, buildPickleRickVersionTrailer, getDat
 import { isLaneSessionDir } from '../services/anatomy-lanes.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 const sm = new StateManager();
-import { runIteration, loadRateLimitSettings, classifyIterationExit, computeRateLimitAction, killCurrentChild, wouldResetOrphanCommit, resolveApncMaxPassesWithoutClean, classifyMuxIteration, isParkExhausted, foldParkIntoEpisode, } from './mux-runner.js';
+import { runIteration, loadRateLimitSettings, classifyIterationExit, computeRateLimitAction, killCurrentChild, wouldResetOrphanCommit, resolveApncMaxPassesWithoutClean, classifyMuxIteration, isParkExhausted, foldParkIntoEpisode, isUsageWarning, } from './mux-runner.js';
 import { resolveCodexModel } from './spawn-morty.js';
 import { checkScopeDiff, isUnevaluableScopeStatus } from './check-scope-diff.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
@@ -3896,7 +3896,7 @@ export async function executeGapAnalysis(state, ctx) {
  * An early probe-driven exit deliberately leaves it unset, so the caller's clean-resume block
  * treats it as the ordinary resume it is.
  */
-async function runRateLimitWaitLoop(ctx, signal, waitStart, waitEnd) {
+async function runRateLimitWaitLoop(ctx, signal, waitStart, waitEnd, warning) {
     const probeIntervalMs = resolveRateLimitProbeIntervalMs();
     // First probe fires one full interval in: we were rejected a moment ago, so re-asking
     // immediately would spend a spawn to learn what we already know.
@@ -3919,7 +3919,8 @@ async function runRateLimitWaitLoop(ctx, signal, waitStart, waitEnd) {
             ctx.rateLimitExitReason = 'limit_reached';
             return;
         }
-        if (_deps.now() - lastProbeMs < probeIntervalMs)
+        // A warning means the API still serves, so a probe would read it as cleared: wait out the reset.
+        if (warning || _deps.now() - lastProbeMs < probeIntervalMs)
             continue;
         lastProbeMs = _deps.now();
         if (await rateLimitWaitClearedByProbe(ctx))
@@ -3946,7 +3947,7 @@ export async function handleRateLimit(_state, ctx, signal, waitMetadata = {}) {
         resets_at_epoch: waitMetadata.resetsAt ?? null,
         wait_source: waitMetadata.waitSource ?? null,
     });
-    await runRateLimitWaitLoop(ctx, signal, waitStart, waitEnd);
+    await runRateLimitWaitLoop(ctx, signal, waitStart, waitEnd, waitMetadata.warning === true);
     if (!ctx.rateLimitExitReason) {
         clearRateLimitWaitFile(ctx.sessionDir);
         if (ctx.resetRateLimitCounter)
@@ -5296,6 +5297,7 @@ export async function handleRateLimitExit(state, ctx, exitResult) {
         rateLimitType: exitResult.rateLimitInfo?.rateLimitType ?? null,
         resetsAt: exitResult.rateLimitInfo?.resetsAt ?? null,
         waitSource: action.waitSource,
+        warning: isUsageWarning(exitResult.rateLimitInfo),
     });
     sm.update(ctx.statePath, s => {
         s.rate_limit_park = foldParkIntoEpisode(priorPark, _deps.now() - parkStartMs, consecutiveAtParkStart, _deps.now());
