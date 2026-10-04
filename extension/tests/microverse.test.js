@@ -836,6 +836,21 @@ async function withMicroverseLoopDeps(overrides, fn) {
     }
 }
 
+async function withRateLimitClockDeps(fn) {
+    const original = {
+        sleep: _deps.sleep,
+        now: _deps.now,
+        probeRateLimitCleared: _deps.probeRateLimitCleared,
+    };
+    try {
+        return await fn();
+    } finally {
+        _deps.sleep = original.sleep;
+        _deps.now = original.now;
+        _deps.probeRateLimitCleared = original.probeRateLimitCleared;
+    }
+}
+
 async function withLegacyJudgeSpawn(execFileSync, fn) {
     const original = _deps.execFileSync;
     process.env['PICKLE_JUDGE_LEGACY_SPAWN'] = '1';
@@ -3642,111 +3657,99 @@ function createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs })
 
 test('B2/AC-M6a: a rate limit that clears early ends the wait early', async () => {
     const workingDir = createTempGitRepo();
-    const originalSleep = _deps.sleep;
-    const originalNow = _deps.now;
-    const originalProbe = _deps.probeRateLimitCleared;
     try {
-        const { dir: sessionDir, state } = createSessionDir(workingDir);
-        // The measured over-wait: a 6h park produced by clamping a long reset window.
-        const waitMs = 6 * 60 * 60 * 1000;
-        const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
+        await withRateLimitClockDeps(async () => {
+            const { dir: sessionDir, state } = createSessionDir(workingDir);
+            // The measured over-wait: a 6h park produced by clamping a long reset window.
+            const waitMs = 6 * 60 * 60 * 1000;
+            const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
 
-        // The limit is real for the first four probes and gone by the fifth — the ticket's
-        // "cleared in about 45 minutes" against a 360-minute projection.
-        let probeCalls = 0;
-        _deps.probeRateLimitCleared = async () => {
-            probeCalls += 1;
-            return probeCalls >= 5 ? 'cleared' : 'limited';
-        };
+            // The limit is real for the first four probes and gone by the fifth — the ticket's
+            // "cleared in about 45 minutes" against a 360-minute projection.
+            let probeCalls = 0;
+            _deps.probeRateLimitCleared = async () => {
+                probeCalls += 1;
+                return probeCalls >= 5 ? 'cleared' : 'limited';
+            };
 
-        await handleRateLimit({}, rig.ctx, new AbortController().signal);
+            await handleRateLimit({}, rig.ctx, new AbortController().signal);
 
-        assert.equal(probeCalls, 5, 'the wait must re-ask the API, not sleep out its deadline');
-        assert.ok(
-            rig.elapsed() < waitMs,
-            `a cleared limit must end the wait early (waited ${rig.elapsed()}ms of ${waitMs}ms)`,
-        );
-        assert.equal(rig.elapsed(), 55 * 60 * 1000, 'resumes on the poll whose probe came back cleared');
-        assert.equal(rig.ctx.rateLimitExitReason, undefined, 'an early clear is a resume, not an exit disposition');
-        assert.equal(
-            fs.existsSync(path.join(sessionDir, 'rate_limit_wait.json')), false,
-            'the clean-resume block still clears the status artifact',
-        );
-        assert.ok(
-            rig.logLines.some(l => /limit cleared ahead of the projected reset/.test(l)),
-            `the early resume must be reported to the operator; log was: ${rig.logLines.join(' | ')}`,
-        );
+            assert.equal(probeCalls, 5, 'the wait must re-ask the API, not sleep out its deadline');
+            assert.ok(
+                rig.elapsed() < waitMs,
+                `a cleared limit must end the wait early (waited ${rig.elapsed()}ms of ${waitMs}ms)`,
+            );
+            assert.equal(rig.elapsed(), 55 * 60 * 1000, 'resumes on the poll whose probe came back cleared');
+            assert.equal(rig.ctx.rateLimitExitReason, undefined, 'an early clear is a resume, not an exit disposition');
+            assert.equal(
+                fs.existsSync(path.join(sessionDir, 'rate_limit_wait.json')), false,
+                'the clean-resume block still clears the status artifact',
+            );
+            assert.ok(
+                rig.logLines.some(l => /limit cleared ahead of the projected reset/.test(l)),
+                `the early resume must be reported to the operator; log was: ${rig.logLines.join(' | ')}`,
+            );
+        });
     } finally {
-        _deps.sleep = originalSleep;
-        _deps.now = originalNow;
-        _deps.probeRateLimitCleared = originalProbe;
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });
 
 test('B2/AC-M6a: a limit that genuinely persists still waits out the full deadline', async () => {
     const workingDir = createTempGitRepo();
-    const originalSleep = _deps.sleep;
-    const originalNow = _deps.now;
-    const originalProbe = _deps.probeRateLimitCleared;
     try {
-        const { dir: sessionDir, state } = createSessionDir(workingDir);
-        const waitMs = 6 * 60 * 60 * 1000;
-        const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
+        await withRateLimitClockDeps(async () => {
+            const { dir: sessionDir, state } = createSessionDir(workingDir);
+            const waitMs = 6 * 60 * 60 * 1000;
+            const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
 
-        let probeCalls = 0;
-        _deps.probeRateLimitCleared = async () => { probeCalls += 1; return 'limited'; };
+            let probeCalls = 0;
+            _deps.probeRateLimitCleared = async () => { probeCalls += 1; return 'limited'; };
 
-        await handleRateLimit({}, rig.ctx, new AbortController().signal);
+            await handleRateLimit({}, rig.ctx, new AbortController().signal);
 
-        // The other direction: re-probing must not become a way to leave early on a live limit.
-        assert.ok(
-            rig.elapsed() >= waitMs,
-            `a still-live limit must be waited out in full (waited ${rig.elapsed()}ms of ${waitMs}ms)`,
-        );
-        assert.ok(probeCalls > 20, `the wait re-asks repeatedly across a long park (probes: ${probeCalls})`);
-        assert.equal(rig.ctx.rateLimitExitReason, undefined);
+            // The other direction: re-probing must not become a way to leave early on a live limit.
+            assert.ok(
+                rig.elapsed() >= waitMs,
+                `a still-live limit must be waited out in full (waited ${rig.elapsed()}ms of ${waitMs}ms)`,
+            );
+            assert.ok(probeCalls > 20, `the wait re-asks repeatedly across a long park (probes: ${probeCalls})`);
+            assert.equal(rig.ctx.rateLimitExitReason, undefined);
+        });
     } finally {
-        _deps.sleep = originalSleep;
-        _deps.now = originalNow;
-        _deps.probeRateLimitCleared = originalProbe;
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });
 
 test('B2/AC-M6a: a probe that fails parks and continues — it never aborts the wait', async () => {
     const workingDir = createTempGitRepo();
-    const originalSleep = _deps.sleep;
-    const originalNow = _deps.now;
-    const originalProbe = _deps.probeRateLimitCleared;
     try {
-        const { dir: sessionDir, state } = createSessionDir(workingDir);
-        const waitMs = 2 * 60 * 60 * 1000;
-        const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
+        await withRateLimitClockDeps(async () => {
+            const { dir: sessionDir, state } = createSessionDir(workingDir);
+            const waitMs = 2 * 60 * 60 * 1000;
+            const rig = createRateLimitWaitRig(sessionDir, state, { waitMs, advancePerPollMs: 11 * 60 * 1000 });
 
-        // The harshest failure available: the probe itself throws. Nothing may escape into
-        // the wait loop, and an unmeasurable limit must never be read as a cleared one.
-        let probeCalls = 0;
-        _deps.probeRateLimitCleared = async () => {
-            probeCalls += 1;
-            throw new Error('probe exploded');
-        };
+            // The harshest failure available: the probe itself throws. Nothing may escape into
+            // the wait loop, and an unmeasurable limit must never be read as a cleared one.
+            let probeCalls = 0;
+            _deps.probeRateLimitCleared = async () => {
+                probeCalls += 1;
+                throw new Error('probe exploded');
+            };
 
-        await assert.doesNotReject(
-            () => handleRateLimit({}, rig.ctx, new AbortController().signal),
-            'a probe failure must not propagate — park and continue, never halt',
-        );
+            await assert.doesNotReject(
+                () => handleRateLimit({}, rig.ctx, new AbortController().signal),
+                'a probe failure must not propagate — park and continue, never halt',
+            );
 
-        assert.ok(probeCalls >= 1, 'the probe was actually attempted');
-        assert.ok(
-            rig.elapsed() >= waitMs,
-            `an unmeasurable limit degrades to the full projected wait, not an early exit (waited ${rig.elapsed()}ms)`,
-        );
-        assert.equal(rig.ctx.rateLimitExitReason, undefined, 'no new exit disposition is introduced');
+            assert.ok(probeCalls >= 1, 'the probe was actually attempted');
+            assert.ok(
+                rig.elapsed() >= waitMs,
+                `an unmeasurable limit degrades to the full projected wait, not an early exit (waited ${rig.elapsed()}ms)`,
+            );
+            assert.equal(rig.ctx.rateLimitExitReason, undefined, 'no new exit disposition is introduced');
+        });
     } finally {
-        _deps.sleep = originalSleep;
-        _deps.now = originalNow;
-        _deps.probeRateLimitCleared = originalProbe;
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });
@@ -3900,101 +3903,93 @@ test('R-MVPARK: handleRateLimitExit sums cumulative_parked_ms across waits and e
 
 test('R-MVPARK: handleRateLimitExit arms and folds state.rate_limit_park across a completed park — no second ledger', async () => {
     const workingDir = createTempGitRepo();
-    const originalSleep = _deps.sleep;
-    const originalNow = _deps.now;
-    const originalProbe = _deps.probeRateLimitCleared;
     try {
-        const { dir: sessionDir, state } = createSessionDir(workingDir);
-        const statePath = path.join(sessionDir, 'state.json');
-        assert.equal(readRunnerState(statePath).rate_limit_park, undefined, 'fresh session starts with no park arm');
+        await withRateLimitClockDeps(async () => {
+            const { dir: sessionDir, state } = createSessionDir(workingDir);
+            const statePath = path.join(sessionDir, 'state.json');
+            assert.equal(readRunnerState(statePath).rate_limit_park, undefined, 'fresh session starts with no park arm');
 
-        const epoch = 1_700_000_000_000;
-        let clock = epoch;
-        _deps.now = () => clock;
-        const advancePerPollMs = 11 * 60 * 1000;
-        _deps.sleep = async () => { clock += advancePerPollMs; };
-        _deps.probeRateLimitCleared = async () => 'limited';
+            const epoch = 1_700_000_000_000;
+            let clock = epoch;
+            _deps.now = () => clock;
+            const advancePerPollMs = 11 * 60 * 1000;
+            _deps.sleep = async () => { clock += advancePerPollMs; };
+            _deps.probeRateLimitCleared = async () => 'limited';
 
-        const ctx = {
-            sessionDir,
-            statePath,
-            workingDir,
-            currentRunnerState: state,
-            consecutiveRateLimits: 1,
-            maxRateLimitRetries: 5,
-            rateLimitWaitMinutes: 15,
-            maxParkMinutes: 60,
-            log: () => {},
-        };
-        // ~5.5min clamped wait — well under the 60min ceiling, so the park completes in full.
-        const exitResult = {
-            type: 'api_limit',
-            rateLimitInfo: { limited: true, resetsAt: Math.floor(Date.now() / 1000) + 5 * 60, rateLimitType: 'five_hour' },
-        };
+            const ctx = {
+                sessionDir,
+                statePath,
+                workingDir,
+                currentRunnerState: state,
+                consecutiveRateLimits: 1,
+                maxRateLimitRetries: 5,
+                rateLimitWaitMinutes: 15,
+                maxParkMinutes: 60,
+                log: () => {},
+            };
+            // ~5.5min clamped wait — well under the 60min ceiling, so the park completes in full.
+            const exitResult = {
+                type: 'api_limit',
+                rateLimitInfo: { limited: true, resetsAt: Math.floor(Date.now() / 1000) + 5 * 60, rateLimitType: 'five_hour' },
+            };
 
-        const result = await handleRateLimitExit({}, ctx, exitResult);
+            const result = await handleRateLimitExit({}, ctx, exitResult);
 
-        assert.equal(result, 'continue', 'a completed park with no cutoff resumes iteration');
-        const recorded = readRunnerState(statePath).rate_limit_park;
-        assert.ok(recorded, 'state.rate_limit_park must be populated by the arm/fold — no second ledger');
-        assert.equal(recorded.reset_at_epoch_sec, null, 'the fold consumes reset_at_epoch_sec — the window was spent');
-        assert.ok(
-            recorded.cumulative_parked_ms >= ctx.rateLimitWaitMs,
-            `the folded wall (${recorded.cumulative_parked_ms}ms) must cover at least the clamped wait (${ctx.rateLimitWaitMs}ms)`,
-        );
-        assert.equal(recorded.consecutive_waits, 2, 'the fold preserves consecutive_waits captured at park-start (post-increment)');
+            assert.equal(result, 'continue', 'a completed park with no cutoff resumes iteration');
+            const recorded = readRunnerState(statePath).rate_limit_park;
+            assert.ok(recorded, 'state.rate_limit_park must be populated by the arm/fold — no second ledger');
+            assert.equal(recorded.reset_at_epoch_sec, null, 'the fold consumes reset_at_epoch_sec — the window was spent');
+            assert.ok(
+                recorded.cumulative_parked_ms >= ctx.rateLimitWaitMs,
+                `the folded wall (${recorded.cumulative_parked_ms}ms) must cover at least the clamped wait (${ctx.rateLimitWaitMs}ms)`,
+            );
+            assert.equal(recorded.consecutive_waits, 2, 'the fold preserves consecutive_waits captured at park-start (post-increment)');
+        });
     } finally {
-        _deps.sleep = originalSleep;
-        _deps.now = originalNow;
-        _deps.probeRateLimitCleared = originalProbe;
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });
 
 test('R-MVPARK: handleRateLimitExit passes ctx.maxParkMinutes into computeRateLimitAction, not just the compiled default', async () => {
     const workingDir = createTempGitRepo();
-    const originalSleep = _deps.sleep;
-    const originalNow = _deps.now;
-    const originalProbe = _deps.probeRateLimitCleared;
     try {
-        const { dir: sessionDir, state } = createSessionDir(workingDir);
-        const statePath = path.join(sessionDir, 'state.json');
+        await withRateLimitClockDeps(async () => {
+            const { dir: sessionDir, state } = createSessionDir(workingDir);
+            const statePath = path.join(sessionDir, 'state.json');
 
-        const epoch = 1_700_000_000_000;
-        let clock = epoch;
-        _deps.now = () => clock;
-        const advancePerPollMs = 11 * 60 * 1000;
-        _deps.sleep = async () => { clock += advancePerPollMs; };
-        _deps.probeRateLimitCleared = async () => 'limited';
+            const epoch = 1_700_000_000_000;
+            let clock = epoch;
+            _deps.now = () => clock;
+            const advancePerPollMs = 11 * 60 * 1000;
+            _deps.sleep = async () => { clock += advancePerPollMs; };
+            _deps.probeRateLimitCleared = async () => 'limited';
 
-        const maxParkMinutes = 2; // far below DEFAULT_MAX_PARK_MINUTES (360)
-        const ctx = {
-            sessionDir,
-            statePath,
-            workingDir,
-            currentRunnerState: state,
-            consecutiveRateLimits: 1,
-            maxRateLimitRetries: 5,
-            rateLimitWaitMinutes: 15,
-            maxParkMinutes,
-            log: () => {},
-        };
-        // resetsAt far in the future so the clamp — not the API hint — determines waitMs.
-        const exitResult = {
-            type: 'api_limit',
-            rateLimitInfo: { limited: true, resetsAt: Math.floor(Date.now() / 1000) + 100 * 60 * 60, rateLimitType: 'five_hour' },
-        };
+            const maxParkMinutes = 2; // far below DEFAULT_MAX_PARK_MINUTES (360)
+            const ctx = {
+                sessionDir,
+                statePath,
+                workingDir,
+                currentRunnerState: state,
+                consecutiveRateLimits: 1,
+                maxRateLimitRetries: 5,
+                rateLimitWaitMinutes: 15,
+                maxParkMinutes,
+                log: () => {},
+            };
+            // resetsAt far in the future so the clamp — not the API hint — determines waitMs.
+            const exitResult = {
+                type: 'api_limit',
+                rateLimitInfo: { limited: true, resetsAt: Math.floor(Date.now() / 1000) + 100 * 60 * 60, rateLimitType: 'five_hour' },
+            };
 
-        await handleRateLimitExit({}, ctx, exitResult);
+            await handleRateLimitExit({}, ctx, exitResult);
 
-        assert.equal(
-            ctx.rateLimitWaitMs, maxParkMinutes * 60 * 1000,
-            'the operator-configured ceiling, not the compiled default, must clamp the wait',
-        );
+            assert.equal(
+                ctx.rateLimitWaitMs, maxParkMinutes * 60 * 1000,
+                'the operator-configured ceiling, not the compiled default, must clamp the wait',
+            );
+        });
     } finally {
-        _deps.sleep = originalSleep;
-        _deps.now = originalNow;
-        _deps.probeRateLimitCleared = originalProbe;
         fs.rmSync(workingDir, { recursive: true, force: true });
     }
 });
