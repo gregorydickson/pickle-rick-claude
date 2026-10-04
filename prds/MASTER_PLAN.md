@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-04 17:15Z) — v2.2.0-beta.2 RELEASED + deployed; CI red on Linux since ~09-26 (fixture-size defect) → B-FIXTURE-ENV RUNNING
+### ▶ STATE (2026-10-04 20:35Z) — CI fixture fixed (gate 22/22); B-FIELD-75 RUNNING on main
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-FIXTURE-ENV** on `main`, session `2026-10-04-b0e650dd` (tmux `pipeline-b0e650dd`, 17:09Z; 1 test-only ticket). **CI (Linux, Node 22) has been red on every `main` push since ~2026-09-26** (last green `b19f391c`) on ONE test: `tests/microverse.test.js:302` — its remediation-brief fixture straddles the 98304-byte budget depending on TMPDIR length (Linux 86116, macOS standalone 98146, short TMPDIR 81705); the LOCAL gate passed only because its per-run tmp path is long. The OS-axis gap CLAUDE.md warns about, realised |
+| RUNNING | **B-FIELD-75** on `main`, session `2026-10-04-847fdb2b` (tmux `pipeline-847fdb2b`, 20:30Z; 6 tickets f7500001–6 for #75, #72, #74, #71, #68+#70-README, #69; `paths:` scope 23 armed). B-FIXTURE-ENV landed (`070bb23f` + szechuan, which removed 20 tautological tests in `microverse.test.js`, 211 → 191, all passing); gate `20261004T190904Z-50574` 22/22 at `0a2d9299`, pushed. #72 measured first: a 5-day reset gives NO false convergence (pickle parks to the known reset; review phases exhaust at the 360-min cap and the run withholds success) — exhaustion left alone; warnings (`allowed_warning`) will park. #70/#73 closed by operator decision |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
