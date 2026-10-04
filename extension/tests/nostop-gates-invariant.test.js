@@ -834,9 +834,10 @@ describe('AC-6 (0d579ec5) — the abort channel is bounded and the bound is meas
   });
 
   test('the AC gate holds no break of its own — the reduction, read at the call site', () => {
-    const body = extractFunctionBody(PIPELINE_RUNNER_SOURCE, 'runPhaseIteration');
+    // runPhaseIteration is a backend-override wrapper; the gate call lives in its body.
+    const body = extractFunctionBody(PIPELINE_RUNNER_SOURCE, 'runPhaseIterationBody');
     const acIdx = body.indexOf('runAcPhaseGate');
-    assert.ok(acIdx !== -1, 'runPhaseIteration no longer calls runAcPhaseGate — re-derive this pin');
+    assert.ok(acIdx !== -1, 'runPhaseIterationBody no longer calls runAcPhaseGate — re-derive this pin');
     // From the gate call to the end of the function: the tail that used to own the abort.
     assert.equal(
       body.slice(acIdx).includes("action: 'break'"),
