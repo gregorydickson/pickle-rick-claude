@@ -19,7 +19,7 @@ import * as path from 'path';
 import { execFileSync, spawn, spawnSync } from 'child_process';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
-import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
+import { backendEnvOverrides, isBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, readFrontmatterField, ticketFilePath, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 // B-NONSTOP WS-2 (AC-NS-6): reuse the T3 disposition map to classify a non-pickle
@@ -3846,8 +3846,8 @@ async function remediateCitadelFindings(runtime, findings, remediatorTimeoutMs, 
         step = 'brief read';
         const briefContent = readCitadelBriefFile(briefPathLine.slice('BRIEF_PATH='.length));
         step = 'remediator spawn';
-        const backend = resolveBackend(sm.read(runtime.statePath));
-        const invocation = buildWorkerInvocation(backend, { prompt: briefContent, addDirs: [runtime.workingDir] });
+        // runtime.backend, not state.json: citadel never stamps a phase_backends override into state.
+        const invocation = buildWorkerInvocation(runtime.backend, { prompt: briefContent, addDirs: [runtime.workingDir] });
         runtime.log(`citadel: spawning remediator (cycle ${cycle + 1})`);
         citadelRemediationDeps.spawnRemediator(invocation.cmd, invocation.args, {
             cwd: runtime.workingDir,

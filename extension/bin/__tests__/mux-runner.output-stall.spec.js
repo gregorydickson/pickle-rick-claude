@@ -4,7 +4,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { conformanceVerdictIsFail, runIteration } from '../../bin/mux-runner.js';
-import { installShutdownHandlers, resolveBackendWithSource } from '../../bin/pipeline-runner.js';
+import { __setCitadelRemediationDepsForTests, executeCitadelPhase, installShutdownHandlers, resolveBackendWithSource } from '../../bin/pipeline-runner.js';
+import { buildWorkerInvocation } from '../../services/backend-spawn.js';
 import { StateManager } from '../../services/state-manager.js';
 function makeExecutableNodeScript(filePath, source) {
     fs.writeFileSync(filePath, `#!/usr/bin/env node\n${source}`);
@@ -290,6 +291,50 @@ test('F75-BACKEND-4: a signal during a phase_backends override restores the pipe
             delete process.env.PICKLE_DATA_ROOT;
         else
             process.env.PICKLE_DATA_ROOT = oldDataRoot;
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+function writeBriefFixture(dir) {
+    const briefPath = path.join(dir, 'brief.md');
+    fs.writeFileSync(briefPath, 'fix it');
+    return briefPath;
+}
+// F75-BACKEND-5: citadel's preparePhaseState stamps no backend, so a `phase_backends.citadel`
+// override never reached state.json — the remediator read state.backend and ran on the pipeline
+// backend while the summary claimed `reviewed by: citadel=<override>`.
+test('F75-BACKEND-5: the citadel remediator spawns on the phase runtime backend, not state.backend', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-f75-backend-5-'));
+    const statePath = path.join(dir, 'state.json');
+    const briefPath = writeBriefFixture(dir);
+    // eslint-disable-next-line pickle/no-raw-state-write -- initial creation: no existing state to lock against
+    new StateManager().forceWrite(statePath, {
+        active: true, working_dir: dir, step: 'implement', iteration: 0, max_iterations: 50,
+        worker_timeout_seconds: 1200, start_time_epoch: 1000, completion_promise: null,
+        original_prompt: 'f75', current_ticket: null, history: [], started_at: new Date().toISOString(),
+        session_dir: dir, tmux_mode: true, backend: 'claude', prd_path: path.join(dir, 'prd.md'), start_commit: 'abc123',
+    });
+    const runtime = {
+        sessionDir: dir, extensionRoot: dir, statePath, repoRoot: dir, target: dir, workingDir: dir,
+        config: { phases: ['citadel'], citadel_strict: false, phase_backends: { citadel: 'codex' } },
+        backend: 'codex', phaseEnv: process.env, log: () => { },
+    };
+    const spawned = [];
+    try {
+        __setCitadelRemediationDepsForTests({
+            loadSettings: () => ({ cap: 1, remediatorTimeoutMs: 1000 }),
+            runCitadelAudit: (async () => ({ findings: [{ id: 'f1', severity: 'High', message: 'm' }] })),
+            spawnGateRemediatorMain: (async (opts) => {
+                opts.stdout(`BRIEF_PATH=${briefPath}`);
+                return 0;
+            }),
+            spawnRemediator: (cmd) => { spawned.push(cmd); },
+        });
+        assert.equal((await executeCitadelPhase(runtime)).exitCode, 0);
+        assert.deepEqual(spawned, [buildWorkerInvocation('codex', { prompt: 'x', addDirs: [dir] }).cmd]);
+        assert.notEqual(spawned[0], buildWorkerInvocation('claude', { prompt: 'x', addDirs: [dir] }).cmd);
+    }
+    finally {
+        __setCitadelRemediationDepsForTests(null);
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });

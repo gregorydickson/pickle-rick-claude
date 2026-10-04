@@ -22,7 +22,7 @@ import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process
 import type { Backend, State } from '../types/index.js';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage, type GraduationCounts, type FinalizeOpts } from '../services/state-manager.js';
-import { backendEnvOverrides, isBackend, resolveBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
+import { backendEnvOverrides, isBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
 import {
   getExtensionRoot,
   Style,
@@ -4539,8 +4539,8 @@ async function remediateCitadelFindings(
     const briefContent = readCitadelBriefFile(briefPathLine.slice('BRIEF_PATH='.length));
 
     step = 'remediator spawn';
-    const backend = resolveBackend(sm.read(runtime.statePath));
-    const invocation = buildWorkerInvocation(backend, { prompt: briefContent, addDirs: [runtime.workingDir] });
+    // runtime.backend, not state.json: citadel never stamps a phase_backends override into state.
+    const invocation = buildWorkerInvocation(runtime.backend, { prompt: briefContent, addDirs: [runtime.workingDir] });
     runtime.log(`citadel: spawning remediator (cycle ${cycle + 1})`);
     citadelRemediationDeps.spawnRemediator(invocation.cmd, invocation.args, {
       cwd: runtime.workingDir,
