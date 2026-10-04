@@ -1881,40 +1881,6 @@ test('convergence: 3 consecutive holds with stall_limit=3 stops loop', () => {
     assert.equal(isConverged(mvState), 'stall', 'should be converged');
 });
 
-// --- Hard cap enforcement ---
-
-test('hard cap: max_iterations enforced', () => {
-    const dir = createTempGitRepo();
-    try {
-        const { dir: sessionDir, state } = createSessionDir(dir, {});
-        state.max_iterations = 5;
-        state.iteration = 5; // at the cap
-        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(state, null, 2));
-
-        // Verify cap logic: iteration >= max_iterations should stop
-        const rawMaxIter = Number(state.max_iterations);
-        const curIter = Number(state.iteration);
-        assert.equal(rawMaxIter > 0 && curIter >= rawMaxIter, true, 'should trigger cap');
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
-test('hard cap: max_time_minutes enforced', () => {
-    const dir = createTempGitRepo();
-    try {
-        const { dir: sessionDir, state } = createSessionDir(dir, {});
-        state.max_time_minutes = 1;
-        state.start_time_epoch = Math.floor(Date.now() / 1000) - 120; // 2 min ago
-        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(state, null, 2));
-
-        const elapsed = Math.floor(Date.now() / 1000) - state.start_time_epoch;
-        assert.ok(elapsed >= state.max_time_minutes * 60, 'should exceed time limit');
-    } finally {
-        fs.rmSync(dir, { recursive: true });
-    }
-});
-
 // --- Dirty tree abort ---
 
 test('dirty working tree detected', () => {
