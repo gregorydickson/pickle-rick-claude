@@ -291,10 +291,11 @@ Applies to new writing; fix old occurrences only when already touching the file.
 
 ## 🚫 NO PULL REQUESTS (operator-set 2026-09-06, BINDING)
 
-**This repo does not use PRs.** The **v2.1 line** ships by TAG from **`main`** (operator-set
-2026-09-21: development moved to `main` once `v2.1.0` shipped; `release/v2.2-beta` is retained as a
-historical ref and is no longer written to) — **releases are `v2.1.X` patch tags** (operator-set
-2026-09-17); the branch name never set the version, `extension/package.json` does. Next tag: `v2.1.1`. —
+**This repo does not use PRs.** Releases ship by TAG from **`main`** (development moved to `main` once
+`v2.1.0` shipped; the experimental branches were merged into `main` and retired 2026-10-04) — **releases are
+`v2.2.0-beta.N` pre-release tags** (operator-set 2026-10-04; the 2.x line continues despite the
+`--teams`/`--max-parallel` removal, which the release note names as breaking); the branch name never set the
+version, `extension/package.json` does. —
 `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`. Work lands as commits pushed straight to
 `main`.
 
