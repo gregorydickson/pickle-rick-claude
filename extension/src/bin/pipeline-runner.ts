@@ -6825,11 +6825,10 @@ async function runPhaseIteration(
   cancelMarker: string,
   rawPhase: PhaseName,
   index: number,
-  log: (msg: string) => void,
 ): Promise<PhaseIterationOutcome> {
   const override = runtime.config.phase_backends[rawPhase];
   if (!override || override === runtime.backend) {
-    return runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index, log);
+    return runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index);
   }
   const phaseRuntime: PipelineRuntime = {
     ...runtime,
@@ -6837,7 +6836,7 @@ async function runPhaseIteration(
     phaseEnv: { ...process.env, ...backendEnvOverrides(override) },
   };
   try {
-    return await runPhaseIterationBody(phaseRuntime, counters, cancelMarker, rawPhase, index, log);
+    return await runPhaseIterationBody(phaseRuntime, counters, cancelMarker, rawPhase, index);
   } finally {
     restampBackendIfNeeded(runtime.statePath, runtime.backend);
   }
@@ -6849,8 +6848,8 @@ async function runPhaseIterationBody(
   cancelMarker: string,
   rawPhase: PhaseName,
   index: number,
-  log: (msg: string) => void,
 ): Promise<PhaseIterationOutcome> {
+  const { log } = runtime;
   logPhaseStart(runtime, rawPhase, index);
   writeRunningStatus(runtime, counters, rawPhase);
   const result = await runConfiguredPhase(runtime, setupPhase(rawPhase, runtime.config));
@@ -7425,8 +7424,8 @@ async function runPipelinePhaseLoop(
   counters: PhaseCounters,
   cancelMarker: string,
   startIndex: number,
-  log: (msg: string) => void,
 ): Promise<PipelinePhaseLoopResult> {
+  const { log } = runtime;
   const result: PipelinePhaseLoopResult = { phaseIncomplete: false, phaseIncompleteReason: null };
   for (let i = startIndex; i < runtime.config.phases.length; i++) {
     const rawPhase = runtime.config.phases[i];
@@ -7436,7 +7435,7 @@ async function runPipelinePhaseLoop(
     }
     let outcome: PhaseIterationOutcome;
     try {
-      outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i, log);
+      outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i);
     } catch (err) {
       const downgraded = downgradePhaseThrow(runtime, counters, rawPhase, i, err, log);
       outcome = cancelledOutcome(cancelMarker, log) ?? downgraded;
@@ -7486,7 +7485,7 @@ export async function main(sessionDir: string, opts: MainOpts = {}): Promise<voi
 
   let loop: PipelinePhaseLoopResult;
   try {
-    loop = await runPipelinePhaseLoop(runtime, counters, cancelMarker, resumeStartIndex, log);
+    loop = await runPipelinePhaseLoop(runtime, counters, cancelMarker, resumeStartIndex);
   } finally {
     phaseRunnerContext = null;
     cleanupShutdownHandlers();

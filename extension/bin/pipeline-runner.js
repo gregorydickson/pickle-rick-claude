@@ -5885,10 +5885,10 @@ function withholdForCloserHandoff(runtime, counters, cancelMarker, rawPhase, exi
     log(`Phase ${rawPhase} handed off (exit_reason=${handoffReason}) — withholding success verdict, advancing`);
     return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
 }
-async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, index, log) {
+async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, index) {
     const override = runtime.config.phase_backends[rawPhase];
     if (!override || override === runtime.backend) {
-        return runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index, log);
+        return runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index);
     }
     const phaseRuntime = {
         ...runtime,
@@ -5896,13 +5896,14 @@ async function runPhaseIteration(runtime, counters, cancelMarker, rawPhase, inde
         phaseEnv: { ...process.env, ...backendEnvOverrides(override) },
     };
     try {
-        return await runPhaseIterationBody(phaseRuntime, counters, cancelMarker, rawPhase, index, log);
+        return await runPhaseIterationBody(phaseRuntime, counters, cancelMarker, rawPhase, index);
     }
     finally {
         restampBackendIfNeeded(runtime.statePath, runtime.backend);
     }
 }
-async function runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index, log) {
+async function runPhaseIterationBody(runtime, counters, cancelMarker, rawPhase, index) {
+    const { log } = runtime;
     logPhaseStart(runtime, rawPhase, index);
     writeRunningStatus(runtime, counters, rawPhase);
     const result = await runConfiguredPhase(runtime, setupPhase(rawPhase, runtime.config));
@@ -6443,7 +6444,8 @@ function downgradePhaseThrow(runtime, counters, phase, phaseIndex, err, log) {
  * reported incomplete, not from which arm ended the loop — honesty and halting are
  * separate wires, so a `break` here is a disposition, not a verdict.
  */
-async function runPipelinePhaseLoop(runtime, counters, cancelMarker, startIndex, log) {
+async function runPipelinePhaseLoop(runtime, counters, cancelMarker, startIndex) {
+    const { log } = runtime;
     const result = { phaseIncomplete: false, phaseIncompleteReason: null };
     for (let i = startIndex; i < runtime.config.phases.length; i++) {
         const rawPhase = runtime.config.phases[i];
@@ -6453,7 +6455,7 @@ async function runPipelinePhaseLoop(runtime, counters, cancelMarker, startIndex,
         }
         let outcome;
         try {
-            outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i, log);
+            outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i);
         }
         catch (err) {
             const downgraded = downgradePhaseThrow(runtime, counters, rawPhase, i, err, log);
@@ -6507,7 +6509,7 @@ export async function main(sessionDir, opts = {}) {
     writeRunningStatus(runtime, counters, null);
     let loop;
     try {
-        loop = await runPipelinePhaseLoop(runtime, counters, cancelMarker, resumeStartIndex, log);
+        loop = await runPipelinePhaseLoop(runtime, counters, cancelMarker, resumeStartIndex);
     }
     finally {
         phaseRunnerContext = null;
