@@ -7248,6 +7248,32 @@ describe('A3: field-timing.py reports wave widths, the implementation sub-phase 
   });
 });
 
+// Shared fixture for the F75 review-phase suites: a repo whose branch diff is non-empty (so
+// the review phases run), a session dir, and an isolated PICKLE_DATA_ROOT. Restores the env,
+// the spawn-runner seam and the temp dirs whatever `fn` does.
+async function withReviewPhaseRepo(fn) {
+  const repo = tmpDir();
+  const sessionDir = tmpDir();
+  const dataRoot = tmpDir();
+  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  try {
+    const startCommit = initRepo(repo, {
+      'services/a.ts': 'export const a = 1;\n',
+      'services/b.ts': 'export const b = 2;\n',
+      'services/c.ts': 'export const c = 3;\n',
+    });
+    fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-q', '-m', 'followup');
+    return await fn({ repo, sessionDir, startCommit });
+  } finally {
+    __setSpawnRunnerForTests(null);
+    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+    for (const dir of [repo, sessionDir, dataRoot]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // F75-OPENDEC: the refined PRD's `## Open Decisions` table is read at run start and
 // at the summary; an open row withholds the success verdict while every phase still
@@ -7263,22 +7289,9 @@ describe('F75-OPENDEC: open decisions are disclosed twice and withhold success',
   ].join('\n');
 
   // Drives the real main() over anatomy-park + szechuan-sauce, both stamped `converged`.
-  async function driveRun(prdRefined) {
-    const repo = tmpDir();
-    const sessionDir = tmpDir();
-    const dataRoot = tmpDir();
-    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-    const runners = [];
-    try {
-      const startCommit = initRepo(repo, {
-        'services/a.ts': 'export const a = 1;\n',
-        'services/b.ts': 'export const b = 2;\n',
-        'services/c.ts': 'export const c = 3;\n',
-      });
-      fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
-      git(repo, 'add', '.');
-      git(repo, 'commit', '-q', '-m', 'followup');
+  function driveRun(prdRefined) {
+    return withReviewPhaseRepo(async ({ repo, sessionDir, startCommit }) => {
+      const runners = [];
       writeStateFile(path.join(sessionDir, 'state.json'), {
         working_dir: repo, step: 'implement', max_iterations: 100, original_prompt: 'F75 open decisions',
         schema_version: 3, tmux_mode: false, chain_meeseeks: false, backend: 'claude',
@@ -7303,11 +7316,7 @@ describe('F75-OPENDEC: open decisions are disclosed twice and withhold success',
         exitCode, status, log, phasesSpawned: runners.length,
         exitReason: readJson(path.join(sessionDir, 'state.json')).exit_reason,
       };
-    } finally {
-      __setSpawnRunnerForTests(null);
-      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-      for (const dir of [repo, sessionDir, dataRoot]) fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
   }
 
   const openLines = (log) => log.split('\n').filter((l) => /open decisions: \d+/.test(l));
@@ -7354,60 +7363,44 @@ describe('F75-OPENDEC: open decisions are disclosed twice and withhold success',
 // finalize-gate (which passes), still ends failed, exits 1, and never claims
 // any review phase completed successfully.
 // ---------------------------------------------------------------------------
-test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gate end failed, never converged', async () => {
-  const repo = mkFixtureTmpDir('f75-rlfar-repo-');
-  const sessionDir = mkFixtureTmpDir('f75-rlfar-session-');
-  const dataRoot = mkFixtureTmpDir('f75-rlfar-data-');
-  const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-  process.env.PICKLE_DATA_ROOT = dataRoot;
-  try {
-    const startCommit = initRepo(repo, Object.fromEntries(['a', 'b', 'c'].map((f) => [`services/${f}.ts`, `export const ${f} = 1;\n`])));
-    // A follow-up commit keeps the branch diff non-empty so the review phases run.
-    fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
-    git(repo, 'add', '.');
-    git(repo, 'commit', '-q', '-m', 'followup');
-    writeStateFile(path.join(sessionDir, 'state.json'), {
-      active: false, working_dir: repo, step: 'implement', iteration: 0, max_iterations: 100,
-      max_time_minutes: 720, worker_timeout_seconds: 1200, start_time_epoch: 1000,
-      completion_promise: null, original_prompt: 'F75 rate-limit exhaustion', current_ticket: null,
-      history: [], started_at: new Date().toISOString(), session_dir: sessionDir, schema_version: 3,
-      backend: 'claude', start_commit: startCommit, tmux_mode: true, chain_meeseeks: false,
-      pipeline_continue_on_phase_fail: true,
-    });
-    fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
-      phases: ['anatomy-park', 'szechuan-sauce'], target: repo, anatomy_stall_limit: 3,
-      szechuan_stall_limit: 5, anatomy_max_iterations: 100, szechuan_max_iterations: 50,
-      dirty_exempt_segments: ['prds', 'docs'],
-    }, null, 2));
+test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gate end failed, never converged', () => withReviewPhaseRepo(async ({ repo, sessionDir, startCommit }) => {
+  writeStateFile(path.join(sessionDir, 'state.json'), {
+    active: false, working_dir: repo, step: 'implement', iteration: 0, max_iterations: 100,
+    max_time_minutes: 720, worker_timeout_seconds: 1200, start_time_epoch: 1000,
+    completion_promise: null, original_prompt: 'F75 rate-limit exhaustion', current_ticket: null,
+    history: [], started_at: new Date().toISOString(), session_dir: sessionDir, schema_version: 3,
+    backend: 'claude', start_commit: startCommit, tmux_mode: true, chain_meeseeks: false,
+    pipeline_continue_on_phase_fail: true,
+  });
+  fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+    phases: ['anatomy-park', 'szechuan-sauce'], target: repo, anatomy_stall_limit: 3,
+    szechuan_stall_limit: 5, anatomy_max_iterations: 100, szechuan_max_iterations: 50,
+    dirty_exempt_segments: ['prds', 'docs'],
+  }, null, 2));
 
-    const runners = [];
-    __setSpawnRunnerForTests(async (_cmd, args) => {
-      const script = path.basename(String(args[0]));
-      runners.push(script);
-      if (script === 'microverse-runner.js') {
-        const statePath = path.join(sessionDir, 'state.json');
-        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
-        state.exit_reason = 'rate_limit_exhausted';
-        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
-        return { exitCode: 1, stdout: '', stderr: '' };
-      }
-      return { exitCode: 0, stdout: '', stderr: '' };
-    });
+  const runners = [];
+  __setSpawnRunnerForTests(async (_cmd, args) => {
+    const script = path.basename(String(args[0]));
+    runners.push(script);
+    if (script === 'microverse-runner.js') {
+      const statePath = path.join(sessionDir, 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      state.exit_reason = 'rate_limit_exhausted';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+      return { exitCode: 1, stdout: '', stderr: '' };
+    }
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
 
-    assert.equal(await runMainToExit(sessionDir), 1);
+  assert.equal(await runMainToExit(sessionDir), 1);
 
-    assert.ok(runners.filter((s) => s === 'microverse-runner.js').length >= 2, `both review phases must run: ${runners.join(',')}`);
-    assert.ok(runners.includes('finalize-gate.js'), 'finalize-gate runs and passes');
-    const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
-    assert.equal(status.status, 'failed');
-    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
-    assert.equal((log.match(/completed successfully/g) ?? []).length, 0, 'no review phase may claim success');
-  } finally {
-    __setSpawnRunnerForTests(null);
-    if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-    for (const d of [repo, sessionDir, dataRoot]) fs.rmSync(d, { recursive: true, force: true });
-  }
-});
+  assert.ok(runners.filter((s) => s === 'microverse-runner.js').length >= 2, `both review phases must run: ${runners.join(',')}`);
+  assert.ok(runners.includes('finalize-gate.js'), 'finalize-gate runs and passes');
+  const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+  assert.equal(status.status, 'failed');
+  const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.equal((log.match(/completed successfully/g) ?? []).length, 0, 'no review phase may claim success');
+}));
 
 // ---------------------------------------------------------------------------
 // F75-BACKEND: opt-in `phase_backends` override in pipeline.json reaches the phase's spawn env
@@ -7415,23 +7408,10 @@ test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gat
 // ---------------------------------------------------------------------------
 
 describe('F75-BACKEND: phase_backends override', () => {
-  async function driveBackendRun(phaseBackends) {
-    const repo = tmpDir();
-    const sessionDir = tmpDir();
-    const dataRoot = tmpDir();
-    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-    const spawns = [];
-    const statePath = path.join(sessionDir, 'state.json');
-    try {
-      const startCommit = initRepo(repo, {
-        'services/a.ts': 'export const a = 1;\n',
-        'services/b.ts': 'export const b = 2;\n',
-        'services/c.ts': 'export const c = 3;\n',
-      });
-      fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
-      git(repo, 'add', '.');
-      git(repo, 'commit', '-q', '-m', 'followup');
+  function driveBackendRun(phaseBackends) {
+    return withReviewPhaseRepo(async ({ repo, sessionDir, startCommit }) => {
+      const spawns = [];
+      const statePath = path.join(sessionDir, 'state.json');
       writeStateFile(statePath, {
         working_dir: repo, step: 'implement', max_iterations: 100, original_prompt: 'F75 backend',
         schema_version: 3, tmux_mode: false, chain_meeseeks: false, backend: 'claude',
@@ -7456,11 +7436,7 @@ describe('F75-BACKEND: phase_backends override', () => {
         finalBackend: readJson(statePath).backend,
         log: fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8'),
       };
-    } finally {
-      __setSpawnRunnerForTests(null);
-      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
-      for (const dir of [repo, sessionDir, dataRoot]) fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
   }
 
   const reviewedLines = (log) => log.split('\n').filter((l) => l.includes('reviewed by:'));
