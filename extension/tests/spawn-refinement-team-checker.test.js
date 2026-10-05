@@ -565,7 +565,6 @@ test('regression corpus: the preserved 44-warning baseline collapses well below 
         warnings.length <= 40,
         `expected the baseline to collapse well below 44 warnings, got ${warnings.length}`
     );
-    assert.ok(warnings.length < 44, 'expected a real reduction from the original 44-warning baseline');
 
     const validClasses = new Set(['path_not_found', 'line_out_of_range', 'not_tracked_forward_created', 'ambiguous_citation']);
     for (const w of warnings) {
