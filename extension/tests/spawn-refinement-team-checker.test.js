@@ -87,6 +87,11 @@ function tmpDir(prefix = 'pickle-apv-') {
     return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
+/** Recursively removes every fixture directory; missing ones are ignored. */
+function removeDirs(...dirs) {
+    for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+}
+
 function initGitRepo(dir) {
     spawnSync('git', ['init', '-q'], { cwd: dir });
     spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
@@ -119,8 +124,7 @@ test('scanAnalystOutputsForUnverifiedPaths: emits path_not_found for a phantom b
         assert.equal(warnings[0].cycle, 1);
         assert.equal(warnings[0].ticket_id, UNATTRIBUTED_TICKET_ID);
     } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(refinementDir, workingDir);
     }
 });
 
@@ -138,8 +142,7 @@ test('scanAnalystOutputsForUnverifiedPaths: ignores non-canonical (per-cycle) fi
         const warnings = scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir);
         assert.equal(warnings.length, 0);
     } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(refinementDir, workingDir);
     }
 });
 
@@ -160,8 +163,7 @@ test('scanAnalystOutputsForUnverifiedPaths: emits path_not_found when citing a r
         assert.equal(warnings[0].defect_class, 'path_not_found');
         assert.match(warnings[0].evidence, /extension\/services\/untracked\.ts/);
     } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(refinementDir, workingDir);
     }
 });
 
@@ -180,8 +182,7 @@ test('scanAnalystOutputsForUnverifiedPaths: derives cycle from the highest analy
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].cycle, 3);
     } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(refinementDir, workingDir);
     }
 });
 
@@ -196,7 +197,7 @@ test('AC-FOMC-8a: a token without a file extension is not a citation at all', ()
         const warnings = checkAnalystOutputPaths(content, workingDir);
         assert.equal(warnings.length, 0);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -220,7 +221,7 @@ test('AC-FOMC-8b: suffix resolution finds a bare basename or a partial relative 
         const warnings = checkAnalystOutputPaths(content, workingDir);
         assert.equal(warnings.length, 0);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -247,7 +248,7 @@ test('AC-FOMC-8c: a file:line citation past the file end-of-line count is line_o
         assert.equal(warnings[0].defect_class, 'line_out_of_range');
         assert.equal(warnings[0].line, 99999);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -265,7 +266,7 @@ test('AC-FOMC-8c: a file:line citation within range produces no warning', () => 
         const warnings = checkAnalystOutputPaths(content, workingDir);
         assert.equal(warnings.length, 0);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -291,7 +292,7 @@ test('AC-FOMC-8d: >1 tracked suffix match emits ambiguous_citation, never a sile
         assert.equal(warnings[0].defect_class, 'ambiguous_citation');
         assert.equal(warnings[0].path, 'activity-events.schema.json');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -317,7 +318,7 @@ test('AP-RMS-12: a fabricated basename that is only a mid-segment glob hit still
         assert.equal(warnings[0].defect_class, 'path_not_found');
         assert.equal(warnings[0].path, 'manager.ts');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -337,7 +338,7 @@ test('AP-RMS-12: a line citation is never range-checked against a mid-segment gl
         // The defect is the missing file, NOT a line range read off a foreign file.
         assert.equal(warnings[0].defect_class, 'path_not_found');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -355,7 +356,7 @@ test('AP-RMS-12: a genuine nested path still resolves through the boundary filte
         assert.equal(checkAnalystOutputPaths('`state-manager.ts:2`\n', workingDir).length, 0);
         assert.equal(checkAnalystOutputPaths('`services/state-manager.ts:2`\n', workingDir).length, 0);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -378,7 +379,7 @@ test('AC-FOMC-9: not_tracked_forward_created is distinguished from a bare path_n
         assert.equal(byPath['does-not-exist.ts'], 'path_not_found');
         assert.equal(byPath['citadel/changed-source-helpers.ts'], 'not_tracked_forward_created');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -400,8 +401,7 @@ test('AC-FOMC-9: scanAnalystOutputsForUnverifiedPaths surfaces analyst + cycle a
         assert.ok(['path_not_found', 'line_out_of_range', 'not_tracked_forward_created', 'ambiguous_citation']
             .includes(warnings[0].defect_class));
     } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(refinementDir, workingDir);
     }
 });
 
@@ -431,8 +431,7 @@ test('AC-FOMC-14: repeating the same token spawns git ls-files exactly once', ()
         const spawnCount = readShimSpawnCount(shimDir);
         assert.equal(spawnCount, 1);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
-        fs.rmSync(shimDir, { recursive: true, force: true });
+        removeDirs(workingDir, shimDir);
     }
 });
 
@@ -663,8 +662,7 @@ test('AP-RMS-3: analyst-path warnings carry a schema-valid ticket_id', () => {
             );
         }
     } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(refinementDir, workingDir);
     }
 });
 
@@ -746,7 +744,7 @@ function emittedManifestRootKeys() {
             ...Object.keys(buildRefinementManifest(args, results, [warning])),
         ]);
     } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        removeDirs(dir);
     }
 }
 
@@ -885,8 +883,7 @@ test('AP-RMS-8: a really-emitted warning carries exactly the pinned undeclared k
             );
         }
     } finally {
-        fs.rmSync(refinementDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(refinementDir, workingDir);
     }
 });
 
@@ -961,8 +958,7 @@ function realManifestWithBothStrictArrays() {
         assert.ok(manifest.decomposition_quality_flags.length > 0, 'fixture must produce a decomposition quality flag');
         return manifest;
     } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(dir, workingDir);
     }
 }
 
@@ -1040,7 +1036,7 @@ test('AP-RMS-10: analyst path (checkAnalystOutputPaths) flags a citation exactly
         const lastReal = checkAnalystOutputPaths('Cited: `microverse-runner.ts:3`.\n', workingDir);
         assert.equal(lastReal.length, 0, 'the final real line is in range');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -1062,7 +1058,7 @@ test('AP-RMS-10: anchor path (findStaleAnchorWarnings) flags one-past-EOF and re
         const lastReal = findStaleAnchorWarnings('See `src/short.ts:3` here.\n', workingDir);
         assert.equal(lastReal.length, 0, 'the final real line is in range');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -1085,7 +1081,7 @@ test('F75-ANCHOR-1: a package-relative citation resolves through the tracked suf
         assert.deepEqual(warnings.map((w) => [w.citation.lineNumber, w.reason]), [[9, 'line-out-of-range']]);
         assert.match(warnings[0].detail, /line 9 exceeds line count 3 \(packages\/pkg\/src\/modules\/foo\/bar\.ts\)/);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -1097,7 +1093,7 @@ test('F75-ANCHOR-2: a suffix matching two tracked files is ambiguous, not missin
         assert.deepEqual(warnings.map((w) => w.reason), ['ambiguous']);
         assert.match(warnings[0].detail, /2 tracked files match x\.ts/);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -1109,7 +1105,7 @@ test('F75-ANCHOR-3: a genuinely missing file stays missing-file', () => {
         assert.deepEqual(warnings.map((w) => w.reason), ['missing-file']);
         assert.match(warnings[0].detail, /no tracked file matches nope\.ts/);
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -1165,8 +1161,7 @@ test('AP-EXT-ITER56-01: a tracked citation still resolves when the ls-files list
     } finally {
         process.env.PATH = originalPath;
         __resetGitLsFilesSuffixCacheForTests();
-        fs.rmSync(shimDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(shimDir, workingDir);
     }
 });
 
@@ -1185,8 +1180,7 @@ test('AP-EXT-ITER56-01 (control): the cap does not suppress a genuinely unresolv
     } finally {
         process.env.PATH = originalPath;
         __resetGitLsFilesSuffixCacheForTests();
-        fs.rmSync(shimDir, { recursive: true, force: true });
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(shimDir, workingDir);
     }
 });
 
@@ -1570,7 +1564,7 @@ test('AP-EXT-ITER85-01: a single umbrella ticket is detected as over-collapse at
             assert.equal(result.composedCount, 2, 'composedCount is the composes: entry count');
         }
     } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        removeDirs(dir);
     }
 });
 
@@ -1584,7 +1578,7 @@ test('AP-EXT-ITER85-01: two umbrella tickets across three analysts (6 raw entrie
         assert.equal(result.detected, true, '2 distinct tickets <= 2 composed sources is over-collapse');
         assert.equal(result.ticketCount, 2, 'the 6 raw entries collapse to 2 distinct tickets');
     } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        removeDirs(dir);
     }
 });
 
@@ -1597,7 +1591,7 @@ test('AP-EXT-ITER85-01: a genuine atomic decomposition is not flagged, however m
         const result = detectBundleOfBundlesOverCollapse(parentPath, manifest);
         assert.equal(result.detected, false, '3 distinct tickets > 2 composed sources is a real fan-out');
     } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        removeDirs(dir);
     }
 });
 
@@ -1727,8 +1721,7 @@ process.stdout.write('<promise>ANALYSIS_DONE</promise>\\n');
         assert.ok(fs.existsSync(path.join(tmp, 'readiness_snapshot.json')), 'the run reached the gates');
         assert.doesNotMatch(result.stderr, /ac-shape gate advisory/);
     } finally {
-        fs.rmSync(tmp, { recursive: true, force: true });
-        fs.rmSync(fakeBin, { recursive: true, force: true });
+        removeDirs(tmp, fakeBin);
     }
 });
 
@@ -1761,7 +1754,7 @@ test('AP-EXT-ITER91-01: a non-zero readiness verdict is reported and does not ex
         assert.match(result.stdout, /SURVIVED status=2/, 'the gate still REPORTS 2 — only the halt is gone');
         assert.match(result.stderr, /BLOCKING FINDING/, 'the gate still forwards every finding');
     } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
+        removeDirs(dir);
     }
 });
 
@@ -1822,7 +1815,7 @@ test('AP-EXT-ITER104-02: an ASCII citation under a C-quoted ancestor directory i
         const warnings = checkAnalystOutputPaths('Cited: `state-manager.ts`.\n', workingDir);
         assert.deepEqual(warnings, [], 'a correctly-cited real file must produce no warning');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -1844,7 +1837,7 @@ test('AP-EXT-ITER104-02: a C-quoted twin still counts toward ambiguous_citation'
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].defect_class, 'ambiguous_citation');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -1926,7 +1919,7 @@ test('AP-EXT-ITER314-02: a citation read from a subdirectory resolves the same f
         assert.deepEqual(resolveTrackedSuffixMatches(subdir, 'manager.ts'), [],
             'AP-RMS-12: a mid-segment glob hit must still fail the path-boundary filter');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
@@ -1950,7 +1943,7 @@ test('AP-EXT-ITER314-02: the resolved path is still joinable onto workingDir for
         assert.equal(overrun.length, 1, `the range check must have read the file; got ${JSON.stringify(overrun)}`);
         assert.equal(overrun[0].defect_class, 'line_out_of_range');
     } finally {
-        fs.rmSync(workingDir, { recursive: true, force: true });
+        removeDirs(workingDir);
     }
 });
 
