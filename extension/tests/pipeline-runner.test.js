@@ -78,6 +78,26 @@ class ExitIntercept extends Error {
   }
 }
 
+// Runs the real main() with TMUX unset and process.exit turned into a throw.
+// Returns the intercepted exit code, or null when main() resolves without exiting.
+async function runMainToExit(sessionDir) {
+  const originalExit = process.exit;
+  const originalTmux = process.env.TMUX;
+  delete process.env.TMUX;
+  process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
+  try {
+    await main(sessionDir);
+    return null;
+  } catch (err) {
+    if (err instanceof ExitIntercept) return err.code;
+    throw err;
+  } finally {
+    process.exit = originalExit;
+    if (originalTmux === undefined) delete process.env.TMUX;
+    else process.env.TMUX = originalTmux;
+  }
+}
+
 function tmpDir() {
   return mkFixtureTmpDir('pickle-pipeline-');
 }
@@ -2077,24 +2097,6 @@ describe('B1: pipeline-cancel marker is cleared at startup', () => {
     }, null, 2));
   }
 
-  async function runMainToExit(sessionDir) {
-    const originalExit = process.exit;
-    const originalTmux = process.env.TMUX;
-    delete process.env.TMUX;
-    process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
-    try {
-      await main(sessionDir);
-      return null;
-    } catch (err) {
-      if (err instanceof ExitIntercept) return err.code;
-      throw err;
-    } finally {
-      process.exit = originalExit;
-      if (originalTmux === undefined) delete process.env.TMUX;
-      else process.env.TMUX = originalTmux;
-    }
-  }
-
   // AC-M5, direction (a): a stale marker left by a PRIOR run must not cancel
   // a fresh run. Two 'pickle' phases with zero tickets each graduate
   // trivially (graduationDecision: ticketCount <= 0 -> graduate), so BOTH
@@ -4020,20 +4022,7 @@ describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
   }
 
   async function captureMainExit(sessionDir, expectedCode) {
-    const originalExit = process.exit;
-    const originalTmux = process.env.TMUX;
-    delete process.env.TMUX;
-    process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
-    try {
-      await assert.rejects(
-        () => main(sessionDir),
-        (err) => err instanceof ExitIntercept && err.code === expectedCode,
-      );
-    } finally {
-      process.exit = originalExit;
-      if (originalTmux === undefined) delete process.env.TMUX;
-      else process.env.TMUX = originalTmux;
-    }
+    assert.equal(await runMainToExit(sessionDir), expectedCode);
   }
 
   function readActivityEvents(dataRoot) {
@@ -4940,21 +4929,11 @@ describe('B-LANES 13h lane session placement', () => {
 
 /** Drive `main()` outside tmux under `dataRoot`; returns the `process.exit` code, or null. */
 async function runLaneMain(sessionDir, dataRoot) {
-  const originalExit = process.exit;
-  const originalTmux = process.env.TMUX;
   const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-  delete process.env.TMUX;
   process.env.PICKLE_DATA_ROOT = dataRoot;
-  process.exit = (code) => { throw Object.assign(new Error('exit'), { exitCode: code ?? 0 }); };
   try {
-    await main(sessionDir);
-    return null;
-  } catch (err) {
-    if (err && typeof err.exitCode === 'number') return err.exitCode;
-    throw err;
+    return await runMainToExit(sessionDir);
   } finally {
-    process.exit = originalExit;
-    if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
     if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
   }
 }
@@ -7310,8 +7289,6 @@ describe('F75-OPENDEC: open decisions are disclosed twice and withhold success',
     const dataRoot = tmpDir();
     const prevDataRoot = process.env.PICKLE_DATA_ROOT;
     process.env.PICKLE_DATA_ROOT = dataRoot;
-    const originalExit = process.exit;
-    const originalTmux = process.env.TMUX;
     const runners = [];
     try {
       const startCommit = initRepo(repo, {
@@ -7339,13 +7316,7 @@ describe('F75-OPENDEC: open decisions are disclosed twice and withhold success',
         fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: 'converged' }));
         return { exitCode: 0, stdout: '', stderr: '' };
       });
-      delete process.env.TMUX;
-      process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
-      let exitCode = null;
-      try { await main(sessionDir); } catch (err) {
-        if (!(err instanceof ExitIntercept)) throw err;
-        exitCode = err.code;
-      }
+      const exitCode = await runMainToExit(sessionDir);
       const status = readJson(path.join(sessionDir, 'pipeline-status.json'));
       const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
       return {
@@ -7353,8 +7324,6 @@ describe('F75-OPENDEC: open decisions are disclosed twice and withhold success',
         exitReason: readJson(path.join(sessionDir, 'state.json')).exit_reason,
       };
     } finally {
-      process.exit = originalExit;
-      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
       __setSpawnRunnerForTests(null);
       if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
       for (const dir of [repo, sessionDir, dataRoot]) fs.rmSync(dir, { recursive: true, force: true });
@@ -7410,8 +7379,6 @@ test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gat
   const sessionDir = mkFixtureTmpDir('f75-rlfar-session-');
   const dataRoot = mkFixtureTmpDir('f75-rlfar-data-');
   const prevDataRoot = process.env.PICKLE_DATA_ROOT;
-  const originalExit = process.exit;
-  const originalTmux = process.env.TMUX;
   process.env.PICKLE_DATA_ROOT = dataRoot;
   try {
     const startCommit = initRepo(repo, Object.fromEntries(['a', 'b', 'c'].map((f) => [`services/${f}.ts`, `export const ${f} = 1;\n`])));
@@ -7447,10 +7414,7 @@ test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gat
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
-    delete process.env.TMUX;
-    process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
-    await assert.rejects(() => main(sessionDir), (err) => err instanceof ExitIntercept && err.code === 1);
-    process.exit = originalExit;
+    assert.equal(await runMainToExit(sessionDir), 1);
 
     assert.ok(runners.filter((s) => s === 'microverse-runner.js').length >= 2, `both review phases must run: ${runners.join(',')}`);
     assert.ok(runners.includes('finalize-gate.js'), 'finalize-gate runs and passes');
@@ -7459,9 +7423,7 @@ test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gat
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.equal((log.match(/completed successfully/g) ?? []).length, 0, 'no review phase may claim success');
   } finally {
-    process.exit = originalExit;
     __setSpawnRunnerForTests(null);
-    if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
     if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
     for (const d of [repo, sessionDir, dataRoot]) fs.rmSync(d, { recursive: true, force: true });
   }
@@ -7479,8 +7441,6 @@ describe('F75-BACKEND: phase_backends override', () => {
     const dataRoot = tmpDir();
     const prevDataRoot = process.env.PICKLE_DATA_ROOT;
     process.env.PICKLE_DATA_ROOT = dataRoot;
-    const originalExit = process.exit;
-    const originalTmux = process.env.TMUX;
     const spawns = [];
     const statePath = path.join(sessionDir, 'state.json');
     try {
@@ -7510,19 +7470,13 @@ describe('F75-BACKEND: phase_backends override', () => {
         fs.writeFileSync(statePath, JSON.stringify({ ...cur, exit_reason: 'converged' }));
         return { exitCode: 0, stdout: '', stderr: '' };
       });
-      delete process.env.TMUX;
-      process.exit = (code) => { throw new ExitIntercept(code ?? 0); };
-      try { await main(sessionDir); } catch (err) {
-        if (!(err instanceof ExitIntercept)) throw err;
-      }
+      await runMainToExit(sessionDir);
       return {
         spawns,
         finalBackend: readJson(statePath).backend,
         log: fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8'),
       };
     } finally {
-      process.exit = originalExit;
-      if (originalTmux === undefined) delete process.env.TMUX; else process.env.TMUX = originalTmux;
       __setSpawnRunnerForTests(null);
       if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
       for (const dir of [repo, sessionDir, dataRoot]) fs.rmSync(dir, { recursive: true, force: true });
