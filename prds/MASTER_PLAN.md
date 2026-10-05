@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-05 02:45Z) — B-FIELD-75 + B-F75-FIX built; gate 20/22 (load-band git spawns) → B-F75-FIX2 RUNNING
+### ▶ STATE (2026-10-05 04:55Z) — B-FIELD-75 + 2 fixes built; gate 21/22 (one stale integration pin) → B-F75-FIX3 RUNNING
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-F75-FIX2** on `main`, session `2026-10-05-16c50ffa` (tmux `pipeline-16c50ffa`, 02:42Z; 1 test-only ticket). Gate `20261005T013050Z-62278` at `f479ff2c`: 20/22 (fast tier green) — two `execFileSync('git', …, { timeout: 10_000 })` added by f7500002 sit in the audit's load-sensitive band; fix raises them to 30 000 rather than serializing the 323-test file. LOCAL `main` holds B-FIELD-75 + B-F75-FIX, UNPUSHED; redeploy follows a green gate. Pattern: 3 of the last 4 fix bundles were test-hygiene misses (timeouts) in newly written tests — a worker-prompt sentence is the proposed quality-ratchet fix (no new gate) |
+| RUNNING | **B-F75-FIX3** on `main`, session `2026-10-05-d0511406` (tmux `pipeline-d0511406`, 04:52Z; 1 test-only ticket). Gate `20261005T033126Z-57054` at `9d6510e7`: 21/22 — `test_integration` red on ONE test, `mux-runner-extracted-helpers-behaviour.test.js:357`, an exact `deepEqual` of `RateLimitInfo` that predates #72's new `status` field (integration-tier file outside f7500002's scope). LOCAL `main` holds B-FIELD-75 + B-F75-FIX + B-F75-FIX2, UNPUSHED; redeploy follows a green gate. **Lesson for ticket authoring:** when a ticket changes a shared return shape, grep ALL tiers for exact-shape pins of it and put those files in the ticket's scope |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
