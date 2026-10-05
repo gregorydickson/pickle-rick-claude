@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-05 13:35Z) — CI flaked red on a docs-only commit (FS-timestamp race); B-MTIME-GRAN RUNNING
+### ▶ STATE (2026-10-05 16:55Z) — B-MTIME-GRAN deployed; queue idle
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-MTIME-GRAN** on `main`, session `2026-10-05-f4273fe6` (tmux `pipeline-f4273fe6`, 13:32Z; 1 ticket). CI on `aad36652` (docs-only) exceeded the fast-tier flake budget 3/5 vs 2: 2 of 3 failures = `refinement-worker-evidence.test.js:13`, because `evaluateAnalystSuccess` compares `mtimeMs >= startTime` and Linux FS timestamps trail `Date.now()` by ms (deterministic probe: 3 ms backdate → false). Fix: a named 2000 ms granularity tolerance. Third failure (`mux-runner relaunch claims ownership…`, 1 of 5) recorded only. Flake logs come from the CI `flake-budget-logs` artifact (`gh run download <id> -n flake-budget-logs`) |
+| RUNNING | **nothing** (as of 16:55Z). Last: B-MTIME-GRAN (session `2026-10-05-f4273fe6`, 4/4, 33 min) — 2000 ms granularity tolerance in `evaluateAnalystSuccess` PLUS anatomy-park's catch (`fb756d9e`): an artifact untouched since spawn is still rejected, so the tolerance cannot admit a stale file (`MTIME-3`). Gate `20261005T153056Z-88121` 22/22, pushed `6222a5e7`, DEPLOYED (`MTIME_GRANULARITY_TOLERANCE_MS` 0→2; diffs 0). Watch CI on the next pushes: the fast-tier flake budget should hold at ≤ 2/5 with the dominant flake gone |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
