@@ -1082,6 +1082,9 @@ interface AnalystKillEscalation {
   clear: () => void;
 }
 
+/** Grace between the timeout SIGTERM and the SIGKILL that follows it. */
+const SIGKILL_ESCALATION_DELAY_MS = 2000;
+
 /**
  * Arm the SIGTERM-then-SIGKILL escalation that stands in for a `timeout:` option on
  * the async analyst spawn (AP-EXT-ITER43-01). The group kill only bounds anything
@@ -1094,13 +1097,12 @@ function armAnalystKillEscalation(
   let workerTimedOut = false;
   let killEscalation: ReturnType<typeof setTimeout> | null = null;
 
-  // SIGTERM first, escalate to SIGKILL after 2s if still alive
   const timeoutHandle = setTimeout(() => {
     workerTimedOut = true;
     terminateWorkerProcess(proc, 'SIGTERM');
     killEscalation = setTimeout(() => {
       terminateWorkerProcess(proc, 'SIGKILL');
-    }, 2000);
+    }, SIGKILL_ESCALATION_DELAY_MS);
   }, timeout * 1000);
 
   return {
