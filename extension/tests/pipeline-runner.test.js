@@ -7440,8 +7440,8 @@ test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gat
     const startCommit = initRepo(repo, Object.fromEntries(['a', 'b', 'c'].map((f) => [`services/${f}.ts`, `export const ${f} = 1;\n`])));
     // A follow-up commit keeps the branch diff non-empty so the review phases run.
     fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
-    execFileSync('git', ['add', '.'], { cwd: repo, timeout: 10_000 });
-    execFileSync('git', ['commit', '-q', '-m', 'followup'], { cwd: repo, timeout: 10_000 });
+    execFileSync('git', ['add', '.'], { cwd: repo, timeout: 30_000 });
+    execFileSync('git', ['commit', '-q', '-m', 'followup'], { cwd: repo, timeout: 30_000 });
     writeStateFile(path.join(sessionDir, 'state.json'), {
       active: false, working_dir: repo, step: 'implement', iteration: 0, max_iterations: 100,
       max_time_minutes: 720, worker_timeout_seconds: 1200, start_time_epoch: 1000,
