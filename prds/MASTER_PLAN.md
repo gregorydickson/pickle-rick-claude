@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-05 00:30Z) — CI GREEN on Linux again; B-FIELD-75 built (gate 19/22: one missing-timeout cause) → B-F75-FIX RUNNING
+### ▶ STATE (2026-10-05 02:45Z) — B-FIELD-75 + B-F75-FIX built; gate 20/22 (load-band git spawns) → B-F75-FIX2 RUNNING
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-F75-FIX** on `main`, session `2026-10-05-936622c5` (tmux `pipeline-936622c5`, 00:27Z; 1 test-only ticket). LOCAL `main` = B-FIELD-75 (`1a535443`..`356ad44d`, 13 commits, session `2026-10-04-847fdb2b`, 116 min, 3/4 — szechuan `stalled_below_target`) + fix PRD, UNPUSHED. Gate `20261004T233053Z-80348`: 19/22 — two new `spawnSync('git', …)` without `timeout:` from f7500003 (full failure list read: that is the only failing test). **CI (Linux) green on `d8e33f67`/`bb8d4933`** — first green since 2026-09-26 (B-FIXTURE-ENV) |
+| RUNNING | **B-F75-FIX2** on `main`, session `2026-10-05-16c50ffa` (tmux `pipeline-16c50ffa`, 02:42Z; 1 test-only ticket). Gate `20261005T013050Z-62278` at `f479ff2c`: 20/22 (fast tier green) — two `execFileSync('git', …, { timeout: 10_000 })` added by f7500002 sit in the audit's load-sensitive band; fix raises them to 30 000 rather than serializing the 323-test file. LOCAL `main` holds B-FIELD-75 + B-F75-FIX, UNPUSHED; redeploy follows a green gate. Pattern: 3 of the last 4 fix bundles were test-hygiene misses (timeouts) in newly written tests — a worker-prompt sentence is the proposed quality-ratchet fix (no new gate) |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
