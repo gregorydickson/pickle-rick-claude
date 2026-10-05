@@ -201,3 +201,16 @@ test('MTIME-2: artifact backdated 10 minutes => success false (control)', () => 
     assert.equal(evaluateAnalystSuccess({ workerTimedOut: false, outputFile, startTime }), false);
     fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('MTIME-3: prior-cycle artifact inside the tolerance window, untouched since spawn => success false', () => {
+    const dir = mkTmp();
+    const outputFile = path.join(dir, 'analysis_researcher.md');
+    fs.writeFileSync(outputFile, '# prior cycle\n');
+    const startTime = Date.now();
+    const backdated = (startTime - 1000) / 1000;
+    fs.utimesSync(outputFile, backdated, backdated);
+    const priorMtimeMs = fs.statSync(outputFile).mtimeMs;
+
+    assert.equal(evaluateAnalystSuccess({ workerTimedOut: false, outputFile, startTime, priorMtimeMs }), false);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
