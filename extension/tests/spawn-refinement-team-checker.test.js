@@ -1073,8 +1073,8 @@ function commitTrackedFiles(workingDir, files) {
         fs.mkdirSync(path.dirname(path.join(workingDir, rel)), { recursive: true });
         fs.writeFileSync(path.join(workingDir, rel), body);
     }
-    spawnSync('git', ['add', '.'], { cwd: workingDir });
-    spawnSync('git', ['commit', '-q', '-m', 'add files'], { cwd: workingDir });
+    spawnSync('git', ['add', '.'], { cwd: workingDir, timeout: 30_000 });
+    spawnSync('git', ['commit', '-q', '-m', 'add files'], { cwd: workingDir, timeout: 30_000 });
     __resetGitLsFilesSuffixCacheForTests();
 }
 
