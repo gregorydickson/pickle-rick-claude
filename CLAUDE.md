@@ -293,8 +293,8 @@ Applies to new writing; fix old occurrences only when already touching the file.
 
 **This repo does not use PRs.** Releases ship by TAG from **`main`** (development moved to `main` once
 `v2.1.0` shipped; the experimental branches were merged into `main` and retired 2026-10-04) — **releases are
-`v2.2.0-beta.N` pre-release tags** (operator-set 2026-10-04; the 2.x line continues despite the
-`--teams`/`--max-parallel` removal, which the release note names as breaking); the branch name never set the
+`v2.2.X` tags** (operator-set 2026-10-05: 2.2 left beta at `v2.2.0`; the 2.x line continues despite the
+`--teams`/`--max-parallel` removal, which the release notes name as breaking); the branch name never set the
 version, `extension/package.json` does. —
 `gh release create vX.Y.Z --target "$(git rev-parse HEAD)"`. Work lands as commits pushed straight to
 `main`.
