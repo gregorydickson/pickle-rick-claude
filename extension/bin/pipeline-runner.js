@@ -6023,7 +6023,10 @@ const PICKLE_INCOMPLETE_SENTINEL = 'pickle_incomplete.json';
  * Reuses `reportPhaseIncomplete`'s `pipeline_phase_incomplete` exit_reason and the
  * `{action:'continue', phaseIncomplete:true}` outcome — B-NOSTOP-GATES WS-1: an
  * abnormal-teardown sentinel is a REPORTING signal, not a halt. It reports
- * incomplete for reconciliation but still advances to citadel.
+ * incomplete for reconciliation but still advances to citadel. The roster is
+ * consulted FIRST: when every ticket is accounted for the sentinel is stale — it
+ * is deleted, disclosed in the log, and `null` is returned so the normal gate
+ * decides (a completed run is not reported as failed).
  */
 function maybeStampPickleIncompleteRobust(runtime, rawPhase, log) {
     if (rawPhase !== 'pickle')
@@ -6036,20 +6039,21 @@ function maybeStampPickleIncompleteRobust(runtime, rawPhase, log) {
     catch { /* best-effort — unreadable treated as absent; existing gates still apply */ }
     if (!sentinelPresent)
         return null;
-    log(`Phase ${rawPhase} did NOT complete — advancing with phase reported incomplete (${PICKLE_INCOMPLETE_SENTINEL} sentinel present)`);
     const genuinelyIncomplete = reportPhaseIncomplete(runtime, rawPhase);
-    if (!genuinelyIncomplete) {
-        // B4: a LATER pickle phase run completed the remaining tickets — the
-        // condition this sentinel recorded no longer holds. Clear it so it
-        // cannot keep asserting a stale incompleteness on a future phase-boundary
-        // check (subtraction, not a second ledger — the sentinel stays a
-        // best-effort reporting signal, never authoritative).
-        try {
-            fs.unlinkSync(sentinelPath);
-        }
-        catch { /* best-effort */ }
+    if (genuinelyIncomplete) {
+        log(`Phase ${rawPhase} did NOT complete — advancing with phase reported incomplete (${PICKLE_INCOMPLETE_SENTINEL} sentinel present)`);
+        return { action: 'continue', phaseIncomplete: true };
     }
-    return { action: 'continue', phaseIncomplete: true };
+    // B4: a LATER pickle phase run completed the remaining tickets — the
+    // condition this sentinel recorded no longer holds. Clear it so it
+    // cannot keep asserting a stale incompleteness, and disclose it rather than
+    // report failure: the normal gate decides (subtraction, not a second ledger).
+    try {
+        fs.unlinkSync(sentinelPath);
+    }
+    catch { /* best-effort */ }
+    log(`Phase ${rawPhase}: an earlier signal teardown left ${PICKLE_INCOMPLETE_SENTINEL}; all tickets are now accounted for — completed`);
+    return null;
 }
 /**
  * ROOT G2: `worker_gate_tests_verdict` persists ONLY the three-valued disposition string

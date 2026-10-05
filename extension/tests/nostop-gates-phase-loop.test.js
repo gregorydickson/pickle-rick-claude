@@ -471,7 +471,7 @@ describe('Terminal exit_reason survives a later phase\'s own clean finalize', ()
 });
 
 describe('#49 — the phase-incomplete arm never keeps a later phase\'s success-class reason', () => {
-  test('sentinel forces pickle incomplete on an all-Done roster (no reason stamped); anatomy-park then converges — terminal is failed, not converged', async () => {
+  test('sentinel over a genuinely incomplete roster keeps pickle incomplete; anatomy-park then converges — terminal stays phase-incomplete, not converged', async () => {
     const repo = tmpDir('nsg-terminal-arm3-repo-');
     const sessionDir = tmpDir('nsg-terminal-arm3-session-');
     const startCommit = initRepo(repo);
@@ -480,9 +480,10 @@ describe('#49 — the phase-incomplete arm never keeps a later phase\'s success-
     writePipeline(sessionDir, repo, ['pickle', 'anatomy-park']);
     writePrd(sessionDir);
     writeTicket(sessionDir, 'aaa11111', 1, 'Done');
+    writeTicket(sessionDir, 'bbb22222', 2, 'Todo');
     commitForTicketInSubsystem(repo, 'aaa11111');
-    // The sentinel forces the phase INCOMPLETE for the exit code, but the roster is honestly
-    // all-Done, so `reportPhaseIncomplete` stamps no reason — the null-reason fallback arm.
+    // A Todo ticket keeps the phase genuinely INCOMPLETE beside the sentinel, so the phase
+    // exits PhaseIncomplete and the later phase's converged must not stand as the terminal reason.
     fs.writeFileSync(path.join(sessionDir, 'pickle_incomplete.json'), '{}\n');
 
     const calls = [];
@@ -501,7 +502,7 @@ describe('#49 — the phase-incomplete arm never keeps a later phase\'s success-
 
     assert.ok(calls.some((a) => a.includes('microverse-runner.js')), 'anatomy-park must have run for this test to prove anything');
     const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
-    assert.equal(state.exit_reason, 'failed', 'a later phase\'s converged must not stand as the terminal reason of an incomplete run');
+    assert.equal(state.exit_reason, 'pipeline_phase_incomplete', 'a later phase\'s converged must not stand as the terminal reason of an incomplete run');
   });
 });
 

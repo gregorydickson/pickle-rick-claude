@@ -128,6 +128,15 @@ async function captureMainExit(sessionDir, expectedCode) {
   }
 }
 
+/** The stale-sentinel disclosure ran, the genuine-incomplete line did not, and the run reports completed. */
+function assertDisclosedAsCompleted(sessionDir) {
+  const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+  assert.match(log, /an earlier signal teardown left pickle_incomplete\.json; all tickets are now accounted for — completed/);
+  assert.doesNotMatch(log, /did NOT complete/);
+  const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+  assert.equal(status.status, 'completed');
+}
+
 afterEach(() => {
   __setSpawnRunnerForTests(null);
 });
@@ -186,21 +195,14 @@ test('SIGTERM-killed mux drops the sentinel → reports incomplete but still ADV
   }
 });
 
-// ── AC2b (SUPERSEDED by B-NOSTOP-GATES WS-1): sentinel + all-Done roster now
-// advances (ground truth wins), while the sentinel still forces exit code 3 ──
-// OLD (pre-WS-1): the sentinel forced BOTH a halt (citadel blocked) AND a
-// `pipeline_phase_incomplete` stamp, unconditionally — even over an honestly
-// all-Done roster (this test's original premise).
-// NEW (WS-1): `maybeStampPickleIncompleteRobust` still calls `reportPhaseIncomplete`
-// unconditionally and its RETURNED `phaseIncomplete: true` is still hardcoded
-// (the sentinel always forces exit code 3 for reconciliation, per the plan) —
-// but `reportPhaseIncomplete` ITSELF now defers to ground truth: a genuinely
-// all-Done roster (unfinished.length === 0) declines to stamp
-// `pipeline_phase_incomplete` at all, and the phase ADVANCES to citadel, which
-// runs and succeeds. The exit code (3) and the exit_reason (unstamped) can
-// therefore disagree — that split is intentional: the code is the sentinel's
-// disposition signal, the reason is the roster's honest verdict.
-test('pickle_incomplete.json sentinel forces exit 3 but an honestly all-Done roster still advances to citadel', async () => {
+// ── AC2b: a stale sentinel over an honestly all-Done roster is DISCLOSED, not
+// reported as failure. `maybeStampPickleIncompleteRobust` consults the roster
+// FIRST (`reportPhaseIncomplete`); when every ticket is accounted for it deletes
+// the stale sentinel, logs the disclosure and returns null so the normal gate
+// decides — the run completes (exit 0, status completed). The older split
+// (sentinel forces exit 3 over an all-Done roster) is reversed: a run whose
+// every ticket is Done and every phase exited 0 must not end `failed`.
+test('pickle_incomplete.json sentinel over an honestly all-Done roster is disclosed and the run completes', async () => {
   const repo = tmpDir('rrh-repo-');
   const sessionDir = tmpDir('rrh-session-');
   try {
@@ -219,18 +221,19 @@ test('pickle_incomplete.json sentinel forces exit 3 but an honestly all-Done ros
 
     __setSpawnRunnerForTests(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
 
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+    await captureMainExit(sessionDir, 0);
 
     assert.ok(
       fs.existsSync(path.join(sessionDir, 'citadel_report.json')),
-      'WS-1: an honestly all-Done roster must reach and run citadel despite the sentinel',
+      'an honestly all-Done roster must reach and run citadel despite the sentinel',
     );
     const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
     assert.notEqual(
       state.exit_reason,
       'pipeline_phase_incomplete',
-      'ground truth (all-Done) must win over the sentinel for the STAMP — only the exit code stays 3',
+      'ground truth (all-Done) must win over the stale sentinel',
     );
+    assertDisclosedAsCompleted(sessionDir);
   } finally {
     __setSpawnRunnerForTests(null);
     fs.rmSync(repo, { recursive: true, force: true });
@@ -240,10 +243,9 @@ test('pickle_incomplete.json sentinel forces exit 3 but an honestly all-Done ros
 
 // ── B4: a LATER pickle phase completing the remaining tickets clears the
 // stale sentinel instead of letting it keep asserting incompleteness forever.
-// The exit code (3) still stands for THIS run (see the test above — that
-// split is intentional), but the on-disk artifact itself must not survive
-// past the point where ground truth (`reportPhaseIncomplete`) confirms the
-// condition it recorded no longer holds.
+// The run completes (see the test above) and the on-disk artifact itself must
+// not survive past the point where ground truth (`reportPhaseIncomplete`)
+// confirms the condition it recorded no longer holds.
 test('B4: an honestly all-Done roster clears the stale pickle_incomplete.json sentinel', async () => {
   const repo = tmpDir('rrh-repo-');
   const sessionDir = tmpDir('rrh-session-');
@@ -265,12 +267,13 @@ test('B4: an honestly all-Done roster clears the stale pickle_incomplete.json se
 
     __setSpawnRunnerForTests(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
 
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+    await captureMainExit(sessionDir, 0);
 
     assert.ok(
       !fs.existsSync(sentinelPath),
       'B4: the stale sentinel must be cleared once ground truth confirms the roster is all-Done',
     );
+    assertDisclosedAsCompleted(sessionDir);
   } finally {
     __setSpawnRunnerForTests(null);
     fs.rmSync(repo, { recursive: true, force: true });
