@@ -92,6 +92,16 @@ function removeDirs(...dirs) {
     for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/** Runs `fn` with one fresh tmpdir per prefix, removing them all afterwards. */
+function withTempDirs(prefixes, fn) {
+    const dirs = prefixes.map((prefix) => tmpDir(prefix));
+    try {
+        return fn(...dirs);
+    } finally {
+        removeDirs(...dirs);
+    }
+}
+
 function initGitRepo(dir) {
     spawnSync('git', ['init', '-q'], { cwd: dir });
     spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
@@ -103,9 +113,7 @@ function initGitRepo(dir) {
 
 test('scanAnalystOutputsForUnverifiedPaths: emits path_not_found for a phantom backticked path', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const refinementDir = tmpDir('pickle-apv-refine-');
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-refine-', 'pickle-apv-work-'], (refinementDir, workingDir) => {
         initGitRepo(workingDir);
         // Analyst output cites a path that does NOT exist at HEAD and is NOT annotated.
         fs.writeFileSync(
@@ -123,16 +131,12 @@ test('scanAnalystOutputsForUnverifiedPaths: emits path_not_found for a phantom b
         // No analysis_codebase_c<N>.md archive exists in this fixture, so this is cycle 1.
         assert.equal(warnings[0].cycle, 1);
         assert.equal(warnings[0].ticket_id, UNATTRIBUTED_TICKET_ID);
-    } finally {
-        removeDirs(refinementDir, workingDir);
-    }
+    });
 });
 
 test('scanAnalystOutputsForUnverifiedPaths: ignores non-canonical (per-cycle) files for citation scanning, but reads them for cycle attribution', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const refinementDir = tmpDir('pickle-apv-refine-');
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-refine-', 'pickle-apv-work-'], (refinementDir, workingDir) => {
         initGitRepo(workingDir);
         // Per-cycle file should NOT be scanned for citations (synthesis uses canonical only).
         fs.writeFileSync(
@@ -141,16 +145,12 @@ test('scanAnalystOutputsForUnverifiedPaths: ignores non-canonical (per-cycle) fi
         );
         const warnings = scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir);
         assert.equal(warnings.length, 0);
-    } finally {
-        removeDirs(refinementDir, workingDir);
-    }
+    });
 });
 
 test('scanAnalystOutputsForUnverifiedPaths: emits path_not_found when citing a real-but-untracked path', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const refinementDir = tmpDir('pickle-apv-refine-');
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-refine-', 'pickle-apv-work-'], (refinementDir, workingDir) => {
         initGitRepo(workingDir);
         // Create the file but don't track it via git — suffix resolution finds nothing.
         fs.writeFileSync(path.join(workingDir, 'untracked.ts'), '// new\n');
@@ -162,16 +162,12 @@ test('scanAnalystOutputsForUnverifiedPaths: emits path_not_found when citing a r
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].defect_class, 'path_not_found');
         assert.match(warnings[0].evidence, /extension\/services\/untracked\.ts/);
-    } finally {
-        removeDirs(refinementDir, workingDir);
-    }
+    });
 });
 
 test('scanAnalystOutputsForUnverifiedPaths: derives cycle from the highest analysis_<role>_c<N>.md archive', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const refinementDir = tmpDir('pickle-apv-refine-');
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-refine-', 'pickle-apv-work-'], (refinementDir, workingDir) => {
         initGitRepo(workingDir);
         const content = '# Analysis\n\nCitation: `extension/services/phantom.ts`\n';
         fs.writeFileSync(path.join(refinementDir, 'analysis_codebase_c1.md'), content);
@@ -181,32 +177,26 @@ test('scanAnalystOutputsForUnverifiedPaths: derives cycle from the highest analy
         const warnings = scanAnalystOutputsForUnverifiedPaths(refinementDir, workingDir);
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].cycle, 3);
-    } finally {
-        removeDirs(refinementDir, workingDir);
-    }
+    });
 });
 
 // --- AC-FOMC-8a: extension-gated token matching -----------------------------
 
 test('AC-FOMC-8a: a token without a file extension is not a citation at all', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         initGitRepo(workingDir);
         const content = 'See `R-JPCM/WS-2`, `B-RLH/WS-1..5`, and `MICROVERSE_FATAL/FAILURE_REASONS`.\n';
         const warnings = checkAnalystOutputPaths(content, workingDir);
         assert.equal(warnings.length, 0);
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 // --- AC-FOMC-8b: suffix-based resolution, repo-agnostic ---------------------
 
 test('AC-FOMC-8b: suffix resolution finds a bare basename or a partial relative path with no hardcoded prefix', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         spawnSync('git', ['init', '-q'], { cwd: workingDir });
         spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: workingDir });
         spawnSync('git', ['config', 'user.name', 'Test'], { cwd: workingDir });
@@ -220,9 +210,7 @@ test('AC-FOMC-8b: suffix resolution finds a bare basename or a partial relative 
         const content = 'Cited: `tests/microverse.test.js` and `types/index.ts`.\n';
         const warnings = checkAnalystOutputPaths(content, workingDir);
         assert.equal(warnings.length, 0);
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AC-FOMC-8b (invariant guard): resolution logic carries no hardcoded extension/ or extension/src/ prefix', () => {
@@ -234,8 +222,7 @@ test('AC-FOMC-8b (invariant guard): resolution logic carries no hardcoded extens
 
 test('AC-FOMC-8c: a file:line citation past the file end-of-line count is line_out_of_range', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         initGitRepo(workingDir);
         fs.mkdirSync(path.join(workingDir, 'extension', 'src', 'bin'), { recursive: true });
         fs.writeFileSync(path.join(workingDir, 'extension', 'src', 'bin', 'microverse-runner.ts'), 'line1\nline2\nline3\n');
@@ -247,15 +234,12 @@ test('AC-FOMC-8c: a file:line citation past the file end-of-line count is line_o
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].defect_class, 'line_out_of_range');
         assert.equal(warnings[0].line, 99999);
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AC-FOMC-8c: a file:line citation within range produces no warning', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         initGitRepo(workingDir);
         fs.mkdirSync(path.join(workingDir, 'extension', 'src', 'bin'), { recursive: true });
         fs.writeFileSync(path.join(workingDir, 'extension', 'src', 'bin', 'microverse-runner.ts'), 'line1\nline2\nline3\n');
@@ -265,17 +249,14 @@ test('AC-FOMC-8c: a file:line citation within range produces no warning', () => 
         const content = 'Cited: `microverse-runner.ts:2`.\n';
         const warnings = checkAnalystOutputPaths(content, workingDir);
         assert.equal(warnings.length, 0);
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 // --- AC-FOMC-8d: ambiguous suffix match --------------------------------------
 
 test('AC-FOMC-8d: >1 tracked suffix match emits ambiguous_citation, never a silent first-pick', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         spawnSync('git', ['init', '-q'], { cwd: workingDir });
         spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: workingDir });
         spawnSync('git', ['config', 'user.name', 'Test'], { cwd: workingDir });
@@ -291,9 +272,7 @@ test('AC-FOMC-8d: >1 tracked suffix match emits ambiguous_citation, never a sile
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].defect_class, 'ambiguous_citation');
         assert.equal(warnings[0].path, 'activity-events.schema.json');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 // --- AP-RMS-12: suffix resolution anchors on a path boundary -----------------
@@ -304,8 +283,7 @@ test('AC-FOMC-8d: >1 tracked suffix match emits ambiguous_citation, never a sile
 
 test('AP-RMS-12: a fabricated basename that is only a mid-segment glob hit still reads path_not_found', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         initGitRepo(workingDir);
         fs.mkdirSync(path.join(workingDir, 'services'), { recursive: true });
         // Ends with "manager.ts" but only mid-segment — `manager.ts` is not a real file.
@@ -317,15 +295,12 @@ test('AP-RMS-12: a fabricated basename that is only a mid-segment glob hit still
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].defect_class, 'path_not_found');
         assert.equal(warnings[0].path, 'manager.ts');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AP-RMS-12: a line citation is never range-checked against a mid-segment glob hit', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         initGitRepo(workingDir);
         fs.mkdirSync(path.join(workingDir, 'services'), { recursive: true });
         // 3 lines: an unanchored resolve would emit line_out_of_range for :9.
@@ -337,15 +312,12 @@ test('AP-RMS-12: a line citation is never range-checked against a mid-segment gl
         assert.equal(warnings.length, 1);
         // The defect is the missing file, NOT a line range read off a foreign file.
         assert.equal(warnings[0].defect_class, 'path_not_found');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AP-RMS-12: a genuine nested path still resolves through the boundary filter', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         initGitRepo(workingDir);
         fs.mkdirSync(path.join(workingDir, 'services'), { recursive: true });
         fs.writeFileSync(path.join(workingDir, 'services', 'state-manager.ts'), 'a\nb\nc\n');
@@ -355,9 +327,7 @@ test('AP-RMS-12: a genuine nested path still resolves through the boundary filte
         // Bare basename, partial path, and full path all sit on a boundary.
         assert.equal(checkAnalystOutputPaths('`state-manager.ts:2`\n', workingDir).length, 0);
         assert.equal(checkAnalystOutputPaths('`services/state-manager.ts:2`\n', workingDir).length, 0);
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 // --- AC-FOMC-9: defect_class split, analyst/cycle fields, ticket_id sentinel -
@@ -367,8 +337,7 @@ test('AP-RMS-12: a genuine nested path still resolves through the boundary filte
 
 test('AC-FOMC-9: not_tracked_forward_created is distinguished from a bare path_not_found fabrication', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         initGitRepo(workingDir);
         const content =
             'Fabrication: `does-not-exist.ts` is cited as if real.\n' +
@@ -378,16 +347,12 @@ test('AC-FOMC-9: not_tracked_forward_created is distinguished from a bare path_n
         const byPath = Object.fromEntries(warnings.map((w) => [w.path, w.defect_class]));
         assert.equal(byPath['does-not-exist.ts'], 'path_not_found');
         assert.equal(byPath['citadel/changed-source-helpers.ts'], 'not_tracked_forward_created');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AC-FOMC-9: scanAnalystOutputsForUnverifiedPaths surfaces analyst + cycle as dedicated fields, ticket_id is the unattributed sentinel', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const refinementDir = tmpDir('pickle-apv-refine-');
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-refine-', 'pickle-apv-work-'], (refinementDir, workingDir) => {
         initGitRepo(workingDir);
         fs.writeFileSync(
             path.join(refinementDir, 'analysis_requirements.md'),
@@ -400,9 +365,7 @@ test('AC-FOMC-9: scanAnalystOutputsForUnverifiedPaths surfaces analyst + cycle a
         assert.equal(warnings[0].ticket_id, UNATTRIBUTED_TICKET_ID);
         assert.ok(['path_not_found', 'line_out_of_range', 'not_tracked_forward_created', 'ambiguous_citation']
             .includes(warnings[0].defect_class));
-    } finally {
-        removeDirs(refinementDir, workingDir);
-    }
+    });
 });
 
 // --- AC-FOMC-14: memoized + timeout-bounded git ls-files ---------------------
@@ -863,9 +826,7 @@ test('AP-RMS-8: a really-emitted warning carries exactly the pinned undeclared k
     // pinned key that no writer emits any more must shrink the pin, and a
     // writer that starts emitting a third key must fail here.
     __resetGitLsFilesSuffixCacheForTests();
-    const refinementDir = tmpDir('pickle-apv-item-refine-');
-    const workingDir = tmpDir('pickle-apv-item-work-');
-    try {
+    withTempDirs(['pickle-apv-item-refine-', 'pickle-apv-item-work-'], (refinementDir, workingDir) => {
         fs.writeFileSync(
             path.join(refinementDir, 'analysis_architect.md'),
             'The fix belongs in `src/does/not/exist.ts`.\n'
@@ -882,9 +843,7 @@ test('AP-RMS-8: a really-emitted warning carries exactly the pinned undeclared k
                 `emitted warning's undeclared keys drifted from the pin: ${JSON.stringify(warning)}`
             );
         }
-    } finally {
-        removeDirs(refinementDir, workingDir);
-    }
+    });
 });
 
 // --- AP-EXT-ITER270-01: a REAL manifest validates against the REAL schema ----
@@ -1017,8 +976,7 @@ test('AP-RMS-10: the line-count oracle is exact across newline shapes', () => {
 
 test('AP-RMS-10: analyst path (checkAnalystOutputPaths) flags a citation exactly one line past EOF', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-work-');
-    try {
+    withTempDirs(['pickle-apv-work-'], (workingDir) => {
         initGitRepo(workingDir);
         fs.mkdirSync(path.join(workingDir, 'extension', 'src', 'bin'), { recursive: true });
         // a normal 3-line POSIX file
@@ -1035,14 +993,11 @@ test('AP-RMS-10: analyst path (checkAnalystOutputPaths) flags a citation exactly
         // the last REAL line must still be accepted — guards against over-correction
         const lastReal = checkAnalystOutputPaths('Cited: `microverse-runner.ts:3`.\n', workingDir);
         assert.equal(lastReal.length, 0, 'the final real line is in range');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AP-RMS-10: anchor path (findStaleAnchorWarnings) flags one-past-EOF and reports the TRUE count', () => {
-    const workingDir = tmpDir('pickle-apv-anchor-');
-    try {
+    withTempDirs(['pickle-apv-anchor-'], (workingDir) => {
         initGitRepo(workingDir);
         fs.mkdirSync(path.join(workingDir, 'src'), { recursive: true });
         fs.writeFileSync(path.join(workingDir, 'src', 'short.ts'), 'line1\nline2\nline3\n');
@@ -1057,9 +1012,7 @@ test('AP-RMS-10: anchor path (findStaleAnchorWarnings) flags one-past-EOF and re
 
         const lastReal = findStaleAnchorWarnings('See `src/short.ts:3` here.\n', workingDir);
         assert.equal(lastReal.length, 0, 'the final real line is in range');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 function commitTrackedFiles(workingDir, files) {
@@ -1074,39 +1027,30 @@ function commitTrackedFiles(workingDir, files) {
 }
 
 test('F75-ANCHOR-1: a package-relative citation resolves through the tracked suffix, only the out-of-range line warns', () => {
-    const workingDir = tmpDir('pickle-f75-anchor-');
-    try {
+    withTempDirs(['pickle-f75-anchor-'], (workingDir) => {
         commitTrackedFiles(workingDir, { 'packages/pkg/src/modules/foo/bar.ts': 'a\nb\nc\n' });
         const warnings = findStaleAnchorWarnings('See `modules/foo/bar.ts:3` and `modules/foo/bar.ts:9`.\n', workingDir);
         assert.deepEqual(warnings.map((w) => [w.citation.lineNumber, w.reason]), [[9, 'line-out-of-range']]);
         assert.match(warnings[0].detail, /line 9 exceeds line count 3 \(packages\/pkg\/src\/modules\/foo\/bar\.ts\)/);
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('F75-ANCHOR-2: a suffix matching two tracked files is ambiguous, not missing', () => {
-    const workingDir = tmpDir('pickle-f75-anchor-');
-    try {
+    withTempDirs(['pickle-f75-anchor-'], (workingDir) => {
         commitTrackedFiles(workingDir, { 'a/x.ts': 'one\n', 'b/x.ts': 'two\n' });
         const warnings = findStaleAnchorWarnings('See `x.ts:1`.\n', workingDir);
         assert.deepEqual(warnings.map((w) => w.reason), ['ambiguous']);
         assert.match(warnings[0].detail, /2 tracked files match x\.ts/);
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('F75-ANCHOR-3: a genuinely missing file stays missing-file', () => {
-    const workingDir = tmpDir('pickle-f75-anchor-');
-    try {
+    withTempDirs(['pickle-f75-anchor-'], (workingDir) => {
         commitTrackedFiles(workingDir, { 'a/x.ts': 'one\n' });
         const warnings = findStaleAnchorWarnings('See `nope.ts:1`.\n', workingDir);
         assert.deepEqual(warnings.map((w) => w.reason), ['missing-file']);
         assert.match(warnings[0].detail, /no tracked file matches nope\.ts/);
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AP-RMS-10: neither staleness site hand-rolls its own line count', () => {
@@ -1548,8 +1492,7 @@ function manifestWithAnalystCopies(ticketIds, analystCount) {
 }
 
 test('AP-EXT-ITER85-01: a single umbrella ticket is detected as over-collapse at every analyst count', () => {
-    const dir = tmpDir('pickle-bob-collapse-');
-    try {
+    withTempDirs(['pickle-bob-collapse-'], (dir) => {
         const parentPath = buildOverCollapseFixture(dir);
         for (const analystCount of [1, 2, 3]) {
             const manifest = manifestWithAnalystCopies(['umbrella'], analystCount);
@@ -1563,36 +1506,28 @@ test('AP-EXT-ITER85-01: a single umbrella ticket is detected as over-collapse at
             assert.equal(result.ticketCount, 1, 'ticketCount reports DISTINCT tickets, not analyst emissions');
             assert.equal(result.composedCount, 2, 'composedCount is the composes: entry count');
         }
-    } finally {
-        removeDirs(dir);
-    }
+    });
 });
 
 test('AP-EXT-ITER85-01: two umbrella tickets across three analysts (6 raw entries) still detect over-collapse', () => {
-    const dir = tmpDir('pickle-bob-collapse-two-');
-    try {
+    withTempDirs(['pickle-bob-collapse-two-'], (dir) => {
         const parentPath = buildOverCollapseFixture(dir);
         const manifest = manifestWithAnalystCopies(['umbrella-a', 'umbrella-b'], 3);
         assert.equal(manifest.tickets.length, 6, 'raw entries exceed the composed-source count');
         const result = detectBundleOfBundlesOverCollapse(parentPath, manifest);
         assert.equal(result.detected, true, '2 distinct tickets <= 2 composed sources is over-collapse');
         assert.equal(result.ticketCount, 2, 'the 6 raw entries collapse to 2 distinct tickets');
-    } finally {
-        removeDirs(dir);
-    }
+    });
 });
 
 test('AP-EXT-ITER85-01: a genuine atomic decomposition is not flagged, however many analysts named it', () => {
-    const dir = tmpDir('pickle-bob-atomic-');
-    try {
+    withTempDirs(['pickle-bob-atomic-'], (dir) => {
         const parentPath = buildOverCollapseFixture(dir);
         const manifest = manifestWithAnalystCopies(['R-A-1', 'R-A-2', 'R-B-1'], 3);
         assert.equal(manifest.tickets.length, 9, 'three analysts each name all three atomic tickets');
         const result = detectBundleOfBundlesOverCollapse(parentPath, manifest);
         assert.equal(result.detected, false, '3 distinct tickets > 2 composed sources is a real fan-out');
-    } finally {
-        removeDirs(dir);
-    }
+    });
 });
 
 // --- AP-EXT-ITER91-01: the readiness gate must be advisory at EVERY caller ----
@@ -1796,8 +1731,7 @@ function initQuotingRepo(dir, relativePaths) {
 
 test('AP-EXT-ITER104-02: an ASCII citation under a C-quoted ancestor directory is NOT a fabricated path_not_found', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-quote-');
-    try {
+    withTempDirs(['pickle-apv-quote-'], (workingDir) => {
         // The only tracked copy sits under a non-ASCII directory. The citation
         // itself is pure ASCII — the analyst named a real file correctly.
         const nonAsciiDir = 'sérvices';
@@ -1814,15 +1748,12 @@ test('AP-EXT-ITER104-02: an ASCII citation under a C-quoted ancestor directory i
         __resetGitLsFilesSuffixCacheForTests();
         const warnings = checkAnalystOutputPaths('Cited: `state-manager.ts`.\n', workingDir);
         assert.deepEqual(warnings, [], 'a correctly-cited real file must produce no warning');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AP-EXT-ITER104-02: a C-quoted twin still counts toward ambiguous_citation', () => {
     __resetGitLsFilesSuffixCacheForTests();
-    const workingDir = tmpDir('pickle-apv-quote-');
-    try {
+    withTempDirs(['pickle-apv-quote-'], (workingDir) => {
         // Two REAL tracked copies, one of them under a non-ASCII directory.
         // Pre-fix the quoted twin was invisible, so AC-FOMC-8d's ambiguity
         // warning never fired and the line range-check below ran against
@@ -1836,9 +1767,7 @@ test('AP-EXT-ITER104-02: a C-quoted twin still counts toward ambiguous_citation'
         const warnings = checkAnalystOutputPaths('Cited: `state-manager.ts`.\n', workingDir);
         assert.equal(warnings.length, 1);
         assert.equal(warnings[0].defect_class, 'ambiguous_citation');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 // --- AP-EXT-ITER314-02: the suffix listing is anchored at the repo root -------
@@ -1884,8 +1813,7 @@ function initSubdirRepo(dir) {
 }
 
 test('AP-EXT-ITER314-02: a citation read from a subdirectory resolves the same file the toplevel resolves', () => {
-    const workingDir = tmpDir('pickle-apv-subdir-');
-    try {
+    withTempDirs(['pickle-apv-subdir-'], (workingDir) => {
         const subdir = initSubdirRepo(workingDir);
 
         __resetGitLsFilesSuffixCacheForTests();
@@ -1918,14 +1846,11 @@ test('AP-EXT-ITER314-02: a citation read from a subdirectory resolves the same f
         __resetGitLsFilesSuffixCacheForTests();
         assert.deepEqual(resolveTrackedSuffixMatches(subdir, 'manager.ts'), [],
             'AP-RMS-12: a mid-segment glob hit must still fail the path-boundary filter');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 test('AP-EXT-ITER314-02: the resolved path is still joinable onto workingDir for the line-range read', () => {
-    const workingDir = tmpDir('pickle-apv-subdir-');
-    try {
+    withTempDirs(['pickle-apv-subdir-'], (workingDir) => {
         const subdir = initSubdirRepo(workingDir);
 
         // The pair is the assertion. In-range-clean alone passes vacuously when
@@ -1942,9 +1867,7 @@ test('AP-EXT-ITER314-02: the resolved path is still joinable onto workingDir for
         const overrun = checkAnalystOutputPaths('Cited: `state-manager.ts:999`.\n', subdir);
         assert.equal(overrun.length, 1, `the range check must have read the file; got ${JSON.stringify(overrun)}`);
         assert.equal(overrun[0].defect_class, 'line_out_of_range');
-    } finally {
-        removeDirs(workingDir);
-    }
+    });
 });
 
 /**
