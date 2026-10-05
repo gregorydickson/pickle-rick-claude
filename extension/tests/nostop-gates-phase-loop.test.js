@@ -192,7 +192,6 @@ async function runRow({ tickets, muxExit, expectedCode, stateOverrides = {} }) {
   }));
 
   return {
-    processExit: expectedCode,
     terminalReason: state.exit_reason ?? null,
     pipelineStatus,
     bannerColor,
