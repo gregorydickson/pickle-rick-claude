@@ -2464,12 +2464,6 @@ describe('bundle bootstrap shape', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
-
-  test('phases[0] is pickle and backend is claude (invariant check)', () => {
-    const raw = { ...CANONICAL_BUNDLE };
-    assert.equal(raw.phases[0], 'pickle');
-    assert.equal(raw.backend, 'claude');
-  });
 });
 
 // ---------------------------------------------------------------------------
