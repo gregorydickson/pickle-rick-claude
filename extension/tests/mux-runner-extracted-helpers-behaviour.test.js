@@ -365,7 +365,7 @@ test('classifyAndRecordIterationEnd: a rejected rate_limit_event in the iteratio
 
   assert.deepEqual(result, {
     type: 'api_limit',
-    rateLimitInfo: { limited: true, sawEvents: true, resetsAt: 1_900_000_000, rateLimitType: 'five_hour' },
+    rateLimitInfo: { limited: true, sawEvents: true, resetsAt: 1_900_000_000, rateLimitType: 'five_hour', status: 'rejected' },
   });
   assert.equal(events.length, 1);
   assert.equal(events[0].exit_type, 'api_limit');
