@@ -700,8 +700,8 @@ ${prdContent}
 ${outputInstructions}`;
 }
 // Mirrors evaluateWorkerOutcome (spawn-morty.ts): success is decided by fresh-artifact
-// evidence, never narrative log tokens. The freshness comparator matches checkGitEdits'
-// `>=` semantics — an artifact written at the same instant the worker started still counts.
+// evidence, never narrative log tokens. The freshness comparator is checkGitEdits' `>=`
+// widened by a tolerance — an artifact written at the same instant the worker started counts.
 // File-system mtimes are coarser than Date.now() (ext4/HFS+/FAT round or lag), so a file
 // written just after startTime can read a few ms older; the tolerance absorbs that. The
 // canonical file is shared across cycles and the slowest analyst's prior-cycle write can land
