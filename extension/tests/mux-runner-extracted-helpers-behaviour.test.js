@@ -127,7 +127,6 @@ function sentinelAnchor() {
 }
 
 function livenessInput(session, { now, lastProgressEpoch, anchor, ...overrides }) {
-  const logs = [];
   const stallTrackers = { lastStateIteration: 4, stallCount: 2, lastProgressEpoch };
   const input = {
     state: session.state,
@@ -144,10 +143,10 @@ function livenessInput(session, { now, lastProgressEpoch, anchor, ...overrides }
     cbState: null,
     stallTrackers,
     anchor,
-    log: (msg) => logs.push(msg),
+    log: () => {},
     ...overrides,
   };
-  return { input, logs, stallTrackers };
+  return { input, stallTrackers };
 }
 
 // ─────────────────────────── runPreSpawnLivenessWatchdogs ───────────────────────────
