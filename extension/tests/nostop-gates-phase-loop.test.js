@@ -504,6 +504,41 @@ describe('#49 — the phase-incomplete arm never keeps a later phase\'s success-
     const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
     assert.equal(state.exit_reason, 'pipeline_phase_incomplete', 'a later phase\'s converged must not stand as the terminal reason of an incomplete run');
   });
+
+  test('pickle incomplete with NO stamped reason (oracle-committed Todo, mux exit 3); anatomy-park then converges — terminal is failed, not converged', async () => {
+    const repo = tmpDir('nsg-terminal-arm4-repo-');
+    const sessionDir = tmpDir('nsg-terminal-arm4-session-');
+    const startCommit = initRepo(repo);
+    seedAnatomySubsystem(repo);
+    writeState(sessionDir, repo, startCommit);
+    writePipeline(sessionDir, repo, ['pickle', 'anatomy-park']);
+    writePrd(sessionDir);
+    // Status says Todo but the oracle sees its commit: `reportPhaseIncomplete` declines to stamp,
+    // yet the status-pending count keeps the phase incomplete — the null-captured-reason arm.
+    writeTicket(sessionDir, 'aaa11111', 1, 'Todo');
+    commitForTicketInSubsystem(repo, 'aaa11111');
+
+    const calls = [];
+    __setSpawnRunnerForTests(async (cmd, args) => {
+      calls.push(args[0]);
+      if (args[0].includes('microverse-runner.js')) {
+        fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({ converged: true, reason: 'worker convergence complete' }, null, 2));
+        const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+        state.exit_reason = 'converged';
+        fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(state, null, 2));
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      return { exitCode: PipelineRunnerExitCode.PhaseIncomplete, stdout: '', stderr: '' };
+    });
+
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+
+    assert.ok(calls.some((a) => a.includes('microverse-runner.js')), 'anatomy-park must have run for this test to prove anything');
+    const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
+    assert.match(log, /remain runnable by status/, 'the unstamped Branch-B arm must be the one under test');
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.equal(state.exit_reason, 'failed', 'with no captured reason, a later phase\'s converged must still not stand as the terminal reason');
+  });
 });
 
 /**
