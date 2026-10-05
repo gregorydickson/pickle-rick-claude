@@ -957,6 +957,11 @@ export interface WorkerResult {
 // Mirrors evaluateWorkerOutcome (spawn-morty.ts): success is decided by fresh-artifact
 // evidence, never narrative log tokens. The freshness comparator matches checkGitEdits'
 // `>=` semantics — an artifact written at the same instant the worker started still counts.
+// File-system mtimes are coarser than Date.now() (ext4/HFS+/FAT round or lag), so a file
+// written just after startTime can read a few ms older; the tolerance absorbs that. A stale
+// prior-cycle artifact is minutes old, so it stays far outside the window.
+const MTIME_GRANULARITY_TOLERANCE_MS = 2000;
+
 export function evaluateAnalystSuccess(opts: {
   workerTimedOut: boolean;
   outputFile: string;
@@ -967,7 +972,7 @@ export function evaluateAnalystSuccess(opts: {
     return false;
   }
   try {
-    return fs.statSync(outputFile).mtimeMs >= startTime;
+    return fs.statSync(outputFile).mtimeMs >= startTime - MTIME_GRANULARITY_TOLERANCE_MS;
   } catch {
     return false;
   }

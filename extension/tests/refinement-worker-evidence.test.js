@@ -177,3 +177,27 @@ test('AP-EXT-ITER43-01: terminating a timed-out analyst reaps the forked grandch
     await waitFor(() => !pidAlive(grandchildPid));
     assert.equal(pidAlive(grandchildPid), false, 'a bare child-only kill leaks the analyst tree');
 });
+
+test('MTIME-1: artifact backdated 3 ms (fs timestamp granularity) => success true', () => {
+    const dir = mkTmp();
+    const outputFile = path.join(dir, 'analysis_researcher.md');
+    fs.writeFileSync(outputFile, '# analysis\n');
+    const startTime = Date.now();
+    const backdated = (startTime - 3) / 1000;
+    fs.utimesSync(outputFile, backdated, backdated);
+
+    assert.equal(evaluateAnalystSuccess({ workerTimedOut: false, outputFile, startTime }), true);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('MTIME-2: artifact backdated 10 minutes => success false (control)', () => {
+    const dir = mkTmp();
+    const outputFile = path.join(dir, 'analysis_researcher.md');
+    fs.writeFileSync(outputFile, '# stale\n');
+    const startTime = Date.now();
+    const backdated = (startTime - 600_000) / 1000;
+    fs.utimesSync(outputFile, backdated, backdated);
+
+    assert.equal(evaluateAnalystSuccess({ workerTimedOut: false, outputFile, startTime }), false);
+    fs.rmSync(dir, { recursive: true, force: true });
+});
