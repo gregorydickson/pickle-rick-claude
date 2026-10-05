@@ -958,23 +958,34 @@ export interface WorkerResult {
 // evidence, never narrative log tokens. The freshness comparator matches checkGitEdits'
 // `>=` semantics — an artifact written at the same instant the worker started still counts.
 // File-system mtimes are coarser than Date.now() (ext4/HFS+/FAT round or lag), so a file
-// written just after startTime can read a few ms older; the tolerance absorbs that. A stale
-// prior-cycle artifact is minutes old, so it stays far outside the window.
+// written just after startTime can read a few ms older; the tolerance absorbs that. The
+// canonical file is shared across cycles and the slowest analyst's prior-cycle write can land
+// inside the window, so an mtime equal to the pre-spawn snapshot is never fresh.
 const MTIME_GRANULARITY_TOLERANCE_MS = 2000;
 
 export function evaluateAnalystSuccess(opts: {
   workerTimedOut: boolean;
   outputFile: string;
   startTime: number;
+  priorMtimeMs?: number;
 }): boolean {
-  const { workerTimedOut, outputFile, startTime } = opts;
+  const { workerTimedOut, outputFile, startTime, priorMtimeMs } = opts;
   if (workerTimedOut) {
     return false;
   }
   try {
-    return fs.statSync(outputFile).mtimeMs >= startTime - MTIME_GRANULARITY_TOLERANCE_MS;
+    const { mtimeMs } = fs.statSync(outputFile);
+    return mtimeMs !== priorMtimeMs && mtimeMs >= startTime - MTIME_GRANULARITY_TOLERANCE_MS;
   } catch {
     return false;
+  }
+}
+
+function readMtimeMs(file: string): number | undefined {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1125,6 +1136,7 @@ interface AnalystSettlementContext {
   hangGuardMs: number;
   outputFile: string;
   startTime: number;
+  priorMtimeMs: number | undefined;
   onComplete: (result: WorkerResult) => void;
   resultBase: { roleId: RoleId; logPath: string; cycle: number };
 }
@@ -1168,6 +1180,7 @@ function attachAnalystOutcomeHandlers(
         workerTimedOut: escalation.timedOut(),
         outputFile: ctx.outputFile,
         startTime: ctx.startTime,
+        priorMtimeMs: ctx.priorMtimeMs,
       });
       latch.settleWith({ ...resultBase, success, exitCode });
     });
@@ -1212,6 +1225,7 @@ function awaitAnalystSettlement(ctx: AnalystSettlementContext): Promise<WorkerRe
 }
 
 function spawnWorker(opts: AnalystSpawnOptions): Promise<WorkerResult> {
+  const priorMtimeMs = readMtimeMs(opts.outputFile);
   const startTime = Date.now();
   const { logPath, logStream } = createAnalystLogStream(opts.refinementDir, opts.roleId, opts.cycle);
 
@@ -1228,6 +1242,7 @@ function spawnWorker(opts: AnalystSpawnOptions): Promise<WorkerResult> {
     hangGuardMs: (opts.timeout + 30) * 1000,
     outputFile: opts.outputFile,
     startTime,
+    priorMtimeMs,
     onComplete: opts.onComplete,
     resultBase: { roleId: opts.roleId, logPath, cycle: opts.cycle },
   });
