@@ -71,6 +71,13 @@ const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false',
 }).trim();
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf-8'));
 
+class ExitIntercept extends Error {
+  constructor(code) {
+    super(`process.exit(${code})`);
+    this.code = code;
+  }
+}
+
 function tmpDir() {
   return mkFixtureTmpDir('pickle-pipeline-');
 }
@@ -2070,13 +2077,6 @@ describe('B1: pipeline-cancel marker is cleared at startup', () => {
     }, null, 2));
   }
 
-  class ExitIntercept extends Error {
-    constructor(code) {
-      super(`process.exit(${code})`);
-      this.code = code;
-    }
-  }
-
   async function runMainToExit(sessionDir) {
     const originalExit = process.exit;
     const originalTmux = process.env.TMUX;
@@ -3975,13 +3975,6 @@ describe('B-CRASHFLOOR pickle-arm crash floor', () => {
 // ---------------------------------------------------------------------------
 
 describe('B-CRASHFLOOR dispatchHaltAction gate skip', () => {
-  class ExitIntercept extends Error {
-    constructor(code) {
-      super(`process.exit(${code})`);
-      this.code = code;
-    }
-  }
-
   function tmp(prefix) {
     return mkFixtureTmpDir(prefix);
   }
@@ -7309,13 +7302,6 @@ describe('A3: field-timing.py reports wave widths, the implementation sub-phase 
 // ---------------------------------------------------------------------------
 
 describe('F75-OPENDEC: open decisions are disclosed twice and withhold success', () => {
-  class ExitIntercept extends Error {
-    constructor(code) {
-      super(`process.exit(${code})`);
-      this.code = code;
-    }
-  }
-
   const TABLE_WITH_STATUS = (rows) => [
     '# Refined PRD', '', '## Open Decisions', '',
     '| decision | options | default | owner | status |',
@@ -7426,9 +7412,6 @@ describe('F75-OPENDEC: open decisions are disclosed twice and withhold success',
 // any review phase completed successfully.
 // ---------------------------------------------------------------------------
 test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gate end failed, never converged', async () => {
-  class ExitIntercept extends Error {
-    constructor(code) { super(`process.exit(${code})`); this.code = code; }
-  }
   const repo = mkFixtureTmpDir('f75-rlfar-repo-');
   const sessionDir = mkFixtureTmpDir('f75-rlfar-session-');
   const dataRoot = mkFixtureTmpDir('f75-rlfar-data-');
@@ -7496,13 +7479,6 @@ test('F75-RLFAR-: review runners exiting rate_limit_exhausted with a passing gat
 // ---------------------------------------------------------------------------
 
 describe('F75-BACKEND: phase_backends override', () => {
-  class ExitIntercept extends Error {
-    constructor(code) {
-      super(`process.exit(${code})`);
-      this.code = code;
-    }
-  }
-
   async function driveBackendRun(phaseBackends) {
     const repo = tmpDir();
     const sessionDir = tmpDir();
