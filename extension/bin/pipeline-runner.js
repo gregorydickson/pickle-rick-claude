@@ -5354,11 +5354,10 @@ function buildPipelineTerminalBanner(effectiveFailed) {
  * on entry and stamps its OWN disposition (e.g. 'converged') on its own clean
  * finalize, which would otherwise silently overwrite the earlier phase's
  * incompleteness signal — the exact value auto-resume.sh:154 depends on to
- * relaunch. `phaseIncompleteReason` is null when the sentinel-forced robust
- * path (`maybeStampPickleIncompleteRobust`) hardcodes `phaseIncomplete: true`
- * for the exit CODE while `reportPhaseIncomplete` itself declined to stamp
- * anything (an honestly all-Done roster — ground truth wins the STAMP, only
- * the code stays forced); that case falls back to the bare preserve-as-is
+ * relaunch. `phaseIncompleteReason` is null when the phase exited incomplete
+ * but `reportPhaseIncomplete` declined to stamp anything (e.g. a status-Todo
+ * ticket the oracle sees committed, while the status-pending count still keeps
+ * the phase incomplete); that case falls back to the bare preserve-as-is
  * call rather than inventing a reason nothing actually produced.
  * handoffStop-only (no phaseIncomplete) is unaffected: its reason is set and
  * read within the same phase call that breaks the loop, so nothing downstream
@@ -6000,7 +5999,8 @@ export function classifyMicroverseHaltDecision(rawExitReason) {
  * B-RRH C1: sentinel filename written by mux-runner's signal teardown
  * (`writePickleIncompleteSentinelIfRemaining`) into SESSION_ROOT when the pickle
  * phase was killed with ≥1 ticket remaining. Its presence forces the pickle
- * phase INCOMPLETE regardless of the mux exit code.
+ * phase INCOMPLETE regardless of the mux exit code — unless the roster shows
+ * every ticket accounted for, in which case it is stale and cleared.
  */
 const PICKLE_INCOMPLETE_SENTINEL = 'pickle_incomplete.json';
 /**
@@ -6013,8 +6013,8 @@ const PICKLE_INCOMPLETE_SENTINEL = 'pickle_incomplete.json';
  * the authoritative "abnormal teardown" marker and is the one signal the
  * count-based gate cannot see — an externally-killed mux can exit 0,
  * indistinguishable from a clean completion (the B-XSPA bug). When the sentinel
- * is present this gate forces the pickle phase INCOMPLETE regardless of the mux
- * exit code or roster.
+ * is present over a roster with unfinished tickets, this gate forces the pickle
+ * phase INCOMPLETE regardless of the mux exit code.
  *
  * When the sentinel is ABSENT this gate defers ENTIRELY to the unified
  * `maybeStampPhaseGraduation` proportional gate (which runs on all exit codes and
@@ -6044,8 +6044,8 @@ function maybeStampPickleIncompleteRobust(runtime, rawPhase, log) {
         log(`Phase ${rawPhase} did NOT complete — advancing with phase reported incomplete (${PICKLE_INCOMPLETE_SENTINEL} sentinel present)`);
         return { action: 'continue', phaseIncomplete: true };
     }
-    // B4: a LATER pickle phase run completed the remaining tickets — the
-    // condition this sentinel recorded no longer holds. Clear it so it
+    // B4: every ticket is now accounted for (e.g. a LATER pickle phase run
+    // completed the remaining ones) — the condition this sentinel recorded no longer holds. Clear it so it
     // cannot keep asserting a stale incompleteness, and disclose it rather than
     // report failure: the normal gate decides (subtraction, not a second ledger).
     try {
