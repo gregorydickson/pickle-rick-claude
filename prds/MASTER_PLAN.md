@@ -223,15 +223,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-05 16:55Z) — B-MTIME-GRAN deployed; queue idle
+### ▶ STATE (2026-10-05 22:50Z) — **v2.2.0 RELEASED** (out of beta) and deployed; queue idle
 
 | | |
 |---|---|
-| `main` | **`v2.2.0-beta.2` tagged at `aeb3af77`** (operator: next 2.x beta; notes name the `--teams`/`--max-parallel` removal as breaking). Release gate `20261004T154702Z-93411` 22/22, soak 1803.7s; `verify-release-tag.sh` OK. OS axis UNRUN locally (no docker on this host). **DEPLOYED**: version `2.2.0-beta.2`, `bin/`/`services/`/`.claude/commands` diffs 0, runners import. Local `main` adds the B-FIXTURE-ENV PRD (`4e956400`) |
+| `main` | **`v2.2.0` tagged at `438991b1`** (operator 2026-10-05: take 2.2 out of beta; full release, marked latest). Release gate `20261005T212247Z-99474` 22/22, soak 1804.0s; `verify-release-tag.sh` OK. **DEPLOYED**: version `2.2.0`; `bin/`/`services/`/`.claude/commands` diffs 0; runners import. Releases are now `v2.2.X` tags (root CLAUDE.md). Open risk stated in the release notes: no field run yet on this code (A2 monorepo linking untested); multi-agent speed criteria waived, parallelism default-off |
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **nothing** (as of 16:55Z). Last: B-MTIME-GRAN (session `2026-10-05-f4273fe6`, 4/4, 33 min) — 2000 ms granularity tolerance in `evaluateAnalystSuccess` PLUS anatomy-park's catch (`fb756d9e`): an artifact untouched since spawn is still rejected, so the tolerance cannot admit a stale file (`MTIME-3`). Gate `20261005T153056Z-88121` 22/22, pushed `6222a5e7`, DEPLOYED (`MTIME_GRANULARITY_TOLERANCE_MS` 0→2; diffs 0). Watch CI on the next pushes: the fast-tier flake budget should hold at ≤ 2/5 with the dominant flake gone |
+| RUNNING | **nothing** (as of 22:50Z). Next signal: the operator's client field run on `2.2.0` |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
