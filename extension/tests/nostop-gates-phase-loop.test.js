@@ -443,30 +443,24 @@ describe('Terminal exit_reason survives a later phase\'s own clean finalize', ()
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
-    try {
-      await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.PhaseIncomplete);
 
-      assert.ok(
-        calls.some((a) => a.includes('microverse-runner.js')),
-        'anatomy-park must have actually run (not empty-scope-skipped) for this test to prove anything',
-      );
+    assert.ok(
+      calls.some((a) => a.includes('microverse-runner.js')),
+      'anatomy-park must have actually run (not empty-scope-skipped) for this test to prove anything',
+    );
 
-      const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
-      assert.equal(
-        state.exit_reason,
-        'pipeline_phase_incomplete',
-        'the terminal exit_reason must be the ORIGINAL pickle-phase incompleteness reason, ' +
-        'not anatomy-park\'s own later "converged" stamp — auto-resume.sh:154 relaunches on ' +
-        'this exact string and must not be silently starved by a later phase\'s clean finalize',
-      );
+    const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
+    assert.equal(
+      state.exit_reason,
+      'pipeline_phase_incomplete',
+      'the terminal exit_reason must be the ORIGINAL pickle-phase incompleteness reason, ' +
+      'not anatomy-park\'s own later "converged" stamp — auto-resume.sh:154 relaunches on ' +
+      'this exact string and must not be silently starved by a later phase\'s clean finalize',
+    );
 
-      const pipelineStatus = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
-      assert.equal(pipelineStatus.status, 'failed', 'a phase-incomplete terminal must not report a green/completed status');
-    } finally {
-      __setSpawnRunnerForTests(null);
-      fs.rmSync(repo, { recursive: true, force: true });
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
+    const pipelineStatus = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
+    assert.equal(pipelineStatus.status, 'failed', 'a phase-incomplete terminal must not report a green/completed status');
   });
 });
 
