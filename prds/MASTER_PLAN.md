@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-05 06:55Z) — B-FIELD-75 + 3 fixes gated 22/22 and DEPLOYED; #68/#69/#71/#72/#74/#75 closed; B-STALE-SENTINEL (#76) RUNNING
+### ▶ STATE (2026-10-05 10:55Z) — #76 fixed + deployed; queue idle (remaining open items need the operator, a field run, or are deliberately deferred)
 
 | | |
 |---|---|
@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
-| RUNNING | **B-STALE-SENTINEL** on `main`, session `2026-10-05-a4293f37` (tmux `pipeline-a4293f37`, 06:53Z; 1 ticket, #76): a stale `pickle_incomplete.json` from an earlier signal teardown forces exit 3 / `failed` over an all-Done roster. Fix reorders the check (roster first) and DISCLOSES the earlier teardown — reversing the AC2b/B4 'intentional split' on honesty-is-reporting grounds. **Deployed before it:** `f388dc75` (B-FIELD-75 + B-F75-FIX/FIX2/FIX3), gate `20261005T053055Z-32795` 22/22; deployed JS verified (Open Decisions, `allowed_warning`, `phase_backends`, `reviewed by` all 0→present; bin/services/commands diffs 0). CI on Linux green since `d8e33f67` |
+| RUNNING | **nothing** (as of 10:55Z). Last: B-STALE-SENTINEL (#76) built (session `2026-10-05-a4293f37`, 4/4, 49 min), gate `20261005T093051Z-14891` 22/22, pushed `d9ee3c04`, DEPLOYED and verified (disclosure line 0→1; bin/services/commands diffs 0). Open issues: #43 and the partly-addressed #56–#62, #64–#67 (status comments posted). Next field signal: the operator's client run |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
