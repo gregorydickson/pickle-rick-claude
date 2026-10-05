@@ -1114,13 +1114,16 @@ function armAnalystKillEscalation(
   };
 }
 
+/** Fallback that runs `finalize` when the log stream's 'finish' never fires. */
+const LOG_FLUSH_FALLBACK_TIMEOUT_MS = 5000;
+
 /**
  * Run `finalize` once the log stream has flushed. The 'finish' listener is registered
- * BEFORE end() so a synchronous completion is not missed, and a 5s fallback covers
- * 'finish' never firing (e.g. disk I/O failure).
+ * BEFORE end() so a synchronous completion is not missed, and a
+ * LOG_FLUSH_FALLBACK_TIMEOUT_MS fallback covers 'finish' never firing (e.g. disk I/O failure).
  */
 function finalizeAfterLogFlush(logStream: fs.WriteStream, finalize: () => void): void {
-  const flushTimeout = setTimeout(() => finalize(), 5000);
+  const flushTimeout = setTimeout(() => finalize(), LOG_FLUSH_FALLBACK_TIMEOUT_MS);
 
   logStream.on('finish', () => {
     clearTimeout(flushTimeout);
