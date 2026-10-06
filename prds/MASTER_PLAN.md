@@ -352,7 +352,12 @@ NO measured basis. Large PRDs are not constrained by the cap.
    - **Proposed bundle:** #75 + #71 line + #68 line (same report block in `pipeline-runner.ts`) + the #72 fixture + #69 +
      #74. Also reword a client-naming code comment in `spawn-refinement-team.ts` (~:601) while #74 is in that file.
 
-9. **NEXT — B-FIELD-82: field-run issues #77–#82 (filed 2026-10-06), screened against the PRIME DIRECTIVE.** ONE bundle on
+9. **LAUNCHED 2026-10-06 — B-FIELD-82: PRD `prds/p1-b-field-82.md` (6 tickets, every AC run at HEAD and red).** The PRD
+   tightened the triage below: the readiness-exit report line (was T6), the citadel diff-base change (was T7, now a
+   HYPOTHESIS to measure on the next field run) and the test-`timeout:` worker rule (was T9 — already at
+   `extension/CLAUDE.md:76`; a worker-prompt copy would reproduce #62) were CUT; #59 is already satisfied
+   (`spawn-morty.ts:515`, MREL-B3). The PRD's "Rejected or recorded" table is authoritative. Original triage:
+   **B-FIELD-82: field-run issues #77–#82 (filed 2026-10-06), screened against the PRIME DIRECTIVE.** ONE bundle on
    `main` (the review toll is per bundle; never split to de-risk). Premises measured at `6483f826`. Gate legs 22 → 22.
    `--no-refine` is NOT appropriate (prompt-contract changes = new behaviour); refinement ON. PRD not yet written — the
    babysitter authors it under rule D, every AC run at HEAD first (must fail today).
