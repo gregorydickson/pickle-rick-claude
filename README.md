@@ -815,6 +815,9 @@ User-visible changes for someone who sets nothing:
   - The run summary's `base drift:` line runs a bounded `git fetch --no-tags origin <ref>` (writes only FETCH_HEAD); see the existing `base drift:` paragraph.
   - The review rubric adds an existing-writers protocol check and tags PRD-says-so exonerations `[report-only: spec-suspect]`.
   - The never-run archaeology module and its calibration suite are deleted.
+- **Deploy no longer links back into the source checkout.** `typescript` is now a production dependency, and a git-mode `install.sh` copies the `npm ls --omit=dev` closure (including `@colbymchenry/codegraph` and its platform binding) into the deploy root as real files, so `npm ci`, `git clean -xfd` or removing a worktree cannot break the deployed runtime. The install self-probe also loads `bin/pipeline-runner.js`. A tarball upgrade's networked `npm install` now also fetches `typescript` (~23 MB more).
+- **Refinement and worker prompts (default-on):** a counter-example to a recorded decision is a new `open` row in `## Open Decisions`; tickets quote an applied decision verbatim, and a rule shared by two or more tickets gets one rule owner ticket; worker research cites each persisted input's writer and write condition, and plan builds fixtures through that writer.
+- **Citadel AC coverage table says "Mentioned in code / Mentioned in tests"** with a note that coverage is an id/entity mention in a changed line, not proof the criterion holds.
 - **tmux runners now exit when finished.** The pane hold is removed; completion is read from the `Pipeline finished:` line in `pipeline-runner.log` (or the runner's own log).
 
 ## 🚀 Command & Flag Reference
