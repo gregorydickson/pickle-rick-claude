@@ -232,7 +232,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0` on `main` (the only line). No tag pending |
 | RUNNING | **nothing** (2026-10-06 ~21:35Z). B-FIELD-82 shipped to `main` + deployed (below). Next signal: the operator's client field run |
-| open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #78–#82.** Still open: #43, #56–#62, #64–#67, #77 (tarball axis UNRUN) |
+| open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #77–#82.** Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT (rewritten 2026-10-06 for the single-`main` line; rules P/S/C deleted) + the queue below. Cron is session-only — re-arm after a restart |
@@ -363,8 +363,8 @@ NO measured basis. Large PRDs are not constrained by the cap.
    **Tarball/self-update axis:** control at `0bdd6158` (worker-measured) = install rc 0 + `OK codegraph` + runner import
    FAILS on `typescript` — the fake-green is confirmed. After-fix run at `4db308f9`: first attempt UNRUN (registry
    ETIMEDOUT; install exited non-zero, so it no longer reports success); retry with `npm_config_fetch_retries=5` also
-   ETIMEDOUT after 672s → **tarball axis UNRUN** (registry unreachable from this host 2026-10-06 ~21:30Z). #77 stays OPEN
-   until a tarball install completes and the runner imports. Closed with evidence: #78, #79, #80, #81, #82.
+   ETIMEDOUT after 672s; **third attempt ~22:50Z (registry back): install rc 0, `Mode: tarball`, `OK codegraph`,
+   `typescript` present, runner import OK — tarball axis GREEN.** Closed with evidence: #77, #78, #79, #80, #81, #82.
    Previously: **LAUNCHED 2026-10-06 — B-FIELD-82: PRD `prds/p1-b-field-82.md` (6 tickets, every AC run at HEAD and red).** The PRD
    tightened the triage below: the readiness-exit report line (was T6), the citadel diff-base change (was T7, now a
    HYPOTHESIS to measure on the next field run) and the test-`timeout:` worker rule (was T9 — already at
