@@ -6,7 +6,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { buildCitadelAuditReport } from '../services/citadel/audit-runner.js';
-import { buildAcCoverageScorecard, extractKeywordAnchors } from '../services/citadel/ac-coverage-scorecard.js';
+import {
+  buildAcCoverageScorecard,
+  extractKeywordAnchors,
+  renderAcCoverageMarkdownTable,
+} from '../services/citadel/ac-coverage-scorecard.js';
 
 function writeFile(repoRoot, filePath, content) {
   const fullPath = path.join(repoRoot, filePath);
@@ -396,6 +400,20 @@ describe('buildAcCoverageScorecard', () => {
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe('renderAcCoverageMarkdownTable', () => {
+  test('with no rows still renders the header and the mention-not-conformance note after a blank line', () => {
+    assert.equal(
+      renderAcCoverageMarkdownTable([]),
+      [
+        '| ID | Mentioned in code | Mentioned in tests | File:line evidence |',
+        '|---|:---:|:---:|---|',
+        '',
+        "Coverage means the criterion's id or a mapped entity appears in a changed line; it is not a check that the criterion holds.",
+      ].join('\n'),
+    );
   });
 });
 
