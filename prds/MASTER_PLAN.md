@@ -223,7 +223,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-05 22:50Z) — **v2.2.0 RELEASED** (out of beta) and deployed; queue idle
+### ▶ STATE (2026-10-06) — **v2.2.0 RELEASED + DEPLOYED; idle; awaiting the operator's first client field run** (context cleared after this)
 
 | | |
 |---|---|
@@ -237,6 +237,39 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
 | exocortex | integration DEFERRED until memory-graph/exocortex#1 (reads drop `content`) is fixed. The runner-only plan is in auto-memory |
+
+#### ▶ SESSION HANDOFF (2026-10-06, written before a context clear)
+
+- **Where things are.**
+  - `main` @ `v2.2.0` (`438991b1`) + docs. Released as a full release, marked latest.
+  - Deployed on this machine, verified by content.
+  - CI (Linux) and the Release workflow are green on the tag.
+  - No pipeline, gate or worktree is in use.
+  - Experimental branches are retired. `main` is the only line and the deployed runtime.
+- **Next input — the operator's client field run on `2.2.0`.** Record NUMBERS ONLY (public repo):
+  - phases completed /4;
+  - any `non_convergent` or `stalled_below_target`;
+  - `kept lane branch` lines;
+  - `Cannot find module` / `ERR_MODULE_NOT_FOUND` in a lane or unit (the A2 risk R9 — if it appears, set both parallel keys to 1 for that repo and file it against A2 with the path shape only);
+  - `base drift:` result;
+  - open-decision count.
+  Log the run as the first field row: N1 = hands-off completion, N2 = all phases converged with nothing stranded (`prds/research/tools/field-timing.py`).
+- **The babysitter prompt is STALE.**
+  - The cron prompt and `prds/babysitter.md` still carry rule P (merge down `main` → `exp/b-lanes` → `exp/b-parallel-build`) and soak rule S (deploy from `exp/b-lanes`). Both branches are retired.
+  - Current practice: general fixes run as a pipeline on `main` → gate (`prds/gate-runner.sh`, all 22 `LEG_RC 0`, full soak) → push → `bash install.sh` from `main` → verify the deployed JS by content (`diff -rq` of `bin/`, `services/` and `.claude/commands` = 0). There is no merge-down.
+  - The babysitter cron is session-only; re-arm it after a restart.
+- **Hard-won rules from this run** (apply when authoring tickets):
+  - Read the WHOLE `failing tests:` section of every flake-budget run log, never `grep -A3`.
+  - A ticket that changes a shared return shape must put every exact-shape pin of it, in ALL tiers, in its Files list.
+  - Every subprocess in a new test gets `timeout: 30_000`. A value in the 5–15 s band trips the subprocess audit.
+  - `pipeline.json` `paths:` silently drops paths that don't exist yet. Host new code and tests in existing files.
+  - When CI is red, `gh run download <id> -n flake-budget-logs` has the per-run logs.
+  - No docker here, so the Linux check is CI's, not local.
+- **Open, not queued.**
+  - #43 (speed; deferred until a width > 1 wave run exists).
+  - The partly-addressed #56–#62 and #64–#67, each with a status comment.
+  - Proposed quality item: one worker-prompt sentence — "every spawn in a new test gets an explicit `timeout:`" — to stop the recurring test-hygiene fix bundles. It is not built yet.
+  - Client-name residue in old closed issues and 145 repo files (the #31 leak). That is an operator decision.
 
 ### ▶ QUEUE (strictly sequential; never two pipelines; never commit to a branch while its pipeline or gate runs)
 
