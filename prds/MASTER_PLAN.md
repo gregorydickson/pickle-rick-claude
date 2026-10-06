@@ -230,12 +230,12 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `main` | **`v2.2.0` tagged at `438991b1`** (operator 2026-10-05: take 2.2 out of beta; full release, marked latest). Release gate `20261005T212247Z-99474` 22/22, soak 1804.0s; `verify-release-tag.sh` OK. **DEPLOYED**: version `2.2.0`; `bin/`/`services/`/`.claude/commands` diffs 0; runners import. Releases are now `v2.2.X` tags (root CLAUDE.md). Open risk stated in the release notes: no field run yet on this code (A2 monorepo linking untested); multi-agent speed criteria waived, parallelism default-off |
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
-| version | `2.2.0-beta.1` on the lane branches; `main` `2.1.1`. No tag pending |
+| version | `2.2.0` on `main` (the only line). No tag pending |
 | RUNNING | **nothing** (as of 22:50Z). Next signal: the operator's client field run on `2.2.0` |
-| open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). Still open: #43, #56–#62, #64–#67 |
+| open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). Still open: #43, #56–#62, #64–#67, #77–#82 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
-| babysitter | `prds/babysitter.md` CURRENT PROMPT + the queue below |
+| babysitter | `prds/babysitter.md` CURRENT PROMPT (rewritten 2026-10-06 for the single-`main` line; rules P/S/C deleted) + the queue below. Cron is session-only — re-arm after a restart |
 | exocortex | integration DEFERRED until memory-graph/exocortex#1 (reads drop `content`) is fixed. The runner-only plan is in auto-memory |
 
 #### ▶ SESSION HANDOFF (2026-10-06, written before a context clear)
@@ -254,10 +254,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
   - `base drift:` result;
   - open-decision count.
   Log the run as the first field row: N1 = hands-off completion, N2 = all phases converged with nothing stranded (`prds/research/tools/field-timing.py`).
-- **The babysitter prompt is STALE.**
-  - The cron prompt and `prds/babysitter.md` still carry rule P (merge down `main` → `exp/b-lanes` → `exp/b-parallel-build`) and soak rule S (deploy from `exp/b-lanes`). Both branches are retired.
-  - Current practice: general fixes run as a pipeline on `main` → gate (`prds/gate-runner.sh`, all 22 `LEG_RC 0`, full soak) → push → `bash install.sh` from `main` → verify the deployed JS by content (`diff -rq` of `bin/`, `services/` and `.claude/commands` = 0). There is no merge-down.
-  - The babysitter cron is session-only; re-arm it after a restart.
+- **Babysitter: REWRITTEN + RE-ARMED 2026-10-06.** `prds/babysitter.md` CURRENT PROMPT now matches the single-`main` line: pipeline on `main` → gate (`prds/gate-runner.sh`, all 22 `LEG_RC 0`, full soak) → push → `bash install.sh` from `main` → verify by content (`diff -rq` of `bin/`, `services/`, `.claude/commands` = 0). Rules P/S/C (merge-down, beta soak, experimental branches) deleted. Every PRD it authors must pass the PRINCIPLE SCREEN (rule D). Cron is session-only; re-arm after a restart.
 - **Hard-won rules from this run** (apply when authoring tickets):
   - Read the WHOLE `failing tests:` section of every flake-budget run log, never `grep -A3`.
   - A ticket that changes a shared return shape must put every exact-shape pin of it, in ALL tiers, in its Files list.
@@ -267,8 +264,8 @@ NO measured basis. Large PRDs are not constrained by the cap.
   - No docker here, so the Linux check is CI's, not local.
 - **Open, not queued.**
   - #43 (speed; deferred until a width > 1 wave run exists).
-  - The partly-addressed #56–#62 and #64–#67, each with a status comment.
-  - Proposed quality item: one worker-prompt sentence — "every spawn in a new test gets an explicit `timeout:`" — to stop the recurring test-hygiene fix bundles. It is not built yet.
+  - The partly-addressed #56–#58, #60–#62 and #64–#67, each with a status comment.
+  - #59, #77–#82 and the worker-prompt `timeout:` sentence are now QUEUED as B-FIELD-82 (queue item 9).
   - Client-name residue in old closed issues and 145 repo files (the #31 leak). That is an operator decision.
 
 ### ▶ QUEUE (strictly sequential; never two pipelines; never commit to a branch while its pipeline or gate runs)
@@ -288,7 +285,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
    UNMEASURED disclosure; T3 refinement AC-shape dedupe, `missing_requirement_ids`, dependency `.d.ts` symbol resolution;
    T4 monitor template; T5 `/pickle-pipeline` session binding + 0-ahead scope pin). Every premise re-measured at `72797f3e`
    (8/8 live). Decisions D-1..D-4 taken at the recommended defaults. G3/G4 and the AC-shape advisory demotion are follow-ups.
-   - Then: gate `main` → push → merge into `exp/b-lanes` → gate → push → redeploy → merge into `exp/b-parallel-build` → gate → push.
+   - DONE: gated, pushed, deployed (the merge-down steps are obsolete — both experimental branches retired 2026-10-04).
 
 5. **B-MEGA — fix every open issue + keep developing the multi-agent branch (operator decision 2026-10-02).** **LAUNCHED 2026-10-02 23:43Z** (session `2026-10-02-be104839`). **BUILT 2026-10-03 11:33Z; gate 22/22 at `d9767fcb`; pushed.** Measured (A3's `field-timing.py`): pickle 636 min for 23 tickets (≈27.6 min/ticket = the serial baseline), wave widths 1×21 + 2×1, implementation sub-phase 189.8 min, 0 wave-failed-then-serial-done, 25 anatomy passes. B-PBUILD merge criterion NOT met (no width>1 speedup; self-build only).
    - **Placement (operator):** ONE bundle on `exp/b-parallel-build`, **deployed first** (operator-approved deploy of that
@@ -304,7 +301,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
      drift report, G4 scripted decomposition, AC-shape gate advisory, one requirement-id rule, microverse template,
      nested-workspace .d.ts resolution) · F #5 Moves 1–3.
    - **PRD committed on local main** (`prds/p1-b-mega-multiagent.md`, premises measured at `exp/b-parallel-build@99fe61eb`; ~25 tickets; first-ever real wave run; #5 Moves 2–3 found already satisfied, Move 1's archaeology has 0 callers). **Operator answers (2026-10-02):** (1) **A2 ships in B-MEGA** with A1 kept as the safety net — if linking cannot reproduce a workspace's node_modules, units/lanes fall back to serial; the first monorepo field run is A2's real test; (2) **delete archaeology** (dead module + stale `PRD_GUIDE.md` reference) and close #5 with the evidence that Moves 2–3 are already satisfied; (3) **close #52/#53/#5 only when the branch merges to `main`**; (4) **cut E5** (cosmetic; recorded only). The PRD on local main is amended to match once B-DEPLOYPARITY finishes.
-   - **Order:** after step 4 finishes AND merges down (main → exp/b-lanes → exp/b-parallel-build, each gated); then deploy
+   - **Order (historical; branches retired 2026-10-04, work merged via B-MERGE-REL):** after step 4 finishes AND merges down (main → exp/b-lanes → exp/b-parallel-build, each gated); then deploy
      `exp/b-parallel-build`, verify by content, launch. PRD being drafted with every premise measured at the branch HEAD.
    - **Found while planning (to measure):** pickle build units (`createTicketUnitSession`) link node_modules with the same
      depth-1 linker as lanes but have no L2 predicate, so in a workspace each unit builds against a tree without its deps.
@@ -337,7 +334,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
      bundle composition (file-disjoint tickets), not more runtime machinery — after tiers 1–2.
    - Cross-reference comments posted on #56, #61, #64, #66.
 
-8. **Field-run issues #68–#75 (2026-10-04) — sanitized (#68/#69/#70/#75 rewritten; #71–#74 had no client data); triaged by the
+8. **DONE 2026-10-05 — B-FIELD-75 (+ FIX/FIX2/FIX3) and B-STALE-SENTINEL (#76) built, gated, deployed; #68–#76 closed.** Field-run issues #68–#75 (2026-10-04) — sanitized (#68/#69/#70/#75 rewritten; #71–#74 had no client data); triaged by the
    ratchet order; no duplicates.**
    - **Tier 1:** #75 — refinement's `## Open Decisions` table (B-MEGA C2) is written but read by nothing, so escalated
      questions were answered and the build ran. Smallest fix: read it, print open decisions at run start and end, and
@@ -355,9 +352,36 @@ NO measured basis. Large PRDs are not constrained by the cap.
    - **Proposed bundle:** #75 + #71 line + #68 line (same report block in `pipeline-runner.ts`) + the #72 fixture + #69 +
      #74. Also reword a client-naming code comment in `spawn-refinement-team.ts` (~:601) while #74 is in that file.
 
-**Before #54 the queue was drained.** Remaining open issues are not babysitter-drainable: #53 and #52 are fixed on the experimental branches only (closing or
-merging to `main` is the operator's call), and #43 and #5 are operator-deferred. **Operator decisions pending:** end the 2.2 beta soak and
-merge `exp/b-lanes` into `main` (the ledger now has 7 sessions); deploy or merge `exp/b-parallel-build`; close #52/#53.
+9. **NEXT — B-FIELD-82: field-run issues #77–#82 (filed 2026-10-06), screened against the PRIME DIRECTIVE.** ONE bundle on
+   `main` (the review toll is per bundle; never split to de-risk). Premises measured at `6483f826`. Gate legs 22 → 22.
+   `--no-refine` is NOT appropriate (prompt-contract changes = new behaviour); refinement ON. PRD not yet written — the
+   babysitter authors it under rule D, every AC run at HEAD first (must fail today).
+
+   **The screen each row passed** (root `CLAUDE.md`): (1) would the NEXT ITERATION fix it? (2) adds no halt / abort
+   condition; (3) widens or subtracts before it adds; (4) any new check lives inside an EXISTING leg, with a falsifying
+   control; (5) AC measured at HEAD; (6) no client content (#80's body carries schema-like identifiers — the PRD uses
+   generic names only).
+
+   | Ticket | Issue | Tier | What ships | Why it passes the screen |
+   |---|---|---|---|---|
+   | T1 | #77 | **1 — reliability** | git-mode `install.sh` copies the resolved runtime deps into the deploy root (`cp -R`, from the lockfile-installed source tree — offline-safe, same pinned versions) instead of `ln -sfn`; delete the symlink loop (`install.sh:398-411`) and the git-mode codegraph link branch (`:421-433`); move `typescript` to `dependencies` | **Measured:** 3 deployed `node_modules` links resolve outside the deploy root (typescript, codegraph, the platform binding); `typescript` is devDependency-only yet imported at runtime by `did-we-count-replay.ts` and `citadel/frontend-prop-drift-audit.ts`. The gate's own `npm ci` deletes the link targets, so a pipeline running during a gate loses modules mid-run → halt. The next iteration cannot fix a halt. Subtraction: one dependency mechanism per mode, no links. AC: after a sandbox install, links under `<prefix>/extension/node_modules` whose realpath leaves `<prefix>` = 0 (measured 3 today); the assertion lives in an EXISTING install test; control: restore `ln -sfn` → red. `install.sh:588` (source-tree `.bin/tsc` link) is out of scope |
+   | T2 | #78 | 2 — quality | Widen Step 7a's existing rule "Self-contained: worker executes without reading PRD" (`pickle-refine-prd.md:196`): a ticket that applies a recorded decision/ruling quotes its text verbatim — an id alone is not self-contained; AC wording is carried unparaphrased | A violation of an existing rule → widen the rule, add no mechanism. **Rejected:** the proposed new pointer-only audit row and AC-paraphrase diff (a new classifier; revisit only if the next field run shows the widened rule did not hold) |
+   | T3 | #79 | 2 — quality | Step 7a guidance: a rule consumed by ≥2 tickets gets ONE owner ticket that defines it for every input side, with a symmetry test in its ACs; consumers order after it; an owner ticket is never tier `small` | Prompt-only. **Rejected:** a tier-floor case in the runtime tier heuristic (an enumerated-set member). Breakdown measures where the tier is assigned — if it is code, the floor stays prompt guidance |
+   | T4 | #80 | 2 — quality | Research instruction (`send-to-morty.md`): for each persisted input the change reads, cite its writer and write condition (conditional nulling, rejection); build fixtures through the producer where one exists | Prompt-only. **Rejected:** the fixture-realism checker (no repo-independent formulation) and a plan-review refusal on a missing section (a new refusal) |
+   | T5 | #82 analyst half | 2 — quality | Refinement analyst contract: a counter-example to a recorded decision is written as an `open` row in `## Open Decisions` (Step 6 rule 13), never closed by "already decided" | REUSES #75's wiring: `readOpenDecisions` already feeds `computePipelineVerdict` (`pipeline-runner.ts:6291`), which withholds success. Zero new runtime code |
+   | T6 | #82 report half | 2 — quality | Carry a non-zero readiness / ticket-audit exit into the final run report (disclosure only — today it is only a mux log line, `mux-runner.ts:13878`; confirm the final report omits it at breakdown) | Honesty is a REPORTING property. Does NOT withhold success: both checks are advisory BY DESIGN (R-GATE-ADVISORY — they false-blocked legitimate bundles), so withholding on them would make success unreachable |
+   | T7 | #81 | 2 — quality | Citadel's diff base becomes the pinned scope base the other review phases use, instead of `${startCommit}..HEAD` (`pipeline-runner.ts:4715`) — one review base, not two | Collapse of a divergence. **Premise partly STALE:** keyword anchors already do NOT credit coverage (`ac-coverage-scorecard.ts:199,207` pass `[]`; anchor hits report `lexical-only`). What still credits `implemented`/`tested` is an AC id or LLM-entity string in a changed line (`:232-238`) — a MENTION, not a falsification |
+   | T8 | #81 + #59 | 2 — quality | Citadel report states that AC coverage is mention-evidence, not a falsification check; workers stop writing PRD-internal ids into shipped code/test names (#59), which is what lets an id in a test title credit "tested" | Reporting honesty + one prompt rule; #59 shares the worker-prompt surface, so it rides free |
+   | T9 | test hygiene | 2 — quality | Worker-prompt sentence: every subprocess spawn in a new test gets an explicit `timeout:` (outside the 5–15 s band the subprocess audit flags) | The recurring test-hygiene fix bundles (handoff "Hard-won rules"); same `send-to-morty.md` surface as T4, rides free |
+
+   **Rejected outright (recorded, not built):** #82's launch block until an operator acknowledges a non-zero readiness/audit
+   exit — an abort condition, forbidden by the PRIME DIRECTIVE and a reversal of R-GATE-ADVISORY. #81's per-criterion
+   counter-example generation — a spawn per AC ("precision that costs a spawn"). #81's citadel-after-anatomy-park reorder —
+   a phase-order change against the 2026-09-16 "review phases stay simple" constraint; **operator decision** if wanted.
+   #77's tarball lockfile pinning — the deploy-tree lockfile exclusion is intentional (`install.sh:417-419`); record only.
+
+**Operator-deferred / not babysitter-drainable:** #43 (speed; needs a width > 1 wave run). The partly-addressed
+#56–#58, #60–#62, #64–#67 each carry a status comment; they are composable into a later bundle by surface, not queued.
 
 **B-ATTRIB decisions (refinement session `2026-10-01-e8b44a10`, 3×3):**
 - The sweep base is a typecheck REPLAYED at `start_commit` in the same worktree. The rolling `gate/baseline.json` is

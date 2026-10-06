@@ -1,34 +1,48 @@
 # Babysitter — pickle-rick-claude master-plan driver
 
-Two prompts live here. **The CURRENT one is directly below** and is what the
-2026-09-19 → 09-22 sessions actually ran. The older cron/drain-queue variant is kept
+Two prompts live here. **The CURRENT one is directly below** (rewritten 2026-10-06
+for the single-`main` line). The older cron/drain-queue variant is kept
 at the bottom as **v1 (superseded)** — it references a Drain Queue table and bundle
 codes that no longer match the live plan, so do not arm it without re-verifying.
 
 ---
 
-## CURRENT PROMPT (operative, 2026-09-25 — autonomous)
+## CURRENT PROMPT (operative, 2026-10-06 — autonomous, single `main` line)
 
-Paste verbatim. It is written to be re-sent every tick; each tick is self-contained.
+Paste verbatim. It is written to be re-sent every tick; each tick is self-contained. Arm with
+`CronCreate({ cron: "11,41 * * * *", recurring: true, prompt: <the block below> })` — session-only,
+auto-expires after 7 days; re-arm after a restart.
 
 ```
-PICKLE-RICK PIPELINE BABYSITTER TICK (AUTONOMOUS). Scope: /Users/gregorydickson/pickle-rick-claude, branch main plus any experimental branch named in the MASTER_PLAN handoff (currently exp/b-lanes). BINDING: this repo is open source; no client content ever (root CLAUDE.md). MEASUREMENT RULES: resolve the live session by reading the newest ~/.local/share/pickle-rick/sessions/*/state.json + pipeline-status.json; Node v24; TZ=UTC; capture exit codes directly; an absent or empty result is not a pass; verify deploys BY CONTENT (including `diff -rq .claude/commands ~/.claude/commands` must report 0 differing). Read the SESSION HANDOFF in prds/MASTER_PLAN.md and open GitHub issues each tick.
+PICKLE-RICK PIPELINE BABYSITTER TICK (AUTONOMOUS). Scope: /Users/gregorydickson/pickle-rick-claude, branch main ONLY (the experimental branches were retired 2026-10-04; main is the only line and the deployed runtime). BINDING: this repo is open source — no client content ever (root CLAUDE.md), in PRDs, tickets, commits or issue comments; field-run issues are referenced by number and generic shape only. Each tick: read root CLAUDE.md's PRIME DIRECTIVE, the SESSION HANDOFF + QUEUE in prds/MASTER_PLAN.md, and the open GitHub issues.
+
+MEASUREMENT RULES: resolve the live session from the newest ~/.local/share/pickle-rick/sessions/*/state.json + pipeline-runner.log + artifact mtimes (pipeline-status.json publishes only at phase boundaries); TZ=UTC for every time comparison; Node v24; capture exit codes directly; an absent, empty or zero-file result is NOT a pass; a claim is a measurement only if you named and took the observation that would falsify it. Verify a deploy BY CONTENT: `diff -rq` of extension/bin, extension/services and .claude/commands against ~/.claude/pickle-rick and ~/.claude/commands must report 0 differing.
 
 STANDING AUTHORIZATIONS — act, do NOT ask the operator:
-A. RUNTIME/PIPELINE-BREAKING BUG (deployed runtime fails to load, pipelines crash/halt, tests damage the real ~/.claude/pickle-rick): restore first (git switch main when no runner is alive, bash install.sh, verify the deployed runtime imports), then write a PRD with ACs measured at HEAD and run /pickle-pipeline on main.
-B. FINISHED BUNDLE ON main: run prds/gate-runner.sh; a leg is green only if its LEG_RC is 0 (the runner's own exit code is not enough). All legs green → git push origin main, bash install.sh, verify deployed content by grep/cmp and `diff -rq .claude/commands ~/.claude/commands` (0 differing). Any red leg → write a fix PRD naming each red with its cause (fix the cause, never loosen a check) and run it as a pipeline on main.
-C. EXPERIMENTAL BRANCH: keep it moving. Merge main into it (merge commit on the branch) whenever main has shipped fixes it needs; re-measure the branch fix PRD's ACs at branch HEAD; run it as a pipeline on the branch. When a branch bundle finishes, run the gate on the branch; push the branch after EVERY bundle (backup, green or red); if red, write the next fix PRD and run it. NEVER merge the branch into main, never install.sh from the branch, never tag it.
-D. PRD authoring: every AC measured at HEAD before launch (it must fail today). Use --no-refine for small fix bundles (≤ 5 named reds); use refinement for new features.
-S. SOAK MODE — v2.2.0-beta.1 (operator-approved 2026-09-26). While the MASTER_PLAN handoff says the 2.2 beta soak is active, the DEPLOYED runtime is exp/b-lanes, not main. So: (1) never bash install.sh from main during the soak — it would roll the beta back; (2) a green main bundle is pushed to main, then main is merged into exp/b-lanes, the branch is gated, pushed, and deployed from the branch (install.sh with the branch checked out), verified by content (`diff -rq .claude/commands ~/.claude/commands` must report 0 differing); (3) every pipeline launched during the soak sets "anatomy_max_parallel_lanes": 2 in pipeline.json, and after it finishes append one row to the MASTER_PLAN "2.2 completion ledger": session, changed files, lanes kept, anatomy-park phase minutes, passes per lane, findings fixed, lanes.json outcomes, any lane cancel/conflict/integration_red, and population. Rollback if the beta breaks a run: git checkout main && bash install.sh, then report. Ending the soak and merging exp/b-lanes into main are the operator's decision.
-P. GENERAL FIXES LAND ON MAIN AND ON EVERY EXPERIMENTAL BRANCH (operator, 2026-09-26). A general fix (anything not specific to an experimental feature) is authored and run as a pipeline on main — even if found while working on a branch — and after it ships on main it is merged down the chain main → exp/b-lanes → exp/b-parallel-build, each branch gated and pushed (exp/b-lanes also redeployed per rule S). Only branch-specific repairs stay on their branch. No-refine fix bundles set an explicit `paths:` scope in pipeline.json: an empty branch diff at setup leaves the run unscoped, which on the beta reviews every lane (measured: 135 min for a 2-file fix).
-E. IDLE (nothing running, no drainable work): research tick — ONE background research agent refines prds/research/2026-09-agent-systems-spike.md (one open gap from §6; primary sources; ≤ ~4,000 words; changelog line); read its diff, commit only that file on main, push. Skip if a research agent is still running.
-F. Never switch branches or commit on a branch while a pipeline runs on it. Never commit while any pipeline runs on main.
+A. RUNTIME/PIPELINE-BREAKING BUG (deployed runtime fails to load, pipelines halt, tests damage the real ~/.claude/pickle-rick): restore first (bash install.sh from main when no runner is alive; verify the deployed runners import), then write a PRD per rule D and run /pickle-pipeline on main.
+B. FINISHED BUNDLE: run prds/gate-runner.sh <log>; green ONLY if every leg prints `=== LEG_RC <leg> 0` (the runner's own exit code is not enough) and the soak's reported wall-clock is ≥ SOAK_SECONDS (grep SOAK_UNRUN). All green → git push origin main, bash install.sh, verify by content (above), update the MASTER_PLAN STATE/QUEUE rows, commit + push the doc, and post an evidence comment (--body-file) on each issue the bundle fixed, closing it. Any red leg → write a fix PRD naming each red and its cause (fix the cause, never loosen a check) and run it as a pipeline on main.
+C. NEXT QUEUE ITEM: when nothing runs and the tree is green, take the next undone QUEUE item in MASTER_PLAN. If its PRD does not exist, author it (rule D), commit it on main, then launch /pickle-pipeline. Strictly sequential: never two pipelines; never commit to main while a pipeline or gate runs on it.
+D. PRD AUTHORING — THE PRINCIPLE SCREEN (every ticket must pass all, or it is cut and recorded as rejected with the reason):
+   1. Would the NEXT ITERATION fix this? If yes, add nothing — record it.
+   2. It adds no halt, abort or launch-block condition. Gates MAY refuse a local action and withhold the success verdict; they MAY NEVER stop the pipeline.
+   3. Subtract or widen before adding: name the existing rule/primitive it widens or the code it deletes; a new enumerated-set member needs a written reason no list-free formulation exists. Fill the `## Simplification Review` (prds/CLAUDE.md).
+   4. A new check goes INSIDE an existing gate leg (state the leg count; 22 today) and names its falsifying control (break the watched thing → it must red).
+   5. Every executable AC is RUN at HEAD before launch: it must FAIL today, and its expected value is the measured one. Grep every named symbol in src/ at HEAD.
+   6. Files sections name only paths that exist (pipeline.json `paths:` silently drops absent ones — host new code/tests in existing files); a ticket that changes a shared return shape lists every exact-shape pin in all tiers; every subprocess in a new test gets `timeout: 30_000`.
+   Pin `--scope-base <sha-before-the-bundle>` in pipeline.json (on main `--scope branch` resolves empty). Use refinement for behaviour/prompt-contract changes; --no-refine only for ≤ 5 named reds.
+E. IDLE (nothing running, queue drained): do nothing beyond the report. Do not invent work; the backlog is what the operator logs (root CLAUDE.md "Filing findings").
+F. FIELD-RUN EVIDENCE: if a new client field run appears (a session whose working_dir is not this repo), record NUMBERS ONLY in MASTER_PLAN per the handoff checklist (phases /4, non_convergent/stalled_below_target, kept lane branches, ERR_MODULE_NOT_FOUND in a lane/unit, base drift, open-decision count) and log the field row via prds/research/tools/field-timing.py. Never touch, restart or install against a pipeline in another repo.
+G. NEW GITHUB ISSUES: triage each new issue against rule D's screen (measure its premises at HEAD — a premise can be stale), add it to the MASTER_PLAN QUEUE as a ticket row or a recorded rejection, and compose same-surface rows into the next bundle rather than opening a new one. If an issue body carries client content, do not quote it; tell the operator.
 
-ASK THE OPERATOR ONLY FOR: merging an experimental branch into main; cutting a release/tag; deleting branches, tags or session data; changing a PRD's goal (not its mechanics); anything touching client/private data; operator-deferred issues #43 and #5.
+ASK THE OPERATOR ONLY FOR: cutting a release/tag (cadence: every few days, not per bundle); deleting branches, tags or session data; changing a PRD's goal (not its mechanics); phase-order or gate-leg-count changes; anything touching client/private data; operator-deferred #43.
 
 Report each tick in 2-3 sentences: what ran, what you measured, what you changed or launched.
-Claude-Session: <the session URL>
 ```
+
+**Rewritten 2026-10-06:** the 09-25 prompt carried rules C/P/S for `exp/b-lanes` / `exp/b-parallel-build`
+(merge-down, beta soak, deploy-from-branch). Both branches were retired 2026-10-04, so those rules targeted
+nothing. Rule D now carries the PRIME DIRECTIVE screen explicitly (operator: "tickets have to pass our
+guiding principles"); the research-agent idle rule was dropped (the spike doc is not on the queue).
 
 **Why autonomous (operator, 2026-09-25):** "I seem to be making obvious decisions, we need to update the babysitter
 to keep the work going more autonomously." The loop had stalled for hours on yes/no questions the evidence had
