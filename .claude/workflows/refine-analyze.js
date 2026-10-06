@@ -238,6 +238,10 @@ function synthPrompt(prdPath, sessionDir, refinementDir, analyses, cycles, maxTu
     '   recorded, then `decided: <quote>`. A needs-human item',
     '   is never written under settled decisions without a quoted human decision.',
     '   An empty ledger or table is written as one explicit `none` row.',
+    '   A counter-example to a recorded decision — named inputs, the decided rule\'s output, and the expected',
+    '   output — is a NEW row in this table, even when the decision is marked final: `decision`:',
+    '   `<id>: counter-example — <inputs>`; `options`: `keep rule | amend rule`; `default`: `keep rule`;',
+    '   `owner`: the decision\'s owner; `status`: `open`. Only `decided: <quote>` closes it; "already decided" never does.',
     '3. Return that same manifest object as your structured result.',
   ].join('\n');
   return `${body}\n\n${FOM_EVIDENCE_RULES}\n\n${FOM_HONEST_REPORTING_RULES}`;
