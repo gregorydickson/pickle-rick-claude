@@ -84,6 +84,12 @@ describe('buildAcCoverageScorecard', () => {
       assert.equal(result.rows[0].implementationEvidence[0].symbol, 'buildComparisonRetryGuard');
       assert.equal(result.rows[0].testEvidence[0].matchType, 'symbol');
       assert.match(result.markdownTable, /\| AC-FF-01 \| ✓ \| ✓ \| src\/comparison-retry\.ts:1 \+ tests\/comparison-retry\.test\.ts:1 \|/);
+      assert.match(result.markdownTable, /\| ID \| Mentioned in code \| Mentioned in tests \|/);
+      assert.ok(
+        result.markdownTable.endsWith(
+          "|\n\nCoverage means the criterion's id or a mapped entity appears in a changed line; it is not a check that the criterion holds.",
+        ),
+      );
     } finally {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }

@@ -64,9 +64,11 @@ export function buildAcCoverageScorecard(acceptanceCriteria, diff, options = {})
 }
 export function renderAcCoverageMarkdownTable(rows) {
     return [
-        '| ID | Implemented | Tested | File:line evidence |',
+        '| ID | Mentioned in code | Mentioned in tests | File:line evidence |',
         '|---|:---:|:---:|---|',
         ...rows.map((row) => `| ${escapeTableCell(row.id)} | ${row.implemented ? '✓' : '✗'} | ${row.tested ? '✓' : '✗'} | ${escapeTableCell(formatEvidenceCell(row))} |`),
+        '',
+        "Coverage means the criterion's id or a mapped entity appears in a changed line; it is not a check that the criterion holds.",
     ].join('\n');
 }
 /**
