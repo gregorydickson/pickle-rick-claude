@@ -193,7 +193,8 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 Atomic tasks from refined PRD + codebase analysis:
 - Produces code/config/test changes (no research-only tickets)
 - Sequential `order` field (10, 20, 30...) drives execution order — no separate dependency graph
-- Self-contained: worker executes without reading PRD
+- Self-contained: worker executes without reading PRD. A ticket that applies a recorded decision or ruling (D-n, R-n, an Open Decisions row) quotes the decision's text verbatim — an id alone is not self-contained. Acceptance-criterion wording is carried into tickets unparaphrased.
+- A rule or predicate consumed by two or more tickets has ONE rule owner ticket that defines it for every input side, with a symmetry test (each input side × each outcome) in its acceptance criteria; consumer tickets order after it.
 - Embed research seeds (file paths, patterns, APIs, test patterns)
 - Machine-checkable acceptance criteria with verify commands
 - Interface contracts: exact I/O/error shapes
@@ -202,7 +203,7 @@ Atomic tasks from refined PRD + codebase analysis:
 
 Sizing: <30min coding, <5 files, <4 criteria, <2 subsystems.
 
-Tier is a bet: `complexity_tier` (frontmatter, else content-classified) drives worker timeout, iteration budget, and which test tiers the gate runs — `small` skips `test:fast`. Stamp medium+ on any ticket touching the orchestrator, iteration loop, or recovery path regardless of LOC, and count verification cost in the bet (a slow integration/container-based verify is never `small`); keep doc-only tickets small — an upward mis-tier runs red-main gates that can wipe the edits.
+Tier is a bet: `complexity_tier` (frontmatter, else content-classified) drives worker timeout, iteration budget, and which test tiers the gate runs — `small` skips `test:fast`. Stamp medium+ on any ticket touching the orchestrator, iteration loop, or recovery path regardless of LOC, and count verification cost in the bet (a slow integration/container-based verify is never `small`); keep doc-only tickets small, except that the rule owner is never tier `small` — an upward mis-tier runs red-main gates that can wipe the edits.
 
 #### Failure-mode checklist
 
