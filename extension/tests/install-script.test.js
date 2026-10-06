@@ -1420,6 +1420,16 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
       /ln -sfn "\$_cg_src"|ln -sfn "\$SCRIPT_DIR\/extension\/node_modules/,
       'install.sh must not symlink runtime deps from the source checkout into the deploy root',
     );
+    // The literal pin above names two spellings; between mode detection and the self-probe NO
+    // symlink of any spelling may deploy a runtime dep (later `ln -s` lines link tool shims).
+    const modeIdx = src.indexOf('# --- MODE DETECTION');
+    const probeOkIdx = src.indexOf('echo "OK codegraph"', modeIdx);
+    assert.ok(modeIdx !== -1 && probeOkIdx !== -1, 'mode-detection and self-probe anchors must both exist');
+    assert.doesNotMatch(
+      src.slice(modeIdx, probeOkIdx),
+      /\bln -s/,
+      'install.sh must not symlink anything between mode detection and the runtime self-probe',
+    );
     // Git mode: the production closure npm reports is COPIED into the deploy root.
     assert.match(
       src,
