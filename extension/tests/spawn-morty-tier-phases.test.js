@@ -133,12 +133,28 @@ test('medium lifecycle: research is step 1, simplify is step 8', () => {
   assert.match(sections, /###\s+8\.\s+Simplify\n/);
 });
 
+// One lifecycle step's body: from its `### N. <title>` heading to the next heading.
+function lifecycleSection(out, title) {
+  const heading = new RegExp(`### \\d+\\. ${title}\\n`).exec(out);
+  assert.ok(heading, `lifecycle must contain a "${title}" step`);
+  const start = heading.index + heading[0].length;
+  const next = out.indexOf('\n### ', start);
+  return out.slice(start, next === -1 ? out.length : next);
+}
+
 test('research block cites input writers and write conditions', () => {
   const out = buildTierLifecycleSections(TIER_LIFECYCLE.medium, 'medium');
-  assert.ok(out.includes('write condition'), 'medium research must name write condition');
+  const research = lifecycleSection(out, 'Research');
+  assert.ok(research.includes('write condition'), 'medium Research step must name write condition');
+  // Research review fails research that proposes solutions, so the fixture-building clause must stay out of it.
+  assert.ok(!research.includes("through the input's writer"), 'fixture clause must not appear in the Research step');
+  assert.ok(
+    lifecycleSection(out, 'Plan').includes("through the input's writer"),
+    'medium Plan step must name the writer',
+  );
 });
 
 test('plan block builds fixtures through the input writer', () => {
   const out = buildTierLifecycleSections(TIER_LIFECYCLE.small, 'small');
-  assert.ok(out.includes("through the input's writer"), 'small plan must name the writer');
+  assert.ok(lifecycleSection(out, 'Plan').includes("through the input's writer"), 'small Plan step must name the writer');
 });
