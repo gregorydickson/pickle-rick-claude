@@ -6,6 +6,7 @@ import {
   buildTierResumeTable,
   buildTierLifecycleSections,
 } from '../bin/spawn-morty.js';
+import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
 
 const TRIVIAL_PHASES = ['implement', 'code_review'];
 const SMALL_PHASES = ['plan', 'implement', 'code_review'];
@@ -130,4 +131,14 @@ test('medium lifecycle: research is step 1, simplify is step 8', () => {
   const sections = buildTierLifecycleSections(MEDIUM_PHASES, 'medium');
   assert.match(sections, /###\s+1\.\s+Research\n/);
   assert.match(sections, /###\s+8\.\s+Simplify\n/);
+});
+
+test('research block cites input writers and write conditions', () => {
+  const out = buildTierLifecycleSections(TIER_LIFECYCLE.medium, 'medium');
+  assert.ok(out.includes('write condition'), 'medium research must name write condition');
+});
+
+test('plan block builds fixtures through the input writer', () => {
+  const out = buildTierLifecycleSections(TIER_LIFECYCLE.small, 'small');
+  assert.ok(out.includes("through the input's writer"), 'small plan must name the writer');
 });

@@ -396,13 +396,13 @@ export function buildTierLifecycleSections(phases, tier) {
     }
     let n = 1;
     if (phaseSet.has('research')) {
-        out += `\n### ${n++}. Research\nWhat IS, not SHOULD BE. No solutioning. Every claim = \`file:line\` ref.\n- Read \`\${TICKET_DIR}/rick_ticket_\${TICKET_ID}.md\`\n- **Glob**, **Grep** (not bash grep), **Read** to trace code\n- Write \`\${TICKET_DIR}/research_[date].md\`: Summary, Context (file:line), Findings, Constraints\n`;
+        out += `\n### ${n++}. Research\nWhat IS, not SHOULD BE. No solutioning. Every claim = \`file:line\` ref.\n- For each persisted input the change reads (row, column, file, field), cite its writer and write condition (conditional nulling, rejection) as \`file:line\`.\n- Read \`\${TICKET_DIR}/rick_ticket_\${TICKET_ID}.md\`\n- **Glob**, **Grep** (not bash grep), **Read** to trace code\n- Write \`\${TICKET_DIR}/research_[date].md\`: Summary, Context (file:line), Findings, Constraints\n`;
     }
     if (phaseSet.has('research_review')) {
         out += `\n### ${n++}. Research Review\nFAIL if: proposes solutions, claims lack refs, incomplete.\n- Write \`\${TICKET_DIR}/research_review.md\`: APPROVED/NEEDS REVISION/REJECTED + feedback\n- APPROVED → next. Otherwise → redo previous.\n`;
     }
     if (phaseSet.has('plan')) {
-        out += `\n### ${n++}. Plan\nRead research${phaseSet.has('research') ? '' : ' (use ticket body ## Problem / ## Solution)'}. No guessing.\n- Write \`\${TICKET_DIR}/plan_[date].md\`: Scope, Current State (file:line), Phases with Goal/Steps/Verify command\n- Self-check: strict scope? No magic steps? Every phase has verification?\n`;
+        out += `\n### ${n++}. Plan\nRead research${phaseSet.has('research') ? '' : ' (use ticket body ## Problem / ## Solution)'}. No guessing.\n- Write \`\${TICKET_DIR}/plan_[date].md\`: Scope, Current State (file:line), Phases with Goal/Steps/Verify command\n- Build test fixtures through the input's writer where one exists.\n- Self-check: strict scope? No magic steps? Every phase has verification?\n`;
     }
     if (phaseSet.has('plan_review')) {
         out += `\n### ${n++}. Plan Review\nFAIL if: vague steps, no verify commands, generic paths.\n- Write \`\${TICKET_DIR}/plan_review.md\`: APPROVED/RISKY/REJECTED\n- APPROVED → next. RISKY → revise. REJECTED → redo previous.\n`;
