@@ -326,10 +326,8 @@ jq . "$SETTINGS_FILE" >/dev/null 2>&1 || { echo "❌ settings.json is not valid 
 
 # --- MODE DETECTION ---
 # `-e`, not `-d`: in a git WORKTREE `.git` is a FILE (a gitdir: pointer), not a directory. Testing
-# for a directory silently fell through to tarball mode there — which skips the codegraph symlinks
-# and then lets the deploy-root `npm install --omit=dev` prune the `typescript` symlink as
-# extraneous, leaving the deployed pipeline-runner unloadable (ERR_MODULE_NOT_FOUND). It failed
-# loudly in the tests and SILENTLY for anyone installing from a worktree.
+# for a directory silently fell through to tarball mode there — a networked deploy-root
+# `npm install` instead of a local copy of the checkout's own runtime closure.
 if [ -e "$SCRIPT_DIR/.git" ]; then
   INSTALL_MODE="git"
 else
@@ -395,41 +393,30 @@ if [ -f "$_schema_src" ]; then
   cp "$_schema_src" "$EXTENSION_ROOT/extension/activity-events.schema.json"
 fi
 
-# --- RUNTIME DEPS ---
-# Some compiled JS modules (e.g. citadel/frontend-prop-drift-audit.js) import
-# packages from extension/node_modules at module-load. Since rsync excludes
-# node_modules, symlink the specific runtime deps the deployed code needs.
-# Recreated each install.sh run because --delete-excluded above blows them away.
-# Runs BEFORE the parity probe below, which executes deployed JS that needs
-# these symlinks to load (R-ITS-2 vs C1: a probe that runs before its own
-# dependencies exist can crash on a tree that would otherwise install fine).
-mkdir -p "$EXTENSION_ROOT/extension/node_modules"
-for dep in typescript; do
-  if [ -d "$SCRIPT_DIR/extension/node_modules/$dep" ]; then
-    ln -sfn "$SCRIPT_DIR/extension/node_modules/$dep" "$EXTENSION_ROOT/extension/node_modules/$dep"
-  fi
-done
-
 # --- CODEGRAPH RUNTIME DEP (per-mode; recreated each run — rsync deletes node_modules) ---
-# @colbymchenry/codegraph is a SCOPED package with a platform-specific native
-# binding; the flat-name loop above cannot express the @colbymchenry/ layout, so
-# deploy it explicitly per mode. Git: symlink the scoped main package + the one
-# resolved platform binding from SOURCE node_modules. Tarball: npm install at the
-# deploy root (no lockfile reaches the deploy tree by design — npm ci impossible
-# there; lockfile staying rsync-excluded is intentional, NOT a bug to "fix").
-_codegraph_scope="$EXTENSION_ROOT/extension/node_modules/@colbymchenry"
+# Compiled JS imports runtime packages at module-load (typescript from
+# citadel/frontend-prop-drift-audit.js, the scoped @colbymchenry/codegraph and its
+# native binding). rsync excludes node_modules, so deploy them per mode as REAL
+# files inside the deploy root — never links back into the source checkout, which
+# loses its node_modules on `npm ci`, `git clean -xfd` or `git worktree remove`.
+# Git: copy the production closure npm itself reports for the source tree (no
+# hand-maintained package list). Tarball: npm install at the deploy root (no
+# lockfile reaches the deploy tree by design — npm ci impossible there; lockfile
+# staying rsync-excluded is intentional, NOT a bug to "fix").
+# Runs BEFORE the parity probe below, which executes deployed JS that needs these
+# packages to load.
 if [ "$INSTALL_MODE" = "git" ]; then
-  mkdir -p "$_codegraph_scope"
-  _cg_src="$SCRIPT_DIR/extension/node_modules/@colbymchenry/codegraph"
-  if [ -d "$_cg_src" ]; then
-    ln -sfn "$_cg_src" "$_codegraph_scope/codegraph"
-  fi
-  # Resolve the ONE platform binding present in source node_modules generically
-  # (each codegraph release ships one optionalDependency per supported platform;
-  # npm installs only the host-matching one — do not hardcode darwin-arm64).
-  for _cg_plat in "$SCRIPT_DIR"/extension/node_modules/@colbymchenry/codegraph-*-*; do
-    [ -d "$_cg_plat" ] || continue
-    ln -sfn "$_cg_plat" "$_codegraph_scope/$(basename "$_cg_plat")"
+  # npm's first line is the package root itself; derive the prefix from it so a
+  # symlinked checkout path cannot empty the copy, and the root line filters itself out.
+  _closure="$(cd "$SCRIPT_DIR/extension" && npm ls --omit=dev --all --parseable 2>/dev/null || true)"
+  _root="$(printf '%s\n' "$_closure" | head -n1)"
+  printf '%s\n' "$_closure" | while IFS= read -r _dep; do
+    case "$_dep" in "$_root"/node_modules/*) ;; *) continue ;; esac
+    _dst="$EXTENSION_ROOT/extension/${_dep#"$_root"/}"
+    rm -rf "$_dst"; mkdir -p "$(dirname "$_dst")"
+    # Clone where the filesystem supports it; a failed clone may leave a partial
+    # directory, which a plain `cp -R` would then copy INTO — clear it first.
+    cp -cR "$_dep" "$_dst" 2>/dev/null || { rm -rf "$_dst"; cp -R "$_dep" "$_dst"; }
   done
 else
   _codegraph_pkg_json="$EXTENSION_ROOT/extension/package.json"
@@ -443,11 +430,12 @@ else
   (cd "$EXTENSION_ROOT/extension" && npm install --omit=dev --no-save "@colbymchenry/codegraph@$_codegraph_spec" --no-fund --no-audit)
 fi
 
-# Self-probe (both modes): the deployed tree MUST resolve the scoped package, or
-# the deploy is broken and we abort loudly at install time, not at session time.
-if ! (cd "$EXTENSION_ROOT/extension" && node -e "import('@colbymchenry/codegraph').then(()=>process.exit(0),()=>process.exit(1))"); then
-  echo "❌ FATAL: @colbymchenry/codegraph does not resolve from the deployed extension root ($EXTENSION_ROOT/extension)." >&2
-  echo "   Mode: $INSTALL_MODE. The deploy cannot self-verify its codegraph runtime dependency; aborting." >&2
+# Self-probe (both modes): the deployed tree MUST resolve the scoped package AND load
+# the pipeline runner (the typescript consumer; its CLI basename guard keeps the import
+# inert), or the deploy is broken and we abort loudly at install time, not at session time.
+if ! (cd "$EXTENSION_ROOT/extension" && node -e "Promise.all([import('@colbymchenry/codegraph'),import('./bin/pipeline-runner.js')]).then(()=>process.exit(0),(e)=>{console.error(e&&e.message);process.exit(1)})"); then
+  echo "❌ FATAL: @colbymchenry/codegraph or bin/pipeline-runner.js does not load from the deployed extension root ($EXTENSION_ROOT/extension)." >&2
+  echo "   Mode: $INSTALL_MODE. The deploy cannot self-verify its runtime dependencies; aborting." >&2
   exit 1
 fi
 echo "OK codegraph"

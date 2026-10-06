@@ -48,14 +48,14 @@
     }
   },
   "dependencies": {
-    "@colbymchenry/codegraph": "^1.6.0"
+    "@colbymchenry/codegraph": "^1.6.0",
+    "typescript": "^5.9.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.3.3",
     "c8": "11.0.0",
     "eslint": "^10.0.2",
-    "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1"
   }
 }

@@ -13,9 +13,10 @@ const DEBUG_LOG = 'debug.log';
 
 // AP-EXT-ITER94-01: a RUNAWAY BACKSTOP for the installer spawn below, not a schedule.
 // The upgrade payload has no `.git`, so `install.sh` takes its TARBALL branch, whose
-// mandatory step is a NETWORKED `npm install` of @colbymchenry/codegraph (the 0.9.x era) at the deploy
-// root — measured 46 MB fetched, unpacking to 181 MB, on EVERY upgrade (the rsync above it
-// runs `--delete-excluded`, so `node_modules` is rebuilt each run). The former 30s needed
+// mandatory step is a NETWORKED `npm install` at the deploy root that pulls every production
+// dependency — @colbymchenry/codegraph (the 0.9.x era: measured 46 MB fetched, unpacking to
+// 181 MB) plus `typescript` (~23 MB more) — on EVERY upgrade (the rsync above it runs
+// `--delete-excluded`, so `node_modules` is rebuilt each run). The former 30s needed
 // >12 Mbps sustained before a single local step, and this repo's own harness for the same
 // script uses 600_000 after 120_000 was measured a false-failure source (fde629a7: ~95s on
 // the operator host, observed failing twice). A cap that fires lands MID-DEPLOY: the rsync

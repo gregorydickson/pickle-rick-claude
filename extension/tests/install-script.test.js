@@ -2,7 +2,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync, lstatSync, readlinkSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -1407,84 +1407,6 @@ sleep 2
   });
 });
 
-function buildTypescriptSymlinkFixtureScript(scriptDir, extensionRoot) {
-  return `#!/bin/bash
-set -euo pipefail
-SCRIPT_DIR="${scriptDir}"
-EXTENSION_ROOT="${extensionRoot}"
-
-mkdir -p "$EXTENSION_ROOT/extension/node_modules"
-for dep in typescript; do
-  if [ -d "$SCRIPT_DIR/extension/node_modules/$dep" ]; then
-    ln -sfn "$SCRIPT_DIR/extension/node_modules/$dep" "$EXTENSION_ROOT/extension/node_modules/$dep"
-  fi
-done
-echo "ok"
-`;
-}
-
-function makeTypescriptSymlinkFixture() {
-  const dir = mkdtempSync(path.join(tmpdir(), 'install-typescript-symlink-'));
-  const scriptDir = path.join(dir, 'source');
-  const extensionRoot = path.join(dir, 'deployed');
-  const tsNodeModules = path.join(scriptDir, 'extension', 'node_modules', 'typescript');
-  mkdirSync(tsNodeModules, { recursive: true });
-  const scriptPath = path.join(dir, 'install.sh');
-  writeFileSync(scriptPath, buildTypescriptSymlinkFixtureScript(scriptDir, extensionRoot), { mode: 0o755 });
-  return {
-    dir,
-    scriptDir,
-    extensionRoot,
-    scriptPath,
-    symlinkPath: path.join(extensionRoot, 'extension', 'node_modules', 'typescript'),
-    expectedTarget: tsNodeModules,
-  };
-}
-
-describe('install.sh typescript symlink', () => {
-  test('install-script.typescript-symlink exists after install with correct target', () => {
-    const fixture = makeTypescriptSymlinkFixture();
-    try {
-      const result = spawnSync('bash', [fixture.scriptPath], { encoding: 'utf8' });
-      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
-      assert.match(result.stdout, /ok/);
-      assert.ok(existsSync(fixture.symlinkPath), 'typescript symlink must exist in deployed extension/node_modules');
-      assert.ok(lstatSync(fixture.symlinkPath).isSymbolicLink(), 'typescript entry must be a symlink');
-      assert.strictEqual(
-        readlinkSync(fixture.symlinkPath),
-        fixture.expectedTarget,
-        'symlink target must equal repo extension/node_modules/typescript',
-      );
-    } finally {
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
-  test('install-script.typescript-symlink idempotent replaces stale symlink', () => {
-    const fixture = makeTypescriptSymlinkFixture();
-    try {
-      const deployedNodeModules = path.join(fixture.extensionRoot, 'extension', 'node_modules');
-      mkdirSync(deployedNodeModules, { recursive: true });
-      const staleTarget = path.join(fixture.dir, 'stale-typescript');
-      mkdirSync(staleTarget);
-      symlinkSync(staleTarget, fixture.symlinkPath);
-      assert.strictEqual(readlinkSync(fixture.symlinkPath), staleTarget, 'pre-condition: stale symlink must be installed');
-
-      const result = spawnSync('bash', [fixture.scriptPath], { encoding: 'utf8' });
-      assert.strictEqual(result.status, 0, `expected exit 0, got ${result.status}: ${result.stderr}`);
-      assert.ok(existsSync(fixture.symlinkPath), 'typescript symlink must still exist after re-install');
-      assert.ok(lstatSync(fixture.symlinkPath).isSymbolicLink(), 'typescript entry must remain a symlink after re-install');
-      assert.strictEqual(
-        readlinkSync(fixture.symlinkPath),
-        fixture.expectedTarget,
-        'stale symlink must be replaced with correct target on re-install',
-      );
-    } finally {
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-});
-
 describe('install.sh codegraph runtime dep (361e8bd9)', () => {
   test('real install.sh contains the per-mode codegraph sequence + self-probe', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
@@ -1492,17 +1414,22 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
       src.includes('CODEGRAPH RUNTIME DEP'),
       'install.sh must contain the per-mode codegraph banner',
     );
-    // Git mode: scoped main package symlink.
-    assert.match(
+    // Git mode: no symlink back into the source checkout survives anywhere in the deploy.
+    assert.doesNotMatch(
       src,
-      /ln -sfn "\$_cg_src" "\$_codegraph_scope\/codegraph"/,
-      'install.sh must symlink the scoped @colbymchenry/codegraph main package in git mode',
+      /ln -sfn "\$_cg_src"|ln -sfn "\$SCRIPT_DIR\/extension\/node_modules/,
+      'install.sh must not symlink runtime deps from the source checkout into the deploy root',
     );
-    // Git mode: generic platform-binding discovery (no hardcoded darwin-arm64).
+    // Git mode: the production closure npm reports is COPIED into the deploy root.
     assert.match(
       src,
-      /@colbymchenry\/codegraph-\*-\*/,
-      'install.sh must resolve the platform binding via a generic codegraph-<plat>-<arch> glob',
+      /npm ls --omit=dev --all --parseable/,
+      'install.sh must derive the git-mode runtime closure from npm ls --omit=dev',
+    );
+    assert.match(
+      src,
+      /cp -cR "\$_dep" "\$_dst"/,
+      'install.sh must copy each closure package into the deploy root',
     );
     assert.doesNotMatch(
       src,
@@ -1526,15 +1453,15 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
       /could not read dependencies\['@colbymchenry\/codegraph'\][\s\S]{0,200}exit 1/,
       'install.sh must abort loudly if the codegraph spec cannot be read from package.json',
     );
-    // Self-probe (both modes).
+    // Self-probe (both modes): codegraph AND the pipeline runner (the typescript consumer).
     assert.match(
       src,
-      /import\('@colbymchenry\/codegraph'\)\.then\(\(\)=>process\.exit\(0\),\(\)=>process\.exit\(1\)\)/,
-      'install.sh must self-probe import resolution of @colbymchenry/codegraph',
+      /Promise\.all\(\[import\('@colbymchenry\/codegraph'\),import\('\.\/bin\/pipeline-runner\.js'\)\]\)/,
+      'install.sh must self-probe both @colbymchenry/codegraph and bin/pipeline-runner.js',
     );
     assert.ok(
-      src.includes('FATAL: @colbymchenry/codegraph does not resolve'),
-      'install.sh must abort loudly when the codegraph probe fails',
+      src.includes('FATAL: @colbymchenry/codegraph or bin/pipeline-runner.js does not load'),
+      'install.sh must abort loudly when the runtime self-probe fails',
     );
   });
 
@@ -1636,7 +1563,7 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
 
   test('codegraph spec read + FATAL live only in the tarball branch (git mode never consumes it)', () => {
     const src = readFileSync(INSTALL_SH, 'utf8');
-    const gitIf = src.indexOf('if [ "$INSTALL_MODE" = "git" ]; then\n  mkdir -p "$_codegraph_scope"');
+    const gitIf = src.indexOf('if [ "$INSTALL_MODE" = "git" ]; then\n  # npm\'s first line is the package root itself');
     assert.ok(gitIf !== -1, 'codegraph per-mode git branch must exist');
     const elseIdx = src.indexOf('\nelse\n', gitIf);
     const fiIdx = src.indexOf('\nfi\n', elseIdx);
@@ -1647,22 +1574,6 @@ describe('install.sh codegraph runtime dep (361e8bd9)', () => {
     assert.equal(
       src.indexOf('_codegraph_spec='), src.indexOf('_codegraph_spec=', elseIdx),
       'no spec read may run before the mode split — git mode would abort on a value it never uses',
-    );
-  });
-
-  test('flat-name symlink loop does NOT mention @colbymchenry (AC-4)', () => {
-    const src = readFileSync(INSTALL_SH, 'utf8');
-    const lines = src.split('\n');
-    const loopStart = lines.findIndex((l) => /for dep in typescript;/.test(l));
-    assert.ok(loopStart !== -1, 'flat-name for-dep loop must exist');
-    // The flat-name loop is a small fixed block ending at its `done`.
-    const loopEnd = lines.findIndex((l, i) => i > loopStart && /^done$/.test(l.trim()));
-    assert.ok(loopEnd !== -1 && loopEnd > loopStart, 'flat-name for-dep loop must close with done');
-    const loopBody = lines.slice(loopStart, loopEnd + 1).join('\n');
-    assert.doesNotMatch(
-      loopBody,
-      /@colbymchenry/,
-      'the flat-name symlink loop must NOT carry @colbymchenry — codegraph deploys via the per-mode block',
     );
   });
 

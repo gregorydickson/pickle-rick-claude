@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -52,7 +53,7 @@ test('install-typescript-package: pipeline-runner module-load smoke exits 0 (R-D
   }
 });
 
-test('codegraph per-mode deploy: scoped symlinks + probe exit 0 + idempotent (361e8bd9)', () => {
+test('codegraph per-mode deploy: real copied deps + probe exit 0 + idempotent (361e8bd9)', () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-codegraph-'));
   const prefix = path.join(homeDir, '.claude', 'pickle-rick');
 
@@ -66,10 +67,23 @@ test('codegraph per-mode deploy: scoped symlinks + probe exit 0 + idempotent (36
     PICKLE_DATA_ROOT: path.join(homeDir, '.local', 'share', 'pickle-rick'),
   };
 
-  // The operator host is git mode (REPO_ROOT/.git present), so install.sh runs
-  // the scoped-symlink branch. Detect mode so the symlink-shape assertions stay
-  // host-agnostic; the scope dir + probe assertions are unconditional.
+  // The operator host is git mode (REPO_ROOT/.git present), so install.sh copies the
+  // source's production closure into the deploy root. Detect mode so the copy-shape
+  // assertions stay host-agnostic; the scope dir + probe assertions are unconditional.
   const gitMode = fs.existsSync(path.join(REPO_ROOT, '.git'));
+
+  // Source production closure as npm reports it: every line under the FIRST line's
+  // node_modules/ is a package the deployed runtime must resolve inside the deploy root.
+  const closurePackages = () => {
+    const ls = spawnSync('npm', ['ls', '--omit=dev', '--all', '--parseable'], {
+      cwd: path.join(REPO_ROOT, 'extension'),
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    const lines = ls.stdout.split('\n').filter(Boolean);
+    const prefix = `${lines[0]}${path.sep}node_modules${path.sep}`;
+    return lines.filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length));
+  };
 
   const runInstall = () =>
     spawnSync('bash', [INSTALL_SH, '--prefix', prefix, '--no-confirm'], {
@@ -92,16 +106,34 @@ test('codegraph per-mode deploy: scoped symlinks + probe exit 0 + idempotent (36
 
     if (gitMode) {
       assert.ok(
-        fs.lstatSync(mainPkg).isSymbolicLink(),
-        `${label}: git-mode @colbymchenry/codegraph must be a symlink`,
+        !fs.lstatSync(mainPkg).isSymbolicLink() && fs.lstatSync(mainPkg).isDirectory(),
+        `${label}: git-mode @colbymchenry/codegraph must be a real directory, not a symlink`,
       );
       assert.ok(
         bindings.length >= 1,
-        `${label}: git mode must symlink at least one codegraph-<plat>-<arch> binding (found: ${entries.join(', ')})`,
+        `${label}: git mode must copy at least one codegraph-<plat>-<arch> binding (found: ${entries.join(', ')})`,
       );
+      const binding = path.join(scopeDir, bindings[0]);
       assert.ok(
-        fs.lstatSync(path.join(scopeDir, bindings[0])).isSymbolicLink(),
-        `${label}: git-mode platform binding ${bindings[0]} must be a symlink`,
+        !fs.lstatSync(binding).isSymbolicLink() && fs.lstatSync(binding).isDirectory(),
+        `${label}: git-mode platform binding ${bindings[0]} must be a real directory, not a symlink`,
+      );
+
+      const packages = closurePackages();
+      assert.ok(packages.includes('typescript'), `${label}: source closure must include typescript (got: ${packages.join(', ')})`);
+      const realPrefix = fs.realpathSync(prefix);
+      const requireFromRunner = createRequire(path.join(prefix, 'extension', 'bin', 'pipeline-runner.js'));
+      for (const pkg of packages) {
+        const resolved = fs.realpathSync(requireFromRunner.resolve(`${pkg}/package.json`));
+        assert.ok(
+          resolved.startsWith(realPrefix + path.sep),
+          `${label}: ${pkg} must resolve inside the deploy root ${realPrefix}, got ${resolved}`,
+        );
+      }
+
+      assert.ok(
+        !fs.existsSync(path.join(prefix, 'extension', 'src')),
+        `${label}: the npm ls root line must not be copied (found ${path.join(prefix, 'extension', 'src')})`,
       );
     }
 
