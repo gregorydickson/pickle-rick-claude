@@ -231,8 +231,8 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.0` on `main` (the only line). No tag pending |
-| RUNNING | **nothing** (as of 22:50Z). Next signal: the operator's client field run on `2.2.0` |
-| open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). Still open: #43, #56–#62, #64–#67, #77–#82 |
+| RUNNING | **nothing** (2026-10-06 ~21:35Z). B-FIELD-82 shipped to `main` + deployed (below). Next signal: the operator's client field run |
+| open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #78–#82.** Still open: #43, #56–#62, #64–#67, #77 (tarball axis UNRUN) |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
 | babysitter | `prds/babysitter.md` CURRENT PROMPT (rewritten 2026-10-06 for the single-`main` line; rules P/S/C deleted) + the queue below. Cron is session-only — re-arm after a restart |
@@ -352,7 +352,20 @@ NO measured basis. Large PRDs are not constrained by the cap.
    - **Proposed bundle:** #75 + #71 line + #68 line (same report block in `pipeline-runner.ts`) + the #72 fixture + #69 +
      #74. Also reword a client-naming code comment in `spawn-refinement-team.ts` (~:601) while #74 is in that file.
 
-9. **LAUNCHED 2026-10-06 — B-FIELD-82: PRD `prds/p1-b-field-82.md` (6 tickets, every AC run at HEAD and red).** The PRD
+9. **DONE 2026-10-06 — B-FIELD-82 built, gated, deployed.** Session `2026-10-06-8bb73a5e`: 4/4 phases in 238m; 9/9
+   tickets (5 implementation + 4 hardening), 11 commits `0bdd6158..4db308f9`; anatomy-park 10 passes, 5/5 subsystems
+   clean ×2, 0 findings; szechuan baseline 0, converged in 2 iterations; open decisions 0; base drift clean.
+   **Gate `4db308f9`: 21/22 `LEG_RC 0`; soak 1804.7s, 0 `SOAK_UNRUN`.** The one red, `test_integration`
+   (`tsc-gate.test.js:1334`: `timeout` expected, `cold_cache_timeout` observed), did NOT reproduce — 3/3 alone, 5/5 under
+   16 CPU spinners, full tier re-run 794+712 green. Recorded as an unreproduced flake (no PRD: the cause is a hypothesis —
+   shim node cold-start vs the fixture's 2000ms budget). **Deployed + verified by content** (`bin/` differs only by the
+   `tmux-runner.js` alias; `services/`, `.claude/commands` 0); deployed `node_modules` has 0 symlinks; runner imports.
+   **Tarball/self-update axis:** control at `0bdd6158` (worker-measured) = install rc 0 + `OK codegraph` + runner import
+   FAILS on `typescript` — the fake-green is confirmed. After-fix run at `4db308f9`: first attempt UNRUN (registry
+   ETIMEDOUT; install exited non-zero, so it no longer reports success); retry with `npm_config_fetch_retries=5` also
+   ETIMEDOUT after 672s → **tarball axis UNRUN** (registry unreachable from this host 2026-10-06 ~21:30Z). #77 stays OPEN
+   until a tarball install completes and the runner imports. Closed with evidence: #78, #79, #80, #81, #82.
+   Previously: **LAUNCHED 2026-10-06 — B-FIELD-82: PRD `prds/p1-b-field-82.md` (6 tickets, every AC run at HEAD and red).** The PRD
    tightened the triage below: the readiness-exit report line (was T6), the citadel diff-base change (was T7, now a
    HYPOTHESIS to measure on the next field run) and the test-`timeout:` worker rule (was T9 — already at
    `extension/CLAUDE.md:76`; a worker-prompt copy would reproduce #62) were CUT; #59 is already satisfied
