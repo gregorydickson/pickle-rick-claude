@@ -72,17 +72,18 @@ test('codegraph per-mode deploy: real copied deps + probe exit 0 + idempotent (3
   // assertions stay host-agnostic; the scope dir + probe assertions are unconditional.
   const gitMode = fs.existsSync(path.join(REPO_ROOT, '.git'));
 
-  // Source production closure as npm reports it: every line under the FIRST line's
-  // node_modules/ is a package the deployed runtime must resolve inside the deploy root.
-  const closurePackages = () => {
+  // Source production closure as npm reports it: the FIRST line is the package root, and every
+  // line under its node_modules/ is a package the deployed runtime must resolve inside the deploy root.
+  const sourceClosure = () => {
     const ls = spawnSync('npm', ['ls', '--omit=dev', '--all', '--parseable'], {
       cwd: path.join(REPO_ROOT, 'extension'),
       encoding: 'utf8',
       timeout: 60_000,
     });
-    const lines = ls.stdout.split('\n').filter(Boolean);
-    const prefix = `${lines[0]}${path.sep}node_modules${path.sep}`;
-    return lines.filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length));
+    const [root, ...rest] = ls.stdout.split('\n').filter(Boolean);
+    const underNodeModules = `${root}${path.sep}node_modules${path.sep}`;
+    const packages = rest.filter((l) => l.startsWith(underNodeModules)).map((l) => l.slice(underNodeModules.length));
+    return { root, packages };
   };
 
   const runInstall = () =>
@@ -119,7 +120,7 @@ test('codegraph per-mode deploy: real copied deps + probe exit 0 + idempotent (3
         `${label}: git-mode platform binding ${bindings[0]} must be a real directory, not a symlink`,
       );
 
-      const packages = closurePackages();
+      const { root, packages } = sourceClosure();
       assert.ok(packages.includes('typescript'), `${label}: source closure must include typescript (got: ${packages.join(', ')})`);
       const realPrefix = fs.realpathSync(prefix);
       const requireFromRunner = createRequire(path.join(prefix, 'extension', 'bin', 'pipeline-runner.js'));
@@ -131,9 +132,12 @@ test('codegraph per-mode deploy: real copied deps + probe exit 0 + idempotent (3
         );
       }
 
+      // Unfiltered, the root line survives the `${_dep#"$_root"/}` strip whole, so its copy lands at
+      // <deploy>/extension/<absolute source root> — check that exact path.
+      const copiedRoot = path.join(prefix, 'extension', root);
       assert.ok(
-        !fs.existsSync(path.join(prefix, 'extension', 'src')),
-        `${label}: the npm ls root line must not be copied (found ${path.join(prefix, 'extension', 'src')})`,
+        !fs.existsSync(copiedRoot),
+        `${label}: the npm ls root line must not be copied (found ${copiedRoot})`,
       );
     }
 
