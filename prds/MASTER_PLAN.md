@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.1` on `main` (the only line). No tag pending |
-| RUNNING | **nothing** (2026-10-07). v2.2.1 released (CI + Release green). Queue drained → idle ticks run agent-swarm research (queue item 10). Next signal: the operator's client field run |
+| RUNNING | **nothing; babysitter DISARMED** (operator, 2026-10-07 ~21:30Z: "if we have no active work we can shut down for now"). v2.2.1 released, CI + Release green. Swarm research this session: Gaps 8, 4, 7, 5 (next: 3, 6 — both need field data). To resume: re-arm the cron from `prds/babysitter.md` CURRENT PROMPT. Next signal: the operator's client field run |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #77–#82.** Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
