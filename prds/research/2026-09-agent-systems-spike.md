@@ -98,12 +98,12 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 - **Anthropic research system** [Mv]. +90.2% over single-agent at ~15× tokens; coding parallelizes less.
 - **Read-out for lanes.** Every measured 2→3 curve on *coupled* work declines (CAID peaked at 2 once); none covers **cherry-picked review lanes**. **Start at 2; go to 3 only on the soak's own conflict and dropped-lane rate**.
 
-**Cherry-pick integration: 0 conflicts, 0 dropped lanes, small n** [M, this repo, 2026-10-04]. `archive/lanes.json` (11, 09-27 → 10-03), `anatomy lanes:` log lines, and two pruned 09-26 sessions (16 lanes, 34 commits; from the 10-02 census): 13 sessions, cap 2.
-- **Outcomes, 60 lane runs:** integrated 60; every failure outcome 0 (logs agree).
-- **Committed vs integrated:** 18/60 lanes committed (59 commits), 18/18 integrated; 59/59 `git patch-id` matches off-lane (25 re-checked). Dropped-lane rate **0/18** (one-sided 95% upper bound 15%).
-- **Contested picks** (onto a tree an earlier pick moved; 6 sessions): 0/9 conflicts (upper bound 28%). Not disjoint: 30/114 file touches outside the lane directory.
-- **`integration_check`** from `2026-10-01-face240c` (29 lanes): green 10 (every committing lane), null 19. The 31 earlier lanes lack it: **a gap, not 31 greens**.
-- **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s (median 6.2 s), ≤0.81% of the lanes span. **Negligible at N=2; bounds 15% / 28% do not license N=3.**
+**Cherry-pick integration: 0 conflicts, 0 dropped lanes, small n** [M, this repo, 2026-10-07; `lanes.json` plus logs]: 16 sessions, cap 2.
+- **67 lanes**, all integrated; 21 committed (63 commits, 63/63 `git patch-id` matches). Dropped **0/21** (one-sided 95% exact bound 1 − 0.05^(1/n): 13%).
+- **Contested picks** (onto a tree an earlier pick moved): 0/9 conflicts (bound 28%). Not disjoint: 36/128 touches outside the lane.
+- **`integration_check`** (36 lanes from `face240c`): green 13 (every committing lane), null 23; 31 earlier lack it: **a gap**.
+- **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s (new sessions 5.1–5.7 s), ≤1.5% of the lanes span (span now first lane start → `verdict`; the 10-04 figure, ≤0.81%, used a different span, so the rise is method, not cost). **Negligible at N=2; bounds 13% / 28% do not license N=3.**
+- **Attribution survives** [24 `lanes.json` commits, patch-id matched, `git show -s`]: message byte-identical 24/24 (3/3 trailers); author, author date, committer 24/24; committer date rewritten. Limits: one human identity (author proves nothing about agents); no ticket trailers; no squash.
 
 **The anatomy-park stall is the C-compiler stall:** `discoverSubsystems` (`pipeline-runner.ts:471`) makes `extension/` one lane.
 
@@ -255,8 +255,8 @@ Figures checked against primary text.
 - **Gap 4.** **(Narrowed 2026-10-07.) Review-unit size vs defect count.** Probes: planted mutations saturate (E3, 14–19/20), real reverted defects floor (E3b, 0/12). Literature (§3): aggregated passes double real-defect recall; tools alone add ~0 or trade precision [M]. Open: no study fixes real-defect count while varying diff size or lanes; an aggregated, tool-using E3b rerun (arms a/b, equal passes) is unrun.
 - **Gap 5.** **(Re-checked 2026-10-04: none replicated.) Single-study [M]:** subtask memory (+4.7); VibeMemBench (11/12) vs DreamBench-SWE (recall-*requiring*: Mem0 97/180 vs none 21/180); MetaGPT (+4.2) vs Kim et al. (−2.1% to −14.9%, SWE-bench Verified subsets); Sun et al. (confounded; Chowdhury: 12/13 review agents' signal ratio <60%; Cynthia: 54.8–72.9% *marked* resolved); Claim Plane (own pilot); CooperBench (no re-run above 2); Destefanis & Aste (synthetic): split spec 10/10 at 2–8 agents, eight-step chain 0/10 at 8: decline tracks coupling.
 - **Gap 6.** **(Narrowed 2026-10-04.)** Measured (§3): declared lists, phase cost, test gates. Open: manager time; a wave run at width >1; `-p` teams under `/resume`.
-- **Gap 7.** **(Narrowed 2026-10-04.) Cherry-pick integration cost.** 0 conflicts, 0/18 dropped, ≤11.3 s (§3). Open: small n (bounds 15% / 28%), one repo at N=2.
-- **Gap 8.** **(Narrowed 2026-10-07.) Harness-agnostic multi-writer coordination.** Answered by design (§3): per-writer worktree, leased claims, append-only actor-stamped log, actor id in the commit [D]. Only cost measurement: grite, synthetic [M]. Open: attribution accuracy and lease overhead with real LLM writers at N>2; whether trailers survive cherry-pick/squash here.
+- **Gap 7.** **(Narrowed 2026-10-07.) Cherry-pick integration cost.** 0 conflicts, 0/21 dropped (§3). Open: small n (bounds 13% / 28%; contested picks stuck at 9), one repo, N=2.
+- **Gap 8.** **(Narrowed 2026-10-07.) Harness-agnostic multi-writer coordination.** Answered by design (§3): per-writer worktree, leased claims, append-only actor-stamped log, actor id in the commit [D]. Only cost measurement: grite, synthetic [M]. Open: attribution accuracy and lease overhead with real LLM writers at N>2; squash. Cherry-pick keeps messages 24/24 [M, this repo].
 
 ## Changelog
 
@@ -265,4 +265,5 @@ Figures checked against primary text.
 - 2026-10-02 — Gap 7 narrowed (first lane census); Xu et al. added.
 - 2026-10-04 — Gap 7 refreshed; Gap 3 first wave run; Gap 6 pickle-phase decomposition; Gap 1 closed; Gap 5 re-checked.
 - 2026-10-07 — Gap 8 narrowed: harness-neutral patterns mapped to our four single-writer assumptions (§3); grite the only measurement (synthetic).
+- 2026-10-07 — Gap 7 re-censused; attribution survives cherry-pick.
 - 2026-10-07 — Gap 4 narrowed: aggregated passes, not tools or lanes, raise real-defect recall [M]; probe skipped (unbounded).
