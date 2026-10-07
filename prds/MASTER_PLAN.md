@@ -223,14 +223,14 @@ NO measured basis. Large PRDs are not constrained by the cap.
 
 ## 🚢 SESSION HANDOFF — 2026-09-23 (v2.1.1 tagged; B-REFUSAL fixed; Linux CI green again; nothing running). **READ THIS FIRST.**
 
-### ▶ STATE (2026-10-06) — **v2.2.0 RELEASED + DEPLOYED; idle; awaiting the operator's first client field run** (context cleared after this)
+### ▶ STATE (2026-10-07) — **v2.2.1 RELEASED + DEPLOYED (B-FIELD-82, #77–#82); idle; awaiting the operator's first client field run** (context cleared after this)
 
 | | |
 |---|---|
-| `main` | **`v2.2.0` tagged at `438991b1`** (operator 2026-10-05: take 2.2 out of beta; full release, marked latest). Release gate `20261005T212247Z-99474` 22/22, soak 1804.0s; `verify-release-tag.sh` OK. **DEPLOYED**: version `2.2.0`; `bin/`/`services/`/`.claude/commands` diffs 0; runners import. Releases are now `v2.2.X` tags (root CLAUDE.md). Open risk stated in the release notes: no field run yet on this code (A2 monorepo linking untested); multi-agent speed criteria waived, parallelism default-off |
+| `main` | **`v2.2.1` tagged at `7bdcdecb`** (operator 2026-10-07: cut a point release). Release gate at the bump commit **22/22**, soak 1804.7s, 0 `SOAK_UNRUN`; `verify-release-tag.sh` OK. **DEPLOYED**: version `2.2.1`; `bin/`/`services/`/`.claude/commands` diffs 0 (excl. the `tmux-runner.js` alias); runner imports. OS axis (Linux) via CI on the tag — no local docker. Previous: `v2.2.0` at `438991b1` |
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
-| version | `2.2.0` on `main` (the only line). No tag pending |
+| version | `2.2.1` on `main` (the only line). No tag pending |
 | RUNNING | **nothing** (2026-10-06 ~21:35Z). B-FIELD-82 shipped to `main` + deployed (below). Next signal: the operator's client field run |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #77–#82.** Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
