@@ -85,8 +85,8 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 **Implication:** lists over-declare, so 1.5–2× hides no collisions; CLAUDE.md catalogs and `.claude/**/*.md` stay shared.
 
 **First real wave run: width 2 once** [M, this repo, 2026-10-04; one run]. `2026-10-02-be104839` (B-MEGA), `max_parallel_tickets: 2`: 23 tickets, 22 waves, widths 1×21 + 2×1 (`pickle waves:` lines; `field-timing.py` agrees).
-- **Reliability.** 22/23 members integrated; 1/23 had no attributable commit (`unmapped`); serial fallback finished it (44 min). 0 conflicts, 0 halts; `wave_member_failed_then_serial_done` 0 (counts `parallel_safe` members only).
-- **Why width stayed 1.** Deployed `planTicketWave`, replayed over declared files, reproduces all 22 widths. Of 22 adjacent pairs, 19 overlap (11 only via the global markers `.claude/**`, `CLAUDE.md`), 2 lack `parallel_safe` (absent on 14/23), 1 eligible. All-safe ceiling: 21 waves (1.10×), as the §3 greedy method.
+- **Reliability.** 22/23 members integrated; 1/23 had no attributable commit (`unmapped`); serial fallback finished it. 0 conflicts, 0 halts.
+- **Why width stayed 1.** Deployed `planTicketWave` replayed over declared files reproduces all 22 widths: 19/22 adjacent pairs overlap (11 only via `.claude/**`, `CLAUDE.md`), 2 lack `parallel_safe`. All-safe ceiling 1.10×.
 - **Speed.** **27.7 min/ticket** (636.0 min; serial: E2 bar <27, field 20–27, `2026-10-03-2868b847` 8.3); decomposed below ("Where the rest…").
 - **Read-out.** Reliability held; shared-surface bundles pack tickets waves cannot split.
 
@@ -95,21 +95,21 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 - **Cursor (2026-01-14)** [Mv]. Locked, "twenty agents would slow down to the effective throughput of two or three"; an integrator "created more bottlenecks than it solved".
 - **Claim Plane (Nikolaev, 2026-08-02)** [M, single author]. 30 CooperBench pairs: pre-write admission 23.3% → 50.0% success, serializing 96.7% of executions.
 - **Passes Alone, Fails Together (Xia, Wu & Park, 2026-09-21)** [M]. 417 real Django PR pairs, two agents: 1 interference in 834 runs; 97% of tasks share helpers.
-- **Destefanis & Aste** [M]: messaging grows "close to quadratically". **Kim et al.** [M]: +80.8% (decomposable) to −70.0% (sequential). **AgenticFlict** [M]: 27.67% of simulated agent-PR merges conflict; **Xu et al.** [M]: 19.8% intra- vs 41.7% cross-agent, 747 co-active PR pairs.
-- **Anthropic research system (2025-06-13)** [Mv; eval unpublished]. Beat single-agent Opus 4 "by 90.2%" at "about 15× more tokens than chats"; tokens "explain 80% of the variance"; coding is less parallelizable.
+- **Destefanis & Aste** [M]: messaging "close to quadratically". **Kim et al.** [M]: +80.8% (decomposable) to −70.0% (sequential). **AgenticFlict** [M]: 27.67% of agent-PR merges conflict; **Xu et al.** [M]: 19.8% same- vs 41.7% cross-agent (747 pairs).
+- **Anthropic research system (2025-06-13)** [Mv]. +90.2% over single-agent at ~15× tokens; coding is less parallelizable.
 - **Read-out for lanes.** Every measured 2→3 curve on *coupled* work declines (CAID peaked at 2 on one benchmark); none covers **cherry-picked review lanes**. **Start at 2; go to 3 only on the soak's own conflict and dropped-lane rate**.
 
 **Cherry-pick integration: 0 conflicts, 0 dropped lanes, small n** [M, this repo, 2026-10-04]. All `archive/lanes.json` (11 on disk, 09-27 → 10-03), `anatomy lanes:` log lines, and `2026-09-26-23989a13`/`-bcd24b6d` (16 lanes, 34 commits; pruned, carried from the 10-02 census): 13 sessions, cap 2.
 - **Outcomes, 60 lane runs:** integrated 60; every failure outcome 0 (logs agree; no kept branch).
 - **Committed vs integrated:** 18/60 lanes committed (59 commits), 18/18 integrated; 59/59 have a `git patch-id` match off-lane (25 re-checked). Dropped-lane rate **0/18** (one-sided 95% upper bound 15%).
 - **Contested picks** (onto a tree an earlier pick moved; 6 sessions): 0/9 conflicts (upper bound 28%). Not disjoint: 30/114 file touches fell outside the lane directory.
-- **`integration_check`** exists from `2026-10-01-face240c` (6 sessions, 29 lanes): green 10 (every committing lane), null 19 (no commits), unavailable 0. The 31 earlier lanes lack it: **a measurement gap, not 31 greens**.
-- **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s over 9 picking sessions (median 6.2 s); 0.4 s without picks (4); ≤0.81% of the lanes span. **Negligible at N=2; bounds 15% / 28% do not license N=3.**
+- **`integration_check`** from `2026-10-01-face240c` (29 lanes): green 10 (every committing lane), null 19. The 31 earlier lanes lack it: **a gap, not 31 greens**.
+- **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s (median 6.2 s), ≤0.81% of the lanes span. **Negligible at N=2; bounds 15% / 28% do not license N=3.**
 
 **The anatomy-park stall is the C-compiler stall.** `discoverSubsystems` (`pipeline-runner.ts:471`) makes `extension/` one lane.
 
 **Review-size literature** (primary sources re-read 2026-09-24):
-- **Kumar et al. (2026-04-09): confounded.** <10-line bin (n=92) synthetic, >50-line bins (n=34, 14) real; F1 0.847 vs 0.066. **Not used.**
+- **Kumar et al. (2026-04-09): confounded** (synthetic small bins, real large ones). **Not used.**
 - **SWR-Bench (Zeng et al., 2025-09-01; FSE 2026): clean.** Recall 38.35% (N=1 issue, 266 PRs) → **8.88% (N≥5, 22 PRs)**, precision flat [M]: ~0.4–0.5 finds per PR at every N; our diffs are the many-issue case.
 - **Sense and Sensitivity (Štorek et al., v5 2026-07-10; ACL 2026): mechanism.** 10 LLMs: semantic code recall drops a median 92.73% mid-context [M; not review].
 - **Implication.** Direction supported twice; magnitude does not. If finds per pass are fixed, **passes-to-clean scale with defect count, not partition size**; finer partitions save only wall-clock.
@@ -119,8 +119,22 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 ### #5 Move 4: worktree-as-proposal
 
 - **Evidence.** Design convergence [D]. CAID's **manager-owned merge** ≈ #5's accept/reject gate; the C compiler uses push conflicts *as the lock* [Mv].
-- **Unclaimed.** No source measures isolation reducing defects versus trunk plus scope fences; the benefit is structural (free rejection). Costs: CAID slower, dearer; Claim Plane serialized ~all [M].
+- **Unclaimed.** No source measures isolation reducing defects versus trunk plus scope fences. Costs: CAID slower, dearer; Claim Plane serialized ~all [M].
 - **Strength.** Consensus plus cost data; "it deletes our five enforcement mechanisms" is HYPOTHESIS.
+
+### Gap 8: harness-agnostic coordination (2026-10-07)
+
+Every cross-CLI orchestrator found uses only processes, files and git [D].
+
+| Our single-writer assumption | Harness-neutral pattern | Source |
+|---|---|---|
+| Spawn lock | Lock the **claim**, not the spawn: TTL lease per task under a git ref, or a committed lock file whose push conflict is the lock | grite [M, synthetic]; C compiler [Mv]; agent teams [D] |
+| `state.json` single writer | Keep it; workers **append** actor-stamped events, one projector | grite: a last-writer-wins file tracker silently drops concurrent writes, its git-ref log loses none [M, synthetic]; OpenHands [D] |
+| Sequential attribution ledgers | Actor id **in the artifact**: commit trailer or author suffix; trace record keyed to the revision | Aider `(aider)` / `Co-authored-by` [D]; Agent Trace 0.1.0 `vcs.revision` + `model_id`, storage unspecified [D] |
+| Per-ticket scope fence | **Worktree + branch per writer**: diff the branch, not the iteration window | claude-squad, Vibe Kanban, Conductor, Codex (detached-HEAD worktrees), Claude Code `isolation: worktree`, Copilot (one branch, one PR per task) [D] |
+
+- **Measured cost: one study, synthetic agents.** grite (Sarkar, 2026-06-17; seeded op-generators, not LLMs): at N=32 duplicate work 78% (none) → 64% (locks only) → **0% (locks + shared log)**; goodput 2.33 → 3.84 → 8.00 tasks/round; cross-actor overwrites 410 → 138 → 48 [M]. Locks alone barely help. Ours: worktree create/integrate 2.1 min over 22 waves [M, this repo].
+- **Read-out.** The babysitter false record (MASTER_PLAN "🐝 AGENT SWARMS") was two writers in one checkout and time window. Worktree per writer plus a ticket/backend commit trailer makes attribution a property of the commit, not of timing; `state.json` stays single-writer.
 
 ### #5 Move 5: state from git
 
@@ -149,7 +163,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 | Simplify | 38 | 0 s | 11/38 applied a change (+4 unclear); 27 wrote no artifact |
 | Whole worker spawn(s) | 65 | 6.7 min | 95% inside these intervals (53 single-spawn) |
 
-**Limits.** Write time is not thinking time: in 25–33/65 tickets a review landed ≤2 s after its subject (Research Review + Plan + Plan Review median 0.38 min; Code Review + Simplify 0.14). Change counts are lower bounds.
+**Limits.** Write time is not thinking time (25–33/65 reviews landed ≤2 s after their subject); change counts are lower bounds.
 
 **Finding.** The "~3 min per phase" premise fails: review/simplify phases cost <1 min of 6.7; Research and Implement/Conformance ~75%. Research Review and Plan Review rarely change anything (0/65, 1/65): merge candidates (HYPOTHESIS). Spec Conformance, Code Review, Simplify change something in 8%, 12%, ≥29% of tickets at near-zero cost. On `2026-09-21-7ba3aec1` 17 worker spawns sum to 262 of the pickle phase's 524 min.
 
@@ -163,7 +177,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 
 - **Fixed costs.** Tail gate (between-ticket `test:fast` + post-final tier): 7.1–7.7 min per runner session, all 13 serial sessions; each wave unit is one (24 runs, median 7.6). Worker gate: median 7.4–7.9 min per medium/large ticket, ~0 for small (`test:fast` tier-skipped). Gaps ≤0.2 min per session; unit create/integrate 2.1 min over 22 waves.
 - **27.7 vs 8.3.** Of the 19.3 min/ticket gap: worker +7.9 (large median 19.3 min vs 7.3 elsewhere, n=5 / 9; three empty-log spawns, 17.8 min each; non-empty logs 184.9 min), tail gate +7.0 (one per unit), manager +2.3, worker gate +2.0 (non-small 78% vs 47%), create/integrate +0.1. **Tier mix plus per-unit tail gates; not manager or worktree time.** HYPOTHESIS: serial B-MEGA ≈ 20 min/ticket (636 − 181 + 7.5), near 03d1f8d2's 16.9.
-- **Falsified by** a wave run whose per-unit tail gate is not ≈7.5 min, or a serial bundle ≥75% non-small at ≤10 min/ticket. **Limits:** later phases overwrite `tmux_iteration_*.log` (manager is a residual); mtime matched the stop-hook 6/6; one wave run.
+- **Falsified by** a wave run whose per-unit tail gate is not ≈7.5 min. **Limits:** manager time is a residual; one wave run.
 - **Lever.** A width-1 wave pays a ~7.6 min tail gate for no concurrency.
 
 ## 4. Experiments (measurement only)
@@ -178,7 +192,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 - **Recall 0.00 in all 9 arm-repeats**; each pass emitted 1–3 *other* findings.
 - **Read-out.** One no-tools pass cannot separate size from defect count.
 
-**E1. Finer anatomy-park partition.** Roster one level deeper on a findings-heavy bundle vs B-INVENTED (34 passes / 995 min, one lane). **Success:** largest lane ≤ 50% of baseline passes, wall-clock ≤ −25%, findings fixed not lower. **Falsified if** Σ passes ≈ 34+ with no wall-clock drop. The soak runs it at 2 lanes.
+**E1. Finer anatomy-park partition** vs B-INVENTED (34 passes / 995 min, one lane). **Success:** largest lane ≤ 50% of baseline passes, wall-clock ≤ −25%. **Falsified if** Σ passes ≈ 34+ with no wall-clock drop.
 
 **E2. `--teams` — blocked** under `-p`. Bar: < 27 min/ticket, zero interventions, `--max-parallel` ≤ 3.
 
@@ -219,6 +233,7 @@ Median 2.0×, pooled 26 / 14 = **1.86×** (single-ticket, hardening-only session
 - Yang et al., "SWE-agent" — https://arxiv.org/abs/2405.15793 (v3 2024-11-11; NeurIPS 2024; Table 1, §5 read 2026-10-04)
 - Accessed 2026-10-04: CrewAI https://docs.crewai.com/en/concepts/processes (+ tasks, memory); AutoGen https://github.com/microsoft/autogen, https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/teams.html (+ state.html); Sweep https://github.com/sweepai/sweep; Microsoft Agent Framework https://github.com/microsoft/agent-framework, https://learn.microsoft.com/en-us/agent-framework/workflows/checkpoints (+ orchestrations/concurrent, orchestrations/magentic, concepts/workflows/builder-and-execution, state)
 - Accessed 2026-10-04 (Gap 5): Singh, "DreamBench-SWE" https://arxiv.org/abs/2608.20664 (2026-08-21); Nikolaev, Claim Plane pilot https://arxiv.org/abs/2607.21909 (2026-07-24); Chowdhury et al. https://arxiv.org/abs/2604.03196 (MSR 2026); Cynthia et al. https://arxiv.org/abs/2607.21997 (2026-07-24); Kim et al., Destefanis & Aste full text; CooperBench, Sun et al. version listings
+- Accessed 2026-10-07 (Gap 8): Sarkar, "Before the Pull Request" (grite) https://arxiv.org/abs/2606.19616 (2026-06-17; HTML full text); Agent Trace 0.1.0 https://agent-trace.dev/ (2026-01); Aider https://aider.chat/docs/git.html; claude-squad https://github.com/smtg-ai/claude-squad; Vibe Kanban https://github.com/BloopAI/vibe-kanban; Conductor https://www.conductor.build/docs/concepts/git-worktrees; Codex https://learn.chatgpt.com/docs/environments/git-worktrees; Claude Code https://code.claude.com/docs/en/sub-agents; MCP Agent Mail https://github.com/Dicklesworthstone/mcp_agent_mail; beads https://github.com/steveyegge/beads
 - Magentic-One — https://www.microsoft.com/en-us/research/articles/magentic-one-a-generalist-multi-agent-system-for-solving-complex-tasks/ (2024-11-04)
 - Hong et al., "MetaGPT" — https://arxiv.org/abs/2308.00352 (ICLR 2024)
 - LangGraph docs — https://docs.langchain.com/oss/python/langgraph/interrupts
@@ -228,17 +243,18 @@ Figures checked against primary text.
 
 ## 6. Open research gaps
 
-- **Gap 1.** **(Closed 2026-10-04.)** SWE-agent per the paper (§2, 2024 models; the abstract's "+10.7 points" is vs shell-only *without demonstrations*, 7.33%). CrewAI, AutoGen 0.4+, Microsoft Agent Framework: no measurements, no writer integration [D]. Sweep pivoted to JetBrains (last push 2025-09-18).
-- **Gap 3.** **(Narrowed 2026-10-04.) The knee is multi-study; our units barely measured.** CAID, CooperBench, Cursor: 2–4 for *coupled writers*; review lanes: Gap 7; one build-wave run, width 2 in 1/22 waves. Open: build-wave speed, which needs disjoint declared files.
+- **Gap 1.** **(Closed 2026-10-04.)** SWE-agent per the paper (§2); CrewAI, AutoGen, Microsoft Agent Framework unmeasured [D]; Sweep discontinued.
+- **Gap 3.** **(Narrowed 2026-10-04.)** The knee is 2–4 for *coupled writers* (CAID, CooperBench, Cursor); review lanes: Gap 7. Open: build-wave speed, which needs disjoint declared files.
 - **Gap 4.** **(Narrowed 2026-09-26.) Review-unit size vs defect count.** No study fixes real-defect count while varying diff size. Probes bracket it: planted mutations saturate (E3, 14–19/20), real reverted defects floor (E3b, 0/12). Open: a tool-using, multi-pass reviewer on real defects.
-- **Gap 5.** **(Re-checked 2026-10-04: none replicated or corrected.) Single-study [M]:** subtask memory (+4.7, SWE-bench Verified): nothing found. VibeMemBench (11/12; 111 tasks): nothing found; contrast: DreamBench-SWE (one author; recall-*requiring* tasks), hosted Mem0 97/180 vs none 21/180 [M]. MetaGPT (+4.2 HumanEval, 2023 models): no re-run; Kim et al.: multi-agent −2.1% to −14.9% vs single (SWE-bench Verified, 20-instance subsets) [M]. Sun et al. (22,000+ comments; confounded): other metrics only: Chowdhury (3,109 PRs) 12/13 review agents' signal ratio <60%; Cynthia (54,713 comments) 54.8–72.9% of threads *marked* resolved [M]. Claim Plane (30 pairs): only the author's 6-pair pilot. CooperBench 2/3/4 (46 tasks): no re-run above 2 agents; Destefanis & Aste (synthetic, 10 runs/cell): split spec 10/10 at 2–8 agents, eight-step chain 9/10 at 2 and 4, 0/10 at 8 [M]: decline tracks coupling.
-- **Gap 6.** **(Narrowed 2026-10-04.) Unmeasured repo claims.** Measured (§3): declared lists vs diffs, per-phase cost, the non-worker half (test gates). Open: what main-session manager time contains; a wave run at width >1; whether a `-p` teams path survives `/resume`.
-- **Gap 7.** **(Narrowed 2026-10-04, not closed.) Cherry-pick integration cost.** 60 lane runs: 0 conflicts, 0/18 dropped, ≤11.3 s (§3). Open: small n (upper bounds 15%; 28% over 9 contested picks), one repo at N=2, 31 pre-10-01 lanes lack `integration_check`.
-- **Gap 8.** **(Added 2026-10-07, open.) Harness-agnostic multi-writer coordination.** Pickle Rick must run outside any one harness (operator, 2026-10-07) and already spawns claude / codex / hermes / API backends; `--teams` is unrunnable under `-p` (§3). Open: how cross-CLI or harness-neutral systems coordinate parallel writers (process + files + git, worktrees, locks, append-only logs) and what attribution they keep per writer; any measured cost of that coordination.
+- **Gap 5.** **(Re-checked 2026-10-04: none replicated.) Single-study [M]:** subtask memory (+4.7); VibeMemBench (11/12), contrast DreamBench-SWE (recall-*requiring* tasks: Mem0 97/180 vs none 21/180); MetaGPT (+4.2), vs Kim et al. multi-agent −2.1% to −14.9% on SWE-bench Verified subsets; Sun et al. (confounded), other metrics only (Chowdhury: 12/13 review agents' signal ratio <60%; Cynthia: 54.8–72.9% of threads *marked* resolved); Claim Plane (author's own pilot only); CooperBench 2/3/4 (no re-run above 2), Destefanis & Aste (synthetic): split spec 10/10 at 2–8 agents, eight-step chain 0/10 at 8 [M]: decline tracks coupling.
+- **Gap 6.** **(Narrowed 2026-10-04.)** Measured (§3): declared lists, per-phase cost, test gates. Open: manager time contents; a wave run at width >1; `-p` teams under `/resume`.
+- **Gap 7.** **(Narrowed 2026-10-04.) Cherry-pick integration cost.** 0 conflicts, 0/18 dropped, ≤11.3 s (§3). Open: small n (bounds 15% / 28%), one repo at N=2.
+- **Gap 8.** **(Narrowed 2026-10-07.) Harness-agnostic multi-writer coordination.** Answered by design (§3): worktree + branch per writer, leased claims, an append-only actor-stamped log, actor id in the commit; all harness-neutral [D]. Only cost measurement: grite, synthetic agents [M]. Open: attribution accuracy and lease overhead with real LLM writers at N>2; whether commit trailers survive cherry-pick/squash integration here.
 
 ## Changelog
 
 - 2026-09-24 — §6 added; `--teams` unrunnable under `-p`; E3 saturated.
 - 2026-09-26 — Gaps 3, 4, 6 narrowed; Gap 2 closed; Gap 7 added; E3b floored.
 - 2026-10-02 — Gap 7 narrowed (first lane census); Xu et al. added.
-- 2026-10-04 — Gap 7 refreshed; Gap 3 first wave run; Gap 6 pickle-phase decomposition; Gap 1 closed (SWE-agent verified, CrewAI, AutoGen 0.4+, Microsoft Agent Framework; Sweep out); Gap 5 re-checked (no replications). Numbers in the body.
+- 2026-10-04 — Gap 7 refreshed; Gap 3 first wave run; Gap 6 pickle-phase decomposition; Gap 1 closed; Gap 5 re-checked.
+- 2026-10-07 — Gap 8 narrowed: §3 "Gap 8" maps harness-neutral coordination patterns to our four single-writer assumptions; grite the only measurement (synthetic).
