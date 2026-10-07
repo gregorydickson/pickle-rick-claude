@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.1` on `main` (the only line). No tag pending |
-| RUNNING | **nothing** (2026-10-06 ~21:35Z). B-FIELD-82 shipped to `main` + deployed (below). Next signal: the operator's client field run |
+| RUNNING | **nothing** (2026-10-07). v2.2.1 released (CI + Release green). Queue drained → idle ticks run agent-swarm research (queue item 10). Next signal: the operator's client field run |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #77–#82.** Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
@@ -397,6 +397,20 @@ NO measured basis. Large PRDs are not constrained by the cap.
    counter-example generation — a spawn per AC ("precision that costs a spawn"). #81's citadel-after-anatomy-park reorder —
    a phase-order change against the 2026-09-16 "review phases stay simple" constraint; **operator decision** if wanted.
    #77's tarball lockfile pinning — the deploy-tree lockfile exclusion is intentional (`install.sh:417-419`); record only.
+
+10. **STANDING IDLE WORK — agent-swarm research (operator, 2026-10-07: "when there is nothing to do, we should keep
+    doing our agent swarm research").** Whenever nothing runs and items 1–9 are drained, the babysitter (rule E) runs
+    ONE background research tick against `prds/research/2026-09-agent-systems-spike.md`: one open §6 gap per tick,
+    rotating; primary sources; evidence tags; ≤ ~4,500 words (tighten, don't append); changelog line; commit only
+    that file, never during a pipeline or gate. Framing: the "🐝 AGENT SWARMS" section below (swarm-readiness =
+    attribution survives N writers) plus the portability constraint (pickle-rick runs outside any one harness, so
+    prefer process/file/git coordination to harness-specific team features — `--teams` is already unrunnable under
+    `-p`). Open gaps as of 2026-10-07: 3 (build-wave speed, needs disjoint files), 4 (tool-using multi-pass reviewer
+    on real defects), 5 (single-study claims unreplicated), 6 (manager-time contents, width>1 wave, `-p` teams under
+    `/resume`), 7 (cherry-pick integration cost at larger n), and **8 (new): harness-agnostic multi-writer
+    coordination — how systems that run across Claude/Codex/other CLIs coordinate parallel writers without a
+    harness's built-in team feature.** Research findings feed #43 and the swarm sequencing; they never launch a
+    pipeline on their own.
 
 **Operator-deferred / not babysitter-drainable:** #43 (speed; needs a width > 1 wave run). The partly-addressed
 #56–#58, #60–#62, #64–#67 each carry a status comment; they are composable into a later bundle by surface, not queued.

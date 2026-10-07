@@ -30,7 +30,7 @@ D. PRD AUTHORING — THE PRINCIPLE SCREEN (every ticket must pass all, or it is 
    5. Every executable AC is RUN at HEAD before launch: it must FAIL today, and its expected value is the measured one. Grep every named symbol in src/ at HEAD.
    6. Files sections name only paths that exist (pipeline.json `paths:` silently drops absent ones — host new code/tests in existing files); a ticket that changes a shared return shape lists every exact-shape pin in all tiers; every subprocess in a new test gets `timeout: 30_000`.
    Pin `--scope-base <sha-before-the-bundle>` in pipeline.json (on main `--scope branch` resolves empty). Use refinement for behaviour/prompt-contract changes; --no-refine only for ≤ 5 named reds.
-E. IDLE (nothing running, queue drained): do nothing beyond the report. Do not invent work; the backlog is what the operator logs (root CLAUDE.md "Filing findings").
+E. IDLE (nothing running, queue drained) → AGENT-SWARM RESEARCH TICK (operator, 2026-10-07). Skip if a research agent from an earlier tick is still running. Otherwise launch ONE background research agent on prds/research/2026-09-agent-systems-spike.md: pick ONE open gap from its §6 (rotate; never the same gap two ticks running), work from primary sources (papers, benchmarks, vendor engineering posts, source repos), label every claim with the doc's evidence tags ([M] / [M, this repo] / [Mv] / [C] / [D]), and keep the swarm framing of MASTER_PLAN "🐝 AGENT SWARMS" (attribution must survive N writers; single-writer assumptions) and the portability constraint (pickle-rick runs outside any one harness — prefer process/file/git-based coordination over harness-specific team features). The agent edits ONLY that file: replace or tighten rather than append, keep it ≤ ~4,500 words, add one Changelog line. Measurement-only experiments (§4 style) are allowed if cheap (≤ ~15 min, no pipeline launch, nothing under ~/.claude). Read its diff before committing; commit only that file on main and push — never while a pipeline or gate runs (rule F). This is the only idle work; do not invent bug work.
 F. FIELD-RUN EVIDENCE: if a new client field run appears (a session whose working_dir is not this repo), record NUMBERS ONLY in MASTER_PLAN per the handoff checklist (phases /4, non_convergent/stalled_below_target, kept lane branches, ERR_MODULE_NOT_FOUND in a lane/unit, base drift, open-decision count) and log the field row via prds/research/tools/field-timing.py. Never touch, restart or install against a pipeline in another repo.
 G. NEW GITHUB ISSUES: triage each new issue against rule D's screen (measure its premises at HEAD — a premise can be stale), add it to the MASTER_PLAN QUEUE as a ticket row or a recorded rejection, and compose same-surface rows into the next bundle rather than opening a new one. If an issue body carries client content, do not quote it; tell the operator.
 
@@ -38,6 +38,8 @@ ASK THE OPERATOR ONLY FOR: cutting a release/tag (cadence: every few days, not p
 
 Report each tick in 2-3 sentences: what ran, what you measured, what you changed or launched.
 ```
+
+**Amended 2026-10-07:** rule E — idle ticks run agent-swarm research (operator: "when there is nothing to do, we should keep doing our agent swarm research").
 
 **Rewritten 2026-10-06:** the 09-25 prompt carried rules C/P/S for `exp/b-lanes` / `exp/b-parallel-build`
 (merge-down, beta soak, deploy-from-branch). Both branches were retired 2026-10-04, so those rules targeted
