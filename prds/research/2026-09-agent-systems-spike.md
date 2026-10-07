@@ -177,7 +177,7 @@ Every cross-CLI orchestrator found uses only processes, files and git [D].
 
 - **Fixed costs.** Tail gate (between-ticket `test:fast` + post-final tier): 7.1–7.7 min per runner session, all 13 serial sessions; each wave unit is one (24 runs, median 7.6). Worker gate: median 7.4–7.9 min per medium/large ticket, ~0 for small (`test:fast` tier-skipped). Gaps ≤0.2 min per session; unit create/integrate 2.1 min over 22 waves.
 - **27.7 vs 8.3.** Of the 19.3 min/ticket gap: worker +7.9 (large median 19.3 min vs 7.3 elsewhere, n=5 / 9; three empty-log spawns, 17.8 min each; non-empty logs 184.9 min), tail gate +7.0 (one per unit), manager +2.3, worker gate +2.0 (non-small 78% vs 47%), create/integrate +0.1. **Tier mix plus per-unit tail gates; not manager or worktree time.** HYPOTHESIS: serial B-MEGA ≈ 20 min/ticket (636 − 181 + 7.5), near 03d1f8d2's 16.9.
-- **Falsified by** a wave run whose per-unit tail gate is not ≈7.5 min. **Limits:** manager time is a residual; one wave run.
+- **Falsified by** a wave run whose per-unit tail gate is not ≈7.5 min, or a serial bundle ≥75% non-small at ≤10 min/ticket. **Limits:** manager time is a residual; one wave run.
 - **Lever.** A width-1 wave pays a ~7.6 min tail gate for no concurrency.
 
 ## 4. Experiments (measurement only)
