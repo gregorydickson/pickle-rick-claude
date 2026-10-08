@@ -204,6 +204,15 @@ test('a MISSING lifecycle artifact refuses — the declaration alone is not evid
   }, { artifacts: MEDIUM_TIER_ARTIFACTS.filter((f) => !f.startsWith('conformance')) });
 });
 
+test('review artifacts alone do not satisfy research or plan for the zero-diff arm', () => {
+  withFixture(({ repo, sessionDir }) => {
+    const decision = evaluateCompletionEvidence(ctxFor(sessionDir, repo, 'done-flip'));
+    assert.equal(decision.ok, false,
+      'research_review.md is the review of the research, not the research — the zero-diff arm must '
+      + 'answer "are the tier artifacts present" exactly as lifecycleArtifactStatus does');
+  }, { artifacts: MEDIUM_TIER_ARTIFACTS.filter((f) => !/^(research|plan)_\d/.test(f)) });
+});
+
 test('an ABSENT complexity_tier refuses rather than defaulting to a tier', () => {
   withFixture(({ repo, sessionDir }) => {
     const decision = evaluateCompletionEvidence(ctxFor(sessionDir, repo, 'done-flip'));

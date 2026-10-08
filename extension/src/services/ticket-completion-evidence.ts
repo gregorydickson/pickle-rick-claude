@@ -26,7 +26,7 @@ import {
   normalizeCompletionCommitField,
   ticketFilePath,
 } from './pickle-utils.js';
-import { findMissingPrefixes, requiredTierArtifactPrefixes } from './artifact-validation.js';
+import { requiredTierArtifactPrefixes } from './artifact-validation.js';
 import { VALID_TICKET_COMPLEXITY_TIERS, type TicketComplexityTier } from './pickle-utils.js';
 import { gitReportedExitStatus } from './git-utils.js';
 import { UNBOUNDED_READ_MAX_BUFFER, matchesArtifactPrefix } from '../types/index.js';
@@ -1047,6 +1047,9 @@ function workerGateRefusal(ctx: CompletionDecisionCtx): CompletionDecision | nul
  * silently inventing a tier for a ticket that never declared one is exactly the
  * proxy-over-truth move this arm exists to remove.
  *
+ * Answered by `lifecycleArtifactStatus`, the module's one reader of this fact, so
+ * a review artifact never stands in for its subject phase here either.
+ *
  * Fail-closed: any read error yields false, so a zero-diff accept never rests on
  * an unreadable ticket directory.
  *
@@ -1054,9 +1057,9 @@ function workerGateRefusal(ctx: CompletionDecisionCtx): CompletionDecision | nul
  * missing" and "this dir could not be READ". `onCouldNotMeasure` is the same
  * OBSERVATION beside the verdict that `scanGitLogByTrailer` takes
  * (AP-EXT-ITER327-02), so this stays a two-state predicate and the caller decides
- * what an unread dir means. Only the `catch` reports: the explicit `return false`
- * arms above it (no ticket path, no declared tier, a prefix genuinely missing) are
- * all MEASURED absences and must keep discarding.
+ * what an unread dir means. Only an unreadable ticket or dir reports: no ticket
+ * path, no declared tier and a prefix genuinely missing are all MEASURED absences
+ * and must keep discarding.
  */
 function hasLifecycleArtifacts(
   ctx: CompletionDecisionCtx,
@@ -1064,19 +1067,9 @@ function hasLifecycleArtifacts(
 ): boolean {
   const tPath = resolveTicketPath(ctx);
   if (!tPath) return false;
-  try {
-    const raw = fs.readFileSync(tPath, 'utf8');
-    const declaredTier = readFrontmatterField(raw, 'complexity_tier')?.trim().toLowerCase();
-    if (!declaredTier || !(VALID_TICKET_COMPLEXITY_TIERS as readonly string[]).includes(declaredTier)) {
-      return false;
-    }
-    const required = requiredTierArtifactPrefixes(declaredTier as TicketComplexityTier);
-    const files = fs.readdirSync(path.dirname(tPath));
-    return findMissingPrefixes(files, required).length === 0;
-  } catch {
-    onCouldNotMeasure?.();
-    return false;
-  }
+  const status = lifecycleArtifactStatus(tPath);
+  if (status.kind === 'unmeasured' && status.reason !== 'tierless') onCouldNotMeasure?.();
+  return status.kind === 'complete';
 }
 
 /**

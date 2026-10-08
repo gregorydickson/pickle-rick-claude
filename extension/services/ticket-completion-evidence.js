@@ -20,7 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { readFrontmatterField, upsertFrontmatterField, normalizeCompletionCommitField, ticketFilePath, } from './pickle-utils.js';
-import { findMissingPrefixes, requiredTierArtifactPrefixes } from './artifact-validation.js';
+import { requiredTierArtifactPrefixes } from './artifact-validation.js';
 import { VALID_TICKET_COMPLEXITY_TIERS } from './pickle-utils.js';
 import { gitReportedExitStatus } from './git-utils.js';
 import { UNBOUNDED_READ_MAX_BUFFER, matchesArtifactPrefix } from '../types/index.js';
@@ -763,6 +763,9 @@ function workerGateRefusal(ctx) {
  * silently inventing a tier for a ticket that never declared one is exactly the
  * proxy-over-truth move this arm exists to remove.
  *
+ * Answered by `lifecycleArtifactStatus`, the module's one reader of this fact, so
+ * a review artifact never stands in for its subject phase here either.
+ *
  * Fail-closed: any read error yields false, so a zero-diff accept never rests on
  * an unreadable ticket directory.
  *
@@ -770,28 +773,18 @@ function workerGateRefusal(ctx) {
  * missing" and "this dir could not be READ". `onCouldNotMeasure` is the same
  * OBSERVATION beside the verdict that `scanGitLogByTrailer` takes
  * (AP-EXT-ITER327-02), so this stays a two-state predicate and the caller decides
- * what an unread dir means. Only the `catch` reports: the explicit `return false`
- * arms above it (no ticket path, no declared tier, a prefix genuinely missing) are
- * all MEASURED absences and must keep discarding.
+ * what an unread dir means. Only an unreadable ticket or dir reports: no ticket
+ * path, no declared tier and a prefix genuinely missing are all MEASURED absences
+ * and must keep discarding.
  */
 function hasLifecycleArtifacts(ctx, onCouldNotMeasure) {
     const tPath = resolveTicketPath(ctx);
     if (!tPath)
         return false;
-    try {
-        const raw = fs.readFileSync(tPath, 'utf8');
-        const declaredTier = readFrontmatterField(raw, 'complexity_tier')?.trim().toLowerCase();
-        if (!declaredTier || !VALID_TICKET_COMPLEXITY_TIERS.includes(declaredTier)) {
-            return false;
-        }
-        const required = requiredTierArtifactPrefixes(declaredTier);
-        const files = fs.readdirSync(path.dirname(tPath));
-        return findMissingPrefixes(files, required).length === 0;
-    }
-    catch {
+    const status = lifecycleArtifactStatus(tPath);
+    if (status.kind === 'unmeasured' && status.reason !== 'tierless')
         onCouldNotMeasure?.();
-        return false;
-    }
+    return status.kind === 'complete';
 }
 /** Every gated artifact prefix any tier can require, derived from the tier table. */
 const KNOWN_ARTIFACT_PREFIXES = [...new Set(VALID_TICKET_COMPLEXITY_TIERS.flatMap(requiredTierArtifactPrefixes))];
