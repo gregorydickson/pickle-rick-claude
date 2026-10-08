@@ -188,6 +188,18 @@ test('Spec Conformance requires verifier-chosen bounded guard mutants with a saf
   assert.doesNotMatch(conformance, /git checkout --/);
 });
 
+test('the verifier agent carries the same exception-list and guard-mutant rules as the worker prompt', () => {
+  const verifier = fs.readFileSync(
+    path.resolve(import.meta.dirname, '../../.claude/agents/morty-phase-verifier.md'), 'utf-8');
+  assert.match(verifier, /an allowlist, uncovered-files or known-exceptions list, or a baseline — is not a fix/);
+  assert.match(verifier, /record a necessary exception with its reason as an open finding/);
+  assert.match(verifier, /`mutants: K of M`/);
+  assert.match(verifier, /at most 5/);
+  assert.match(verifier, /test FILES \(never a whole tier\)/);
+  assert.match(verifier, /git diff --quiet -- <path>/);
+  assert.match(verifier, /Never undo a mutant with git (?:check)out or git restore/);
+});
+
 // ── Lifecycle re-run of committed work ────────────────────────────────────────
 
 const RERUN_SHA = 'abc1234def5678';
