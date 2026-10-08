@@ -147,8 +147,16 @@ test('MREL-B2-4 refine skill carries no pickle-rick install.sh or size-ceiling h
   assert.ok(skill.split(phrase).length - 1 >= 2);
 });
 
-test('Step 7a names the outermost-surface rule for state/outcome table rows', () => {
+// Step 7a's body, failing closed when either heading moves: an unfound end anchor would
+// otherwise slice to the end of the file and let any later step answer the assertion.
+function step7aBody() {
   const content = fs.readFileSync(SKILL_PATH, 'utf-8');
-  const step7a = content.slice(content.indexOf('### 7a'), content.indexOf('### 7b'));
-  assert.match(step7a, /outermost surface/);
+  const start = content.indexOf('### 7a');
+  const end = content.indexOf('### 7b');
+  assert.ok(start >= 0 && end > start, `Step 7a must precede Step 7b (7a@${start}, 7b@${end})`);
+  return content.slice(start, end);
+}
+
+test('Step 7a names the outermost-surface rule for state/outcome table rows', () => {
+  assert.match(step7aBody(), /outermost surface/);
 });

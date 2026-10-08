@@ -172,15 +172,15 @@ test('plan block builds fixtures through the input writer', () => {
 
 test('Implement and Code Review sections warn against growing guard exception lists', () => {
   const text = buildTierLifecycleSections(MEDIUM_PHASES, 'medium');
-  const implement = text.slice(text.indexOf('Implement\n'), text.indexOf('Spec Conformance'));
-  const review = text.slice(text.indexOf('Code Review\n'), text.indexOf('Simplify'));
+  const implement = lifecycleSection(text, 'Implement');
+  const review = lifecycleSection(text, 'Code Review');
   assert.match(implement, /allowlist/i);
   assert.match(review, /allowlist/i);
 });
 
 test('Spec Conformance requires verifier-chosen bounded guard mutants with a safe restore', () => {
   const text = buildTierLifecycleSections(MEDIUM_PHASES, 'medium');
-  const conformance = text.slice(text.indexOf('Spec Conformance'), text.indexOf('Code Review\n'));
+  const conformance = lifecycleSection(text, 'Spec Conformance');
   assert.match(conformance, /mutants: /);
   assert.match(conformance, /at most 5/);
   assert.match(conformance, /test FILES/);
