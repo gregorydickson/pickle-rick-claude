@@ -10,7 +10,7 @@ codes that no longer match the live plan, so do not arm it without re-verifying.
 ## CURRENT PROMPT (operative, 2026-10-06 — autonomous, single `main` line)
 
 Paste verbatim. It is written to be re-sent every tick; each tick is self-contained. Arm with
-`CronCreate({ cron: "11,41 * * * *", recurring: true, prompt: <the block below> })` — session-only,
+`CronCreate({ cron: "11 */2 * * *", recurring: true, prompt: <the block below> })` (every 2 hours — operator, 2026-10-08) — session-only,
 auto-expires after 7 days; re-arm after a restart.
 
 ```
