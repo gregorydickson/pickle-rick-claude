@@ -3164,10 +3164,13 @@ export function applyEpochResetOnReconstruction(
   return { originalEpoch, newEpoch };
 }
 
-function archiveFile(sessionDir: string, filename: string, phase: string): void {
+/** `keepExisting` leaves a present archive alone: a resumed phase setup would otherwise archive the PRD it just wrote over the original. */
+function archiveFile(sessionDir: string, filename: string, phase: string, opts?: { keepExisting?: boolean }): void {
   const src = path.join(sessionDir, filename);
   if (!fs.existsSync(src)) return;
-  try { fs.copyFileSync(src, path.join(sessionDir, `${path.basename(filename, path.extname(filename))}-${phase}${path.extname(filename)}`)); } catch { /* best effort */ }
+  const dest = path.join(sessionDir, `${path.basename(filename, path.extname(filename))}-${phase}${path.extname(filename)}`);
+  if (opts?.keepExisting && fs.existsSync(dest)) return;
+  try { fs.copyFileSync(src, dest); } catch { /* best effort */ }
 }
 
 /** Archive and remove inter-phase artifacts that could confuse the next phase. */
@@ -3628,6 +3631,17 @@ export function readPersistedAllowedPaths(sessionDir: string): string[] | undefi
       return undefined;
     }
     return field as string[];
+  } catch {
+    return undefined;
+  }
+}
+
+/** The `base_sha` the scope pinned at launch, or undefined when `scope.json` is absent, unreadable or carries none. */
+function readPersistedScopeBaseSha(sessionDir: string): string | undefined {
+  try {
+    const raw = readRecoverableJsonObject(path.join(sessionDir, 'scope.json')) as Record<string, unknown> | null;
+    const baseSha = raw?.base_sha;
+    return typeof baseSha === 'string' && baseSha.length > 0 ? baseSha : undefined;
   } catch {
     return undefined;
   }
@@ -4254,7 +4268,7 @@ export function setupAnatomyPark(
 
   const lens = buildDependencyLens(sessionDir, effectiveScope?.allowedPaths ?? []);
   log(`dependency lens: ${lens.parsed} premises parsed (${lens.outside} outside allowed paths)`);
-  archiveFile(sessionDir, 'prd.md', 'pickle');
+  archiveFile(sessionDir, 'prd.md', 'pickle', { keepExisting: true });
   fs.writeFileSync(
     path.join(sessionDir, 'prd.md'),
     buildAnatomyPrd(target, subsystems, stallLimit, runnerStallLimit, citadelReport, lens),
@@ -4337,12 +4351,14 @@ function buildSzechuanPrd(
   domain: string | undefined,
   focus: string | undefined,
   citadelReport: CitadelJsonReport | null,
+  baseSha: string | undefined,
 ): string {
   const prdParts = [
     '# Szechuan Sauce: Iterative Deslopping',
     '',
     '## Objective',
     `Eliminate all coding principle violations in ${target} through iterative review and fix cycles.`,
+    `Reviewed range: ${baseSha ? `${baseSha}..HEAD` : 'HEAD (no scope base)'}`,
     '',
     '## Target',
     target,
@@ -4412,10 +4428,10 @@ export function setupSzechuanSauce(
 
   injectDesignSafeIntoMicroverse(sessionDir, designSafe, log);
 
-  archiveFile(sessionDir, 'prd.md', 'anatomy-park');
+  archiveFile(sessionDir, 'prd.md', 'anatomy-park', { keepExisting: true });
   fs.writeFileSync(
     path.join(sessionDir, 'prd.md'),
-    buildSzechuanPrd(target, stallLimit, principlesPath, extensionRoot, domain, focus, citadelReport),
+    buildSzechuanPrd(target, stallLimit, principlesPath, extensionRoot, domain, focus, citadelReport, readPersistedScopeBaseSha(sessionDir)),
   );
   log('Szechuan Sauce setup complete');
   return true;

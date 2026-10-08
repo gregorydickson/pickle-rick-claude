@@ -39,6 +39,7 @@ import {
   runAllBackendsExhaustedFinalizeGate,
   runJudgeTimeoutFinalizeGate,
   setupAnatomyPark,
+  setupSzechuanSauce,
   readPersistedAllowedPaths,
   finalizePhaseSuccess,
   computePipelineVerdict,
@@ -7789,5 +7790,43 @@ describe('lane integration: shared CLAUDE.md catalog appends', () => {
     } finally {
       fs.rmSync(fx.root, { recursive: true, force: true });
     }
+  });
+});
+
+// The szechuan objective is what the judge scores against, so it must say which diff it reviews.
+describe('szechuan objective names its reviewed range', () => {
+  function szechuanPrd({ scopeJson }) {
+    const repo = tmpDir();
+    initRepo(repo);
+    const sessionDir = makeAnatomySessionDir(repo);
+    try {
+      if (scopeJson) fs.writeFileSync(path.join(sessionDir, 'scope.json'), JSON.stringify(scopeJson));
+      const result = setupSzechuanSauce(
+        sessionDir, repo, 3, AP_REPO_ROOT, undefined, undefined, () => {}, { allowedPaths: ['src/a.ts'] },
+      );
+      assert.equal(result, true);
+      return fs.readFileSync(path.join(sessionDir, 'prd.md'), 'utf-8');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  }
+
+  test('a scope that pinned a base reviews <base>..HEAD', () => {
+    const base = 'abc1234def5678abc1234def5678abc1234def56';
+    const prd = szechuanPrd({ scopeJson: { allowed_paths: ['src/a.ts'], base_sha: base } });
+    assert.ok(prd.includes(`${base}..HEAD`), 'objective must name the pinned range');
+    assert.ok(!prd.includes('no scope base'));
+  });
+
+  test('a scope with no base reviews HEAD (no scope base)', () => {
+    const prd = szechuanPrd({ scopeJson: { allowed_paths: ['src/a.ts'] } });
+    assert.ok(prd.includes('HEAD (no scope base)'));
+    assert.ok(!prd.includes('..HEAD'));
+  });
+
+  test('no scope.json at all reviews HEAD (no scope base)', () => {
+    const prd = szechuanPrd({ scopeJson: null });
+    assert.ok(prd.includes('HEAD (no scope base)'));
   });
 });

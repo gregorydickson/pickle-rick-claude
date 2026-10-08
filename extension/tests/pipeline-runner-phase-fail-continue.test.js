@@ -10,6 +10,7 @@ import {
   __setSpawnRunnerForTests,
   applyStrictPhasesOverride,
   buildCloserReleasePlan,
+  cleanPhaseArtifacts,
   computePipelineVerdict,
   executeCloserReleasePlan,
   finalizePhaseSuccess,
@@ -18,6 +19,7 @@ import {
   main,
   recordRecoverablePhaseFailure,
   runAnatomyLanes,
+  setupAnatomyPark,
   shouldHaltAfterPhase,
   writeSkippedByScope,
 } from '../bin/pipeline-runner.js';
@@ -1379,4 +1381,36 @@ test('MREL-A12-c: a non-zero citadel exit is never counted completed — it is n
   assert.equal(counters.completed, 0);
   assert.equal(counters.nonConvergent, 1);
   assert.equal(counters.phaseDispositions.citadel, 'exit_1');
+});
+
+// A crash-resume re-enters anatomy-park, so its setup runs a second time over a session dir whose
+// prd.md is already the anatomy PRD. The archive of the feature PRD must not be replaced by it.
+test('feature PRD archive survives a second anatomy setup; TASK_NOTES archives still overwrite', () => {
+  const { repo, startCommit } = makeRepo({ createFollowupCommit: true });
+  const sessionDir = tmpDir('pipeline-prd-archive-session-');
+  writeState(sessionDir, repo, { start_commit: startCommit });
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const featurePrd = '# Feature PRD\n\nthe original requirements\n';
+  fs.writeFileSync(path.join(sessionDir, 'prd.md'), featurePrd);
+
+  assert.equal(setupAnatomyPark(sessionDir, repo, 3, repoRoot, () => {}), true);
+  const anatomyPrd = fs.readFileSync(path.join(sessionDir, 'prd.md'), 'utf-8');
+  assert.notEqual(anatomyPrd, featurePrd, 'precondition: setup replaced prd.md with the anatomy PRD');
+  assert.equal(setupAnatomyPark(sessionDir, repo, 3, repoRoot, () => {}), true);
+
+  assert.equal(
+    fs.readFileSync(path.join(sessionDir, 'prd-pickle.md'), 'utf-8'),
+    featurePrd,
+    'prd-pickle.md must still hold the feature PRD after setup ran twice',
+  );
+
+  fs.writeFileSync(path.join(sessionDir, 'TASK_NOTES.md'), 'first notes\n');
+  cleanPhaseArtifacts(sessionDir, 'anatomy-park');
+  fs.writeFileSync(path.join(sessionDir, 'TASK_NOTES.md'), 'second notes\n');
+  cleanPhaseArtifacts(sessionDir, 'anatomy-park');
+  assert.equal(
+    fs.readFileSync(path.join(sessionDir, 'TASK_NOTES-anatomy-park.md'), 'utf-8'),
+    'second notes\n',
+    'a TASK_NOTES archive is per-phase scratch and keeps overwriting',
+  );
 });
