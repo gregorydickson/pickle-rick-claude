@@ -244,15 +244,7 @@ function resolveLedgerPath(sessionRoot: string, entryPath: string): string {
   return assertWithinRoot(targetPath, sessionRoot);
 }
 
-/** Minimal shape both ledger entry kinds satisfy at the reversal decision. */
-type ContentBearingLedgerEntry = {
-  action?: string;
-  beforeContent?: string | null;
-  previousContent?: string | null;
-  backupContent?: string | null;
-};
-
-function restoreContent(entry: ContentBearingLedgerEntry): string | null | undefined {
+function restoreContent(entry: ReverseLedgerEntry): string | null | undefined {
   if ('beforeContent' in entry) return entry.beforeContent;
   if ('previousContent' in entry) return entry.previousContent;
   if ('backupContent' in entry) return entry.backupContent;
@@ -271,7 +263,7 @@ type LedgerReversal =
  * a non-create entry with no recorded content is unrestorable — leave it alone
  * rather than destroying a file that pre-dated the transaction.
  */
-function planReversal(entry: ContentBearingLedgerEntry): LedgerReversal {
+function planReversal(entry: ReverseLedgerEntry): LedgerReversal {
   if (entry.action === 'create' || entry.action === 'created') return { kind: 'delete' };
   const priorContent = restoreContent(entry);
   if (typeof priorContent === 'string') return { kind: 'restore', content: priorContent };
