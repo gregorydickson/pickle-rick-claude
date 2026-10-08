@@ -592,11 +592,22 @@ describe('AC-12: the degraded marker reaches the operator-visible completion out
     assert.equal(panel['Non-convergent'], '1', 'the existing count row is unchanged');
   });
 
+  test('panel states the sha review convergence was not measured at, unknown outside git', () => {
+    const counters = { completed: 4, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    assert.match(buildPipelineCompletePanel(counters, '4/4', 90, 0, process.cwd()).Review, /not measured at ([0-9a-f]{7}|unknown)/);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-nogit-'));
+    try {
+      assert.equal(buildPipelineCompletePanel(counters, '4/4', 90, 0, dir).Review, 'review convergence: not measured at unknown');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('a clean run renders no Dispositions row (additive, byte-identical happy path)', () => {
     const counters = { completed: 4, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
     const panel = buildPipelineCompletePanel(counters, '4/4', 90, 0);
     assert.equal(panel.Dispositions, undefined);
-    assert.deepEqual(Object.keys(panel), ['Phases', 'Elapsed']);
+    assert.deepEqual(Object.keys(panel), ['Phases', 'Review', 'Elapsed']);
   });
 });
 

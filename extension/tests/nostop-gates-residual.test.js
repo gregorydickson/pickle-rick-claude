@@ -183,7 +183,7 @@ test('AC-NSG-11: a 3-parked fixture emits exactly 3 ticket_auto_skip_no_evidence
 
 test('AC-NSG-13: zero-parked panel is byte-identical to the pre-WS-3 shape', () => {
   const counters = { completed: 4, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
-  const baseline = { Phases: '4/4', Elapsed: '0m 0s' };
+  const baseline = { Phases: '4/4', Review: 'review convergence: not measured at unknown', Elapsed: '0m 0s' };
   const panel = buildPipelineCompletePanel(counters, '4/4', 0);
   assert.deepEqual(panel, baseline, 'zero parked tickets must not add a Parked row or otherwise change the panel');
   assert.ok(!('Parked' in panel));

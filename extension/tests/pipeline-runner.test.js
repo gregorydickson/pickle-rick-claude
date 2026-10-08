@@ -7013,7 +7013,7 @@ describe('A1: pickle waves fall back to serial where a unit worktree cannot repr
       __setSpawnRunnerForTests(recordingRunner([]));
       const exitCode = await runLaneMain(fx.sessionDir, fx.dataRoot);
       const lines = readRunnerLog(fx.sessionDir).split('\n');
-      const hits = lines.flatMap((l, i) => (/\] review convergence: not measured$/.test(l) ? [i] : []));
+      const hits = lines.flatMap((l, i) => (/\] review convergence: not measured at ([0-9a-f]{7}|unknown)$/.test(l) ? [i] : []));
       assert.equal(hits.length, 1, `disclosure logged once: ${hits.length}`);
       const dropped = lines.findIndex((l) => /\] dropped findings \(conf>=25\): /.test(l));
       assert.ok(dropped >= 0 && hits[0] > dropped, `disclosure ${hits[0]} after dropped findings ${dropped}`);

@@ -5061,7 +5061,7 @@ function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipeli
     reportDroppedFindings(runtime);
     reportSkippedFailedTickets(runtime);
     reportLifecycleIncompleteTickets(runtime);
-    runtime.log('review convergence: not measured');
+    runtime.log(reviewConvergenceNote(runtime.workingDir));
     const reviewedBy = runtime.config.phases
         .filter((p) => p !== 'pickle')
         .map((p) => `${p}=${runtime.config.phase_backends[p] ?? runtime.backend}`);
@@ -5530,7 +5530,18 @@ function finalizeDegradedCompleteOpts(statePath, unsuccessful) {
  * when > 0, so a clean run (parkedCount 0) renders byte-identical to the
  * pre-WS-3 panel — additive, never a cosmetic change on the happy path.
  */
-export function buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount = 0) {
+/** The disclosure that review convergence was never measured, naming the sha it was not measured at; `unknown` on any git failure. */
+function reviewConvergenceNote(workingDir) {
+    let sha = 'unknown';
+    if (workingDir) {
+        const { status, stdout } = runGitForDrift(workingDir, ['rev-parse', '--short=7', 'HEAD'], 10_000);
+        const out = stdout.trim();
+        if (status === 0 && /^[0-9a-f]{7}$/.test(out))
+            sha = out;
+    }
+    return `review convergence: not measured at ${sha}`;
+}
+export function buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount = 0, workingDir) {
     const panel = { Phases: phasesSummary };
     if (counters.nonConvergent > 0)
         panel['Non-convergent'] = String(counters.nonConvergent);
@@ -5546,6 +5557,7 @@ export function buildPipelineCompletePanel(counters, phasesSummary, totalElapsed
         panel.Dispositions = dispositions;
     if (parkedCount > 0)
         panel.Parked = String(parkedCount);
+    panel.Review = reviewConvergenceNote(workingDir);
     panel.Elapsed = formatTime(totalElapsed);
     return panel;
 }
@@ -5721,7 +5733,7 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
     const phasesSummary = formatPhasesSummary(counters, runtime.config.phases.length);
     const banner = buildPipelineTerminalBanner(effectiveFailed);
     const parkedCount = resolveParkedTicketCount(runtime);
-    printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount), banner.color, '🧪');
+    printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount, runtime.workingDir), banner.color, '🧪');
     writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
     // handoff stops skip closer-release; so does a degraded run (B-ONEABORT AC-OA-1c).
     maybeRunCloserRelease(runtime, unsuccessful, handoffStop);
