@@ -7,6 +7,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   __setSpawnRunnerForTests,
+  buildFlowLanes,
   discoverLanes,
   main,
   resolveAnatomyLaneRoster,
@@ -25,7 +26,7 @@ function tmpDir(prefix) {
 }
 
 function git(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 30_000 }).trim();
 }
 
 function initRepo(repo) {
@@ -264,6 +265,34 @@ test('a persisted roster written without files round-trips unchanged', () => wit
     assert.equal(roster.fallbackReason, null);
     assert.equal(fs.readFileSync(configPath, 'utf-8'), written, 'the persisted roster is not rewritten');
     assert.equal(logs.filter((l) => l.includes('fell back to directories')).length, 0);
+  } finally {
+    for (const dir of [repo, sessionDir]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+}));
+
+test('a persisted roster without files is read back even when a review diff would build flow lanes', () => withDataRoot(() => {
+  const { repo, sessionDir } = makeSession();
+  try {
+    const seed = git(['rev-parse', 'HEAD'], repo);
+    fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 10;\n');
+    git(['commit', '-q', '-am', 'review diff'], repo);
+    const directories = discoverLanes(repo).lanes;
+    assert.ok(directories.every((l) => !('files' in l)), 'precondition: directory rows carry no files');
+    assert.notDeepEqual(buildFlowLanes(repo, seed, ['services/a.ts']), directories,
+      'precondition: a rebuild from this diff would name a different roster');
+    const configPath = path.join(sessionDir, 'anatomy-park.json');
+    const written = JSON.stringify({ subsystems: directories.map((l) => l.name), lane_roster: directories });
+    fs.writeFileSync(configPath, written);
+    const logs = [];
+    let calls = 0;
+    const roster = resolveAnatomyLaneRoster({ sessionDir, target: repo, log: (m) => logs.push(m) }, seed, {
+      buildFlowLanes: (...args) => { calls++; return buildFlowLanes(...args); },
+    });
+    assert.equal(calls, 0, 'the persisted roster wins; the flow builder is not consulted');
+    assert.deepEqual(roster.lanes, directories);
+    assert.equal(roster.fallbackReason, null);
+    assert.equal(fs.readFileSync(configPath, 'utf-8'), written, 'the persisted roster is not rewritten');
+    assert.ok(logs.some((l) => l.startsWith('anatomy lanes: reusing the persisted roster')), logs.join('\n'));
   } finally {
     for (const dir of [repo, sessionDir]) fs.rmSync(dir, { recursive: true, force: true });
   }
