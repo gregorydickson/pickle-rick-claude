@@ -554,3 +554,87 @@ test('AP-EXT-ITER323-01: anchoring NARROWS nothing it should not — a non-repo 
         cleanup(repo, session, outside);
     }
 });
+
+function seedAnatomyThenSzechuan() {
+    const repo = makeRepo();
+    const session = makeSession(repo);
+    git(['checkout', '-qb', 'feature'], repo);
+    fs.writeFileSync(path.join(repo, 'f1.ts'), 'v1\n');
+    git(['add', '.'], repo);
+    git(['commit', '-qm', 'f1'], repo);
+    resolveScope({ scopeFlag: 'branch', scopeBase: 'main', sessionRoot: session, repoRoot: repo });
+    // Build-phase commit lands before anatomy-park entry.
+    fs.writeFileSync(path.join(repo, 'built.ts'), 'built\n');
+    git(['add', '.'], repo);
+    git(['commit', '-qm', 'built'], repo);
+    const anatomy = refreshScope(session, 'anatomy-park', { repoRoot: repo, log: () => {} });
+    // Anatomy-park commits: an in-scope edit, an out-of-scope source file, and a catalog.
+    fs.writeFileSync(path.join(repo, 'f1.ts'), 'v1 fixed\n');
+    fs.writeFileSync(path.join(repo, 'outside.ts'), 'stray\n');
+    fs.mkdirSync(path.join(repo, 'sub'));
+    fs.writeFileSync(path.join(repo, 'sub', 'CLAUDE.md'), 'catalog\n');
+    git(['add', '.'], repo);
+    git(['commit', '-qm', 'anatomy'], repo);
+    return { repo, session, anatomy };
+}
+
+test('#57: anatomy-entry refresh absorbs the build diff and never raises SCOPE_EMPTY_POST_BUILD', () => {
+    const repo = makeRepo();
+    const session = makeSession(repo);
+    try {
+        git(['checkout', '-qb', 'feature'], repo);
+        fs.writeFileSync(path.join(repo, 'f1.ts'), 'v1\n');
+        git(['add', '.'], repo);
+        git(['commit', '-qm', 'f1'], repo);
+        resolveScope({ scopeFlag: 'branch', scopeBase: 'main', sessionRoot: session, repoRoot: repo });
+        fs.writeFileSync(path.join(repo, 'built.ts'), 'built\n');
+        git(['add', '.'], repo);
+        git(['commit', '-qm', 'built'], repo);
+        const anatomy = refreshScope(session, 'anatomy-park', { repoRoot: repo, log: () => {} });
+        assert.deepStrictEqual(anatomy.allowed_paths, ['built.ts', 'f1.ts']);
+    } finally {
+        cleanup(repo, session);
+    }
+});
+
+test('#57: szechuan-entry refresh excludes an out-of-scope anatomy write but keeps in-scope paths and the CLAUDE.md catalog', () => {
+    const { repo, session, anatomy } = seedAnatomyThenSzechuan();
+    try {
+        assert.deepStrictEqual(anatomy.allowed_paths, ['built.ts', 'f1.ts']);
+        const szechuan = refreshScope(session, 'szechuan-sauce', { repoRoot: repo, log: () => {} });
+        assert.ok(!szechuan.allowed_paths.includes('outside.ts'), 'stray anatomy write must not widen szechuan scope');
+        assert.deepStrictEqual(szechuan.allowed_paths, ['built.ts', 'f1.ts', 'sub/CLAUDE.md']);
+    } finally {
+        cleanup(repo, session);
+    }
+});
+
+test('#57: the anatomy-entry refresh itself is unchanged — it admits every path the diff touched', () => {
+    const { repo, session } = seedAnatomyThenSzechuan();
+    const control = makeSession(repo);
+    try {
+        // Same HEAD, same frozen base, anatomy phase: nothing is narrowed.
+        fs.copyFileSync(path.join(session, 'scope.json'), path.join(control, 'scope.json'));
+        const scope = JSON.parse(fs.readFileSync(path.join(control, 'scope.json'), 'utf-8'));
+        const refreshed = refreshScope(control, 'anatomy-park', { repoRoot: repo, log: () => {} });
+        assert.ok(refreshed.allowed_paths.includes('outside.ts'));
+        assert.equal(scope.mode, 'branch');
+    } finally {
+        cleanup(repo, session, control);
+    }
+});
+
+test('#57: paths-mode scope is unaffected at szechuan entry', () => {
+    const repo = makeRepo();
+    const session = makeSession(repo);
+    try {
+        fs.writeFileSync(path.join(repo, 'p.ts'), 'p\n');
+        git(['add', '.'], repo);
+        git(['commit', '-qm', 'p'], repo);
+        const initial = resolveScope({ scopeFlag: 'paths:p.ts', sessionRoot: session, repoRoot: repo });
+        const refreshed = refreshScope(session, 'szechuan-sauce', { repoRoot: repo, log: () => {} });
+        assert.deepStrictEqual(refreshed.allowed_paths, initial.allowed_paths);
+    } finally {
+        cleanup(repo, session);
+    }
+});

@@ -331,7 +331,7 @@ export function refreshScope(
   const repoRoot = resolveRepoToplevel(opts.repoRoot ?? resolveRepoRootFromState(sm, statePath));
   const newHead = getHeadSha(repoRoot);
 
-  const newAllowed = computeRefreshedAllowed(scope, newHead, repoRoot, opts.target);
+  const newAllowed = computeRefreshedAllowed(scope, newHead, repoRoot, opts.target, phase);
   if (newAllowed.length === 0 && phase === 'anatomy-park') {
     throw new ScopeError(
       'SCOPE_EMPTY_POST_BUILD',
@@ -389,6 +389,7 @@ function computeRefreshedAllowed(
   newHead: string,
   repoRoot: string,
   target: string | undefined,
+  phase: string,
 ): string[] {
   if (scope.mode === 'paths') return scope.allowed_paths.slice();
   if (!scope.base_sha) {
@@ -403,7 +404,18 @@ function computeRefreshedAllowed(
   }
   const narrowed = filterByTarget(base, target, repoRoot);
   const expanded = scope.strategy === 'one-hop' ? computeOneHop(narrowed, repoRoot) : narrowed;
-  return Array.from(new Set(expanded.map(toPosix))).sort(byteOrder);
+  const fresh = Array.from(new Set(expanded.map(toPosix))).sort(byteOrder);
+  return phase === 'szechuan-sauce' ? narrowToPreviousScope(fresh, scope.allowed_paths) : fresh;
+}
+
+/**
+ * Szechuan entry reviews what the earlier phases already fenced, so a path an
+ * anatomy-park commit touched outside that fence stays outside. A subsystem
+ * `CLAUDE.md` is anatomy-park's own catalog deliverable and is always admitted.
+ */
+function narrowToPreviousScope(fresh: string[], previous: string[]): string[] {
+  const prior = new Set(previous.map(toPosix));
+  return fresh.filter((p) => prior.has(p) || path.posix.basename(p) === 'CLAUDE.md');
 }
 
 function persistRefreshedScope(
