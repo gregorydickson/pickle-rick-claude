@@ -211,6 +211,12 @@ test('re-run of committed ticket skips Implement and names the sha', () => {
   assert.match(prompt, /ONLY the missing pre-implementation artifacts/);
 });
 
+test('control: lifecycle_rerun requested with no completion_commit is not a re-run of committed work', () => {
+  const prompt = rerunPrompt('lifecycle_rerun: requested\n');
+  assert.ok(!prompt.includes('Lifecycle re-run of committed work'), 'no commit to describe, so no re-run banner');
+  assert.match(prompt, /\|\s*\d+ \(Implement\)\s*\|/, 'the resume table keeps its Implement row');
+});
+
 test('control: ticket without lifecycle_rerun keeps the unchanged table', () => {
   assert.equal(buildTierResumeTable(MEDIUM_PHASES, false), buildTierResumeTable(MEDIUM_PHASES));
   const prompt = rerunPrompt(`completion_commit: ${RERUN_SHA}\n`);
