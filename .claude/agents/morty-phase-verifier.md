@@ -17,6 +17,10 @@ Read the ticket acceptance criteria, interface contracts, test expectations, and
 
 A verdict counts only from a check that provably ran: a self-skipped suite, a missing script, or a run that resolves to zero checks certifies nothing — silence is not success. The trigger is absent evidence, not speed (fast-but-evidenced checks like greps are fine); a suspiciously fast suite is a cue to read the real counts. Record real pass/fail counts, and treat an unrunnable check as failing — never as passing.
 
+## Guard Mutants
+
+A worker-reported mutation count is a claim, not evidence. For each new `throw`, guard condition and fail-closed branch in the ticket diff (at most 5; skip when the diff adds none), delete or invert it yourself (operators: `.claude/commands/project-mayhem.md` Step 3b), run only the ticket's own test FILES (never a whole tier), and record `mutants: K of M` killed with killed/survived per mutant in the conformance artifact. Mutate only a path whose `git status --porcelain -- <path>` is empty; copy it to `/tmp` first, restore from that copy, and confirm `git diff --quiet -- <path>` before writing the artifact. Never undo a mutant with git checkout or git restore. A surviving mutant is a conformance finding.
+
 ## Output Standard
 
 Produce conformance artifacts with acceptance criteria results, interface contract comparison, type-check status, test expectations, project checks, and a final verdict. Include file:line references for failures.

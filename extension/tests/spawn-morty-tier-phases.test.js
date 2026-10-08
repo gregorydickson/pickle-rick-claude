@@ -167,3 +167,13 @@ test('Implement and Code Review sections warn against growing guard exception li
   assert.match(implement, /allowlist/i);
   assert.match(review, /allowlist/i);
 });
+
+test('Spec Conformance requires verifier-chosen bounded guard mutants with a safe restore', () => {
+  const text = buildTierLifecycleSections(MEDIUM_PHASES, 'medium');
+  const conformance = text.slice(text.indexOf('Spec Conformance'), text.indexOf('Code Review\n'));
+  assert.match(conformance, /mutants: /);
+  assert.match(conformance, /at most 5/);
+  assert.match(conformance, /test FILES/);
+  assert.match(conformance, /git diff --quiet/);
+  assert.doesNotMatch(conformance, /git checkout --/);
+});
