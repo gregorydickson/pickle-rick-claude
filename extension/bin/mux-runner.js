@@ -6,7 +6,7 @@ import { spawn, spawnSync, execFileSync } from 'child_process';
 import { printMinimalPanel, Style, formatTime, getExtensionRoot, buildPickleRickVersionTrailer, getDataRoot, formatLocalDateKey, buildHandoffSummary, sleep, writeStateFile, markTicketDone, markTicketSkipped, markTicketWithStatus as writeTicketStatus, collectTickets, getTicketStatus, runCmd, safeErrorMessage, ensureMonitorWindow, displayMacNotification, parseTicketFrontmatter, getTicketTierBudgetWithOverrides, readFrontmatterField, upsertFrontmatterField, ticketFilePath, VALID_TICKET_COMPLEXITY_TIERS, TIER_LIFECYCLE, composeManagerPromptFromSkill, resolveWorkerTestGateTimeoutMs, scrubGateEnv, resolveCommandTemplate, resolveManagerPromptPath, loadPickleSettingsBag, resolveHardeningSettings, resolveCodegraphSettings, resolveRateLimitSettings, resolveRateLimitProbeIntervalMs, RATE_LIMIT_PROBE_TIMEOUT_MS, RATE_LIMIT_PROBE_LOG_FILENAME, RATE_LIMIT_PROBE_PROMPT, DEFAULT_MAX_PARK_MINUTES } from '../services/pickle-utils.js';
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from '../services/artifact-validation.js';
 import { isLaneSessionDir } from '../services/anatomy-lanes.js';
-import { PromiseTokens, hasToken, VALID_STEPS, Defaults, classifyExitReason, FALSE_EPIC_THRESHOLD, hasLifecycleArtifact, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults } from '../types/index.js';
+import { PromiseTokens, hasToken, VALID_STEPS, Defaults, classifyExitReason, FALSE_EPIC_THRESHOLD, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
 import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, formatCircuitBreakerTripReason, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
@@ -2689,49 +2689,6 @@ export function checkIterationLogForCodexSelfBootstrap(output, backend, currentT
         }
     }
     return results;
-}
-/**
- * Post-hoc safety net: validates whether a ticket was actually completed
- * before marking it Done. TASK_COMPLETED token is strong evidence. Otherwise
- * require a ticket-scoped lifecycle artifact — unscoped git diff alone is a
- * ghost source (changes from any other ticket in the tree pass). Never throws.
- */
-export function classifyTicketCompletion(iterLogFile, workingDir, ticketDir, role = 'implementation') {
-    try {
-        const logContent = fs.readFileSync(iterLogFile, 'utf-8');
-        const assistantContent = extractAssistantContent(logContent);
-        if (hasToken(assistantContent, PromiseTokens.TASK_COMPLETED))
-            return 'completed';
-    }
-    catch (err) {
-        process.stderr.write(`[mux-runner:classify-ticket:log-read] ${safeErrorMessage(err)}\n`); /* fall through to artifact check */
-    }
-    if (!ticketDir)
-        return 'skipped';
-    let files;
-    try {
-        files = fs.readdirSync(ticketDir);
-    }
-    catch {
-        return 'skipped';
-    }
-    if (!hasLifecycleArtifact(files, role))
-        return 'skipped';
-    // Artifact exists — corroborate with git diff. Artifacts alone are
-    // sufficient because the worker wrote them during its lifecycle, but a
-    // dirty tree is a stronger signal that code actually changed.
-    try {
-        const uncommitted = runCmd(['git', 'diff', '--stat'], { cwd: workingDir, check: false });
-        if (uncommitted.length > 0)
-            return 'completed';
-        const staged = runCmd(['git', 'diff', '--stat', '--cached'], { cwd: workingDir, check: false });
-        if (staged.length > 0)
-            return 'completed';
-    }
-    catch (err) {
-        process.stderr.write(`[mux-runner:classify-ticket:git-probe] ${safeErrorMessage(err)}\n`); /* artifact alone suffices */
-    }
-    return 'completed';
 }
 function normalizedStatus(status) {
     return (status || '').toLowerCase().replace(/^["']|["']$/g, '').trim();
@@ -14191,7 +14148,6 @@ async function runMuxRunnerMain({ runIteration, sleep, exit }) {
         }
         // B-DURA T10: commit the gate-passing deliverable BEFORE the Done-detection block below.
         commitBoundaryDeliverableAfterIteration({ sessionDir, statePath, state, iterWorkingDir, extensionRoot, preIterSha, log });
-        // Move iterLogFile computation BEFORE transition block (needed by classifyTicketCompletion)
         const iterLogFile = path.join(sessionDir, `tmux_iteration_${iteration}.log`);
         // Detect ticket transitions: validate completion before marking Done
         const transition = resolveTicketTransition({
