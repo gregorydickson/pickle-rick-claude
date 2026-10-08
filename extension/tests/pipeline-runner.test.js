@@ -56,7 +56,7 @@ import {
   discloseUnmeasuredIntegration,
   unreproducibleNodeModulesGap,
 } from '../bin/pipeline-runner.js';
-import { createLaneWorktree, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount, findNodeModulesDirs, replicateLaneNodeModules } from '../services/anatomy-lanes.js';
+import { createLaneWorktree, integrateLanes, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount, findNodeModulesDirs, replicateLaneNodeModules } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
@@ -5381,6 +5381,7 @@ describe('B-LANES WS-3: lane integration', () => {
       ...laneSeedFiles(LANES.map(({ name }) => name)),
       ...(workspace ? { 'packages/a/index.ts': 'export const p = 1;\n' } : {}),
       'CLAUDE.md': '# Trap doors\n- entry one\n- entry two\n',
+      'shared.ts': 'export const s = 0;\n',
       ...(typecheck ? {
         'package.json': JSON.stringify({ name: 'lanes', private: true, scripts: { typecheck: 'node check.js' } }),
         'check.js': CHECK_JS,
@@ -5443,12 +5444,12 @@ describe('B-LANES WS-3: lane integration', () => {
   const worktreeList = (repo) => git(repo, 'worktree', 'list', '--porcelain').split('\n').filter((l) => l.startsWith('worktree '));
   const byName = (sessionDir) => Object.fromEntries(readJson(path.join(sessionDir, 'archive', 'lanes.json')).map((o) => [o.name, o]));
 
-  test('14: two lanes editing the same catalog line → one integrated, one conflict with its branch kept; the phase completes', async () => {
+  test('14: two lanes editing the same source line → one integrated, one conflict with its branch kept; the phase completes', async () => {
     const fx = makeFixture();
     try {
       __setSpawnRunnerForTests(committingRunner([
-        { 'CLAUDE.md': '# Trap doors\n- entry one (alpha)\n- entry two\n' },
-        { 'CLAUDE.md': '# Trap doors\n- entry one (beta)\n- entry two\n' },
+        { 'shared.ts': 'export const s = "alpha";\n' },
+        { 'shared.ts': 'export const s = "beta";\n' },
       ]));
       const code = await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3);
       assert.equal(code, 1, 'a lane that did not reach main is not converged');
@@ -5460,7 +5461,7 @@ describe('B-LANES WS-3: lane integration', () => {
       assert.ok(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${fx.branch(2)}`), 'conflict branch retained');
       assert.equal(git(fx.repo, 'rev-list', '-1', fx.branch(2)), lanes.beta.commits[0], 'retained branch still holds the lane fix');
       assert.equal(gitOk(fx.repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${fx.branch(1)}`), false, 'integrated branch deleted');
-      assert.match(read(path.join(fx.repo, 'CLAUDE.md')), /entry one \(alpha\)/, 'main fast-forwarded to lane 1');
+      assert.match(read(path.join(fx.repo, 'shared.ts')), /alpha/, 'main fast-forwarded to lane 1');
       assert.equal(git(fx.repo, 'status', '--porcelain'), '', 'main is clean');
       assert.equal(readJson(fx.runtime.statePath).exit_reason, 'conflict');
       assert.deepEqual(worktreeList(fx.repo), [`worktree ${fx.repo}`]);
@@ -5887,8 +5888,8 @@ describe('B-LANES WS-3: lane integration', () => {
     const fx = makeFixture({ typecheck: false });
     try {
       __setSpawnRunnerForTests(committingRunner([
-        { 'CLAUDE.md': '# Trap doors\n- entry one (alpha)\n- entry two\n' },
-        { 'CLAUDE.md': '# Trap doors\n- entry one (beta)\n- entry two\n' },
+        { 'shared.ts': 'export const s = "alpha";\n' },
+        { 'shared.ts': 'export const s = "beta";\n' },
       ]));
       await runAnatomyLanes(fx.runtime, LANES.slice(0, 2), 3);
       const lanes = byName(fx.sessionDir);
@@ -7729,5 +7730,64 @@ describe('F75-BACKEND: phase_backends override', () => {
       parsePipelineConfig({ phase_backends: { 'anatomy-park': 'codex', 'szechuan-sauce': 'nope' } }).phase_backends,
       { 'anatomy-park': 'codex' },
     );
+  });
+});
+
+describe('lane integration: shared CLAUDE.md catalog appends', () => {
+  const commitOn = (repo, branch, files) => {
+    git(repo, 'checkout', '-q', '-b', branch, 'main');
+    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(repo, name), body);
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', `${branch} work`);
+    git(repo, 'checkout', '-q', 'main');
+  };
+  const integrate = (fx, laneBranches) => integrateLanes({
+    repoRoot: fx.repo, target: fx.repo, sessionDir: fx.sessionDir, phaseStartSha: fx.base,
+    lanes: laneBranches.map((branch) => ({ branch, integrate: true })), log: () => {},
+  });
+  const makeFx = () => {
+    const root = mkFixtureTmpDir('pickle-lane-union-');
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(repo);
+    git(repo, 'init', '-q', '-b', 'main');
+    git(repo, 'config', 'user.name', 't');
+    git(repo, 'config', 'user.email', 't@t');
+    fs.writeFileSync(path.join(repo, 'CLAUDE.md'), '# Catalog\n\n- entry zero\n');
+    fs.writeFileSync(path.join(repo, 'shared.txt'), 'line one\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'base');
+    return { root, repo, sessionDir: path.join(root, 'session'), base: git(repo, 'rev-parse', 'HEAD') };
+  };
+  const catalogAppend = (n) => `# Catalog\n\n- entry zero\n- entry ${n}\n`;
+
+  test('two lanes appending to the same CLAUDE.md both integrate with both source commits on main', () => {
+    const fx = makeFx();
+    try {
+      commitOn(fx.repo, 'lane-a', { 'src-a.txt': 'a\n', 'CLAUDE.md': catalogAppend('a') });
+      commitOn(fx.repo, 'lane-b', { 'src-b.txt': 'b\n', 'CLAUDE.md': catalogAppend('b') });
+      const result = integrate(fx, ['lane-a', 'lane-b']);
+      assert.deepEqual(result.outcomes, ['integrated', 'integrated']);
+      assert.ok(fs.existsSync(path.join(fx.repo, 'src-a.txt')) && fs.existsSync(path.join(fx.repo, 'src-b.txt')));
+      const catalog = fs.readFileSync(path.join(fx.repo, 'CLAUDE.md'), 'utf-8');
+      assert.match(catalog, /entry a/);
+      assert.match(catalog, /entry b/);
+      const attributes = path.join(fx.repo, '.git', 'info', 'attributes');
+      assert.ok(!fs.existsSync(attributes) || !/merge=union/.test(fs.readFileSync(attributes, 'utf-8')), 'the operator repo attributes are untouched');
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test('control: two lanes editing the same line of a source file still conflict for the second', () => {
+    const fx = makeFx();
+    try {
+      commitOn(fx.repo, 'lane-a', { 'shared.txt': 'line A\n', 'CLAUDE.md': catalogAppend('a') });
+      commitOn(fx.repo, 'lane-b', { 'shared.txt': 'line B\n', 'CLAUDE.md': catalogAppend('b') });
+      const result = integrate(fx, ['lane-a', 'lane-b']);
+      assert.deepEqual(result.outcomes, ['integrated', 'conflict']);
+      assert.equal(fs.readFileSync(path.join(fx.repo, 'shared.txt'), 'utf-8'), 'line A\n');
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
   });
 });

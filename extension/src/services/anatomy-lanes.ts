@@ -398,10 +398,11 @@ interface PickResult {
 
 /** Pick one lane onto the integration worktree; anything short of green leaves it where it was. */
 function pickLane(
-  worktree: string, sessionDir: string, targetDir: string, commits: string[], preserve: string[], baseRed: boolean, log: (msg: string) => void,
+  worktree: string, sessionDir: string, targetDir: string, commits: string[], preserve: string[], baseRed: boolean, attributesFile: string, log: (msg: string) => void,
 ): PickResult {
   const before = laneGit(worktree, ['rev-parse', 'HEAD']);
-  const picked = commits.every((sha) => laneGitOk(worktree, ['-c', 'gc.auto=0', '-c', 'commit.gpgsign=false', 'cherry-pick', sha]));
+  const pickArgs = ['-c', 'gc.auto=0', '-c', 'commit.gpgsign=false', '-c', `core.attributesFile=${attributesFile}`, 'cherry-pick'];
+  const picked = commits.every((sha) => laneGitOk(worktree, [...pickArgs, sha]));
   if (!picked) laneGitOk(worktree, ['cherry-pick', '--abort']);
   const measured = picked ? runIntegrationTypecheck(targetDir) : null;
   // A target already red at the phase start sha measures nothing about this lane.
@@ -411,6 +412,19 @@ function pickLane(
   // A partial pick (commit k+1 of n conflicted) or a red check: undo the whole lane — here only.
   resetToSha(before, worktree, preserve, { cwd: worktree, sessionDir, ticketDir: null, reason: 'pre_reset' });
   return { outcome: picked ? 'integration_red' : 'conflict', check: null };
+}
+
+/**
+ * Catalog files are append-only and every lane appends its trap doors to the same one, so a plain merge
+ * conflicts the second lane and discards its verified fixes. The union driver keeps both appends. The rule
+ * lives in a file inside the integration worktree's own git dir and is handed to the pick by `-c`:
+ * `info/attributes` is shared with the main checkout across worktrees, so writing there would change the
+ * operator's repository.
+ */
+function writeCatalogUnionAttributes(worktree: string): string {
+  const attributesFile = path.join(laneGit(worktree, ['rev-parse', '--absolute-git-dir']), 'catalog-union-attributes');
+  fs.writeFileSync(attributesFile, 'CLAUDE.md merge=union\n');
+  return attributesFile;
 }
 
 /**
@@ -437,9 +451,10 @@ export function integrateLanes(input: IntegrateLanesInput): IntegrateLanesResult
     if (unreproducible.length > 0) log(`anatomy lanes: integration node_modules not replicated: ${unreproducible.join(', ')}`);
     const targetDir = path.join(worktree, path.relative(realpathOrResolve(repoRoot), realpathOrResolve(input.target)));
     const baseRed = runIntegrationTypecheck(targetDir) === 'red';
+    const attributesFile = writeCatalogUnionAttributes(worktree);
     commits.forEach((laneCommitList, i) => {
       if (laneCommitList.length === 0) return;
-      const pick = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, baseRed, log);
+      const pick = pickLane(worktree, sessionDir, targetDir, laneCommitList, preserve, baseRed, attributesFile, log);
       outcomes[i] = pick.outcome;
       checks[i] = pick.check;
     });
