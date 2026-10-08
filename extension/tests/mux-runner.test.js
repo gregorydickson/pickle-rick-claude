@@ -7856,6 +7856,19 @@ test('lifecycle rerun: a tierless ticket is unmeasured — accepted with no fiel
     assert.equal(readLifecycleRerun(sessionDir, ticketId), null);
 });
 
+test('lifecycle rerun: a split original closed on its twins is never parked for a re-run of its own', async () => {
+    const { guardCompletionCommitBeforeDone } = await import('../bin/mux-runner.js');
+    const ticketId = 'lc-split-original';
+    const { sessionDir, repo } = lifecycleCase(ticketId, { artifacts: [] });
+
+    const guard = withProductionGuard(() => guardCompletionCommitBeforeDone({
+        sessionDir, ticketId, workingDir: repo, flags: null, rereadBackoffMs: 0, ownAttributionTokens: ['lc-twin-i'],
+    }));
+
+    assert.equal(guard.ok, true, 'the split-original auto-close passes ownAttributionTokens and must not be parked');
+    assert.equal(readLifecycleRerun(sessionDir, ticketId), null);
+});
+
 test('lifecycle rerun: the auto-completion handler leaves the parked ticket and records no exit_reason', async () => {
     const { applyAutoTicketCompletionValidation, LIFECYCLE_RERUN_REQUESTED } = await import('../bin/mux-runner.js');
     const ticketId = 'lc-handler';

@@ -6478,7 +6478,9 @@ export function guardCompletionCommitBeforeDone(args: {
     const failedAssertion = findFailedAcceptanceAssertion(args.sessionDir, args.ticketId, args.workingDir);
     if (failedAssertion) return refuseDoneOnFailedAcceptanceAssertion(args, failedAssertion, testsVerdict);
     // Only a committed accept carries a sha; the sha-less accept already required its tier artifacts.
-    if (decision.sha) {
+    // A split original (the one caller passing ownAttributionTokens) is closed on its twins' work and
+    // never runs a lifecycle of its own, so a re-run would redo delivered work.
+    if (decision.sha && !args.ownAttributionTokens) {
       const rerun = requestLifecycleRerunOnce(args, testsVerdict);
       if (rerun) return rerun;
     }
