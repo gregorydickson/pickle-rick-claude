@@ -745,10 +745,10 @@ export function buildFlowLanes(target: string, baseSha: string, changedFiles: st
   const components = new Map<string, string[]>();
   for (const file of nodes) components.set(root(file), [...(components.get(root(file)) ?? []), file]);
   return [...components.values()]
-    .map((files) => files.sort())
-    .map((files): LaneRecord => ({
-      name: `flow:${files[0]}`, dir: '', excludes: [], testRatioApplies: false, fileCount: files.length, files,
-    }))
+    .map((members): LaneRecord => {
+      const files = members.sort();
+      return { name: `flow:${files[0]}`, dir: '', excludes: [], testRatioApplies: false, fileCount: files.length, files };
+    })
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 

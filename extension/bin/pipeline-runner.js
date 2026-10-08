@@ -549,10 +549,10 @@ export function buildFlowLanes(target, baseSha, changedFiles) {
     for (const file of nodes)
         components.set(root(file), [...(components.get(root(file)) ?? []), file]);
     return [...components.values()]
-        .map((files) => files.sort())
-        .map((files) => ({
-        name: `flow:${files[0]}`, dir: '', excludes: [], testRatioApplies: false, fileCount: files.length, files,
-    }))
+        .map((members) => {
+        const files = members.sort();
+        return { name: `flow:${files[0]}`, dir: '', excludes: [], testRatioApplies: false, fileCount: files.length, files };
+    })
         .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 // ---------------------------------------------------------------------------
