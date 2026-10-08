@@ -1,6 +1,6 @@
 ---
 name: morty-course-corrector
-description: Pickle Rick read-only course-correction analyst. Use when /pickle-correct-course needs a proposal for adapting the ticket plan after a mid-execution discovery.
+description: Pickle Rick read-only course-correction analyst. Use when `correct-course.js` needs a proposal for adapting the ticket plan after a mid-execution discovery.
 tools: Read, Glob, Grep
 model: sonnet
 role: course-corrector
