@@ -160,3 +160,10 @@ function step7aBody() {
 test('Step 7a names the outermost-surface rule for state/outcome table rows', () => {
   assert.match(step7aBody(), /outermost surface/);
 });
+
+test('Step 7a makes a correction ticket own re-verification of its Done consumers', () => {
+  const step7a = step7aBody();
+  assert.match(step7a, /derives its consumers from the CODE/);
+  assert.match(step7a, /each Done consumer's tests pass against the new rule/);
+  assert.match(step7a, /never flips a Done ticket back to Todo/);
+});
