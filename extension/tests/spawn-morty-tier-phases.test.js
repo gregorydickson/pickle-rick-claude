@@ -146,6 +146,7 @@ test('research block cites input writers and write conditions', () => {
   const out = buildTierLifecycleSections(TIER_LIFECYCLE.medium, 'medium');
   const research = lifecycleSection(out, 'Research');
   assert.ok(research.includes('write condition'), 'medium Research step must name write condition');
+  assert.match(research, /every writer/, 'medium Research step must require citing every writer');
   // Research review fails research that proposes solutions, so the fixture-building clause must stay out of it.
   assert.ok(!research.includes("through the input's writer"), 'fixture clause must not appear in the Research step');
   assert.ok(
