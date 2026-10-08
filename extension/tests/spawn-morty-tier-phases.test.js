@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   buildTierResumeTable,
   buildTierLifecycleSections,
+  buildWorkerPrompt,
 } from '../bin/spawn-morty.js';
 import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
 
@@ -176,4 +177,34 @@ test('Spec Conformance requires verifier-chosen bounded guard mutants with a saf
   assert.match(conformance, /test FILES/);
   assert.match(conformance, /git diff --quiet/);
   assert.doesNotMatch(conformance, /git checkout --/);
+});
+
+// ── Lifecycle re-run of committed work ────────────────────────────────────────
+
+const RERUN_SHA = 'abc1234def5678';
+const rerunPrompt = (frontmatterExtra) => buildWorkerPrompt({
+  ticket: {
+    task: 'task body', ticketId: 'rr01', ticketPath: '/tmp/rr01', sessionRoot: '/tmp/rr-session',
+    backend: 'claude', isReviewTicket: false,
+    ticketContent: `---\nid: rr01\nstatus: "Todo"\n${frontmatterExtra}---\n# body\n`,
+  },
+  model: 'm',
+  complexityTier: 'medium',
+});
+
+test('re-run of committed ticket skips Implement and names the sha', () => {
+  const table = buildTierResumeTable(MEDIUM_PHASES, true);
+  assert.doesNotMatch(table, /\(Implement\)/);
+  assert.doesNotMatch(table, /\(Conformance\)|\(Code Review\)|\(Simplify\)/);
+  assert.match(table, /\(Plan Review\)/);
+  const prompt = rerunPrompt(`completion_commit: ${RERUN_SHA}\nlifecycle_rerun: requested\n`);
+  assert.ok(prompt.includes(RERUN_SHA), 'prompt must name the committed sha');
+  assert.match(prompt, /ONLY the missing pre-implementation artifacts/);
+});
+
+test('control: ticket without lifecycle_rerun keeps the unchanged table', () => {
+  assert.equal(buildTierResumeTable(MEDIUM_PHASES, false), buildTierResumeTable(MEDIUM_PHASES));
+  const prompt = rerunPrompt(`completion_commit: ${RERUN_SHA}\n`);
+  assert.ok(!prompt.includes('Lifecycle re-run of committed work'));
+  assert.match(prompt, /\(Implement\)/);
 });

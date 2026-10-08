@@ -454,8 +454,15 @@ const ALL_LIFECYCLE_PHASES: LifecyclePhase[] = [
   'implement', 'conformance', 'code_review', 'simplify',
 ];
 
-export function buildTierResumeTable(phases: LifecyclePhase[]): string {
-  const phaseSet = new Set<LifecyclePhase>(phases);
+const POST_PLAN_PHASES: LifecyclePhase[] = ['implement', 'conformance', 'code_review', 'simplify'];
+
+/** The phases that run before Implement: a re-run of committed work writes only these. */
+function preImplementationPhases(phases: LifecyclePhase[]): LifecyclePhase[] {
+  return phases.filter((phase) => !POST_PLAN_PHASES.includes(phase));
+}
+
+export function buildTierResumeTable(phases: LifecyclePhase[], preImplementationOnly = false): string {
+  const phaseSet = new Set<LifecyclePhase>(preImplementationOnly ? preImplementationPhases(phases) : phases);
   const rows: string[] = [];
   let step = 1;
 
@@ -474,11 +481,13 @@ export function buildTierResumeTable(phases: LifecyclePhase[]): string {
     }
     if (phaseSet.has('plan_review')) {
       rows.push(`| \`plan_*.md\` exists; no \`plan_review.md\` | ${step++} (Plan Review) |`);
-      rows.push(`| \`plan_*.md\` exists; \`plan_review.md\` says \`APPROVED\`; no implementation diff | ${step++} (Implement) |`);
-    } else {
+      if (!preImplementationOnly) {
+        rows.push(`| \`plan_*.md\` exists; \`plan_review.md\` says \`APPROVED\`; no implementation diff | ${step++} (Implement) |`);
+      }
+    } else if (!preImplementationOnly) {
       rows.push(`| \`plan_*.md\` exists; no implementation diff | ${step++} (Implement) |`);
     }
-  } else {
+  } else if (!preImplementationOnly) {
     rows.push(`| (none, or no implementation diff) | ${step++} (Implement) |`);
   }
 
@@ -1094,6 +1103,12 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
   return section;
 }
 
+/** The committed sha when the ticket is parked for a lifecycle re-run (`lifecycle_rerun: requested`), else null. */
+function committedRerunSha(ticketContent: string): string | null {
+  if (readFrontmatterField(ticketContent, 'lifecycle_rerun') !== 'requested') return null;
+  return readFrontmatterField(ticketContent, 'completion_commit');
+}
+
 /**
  * Fill the tier-scoped lifecycle scaffolding an implementation (non-review) prompt carries:
  * the resume table, the active-phase sections (plus any pre-rendered Code Graph Context),
@@ -1101,16 +1116,20 @@ export async function buildCodegraphContextSection(opts: CodegraphContextOptions
  */
 function applyTierLifecycleTemplate(workerPrompt: string, opts: BuildWorkerPromptOptions): string {
   const tier = opts.complexityTier ?? 'medium';
-  const activePhases = TIER_LIFECYCLE[tier];
+  const rerunSha = committedRerunSha(opts.ticket.ticketContent);
+  const activePhases = rerunSha === null ? TIER_LIFECYCLE[tier] : preImplementationPhases(TIER_LIFECYCLE[tier]);
   // Replacer functions, same reason as the $ARGUMENTS splice above: codegraphSection is
   // built from repo-derived symbol names and paths, so a replacement string would let a
   // `$$`/`$&`/dollar-quote symbol splice this template into itself.
   let rendered = workerPrompt
-    .replace('{{TIER_RESUME_TABLE}}', () => buildTierResumeTable(activePhases))
+    .replace('{{TIER_RESUME_TABLE}}', () => buildTierResumeTable(activePhases, rerunSha !== null))
     .replace(
       '{{TIER_LIFECYCLE_SECTIONS}}',
       () => buildTierLifecycleSections(activePhases, tier) + (opts.codegraphSection ?? ''),
     );
+  if (rerunSha !== null) {
+    rendered += `\n\n**Lifecycle re-run of committed work:** this ticket's implementation is already committed as \`${rerunSha}\`. This run produces ONLY the missing pre-implementation artifacts (research, plan and their reviews) describing that commit, then stops. Do NOT implement, edit project files, or re-do the shipped change.`;
+  }
   if (TIER_DIFF_ENVELOPE[tier] !== undefined) {
     rendered += `\n\n**Minimalism:** This is a ${tier} ticket. Make the smallest correct change. Do not refactor adjacent code, do not add abstractions, do not rename or restructure beyond the ticket's explicit ask. If the fix is one line, it is one line.`;
   }
