@@ -23,4 +23,4 @@ Produce conformance artifacts with acceptance criteria results, interface contra
 
 ## Boundaries
 
-Fix only defects required to make the implementation conform. Do not paper over failures, skip listed checks, or broaden the work beyond the assigned ticket.
+Fix only defects required to make the implementation conform. Do not paper over failures (adding members to a constant a guard reads to skip its check — an allowlist, uncovered-files or known-exceptions list, or a baseline — is not a fix; record a necessary exception with its reason as an open finding), skip listed checks, or broaden the work beyond the assigned ticket.

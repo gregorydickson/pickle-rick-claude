@@ -158,3 +158,11 @@ test('plan block builds fixtures through the input writer', () => {
   const out = buildTierLifecycleSections(TIER_LIFECYCLE.small, 'small');
   assert.ok(lifecycleSection(out, 'Plan').includes("through the input's writer"), 'small Plan step must name the writer');
 });
+
+test('Implement and Code Review sections warn against growing guard exception lists', () => {
+  const text = buildTierLifecycleSections(MEDIUM_PHASES, 'medium');
+  const implement = text.slice(text.indexOf('Implement\n'), text.indexOf('Spec Conformance'));
+  const review = text.slice(text.indexOf('Code Review\n'), text.indexOf('Simplify'));
+  assert.match(implement, /allowlist/i);
+  assert.match(review, /allowlist/i);
+});
