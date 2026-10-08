@@ -11,6 +11,7 @@ import {
   discoverSubsystems,
   discoverLanes,
   buildFlowLanes,
+  resolveAnatomyLaneRoster,
   MIN_LANE_FILES,
   cleanPhaseArtifacts,
   resetStateForPhase,
@@ -1077,6 +1078,97 @@ describe('buildFlowLanes', () => {
 // ---------------------------------------------------------------------------
 // cleanPhaseArtifacts
 // ---------------------------------------------------------------------------
+
+describe('resolveAnatomyLaneRoster', () => {
+  const FALLBACK = 'anatomy lanes: flow build fell back to directories: ';
+  // Three directory lanes; with `followup` a second commit edits one file per lane root.
+  function rosterFixture({ followup = false } = {}) {
+    const repo = fs.realpathSync(tmpDir());
+    const seed = initRepo(repo, laneSeedFiles(['alpha', 'beta', 'gamma']));
+    if (followup) {
+      for (const name of ['alpha', 'beta', 'gamma']) fs.writeFileSync(path.join(repo, name, 'a.ts'), 'export const a = 2;\n');
+      git(repo, 'commit', '-q', '-am', 'followup');
+    }
+    const sessionDir = fs.realpathSync(tmpDir());
+    fs.writeFileSync(path.join(sessionDir, 'anatomy-park.json'), JSON.stringify({ subsystems: ['alpha', 'beta', 'gamma'] }));
+    const logs = [];
+    const runtime = { sessionDir, target: repo, log: (m) => logs.push(m) };
+    const cleanup = () => { fs.rmSync(repo, { recursive: true, force: true }); fs.rmSync(sessionDir, { recursive: true, force: true }); };
+    return { repo, seed, sessionDir, runtime, logs, cleanup };
+  }
+  const persisted = (sessionDir) => readJson(path.join(sessionDir, 'anatomy-park.json')).lane_roster;
+
+  test('no review diff persists a roster equal to discoverLanes(target).lanes', () => {
+    const fx = rosterFixture();
+    try {
+      const roster = resolveAnatomyLaneRoster(fx.runtime, fx.seed);
+      const directories = discoverLanes(fx.repo).lanes;
+      assert.equal(directories.length, 3);
+      assert.deepEqual(roster.lanes, directories);
+      assert.deepEqual(persisted(fx.sessionDir), directories);
+      assert.equal(roster.fallbackReason, 'no review diff');
+      assert.deepEqual(fx.logs.filter((l) => l.startsWith(FALLBACK)), [`${FALLBACK}no review diff`]);
+      assert.deepEqual(readJson(path.join(fx.sessionDir, 'anatomy-park.json')).subsystems, ['alpha', 'beta', 'gamma'],
+        'the ledger beside the roster is kept');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('a forced buildFlowLanes throw yields the directory roster and the exact fallback line', () => {
+    const fx = rosterFixture({ followup: true });
+    try {
+      const roster = resolveAnatomyLaneRoster(fx.runtime, fx.seed, { buildFlowLanes: () => { throw new Error('boom'); } });
+      assert.deepEqual(roster.lanes, discoverLanes(fx.repo).lanes);
+      assert.deepEqual(persisted(fx.sessionDir), roster.lanes);
+      assert.deepEqual(fx.logs.filter((l) => l.startsWith(FALLBACK)), [`${FALLBACK}buildFlowLanes threw: boom`]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('zero flow lanes for a non-empty diff also falls back to directories', () => {
+    const fx = rosterFixture({ followup: true });
+    try {
+      const roster = resolveAnatomyLaneRoster(fx.runtime, fx.seed, { buildFlowLanes: () => [] });
+      assert.deepEqual(roster.lanes, discoverLanes(fx.repo).lanes);
+      assert.deepEqual(fx.logs.filter((l) => l.startsWith(FALLBACK)), [`${FALLBACK}0 flow lanes for 3 changed file(s)`]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('a review diff yields the flow roster, persisted, with no fallback line', () => {
+    const fx = rosterFixture({ followup: true });
+    try {
+      const roster = resolveAnatomyLaneRoster(fx.runtime, fx.seed);
+      assert.equal(roster.fallbackReason, null);
+      assert.deepEqual(roster.lanes, buildFlowLanes(fx.repo, fx.seed, ['alpha/a.ts', 'beta/a.ts', 'gamma/a.ts']));
+      assert.deepEqual(roster.lanes.map((l) => l.files), [['alpha/a.ts'], ['beta/a.ts'], ['gamma/a.ts']]);
+      assert.deepEqual(persisted(fx.sessionDir), roster.lanes);
+      assert.equal(fx.logs.filter((l) => l.startsWith(FALLBACK)).length, 0);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('the roster is built once: a later call reads it back even after HEAD moves', () => {
+    const fx = rosterFixture({ followup: true });
+    try {
+      const first = resolveAnatomyLaneRoster(fx.runtime, fx.seed);
+      fs.writeFileSync(path.join(fx.repo, 'beta', 'b.ts'), "import { a } from './a.js';\nexport const b = a;\n");
+      git(fx.repo, 'commit', '-q', '-am', 'lane fix');
+      const built = buildFlowLanes(fx.repo, fx.seed, ['alpha/a.ts', 'beta/a.ts', 'beta/b.ts', 'gamma/a.ts']);
+      assert.notDeepEqual(built, first.lanes, 'precondition: a rebuild would name different lanes');
+      let calls = 0;
+      const second = resolveAnatomyLaneRoster(fx.runtime, fx.seed, { buildFlowLanes: () => { calls++; return built; } });
+      assert.equal(calls, 0, 'the builder is not called again');
+      assert.deepEqual(second.lanes, first.lanes);
+    } finally {
+      fx.cleanup();
+    }
+  });
+});
 
 describe('cleanPhaseArtifacts', () => {
   test('archives and removes TASK_NOTES.md', () => {
@@ -5155,6 +5247,23 @@ describe('B-LANES WS-3: concurrent anatomy-park lanes', () => {
       }
     });
   }
+
+  test('a lane run with no review base runs the directory roster and names the fallback in the run summary', async () => {
+    const fx = makeLaneFixture({ pipeline: { anatomy_max_parallel_lanes: 3 } });
+    const calls = [];
+    try {
+      __setSpawnRunnerForTests(recordingRunner(calls, 10));
+      assert.equal(await runLaneMain(fx.sessionDir, fx.dataRoot), 0);
+      assert.deepEqual(readJson(path.join(fx.sessionDir, 'anatomy-park.json')).lane_roster, discoverLanes(fx.repo).lanes);
+      const dispositions = readJson(path.join(fx.sessionDir, 'pipeline-status.json')).phase_dispositions ?? {};
+      assert.match(dispositions['anatomy-park'] ?? '', /^lanes_fell_back_to_directories:/);
+      const rows = readJson(path.join(fx.sessionDir, 'archive', 'lanes.json'));
+      assert.ok(rows.every((row) => !('files' in row)), 'directory lane rows carry no files key');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
 
   test('13e: anatomy_max_parallel_lanes outside the positive integers resolves to the default without throwing', () => {
     for (const value of [undefined, 0, -1, 1.5, 'x', null, {}, []]) {

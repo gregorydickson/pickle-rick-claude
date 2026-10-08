@@ -2182,6 +2182,80 @@ function readAnatomyLanes(sessionDir: string): LaneRecord[] {
     && typeof lane?.dir === 'string' && Array.isArray(lane?.excludes));
 }
 
+/** The `anatomy-park.json` key holding the roster a lane run actually ran; distinct from `lanes`, which setup rewrites. */
+const LANE_ROSTER_KEY = 'lane_roster';
+
+function isLaneRecord(row: unknown): row is LaneRecord {
+  const lane = row as Partial<LaneRecord> | null;
+  return typeof lane?.name === 'string' && typeof lane.dir === 'string' && Array.isArray(lane.excludes)
+    && typeof lane.testRatioApplies === 'boolean' && typeof lane.fileCount === 'number'
+    && (lane.files === undefined || Array.isArray(lane.files));
+}
+
+/** The roster this phase already built, or `[]` when none was persisted. */
+function readPersistedLaneRoster(sessionDir: string): LaneRecord[] {
+  try {
+    const raw = (readRecoverableJsonObject(path.join(sessionDir, 'anatomy-park.json')) as Record<string, unknown> | null)?.[LANE_ROSTER_KEY];
+    return Array.isArray(raw) && raw.length > 0 && raw.every(isLaneRecord) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The review diff as flow lanes, or why there are none: changed files are `base_sha...HEAD` minus deletions, target-relative. */
+function flowLaneRoster(runtime: PipelineRuntime, baseSha: string | null, build: typeof buildFlowLanes): LaneRecord[] | string {
+  if (!baseSha) return 'no review base (scope carries no base_sha)';
+  let changed: string[];
+  try {
+    const repoRoot = gitRepoRoot(runtime.target);
+    const targetRel = path.relative(fs.realpathSync(repoRoot), fs.realpathSync(runtime.target)).split(path.sep).join('/');
+    changed = getDiffFiles(baseSha, 'HEAD', repoRoot)
+      .filter((entry) => entry.status !== 'D')
+      .map((entry) => (targetRel === '' ? entry.path : path.posix.relative(targetRel, entry.path)))
+      .filter((rel) => !rel.startsWith('..'));
+  } catch (err) {
+    return `review diff unreadable: ${safeErrorMessage(err)}`;
+  }
+  if (changed.length === 0) return 'no review diff';
+  try {
+    const lanes = build(runtime.target, baseSha, changed);
+    return lanes.length > 0 ? lanes : `0 flow lanes for ${changed.length} changed file(s)`;
+  } catch (err) {
+    return `buildFlowLanes threw: ${safeErrorMessage(err)}`;
+  }
+}
+
+/**
+ * The lane roster for this anatomy-park phase, built ONCE and persisted under `lane_roster` in the
+ * parent `anatomy-park.json`. A resume reads it back instead of rebuilding: lane commits move HEAD,
+ * so a rebuilt flow roster names different lanes and every lane ledger keyed by the old names would
+ * be zeroed. With a review diff the roster is `buildFlowLanes`; with none, or when the build throws
+ * or yields nothing, it is `discoverLanes(target).lanes` and `fallbackReason` says why. Never throws.
+ */
+export function resolveAnatomyLaneRoster(
+  runtime: PipelineRuntime,
+  baseSha: string | null,
+  deps: { buildFlowLanes?: typeof buildFlowLanes } = {},
+): { lanes: LaneRecord[]; fallbackReason: string | null } {
+  const persisted = readPersistedLaneRoster(runtime.sessionDir);
+  if (persisted.length > 0) {
+    runtime.log(`anatomy lanes: reusing the persisted roster of ${persisted.length} lane(s)`);
+    return { lanes: persisted, fallbackReason: null };
+  }
+  const flow = flowLaneRoster(runtime, baseSha, deps.buildFlowLanes ?? buildFlowLanes);
+  const fallbackReason = typeof flow === 'string' ? flow : null;
+  const lanes = typeof flow === 'string' ? discoverLanes(runtime.target).lanes : flow;
+  if (fallbackReason) runtime.log(`anatomy lanes: flow build fell back to directories: ${fallbackReason}`);
+  try {
+    const configPath = path.join(runtime.sessionDir, 'anatomy-park.json');
+    const prior = readRecoverableJsonObject(configPath) as Record<string, unknown> | null;
+    writeStateFile(configPath, { ...prior, [LANE_ROSTER_KEY]: lanes });
+  } catch (err) {
+    runtime.log(`anatomy lanes: could not persist the lane roster: ${safeErrorMessage(err)}`);
+  }
+  return { lanes, fallbackReason };
+}
+
 /** Book-keeping for one concurrent lane run: what a cancel must reach, and what must be torn down. */
 interface LaneRun {
   runtime: PipelineRuntime;
@@ -2678,7 +2752,9 @@ function integrateLaneRun(run: LaneRun, lanes: readonly LaneRecord[], ends: read
   if (retained.length > 0) runtime.log(`anatomy lanes: kept lane branch(es): ${retained.join(', ')}`);
   try {
     fs.mkdirSync(path.join(runtime.sessionDir, 'archive'), { recursive: true });
-    writeStateFile(path.join(runtime.sessionDir, 'archive', 'lanes.json'), outcomes);
+    // A flow lane's row also names its files; a directory lane's row is unchanged.
+    writeStateFile(path.join(runtime.sessionDir, 'archive', 'lanes.json'),
+      outcomes.map((o, i) => (lanes[i].files ? { ...o, files: lanes[i].files } : o)));
   } catch (err) {
     runtime.log(`anatomy lanes: could not write archive/lanes.json: ${safeErrorMessage(err)}`);
   }
@@ -5327,10 +5403,23 @@ export function unreproducibleNodeModulesGap(runtime: Pick<PipelineRuntime, 'tar
   }
 }
 
+/** The lane arm: resolve this phase's roster once, run it, and name a directory fallback for the run summary. */
+async function runAnatomyLanePhase(
+  runtime: PipelineRuntime,
+  scope: ScopeJson | undefined,
+  cap: number,
+): Promise<{ skipped: false; exitCode: number; disposition?: string }> {
+  const { lanes, fallbackReason } = resolveAnatomyLaneRoster(runtime, scope?.base_sha ?? null);
+  const exitCode = await runAnatomyLanes(runtime, lanes, cap);
+  return fallbackReason
+    ? { skipped: false, exitCode, disposition: `lanes_fell_back_to_directories:${fallbackReason}` }
+    : { skipped: false, exitCode };
+}
+
 async function runConfiguredPhase(
   runtime: PipelineRuntime,
   phaseConfig: PhaseConfig,
-): Promise<{ skipped: boolean; skipReason?: PhaseSkipReason; exitCode: number | null; stderr?: string }> {
+): Promise<{ skipped: boolean; skipReason?: PhaseSkipReason; exitCode: number | null; stderr?: string; disposition?: string }> {
   await postPhaseCleanup(phaseConfig.name, runtime.sessionDir);
   preparePhaseState(phaseConfig, runtime);
   const refreshed = refreshPhaseScope(phaseConfig, runtime);
@@ -5346,7 +5435,7 @@ async function runConfiguredPhase(
   // One predicate guards both parallel arms: a lane or unit worktree gets only the `node_modules` it can link.
   const missing = lanes.length >= 2 || pickleWaves ? unreproducibleNodeModulesGap(runtime) : 0;
   if (lanes.length >= 2) {
-    if (missing === 0) return { skipped: false, exitCode: await runAnatomyLanes(runtime, lanes, cap) };
+    if (missing === 0) return runAnatomyLanePhase(runtime, scope, cap);
     runtime.log(
       `anatomy lanes: disabled for this phase — lane worktrees cannot reproduce ${missing} node_modules dir(s); running serially`,
     );
@@ -6987,6 +7076,7 @@ async function runPhaseIterationBody(
     log(`Phase ${rawPhase} skipped (${result.skipReason ?? 'setup returned false'})`);
     return { action: 'continue' };
   }
+  if (result.disposition) appendPhaseDisposition(counters, rawPhase, result.disposition);
   const exitCode = result.exitCode ?? 1;
   log(`Phase ${rawPhase} exited with code ${exitCode}`);
   const handoffOutcome = withholdForCloserHandoff(runtime, counters, cancelMarker, rawPhase, exitCode, log);

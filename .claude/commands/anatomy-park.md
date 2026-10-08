@@ -353,7 +353,7 @@ Each iteration consists of three primary phases plus the mandatory Phase 2.5 rep
 Severity and confidence come from `szechuan-sauce-principles.md` (loaded in Override 1.5). Every finding is `[SEVERITY, conf=<score>]`. Drop `conf < 80` before Phase 2.
 
 <!-- scope-invariant: phase-1-reads-all-subsystem-files -->
-For the current subsystem, trace the COMPLETE data flow. Read every file the lane admits — for a remainder lane (`<dir>/.`) that excludes the children listed in its `excludes`, those children belong to their own lanes and are not read here. For each finding:
+For the current subsystem, trace the COMPLETE data flow. Read every file the lane admits — for a remainder lane (`<dir>/.`) that excludes the children listed in its `excludes`, those children belong to their own lanes and are not read here. A flow lane (named `flow:<file>`, carrying a `files` list) is a data flow through the review diff, not a directory: read its `files` and their one-hop importers, and write only its `files`. For each finding:
 
 1. **Trace data path**: input → bug → wrong output. Show exact path: "value X constructed at file.ts:123, passed to file2.ts:456, consumed at file3.ts:789 where it means something different because..."
 2. **Check fix history**: Run `git log --oneline --all -- <file>` for any file with a finding. If the same area was "fixed" before, verify the fix landed correctly, consumers use the fixed version, and it didn't introduce dead code.

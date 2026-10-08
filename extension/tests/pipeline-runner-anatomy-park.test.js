@@ -7,7 +7,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   __setSpawnRunnerForTests,
+  discoverLanes,
   main,
+  resolveAnatomyLaneRoster,
+  setupAnatomyPark,
 } from '../bin/pipeline-runner.js';
 
 class ExitIntercept extends Error {
@@ -186,3 +189,82 @@ test('pipeline downgrades known anatomy-park missing-key-metric fatal to phase_s
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+// The lane roster is built once per phase. A resume — setup re-runs, then the roster is resolved again
+// — must read the persisted roster back even though lane commits moved HEAD, or every lane ledger keyed
+// by the old lane names would be zeroed.
+const EXTENSION_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+
+async function withDataRoot(fn) {
+  const dataRoot = tmpDir('pipeline-aph-data-');
+  const prior = process.env.PICKLE_DATA_ROOT;
+  process.env.PICKLE_DATA_ROOT = dataRoot;
+  try {
+    return await fn();
+  } finally {
+    if (prior === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prior;
+    fs.rmSync(dataRoot, { recursive: true, force: true });
+  }
+}
+
+const readLedger = (dir) => JSON.parse(fs.readFileSync(path.join(dir, 'anatomy-park.json'), 'utf-8'));
+
+test('a resumed anatomy-park phase reads the persisted flow roster and keeps the lane ledger', () => withDataRoot(() => {
+  const { repo, sessionDir } = makeSession();
+  const laneDir = tmpDir('pipeline-aph-lane-');
+  const logs = [];
+  const log = (m) => logs.push(m);
+  try {
+    const seed = git(['rev-parse', 'HEAD'], repo);
+    fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 10;\n');
+    fs.writeFileSync(path.join(repo, 'services', 'b.ts'), 'export const b = 20;\n');
+    git(['commit', '-q', '-am', 'review diff'], repo);
+    assert.equal(setupAnatomyPark(sessionDir, repo, 3, EXTENSION_ROOT, log), true);
+    const runtime = { sessionDir, target: repo, log };
+    const first = resolveAnatomyLaneRoster(runtime, seed);
+    assert.deepEqual(first.lanes.map((l) => l.name), ['flow:services/a.ts', 'flow:services/b.ts']);
+
+    // The lane session's own ledger, seeded through its writer, then advanced by a pass.
+    fs.copyFileSync(path.join(sessionDir, 'state.json'), path.join(laneDir, 'state.json'));
+    const lane = first.lanes[1];
+    assert.equal(setupAnatomyPark(laneDir, repo, 3, EXTENSION_ROOT, log, undefined, false, { lanes: [lane] }), true);
+    const advanced = readLedger(laneDir);
+    advanced.pass_counts[lane.name] = 2;
+    advanced.findings_history[lane.name] = [{ pass: 1, findings: 1 }];
+    fs.writeFileSync(path.join(laneDir, 'anatomy-park.json'), JSON.stringify(advanced));
+
+    // A lane commit moves HEAD: rebuilt, the roster would join a.ts and b.ts into one lane.
+    fs.writeFileSync(path.join(repo, 'services', 'b.ts'), "import { a } from './a.js';\nexport const b = a;\n");
+    git(['commit', '-q', '-am', 'lane fix'], repo);
+
+    // Resume: setup runs again over the live session, then the roster is resolved again.
+    assert.equal(setupAnatomyPark(sessionDir, repo, 3, EXTENSION_ROOT, log), true);
+    const resumed = resolveAnatomyLaneRoster(runtime, seed);
+    assert.deepEqual(resumed.lanes, first.lanes, 'the persisted roster, not a rebuild');
+    assert.equal(setupAnatomyPark(laneDir, repo, 3, EXTENSION_ROOT, log, undefined, false, { lanes: [resumed.lanes[1]] }), true);
+    const ledger = readLedger(laneDir);
+    assert.equal(ledger.pass_counts[lane.name], 2, 'the lane ledger is not zeroed');
+    assert.deepEqual(ledger.findings_history[lane.name], [{ pass: 1, findings: 1 }]);
+  } finally {
+    for (const dir of [repo, sessionDir, laneDir]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+}));
+
+test('a persisted roster written without files round-trips unchanged', () => withDataRoot(() => {
+  const { repo, sessionDir } = makeSession();
+  try {
+    const directories = discoverLanes(repo).lanes;
+    assert.ok(directories.length > 0 && directories.every((l) => !('files' in l)), 'precondition: directory rows carry no files');
+    const configPath = path.join(sessionDir, 'anatomy-park.json');
+    const written = JSON.stringify({ subsystems: directories.map((l) => l.name), lane_roster: directories });
+    fs.writeFileSync(configPath, written);
+    const logs = [];
+    const roster = resolveAnatomyLaneRoster({ sessionDir, target: repo, log: (m) => logs.push(m) }, null);
+    assert.deepEqual(roster.lanes, directories);
+    assert.equal(roster.fallbackReason, null);
+    assert.equal(fs.readFileSync(configPath, 'utf-8'), written, 'the persisted roster is not rewritten');
+    assert.equal(logs.filter((l) => l.includes('fell back to directories')).length, 0);
+  } finally {
+    for (const dir of [repo, sessionDir]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+}));
