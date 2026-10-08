@@ -3,7 +3,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { buildJudgeInvocation, resolveBackendFromStateFile, type SpawnInvocation } from '../services/backend-spawn.js';
 import { isoCompactStamp } from '../services/pickle-utils.js';
-import { recoverCourseCorrectionFromLedger, type RecoverCourseCorrectionResult } from '../services/transaction-ticket-ops.js';
 import type { Backend } from '../types/index.js';
 
 const MAX_DISCOVERY_LENGTH = 2_000;
@@ -22,9 +21,6 @@ export interface CorrectCourseArgs {
   dryRun: boolean;
   autoApply: boolean;
   force: boolean;
-  recoverFromLedger: boolean;
-  recover: boolean;
-  ledgerPath?: string;
 }
 
 export interface CorrectCourseRunOptions {
@@ -37,7 +33,6 @@ export interface CorrectCourseRunResult {
   briefPath?: string;
   backend: Backend;
   invocation?: SpawnInvocation;
-  recovery?: RecoverCourseCorrectionResult;
 }
 
 export interface CourseCorrectionProposalValidationInput {
@@ -61,7 +56,7 @@ interface CorrectCoursePlan {
 }
 
 function usage(): never {
-  process.stderr.write('Usage: node correct-course.js "<discovery>" --session-dir <dir> [--repo-root <dir>] [--dry-run] [--auto-apply] [--force] [--recover-from-ledger] [--recover] [--ledger <path>]\n');
+  process.stderr.write('Usage: node correct-course.js "<discovery>" --session-dir <dir> [--repo-root <dir>] [--dry-run] [--auto-apply] [--force]\n');
   process.exit(1);
 }
 
@@ -70,9 +65,7 @@ export function parseArgs(argv: string[]): CorrectCourseArgs {
   if (!sessionDir) usage();
   const repoRoot = readFlag(argv, '--repo-root') ?? process.cwd();
   const discovery = readDiscovery(argv);
-  const recoverFromLedger = argv.includes('--recover-from-ledger');
-  const recover = argv.includes('--recover');
-  if (!recoverFromLedger && !recover) validateDiscovery(discovery);
+  validateDiscovery(discovery);
   return {
     sessionDir: path.resolve(sessionDir),
     repoRoot: path.resolve(repoRoot),
@@ -80,9 +73,6 @@ export function parseArgs(argv: string[]): CorrectCourseArgs {
     dryRun: argv.includes('--dry-run'),
     autoApply: argv.includes('--auto-apply'),
     force: argv.includes('--force'),
-    recoverFromLedger,
-    recover,
-    ledgerPath: readFlag(argv, '--ledger'),
   };
 }
 
@@ -108,7 +98,7 @@ function readDiscovery(argv: string[]): string {
 }
 
 function flagTakesValue(flag: string): boolean {
-  return flag === '--session-dir' || flag === '--repo-root' || flag === '--ledger';
+  return flag === '--session-dir' || flag === '--repo-root';
 }
 
 export function validateDiscovery(discovery: string): void {
@@ -138,8 +128,6 @@ export function buildCorrectCourseBrief(args: CorrectCourseArgs, createdAt: Date
     `- dry_run: ${args.dryRun}`,
     `- auto_apply: ${args.autoApply}`,
     `- force: ${args.force}`,
-    `- recover_from_ledger: ${args.recoverFromLedger}`,
-    `- recover: ${args.recover}`,
     '',
     '## Corrector Contract',
     '',
@@ -258,27 +246,6 @@ function planCorrectCourse(args: CorrectCourseArgs, now: Date): CorrectCoursePla
 export function runCorrectCourse(input: CorrectCourseArgs, opts: CorrectCourseRunOptions = {}): CorrectCourseRunResult {
   const now = opts.now ?? (() => new Date());
   const out = opts.stdout ?? ((message: string) => process.stdout.write(`${message}\n`));
-
-  if (input.recoverFromLedger || input.recover) {
-    if (input.recoverFromLedger && input.recover) {
-      throw new Error('Choose either --recover-from-ledger or --recover, not both.');
-    }
-    if (input.recover && !input.force) {
-      throw new Error('--recover requires --force.');
-    }
-    const recovery = recoverCourseCorrectionFromLedger({
-      sessionRoot: input.sessionDir,
-      ledgerPath: input.ledgerPath,
-      mode: input.recoverFromLedger ? 'reverse' : 'forward',
-      force: input.force,
-      now: now(),
-    });
-    out(`RECOVERY_LEDGER=${recovery.ledgerPath}`);
-    out(`RECOVERY_MODE=${recovery.mode}`);
-    out(`RECOVERED_STEPS=${recovery.recoveredSteps.join(',')}`);
-    const backend = resolveBackendFromStateFile(path.join(input.sessionDir, 'state.json'));
-    return { exitCode: 0, backend, recovery };
-  }
 
   // The plan path resolves the backend once inside planCorrectCourse (via
   // plan.backend); no separate read here keeps state.json a single-read per call.

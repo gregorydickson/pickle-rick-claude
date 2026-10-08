@@ -44,9 +44,6 @@ test('correct-course parseArgs resolves session, repo, discovery, and flags', ()
     '--dry-run',
     '--auto-apply',
     '--force',
-    '--recover-from-ledger',
-    '--recover',
-    '--ledger', '/tmp/session/change_proposal_apply.log',
   ]);
 
   assert.equal(args.sessionDir, path.resolve('/tmp/session'));
@@ -55,19 +52,6 @@ test('correct-course parseArgs resolves session, repo, discovery, and flags', ()
   assert.equal(args.dryRun, true);
   assert.equal(args.autoApply, true);
   assert.equal(args.force, true);
-  assert.equal(args.recoverFromLedger, true);
-  assert.equal(args.recover, true);
-  assert.equal(args.ledgerPath, '/tmp/session/change_proposal_apply.log');
-});
-
-test('correct-course parseArgs allows empty discovery for recovery mode', () => {
-  const args = parseArgs([
-    '--session-dir', '/tmp/session',
-    '--recover-from-ledger',
-  ]);
-
-  assert.equal(args.discovery, '');
-  assert.equal(args.recoverFromLedger, true);
 });
 
 test('correct-course validates discovery statement', () => {
@@ -87,8 +71,6 @@ test('correct-course writes a timestamped brief under the session root', () => {
       dryRun: false,
       autoApply: false,
       force: false,
-      recoverFromLedger: false,
-      recover: false,
     }, {
       stdout: (line) => stdout.push(line),
       now: () => new Date('2026-04-30T12:34:56.000Z'),
@@ -117,8 +99,6 @@ test('correct-course dry-run emits JSON and does not write the brief', () => {
       dryRun: true,
       autoApply: false,
       force: false,
-      recoverFromLedger: false,
-      recover: false,
     }, {
       stdout: (line) => stdout.push(line),
       now: () => new Date('2026-04-30T12:00:00.000Z'),
@@ -145,8 +125,6 @@ test('correct-course planned codex invocation is read-only and never bypasses sa
       dryRun: true,
       autoApply: false,
       force: false,
-      recoverFromLedger: false,
-      recover: false,
     }, { stdout: () => {}, now: () => new Date('2026-04-30T12:00:00.000Z') });
 
     assert.equal(result.invocation.cmd, 'codex');
@@ -169,8 +147,6 @@ test('correct-course planned claude invocation has no Edit, Write, or Bash tools
       dryRun: true,
       autoApply: false,
       force: false,
-      recoverFromLedger: false,
-      recover: false,
     }, { stdout: () => {}, now: () => new Date('2026-04-30T12:00:00.000Z') });
 
     assert.equal(result.invocation.cmd, 'claude');
@@ -194,8 +170,6 @@ test('buildCorrectCourseBrief documents proposal-only manager boundary', () => {
     dryRun: false,
     autoApply: true,
     force: false,
-    recoverFromLedger: false,
-    recover: false,
   }, new Date('2026-04-30T00:00:00.000Z'));
 
   assert.match(brief, /The corrector produces proposal content only/);
@@ -369,122 +343,3 @@ test('validateCourseCorrectionProposal accepts null restart point with documente
   }
 });
 
-test('correct-course --recover-from-ledger executes reverse recovery', () => {
-  const sessionDir = tmpSession('codex');
-  try {
-    const ticketDir = path.join(sessionDir, 'abc123');
-    fs.mkdirSync(ticketDir);
-    const ticketPath = path.join(ticketDir, 'rick_ticket_abc123.md');
-    const before = [
-      '---',
-      'id: abc123',
-      'status: "Todo"',
-      '---',
-      '',
-    ].join('\n');
-    const after = before.replace('status: "Todo"', 'status: "Killed"');
-    fs.writeFileSync(ticketPath, after);
-    const ledgerPath = path.join(sessionDir, 'change_proposal_2026-04-30T18-00-00Z_apply.log');
-    fs.writeFileSync(ledgerPath, `${JSON.stringify({
-      step: 1,
-      action: 'write',
-      operation: 'kill_ticket',
-      ticket_id: 'abc123',
-      path: ticketPath,
-      status: 'applied',
-      recovery_class: 'restore-previous-content',
-      beforeContent: before,
-      previousContent: before,
-      afterContent: after,
-      createdAt: '2026-04-30T18:00:00.000Z',
-    })}\n`);
-    const stdout = [];
-
-    const result = runCorrectCourse({
-      sessionDir,
-      repoRoot: sessionDir,
-      discovery: '',
-      dryRun: false,
-      autoApply: false,
-      force: false,
-      recoverFromLedger: true,
-      recover: false,
-      ledgerPath,
-    }, {
-      stdout: (line) => stdout.push(line),
-      now: () => new Date('2026-04-30T18:05:00.000Z'),
-    });
-
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.recovery.mode, 'reverse');
-    assert.equal(fs.readFileSync(ticketPath, 'utf-8'), before);
-    assert.deepEqual(stdout, [
-      `RECOVERY_LEDGER=${ledgerPath}`,
-      'RECOVERY_MODE=reverse',
-      'RECOVERED_STEPS=1',
-    ]);
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
-});
-
-test('correct-course --recover requires --force and executes forward recovery', () => {
-  const sessionDir = tmpSession('codex');
-  try {
-    const ticketDir = path.join(sessionDir, 'abc123');
-    fs.mkdirSync(ticketDir);
-    const ticketPath = path.join(ticketDir, 'rick_ticket_abc123.md');
-    const before = [
-      '---',
-      'id: abc123',
-      'status: "Todo"',
-      '---',
-      '',
-    ].join('\n');
-    const after = before.replace('status: "Todo"', 'status: "Killed"');
-    fs.writeFileSync(ticketPath, before);
-    const ledgerPath = path.join(sessionDir, 'change_proposal_2026-04-30T19-00-00Z_apply.log');
-    fs.writeFileSync(ledgerPath, `${JSON.stringify({
-      step: 1,
-      action: 'write',
-      operation: 'kill_ticket',
-      ticket_id: 'abc123',
-      path: ticketPath,
-      status: 'failed',
-      recovery_class: 'restore-previous-content',
-      beforeContent: before,
-      previousContent: before,
-      afterContent: after,
-      createdAt: '2026-04-30T19:00:00.000Z',
-    })}\n`);
-
-    assert.throws(() => runCorrectCourse({
-      sessionDir,
-      repoRoot: sessionDir,
-      discovery: '',
-      dryRun: false,
-      autoApply: false,
-      force: false,
-      recoverFromLedger: false,
-      recover: true,
-      ledgerPath,
-    }), /--recover requires --force/);
-
-    const result = runCorrectCourse({
-      sessionDir,
-      repoRoot: sessionDir,
-      discovery: '',
-      dryRun: false,
-      autoApply: false,
-      force: true,
-      recoverFromLedger: false,
-      recover: true,
-      ledgerPath,
-    }, { stdout: () => {}, now: () => new Date('2026-04-30T19:05:00.000Z') });
-
-    assert.equal(result.recovery.mode, 'forward');
-    assert.equal(fs.readFileSync(ticketPath, 'utf-8'), after);
-  } finally {
-    fs.rmSync(sessionDir, { recursive: true, force: true });
-  }
-});

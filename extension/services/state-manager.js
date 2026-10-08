@@ -256,8 +256,8 @@ function stagingSuffix() {
  * place — one atomic step, so the lock can never be seen without the pid that holds it. Creating
  * the lock first and writing the pid second leaves a window where it exists EMPTY, and an empty
  * payload is unreclaimable BY DESIGN: `isDeadPidPayload` cannot prove death from it, so a holder
- * killed in that window wedges the lock forever. The gate and restructure locks have no age-based
- * arm to fall back on (they legitimately hold for minutes), so nothing recovers them. Widening the
+ * killed in that window wedges the lock forever. The gate lock has no age-based arm to fall back
+ * on (it legitimately holds for minutes), so nothing recovers it. Widening the
  * reclaim rule to steal an empty payload is not the fix — a LIVE holder is empty in that same
  * window, so such a steal would evict it.
  */
@@ -1176,13 +1176,12 @@ export class StateManager {
     }
     /**
      * Positive proof of death and NOTHING else — the rule `reclaimDeadLock` states for every other
-     * lock in the system, which this fifth lock re-derived and diverged from.
+     * lock in the system, which this lock re-derived and diverged from.
      *
-     * An age arm here evicts a LIVE holder: `transaction` takes this lock across
-     * `applyTicketFileWrites`, and a restructure legitimately holds while it rewrites every ticket in
-     * the session (see `reclaimDeadRestructureLock`, which refuses an age verdict for exactly that
-     * reason). Any age window expires mid-transaction, the contender steals a live holder's lock, and
-     * both write `state.json` from their own snapshot — the lost update this file exists to prevent.
+     * An age arm here evicts a LIVE holder: `transaction` holds this lock for as long as its callback
+     * runs, however long that is. Any age window can expire mid-transaction, the contender steals a
+     * live holder's lock, and both write `state.json` from their own snapshot — the lost update this
+     * file exists to prevent.
      * `assertOnDiskSchemaNotNewer` cannot see it: neither writer changes `schema_version`.
      *
      * A non-integer pid is not proof either — it defers at `isProcessAlive`, which answers
