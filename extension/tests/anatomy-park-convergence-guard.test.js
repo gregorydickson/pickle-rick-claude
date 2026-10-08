@@ -355,3 +355,14 @@ test('AP-EXT-ITER42-03: a NON-anatomy-park session with no key_metric is still r
     // still fail "key_metric is required for microverse mode".
     assert.equal(readMicroverseState(dir), null, 'a metric-mode session must not be admitted');
 });
+
+test('clean-pass increment rule requires flows_traced and treats the sha as audit-only', () => {
+    const md = fs.readFileSync(
+        path.resolve(import.meta.dirname, '../../.claude/commands/anatomy-park.md'),
+        'utf8',
+    );
+    const rule = md.split('\n').find((l) => l.startsWith('- `consecutive_clean[subsystem]` ='));
+    assert.ok(rule, 'consecutive_clean increment rule present');
+    assert.match(rule, /non-empty `flows_traced`/);
+    assert.match(rule, /NOT a cleanliness condition/);
+});

@@ -529,7 +529,7 @@ Examples:
 
 After each iteration, update `${SESSION_ROOT}/anatomy-park.json`:
 - `pass_counts[subsystem]` += 1
-- `consecutive_clean[subsystem]` = (zero findings ? previous + 1 : 0)
+- `consecutive_clean[subsystem]` = (zero findings AND the `findings_history` entry for this pass carries a non-empty `flows_traced` list (write → store → read → surface, from the review diff) and `reviewed_sha` (the HEAD sha reviewed) ? previous + 1 : 0). The sha is recorded for audit only and is NOT a cleanliness condition — two consecutive clean passes legitimately share a sha, because a clean pass commits nothing.
 - `stall_counts[subsystem]` = (reverted ? previous + 1 : 0)
 - `findings_history[subsystem]` = append current findings summary
 - `trap_doors_added` = append any new trap doors identified in Phase 1 or replayed in Phase 2.5, including `pattern_shape`
