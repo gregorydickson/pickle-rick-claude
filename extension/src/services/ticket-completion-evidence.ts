@@ -29,7 +29,7 @@ import {
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from './artifact-validation.js';
 import { VALID_TICKET_COMPLEXITY_TIERS, type TicketComplexityTier } from './pickle-utils.js';
 import { gitReportedExitStatus } from './git-utils.js';
-import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { UNBOUNDED_READ_MAX_BUFFER, matchesArtifactPrefix } from '../types/index.js';
 
 /**
  * Count ceiling for the trailer scan, used ONLY when the session carries no
@@ -1077,6 +1077,54 @@ function hasLifecycleArtifacts(
     onCouldNotMeasure?.();
     return false;
   }
+}
+
+/**
+ * The tier-lifecycle answer for a ticket, with every reason it could not be
+ * measured named rather than folded into "missing" (which is what
+ * `hasLifecycleArtifacts`' single `false` does).
+ */
+export type LifecycleArtifactStatus =
+  | { kind: 'complete' }
+  | { kind: 'missing'; prefixes: string[] }
+  | { kind: 'unmeasured'; reason: 'no_ticket' | 'tierless' | 'unreadable' };
+
+/** Every gated artifact prefix any tier can require, derived from the tier table. */
+const KNOWN_ARTIFACT_PREFIXES = [...new Set(VALID_TICKET_COMPLEXITY_TIERS.flatMap(requiredTierArtifactPrefixes))];
+
+/**
+ * `file` is the `prefix` artifact and not a longer sibling's: `research_review.md`
+ * matches `research` under `matchesArtifactPrefix`, but it is the review of the
+ * research, not the research itself. Same rule as `newestExecutablePlanFile`.
+ */
+function satisfiesArtifactPrefix(file: string, prefix: string): boolean {
+  return matchesArtifactPrefix(file, prefix) && !KNOWN_ARTIFACT_PREFIXES.some(
+    (longer) => longer.startsWith(`${prefix}_`) && matchesArtifactPrefix(file, longer),
+  );
+}
+
+/** Which of the ticket's declared-tier lifecycle artifacts are absent from its directory. */
+export function lifecycleArtifactStatus(ticketPath: string): LifecycleArtifactStatus {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(ticketPath, 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return { kind: 'unmeasured', reason: code === 'ENOENT' ? 'no_ticket' : 'unreadable' };
+  }
+  const declaredTier = readFrontmatterField(raw, 'complexity_tier')?.trim().toLowerCase();
+  if (!declaredTier || !(VALID_TICKET_COMPLEXITY_TIERS as readonly string[]).includes(declaredTier)) {
+    return { kind: 'unmeasured', reason: 'tierless' };
+  }
+  let files: string[];
+  try {
+    files = fs.readdirSync(path.dirname(ticketPath));
+  } catch {
+    return { kind: 'unmeasured', reason: 'unreadable' };
+  }
+  const missing = requiredTierArtifactPrefixes(declaredTier as TicketComplexityTier)
+    .filter((prefix) => !files.some((file) => satisfiesArtifactPrefix(file, prefix)));
+  return missing.length > 0 ? { kind: 'missing', prefixes: missing } : { kind: 'complete' };
 }
 
 /**

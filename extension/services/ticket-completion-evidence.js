@@ -23,7 +23,7 @@ import { readFrontmatterField, upsertFrontmatterField, normalizeCompletionCommit
 import { findMissingPrefixes, requiredTierArtifactPrefixes } from './artifact-validation.js';
 import { VALID_TICKET_COMPLEXITY_TIERS } from './pickle-utils.js';
 import { gitReportedExitStatus } from './git-utils.js';
-import { UNBOUNDED_READ_MAX_BUFFER } from '../types/index.js';
+import { UNBOUNDED_READ_MAX_BUFFER, matchesArtifactPrefix } from '../types/index.js';
 /**
  * Count ceiling for the trailer scan, used ONLY when the session carries no
  * usable `startTimeEpoch`. With an epoch, the window is bounded on the SAME
@@ -792,6 +792,41 @@ function hasLifecycleArtifacts(ctx, onCouldNotMeasure) {
         onCouldNotMeasure?.();
         return false;
     }
+}
+/** Every gated artifact prefix any tier can require, derived from the tier table. */
+const KNOWN_ARTIFACT_PREFIXES = [...new Set(VALID_TICKET_COMPLEXITY_TIERS.flatMap(requiredTierArtifactPrefixes))];
+/**
+ * `file` is the `prefix` artifact and not a longer sibling's: `research_review.md`
+ * matches `research` under `matchesArtifactPrefix`, but it is the review of the
+ * research, not the research itself. Same rule as `newestExecutablePlanFile`.
+ */
+function satisfiesArtifactPrefix(file, prefix) {
+    return matchesArtifactPrefix(file, prefix) && !KNOWN_ARTIFACT_PREFIXES.some((longer) => longer.startsWith(`${prefix}_`) && matchesArtifactPrefix(file, longer));
+}
+/** Which of the ticket's declared-tier lifecycle artifacts are absent from its directory. */
+export function lifecycleArtifactStatus(ticketPath) {
+    let raw;
+    try {
+        raw = fs.readFileSync(ticketPath, 'utf8');
+    }
+    catch (err) {
+        const code = err.code;
+        return { kind: 'unmeasured', reason: code === 'ENOENT' ? 'no_ticket' : 'unreadable' };
+    }
+    const declaredTier = readFrontmatterField(raw, 'complexity_tier')?.trim().toLowerCase();
+    if (!declaredTier || !VALID_TICKET_COMPLEXITY_TIERS.includes(declaredTier)) {
+        return { kind: 'unmeasured', reason: 'tierless' };
+    }
+    let files;
+    try {
+        files = fs.readdirSync(path.dirname(ticketPath));
+    }
+    catch {
+        return { kind: 'unmeasured', reason: 'unreadable' };
+    }
+    const missing = requiredTierArtifactPrefixes(declaredTier)
+        .filter((prefix) => !files.some((file) => satisfiesArtifactPrefix(file, prefix)));
+    return missing.length > 0 ? { kind: 'missing', prefixes: missing } : { kind: 'complete' };
 }
 /**
  * B-GTRUTH WS-A1: the zero-diff completion arm — the ONE place "complete, and

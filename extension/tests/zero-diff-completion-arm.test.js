@@ -31,6 +31,7 @@ import ts from 'typescript';
 import {
   evaluateCompletionEvidence,
   gateForPhantomDoneRevert,
+  lifecycleArtifactStatus,
 } from '../services/ticket-completion-evidence.js';
 
 const TICKET_ID = 'zd111111';
@@ -802,4 +803,65 @@ test('AP-EXT-ITER182-01: no pin reads a source file outside the declared readers
     'codeMask has exactly two callers: readCode, and the anchor test that proves it',
   );
   assert.ok(maskCallers.length > 0, 'the anchor test must still exercise codeMask');
+});
+
+// ---------------------------------------------------------------------------
+// lifecycleArtifactStatus — the three-state tier answer the Done-flip guard consumes.
+// A review artifact never stands in for its subject phase, and every reason the
+// answer could not be measured is named rather than collapsed into "missing".
+// ---------------------------------------------------------------------------
+
+function statusFor(ticketOpts) {
+  const sessionDir = mkTmp('pickle-zd-status-');
+  try {
+    const ticketDir = writeZeroDiffTicket(sessionDir, { intent: null, ...ticketOpts });
+    return lifecycleArtifactStatus(path.join(ticketDir, `rick_ticket_${TICKET_ID}.md`));
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+}
+
+test('lifecycleArtifactStatus: review artifacts do not satisfy research or plan', () => {
+  const status = statusFor({
+    artifacts: ['research_review.md', 'plan_review.md', 'conformance_2026-10-08.md', 'code_review_2026-10-08.md'],
+  });
+  assert.equal(status.kind, 'missing');
+  assert.deepEqual(status.prefixes, ['research', 'plan']);
+});
+
+test('lifecycleArtifactStatus: the full medium set is complete', () => {
+  assert.deepEqual(statusFor({ artifacts: MEDIUM_TIER_ARTIFACTS }), { kind: 'complete' });
+});
+
+test('lifecycleArtifactStatus: a small ticket holding only plan_review.md is missing plan', () => {
+  const status = statusFor({ tier: 'small', artifacts: ['plan_review.md', 'code_review_2026-10-08.md'] });
+  assert.deepEqual(status, { kind: 'missing', prefixes: ['plan'] });
+});
+
+test('lifecycleArtifactStatus: a ticket with no declared tier is unmeasured, not missing', () => {
+  assert.deepEqual(statusFor({ tier: null, artifacts: [] }), { kind: 'unmeasured', reason: 'tierless' });
+});
+
+test('lifecycleArtifactStatus: an absent ticket file is unmeasured (no_ticket)', () => {
+  const sessionDir = mkTmp('pickle-zd-status-');
+  try {
+    assert.deepEqual(
+      lifecycleArtifactStatus(path.join(sessionDir, TICKET_ID, `rick_ticket_${TICKET_ID}.md`)),
+      { kind: 'unmeasured', reason: 'no_ticket' },
+    );
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('lifecycleArtifactStatus: a ticket path that cannot be read is unmeasured (unreadable)', () => {
+  const sessionDir = mkTmp('pickle-zd-status-');
+  try {
+    // A directory at the ticket path fails the read with EISDIR for every uid, root included.
+    const ticketPath = path.join(sessionDir, TICKET_ID, `rick_ticket_${TICKET_ID}.md`);
+    fs.mkdirSync(ticketPath, { recursive: true });
+    assert.deepEqual(lifecycleArtifactStatus(ticketPath), { kind: 'unmeasured', reason: 'unreadable' });
+  } finally {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
 });

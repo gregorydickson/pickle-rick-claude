@@ -7739,6 +7739,138 @@ test('Z1-6 (B-RUNREPORT-54 T1): the verdict token on the line AFTER the heading 
     assert.equal(isAcceptanceAssertionRefusal(guard), true);
 });
 
+// --- A committed ticket missing its tier's lifecycle artifacts is re-run once, then accepted and stamped ---
+//
+// The guard's committed accept arm reads the ticket dir's tier artifacts. The first evaluation of an
+// incomplete set parks the ticket (Done -> In Progress, `lifecycle_rerun: requested`, no exit_reason);
+// the second accepts and stamps `accepted_incomplete`. Tierless or unmeasured tickets accept unstamped.
+
+const LIFECYCLE_MEDIUM_SET = [
+    'research_2026-10-08.md', 'research_review.md', 'plan_2026-10-08.md', 'plan_review.md',
+    'conformance_2026-10-08.md', 'code_review_2026-10-08.md',
+];
+
+function writeTieredTicket(sessionDir, ticketId, { tier = 'medium', artifacts = [], status = 'Done' } = {}) {
+    const ticketDir = path.join(sessionDir, ticketId);
+    fs.mkdirSync(ticketDir, { recursive: true });
+    fs.writeFileSync(path.join(ticketDir, `rick_ticket_${ticketId}.md`), [
+        '---',
+        `id: ${ticketId}`,
+        'title: Lifecycle rerun fixture',
+        `status: ${status}`,
+        'order: 1',
+        ...(tier ? [`complexity_tier: ${tier}`] : []),
+        '---',
+        '# Description',
+        '',
+        '## Acceptance Criteria',
+        '- [x] criterion met',
+        '',
+    ].join('\n'));
+    for (const name of artifacts) fs.writeFileSync(path.join(ticketDir, name), 'artifact\n');
+}
+
+function readLifecycleRerun(sessionDir, ticketId) {
+    const content = fs.readFileSync(path.join(sessionDir, ticketId, `rick_ticket_${ticketId}.md`), 'utf-8');
+    const match = /^lifecycle_rerun:\s*"?([^"\n]+)"?$/m.exec(content);
+    return match ? match[1].trim() : null;
+}
+
+function lifecycleCase(ticketId, ticketOpts) {
+    const { repo, startCommit } = z1Repo();
+    const { sessionDir, statePath } = z1Session(repo, startCommit, ticketId);
+    writeTieredTicket(sessionDir, ticketId, ticketOpts);
+    z1CommitTrailered(repo, 'marker.txt', 'work\n', ticketId);
+    return { repo, startCommit, sessionDir, statePath };
+}
+
+async function guardLifecycleCase(ticketId, ticketOpts) {
+    const { guardCompletionCommitBeforeDone } = await import('../bin/mux-runner.js');
+    const fixture = lifecycleCase(ticketId, ticketOpts);
+    const evaluate = () => withProductionGuard(() => guardCompletionCommitBeforeDone({
+        sessionDir: fixture.sessionDir, ticketId, workingDir: fixture.repo, flags: null, rereadBackoffMs: 0,
+    }));
+    return { ...fixture, evaluate };
+}
+
+test('lifecycle rerun: a committed medium ticket holding only conformance + code_review is parked once, not Done', async () => {
+    const { isAcceptanceAssertionRefusal, LIFECYCLE_RERUN_REQUESTED } = await import('../bin/mux-runner.js');
+    const ticketId = 'lc-missing-early';
+    const { sessionDir, statePath, evaluate } = await guardLifecycleCase(ticketId, {
+        artifacts: ['conformance_2026-10-08.md', 'code_review_2026-10-08.md'],
+    });
+
+    const guard = evaluate();
+
+    assert.equal(guard.ok, false, 'the committed accept arm must refuse an incomplete lifecycle the first time');
+    assert.equal(guard.disposition, LIFECYCLE_RERUN_REQUESTED);
+    assert.equal(isAcceptanceAssertionRefusal(guard), true, 'every handler must read this as a LOCAL park');
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'In Progress');
+    assert.equal(z1ExitReason(statePath), null, 'the park records no exit_reason');
+    assert.equal(readLifecycleRerun(sessionDir, ticketId), 'requested');
+});
+
+test('lifecycle rerun: review artifacts do not stand in for research and plan — still parked', async () => {
+    const ticketId = 'lc-reviews-only';
+    const { sessionDir, evaluate } = await guardLifecycleCase(ticketId, {
+        artifacts: ['research_review.md', 'plan_review.md', 'conformance_2026-10-08.md', 'code_review_2026-10-08.md'],
+    });
+
+    const guard = evaluate();
+
+    assert.equal(guard.ok, false);
+    assert.equal(readLifecycleRerun(sessionDir, ticketId), 'requested');
+});
+
+test('lifecycle rerun control: the full medium artifact set is accepted and no field is written', async () => {
+    const ticketId = 'lc-complete';
+    const { sessionDir, evaluate } = await guardLifecycleCase(ticketId, { artifacts: LIFECYCLE_MEDIUM_SET });
+
+    const guard = evaluate();
+
+    assert.equal(guard.ok, true);
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'Done');
+    assert.equal(readLifecycleRerun(sessionDir, ticketId), null);
+});
+
+test('lifecycle rerun: the second evaluation of a still-incomplete ticket accepts and stamps accepted_incomplete', async () => {
+    const ticketId = 'lc-second-pass';
+    const { sessionDir, evaluate } = await guardLifecycleCase(ticketId, {
+        artifacts: ['conformance_2026-10-08.md', 'code_review_2026-10-08.md'],
+    });
+
+    assert.equal(evaluate().ok, false, 'first evaluation parks');
+    const second = evaluate();
+
+    assert.equal(second.ok, true, 'the re-run happened once; the second evaluation accepts');
+    assert.equal(readLifecycleRerun(sessionDir, ticketId), 'accepted_incomplete');
+});
+
+test('lifecycle rerun: a tierless ticket is unmeasured — accepted with no field written', async () => {
+    const ticketId = 'lc-tierless';
+    const { sessionDir, evaluate } = await guardLifecycleCase(ticketId, { tier: null, artifacts: [] });
+
+    const guard = evaluate();
+
+    assert.equal(guard.ok, true);
+    assert.equal(readLifecycleRerun(sessionDir, ticketId), null);
+});
+
+test('lifecycle rerun: the auto-completion handler leaves the parked ticket and records no exit_reason', async () => {
+    const { applyAutoTicketCompletionValidation, LIFECYCLE_RERUN_REQUESTED } = await import('../bin/mux-runner.js');
+    const ticketId = 'lc-handler';
+    const { repo, startCommit, sessionDir, statePath } = lifecycleCase(ticketId, {
+        status: 'In Progress', artifacts: ['conformance_2026-10-08.md', 'code_review_2026-10-08.md'],
+    });
+
+    const verdict = withProductionGuard(() => applyAutoTicketCompletionValidation({
+        sessionDir, ticketId, workingDir: repo, startCommit, iteration: 1, statePath, flags: null,
+    }));
+
+    assert.deepEqual(verdict, { action: 'leave', reason: LIFECYCLE_RERUN_REQUESTED });
+    assert.equal(z1ExitReason(statePath), null);
+});
+
 // ---------------------------------------------------------------------------
 // #72: a usage-limit WARNING parks through the existing rate-limit park and
 // never probes (the API still serves, so a probe reads "cleared" and would

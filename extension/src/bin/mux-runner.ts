@@ -28,7 +28,7 @@ import {
 import { getHeadBranch, gitReportedExitStatus, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, listWorkingTreeDirtyPathsExcludingCodegraph, probeTreeDirty, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES, type ArchiveContext, type ArchiveResult } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible, type PlanPhase, type RecoveryDeps, type RecoveryEvidence, type RecoveryOutcome, type ReExecutionSeam } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds, type ArtifactProgressSnapshot } from '../services/artifact-progress-detector.js';
-import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, type EvidenceCtx, type RevertDecision, type CompletionDecisionCtx, type CompletionDecisionKind } from '../services/ticket-completion-evidence.js';
+import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, lifecycleArtifactStatus, type EvidenceCtx, type RevertDecision, type CompletionDecisionCtx, type CompletionDecisionKind } from '../services/ticket-completion-evidence.js';
 import { isUnrunnableCheckResult } from '../services/convergence-gate.js';
 import { readDeclaredFiles } from '../services/ticket-declared-files.js';
 import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
@@ -3985,7 +3985,7 @@ export function applyAutoTicketCompletionValidation(input: ApplyAutoTicketComple
     });
     if (!guard.ok) {
       return isAcceptanceAssertionRefusal(guard)
-        ? { action: 'leave', reason: ACCEPTANCE_ASSERTION_FAILED }
+        ? { action: 'leave', reason: guard.disposition }
         : reportDoneWithoutCommitEvidence(input, guard.reason);
     }
     // R-PEDC: clear any stale done_without_commit_evidence before marking Done.
@@ -6210,6 +6210,11 @@ export function advisoryWorkerGateResidualDetail(
  */
 export const ACCEPTANCE_ASSERTION_FAILED = 'acceptance_assertion_failed' as const;
 
+/** A committed ticket missing its tier's lifecycle artifacts is parked once for a re-run. */
+export const LIFECYCLE_RERUN_REQUESTED = 'lifecycle_rerun_requested' as const;
+
+type LocalParkDisposition = typeof ACCEPTANCE_ASSERTION_FAILED | typeof LIFECYCLE_RERUN_REQUESTED;
+
 /** One assertion's runtime bound. A timeout is UNMEASURED, never a refusal. */
 const ACCEPTANCE_ASSERTION_TIMEOUT_MS = 120_000;
 
@@ -6235,8 +6240,8 @@ type DoneFlipGuardRefusal = {
   reason: string;
   source: CompletionCommitEvidence['source'];
   testsVerdict: 'green' | 'red' | 'not_run' | null;
-  /** Z1: present only on the refusal a failed executable acceptance assertion produced. */
-  disposition?: typeof ACCEPTANCE_ASSERTION_FAILED;
+  /** Present only on a LOCAL park refusal: the ticket waits, the loop continues, nothing is stamped. */
+  disposition?: LocalParkDisposition;
 };
 
 /**
@@ -6317,25 +6322,78 @@ function findFailedAcceptanceAssertion(sessionDir: string, ticketId: string, wor
   return null;
 }
 
+/** Un-claim a worker's self-flipped Done so a parked ticket is picked up again. */
+function unclaimSelfFlippedDone(args: { sessionDir: string; ticketId: string }): void {
+  try {
+    if (normalizedStatus(getTicketStatus(args.sessionDir, args.ticketId)) === 'done') {
+      writeTicketStatus(args.sessionDir, args.ticketId, 'In Progress');
+    }
+  } catch { /* best-effort: the refusal still withholds the flip */ }
+}
+
 /** Z1: park the ticket (un-claim a worker's self-flipped Done) and refuse the flip with the named disposition. */
 function refuseDoneOnFailedAcceptanceAssertion(
   args: { sessionDir: string; ticketId: string },
   failed: AcceptanceAssertionFailure,
   testsVerdict: DoneFlipGuardRefusal['testsVerdict'],
 ): DoneFlipGuardRefusal {
-  try {
-    if (normalizedStatus(getTicketStatus(args.sessionDir, args.ticketId)) === 'done') {
-      writeTicketStatus(args.sessionDir, args.ticketId, 'In Progress');
-    }
-  } catch { /* best-effort: the refusal below still withholds the flip */ }
+  unclaimSelfFlippedDone(args);
   const reason = `ticket ${args.ticketId} cannot flip Done: ${ACCEPTANCE_ASSERTION_FAILED}: \`${failed.command}\` ${failed.kind} ${failed.expected}, measured ${failed.observed}. Parked, not Done; the loop continues.`;
   process.stderr.write(`[mux-runner:acceptance-assertion] ${reason}\n`);
   return { ok: false, source: 'explicit-reachable', disposition: ACCEPTANCE_ASSERTION_FAILED, reason, testsVerdict };
 }
 
-/** Z1: true only for the LOCAL park refusal; every other refusal keeps its existing residual. */
-export function isAcceptanceAssertionRefusal(guard: { ok: boolean; disposition?: string }): boolean {
-  return !guard.ok && guard.disposition === ACCEPTANCE_ASSERTION_FAILED;
+/**
+ * A committed ticket whose tier lifecycle artifacts are missing is re-run ONCE: the first evaluation
+ * records `lifecycle_rerun: requested` and parks it; the next accepts and records
+ * `accepted_incomplete` so the gap stays visible. A complete, tierless or unmeasured ticket is
+ * accepted untouched. If the request cannot be recorded the flip is accepted — a park that leaves
+ * no trace would re-park on every evaluation.
+ */
+function requestLifecycleRerunOnce(
+  args: { sessionDir: string; ticketId: string },
+  testsVerdict: DoneFlipGuardRefusal['testsVerdict'],
+): DoneFlipGuardRefusal | null {
+  const ticketPath = ticketFilePath(args.sessionDir, args.ticketId);
+  const status = lifecycleArtifactStatus(ticketPath);
+  if (status.kind !== 'missing') return null;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(ticketPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  const prior = readFrontmatterField(raw, 'lifecycle_rerun');
+  if (prior === 'requested') {
+    writeLifecycleRerun(ticketPath, raw, 'accepted_incomplete');
+    return null;
+  }
+  if (prior || !writeLifecycleRerun(ticketPath, raw, 'requested')) return null;
+  unclaimSelfFlippedDone(args);
+  const reason = `ticket ${args.ticketId} cannot flip Done yet: ${LIFECYCLE_RERUN_REQUESTED}: missing ${status.prefixes.join(', ')} artifacts. Parked for one re-run; the loop continues.`;
+  process.stderr.write(`[mux-runner:lifecycle-rerun] ${reason}\n`);
+  return { ok: false, source: 'explicit-reachable', disposition: LIFECYCLE_RERUN_REQUESTED, reason, testsVerdict };
+}
+
+function writeLifecycleRerun(ticketPath: string, raw: string, value: 'requested' | 'accepted_incomplete'): boolean {
+  const updated = upsertFrontmatterField(raw, 'lifecycle_rerun', value);
+  if (updated === null) return false;
+  try {
+    fs.writeFileSync(ticketPath, updated);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True only for a LOCAL park refusal (a failed acceptance assertion, or a lifecycle re-run request);
+ * every other refusal keeps its existing residual. A `disposition` exists only on a park.
+ */
+export function isAcceptanceAssertionRefusal<G extends { ok: boolean; disposition?: string }>(
+  guard: G,
+): guard is G & { disposition: NonNullable<G['disposition']> } {
+  return !guard.ok && guard.disposition !== undefined;
 }
 
 export function guardCompletionCommitBeforeDone(args: {
@@ -6419,6 +6477,11 @@ export function guardCompletionCommitBeforeDone(args: {
     // the measurement. Runs only once the flip would otherwise be accepted, on every route.
     const failedAssertion = findFailedAcceptanceAssertion(args.sessionDir, args.ticketId, args.workingDir);
     if (failedAssertion) return refuseDoneOnFailedAcceptanceAssertion(args, failedAssertion, testsVerdict);
+    // Only a committed accept carries a sha; the sha-less accept already required its tier artifacts.
+    if (decision.sha) {
+      const rerun = requestLifecycleRerunOnce(args, testsVerdict);
+      if (rerun) return rerun;
+    }
     // B-GTRUTH WS-A1 shape mapping ONLY: a declared zero-diff accept has no SHA, so
     // it maps to `sha: null`. No decision is taken here — the arm and all three of
     // its conditions live in evaluateCompletionEvidence (AC-GTRUTH-A1-5).
