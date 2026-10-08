@@ -266,6 +266,10 @@ describe('runPickleWaves via main()', () => {
         assert.equal(git(fx.target, 'log', '-1', '--format=%s', sha), `feat(${id}): unit work`, `${id} completion_commit is its own commit`);
       }
       assert.equal(git(fx.target, 'worktree', 'list').split('\n').length, 1, 'every unit worktree is removed');
+      // The disclosure prints on EVERY run: with no accepted-incomplete ticket it reports 0, once.
+      const disclosures = pipelineLog(fx.sessionDir).split('\n').filter((l) => /lifecycle-incomplete Done tickets:/.test(l));
+      assert.equal(disclosures.length, 1, `one disclosure line per run: ${disclosures}`);
+      assert.match(disclosures[0], /lifecycle-incomplete Done tickets: 0$/);
     } finally {
       __setSpawnRunnerForTests(null);
       fx.cleanup();
