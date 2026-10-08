@@ -3673,14 +3673,27 @@ function formatLaneLine(lane: LaneRecord, index: number): string {
  * B-LANES: where a lane writes its trap doors. The audit sweeps only catalogs that already exist
  * as a directory's CLAUDE.md (`audit-trap-door-enforcement.sh` never sees a new `extension/tests/**`
  * one), so a lane uses the nearest ancestor-or-self directory that holds one and falls back to its
- * own only when no ancestor does. Paths are POSIX, relative to `target`.
+ * own only when no ancestor does. Paths are POSIX, relative to `target`. A flow lane has no `dir`, so
+ * it anchors at the deepest directory common to its `files` (`.` is the target root).
  */
 function laneCatalog(target: string, lane: LaneRecord): string {
-  for (let dir = lane.dir; dir !== '.'; dir = path.posix.dirname(dir)) {
+  const anchor = laneAnchorDir(lane);
+  for (let dir = anchor; dir !== '.'; dir = path.posix.dirname(dir)) {
     const candidate = `${dir}/CLAUDE.md`;
     if (fs.existsSync(path.join(target, candidate))) return candidate;
   }
-  return `${lane.dir}/CLAUDE.md`;
+  return anchor === '.' ? 'CLAUDE.md' : `${anchor}/CLAUDE.md`;
+}
+
+function laneAnchorDir(lane: LaneRecord): string {
+  if (!lane.files) return lane.dir;
+  const dirs = lane.files.map((file) => path.posix.dirname(file).split('/'));
+  const common: string[] = [];
+  for (const [i, seg] of (dirs[0] ?? []).entries()) {
+    if (seg === '.' || dirs.some((segs) => segs[i] !== seg)) break;
+    common.push(seg);
+  }
+  return common.length === 0 ? '.' : common.join('/');
 }
 
 interface DependencyLens {

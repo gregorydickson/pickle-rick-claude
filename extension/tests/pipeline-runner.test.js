@@ -1076,6 +1076,47 @@ describe('buildFlowLanes', () => {
   });
 });
 
+// AP-FIELD88-01: a flow lane carries `dir: ''` and names its members in `files`, so its trap-door
+// catalog must be resolved from those files — reading `dir` alone renders `/CLAUDE.md`.
+describe('AP-FIELD88-01: flow-lane trap-door catalog', () => {
+  const REPO = path.resolve(url.fileURLToPath(new URL('../..', import.meta.url)));
+  const flowLane = (files) => ({
+    name: `flow:${files[0]}`, dir: '', excludes: [], testRatioApplies: false, fileCount: files.length, files,
+  });
+  function catalogLines(lane, catalogs) {
+    const root = tmpDir();
+    try {
+      const target = path.join(root, 'target');
+      const session = path.join(root, 'session');
+      fs.mkdirSync(session, { recursive: true });
+      for (const rel of [...(lane.files ?? []), ...catalogs]) {
+        fs.mkdirSync(path.dirname(path.join(target, rel)), { recursive: true });
+        fs.writeFileSync(path.join(target, rel), rel.endsWith('.md') ? '# catalog\n' : 'export const x = 1;\n');
+      }
+      writeStateFile(path.join(session, 'state.json'), { working_dir: target, step: 'research', schema_version: LATEST_SCHEMA_VERSION });
+      assert.equal(setupAnatomyPark(session, target, 3, REPO, () => {}, undefined, false, { lanes: [lane] }), true);
+      return fs.readFileSync(path.join(session, 'prd.md'), 'utf-8').split('\n').filter((l) => l.startsWith(`- ${lane.name} → `));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  test('a flow lane names the nearest catalog above its files, never the filesystem root', () => {
+    const lane = flowLane(['src/bin/a.ts', 'src/bin/b.ts']);
+    assert.deepEqual(catalogLines(lane, ['CLAUDE.md', 'src/bin/CLAUDE.md']), ['- flow:src/bin/a.ts → src/bin/CLAUDE.md']);
+  });
+
+  test('a flow lane spanning sibling directories anchors at their common ancestor', () => {
+    const lane = flowLane(['alpha/a.ts', 'beta/b.ts']);
+    assert.deepEqual(catalogLines(lane, ['CLAUDE.md', 'alpha/CLAUDE.md']), ['- flow:alpha/a.ts → CLAUDE.md']);
+  });
+
+  test('control: a directory lane still resolves from its dir', () => {
+    const lane = { name: 'src/bin', dir: 'src/bin', excludes: [], testRatioApplies: true, fileCount: 1 };
+    assert.deepEqual(catalogLines(lane, ['src/bin/a.ts', 'src/CLAUDE.md']), ['- src/bin → src/CLAUDE.md']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // cleanPhaseArtifacts
 // ---------------------------------------------------------------------------
