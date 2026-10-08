@@ -6,6 +6,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { mkFixtureTmpDir } from './helpers/fixture-tmpdir.js';
 import { createTicketUnitSession, main, __setSpawnRunnerForTests } from '../bin/pipeline-runner.js';
+import { guardCompletionCommitBeforeDone, LIFECYCLE_RERUN_REQUESTED } from '../bin/mux-runner.js';
+import { buildWorkerPrompt } from '../bin/spawn-morty.js';
 import { readEvidence } from '../services/ticket-completion-evidence.js';
 import { LATEST_SCHEMA_VERSION } from '../types/index.js';
 
@@ -289,6 +291,125 @@ describe('runPickleWaves via main()', () => {
 
   const pipelineLog = (sessionDir) => fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
   const waveLines = (log) => log.split('\n').filter((l) => /pickle waves: wave \d+ members=/.test(l));
+
+  // ── Lifecycle re-run chain: park once → re-run without Implement → accept → run-end line ──
+  const MEDIUM_ARTIFACTS = [
+    'research_2026-10-08.md', 'research_review.md', 'plan_2026-10-08.md', 'plan_review.md',
+    'conformance_2026-10-08.md', 'code_review_2026-10-08.md',
+  ];
+  // The resume-table row, not bare `(Implement)`: static prose elsewhere in the prompt names the phase too.
+  const IMPLEMENT_ROW = /\|\s*\d+ \(Implement\)\s*\|/;
+  const withProductionGuard = (fn) => {
+    const prev = process.env.PICKLE_TEST_MODE;
+    delete process.env.PICKLE_TEST_MODE;
+    try { return fn(); } finally { if (prev !== undefined) process.env.PICKLE_TEST_MODE = prev; }
+  };
+  const tierTickets = (fx, ids) => {
+    for (const id of ids) {
+      const ticketPath = path.join(fx.sessionDir, id, `rick_ticket_${id}.md`);
+      fs.writeFileSync(ticketPath, fs.readFileSync(ticketPath, 'utf-8').replace('parallel_safe: true', 'parallel_safe: true\ncomplexity_tier: medium'));
+    }
+  };
+
+  /**
+   * Stub mux-runner for a ticket that committed its work but wrote no research/plan: it commits, flips
+   * Done, then asks the REAL Done-flip guard and builds the REAL re-run prompt. `complete` ids write the
+   * full artifact set first. Everything the chain decided is recorded per ticket in `observed`.
+   */
+  function lifecycleRunner(observed, { complete = [] } = {}) {
+    return async (_cmd, args) => {
+      const dir = args[1];
+      const unit = /--unit-([0-9a-f]+)$/.exec(dir);
+      const wt = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf-8')).working_dir;
+      const ids = unit ? [unit[1]] : fs.readdirSync(dir).filter((d) => fs.existsSync(path.join(dir, d, `rick_ticket_${d}.md`)));
+      for (const id of ids) {
+        const ticketPath = path.join(dir, id, `rick_ticket_${id}.md`);
+        const setStatus = (status, extra = '') => fs.writeFileSync(ticketPath,
+          fs.readFileSync(ticketPath, 'utf-8').replace(/^status:.*$/m, `status: ${status}${extra}`));
+        fs.mkdirSync(path.join(wt, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(wt, 'src', `${id}.ts`), `export const v = '${id}';\n`);
+        git(wt, 'add', '-A');
+        git(wt, 'commit', '-q', '-m', `feat(${id}): unit work`, '--trailer', `Pickle-Ticket: ${id}`);
+        if (complete.includes(id)) for (const f of MEDIUM_ARTIFACTS) fs.writeFileSync(path.join(dir, id, f), 'artifact\n');
+        setStatus('Done', `\ncompletion_commit: ${git(wt, 'rev-parse', 'HEAD')}`);
+        const rec = (observed[id] = {});
+        const prompt = () => buildWorkerPrompt({
+          ticket: {
+            task: 'task body', ticketId: id, ticketPath: path.join(dir, id), sessionRoot: dir,
+            backend: 'claude', isReviewTicket: false, ticketContent: fs.readFileSync(ticketPath, 'utf-8'),
+          },
+          model: 'm', complexityTier: 'medium',
+        });
+        const flip = () => withProductionGuard(() => guardCompletionCommitBeforeDone({
+          sessionDir: dir, ticketId: id, workingDir: wt, flags: null, rereadBackoffMs: 0,
+        }));
+        rec.initialPrompt = prompt();
+        rec.first = flip();
+        const after = fs.readFileSync(ticketPath, 'utf-8');
+        rec.afterFirst = { status: field(after, 'status'), rerun: field(after, 'lifecycle_rerun'), sha: field(after, 'completion_commit') };
+        if (rec.first.ok) continue;
+        rec.rerunPrompt = prompt();
+        setStatus('Done'); // the re-run worker flips Done again without writing the missing artifacts
+        rec.second = flip();
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+  }
+
+  function assertLifecycleChain(fx, observed, id) {
+    const rec = observed[id];
+    assert.equal(rec.first.ok, false, `${id}: the first evaluation parks`);
+    assert.equal(rec.first.disposition, LIFECYCLE_RERUN_REQUESTED);
+    assert.deepEqual({ status: rec.afterFirst.status, rerun: rec.afterFirst.rerun }, { status: 'In Progress', rerun: 'requested' });
+    assert.ok(rec.afterFirst.sha, `${id}: the park keeps the committed sha the re-run is told about`);
+    assert.match(rec.initialPrompt, IMPLEMENT_ROW, 'control: before the park the resume table still lists Implement');
+    assert.doesNotMatch(rec.rerunPrompt, IMPLEMENT_ROW, 're-run omits Implement');
+    assert.ok(rec.rerunPrompt.includes(rec.afterFirst.sha), 're-run names the committed sha');
+    assert.match(rec.rerunPrompt, /ONLY the missing pre-implementation artifacts/);
+    assert.equal(rec.second.ok, true, `${id}: the re-run's Done flip is accepted`);
+    const parent = readTicket(fx.sessionDir, id);
+    assert.equal(field(parent, 'status'), 'Done');
+    assert.equal(field(parent, 'lifecycle_rerun'), 'accepted_incomplete');
+    // A wave integrates by cherry-pick, so the parent is stamped with the LANDED commit, not the unit-branch sha.
+    const landed = field(parent, 'completion_commit');
+    git(fx.target, 'merge-base', '--is-ancestor', landed, 'HEAD');
+    assert.equal(git(fx.target, 'log', '-1', '--format=%s', landed), `feat(${id}): unit work`, 'the parent carries the ticket\'s own landed commit');
+  }
+
+  test('lifecycle chain, serial: a committed ticket missing research/plan parks once, re-runs without Implement, is accepted and named at run end', async () => {
+    const fx = makeWaveFixture({ max_parallel_tickets: 1 }, ['aaaa1111']);
+    const observed = {};
+    try {
+      tierTickets(fx, ['aaaa1111']);
+      __setSpawnRunnerForTests(lifecycleRunner(observed));
+      await runMain(fx.sessionDir, fx.dataRoot);
+      assertLifecycleChain(fx, observed, 'aaaa1111');
+      assert.match(pipelineLog(fx.sessionDir), /lifecycle-incomplete Done tickets: 1 — aaaa1111/);
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('lifecycle chain, wave: the same chain runs inside a unit and survives write-back; a complete ticket is neither parked nor named', async () => {
+    const fx = makeWaveFixture({ max_parallel_tickets: 2 });
+    const observed = {};
+    const [short, full] = WAVE_TICKETS;
+    try {
+      tierTickets(fx, WAVE_TICKETS);
+      __setSpawnRunnerForTests(lifecycleRunner(observed, { complete: [full] }));
+      await runMain(fx.sessionDir, fx.dataRoot);
+      assertLifecycleChain(fx, observed, short);
+      assert.equal(observed[full].first.ok, true, 'control: the complete ticket is accepted on the first evaluation');
+      assert.equal(field(readTicket(fx.sessionDir, full), 'status'), 'Done');
+      assert.equal(field(readTicket(fx.sessionDir, full), 'lifecycle_rerun'), undefined);
+      assert.match(pipelineLog(fx.sessionDir), new RegExp(`lifecycle-incomplete Done tickets: 1 — ${short}$`, 'm'));
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
 
   test('AC-4: a colliding member is re-queued once, runs alone from the new HEAD, and integrates', async () => {
     const fx = makeWaveFixture({ max_parallel_tickets: 2 });

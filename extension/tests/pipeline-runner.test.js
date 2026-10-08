@@ -5445,6 +5445,65 @@ describe('B-LANES WS-3: lane integration', () => {
   const worktreeList = (repo) => git(repo, 'worktree', 'list', '--porcelain').split('\n').filter((l) => l.startsWith('worktree '));
   const byName = (sessionDir) => Object.fromEntries(readJson(path.join(sessionDir, 'archive', 'lanes.json')).map((o) => [o.name, o]));
 
+  test('flow-lane chain: the review diff persists a flow roster, each lane is fenced to its own files, and integration unions the shared CLAUDE.md appends', async () => {
+    const fx = makeFixture();
+    try {
+      const seed = git(fx.repo, 'rev-parse', 'HEAD');
+      for (const name of ['alpha', 'beta']) fs.writeFileSync(path.join(fx.repo, name, 'a.ts'), 'export const a = 2;\n');
+      git(fx.repo, '-c', 'user.email=l@l', '-c', 'user.name=l', 'commit', '-q', '-am', 'review diff');
+      const phaseStart = git(fx.repo, 'rev-parse', 'HEAD');
+
+      // 1. roster: built from the review diff, persisted, and exactly what a resume would read back
+      const { lanes, fallbackReason } = resolveAnatomyLaneRoster(fx.runtime, seed);
+      assert.equal(fallbackReason, null, 'a review diff yields flow lanes, not the directory fallback');
+      assert.deepEqual(lanes.map((l) => l.files), [['alpha/a.ts'], ['beta/a.ts']]);
+      assert.deepEqual(readJson(path.join(fx.sessionDir, 'anatomy-park.json')).lane_roster, lanes);
+
+      // 2. admission: laneAdmits fences each lane to its own files (a sibling lane's file and an untouched file are refused)
+      const none = new Set();
+      lanes.forEach((lane, i) => {
+        const other = lanes[1 - i].files[0];
+        assert.equal(laneAdmits(lane, lane.files[0], none), true, `${lane.name} admits its own file`);
+        assert.equal(laneAdmits(lane, other, none), false, `${lane.name} refuses its sibling's file`);
+        assert.equal(laneAdmits(lane, 'gamma/a.ts', none), false, `${lane.name} refuses an untouched file`);
+      });
+
+      // 3. run the PERSISTED roster; each lane appends its own entry to the one shared catalog
+      const base = fs.readFileSync(path.join(fx.repo, 'CLAUDE.md'), 'utf-8');
+      const edits = lanes.map((lane) => ({ [lane.files[0]]: 'export const a = 3;\n', 'CLAUDE.md': `${base}- entry ${lane.name}\n` }));
+      const fences = [];
+      const inner = committingRunner(edits);
+      __setSpawnRunnerForTests(async (cmd, args, env, opts) => {
+        const index = Number(/--lane-(\d+)$/.exec(args[1])[1]) - 1;
+        fences[index] = readJson(path.join(args[1], 'scope.json')).allowed_paths;
+        return inner(cmd, args, env, opts);
+      });
+      const code = await runAnatomyLanes(fx.runtime, readJson(path.join(fx.sessionDir, 'anatomy-park.json')).lane_roster, 3);
+
+      // the fence each lane session actually ran under is the one laneAdmits describes
+      lanes.forEach((lane, i) => {
+        assert.ok(fences[i].includes(lane.files[0]), `${lane.name} session fence holds its own file`);
+        assert.ok(!fences[i].includes(lanes[1 - i].files[0]), `${lane.name} session fence excludes its sibling's file`);
+        assert.ok(!fences[i].includes('gamma/a.ts'), `${lane.name} session fence excludes an untouched file`);
+      });
+
+      // 4. integration: both lanes land, and both catalog appends survive the union merge
+      assert.equal(code, 0, 'two converged, integrated lanes finish the phase clean');
+      const rows = byName(fx.sessionDir);
+      for (const lane of lanes) {
+        assert.equal(rows[lane.name].outcome, 'integrated', `${lane.name} integrated`);
+        assert.deepEqual(rows[lane.name].files, lane.files, `${lane.name} archive row records its files`);
+        assert.match(read(path.join(fx.repo, 'CLAUDE.md')), new RegExp(`- entry ${lane.name}\\b`));
+        assert.equal(read(path.join(fx.repo, lane.files[0])), 'export const a = 3;\n');
+      }
+      assert.equal(git(fx.repo, 'rev-list', '--count', `${phaseStart}..HEAD`), '2', 'one landed commit per lane');
+      assert.equal(git(fx.repo, 'status', '--porcelain'), '', 'main is clean');
+      assert.deepEqual(readJson(path.join(fx.sessionDir, 'anatomy-park.json')).lane_roster, lanes, 'the roster outlives the run');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
   test('14: two lanes editing the same source line → one integrated, one conflict with its branch kept; the phase completes', async () => {
     const fx = makeFixture();
     try {
