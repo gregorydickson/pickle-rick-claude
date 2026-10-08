@@ -2,10 +2,15 @@
 // AC-PIAP-A2-1: trivial-tier prompt renders only implement+code_review; medium renders full 8-phase.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   buildTierResumeTable,
   buildTierLifecycleSections,
   buildWorkerPrompt,
+  evaluateWorkerOutcome,
+  persistWorkerOutcomeStatus,
 } from '../bin/spawn-morty.js';
 import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
 
@@ -207,4 +212,49 @@ test('control: ticket without lifecycle_rerun keeps the unchanged table', () => 
   const prompt = rerunPrompt(`completion_commit: ${RERUN_SHA}\n`);
   assert.ok(!prompt.includes('Lifecycle re-run of committed work'));
   assert.match(prompt, /\(Implement\)/);
+});
+
+// ── Worker outcome floor is unchanged by the lifecycle re-run ─────────────────
+// The Done-flip guard parks a committed ticket missing its tier artifacts; the worker's own
+// outcome stays on the any-of artifact floor, so such a ticket is never Failed-flipped here.
+
+function workerOutcomeFor(artifacts) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-outcome-floor-'));
+  const ticketId = 'of01';
+  const ticketPath = path.join(root, ticketId);
+  const workingDir = path.join(root, 'not-a-repo');
+  fs.mkdirSync(ticketPath, { recursive: true });
+  fs.mkdirSync(workingDir);
+  const ticketFile = path.join(ticketPath, `rick_ticket_${ticketId}.md`);
+  fs.writeFileSync(ticketFile, `---\nid: ${ticketId}\nstatus: In Progress\ncomplexity_tier: medium\norder: 1\n---\n# ${ticketId}\n`);
+  for (const name of artifacts) fs.writeFileSync(path.join(ticketPath, name), 'artifact\n');
+  try {
+    const ctx = {
+      args: { isReviewTicket: false }, ticketPath, sessionWorkingDir: workingDir,
+      mutableState: { finalized: false, timedOut: false },
+    };
+    const { isSuccess } = evaluateWorkerOutcome({ ctx, logContent: 'x'.repeat(300), startTime: Date.now() });
+    const sha = 'abc1234def5678abc1234def5678abc1234def56';
+    persistWorkerOutcomeStatus({
+      ticketId, sessionRoot: root, sessionWorkingDir: workingDir, isSuccess, flipSuppressed: false, completionCommitSha: sha,
+    });
+    const body = fs.readFileSync(ticketFile, 'utf-8');
+    const field = (key) => body.match(new RegExp(`^${key}:\\s*"?([^"\\n]+)"?$`, 'm'))?.[1].trim();
+    return { isSuccess, status: field('status'), completionCommit: field('completion_commit'), sha };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('a committed medium ticket holding only research_*.md still persists Done through the worker outcome', () => {
+  const out = workerOutcomeFor(['research_2026-10-08.md']);
+  assert.equal(out.isSuccess, true, 'the any-of artifact floor accepts one lifecycle artifact');
+  assert.equal(out.status, 'Done');
+  assert.equal(out.completionCommit, out.sha);
+});
+
+test('control: a ticket with no lifecycle artifact at all is still a failed worker outcome', () => {
+  const out = workerOutcomeFor([]);
+  assert.equal(out.isSuccess, false);
+  assert.equal(out.status, 'Failed');
 });
