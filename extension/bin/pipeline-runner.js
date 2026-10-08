@@ -5521,15 +5521,6 @@ function finalizeDegradedCompleteOpts(statePath, unsuccessful) {
         ? { step: 'completed' }
         : { step: 'completed', exitReason: 'completed' };
 }
-/**
- * B-NONSTOP WS-2 (AC-NS-6): the end-of-pipeline panel fields. Extracted from
- * `finalizePipeline` so the non-convergent conditional does not push that
- * function past the cyclomatic-complexity ceiling.
- *
- * B-NOSTOP-GATES WS-3 (AC-NSG-12/13): `parkedCount` adds a `Parked` row ONLY
- * when > 0, so a clean run (parkedCount 0) renders byte-identical to the
- * pre-WS-3 panel — additive, never a cosmetic change on the happy path.
- */
 /** The disclosure that review convergence was never measured, naming the sha it was not measured at; `unknown` on any git failure. */
 function reviewConvergenceNote(workingDir) {
     let sha = 'unknown';
@@ -5541,6 +5532,15 @@ function reviewConvergenceNote(workingDir) {
     }
     return `review convergence: not measured at ${sha}`;
 }
+/**
+ * B-NONSTOP WS-2 (AC-NS-6): the end-of-pipeline panel fields. Extracted from
+ * `finalizePipeline` so the non-convergent conditional does not push that
+ * function past the cyclomatic-complexity ceiling.
+ *
+ * B-NOSTOP-GATES WS-3 (AC-NSG-12/13): `parkedCount` adds a `Parked` row ONLY
+ * when > 0, so a clean run (parkedCount 0) renders byte-identical to the
+ * pre-WS-3 panel — additive, never a cosmetic change on the happy path.
+ */
 export function buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount = 0, workingDir) {
     const panel = { Phases: phasesSummary };
     if (counters.nonConvergent > 0)
