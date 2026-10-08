@@ -586,6 +586,7 @@ test('recordIterationResult: no-progress constraint discovery opens with correct
     assert.equal(state.state, 'OPEN');
     assert.match(state.reason, /No progress in 3 iterations/);
     assert.match(state.reason, /correct-course\.js "<discovery>"/);
+    assert.doesNotMatch(state.reason, /pickle-correct-course/, 'no hint at a slash command that has no command file');
 });
 
 /**
@@ -617,6 +618,7 @@ test('AP-EXT-ITER249-01: annotating the trip reason keeps the correct-course sug
     const annotated = formatCircuitBreakerTripReason(state.reason, { tier: 'medium', budget: 3 });
     assert.match(annotated, /^No progress in 3 iterations \(tier: medium, budget: 3\)/);
     assert.match(annotated, /correct-course\.js "<discovery>"/);
+    assert.doesNotMatch(annotated, /pickle-correct-course/);
 });
 
 // Negative controls: the annotation must still land on a bare no-progress reason (so the

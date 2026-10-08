@@ -32,3 +32,9 @@ test('morty-course-corrector agent is read-only', () => {
   assert.equal(tools.includes('Bash'), false);
   assert.match(content, /Do not modify project source, ticket directories, `state\.json`, `active`, `completion_promise`/);
 });
+
+test('morty-course-corrector names the real correct-course entry point, not a missing slash command', () => {
+  const fm = frontmatter(readFileSync(agentPath, 'utf8'));
+  assert.match(fm.description, /`correct-course\.js`/);
+  assert.doesNotMatch(readFileSync(agentPath, 'utf8'), /pickle-correct-course/);
+});
