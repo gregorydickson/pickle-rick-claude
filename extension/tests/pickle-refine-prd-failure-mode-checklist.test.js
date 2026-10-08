@@ -146,3 +146,9 @@ test('MREL-B2-4 refine skill carries no pickle-rick install.sh or size-ceiling h
   const phrase = "the target's enforced `max-lines-per-function`, if any";
   assert.ok(skill.split(phrase).length - 1 >= 2);
 });
+
+test('Step 7a names the outermost-surface rule for state/outcome table rows', () => {
+  const content = fs.readFileSync(SKILL_PATH, 'utf-8');
+  const step7a = content.slice(content.indexOf('### 7a'), content.indexOf('### 7b'));
+  assert.match(step7a, /outermost surface/);
+});

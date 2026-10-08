@@ -195,6 +195,7 @@ Atomic tasks from refined PRD + codebase analysis:
 - Sequential `order` field (10, 20, 30...) drives execution order — no separate dependency graph
 - Self-contained: worker executes without reading PRD. A ticket that applies a recorded decision or ruling (D-n, R-n, an Open Decisions row) quotes the decision's text verbatim — an id alone is not self-contained. Acceptance-criterion wording is carried into tickets unparaphrased.
 - A rule or predicate consumed by two or more tickets has ONE rule owner ticket that defines it for every input side, with a symmetry test (each input side × each outcome) in its acceptance criteria; consumer tickets order after it.
+- Each row of a PRD state/outcome table (input state → result) gets a test asserted at the outermost surface that row reaches (API response, rendered view, persisted record), owned by the ticket that owns that surface or by the final integration ticket; a row with only producer-level tests is an uncovered criterion.
 - Embed research seeds (file paths, patterns, APIs, test patterns)
 - Machine-checkable acceptance criteria with verify commands
 - Interface contracts: exact I/O/error shapes
