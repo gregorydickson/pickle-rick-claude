@@ -603,6 +603,25 @@ describe('AC-12: the degraded marker reaches the operator-visible completion out
     }
   });
 
+  // The test above accepts `unknown` from a git checkout, so a resolver that never reads HEAD would pass it.
+  test('inside a git repo the panel names that repo\'s HEAD as its 7-char sha, not unknown', () => {
+    const counters = { completed: 4, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-git-'));
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf-8', timeout: 30_000 }).trim();
+    try {
+      git('init', '-q');
+      git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '--no-gpg-sign', '-m', 'seed');
+      const sha7 = git('rev-parse', '--short=7', 'HEAD');
+      assert.match(sha7, /^[0-9a-f]{7}$/, 'fixture: git produced a 7-char sha');
+      assert.equal(
+        buildPipelineCompletePanel(counters, '4/4', 90, 0, repo).Review,
+        `review convergence: not measured at ${sha7}`,
+      );
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test('a clean run renders no Dispositions row (additive, byte-identical happy path)', () => {
     const counters = { completed: 4, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
     const panel = buildPipelineCompletePanel(counters, '4/4', 90, 0);
