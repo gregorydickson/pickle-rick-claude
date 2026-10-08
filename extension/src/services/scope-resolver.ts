@@ -457,10 +457,12 @@ function anchorPair(repoRoot: string, target: string): { root: string; targetRoo
 
 /**
  * B-LANES: one anatomy-park review lane. `dir` and every `excludes` entry are
- * POSIX paths relative to the discovery target; `dir` is never `''`. A split
- * lane's remainder is named `<dir>/.` and excludes its qualifying children, so
- * lanes never admit the same file. `fileCount` counts non-generated source
- * files; `testRatioApplies` is true only for an unsplit discovery root.
+ * POSIX paths relative to the discovery target. A directory lane's `dir` is
+ * never `''`; a split lane's remainder is named `<dir>/.` and excludes its
+ * qualifying children, so lanes never admit the same file. A flow lane
+ * (`buildFlowLanes`) has `dir: ''` and names its members in `files` instead.
+ * `fileCount` counts non-generated source files; `testRatioApplies` is true
+ * only for an unsplit discovery root.
  */
 export interface LaneRecord {
   name: string;
@@ -468,20 +470,47 @@ export interface LaneRecord {
   excludes: string[];
   testRatioApplies: boolean;
   fileCount: number;
+  files?: string[];
 }
 
 function isUnderDir(relPath: string, dir: string): boolean {
   return relPath === dir || relPath.startsWith(`${dir}/`);
 }
 
+/** Path segments of `rel` with its extension removed. */
+function stemSegments(rel: string): string[] {
+  return rel.slice(0, rel.length - path.posix.extname(rel).length).split('/');
+}
+
+/**
+ * Whether generated `generatedRel` is the compiled mirror of `sourceRel`:
+ * `R/<outDir>/<p>.js` against `R/<rootDir>/<p>.ts`. The two stems must share
+ * their trailing segments `<p>` and leading segments `R`, and differ by at most
+ * one segment on each side, the outDir and the rootDir.
+ */
+function mirrorsSource(generatedRel: string, sourceRel: string): boolean {
+  const g = stemSegments(generatedRel);
+  const s = stemSegments(sourceRel);
+  let tail = 0;
+  while (tail < g.length && tail < s.length && g[g.length - 1 - tail] === s[s.length - 1 - tail]) tail++;
+  let head = 0;
+  while (head < g.length - tail && head < s.length - tail && g[head] === s[head]) head++;
+  return tail > 0 && g.length - tail - head <= 1 && s.length - tail - head <= 1;
+}
+
 /**
  * THE lane membership function — every consumer (discovery, the scope filter,
  * the skipped-by-scope audit) asks this and nothing else. A target-relative
- * POSIX path belongs to `lane` iff it lies under `lane.dir`, under none of its
- * `excludes`, and is not generated output. Extension plays no part: source
- * extensions only SIZE lanes.
+ * POSIX path belongs to a flow lane (one carrying `files`) iff it is one of
+ * those files or the generated mirror of one. Otherwise it belongs to `lane`
+ * iff it lies under `lane.dir`, under none of its `excludes`, and is not
+ * generated output. Extension plays no part: source extensions only SIZE lanes.
  */
 export function laneAdmits(lane: LaneRecord, relPath: string, generated: ReadonlySet<string>): boolean {
+  if (lane.files) {
+    return lane.files.includes(relPath)
+      || (generated.has(relPath) && lane.files.some((file) => mirrorsSource(relPath, file)));
+  }
   return lane.dir !== ''
     && isUnderDir(relPath, lane.dir)
     && !lane.excludes.some((excluded) => isUnderDir(relPath, excluded))

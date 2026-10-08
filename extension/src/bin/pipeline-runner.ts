@@ -675,6 +675,84 @@ export function discoverSubsystems(target: string): LaneRecord[] {
 }
 
 // ---------------------------------------------------------------------------
+// Flow lanes: the review diff grouped by data flow, not by directory
+// ---------------------------------------------------------------------------
+
+const FLOW_GIT_DIFF_TIMEOUT_MS = 30_000;
+const RELATIVE_IMPORT_RE = /(?:\bfrom|^\s*import)\s*(['"])(\.\.?\/[^'"\n]+)\1/gm;
+const STRING_LITERAL_RE = /(['"`])((?:\\.|(?!\1)[^\\\n])+)\1/g;
+
+/** Changed files that `file` statically imports by a relative specifier; `.js` specifiers resolve to `.ts` sources. */
+function relativeImportTargets(target: string, file: string, changed: ReadonlySet<string>): string[] {
+  let text: string;
+  try { text = fs.readFileSync(path.join(target, file), 'utf-8'); } catch { return []; }
+  const found: string[] = [];
+  for (const match of text.matchAll(RELATIVE_IMPORT_RE)) {
+    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file), match[2]));
+    const stem = resolved.replace(/\.jsx?$/, '');
+    const candidates = [resolved, `${stem}.ts`, `${stem}.tsx`, `${resolved}.ts`, `${resolved}.tsx`,
+      `${resolved}.js`, `${resolved}/index.ts`, `${resolved}/index.js`];
+    found.push(...candidates.filter((candidate) => changed.has(candidate)));
+  }
+  return found;
+}
+
+/** Non-empty string literals on the lines `file` ADDED since `baseSha`; a failed diff contributes none. */
+function addedLiterals(target: string, baseSha: string, file: string): Set<string> {
+  let diff: string;
+  try {
+    diff = execFileSync('git', ['-C', target, 'diff', '--no-color', '--no-ext-diff', '--unified=0', baseSha, '--', file], {
+      encoding: 'utf-8', timeout: FLOW_GIT_DIFF_TIMEOUT_MS, maxBuffer: UNBOUNDED_READ_MAX_BUFFER,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch { return new Set(); }
+  const added = diff.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).join('\n');
+  return new Set([...added.matchAll(STRING_LITERAL_RE)].map((match) => match[2]));
+}
+
+/**
+ * The review diff as data-flow lanes: connected components over the changed,
+ * non-generated source files of `target`. Two files share a component when one
+ * statically imports the other by a relative specifier, or when a string literal
+ * appears in the added lines of exactly those two files. A literal shared by
+ * more files is a hub, not a flow, and joins nothing. `changedFiles` are
+ * target-relative POSIX paths. Components are disjoint by construction, so
+ * every changed source file lands in exactly one lane. Throws only when
+ * `target` cannot be listed.
+ */
+export function buildFlowLanes(target: string, baseSha: string, changedFiles: string[]): LaneRecord[] {
+  fs.readdirSync(target);
+  const { generated } = discoverLanes(target);
+  const nodes = [...new Set(changedFiles)]
+    .filter((file) => SOURCE_EXTS.has(path.posix.extname(file)) && !generated.has(file));
+  const changed = new Set(nodes);
+  const parent = new Map(nodes.map((file) => [file, file]));
+  const root = (file: string): string => {
+    while (parent.get(file) !== file) file = parent.get(file)!;
+    return file;
+  };
+  const join = (a: string, b: string) => parent.set(root(a), root(b));
+
+  const filesByLiteral = new Map<string, string[]>();
+  for (const file of nodes) {
+    for (const imported of relativeImportTargets(target, file, changed)) join(file, imported);
+    for (const literal of addedLiterals(target, baseSha, file)) {
+      filesByLiteral.set(literal, [...(filesByLiteral.get(literal) ?? []), file]);
+    }
+  }
+  for (const files of filesByLiteral.values()) if (files.length === 2) join(files[0], files[1]);
+
+  const components = new Map<string, string[]>();
+  for (const file of nodes) components.set(root(file), [...(components.get(root(file)) ?? []), file]);
+  return [...components.values()]
+    .map((files) => files.sort())
+    .map((files): LaneRecord => ({
+      name: `flow:${files[0]}`, dir: '', excludes: [], testRatioApplies: false, fileCount: files.length, files,
+    }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+// ---------------------------------------------------------------------------
 // Pre-flight: Clean Working Tree
 // ---------------------------------------------------------------------------
 

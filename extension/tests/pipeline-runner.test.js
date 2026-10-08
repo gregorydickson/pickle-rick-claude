@@ -10,6 +10,7 @@ import {
   isTestFile,
   discoverSubsystems,
   discoverLanes,
+  buildFlowLanes,
   MIN_LANE_FILES,
   cleanPhaseArtifacts,
   resetStateForPhase,
@@ -935,6 +936,142 @@ describe('B-LANES lane discovery', () => {
       }
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Flow lanes: the review diff grouped by data flow, not by directory
+// ---------------------------------------------------------------------------
+
+describe('buildFlowLanes', () => {
+  const gitRun = (dir, args) => execFileSync('git', args, { cwd: dir, encoding: 'utf-8', timeout: 30_000 }).trim();
+  const writeTree = (root, files) => {
+    for (const [rel, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), content);
+    }
+  };
+  // A repo whose seed commit holds `base`; `change` is committed on top. Returns the seed sha.
+  const flowRepo = (root, base, change) => {
+    gitRun(root, ['init', '-q', '-b', 'main']);
+    gitRun(root, ['config', 'user.email', 'test@test.local']);
+    gitRun(root, ['config', 'user.name', 'Test']);
+    gitRun(root, ['config', 'commit.gpgsign', 'false']);
+    writeTree(root, base);
+    gitRun(root, ['add', '.']);
+    gitRun(root, ['commit', '-q', '-m', 'seed']);
+    const baseSha = gitRun(root, ['rev-parse', 'HEAD']);
+    writeTree(root, change);
+    gitRun(root, ['add', '.']);
+    gitRun(root, ['commit', '-q', '-m', 'change']);
+    return baseSha;
+  };
+  const fillers = (dirs) => Object.fromEntries(dirs.flatMap((dir) =>
+    [0, 1, 2].map((i) => [`${dir}/f${i}.ts`, `export const v${i} = ${i};\n`])));
+  // One value written -> stored -> read -> served, across four directories, imported by `.js` specifiers.
+  const FLOW = {
+    'store/store.ts': 'export const STORE = new Map();\nexport function put(k, v) { STORE.set(k, v); }\n',
+    'producer/producer.ts': "import { put } from '../store/store.js';\nexport function produce() { put('reading', 42); }\n",
+    'reader/reader.ts': "import { STORE } from '../store/store.js';\nexport function read() { return STORE.get('reading'); }\n",
+    'surface/surface.ts': "import { read } from '../reader/reader.js';\nexport function serve() { return { body: read() }; }\n",
+  };
+  const FLOW_FILES = Object.keys(FLOW).sort();
+
+  test('one producer -> store -> reader -> surface flow across four directories is ONE lane', () => {
+    const root = tmpDir();
+    try {
+      const baseSha = flowRepo(root, fillers(['producer', 'store', 'reader', 'surface']), FLOW);
+      const dirLanes = discoverLanes(root);
+      const dirLaneOf = (f) => dirLanes.lanes.filter((l) => laneAdmits(l, f, dirLanes.generated)).map((l) => l.name);
+      assert.equal(new Set(FLOW_FILES.flatMap(dirLaneOf)).size, 4, 'control: directory lanes split the flow four ways');
+
+      const lanes = buildFlowLanes(root, baseSha, FLOW_FILES);
+      assert.equal(lanes.length, 1);
+      assert.deepEqual(lanes[0], {
+        name: 'flow:producer/producer.ts', dir: '', excludes: [], testRatioApplies: false,
+        fileCount: 4, files: FLOW_FILES,
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('two unrelated flows are two lanes with disjoint files covering every changed source file', () => {
+    const root = tmpDir();
+    try {
+      const change = {
+        'alpha/a.ts': "import { o } from '../omega/o.js';\nexport const a = o + 1;\n",
+        'omega/o.ts': 'export const o = 1;\n',
+        'beta/b.ts': "import { g } from '../gamma/g.js';\nexport const b = g * 2;\n",
+        'gamma/g.ts': 'export const g = 2;\n',
+        'README.md': "notes 'alpha'\n",
+      };
+      const baseSha = flowRepo(root, { 'seed.txt': 'seed\n' }, change);
+      const lanes = buildFlowLanes(root, baseSha, Object.keys(change));
+      assert.deepEqual(lanes.map((l) => l.files), [['alpha/a.ts', 'omega/o.ts'], ['beta/b.ts', 'gamma/g.ts']]);
+      const all = lanes.flatMap((l) => l.files);
+      assert.equal(new Set(all).size, all.length, 'lanes are pairwise disjoint');
+      assert.ok(!all.includes('README.md'), 'a non-source changed file joins no lane');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a literal shared by six files is a hub, not a flow: 'utf-8' does not merge two real flows", () => {
+    const root = tmpDir();
+    try {
+      const read = "import * as fs from 'fs';\nconst text = (p) => fs.readFileSync(p, 'utf-8');\n";
+      const change = {
+        'alpha/a.ts': `${read}import { o } from '../omega/o.js';\nexport const a = () => text(o);\n`,
+        'omega/o.ts': `${read}export const o = 'o.txt';\nexport const ot = () => text(o);\n`,
+        'beta/b.ts': `${read}import { g } from '../gamma/g.js';\nexport const b = () => text(g);\n`,
+        'gamma/g.ts': `${read}export const g = 'g.txt';\nexport const gt = () => text(g);\n`,
+        'lone1/x.ts': `${read}export const x = () => text('x.txt');\n`,
+        'lone2/y.ts': `${read}export const y = () => text('y.txt');\n`,
+      };
+      const baseSha = flowRepo(root, { 'seed.txt': 'seed\n' }, change);
+      const lanes = buildFlowLanes(root, baseSha, Object.keys(change));
+      assert.ok(lanes.length >= 2, `at least two lanes (got ${lanes.length})`);
+      const laneOf = (f) => lanes.find((l) => l.files.includes(f)).name;
+      assert.notEqual(laneOf('alpha/a.ts'), laneOf('beta/b.ts'), 'the two real flows stay apart');
+      assert.equal(laneOf('alpha/a.ts'), laneOf('omega/o.ts'));
+      assert.equal(laneOf('beta/b.ts'), laneOf('gamma/g.ts'));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a literal joins exactly two files only when both ADDED it in the review diff', () => {
+    const root = tmpDir();
+    try {
+      const baseSha = flowRepo(
+        root,
+        { 'old/keeper.ts': "export const key = 'legacy-key';\n" },
+        {
+          'old/keeper.ts': "export const key = 'legacy-key';\nexport const more = 1;\n",
+          'new/user.ts': "export const k = 'legacy-key';\n",
+          'pair/left.ts': "export const tag = 'flow-tag';\n",
+          'pair/right.ts': "export const same = 'flow-tag';\n",
+        },
+      );
+      const lanes = buildFlowLanes(root, baseSha, ['old/keeper.ts', 'new/user.ts', 'pair/left.ts', 'pair/right.ts']);
+      assert.deepEqual(lanes.map((l) => l.files), [['new/user.ts'], ['old/keeper.ts'], ['pair/left.ts', 'pair/right.ts']]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('generated output is not a lane member, and an unreadable target throws', () => {
+    const root = tmpDir();
+    try {
+      const base = { 'pkg/tsconfig.json': '{ "compilerOptions": { "outDir": ".", "rootDir": "src" } }', ...fillers(['pkg/src']) };
+      const baseSha = flowRepo(root, base, { 'pkg/src/m.ts': 'export const m = 1;\n', 'pkg/m.js': 'exports.m = 1;\n' });
+      const lanes = buildFlowLanes(root, baseSha, ['pkg/src/m.ts', 'pkg/m.js']);
+      assert.deepEqual(lanes.map((l) => l.files), [['pkg/src/m.ts']]);
+      assert.throws(() => buildFlowLanes(path.join(root, 'missing'), baseSha, ['a.ts']));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

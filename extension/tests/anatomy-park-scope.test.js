@@ -9,7 +9,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createLaneSession, discoverLanes, setupAnatomyPark, writePipelineStatus, writeSkippedByScope } from '../bin/pipeline-runner.js';
 import { laneRunnerEnv } from '../services/anatomy-lanes.js';
 import { finalizeGateMain } from '../bin/finalize-gate.js';
-import { filterBySubsystem } from '../services/scope-resolver.js';
+import { filterBySubsystem, laneAdmits } from '../services/scope-resolver.js';
 
 // B-LANES: filterBySubsystem takes lane records; these cases name plain one-dir lanes.
 const lane = (name) => ({ name, dir: name, excludes: [], testRatioApplies: true, fileCount: 0 });
@@ -1191,4 +1191,47 @@ test('B-LANES one-lane: a created lane session reviews exactly its lane from its
     fs.rmSync(target, { recursive: true, force: true });
     fs.rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Flow lanes: a lane carrying `files` admits exactly those files plus their mirrors
+// ---------------------------------------------------------------------------
+
+test('a flow lane admits its files and their generated mirrors, and rejects a one-hop importer', () => {
+  const target = makeTarget();
+  try {
+    fs.mkdirSync(path.join(target, 'pkg', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(target, 'pkg', 'tsconfig.json'), '{ "compilerOptions": { "outDir": ".", "rootDir": "src" } }');
+    fs.writeFileSync(path.join(target, 'pkg', 'src', 'a.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(target, 'pkg', 'src', 'b.ts'), "import { a } from './a.js';\nexport const b = a;\n");
+    fs.writeFileSync(path.join(target, 'pkg', 'src', 'c.ts'), "import { b } from './b.js';\nexport const c = b;\n");
+    for (const name of ['a', 'b', 'c']) fs.writeFileSync(path.join(target, 'pkg', `${name}.js`), 'exports.x = 1;\n');
+    const { generated } = discoverLanes(target);
+    assert.deepStrictEqual([...generated].sort(), ['pkg/a.js', 'pkg/b.js', 'pkg/c.js'], 'fixture: the writer marks the mirrors');
+
+    const flow = {
+      name: 'flow:pkg/src/a.ts', dir: '', excludes: [], testRatioApplies: false, fileCount: 2,
+      files: ['pkg/src/a.ts', 'pkg/src/b.ts'],
+    };
+    for (const rel of ['pkg/src/a.ts', 'pkg/src/b.ts', 'pkg/a.js', 'pkg/b.js']) {
+      assert.equal(laneAdmits(flow, rel, generated), true, `${rel} belongs to the flow lane`);
+    }
+    for (const rel of ['pkg/src/c.ts', 'pkg/c.js', 'pkg/tsconfig.json']) {
+      assert.equal(laneAdmits(flow, rel, generated), false, `${rel} is outside the flow lane`);
+    }
+    assert.equal(laneAdmits(flow, 'pkg/a.js', new Set()), false, 'a hand-written .js twin is not a mirror');
+  } finally {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('a lane without files keeps directory membership; an empty dir with no files admits nothing', () => {
+  const generated = new Set(['pkg/a.js']);
+  const dirLane = { name: 'pkg', dir: 'pkg', excludes: ['pkg/vendor'], testRatioApplies: true, fileCount: 3 };
+  assert.equal(laneAdmits(dirLane, 'pkg/src/c.ts', generated), true);
+  assert.equal(laneAdmits(dirLane, 'pkg/vendor/v.ts', generated), false);
+  assert.equal(laneAdmits(dirLane, 'pkg/a.js', generated), false, 'generated output belongs to no directory lane');
+  assert.equal(laneAdmits(dirLane, 'other/x.ts', generated), false);
+  const emptyDir = { name: 'x', dir: '', excludes: [], testRatioApplies: false, fileCount: 0 };
+  assert.equal(laneAdmits(emptyDir, 'pkg/src/c.ts', generated), false);
 });
