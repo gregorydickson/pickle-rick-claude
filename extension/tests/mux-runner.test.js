@@ -7617,7 +7617,7 @@ test('lifecycle rerun: a committed medium ticket holding only conformance + code
 
 test('lifecycle rerun: review artifacts do not stand in for research and plan — still parked', async () => {
     const ticketId = 'lc-reviews-only';
-    const { sessionDir, evaluate } = await guardLifecycleCase(ticketId, {
+    const { sessionDir, statePath, evaluate } = await guardLifecycleCase(ticketId, {
         artifacts: ['research_review.md', 'plan_review.md', 'conformance_2026-10-08.md', 'code_review_2026-10-08.md'],
     });
 
@@ -7625,6 +7625,8 @@ test('lifecycle rerun: review artifacts do not stand in for research and plan �
 
     assert.equal(guard.ok, false);
     assert.equal(readLifecycleRerun(sessionDir, ticketId), 'requested');
+    assert.equal(readAutoMarkTicketStatus(sessionDir, ticketId), 'In Progress', 'parked exactly like the no-review case');
+    assert.equal(z1ExitReason(statePath), null, 'the park records no exit_reason');
 });
 
 test('lifecycle rerun control: the full medium artifact set is accepted and no field is written', async () => {
@@ -7640,7 +7642,7 @@ test('lifecycle rerun control: the full medium artifact set is accepted and no f
 
 test('lifecycle rerun: the second evaluation of a still-incomplete ticket accepts and stamps accepted_incomplete', async () => {
     const ticketId = 'lc-second-pass';
-    const { sessionDir, evaluate } = await guardLifecycleCase(ticketId, {
+    const { sessionDir, statePath, evaluate } = await guardLifecycleCase(ticketId, {
         artifacts: ['conformance_2026-10-08.md', 'code_review_2026-10-08.md'],
     });
 
@@ -7649,6 +7651,12 @@ test('lifecycle rerun: the second evaluation of a still-incomplete ticket accept
 
     assert.equal(second.ok, true, 'the re-run happened once; the second evaluation accepts');
     assert.equal(readLifecycleRerun(sessionDir, ticketId), 'accepted_incomplete');
+    assert.equal(z1ExitReason(statePath), null, 'accepting incomplete records no exit_reason');
+
+    // Bound: the re-run happens at most once — a later evaluation never re-parks an accepted ticket.
+    const third = evaluate();
+    assert.equal(third.ok, true, 'a third evaluation still accepts');
+    assert.equal(readLifecycleRerun(sessionDir, ticketId), 'accepted_incomplete', 'never re-requested');
 });
 
 test('lifecycle rerun: a tierless ticket is unmeasured — accepted with no field written', async () => {
