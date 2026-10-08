@@ -35,6 +35,7 @@ import {
   isoCompactStamp,
   collectTickets,
   readFrontmatterField,
+  upsertFrontmatterField,
   ticketFilePath,
   respawnMonitorWindowForMode,
   classifyDiffVisualDominance,
@@ -2519,6 +2520,24 @@ export function reportDroppedFindings(runtime: PipelineRuntime): void {
   }
 }
 
+/** One line at the end of every run: the Done tickets accepted with missing lifecycle artifacts. Report only. */
+export function reportLifecycleIncompleteTickets(runtime: PipelineRuntime): void {
+  try {
+    const incomplete = collectTickets(runtime.sessionDir)
+      .filter((t) => (t.status ?? '').toLowerCase() === 'done')
+      .filter((t) => {
+        const ticketPath = ticketFilePath(runtime.sessionDir, t.id ?? '');
+        return fs.existsSync(ticketPath)
+          && readFrontmatterField(fs.readFileSync(ticketPath, 'utf-8'), 'lifecycle_rerun') === 'accepted_incomplete';
+      });
+    runtime.log(incomplete.length === 0
+      ? 'lifecycle-incomplete Done tickets: 0'
+      : `lifecycle-incomplete Done tickets: ${incomplete.length} — ${incomplete.map((t) => t.id).join(', ')}`);
+  } catch (err) {
+    try { runtime.log(`lifecycle-incomplete Done tickets: unmeasured (${safeErrorMessage(err)})`); } catch { /* report only */ }
+  }
+}
+
 /**
  * One line at the end of a run naming every Skipped or Failed ticket and its recorded reason. Report only:
  * it withholds nothing and never throws.
@@ -2694,6 +2713,29 @@ function integratedShas(repoRoot: string, waveSha: string, integrated: readonly 
 }
 
 /**
+ * Best effort: copy the unit's ticket artifacts into the parent ticket dir (never the ticket body itself)
+ * and carry a unit-side `lifecycle_rerun` onto the parent frontmatter, so the next wave sees one counter.
+ */
+function carryUnitLifecycle(runtime: PipelineRuntime, id: string): void {
+  const unitTicketDir = path.join(unitSessionDir(runtime.sessionDir, id), id);
+  if (!fs.existsSync(unitTicketDir)) return;
+  const parentTicketDir = path.join(runtime.sessionDir, id);
+  fs.mkdirSync(parentTicketDir, { recursive: true });
+  for (const name of fs.readdirSync(unitTicketDir)) {
+    if (!name.endsWith('.md') || name === `rick_ticket_${id}.md`) continue;
+    fs.copyFileSync(path.join(unitTicketDir, name), path.join(parentTicketDir, name));
+  }
+  const unitTicket = ticketFilePath(unitSessionDir(runtime.sessionDir, id), id);
+  const parentTicket = ticketFilePath(runtime.sessionDir, id);
+  if (!fs.existsSync(unitTicket) || !fs.existsSync(parentTicket)) return;
+  const rerun = readFrontmatterField(fs.readFileSync(unitTicket, 'utf-8'), 'lifecycle_rerun');
+  if (!rerun) return;
+  const parentRaw = fs.readFileSync(parentTicket, 'utf-8');
+  const updated = upsertFrontmatterField(parentRaw, 'lifecycle_rerun', rerun);
+  if (updated !== null && updated !== parentRaw) fs.writeFileSync(parentTicket, updated);
+}
+
+/**
  * Write every member's chosen status back onto the PARENT ticket; an integrated member also
  * gets its sha. A status the parent already carries is not rewritten. Returns the ids whose
  * write-back FAILED — their parent ticket still carries its prior status.
@@ -2705,6 +2747,11 @@ function writeBackWave(
   const failed = new Set<string>();
   members.forEach((id, i) => {
     const sha = shas.get(i);
+    try {
+      carryUnitLifecycle(runtime, id);
+    } catch (err) {
+      runtime.log(`pickle waves: ${id}: lifecycle artifact copy failed: ${safeErrorMessage(err)}`);
+    }
     if (!sha && prior.get(id) === statuses[i].toLowerCase()) return;
     try {
       // completion_commit is written before the status flip, so a Done never exists without its evidence.
@@ -5665,6 +5712,7 @@ function writeFinalPipelineActivity(
   discloseOpenDecisions(runtime);
   reportDroppedFindings(runtime);
   reportSkippedFailedTickets(runtime);
+  reportLifecycleIncompleteTickets(runtime);
   runtime.log('review convergence: not measured');
   const reviewedBy = runtime.config.phases
     .filter((p) => p !== 'pickle')

@@ -20,7 +20,7 @@ import { execFileSync, spawn, spawnSync } from 'child_process';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
-import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, readFrontmatterField, ticketFilePath, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, } from '../services/pickle-utils.js';
+import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, readFrontmatterField, upsertFrontmatterField, ticketFilePath, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 // B-NONSTOP WS-2 (AC-NS-6): reuse the T3 disposition map to classify a non-pickle
 // phase's `state.exit_reason` (no re-mapping — single source of truth in microverse-runner).
@@ -2100,6 +2100,27 @@ export function reportDroppedFindings(runtime) {
         catch { /* report only */ }
     }
 }
+/** One line at the end of every run: the Done tickets accepted with missing lifecycle artifacts. Report only. */
+export function reportLifecycleIncompleteTickets(runtime) {
+    try {
+        const incomplete = collectTickets(runtime.sessionDir)
+            .filter((t) => (t.status ?? '').toLowerCase() === 'done')
+            .filter((t) => {
+            const ticketPath = ticketFilePath(runtime.sessionDir, t.id ?? '');
+            return fs.existsSync(ticketPath)
+                && readFrontmatterField(fs.readFileSync(ticketPath, 'utf-8'), 'lifecycle_rerun') === 'accepted_incomplete';
+        });
+        runtime.log(incomplete.length === 0
+            ? 'lifecycle-incomplete Done tickets: 0'
+            : `lifecycle-incomplete Done tickets: ${incomplete.length} — ${incomplete.map((t) => t.id).join(', ')}`);
+    }
+    catch (err) {
+        try {
+            runtime.log(`lifecycle-incomplete Done tickets: unmeasured (${safeErrorMessage(err)})`);
+        }
+        catch { /* report only */ }
+    }
+}
 /**
  * One line at the end of a run naming every Skipped or Failed ticket and its recorded reason. Report only:
  * it withholds nothing and never throws.
@@ -2276,6 +2297,33 @@ function integratedShas(repoRoot, waveSha, integrated, commits) {
     return cursor === landed.length ? shas : new Map();
 }
 /**
+ * Best effort: copy the unit's ticket artifacts into the parent ticket dir (never the ticket body itself)
+ * and carry a unit-side `lifecycle_rerun` onto the parent frontmatter, so the next wave sees one counter.
+ */
+function carryUnitLifecycle(runtime, id) {
+    const unitTicketDir = path.join(unitSessionDir(runtime.sessionDir, id), id);
+    if (!fs.existsSync(unitTicketDir))
+        return;
+    const parentTicketDir = path.join(runtime.sessionDir, id);
+    fs.mkdirSync(parentTicketDir, { recursive: true });
+    for (const name of fs.readdirSync(unitTicketDir)) {
+        if (!name.endsWith('.md') || name === `rick_ticket_${id}.md`)
+            continue;
+        fs.copyFileSync(path.join(unitTicketDir, name), path.join(parentTicketDir, name));
+    }
+    const unitTicket = ticketFilePath(unitSessionDir(runtime.sessionDir, id), id);
+    const parentTicket = ticketFilePath(runtime.sessionDir, id);
+    if (!fs.existsSync(unitTicket) || !fs.existsSync(parentTicket))
+        return;
+    const rerun = readFrontmatterField(fs.readFileSync(unitTicket, 'utf-8'), 'lifecycle_rerun');
+    if (!rerun)
+        return;
+    const parentRaw = fs.readFileSync(parentTicket, 'utf-8');
+    const updated = upsertFrontmatterField(parentRaw, 'lifecycle_rerun', rerun);
+    if (updated !== null && updated !== parentRaw)
+        fs.writeFileSync(parentTicket, updated);
+}
+/**
  * Write every member's chosen status back onto the PARENT ticket; an integrated member also
  * gets its sha. A status the parent already carries is not rewritten. Returns the ids whose
  * write-back FAILED — their parent ticket still carries its prior status.
@@ -2284,6 +2332,12 @@ function writeBackWave(runtime, members, shas, statuses, prior) {
     const failed = new Set();
     members.forEach((id, i) => {
         const sha = shas.get(i);
+        try {
+            carryUnitLifecycle(runtime, id);
+        }
+        catch (err) {
+            runtime.log(`pickle waves: ${id}: lifecycle artifact copy failed: ${safeErrorMessage(err)}`);
+        }
         if (!sha && prior.get(id) === statuses[i].toLowerCase())
             return;
         try {
@@ -4825,6 +4879,7 @@ function writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, pipeli
     discloseOpenDecisions(runtime);
     reportDroppedFindings(runtime);
     reportSkippedFailedTickets(runtime);
+    reportLifecycleIncompleteTickets(runtime);
     runtime.log('review convergence: not measured');
     const reviewedBy = runtime.config.phases
         .filter((p) => p !== 'pickle')

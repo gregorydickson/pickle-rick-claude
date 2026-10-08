@@ -192,7 +192,7 @@ describe('runPickleWaves via main()', () => {
    * Stub mux-runner: a unit commits its declared file, stamps its OWN ticket Done, and holds.
    * A unit whose id is in `collide` also writes its id as line 1 of the UNDECLARED `shared.txt`, so two such units collide.
    */
-  function unitRunner(calls, holdMs, { collide = [] } = {}) {
+  function unitRunner(calls, holdMs, { collide = [], lifecycle = [] } = {}) {
     return async (_cmd, args, _env, opts) => {
       const call = { dir: args[1], opts, start: Date.now(), end: 0 };
       calls.push(call);
@@ -207,7 +207,9 @@ describe('runPickleWaves via main()', () => {
         git(wt, 'commit', '-q', '-m', `feat(${id}): unit work`);
         const sha = git(wt, 'rev-parse', 'HEAD');
         const ticketPath = path.join(args[1], id, `rick_ticket_${id}.md`);
-        fs.writeFileSync(ticketPath, fs.readFileSync(ticketPath, 'utf-8').replace(/^status:.*$/m, `status: Done\ncompletion_commit: ${sha}`));
+        const rerun = lifecycle.includes(id) ? '\nlifecycle_rerun: accepted_incomplete' : '';
+        if (rerun) fs.writeFileSync(path.join(args[1], id, 'plan_x.md'), '# plan\n');
+        fs.writeFileSync(ticketPath, fs.readFileSync(ticketPath, 'utf-8').replace(/^status:.*$/m, `status: Done\ncompletion_commit: ${sha}${rerun}`));
         await sleep(holdMs);
       }
       call.end = Date.now();
@@ -262,6 +264,23 @@ describe('runPickleWaves via main()', () => {
         assert.equal(git(fx.target, 'log', '-1', '--format=%s', sha), `feat(${id}): unit work`, `${id} completion_commit is its own commit`);
       }
       assert.equal(git(fx.target, 'worktree', 'list').split('\n').length, 1, 'every unit worktree is removed');
+    } finally {
+      __setSpawnRunnerForTests(null);
+      fx.cleanup();
+    }
+  });
+
+  test('write-back copies unit lifecycle artifacts and lifecycle_rerun onto the parent ticket', async () => {
+    const fx = makeWaveFixture({ max_parallel_tickets: 2 });
+    try {
+      __setSpawnRunnerForTests(unitRunner([], 0, { lifecycle: [WAVE_TICKETS[0]] }));
+      await runMain(fx.sessionDir, fx.dataRoot);
+      const [first, second] = WAVE_TICKETS;
+      assert.ok(fs.existsSync(path.join(fx.sessionDir, first, 'plan_x.md')), 'artifact reached the parent ticket dir');
+      assert.equal(field(readTicket(fx.sessionDir, first), 'lifecycle_rerun'), 'accepted_incomplete');
+      assert.equal(field(readTicket(fx.sessionDir, first), 'status'), 'Done');
+      assert.ok(!fs.existsSync(path.join(fx.sessionDir, second, 'plan_x.md')), 'a unit without artifacts copies none');
+      assert.equal(field(readTicket(fx.sessionDir, second), 'lifecycle_rerun'), undefined);
     } finally {
       __setSpawnRunnerForTests(null);
       fx.cleanup();

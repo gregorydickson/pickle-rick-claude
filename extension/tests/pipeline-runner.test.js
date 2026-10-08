@@ -50,6 +50,7 @@ import {
   reportBaseDrift,
   reportDroppedFindings,
   reportSkippedFailedTickets,
+  reportLifecycleIncompleteTickets,
   discloseUnmeasuredIntegration,
   unreproducibleNodeModulesGap,
 } from '../bin/pipeline-runner.js';
@@ -7050,6 +7051,22 @@ describe('MREL-A8: the run summary names Skipped and Failed tickets', () => {
       const logs = [];
       reportSkippedFailedTickets({ sessionDir, log: (m) => logs.push(m) });
       assert.deepEqual(logs, ['skipped/failed tickets: 0']);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('lifecycle-incomplete line names accepted-incomplete Done tickets and prints 0 otherwise', () => {
+    const root = mkFixtureTmpDir('lifecycle-incomplete-');
+    try {
+      const sessionDir = path.join(root, 'session');
+      writeTicket(sessionDir, 'aaaa1111', 'status: Done');
+      writeTicket(sessionDir, 'bbbb2222', 'status: Todo\nlifecycle_rerun: accepted_incomplete');
+      const none = [];
+      reportLifecycleIncompleteTickets({ sessionDir, log: (m) => none.push(m) });
+      assert.deepEqual(none, ['lifecycle-incomplete Done tickets: 0']);
+      writeTicket(sessionDir, 'cccc3333', 'status: Done\nlifecycle_rerun: accepted_incomplete');
+      const one = [];
+      reportLifecycleIncompleteTickets({ sessionDir, log: (m) => one.push(m) });
+      assert.deepEqual(one, ['lifecycle-incomplete Done tickets: 1 — cccc3333']);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
