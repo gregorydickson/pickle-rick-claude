@@ -153,6 +153,8 @@ test('research block cites input writers and write conditions', () => {
   const research = lifecycleSection(out, 'Research');
   assert.ok(research.includes('write condition'), 'medium Research step must name write condition');
   assert.match(research, /every writer/, 'medium Research step must require citing every writer');
+  assert.doesNotMatch(research, /cite its writer/, 'the single-writer sentence is replaced, not kept beside the new rule');
+  assert.match(research, /values that writer can store \(including NULL\)/, 'each writer names the values it can store');
   // Research review fails research that proposes solutions, so the fixture-building clause must stay out of it.
   assert.ok(!research.includes("through the input's writer"), 'fixture clause must not appear in the Research step');
   assert.ok(
@@ -163,7 +165,9 @@ test('research block cites input writers and write conditions', () => {
 
 test('plan block builds fixtures through the input writer', () => {
   const out = buildTierLifecycleSections(TIER_LIFECYCLE.small, 'small');
-  assert.ok(lifecycleSection(out, 'Plan').includes("through the input's writer"), 'small Plan step must name the writer');
+  const plan = lifecycleSection(out, 'Plan');
+  assert.ok(plan.includes("through the input's writer"), 'small Plan step must name the writer');
+  assert.match(plan, /one test fixture per writer/, 'small Plan step must build a fixture for each writer, not one');
 });
 
 test('Implement and Code Review sections warn against growing guard exception lists', () => {
