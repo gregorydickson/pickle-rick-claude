@@ -680,7 +680,7 @@ Iterative Graphite stack reviewer that generates agent-executable directives and
 - Graphite stack with ≥1 non-trunk branch (`gt log short`)
 - A `CLAUDE.md` with project rules, passing lint, and architectural lint rules in ESLint
 - **GitHub CLI (`gh`)** authed, if you want auto-publish (see note below on why `gh` and not `gt`)
-- **Codex plugin** installed and authed, for the adversarial-review pass to be effective. Install: `/plugin install openai-codex` (or `npm i -g @openai/codex-cli` + `codex setup`). Without it, the Phase C Codex subagent is skipped — the rest of the round still runs, but you lose the adversarial-reviewer perspective.
+- **Codex plugin** installed and authed, for the adversarial-review pass to be effective. Install the `codex` plugin from any marketplace (`/plugin install codex@<marketplace>`, or `npm i -g @openai/codex-cli` + `codex setup`); the companion script is located through the plugin registry, so the marketplace name does not matter. Without it, the Phase C Codex subagent is skipped — the rest of the round still runs, but you lose the adversarial-reviewer perspective.
 
 **Round structure** — each round runs four phases; within a round every category runs concurrently:
 
@@ -863,7 +863,7 @@ See [docs/judge-spawn-troubleshooting.md](docs/judge-spawn-troubleshooting.md) f
 - **Zellij** >= 0.40.0 *(optional — for `/pickle-zellij`)*
 - **Graphite CLI** (`gt`) *(optional — for `/council-of-ricks`)*
 - **GitHub CLI** (`gh`) authed *(optional — required only for `/council-of-ricks` auto-publish; the review itself works without it)*
-- **Codex plugin** *(optional — required for `--backend codex` on `/pickle-tmux`, `/pickle-microverse`, `/anatomy-park`, `/szechuan-sauce`, and for `/council-of-ricks` Phase C adversarial review. Without it, `--backend codex` spawns fail and Council's Phase C is skipped — Claude-backed runs and non-Codex Council rounds are unaffected. Install: `/plugin install openai-codex` or `npm i -g @openai/codex-cli` + `codex setup`)*
+- **Codex plugin** *(optional — required for `--backend codex` on `/pickle-tmux`, `/pickle-microverse`, `/anatomy-park`, `/szechuan-sauce`, and for `/council-of-ricks` Phase C adversarial review. Without it, `--backend codex` spawns fail and Council's Phase C is skipped — Claude-backed runs and non-Codex Council rounds are unaffected. Install the `codex` plugin from any marketplace — `/plugin install codex@<marketplace>` — or `npm i -g @openai/codex-cli` + `codex setup`)*
 - macOS or Linux (Windows not supported)
 
 ---
