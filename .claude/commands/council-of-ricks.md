@@ -115,8 +115,9 @@ Read project `CLAUDE.md`, extract rules/required patterns/forbidden patterns/arc
 
 **Codex detection:**
 ```bash
-CODEX_COMPANION="$(ls -td "$HOME/.claude/plugins/cache/openai-codex/codex"/*/scripts/codex-companion.mjs 2>/dev/null | head -1)"
+CODEX_COMPANION="$(node "$HOME/.claude/pickle-rick/extension/bin/resolve-codex-companion.js")" || CODEX_COMPANION=""
 ```
+The resolver reads the plugin registry (any marketplace that installs a plugin named `codex`), so it survives marketplace renames. When it exits non-zero, the line it prints on stderr is the reason to record.
 If `--no-codex` was passed, set `codex_enabled=false` and skip the setup probe.
 Otherwise, if `CODEX_COMPANION` is non-empty AND `[ -f "$CODEX_COMPANION" ]`, probe readiness:
 ```bash
