@@ -54,7 +54,7 @@ export interface CircuitTransition {
 }
 
 const CONSTRAINT_DISCOVERY_PATTERN = /\b(constraint|invariant|assumption|requirement|contract|blocked by|discovered)\b/i;
-const CORRECT_COURSE_SUGGESTION = 'Suggested recovery: run node ~/.claude/pickle-rick/extension/bin/correct-course.js "<discovery>"';
+const CORRECT_COURSE_SUGGESTION = 'Suggested recovery: run node ~/.claude/pickle-rick/extension/bin/correct-course.js "<discovery>" --session-dir <session-dir>';
 const NO_PROGRESS_REASON_PREFIX = /^No progress in \d+ iterations/;
 
 // ---------------------------------------------------------------------------

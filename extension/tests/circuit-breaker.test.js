@@ -590,6 +590,38 @@ test('recordIterationResult: no-progress constraint discovery opens with correct
 });
 
 /**
+ * AP-EXT-ITER3-SVC-01 — the suggestion is a command the operator can run as printed.
+ * `correct-course.js` exits through `usage()` without `--session-dir`, so a suggestion that
+ * omits it sends the operator from a halted run straight into a usage error. Fill the
+ * placeholders and feed the printed argv to the real parser.
+ */
+test('AP-EXT-ITER3-SVC-01: the correct-course suggestion parses under correct-course.js', async () => {
+    const { parseArgs } = await import('../bin/correct-course.js');
+    const settings = makeSettings({ noProgressThreshold: 3, halfOpenAfter: 2 });
+    const state = recordIterationResult(makeFreshState({
+        state: 'HALF_OPEN',
+        consecutive_no_progress: 2,
+        last_error_signature: 'blocked by newly discovered contract constraint',
+    }), { hasProgress: false, errorSignature: 'blocked by newly discovered contract constraint' }, 4, settings);
+    const command = state.reason.split('correct-course.js')[1];
+    assert.ok(command, 'suggestion names correct-course.js');
+    const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-cb-suggest-'));
+    const argv = (command.match(/"[^"]*"|\S+/g) ?? [])
+        .map((token) => token.replace(/^"|"$/g, ''))
+        .map((token) => token.replace('<discovery>', 'new contract constraint').replace('<session-dir>', sessionDir));
+    const realExit = process.exit;
+    process.exit = (code) => { throw new Error(`correct-course.js exited ${code} on the suggested argv`); };
+    try {
+        const parsed = parseArgs(argv);
+        assert.equal(parsed.sessionDir, path.resolve(sessionDir));
+        assert.equal(parsed.discovery, 'new contract constraint');
+    } finally {
+        process.exit = realExit;
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+});
+
+/**
  * AP-EXT-ITER249-01 — the trip reason is ANNOTATED, not rebuilt.
  *
  * The test above pins the PRODUCER: `recordIterationResult` appends the
