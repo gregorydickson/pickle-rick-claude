@@ -34,15 +34,16 @@ If `PICKLE_SUBTOOL_BACKEND_NOOP=1` is set and session backend is non-codex, no-o
 
 ## Forwarding rules
 
-After the pre-flight steps above, forward the rescue request to the Codex companion script exactly as the plugin's `codex:rescue` agent would. Use exactly one `Bash` call:
+After the pre-flight steps above, forward the rescue request to the Codex companion script exactly as the plugin's `codex:rescue` agent would. `CLAUDE_PLUGIN_ROOT` is not set for a user command, so resolve the companion from the plugin registry first, then forward. Use exactly one `Bash` call:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task ...
+CODEX_COMPANION="$(node "$HOME/.claude/pickle-rick/extension/bin/resolve-codex-companion.js")" || exit 1
+node "$CODEX_COMPANION" task ...
 ```
 
 - Default to write-capable run (`--write`) unless user asks for read-only.
 - If the user is continuing prior work, add `--resume-last` unless `--fresh` is present.
 - Return the stdout of `codex-companion` exactly as-is.
-- If the Bash call fails, return nothing.
+- If the Bash call fails, return its exit code and stderr verbatim (the resolver names why Codex could not be found). Never return empty output on failure.
 
 Do not add commentary before or after the forwarded output.
