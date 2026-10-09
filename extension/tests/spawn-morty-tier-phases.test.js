@@ -223,6 +223,21 @@ test('re-run of committed ticket skips Implement and names the sha', () => {
   assert.match(prompt, /ONLY the missing pre-implementation artifacts/);
 });
 
+test('re-run of committed ticket renders no Implement or Code Review section that would contradict its banner', () => {
+  const prompt = rerunPrompt(`completion_commit: ${RERUN_SHA}\nlifecycle_rerun: requested\n`);
+  assert.doesNotMatch(prompt, /### \d+\. Implement\n/);
+  assert.doesNotMatch(prompt, /### \d+\. Code Review\n/);
+  assert.match(prompt, /### \d+\. Plan Review\n/, 'the pre-implementation sections still render');
+});
+
+test('control: every tier lifecycle renders its Implement and Code Review sections', () => {
+  for (const [tier, phases] of Object.entries(TIER_LIFECYCLE)) {
+    const sections = buildTierLifecycleSections(phases, tier);
+    assert.match(sections, /### \d+\. Implement\n/, `tier ${tier} lacks Implement`);
+    assert.match(sections, /### \d+\. Code Review\n/, `tier ${tier} lacks Code Review`);
+  }
+});
+
 test('control: lifecycle_rerun requested with no completion_commit is not a re-run of committed work', () => {
   const prompt = rerunPrompt('lifecycle_rerun: requested\n');
   assert.ok(!prompt.includes('Lifecycle re-run of committed work'), 'no commit to describe, so no re-run banner');
