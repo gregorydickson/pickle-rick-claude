@@ -230,6 +230,12 @@ test('re-run of committed ticket renders no Implement or Code Review section tha
   assert.match(prompt, /### \d+\. Plan Review\n/, 'the pre-implementation sections still render');
 });
 
+test('re-run of a full-lifecycle ticket does not tell the worker to read the ticket body in place of the research/plan it must write', () => {
+  const prompt = rerunPrompt(`completion_commit: ${RERUN_SHA}\nlifecycle_rerun: requested\n`);
+  assert.doesNotMatch(prompt, /Plan\/Research source for skipped phases/);
+  assert.match(prompt, /### \d+\. Research\n/, 'research is the re-run deliverable');
+});
+
 test('control: every tier lifecycle renders its Implement and Code Review sections', () => {
   for (const [tier, phases] of Object.entries(TIER_LIFECYCLE)) {
     const sections = buildTierLifecycleSections(phases, tier);

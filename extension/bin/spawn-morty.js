@@ -393,7 +393,9 @@ const SYNC_GATE_COMMIT_FIRST_RULES = '\n**Gate confirmation is synchronous**: ru
 const GUARD_EXCEPTION_LIST_RULE = '\n**A red guard is not fixed by growing its exception list**: adding members to a constant that a guard reads to skip its check — an allowlist, uncovered-files or known-exceptions list, or a baseline — is not a response to a red guard. If an exception is genuinely necessary, record it with its reason as an open finding in the review artifact.\n';
 export function buildTierLifecycleSections(phases, tier) {
     const phaseSet = new Set(phases);
-    const isReduced = phases.length < ALL_LIFECYCLE_PHASES.length;
+    // Reduced = a pre-implementation phase is skipped. A re-run drops the post-plan phases,
+    // and telling it to read the ticket body in place of research/plan would contradict its job.
+    const isReduced = preImplementationPhases(ALL_LIFECYCLE_PHASES).some((phase) => !phaseSet.has(phase));
     let out = `**Tier: ${tier} | Active phases: ${phases.join(', ')}**\n`;
     out += `\n> **Expected-value source:** a count or literal you assert or check in an acceptance criterion comes from RUNNING its predicate at HEAD and reading the output — never from memory or from the spec's own prose. A predicate that already passes before your change verifies nothing.\n`;
     out += `\n> **Name the behaviour, not the PRD clause:** code, comments, test names and repo docs describe the behaviour itself. A PRD requirement id (FR-n, AC-n, CUJ n) or session-file nickname points at a document that lives outside the repo, so no reader can resolve it — unless the ticket or the target repo's CLAUDE.md asks for one.\n`;
