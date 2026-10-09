@@ -638,3 +638,24 @@ test('#57: paths-mode scope is unaffected at szechuan entry', () => {
         cleanup(repo, session);
     }
 });
+
+test('AP-EXT-ITER8-SVC-01: with anatomy-park skipped, szechuan entry admits the build diff a setup-time fence predates', () => {
+    const repo = makeRepo();
+    const session = makeSession(repo);
+    try {
+        git(['checkout', '-qb', 'feature'], repo);
+        fs.writeFileSync(path.join(repo, 'f1.ts'), 'v1\n');
+        git(['add', '.'], repo);
+        git(['commit', '-qm', 'f1'], repo);
+        const setup = resolveScope({ scopeFlag: 'branch', scopeBase: 'main', sessionRoot: session, repoRoot: repo });
+        assert.deepStrictEqual(setup.allowed_paths, ['f1.ts'], 'fixture precondition: the setup fence predates the build');
+        // --skip-anatomy: the build commit lands and szechuan is the FIRST refresh.
+        fs.writeFileSync(path.join(repo, 'built.ts'), 'built\n');
+        git(['add', '.'], repo);
+        git(['commit', '-qm', 'built'], repo);
+        const szechuan = refreshScope(session, 'szechuan-sauce', { repoRoot: repo, log: () => {} });
+        assert.deepStrictEqual(szechuan.allowed_paths, ['built.ts', 'f1.ts']);
+    } finally {
+        cleanup(repo, session);
+    }
+});

@@ -405,13 +405,18 @@ function computeRefreshedAllowed(
   const narrowed = filterByTarget(base, target, repoRoot);
   const expanded = scope.strategy === 'one-hop' ? computeOneHop(narrowed, repoRoot) : narrowed;
   const fresh = Array.from(new Set(expanded.map(toPosix))).sort(byteOrder);
-  return phase === 'szechuan-sauce' ? narrowToPreviousScope(fresh, scope.allowed_paths) : fresh;
+  return phase === 'szechuan-sauce' && scope.refresh_history.length > 0
+    ? narrowToPreviousScope(fresh, scope.allowed_paths)
+    : fresh;
 }
 
 /**
  * Szechuan entry reviews what the earlier phases already fenced, so a path an
  * anatomy-park commit touched outside that fence stays outside. A subsystem
  * `CLAUDE.md` is anatomy-park's own catalog deliverable and is always admitted.
+ * Only a REFRESHED fence measured the build: a setup-time fence (szechuan the
+ * first refresh, as under `--skip-anatomy`) predates it, so narrowing to it
+ * would drop every file the build added.
  */
 function narrowToPreviousScope(fresh: string[], previous: string[]): string[] {
   const prior = new Set(previous.map(toPosix));
