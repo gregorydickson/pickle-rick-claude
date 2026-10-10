@@ -202,10 +202,11 @@ test('AC-MWMO-D2-8/D2-9 (superseded by B-NOSTOP-GATES WS-1): all-terminal bundle
     );
     assert.match(
       log,
-      /Phase pickle completed successfully/,
-      'AC-MWMO-D2-8 (WS-1): an all-terminal bundle must GRADUATE — halting the healthiest ' +
-      'possible roster state was the bug this campaign fixes',
+      /Phase pickle did NOT converge \(done_without_commit_evidence\)/,
+      'AC-MWMO-D2-8: the non-zero pickle exit is reported non-convergent, yet the all-terminal ' +
+      'bundle still advances rather than halting',
     );
+    assert.doesNotMatch(log, /Phase pickle completed successfully/);
 
     // Operator-visible outcome #2 (WS-1, inverted): citadel IS reached.
     assert.match(
@@ -218,7 +219,8 @@ test('AC-MWMO-D2-8/D2-9 (superseded by B-NOSTOP-GATES WS-1): all-terminal bundle
     // unrelated fixture gap, not a pickle halt) — it is not falsely "completed".
     const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
     assert.notEqual(status.status, 'completed', 'citadel\'s own failure must still be reported honestly');
-    assert.equal(status.completed_phases, 1, 'pickle counts as completed; citadel does not');
+    assert.equal(status.completed_phases, 0, 'neither the non-convergent pickle nor the failed citadel counts as completed');
+    assert.equal(status.phase_dispositions?.pickle, 'done_without_commit_evidence');
 
     // The prior mux exit_reason is neither stamped over by pickle (it never halted)
     // nor laundered into the generic 'failed' by finalizeFailedPipeline (which
@@ -364,7 +366,7 @@ test('AC-GTRUTH-A2-1: committed-but-unflipped + roster-terminal → NO phase-inc
       return { exitCode: PipelineRunnerExitCode.PhaseIncomplete, stdout: '', stderr: '' };
     });
 
-    await captureMainExit(sessionDir, PipelineRunnerExitCode.Success);
+    await captureMainExit(sessionDir, PipelineRunnerExitCode.Failure);
 
     const log = fs.readFileSync(path.join(sessionDir, 'pipeline-runner.log'), 'utf-8');
     assert.match(
@@ -374,10 +376,10 @@ test('AC-GTRUTH-A2-1: committed-but-unflipped + roster-terminal → NO phase-inc
     );
     assert.match(
       log,
-      /Phase pickle completed successfully/,
-      'pickle must GRADUATE: on pre-fix source the exit-3 branch broke unconditionally, so this ' +
-      'line was unreachable and the pipeline halted on a proxy rather than on truth',
+      /Phase pickle did NOT converge \(done_without_commit_evidence\)/,
+      'pickle graduates past the phase-incomplete stamp but its non-zero exit is reported non-convergent',
     );
+    assert.doesNotMatch(log, /Phase pickle completed successfully/);
 
     const finalState = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
     assert.notEqual(
@@ -387,7 +389,8 @@ test('AC-GTRUTH-A2-1: committed-but-unflipped + roster-terminal → NO phase-inc
     );
 
     const status = JSON.parse(fs.readFileSync(path.join(sessionDir, 'pipeline-status.json'), 'utf-8'));
-    assert.equal(status.completed_phases, 1, 'the pickle phase must be recorded complete');
+    assert.equal(status.completed_phases, 0, 'a non-zero pickle exit is not recorded complete');
+    assert.equal(status.phase_dispositions?.pickle, 'done_without_commit_evidence');
   } finally {
     __setSpawnRunnerForTests(null);
     fs.rmSync(repo, { recursive: true, force: true });

@@ -8,11 +8,11 @@
  * NOT stubbed: it self-heals a `state.prd_path` from a real (trivial) `prd.md`
  * seeded into the session dir and runs its own in-process audit-runner, so
  * "citadel is reached" is proven by an ACTUAL clean citadel pass, not a second
- * spawn-stub call. This keeps every row's overall exit code confined to {0, 3}
- * — a row where pickle advances is never masked by an unrelated citadel
- * failure (see the sibling `pipeline-runner-done-without-commit-evidence-*`
- * fixtures, which accept a missing-prd_path citadel failure and therefore
- * cannot make this "exit code never 1" pin).
+ * spawn-stub call. A row's overall exit code is 0 or 3 unless pickle itself
+ * exited non-zero: a non-zero pickle exit is reported non-convergent (pickle
+ * disposition recorded, unsuccessful verdict) and the process exits 1 even
+ * though citadel is still reached. Citadel never fails on its own here, so any
+ * exit 1 is attributable to that report, not to a halt.
  *
  * The terminal triple — banner title/color, parsed `pipeline-status.json`,
  * and the process exit code — is asserted TOGETHER per row from ONE
@@ -155,8 +155,8 @@ afterEach(() => {
 /**
  * Runs one roster-shape x muxExit row through the full pipeline and returns the
  * terminal triple plus the structural advance signal. `expectedCode` is the
- * PROCESS exit code the row's disposition predicts (0 or 3 — never 1, per the
- * ONE RULE this ticket enforces).
+ * PROCESS exit code the row's disposition predicts: 0 or 3, or 1 when pickle
+ * exited non-zero (reported non-convergent, never completed successfully).
  */
 async function runRow({ tickets, muxExit, expectedCode, stateOverrides = {} }) {
   const repo = tmpDir('nsg-phase-loop-repo-');
@@ -205,6 +205,16 @@ async function runRow({ tickets, muxExit, expectedCode, stateOverrides = {} }) {
   };
 }
 
+/** A non-zero pickle exit: disposition recorded, no success line, unsuccessful verdict, nothing demoted or discarded. */
+function assertPickleReportedNonConvergent(r) {
+  assert.equal(r.pipelineStatus.phase_dispositions?.pickle, 'done_without_commit_evidence');
+  assert.doesNotMatch(r.log, /Phase pickle completed successfully/);
+  assert.notEqual(r.pipelineStatus.status, 'completed');
+  assert.equal(r.pipelineStatus.completed_phases, 1, 'only citadel counts as completed');
+  assert.equal(r.bannerTitle, 'Pipeline Failed');
+  assert.equal(r.bannerColor, 'RED');
+}
+
 describe('AC-NSG-1 — roster shape x mux exit code, the terminal triple', () => {
   test('6/6 Done (evidenced), muxExit=0: clean graduate, citadel reached, exit 0', async () => {
     const tickets = Array.from({ length: 6 }, (_, i) => ({
@@ -228,16 +238,13 @@ describe('AC-NSG-1 — roster shape x mux exit code, the terminal triple', () =>
     const r = await runRow({
       tickets,
       muxExit: PipelineRunnerExitCode.PhaseIncomplete,
-      expectedCode: PipelineRunnerExitCode.Success,
+      expectedCode: PipelineRunnerExitCode.Failure,
       stateOverrides: { exit_reason: 'done_without_commit_evidence' },
     });
 
-    // AC-NSG-1 field-wedge row: this is the exact shape from the PRD's own bug
-    // report (session 2026-07-25-38095284) — an all-Done roster must not halt.
-    assert.equal(r.bannerTitle, 'Pipeline Complete');
-    assert.equal(r.bannerColor, 'GREEN');
-    assert.equal(r.pipelineStatus.status, 'completed');
-    assert.equal(r.pipelineStatus.completed_phases, 2);
+    // An all-Done roster must not halt: citadel is reached. The non-zero pickle exit
+    // is reported honestly — non-convergent, never "completed successfully".
+    assertPickleReportedNonConvergent(r);
     assert.notEqual(r.terminalReason, 'pipeline_phase_incomplete');
     assert.ok(r.citadelReached, 'AC-NSG-1 field-wedge row: citadel must be reached');
     assert.ok(
@@ -359,11 +366,11 @@ describe('AC-NSG-1 — roster shape x mux exit code, the terminal triple', () =>
     const r = await runRow({
       tickets,
       muxExit: PipelineRunnerExitCode.PhaseIncomplete,
-      expectedCode: PipelineRunnerExitCode.Success,
+      expectedCode: PipelineRunnerExitCode.Failure,
       stateOverrides: { exit_reason: 'done_without_commit_evidence' },
     });
 
-    assert.equal(r.pipelineStatus.status, 'completed');
+    assertPickleReportedNonConvergent(r);
     assert.notEqual(r.terminalReason, 'pipeline_phase_incomplete');
     assert.ok(r.citadelReached, 'Skipped is terminal (R-PPPA) — must not count as pending, even at exit code 3');
   });
