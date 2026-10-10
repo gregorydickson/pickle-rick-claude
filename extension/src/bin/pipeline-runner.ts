@@ -1016,20 +1016,8 @@ function sortScopePaths(paths: string[]): string[] {
   return [...paths].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-function resolveSeedPathsForSetup(sessionDir: string, statePath: string, target: string | undefined, repoRoot: string): string[] {
-  let currentTicket: string | null;
-  try {
-    const state = sm.read(statePath);
-    currentTicket = typeof state.current_ticket === 'string' && state.current_ticket.length > 0
-      ? state.current_ticket
-      : null;
-  } catch {
-    currentTicket = null;
-  }
-
-  const declared = currentTicket
-    ? readDeclaredFilesForTicket(sessionDir, currentTicket)
-    : Array.from(buildDeclaredFilesByTicket(sessionDir).values()).flat();
+function resolveSeedPathsForSetup(sessionDir: string, target: string | undefined, repoRoot: string): string[] {
+  const declared = Array.from(buildDeclaredFilesByTicket(sessionDir).values()).flat();
   const normalized = Array.from(new Set(declared.map(normalizeRepoPathForScope).filter(Boolean)));
   return sortScopePaths(filterSeedPathsToTarget(normalized, target, repoRoot));
 }
@@ -1071,7 +1059,7 @@ function persistSeededBranchScope(args: SetupScopeArgs): ScopeJson | null {
     if (parsed.mode !== 'branch') { return null; }
 
     const repoRoot = gitRepoRoot(workingDir);
-    const allowedPaths = resolveSeedPathsForSetup(sessionDir, path.join(sessionDir, 'state.json'), target, repoRoot);
+    const allowedPaths = resolveSeedPathsForSetup(sessionDir, target, repoRoot);
     if (allowedPaths.length === 0) { return null; }
 
     const headSha = runGitString(['rev-parse', 'HEAD'], repoRoot);

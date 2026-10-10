@@ -144,6 +144,46 @@ test('setupScope seeds empty pre-build branch scope from ticket-declared file im
     }
 });
 
+test('setupScope seeds the union of every pending ticket\'s declared files even when current_ticket is set', async () => {
+    const repo = makeRepo();
+    const session = makeSession(repo, 'union-first');
+    try {
+        const { setupScope, checkScopeDiff } = await loadCompiledModules();
+        writeTicket(session, 'union-first', ['src/first.ts']);
+        writeTicket(session, 'union-second', ['src/second.ts', 'docs/second.md']);
+        writeTicket(session, 'union-third', ['src/third.ts']);
+        // A finished ticket's declared files are not part of the pending union.
+        writeTicket(session, 'union-done', ['src/already-done.ts']);
+        const donePath = path.join(session, 'union-done', 'rick_ticket_union-done.md');
+        fs.writeFileSync(donePath, fs.readFileSync(donePath, 'utf-8').replace('status: In Progress', 'status: Done'));
+
+        const scope = setupScope({
+            sessionDir: session,
+            workingDir: repo,
+            target: repo,
+            scopeFlag: 'branch',
+            scopeBase: 'main',
+            log: () => {},
+        });
+
+        assert.ok(scope, 'seeded scope should be returned');
+        assert.deepStrictEqual(
+            scope.allowed_paths,
+            ['docs/second.md', 'src/first.ts', 'src/second.ts', 'src/third.ts'],
+        );
+
+        // Control: the fence still refuses a path no pending ticket declared.
+        const gate = checkScopeDiff({
+            scopeJsonPath: path.join(session, 'scope.json'),
+            _getStagedPaths: () => ['src/second.ts', 'src/not-declared.ts'],
+        });
+        assert.equal(gate.status, 'outside_scope');
+        assert.deepStrictEqual(gate.staged_paths_outside_scope, ['src/not-declared.ts']);
+    } finally {
+        cleanup(repo, session);
+    }
+});
+
 test('setupScope preserves a non-empty resolved branch diff instead of replacing it with ticket-declared paths', async () => {
     const repo = makeRepo();
     const session = makeSession(repo, 'preserve-branch');
