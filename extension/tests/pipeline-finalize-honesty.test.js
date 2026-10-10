@@ -17,6 +17,7 @@ import {
   __setCitadelRemediationDepsForTests,
   __setSpawnRunnerForTests,
   buildPipelineCompletePanel,
+  computePipelineVerdict,
   executeCitadelPhase,
   finalizePhaseSuccess,
   main,
@@ -1107,4 +1108,42 @@ describe('R-NOPOSTTIER: withholding never writes exit_reason', () => {
       fs.rmSync(dir, { recursive: true });
     });
   }
+});
+
+describe('a non-zero pickle exit is never reported completed successfully', () => {
+  function runPickle(exitCode, exitReason) {
+    const dir = tmpDir();
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, exitReason);
+    const logs = [];
+    runtime.log = (m) => logs.push(m);
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const outcome = finalizePhaseSuccess(runtime, counters, cancelMarker, 'pickle', exitCode);
+    fs.rmSync(dir, { recursive: true });
+    return { runtime, outcome, counters, logs };
+  }
+
+  test('exit 1 with circuit_open withholds success and lets the next phase run', () => {
+    const { runtime, outcome, counters, logs } = runPickle(1, 'circuit_open');
+    assert.equal(logs.some((m) => m.includes('completed successfully')), false);
+    assert.equal(counters.phaseDispositions.pickle, 'circuit_open');
+    assert.equal(counters.completed, 0);
+    assert.equal(outcome.action, 'continue');
+    runtime.config.phases = [{}, {}, {}, {}];
+    assert.equal(computePipelineVerdict(runtime, counters).unsuccessful, true);
+  });
+
+  test('exit 0 with all tickets done is unchanged', () => {
+    const { outcome, counters, logs } = runPickle(0, 'completed');
+    assert.equal(logs.some((m) => m.includes('Phase pickle completed successfully')), true);
+    assert.equal(counters.completed, 1);
+    assert.equal(counters.phaseDispositions.pickle, undefined);
+    assert.equal(outcome.action, 'continue');
+  });
+
+  test('exit 1 with no exit_reason records exit_1', () => {
+    const { counters } = runPickle(1, null);
+    assert.equal(counters.phaseDispositions.pickle, 'exit_1');
+    assert.equal(counters.nonConvergent, 1);
+  });
 });

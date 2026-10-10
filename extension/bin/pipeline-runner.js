@@ -6551,13 +6551,15 @@ export function withholdForFailedAcGate(runtime, counters, cancelMarker, rawPhas
  * be stale from an earlier phase and is never read.
  */
 function phaseDivergence(runtime, rawPhase, exitCode) {
-    if (isMicroversePhase(rawPhase)) {
+    if (isMicroversePhase(rawPhase) || (rawPhase === 'pickle' && exitCode !== 0)) {
         let exitReason = null;
         try {
             exitReason = sm.read(runtime.statePath).exit_reason;
         }
         catch { /* best-effort — unreadable state falls back to the exit code */ }
         if (typeof exitReason === 'string' && exitReason !== '') {
+            if (!isMicroversePhase(rawPhase))
+                return exitReason;
             return classifyMicroverseDisposition(exitReason).reportAs !== 'success' ? exitReason : null;
         }
     }
@@ -6595,23 +6597,21 @@ export function finalizePhaseSuccess(runtime, counters, cancelMarker, rawPhase, 
     }
     if (rawPhase === 'pickle')
         withholdForDegradedPostFinalVerdict(runtime, counters, rawPhase, log);
-    if (rawPhase !== 'pickle') {
-        const disposition = phaseDivergence(runtime, rawPhase, exitCode);
-        // One raise for both degraded arms; `??` keeps the unmeasured disclosure off a diverged phase.
-        const unmeasured = disposition === null && isMicroversePhase(rawPhase)
-            && reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
-        if (disposition !== null || unmeasured)
-            counters.nonConvergent++;
-        if (disposition !== null) {
-            counters.phaseDispositions[rawPhase] = disposition;
-            // Errors are non-blocking: a failed status write still reports the phase and continues.
-            try {
-                writeRunningStatus(runtime, counters, null);
-            }
-            catch { /* non-blocking */ }
-            log(`Phase ${rawPhase} did NOT converge (${disposition}) — reported non-convergent, not counted as completed`);
-            return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
+    const disposition = phaseDivergence(runtime, rawPhase, exitCode);
+    // One raise for both degraded arms; `??` keeps the unmeasured disclosure off a diverged phase.
+    const unmeasured = disposition === null && isMicroversePhase(rawPhase)
+        && reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
+    if (disposition !== null || unmeasured)
+        counters.nonConvergent++;
+    if (disposition !== null) {
+        counters.phaseDispositions[rawPhase] ??= disposition;
+        // Errors are non-blocking: a failed status write still reports the phase and continues.
+        try {
+            writeRunningStatus(runtime, counters, null);
         }
+        catch { /* non-blocking */ }
+        log(`Phase ${rawPhase} did NOT converge (${disposition}) — reported non-convergent, not counted as completed`);
+        return cancelledOutcome(cancelMarker, log) ?? { action: 'continue' };
     }
     counters.completed++;
     writeRunningStatus(runtime, counters, null);
