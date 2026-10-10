@@ -8295,6 +8295,12 @@ async function waitOutRateLimitParkWithProbe(input, now, sleepFn, parkStartMs, r
     while (now() < resumeTargetMs) {
         await sleepFn(Defaults.RATE_LIMIT_POLL_MS);
         try {
+            // Liveness for the pipeline heartbeat: a parked runner writes no iteration log.
+            const t = new Date();
+            fs.utimesSync(path.join(sessionDir, 'rate_limit_wait.json'), t, t);
+        }
+        catch { /* best effort */ }
+        try {
             if (readRunnerState(statePath).active !== true)
                 return true;
         }

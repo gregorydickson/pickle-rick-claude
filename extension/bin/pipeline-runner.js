@@ -1355,9 +1355,12 @@ function reapChildSubtree(child, leadsGroup, signal = 'SIGTERM') {
  * substantial ticket freezes it past the stall threshold and the worker is
  * SIGTERM'd mid-ticket. The per-iteration `tmux_iteration_*.log` is written
  * continuously and is the truer liveness signal. Take the MAX mtime across
- * those logs; when none exist yet, fall back to `state.json` mtime.
+ * those logs, `rate_limit_probe.log` and `rate_limit_wait.json` (a parked
+ * mux-runner writes no iteration log; the park poll touches the wait file and each
+ * probe appends to the probe log). A park file dated in the future is ignored so it
+ * cannot shield a hung child. When none exist, fall back to `state.json` mtime.
  */
-function resolveChildMuxLivenessMtime(sessionDir, statePath, statSyncFn) {
+function resolveChildMuxLivenessMtime(sessionDir, statePath, statSyncFn, nowMs = Date.now()) {
     let names;
     try {
         names = fs.readdirSync(sessionDir);
@@ -1376,6 +1379,16 @@ function resolveChildMuxLivenessMtime(sessionDir, statePath, statSyncFn) {
         }
         catch {
             // best-effort: a racing log rotation must not crash the heartbeat
+        }
+    }
+    for (const name of ['rate_limit_probe.log', 'rate_limit_wait.json']) {
+        try {
+            const s = statSyncFn(path.join(sessionDir, name));
+            if (s.mtimeMs <= nowMs && s.mtimeMs > maxLogMtimeMs)
+                maxLogMtimeMs = s.mtimeMs;
+        }
+        catch {
+            // absent outside a park
         }
     }
     if (maxLogMtimeMs !== -Infinity) {
@@ -1414,7 +1427,7 @@ export function armChildMuxRunnerHeartbeat(opts, deps = {}) {
     const tick = () => {
         if (stopped || opts.child.killed)
             return;
-        const live = resolveChildMuxLivenessMtime(opts.sessionDir, statePath, statSyncFn);
+        const live = resolveChildMuxLivenessMtime(opts.sessionDir, statePath, statSyncFn, nowFn());
         if (!live)
             return;
         const elapsedSeconds = Math.floor((nowFn() - live.mtimeMs) / 1000);
