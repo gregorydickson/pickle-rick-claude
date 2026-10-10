@@ -9,7 +9,7 @@ import { isLaneSessionDir } from '../services/anatomy-lanes.js';
 import { PromiseTokens, hasToken, VALID_STEPS, Defaults, classifyExitReason, FALSE_EPIC_THRESHOLD, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
-import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, formatCircuitBreakerTripReason, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
+import { loadSettings, startFreshCircuitBreaker, canExecute, detectProgress, extractErrorSignature, formatCircuitBreakerTripReason, recordIterationResult, resetCircuitBreaker } from '../services/circuit-breaker.js';
 import { buildManagerInvocation, buildJudgeInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js';
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
@@ -11476,7 +11476,7 @@ function initializeMuxRunnerSession() {
 function loadMuxLoopSettings(extensionRoot, sessionDir) {
     const cbSettings = loadSettings(extensionRoot);
     const cbEnabled = cbSettings.enabled;
-    const initialCbState = cbEnabled ? initCircuitBreaker(sessionDir, cbSettings) : null;
+    const initialCbState = cbEnabled ? startFreshCircuitBreaker(sessionDir) : null;
     const cbPath = path.join(sessionDir, 'circuit_breaker.json');
     const runnerSettingsBag = loadSettingsBag(extensionRoot, 'mux-runner:main:maxTurns');
     const runnerMaxTurns = positiveIntegerOrNull(runnerSettingsBag.default_tmux_max_turns)

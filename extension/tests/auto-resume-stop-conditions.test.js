@@ -283,6 +283,28 @@ fs.writeFileSync(process.argv[2] + '/state.json', JSON.stringify(s));
     }, { ticket: 'stuck-ticket' });
   });
 
+  test('repeated no-progress relaunches stop at retry 3', () => {
+    // The circuit breaker now starts fresh on every mux-runner process start, so the
+    // relaunch bound is this wrapper's: the same stuck ticket with nothing done stops
+    // at exactly the third launch.
+    runFixtureTest((fixture) => {
+      writeMuxRunner(fixture, `const fs = require('fs');
+const cf = process.argv[2] + '/.n';
+let n = 0;
+try { n = parseInt(fs.readFileSync(cf, 'utf8'), 10) || 0; } catch {}
+fs.writeFileSync(cf, String(n + 1));
+const s = JSON.parse(fs.readFileSync(process.argv[2] + '/state.json', 'utf8'));
+s.exit_reason = 'pipeline_phase_incomplete';
+s.current_ticket = 'stuck-ticket';
+fs.writeFileSync(process.argv[2] + '/state.json', JSON.stringify(s));
+`);
+      const result = runScript(fixture, { PICKLE_AUTO_RESUME_MAX_RETRIES: '20' }, NO_PROGRESS_TIMEOUT_MS);
+      assertCompleted(result);
+      assert.ok(result.stderr.includes('no progress'), `expected no-progress stop\n${formatResultDiagnostics(result)}`);
+      assert.equal(readIfExists(fixture.counterFile), '3', `expected the stop at the third launch\n${formatResultDiagnostics(result)}`);
+    }, { ticket: 'stuck-ticket' });
+  });
+
   test('prints [warn] banner past retry 3', () => {
     // Repeat the prior ticket on the third launch so retry 4 reaches the warning
     // and no-progress halt in the same loop instead of waiting for a fifth launch.

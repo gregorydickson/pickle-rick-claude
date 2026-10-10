@@ -17,6 +17,7 @@ import {
     normalizeErrorSignature,
     recordIterationResult,
     resetCircuitBreaker,
+    startFreshCircuitBreaker,
 } from '../services/circuit-breaker.js';
 
 import { buildTmuxNotification } from '../bin/mux-runner.js';
@@ -1239,58 +1240,83 @@ test('CB last_progress_iteration stays in sync with state.json iteration — no 
     }
 });
 
-test('AC-C3-1: a breaker count accumulated in phase N is still visible in phase N+1', () => {
-    // Drives two phases: phase N accumulates real progress at a high state.iteration
-    // (mirrors mux-runner's pickle-phase loop); phase N+1 simulates the session's
-    // iteration counter being taken over by a different phase runner (e.g.
-    // resetStateForPhase / setup.js --resume --reset / microverse-runner's own loop
-    // driving state.iteration back down) with NO circuit_breaker.json write in between —
-    // exactly the shape a worker cannot script directly (circuit_breaker.json is
-    // R-WSRC-forbidden in a live session), so it is driven at the service seam here.
+test('AC1: a CLOSED breaker persisted at 4/5 starts fresh on a process start and survives one no-progress iteration', () => {
+    // The relaunch contract (reverses C3): a new mux-runner process does not inherit the
+    // previous process's no-progress count, so an environmental stop (quota, unsupported
+    // model) cannot trip the breaker within one second of the relaunch.
     const tmpDir = makeTmpDir();
     try {
-        // Phase N: state.json at iteration 20, CB claims progress up to iteration 20.
-        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 20 }));
-        const phaseN = makeFreshState({
-            state: 'CLOSED', consecutive_no_progress: 3, last_progress_iteration: 20,
-        });
-        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(phaseN));
+        const settings = makeSettings({ noProgressThreshold: 5 });
+        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(
+            makeFreshState({ state: 'CLOSED', consecutive_no_progress: 4, last_progress_iteration: 50 })));
 
-        // Phase N+1: the session's iteration counter regresses (a different phase runner
-        // or a resumed run now owns state.json), with circuit_breaker.json untouched.
-        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 2 }));
+        let cbState = startFreshCircuitBreaker(tmpDir);
+        cbState = recordIterationResult(cbState, { hasProgress: false, errorSignature: null }, 51, settings);
 
-        const reloaded = initCircuitBreaker(tmpDir, makeSettings());
-        assert.equal(reloaded.last_progress_iteration, 20, 'phase N+1 must still see phase N\'s accumulated progress marker');
-        assert.equal(reloaded.consecutive_no_progress, 3, 'phase N+1 must still see phase N\'s accumulated no-progress count');
-        assert.equal(reloaded.state, 'CLOSED');
+        assert.equal(canExecute(cbState), true, 'one no-progress iteration after a relaunch must not trip the breaker');
+        assert.equal(cbState.consecutive_no_progress, 1);
+        assert.equal(cbState.state, 'CLOSED');
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 });
 
-test('AC-C3-2: a run that would trip the breaker mid-phase still trips it when failures straddle a phase boundary', () => {
+test('AC1b: a persisted OPEN breaker starts fresh on a process start; history keeps prior entries plus a process start transition', () => {
+    const tmpDir = makeTmpDir();
+    try {
+        const prior = { timestamp: '2026-01-01T00:00:00.000Z', iteration: 5, from: 'CLOSED', to: 'OPEN', reason: 'No progress in 5 iterations' };
+        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(
+            makeFreshState({ state: 'OPEN', consecutive_no_progress: 5, total_opens: 1, reason: 'No progress in 5 iterations', history: [prior] })));
+
+        const fresh = startFreshCircuitBreaker(tmpDir);
+
+        assert.equal(canExecute(fresh), true);
+        assert.equal(fresh.state, 'CLOSED');
+        assert.equal(fresh.consecutive_no_progress, 0);
+        assert.equal(fresh.consecutive_same_error, 0);
+        assert.equal(fresh.history.length, 2);
+        assert.deepEqual(fresh.history[0], prior);
+        assert.equal(fresh.history[1].reason, 'process start');
+        assert.equal(fresh.history[1].from, 'OPEN');
+        assert.equal(fresh.history[1].to, 'CLOSED');
+    } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test('startFreshCircuitBreaker: absent or corrupt breaker file yields a fresh state with no prior history', () => {
+    const absent = makeTmpDir();
+    const corrupt = makeTmpDir();
+    try {
+        fs.writeFileSync(path.join(corrupt, 'circuit_breaker.json'), '{ not json');
+        for (const dir of [absent, corrupt]) {
+            const fresh = startFreshCircuitBreaker(dir);
+            assert.equal(fresh.state, 'CLOSED');
+            assert.equal(fresh.consecutive_no_progress, 0);
+            assert.equal(fresh.history.length, 0, 'no prior breaker, nothing to record a transition from');
+        }
+    } finally {
+        fs.rmSync(absent, { recursive: true, force: true });
+        fs.rmSync(corrupt, { recursive: true, force: true });
+    }
+});
+
+test('AC2 control: five in-process no-progress iterations still trip OPEN after a process start', () => {
     const tmpDir = makeTmpDir();
     try {
         const settings = makeSettings({ noProgressThreshold: 5 });
+        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(
+            makeFreshState({ state: 'CLOSED', consecutive_no_progress: 4 })));
 
-        // Phase N: 4 consecutive no-progress iterations accumulate at a high iteration.
-        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 50 }));
-        const phaseN = makeFreshState({
-            state: 'CLOSED', consecutive_no_progress: 4, last_progress_iteration: 50,
-        });
-        fs.writeFileSync(path.join(tmpDir, 'circuit_breaker.json'), JSON.stringify(phaseN));
+        let cbState = startFreshCircuitBreaker(tmpDir);
+        for (let i = 1; i <= 4; i++) {
+            cbState = recordIterationResult(cbState, { hasProgress: false, errorSignature: null }, i, settings);
+            assert.notEqual(cbState.state, 'OPEN', `iteration ${i} must not trip`);
+        }
+        cbState = recordIterationResult(cbState, { hasProgress: false, errorSignature: null }, 5, settings);
 
-        // Boundary: state.json's iteration regresses to a low value with no CB write.
-        fs.writeFileSync(path.join(tmpDir, 'state.json'), JSON.stringify({ iteration: 3 }));
-
-        // Phase N+1's mux-runner starts, loads the breaker, and records the 5th
-        // consecutive no-progress iteration at ITS OWN (lower) iteration number.
-        let cbState = initCircuitBreaker(tmpDir, settings);
-        cbState = recordIterationResult(cbState, { hasProgress: false, errorSignature: null }, 4, settings);
-
-        assert.equal(cbState.state, 'OPEN', 'the 5th consecutive no-progress iteration must trip the breaker across the boundary');
-        assert.equal(cbState.consecutive_no_progress, 5);
+        assert.equal(cbState.state, 'OPEN', 'within one process the breaker still accumulates and trips at the threshold');
+        assert.equal(canExecute(cbState), false);
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }

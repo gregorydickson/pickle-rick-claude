@@ -196,6 +196,24 @@ export function initCircuitBreaker(
   }
 }
 
+/**
+ * A mux-runner process start discards the previous process's breaker counts. An environmental
+ * stop (quota, unsupported model) leaves the persisted breaker mid-count, and a relaunch that
+ * inherited it would trip within one second. The audit `history` is kept and one `process start`
+ * transition is appended; within one process the breaker still accumulates, and the relaunch
+ * bound is `auto-resume.sh`.
+ */
+export function startFreshCircuitBreaker(sessionDir: string): CircuitBreakerState {
+  const fresh = freshState();
+  const prior = readCircuitBreakerState(sessionDir);
+  if (!prior) return fresh;
+  const start: CircuitTransition = {
+    timestamp: fresh.last_change, iteration: 0, from: prior.state, to: 'CLOSED', reason: 'process start',
+  };
+  fresh.history = [...prior.history, start].slice(-1000);
+  return fresh;
+}
+
 export function canExecute(state: CircuitBreakerState): boolean {
   return state.state !== 'OPEN';
 }

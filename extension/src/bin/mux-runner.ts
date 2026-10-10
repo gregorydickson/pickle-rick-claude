@@ -9,7 +9,7 @@ import { isLaneSessionDir } from '../services/anatomy-lanes.js';
 import { State, PromiseTokens, hasToken, VALID_STEPS, Defaults, EXIT_REASONS, classifyExitReason, FALSE_EPIC_THRESHOLD, matchesArtifactPrefix, newestArtifactFile, NO_PROGRESS_FAILURE_REASONS, WORKER_GATE_VERDICT_FIELD, UNBOUNDED_READ_MAX_BUFFER, enumerationCompleted, reportedTestResults, type ActivityEvent, type ActivityLogEntry, type Backend, type RateLimitInfo, type IterationExitResult, type IterationOutcome, type MuxIterationReason, type RateLimitAction, type RateLimitPark, type RateLimitProbeVerdict, type Step, type RecoveryAttempt, type HardeningSettings, type OrphanReattachPayload, type TicketFailureReason, type PostFinalVerdictState, type PostFinalVerdictDiagnostic } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, recordExitReason, clearExitReason, writeActivityEntry, writeTimeoutStub, schemaVersionDeployDriftMessage, isProcessAlive, type GraduationCounts } from '../services/state-manager.js';
 import { logActivity } from '../services/activity-logger.js';
-import { loadSettings, initCircuitBreaker, canExecute, detectProgress, extractErrorSignature, formatCircuitBreakerTripReason, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
+import { loadSettings, startFreshCircuitBreaker, canExecute, detectProgress, extractErrorSignature, formatCircuitBreakerTripReason, recordIterationResult, resetCircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerState } from '../services/circuit-breaker.js';
 import { buildManagerInvocation, buildJudgeInvocation, resolveBackend, resolveBackendFromStateFileWithSource, backendEnvOverrides, sessionStampEnv, type SpawnInvocation } from '../services/backend-spawn.js';
 import { getJudgeEnvForAttempt, cleanupJudgeRuntimeDir } from '../services/judge-spawn-env.js';
 import { resolveCodexModel, resolvePackageManagerBin } from './spawn-morty.js';
@@ -13585,7 +13585,7 @@ function initializeMuxRunnerSession() {
 function loadMuxLoopSettings(extensionRoot: string, sessionDir: string) {
   const cbSettings = loadSettings(extensionRoot);
   const cbEnabled = cbSettings.enabled;
-  const initialCbState: CircuitBreakerState | null = cbEnabled ? initCircuitBreaker(sessionDir, cbSettings) : null;
+  const initialCbState: CircuitBreakerState | null = cbEnabled ? startFreshCircuitBreaker(sessionDir) : null;
   const cbPath = path.join(sessionDir, 'circuit_breaker.json');
   const runnerSettingsBag = loadSettingsBag(extensionRoot, 'mux-runner:main:maxTurns');
   const runnerMaxTurns: number = positiveIntegerOrNull(runnerSettingsBag.default_tmux_max_turns)
