@@ -58,7 +58,8 @@ import {
   unreproducibleNodeModulesGap,
 } from '../bin/pipeline-runner.js';
 import { createLaneWorktree, integrateLanes, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount, findNodeModulesDirs, replicateLaneNodeModules } from '../services/anatomy-lanes.js';
-import { listWorkingTreeDirtyPaths } from '../services/git-utils.js';
+import { listWorkingTreeDirtyPaths, markTicketFailed } from '../services/git-utils.js';
+import { runMainLoopRateLimitPark } from '../bin/mux-runner.js';
 import { laneAdmits } from '../services/scope-resolver.js';
 import { describeEach } from './helpers/describe-each.js';
 import { createMicroverseState, recordCapUnmeasured, readMicroverseState, writeMicroverseState } from '../services/microverse-state.js';
@@ -8055,5 +8056,96 @@ describe('operator cancel stops the whole pipeline', () => {
   test('control: the same microverse pair without a cancel runs both phases', async () => {
     const run = await driveMicroversePair(false);
     assert.equal(run.spawned, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chains across tickets: a parked mux-runner stays live to the pipeline heartbeat, and a Failed ticket's
+// recorded cause reaches the run report.
+// ---------------------------------------------------------------------------
+
+describe('park liveness chain: the real park poll keeps the child-mux heartbeat from reaping', () => {
+  const STALL_SECONDS = 1800;
+
+  function heartbeatVerdict(sessionDir, nowMs) {
+    const child = { pid: 4242, killed: false, signal: null, kill(sig) { this.killed = true; this.signal = sig; } };
+    let tick = null;
+    const handle = armChildMuxRunnerHeartbeat(
+      { child, sessionDir, heartbeatMs: 60_000, stallSeconds: STALL_SECONDS },
+      {
+        setInterval: (fn) => { tick = fn; return 1; }, clearInterval: () => {},
+        now: () => nowMs, isProcessAlive: () => true, emitActivity: () => {},
+      },
+    );
+    tick();
+    handle.stop();
+    return child;
+  }
+
+  async function runPark(onPoll) {
+    const dir = tmpDir();
+    try {
+      const statePath = path.join(dir, 'state.json');
+      const startEpoch = 1714080000;
+      fs.writeFileSync(statePath, JSON.stringify({
+        active: true, iteration: 3, max_iterations: 10, min_iterations: 0, worker_timeout_seconds: 30,
+        max_time_minutes: 0, step: 'implement', current_ticket: 't1', working_dir: dir, start_time_epoch: startEpoch,
+      }));
+      let now = startEpoch * 1000;
+      let polls = 0;
+      await runMainLoopRateLimitPark({
+        exitResult: { type: 'api_limit', rateLimitInfo: { resetsAt: startEpoch + 600 } },
+        consecutiveRateLimits: 1, maxRateLimitRetries: 3, rateLimitWaitMinutes: 5, maxParkMinutes: 360,
+        statePath, sessionDir: dir, state: { current_ticket: 't1' }, iteration: 3, log: () => {},
+        now: () => now, jitterMs: 0, probeApiCleared: async () => 'unknown',
+        sleep: async () => {
+          polls += 1;
+          onPoll(dir, polls);
+          if (polls >= 2) now = (startEpoch + 601) * 1000;
+        },
+      });
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  const ageEverything = (dir) => {
+    const stale = new Date(Date.now() - (STALL_SECONDS + 600) * 1000);
+    for (const name of fs.readdirSync(dir)) fs.utimesSync(path.join(dir, name), stale, stale);
+  };
+
+  test('a poll after stale files leaves a heartbeat that does not reap the parked child', async () => {
+    let verdict = null;
+    await runPark((dir, poll) => {
+      if (poll === 1) ageEverything(dir);
+      // Poll 2 runs after poll 1's touch: the heartbeat now reads the file the park itself wrote.
+      if (poll === 2) verdict = heartbeatVerdict(dir, Date.now());
+    });
+    assert.equal(verdict.killed, false);
+  });
+
+  test('control: without the park touch the same aged session is reaped', async () => {
+    let verdict = null;
+    await runPark((dir, poll) => {
+      if (poll === 2) { ageEverything(dir); verdict = heartbeatVerdict(dir, Date.now()); }
+    });
+    assert.equal(verdict.signal, 'SIGTERM');
+  });
+});
+
+describe('failed-reason chain: markTicketFailed reaches the run report', () => {
+  function writeTodo(sessionDir, id) {
+    fs.mkdirSync(path.join(sessionDir, id), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`), `---\nid: ${id}\ntitle: "t"\nstatus: "Todo"\n---\n# body\n`);
+  }
+
+  test('the reason written by the one Failed writer is the reason the report prints', () => {
+    const sessionDir = tmpDir();
+    try {
+      writeTodo(sessionDir, 'dddd4444');
+      markTicketFailed('dddd4444', sessionDir, { reason: 'rate_limited' });
+      const logs = [];
+      reportSkippedFailedTickets({ sessionDir, log: (m) => logs.push(m) });
+      assert.match(logs[0], /dddd4444 Failed \(rate_limited\)/);
+      assert.doesNotMatch(logs[0], /no reason recorded/);
+    } finally { fs.rmSync(sessionDir, { recursive: true, force: true }); }
   });
 });
