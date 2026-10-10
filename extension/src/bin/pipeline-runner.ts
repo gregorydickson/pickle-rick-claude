@@ -2702,7 +2702,11 @@ export function reportSkippedFailedTickets(runtime: PipelineRuntime): void {
     const described = unfinished.slice(0, UNFINISHED_TICKETS_PRINT_CAP).map((t) => {
       const ticketPath = ticketFilePath(runtime.sessionDir, t.id ?? '');
       const raw = fs.existsSync(ticketPath) ? fs.readFileSync(ticketPath, 'utf-8') : null;
-      const reason = raw === null ? null : readFrontmatterField(raw, 'failed_reason') ?? readFrontmatterField(raw, 'skipped_reason');
+      // A ticket's own status names which reason is current: nothing clears a failed_reason when a
+      // later spawn marks the ticket Skipped, so a fixed key order would print the stale failure.
+      const [own, other] = (t.status ?? '').toLowerCase() === 'skipped'
+        ? ['skipped_reason', 'failed_reason'] : ['failed_reason', 'skipped_reason'];
+      const reason = raw === null ? null : readFrontmatterField(raw, own) ?? readFrontmatterField(raw, other);
       return `${t.id} ${t.status} (${reason ?? 'no reason recorded'})`;
     });
     const more = unfinished.length - UNFINISHED_TICKETS_PRINT_CAP;

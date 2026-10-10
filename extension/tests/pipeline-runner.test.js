@@ -7393,6 +7393,24 @@ describe('MREL-A8: the run summary names Skipped and Failed tickets', () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
+  test('a Skipped ticket that once Failed prints its skip reason, not the stale failure', () => {
+    const root = mkFixtureTmpDir('mrel-a8-');
+    try {
+      const sessionDir = path.join(root, 'session');
+      writeTicket(sessionDir, 'eeee5555', 'status: Todo');
+      markTicketFailed('eeee5555', sessionDir, { reason: 'worker_hang' });
+      const ticketPath = path.join(sessionDir, 'eeee5555', 'rick_ticket_eeee5555.md');
+      fs.writeFileSync(ticketPath, fs.readFileSync(ticketPath, 'utf-8')
+        .replace(/^status:.*$/m, 'status: "Skipped"\nskipped_reason: requires_flag'));
+      writeTicket(sessionDir, 'ffff6666', 'status: Failed\nfailed_reason: no_progress\nskipped_reason: stale_skip');
+      const logs = [];
+      reportSkippedFailedTickets({ sessionDir, log: (m) => logs.push(m) });
+      assert.match(logs[0], /eeee5555 Skipped \(requires_flag\)/);
+      assert.doesNotMatch(logs[0], /worker_hang/);
+      assert.match(logs[0], /ffff6666 Failed \(no_progress\)/);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   test('MREL-A8-2: no Skipped or Failed ticket prints 0', () => {
     const root = mkFixtureTmpDir('mrel-a8-');
     try {
