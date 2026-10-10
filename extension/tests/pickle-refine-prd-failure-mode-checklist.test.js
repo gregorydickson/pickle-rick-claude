@@ -167,3 +167,15 @@ test('Step 7a makes a correction ticket own re-verification of its Done consumer
   assert.match(step7a, /each Done consumer's tests pass against the new rule/);
   assert.match(step7a, /never flips a Done ticket back to Todo/);
 });
+
+test('every Step 7e hardening ticket template declares zero_diff_intent: audit', () => {
+  const content = fs.readFileSync(SKILL_PATH, 'utf-8');
+  const step7e = content.slice(content.indexOf('### 7e'), content.indexOf('### 7f'));
+  const blocks = step7e.split(/^\*\*Ticket \d+:/m).slice(1);
+  assert.ok(blocks.length > 0, 'Step 7e must contain Ticket blocks');
+  for (const [i, block] of blocks.entries()) {
+    const frontmatter = /^---\n([\s\S]*?)\n---/m.exec(block);
+    assert.ok(frontmatter, `Ticket block ${i + 1} has no frontmatter`);
+    assert.match(frontmatter[1], /^zero_diff_intent: audit$/m, `Ticket block ${i + 1} must declare zero_diff_intent: audit`);
+  }
+});

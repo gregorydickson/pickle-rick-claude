@@ -5451,7 +5451,7 @@ export function guardCompletionCommitBeforeDone(args) {
         ok: false,
         source: 'absent',
         reason: `ticket ${args.ticketId} cannot flip Done: readEvidence().kind === 'absent' (expected 'committed'); ` +
-            `worker did not produce an attributable git commit. Edit ticket frontmatter to include completion_commit: <sha>.`,
+            `worker did not produce an attributable git commit. Edit ticket frontmatter to set completion_commit: <sha>, or declare zero_diff_intent: audit when the ticket correctly changes nothing.`,
         testsVerdict,
     };
 }

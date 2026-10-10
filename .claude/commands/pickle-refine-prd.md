@@ -406,6 +406,7 @@ title: "Harden: code quality review of [feature area]"
 status: Todo
 priority: High
 complexity_tier: large
+zero_diff_intent: audit
 order: [last order + 10]
 working_dir: [project root]
 created: [Date]
@@ -498,6 +499,7 @@ title: "Audit: data flow integrity for [feature area]"
 status: Todo
 priority: High
 complexity_tier: large
+zero_diff_intent: audit
 order: [last order + 10]
 working_dir: [project root]
 created: [Date]
@@ -596,6 +598,7 @@ title: "Harden: test quality review of [feature area]"
 status: Todo
 priority: High
 complexity_tier: large
+zero_diff_intent: audit
 order: [last order + 10]
 working_dir: [project root]
 created: [Date]
@@ -698,6 +701,7 @@ title: "Audit: cross-reference consistency for [feature area]"
 status: Todo
 priority: High
 complexity_tier: medium
+zero_diff_intent: audit
 order: [last order + 10]
 working_dir: [project root]
 created: [Date]

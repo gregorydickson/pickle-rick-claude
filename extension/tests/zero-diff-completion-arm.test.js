@@ -138,6 +138,20 @@ for (const intent of ['verification', 'audit', 'already-satisfied']) {
   });
 }
 
+for (const tier of ['large', 'medium']) {
+  test(`hardening-template shape: tier=${tier} audit-declared commit-less ticket is accepted; the undeclared twin is refused`, () => {
+    withFixture(({ repo, sessionDir }) => {
+      const decision = evaluateCompletionEvidence(ctxFor(sessionDir, repo, 'done-flip'));
+      assert.equal(decision.ok, true, `declared audit must be accepted — reason=${decision.reason ?? 'n/a'}`);
+      assert.equal(decision.via, 'zero-diff');
+    }, { intent: 'audit', tier });
+    withFixture(({ repo, sessionDir }) => {
+      const decision = evaluateCompletionEvidence(ctxFor(sessionDir, repo, 'done-flip'));
+      assert.equal(decision.ok, false, 'undeclared twin must be refused');
+    }, { intent: null, tier });
+  });
+}
+
 test('AC-GTRUTH-A1-1: the arm is case/whitespace tolerant on the declared value', () => {
   withFixture(({ repo, sessionDir }) => {
     const decision = evaluateCompletionEvidence(ctxFor(sessionDir, repo, 'done-flip'));
@@ -535,13 +549,16 @@ function readSelf() {
   return fs.readFileSync(import.meta.filename, 'utf8');
 }
 
+/** The refusal message may NAME the declaration to the operator; naming it decides and writes nothing. */
+const OPERATOR_HINT_RE = /or declare zero_diff_intent: audit when the ticket correctly changes nothing/;
+
 test('AC-GTRUTH-A1-5: guardCompletionCommitBeforeDone stays policy-free (shape mapping only)', () => {
   const code = readCode(MUX_TS);
   const start = code.indexOf('export function guardCompletionCommitBeforeDone(');
   assert.ok(start > 0, 'guardCompletionCommitBeforeDone must be present');
   const end = code.indexOf('\nexport function hasSubstantiveManagerHandoff', start);
   assert.ok(end > start, 'could not delimit the guard body');
-  const body = code.slice(start, end);
+  const body = code.slice(start, end).replace(OPERATOR_HINT_RE, '');
 
   assert.ok(
     !/zero[_-]?[Dd]iff/.test(body),
@@ -579,6 +596,7 @@ test('F9: `zero_diff_intent` is READ-ONLY in production — a producer must brin
     lines.forEach((line, i) => {
       if (!line.includes('zero_diff_intent')) return;
       if (sanctionedRead.test(line)) return;
+      if (OPERATOR_HINT_RE.test(line)) return;
       unsanctioned.push(`${path.relative(SRC_ROOT, file)}:${i + 1}: ${line.trim()}`);
     });
   }
