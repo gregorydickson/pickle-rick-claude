@@ -5139,6 +5139,40 @@ function b2Fixture(overrides = {}) {
     return { tmpDir, statePath, START_EPOCH };
 }
 
+test('park poll touches rate_limit_wait.json so the pipeline heartbeat sees a live park', async () => {
+    const { tmpDir, statePath, START_EPOCH } = b2Fixture();
+    try {
+        let now = START_EPOCH * 1000;
+        const waitPath = path.join(tmpDir, 'rate_limit_wait.json');
+        let sleeps = 0;
+        let mtimeAtSecondPoll = null;
+        await runMainLoopRateLimitPark({
+            exitResult: { type: 'api_limit', rateLimitInfo: {} },
+            consecutiveRateLimits: 1,
+            maxRateLimitRetries: 3,
+            rateLimitWaitMinutes: 60,
+            maxParkMinutes: 360,
+            statePath,
+            sessionDir: tmpDir,
+            state: { current_ticket: 't1', working_dir: tmpDir },
+            iteration: 3,
+            log: () => {},
+            now: () => now,
+            sleep: async () => {
+                sleeps += 1;
+                if (sleeps === 1) fs.utimesSync(waitPath, new Date(0), new Date(0));
+                if (sleeps === 2) mtimeAtSecondPoll = fs.statSync(waitPath).mtimeMs;
+                now += Defaults.RATE_LIMIT_POLL_MS;
+            },
+            jitterMs: 0,
+            probeIntervalMs: 1_000,
+            probeApiCleared: async () => (sleeps >= 2 ? 'cleared' : 'rejected'),
+        });
+        assert.ok(mtimeAtSecondPoll !== null, 'a second poll must run');
+        assert.ok(mtimeAtSecondPoll > Date.now() - 60_000, 'first poll must have touched the wait file back to real time');
+    } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
 test('B2/AC-B2-1: a re-probe reporting cleared exits the wait BEFORE the computed deadline', async () => {
     const { tmpDir, statePath, START_EPOCH } = b2Fixture();
     try {

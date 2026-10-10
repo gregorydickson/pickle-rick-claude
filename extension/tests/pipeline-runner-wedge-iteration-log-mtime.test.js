@@ -258,3 +258,43 @@ describe('armPhaseChildMuxRunnerHeartbeat sessionDir override (AC-HEARTBEAT)', (
     }
   });
 });
+
+describe('child-mux wedge detector counts rate-limit park files as liveness', () => {
+  for (const name of ['tmux_iteration_3.log', 'rate_limit_probe.log', 'rate_limit_wait.json']) {
+    test(`fresh ${name} alone (others stale) -> NO wedge kill`, () => {
+      const dir = tmpDir();
+      const now = Date.now();
+      const stale = now - (STALL_SECONDS + 600) * 1000;
+      const statePath = path.join(dir, 'state.json');
+      fs.writeFileSync(statePath, '{}');
+      setMtime(statePath, stale);
+      for (const other of ['tmux_iteration_3.log', 'rate_limit_probe.log', 'rate_limit_wait.json']) {
+        const p = path.join(dir, other);
+        fs.writeFileSync(p, '{}');
+        setMtime(p, other === name ? now - 5 * 1000 : stale);
+      }
+      const { child, events } = runTick(dir, now);
+      assert.equal(child.killed, false);
+      assert.equal(events.length, 0);
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+  }
+
+  test('all stale, including a future-dated rate_limit_wait.json -> wedge kill', () => {
+    const dir = tmpDir();
+    const now = Date.now();
+    const stale = now - (STALL_SECONDS + 600) * 1000;
+    for (const other of ['state.json', 'tmux_iteration_3.log', 'rate_limit_probe.log']) {
+      const p = path.join(dir, other);
+      fs.writeFileSync(p, '{}');
+      setMtime(p, stale);
+    }
+    const wait = path.join(dir, 'rate_limit_wait.json');
+    fs.writeFileSync(wait, '{}');
+    setMtime(wait, now + 24 * 3600 * 1000);
+    const { child, events } = runTick(dir, now);
+    assert.equal(child.signal, 'SIGTERM');
+    assert.equal(events.length, 1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
