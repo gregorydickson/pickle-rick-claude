@@ -1194,3 +1194,12 @@ test('AC-R3-3 replay (negative control): the pre-fix guard genuinely approved th
         fs.rmSync(tmpFile, { force: true });
     }
 });
+
+test('szechuan-sauce.md Worker Mode forbids behaviour change without a criterion and defers test-expectation changes', () => {
+    const content = readCommand();
+    const worker = content.slice(content.indexOf('## WORKER MODE'));
+    assert.ok(worker.includes('observable behaviour'), 'worker mode should forbid changing observable behaviour');
+    assert.ok(worker.includes('acceptance criterion'), 'the only exception should be a named acceptance criterion');
+    assert.ok(worker.includes('test expectation'), 'a changed test expectation should be named as a behaviour change');
+    assert.ok(/open finding/.test(worker), 'a behaviour change should be recorded as an open finding, not committed');
+});

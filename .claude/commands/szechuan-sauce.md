@@ -298,6 +298,8 @@ When `$ARGUMENTS` contains `--resume <SESSION_ROOT>`:
 
 Follow the **Microverse Worker protocol** (the standard microverse iteration loop) with these szechuan-sauce overrides:
 
+**Cleanup restructures; it never changes observable behaviour.** A fix may rename, extract, move or simplify, but it must not change observable behaviour (a new refusal, a newly accepted input, a changed output) unless an acceptance criterion names that change. A fix that adds or changes a test expectation is a behaviour change by definition: record it as an open finding in `szechuan-sauce.json` and do not commit it.
+
 ### Override 1: Principles Reference
 
 Before assessing the codebase, check the handoff's `microverse.json` for a `judge_context_path`. If set, read that file — it contains the combined base + domain principles and any focus directive. If not set, read `$HOME/.claude/pickle-rick/szechuan-sauce-principles.md`. If the PRD's Principles Reference section lists additional domain-specific principles files, also read those. Domain principles take precedence over base principles where they overlap. If a Focus Directive section is present, apply it: violations matching the focus are elevated by one priority level and take precedence over same-priority non-focus violations.
