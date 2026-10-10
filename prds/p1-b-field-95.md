@@ -1,191 +1,211 @@
 ---
-title: "B-FIELD-95 — field issues #89–#98 + the B-FIELD-88 gate reds: park-aware hang detection, cancel stops the pipeline, breaker resets on relaunch, Done needs evidence, branch fence from the branch, no attribution trailers, cleanup changes no behaviour"
-status: draft
+title: "B-FIELD-95 — field issues #89–#98 + the B-FIELD-88 gate reds — REFINED"
+status: refined
 priority: P1
 type: bug-bundle
 branch: main
 composes: ["#89", "#90", "#91", "#92", "#93", "#94", "#95", "#96", "#97", "#98"]
 ---
 
-# B-FIELD-95 (`main`)
+# B-FIELD-95 — REFINED
 
-Issue texts reach this PRD by number and generic shape only; no client content (public repo).
-
-## Trigger
-
-Issues #89–#95, filed 2026-10-08/09 from client field runs. Three of them (#91, #93, #94) END or SILENTLY
-CORRUPT a run — reliability tier, ratchet order first. The rest are quality. Triage in `prds/MASTER_PLAN.md`
-QUEUE item 13.
+Source: `prds/p1-b-field-95.md` @ `main@1212055d`. Refined from 3 analysts × 3 cycles (9/9 succeeded). Changes from the
+source are attributed `*(refined: <analyst> c<N>)*`. `composes:` lists ISSUE numbers, not PRDs — no Atomic-decomposition
+fan-out applies. Issue texts reach this PRD by number and generic shape only; no client content.
 
 ## Invariants
 
-- **No gate leg added.** Legs 22 → 22. New tests live in EXISTING test files; every subprocess in a new test
-  case gets `timeout: 30_000`.
-- **No new halt or abort condition.** #91 widens an EXISTING crash-floor halt (operator cancel) to the second
-  path that already means "operator cancel"; nothing else stops.
-- **Reuse before add.** #94 reads the park record `state.json` already carries (`rate_limit_park`); #91 reads the
-  exit reason mux-runner already stamps (`cancelled`); #93 resets a counter at process start; #89 is a subtraction.
-- `--scope branch --scope-base a0d6ccc2` (the commit BEFORE the #96 cherry-pick `3bc1fbdf`, so #96 is inside the reviewed diff).
+- **No gate leg added.** Falsifier: `grep -c 'bash scripts/audit-' CLAUDE.md` is unchanged (record before/after in the
+  release note). Every new test case lives in an EXISTING test file; every subprocess in a new case gets `timeout: 30_000`.
+- **No new halt or abort condition.** T2 makes an EXISTING crash-floor halt (operator cancel) reachable from the cancel
+  path that already means it; nothing else stops. T9/T10 change REPORTING only (verdict and log), never dispositions.
+- `--scope branch --scope-base a0d6ccc2` — the commit before the #96 cherry-pick `3bc1fbdf`, so #96 is reviewed.
+  `git merge-base --is-ancestor 3bc1fbdf HEAD` exits 0.
 
-## Premises (measured at `a0d6ccc2`, read-only)
+## Bundle self-exposure (this bundle runs on the deployed build it fixes) *(refined: risk-scope c3)*
+
+- **#91:** `/eat-pickle` does not stop this bundle's pipeline. Recovery: `tmux kill-session -t pipeline-<hash>`.
+- **#93:** a mid-bundle `circuit_open` is auto-relaunched and trips again; recovery `node ~/.claude/pickle-rick/extension/bin/circuit-reset.js`.
+- **#94:** a rate-limit park over 30 min is reaped as a hang. Recovery: relaunch, or raise `child_mux_runner_stall_seconds`.
+- **#89:** the pickle fence may seed narrow; out-of-fence boundary residue lands in `refs/pickle/salvage/<session>`.
+- **#97:** the generated hardening tickets for THIS bundle already carry `zero_diff_intent: audit` (a recognised value
+  today), so a correct no-op audit here does not loop.
+
+## Premises (measured at `1212055d`)
 
 | Claim | Tag | Evidence |
 |---|---|---|
-| The child-mux heartbeat measures liveness from log/state mtime only and SIGTERMs the subtree past `child_mux_runner_stall_seconds` (default 1800) | (verified) | `pipeline-runner.ts:1709-1800` (`resolveChildMuxLivenessMtime`, `armChildMuxRunnerHeartbeat`), `:324` default |
-| A parked mux-runner records `rate_limit_park { reset_at_epoch_sec, parked_started_epoch_ms, ... }` in state.json and then writes nothing while it sleeps | (verified) | `mux-runner.ts:9732-9733`; park log `Parking on API reset: ...` `:10064` |
-| mux-runner parks on `allowed_warning` as well as `rejected` | (verified) | `mux-runner.ts:4036`, `isUsageWarning` `:4045` |
-| `cancel.ts` sets `active=false` only and writes no `pipeline-cancel` marker | (verified) | `grep -c pipeline-cancel bin/cancel.ts` → 0 |
-| The pipeline phase loop never reads the session's active/exit fact; only the signal handler's marker cancels | (verified) | `grep -c "state.active" bin/pipeline-runner.ts` → 0; `cancelledOutcome` (issue #91, `:7192`) |
-| mux-runner exits `cancelled` on "Session inactive" | (verified, per issue #91) | `mux-runner.ts:15218-15219` (re-verify at breakdown) |
-| The circuit breaker loads `consecutive_no_progress` from disk at every start and counts environmental failures as no-progress | (verified) | `circuit-breaker.ts:177-196`; `mux-runner.ts:10223` excludes only `error`/`inactive` |
-| `evaluateWorkerOutcome` decides success without reading the worker's verdict; `persistWorkerOutcomeStatus` falls back to HEAD for `completion_commit` | (verified, per issue #92) | `spawn-morty.ts:3427-3443`, `:2884-2885`; `grep -c BLOCKED bin/spawn-morty.ts` → 0 code hits |
-| Most worker session logs are empty (B-LOGEV: 35/43 = 81% zero bytes on the one clean recorded run), so a log-token success test fails closed on production | (verified) | `bin/CLAUDE.md` B-LOGEV entry |
-| The branch fence is seeded from ONE ticket's declared files; this repo's own B-FIELD-88 run seeded `allowed_paths = 2` for 21 tickets | (verified) | `pipeline-runner.ts:1019-1031` (`resolveSeedPathsForSetup`); `scope.json` of session `2026-10-08-59c0d821` |
-| The seeded fence is destructive only on the boundary-commit path (HEAD static + dirty tree); workers that commit themselves never hit it | (verified) | `mux-runner.ts:7446` `preStashOutOfAllowlistResidue`, call `:7548` under Branch 2; 0 salvage refs from B-FIELD-88 despite a 2-path fence |
-| `isPathShaped` admits only `/`-paths or a fixed extension list, so root `Dockerfile`/`pnpm-lock.yaml` never enter the fence | (verified) | `services/ticket-declared-files.ts:35-40` |
-| Claude workers are spawned with no `--settings`/attribution override; nothing emits, strips or checks `Co-Authored-By` | (verified) | `services/backend-spawn.ts:~825-840`; this box hides it via `includeCoAuthoredBy: false` in `~/.claude/settings.json` (0/39 B-FIELD-88 commits carry it) |
-| The szechuan prompt has no rule against behaviour changes or new/changed test expectations | (hypothesis) | grep `szechuan-sauce.md` at breakdown |
-
-## Tickets
-
-### T0 — the B-FIELD-88 release gate's two reds: fixtures that model a Done flip without the tier's artifacts (Tier 1 — blocks the release) — `small`
-Release gate run 3 on `a0d6ccc2` (B-FIELD-88): 20/22 legs `LEG_RC 0`; red: `audit-ledger-probes` and `test_integration`.
-ONE cause, measured: B-FIELD-88 T5a parks a committed ticket once when its tier's lifecycle artifacts are missing, and
-two instruments model a `complexity_tier: small` ticket flipping Done with NO `plan`/`code_review` files.
-(1) The R-ORSR-2 PROBE in `prds/MASTER_PLAN.md` (`## OPEN BUG — R-ORSR-2 recovery flips a ticket Done without the
-impl landing`) now exits 1 ("FIXED") because the ticket is parked, not because the prose-AC residual closed — with the
-two artifacts added to its fixture it exits 0 (OPEN) again (measured). (2) `extension/tests/runner-authored-trailer.test.js`
-case `site 1: the completion guard is now satisfiable` (line 136) gets no `result.sha` because the flip is parked —
-with the two artifacts written in `makeSession` the file goes 20/1 → 21/0 (measured on a scratch copy).
-Fix the FIXTURES (they must model a real small ticket); never loosen T5a.
-- AC1: `bash extension/scripts/audit-ledger-probes.sh` exits 0 and reports the R-ORSR-2 probe OPEN (measured exit 1).
-- AC2: `node --test extension/tests/runner-authored-trailer.test.js` exits 0 (measured 1 fail).
-
-### T1 — #94: a live rate-limit park is not a hang (Tier 1) — `medium`
-`resolveChildMuxLivenessMtime` (or the heartbeat tick) reads `state.rate_limit_park`: while `now <
-reset_at_epoch_sec*1000 + grace` the child is LIVE; with no `reset_at`, `parked_started_epoch_ms + max_park_minutes`
-bounds it. An expired park with no activity is reaped as before.
-- AC1 (fails today): heartbeat with a park whose reset is 2h out and stale log/state → no reap, no
-  `child_mux_runner_wedge_detected`. Host: the existing heartbeat test file (locate at breakdown).
-- AC2 (control): park expired + grace passed + no activity → reaped.
-- AC3 (control): no park, stale past threshold → reaped (unchanged).
-- Recorded, not built: parking on `allowed_warning` (a warning, not a rejection — #72 closed). Revisit only with
-  a measured case where the warning park costs a run.
-
-### T2 — #91: an operator cancel ends the pipeline, not just the phase (Tier 1) — `medium`
-`cancelledOutcome` also honours the cancellation FACT mux-runner already records: after a phase returns, a session
-whose `exit_reason` is `cancelled` (the value mux-runner stamps on "Session inactive") takes the same cancel path as
-the marker. Operator cancel is an existing crash-floor halt; this widens its detection, it adds no new halt.
-- AC1 (fails today): drive `main()` with a pickle phase whose runner exits leaving `exit_reason: 'cancelled'` and
-  Todo tickets → citadel/anatomy-park never run, `phases_entered` gains nothing new, run reports cancelled.
-- AC2 (control): a normal pickle completion (`exit_reason: completed`) still advances.
-- Research must confirm `active=false` alone is NOT the signal (normal completion also deactivates).
-
-### T3 — #93: a relaunch starts the no-progress count fresh (Tier 1) — `small`
-At mux-runner start, `initCircuitBreaker` keeps the breaker file but zeroes `consecutive_no_progress` (a relaunch
-is a new run; the breaker bounds one run's spinning). No environmental-error classification.
-- AC1 (fails today): a breaker file at `consecutive_no_progress: 5` (OPEN) → a fresh start does not trip on its
-  first iteration.
-- AC2: within one run, the breaker still trips at its budget.
-- Rejected: an enumerated list of environmental failure kinds (quota/auth/model/rate-limit).
-- Check the B-RRH park and `auto-resume.sh` caps still bound a loop of relaunches (they do by reading; confirm).
-
-### T4 — #92: Done requires completion evidence, not process exit plus a log (Tier 2) — `large`
-`persistWorkerOutcomeStatus` must not stamp Done with a `completion_commit` that is merely current HEAD when no
-commit in the worker's window is attributable to this ticket; such a ticket stays In Progress and mux-runner's
-guard (`guardCompletionCommitBeforeDone`) decides. A BLOCKED verdict from the worker's stdout (the same stream the
-completion-ack listener already reads) maps to non-Done.
-- **Census first (required-field risk):** over the live session corpus, how many Done tickets were flipped by
-  spawn-morty with a HEAD-fallback sha vs a verified window sha? If most production Done flips rely on the fallback,
-  this ticket must route them to the guard rather than refuse them.
-- Rejected: requiring the done-promise token in the worker LOG (81% of logs are empty — fails closed on production).
-
-### T5 — #89: the branch fence comes from the branch, never one ticket (Tier 2) — `medium`
-Subtraction preferred: in branch mode with an empty pre-build diff, do NOT seed a strict pickle-phase fence from
-declared files (per-ticket ownership is `check-scope-diff`'s job); the review phases already refresh scope from the
-real diff. If refinement shows a seeded fence is still needed, seed it from EVERY ticket's declared files resolved
-against `git ls-files` (no extension list).
-- AC1 (fails today): a multi-ticket session with an empty pre-build branch diff → `scope.json` does not restrict
-  the pickle phase to one ticket's files (today: 2 paths for 21 tickets).
-- AC2: a ticket's boundary-commit of in-ticket work outside the first ticket's files is committed, not stashed.
-- Rejected: adding extensions to `isPathShaped` (enumerated set).
-
-### T6 — #90: workers do not emit attribution trailers (Tier 2) — `small`
-Claude worker spawns pass a settings override disabling the co-author trailer (verify the current Claude Code
-setting name at research — `includeCoAuthoredBy` vs `attribution` — against `claude --help` and the docs), plus one
-worker-prompt line: no attribution trailers.
-- AC1: the built claude invocation carries the override (spawn-arg test in the existing backend-spawn test file).
-- Rejected: a hook/post-commit deny list (enumerated set + new check). Repo opt-in deferred until asked.
-
-### T7 — #95: a cleanup phase changes no observable behaviour (Tier 2) — `small`
-`szechuan-sauce.md`: a cleanup may restructure, never change observable behaviour (new refusals, newly accepted
-inputs, changed outputs) unless an acceptance criterion names it; a change that ADDS or CHANGES a test expectation
-is recorded as an open finding, not committed.
-- AC1: `grep -c "observable behaviour" .claude/commands/szechuan-sauce.md` ≥ 1 (measure 0 at HEAD first).
-- Rejected: the runtime test-expectation diff guard (new mechanism; revisit if the prompt rule fails in the field).
-
-## Simplification Review
-
-| Ticket | Necessary? | Reuse | Brittle complexity guarded? | Subtraction |
-|---|---|---|---|---|
-| T1 | Yes — kills runs | existing `rate_limit_park` record | the mtime-only liveness proxy | none |
-| T2 | Yes — skips tickets | existing `cancelled` exit reason + cancel path | two cancel signals, one honoured | collapse to one fact |
-| T3 | Yes — relaunch halts in 1s | existing breaker file | — | none |
-| T4 | Yes — false Done | existing mux guard | HEAD-fallback sha | **delete** the HEAD fallback as Done evidence |
-| T5 | Yes — work stashed off-branch | `check-scope-diff`, scope refresh | one-ticket seed + extension list | **delete** the seed (preferred) |
-| T6 | Yes | spawn args | — | none |
-| T7 | Yes | szechuan prompt | — | none |
+| The child-mux heartbeat reads only `tmux_iteration_*.log` mtimes (state.json fallback) | (verified) | `pipeline-runner.ts:1709-1739` |
+| A `rejected` park re-probes every `PICKLE_RATE_LIMIT_PROBE_INTERVAL_MS` (default 600000, no ceiling) and WRITES `<session>/rate_limit_probe.log` each probe; an `allowed_warning` park does not probe and writes nothing | (verified) | `mux-runner.ts:9846`, `:9862`, `:9919`; `services/pickle-settings.ts:225-229` *(refined: codebase c3 — source premise row 2 was false)* |
+| `rateLimitParkStillLive` returns true on unparseable JSON / missing `wait_until` BY DESIGN (B3: its watchdog callers escalate to a terminal park); a stale `rate_limit_wait.json` can survive a cancelled park | (verified) | `mux-runner.ts:13450-13467` *(refined: risk-scope c3)* |
+| `exit_reason: 'cancelled'` is never persisted on the cancel path | (verified) | all three analysts c2/c3 — the source T2 mechanism could not fire |
+| `cancelSession` returns before its lock when `active !== true`; `resetStateForPhase` sets `active=false` before every phase spawn | (verified) | `cancel.ts:83-86`; `pipeline-runner.ts:2018-2035` *(refined: risk-scope c3)* |
+| `cancelledOutcome` is consulted per-ARM; the pending-ticket pickle arm (`maybeStampPhaseGraduation` continue) never calls it | (verified) | `pipeline-runner.ts:7450`, `:6292`/`:6299`, loop `:7684-7718` *(refined: codebase c2/c3)* |
+| `main()` unlinks a stale `pipeline-cancel` marker at start | (verified) | `pipeline-runner.ts:7733-7738` |
+| `initCircuitBreaker` trusts the on-disk breaker AS-IS (C3, ticket 1312977e), pinned by AC-C3-1/AC-C3-2; `resetCircuitBreaker` early-returns on CLOSED | (verified) | `services/CLAUDE.md` C3; `tests/circuit-breaker.test.js:1242`, `:1272`; `circuit-breaker.ts:453-456` *(refined: codebase c3)* |
+| `canExecute` is `state !== 'OPEN'` | (verified) | `circuit-breaker.ts:199` |
+| `reportPhaseIncomplete` overwrites `exit_reason` only when tickets remain | (verified) | `pipeline-runner.ts:6298` *(refined: requirements c3)* |
+| Local census: 64 Done tickets, 63 stamped, 63/63 carry their own `Pickle-Ticket` trailer inside `start_commit..`; 1 unstamped (zero-diff) | (verified, local only) | census c3; the #92 field corpus is client-side and unmeasured here *(refined: codebase c3)* |
+| HEAD fallback for a Done stamp at `spawn-morty.ts:2912`; a second unattributed source `pickAttributionCommit` → `windowShas[0]` at `:2709` | (verified) | *(refined: codebase c3)* |
+| No worker prompt defines a BLOCKED token; workers may emit only `<promise>I AM DONE</promise>` | (verified) | root `CLAUDE.md` Worker Forbidden Ops *(refined: requirements c2)* |
+| B-FIELD-88 seeded `allowed_paths = 2` from ONE ticket on a fresh launch; the 21 tickets' declared-file union is 41 | (verified) | session `2026-10-08-59c0d821` `pipeline-runner.log:5`; `resolveSeedPathsForSetup` `:1019-1035` takes its `currentTicket ?` branch *(refined: codebase c3)* |
+| Claude CLI 2.1.295 documents `--settings` as additive; `--bare` skips settings-defined hooks | (verified) | `claude --help` *(refined: codebase/risk c2)* |
+| This box masks #90 via `includeCoAuthoredBy: false` in `~/.claude/settings.json` | (verified) | 0/39 B-FIELD-88 commits carry it |
+| `zeroDiffAccept` already accepts a declared intent with the tier's artifacts and a green gate | (verified) | `ticket-completion-evidence.ts:1149-1189` *(refined: requirements c2)* |
+| Step 7e templates: Tickets 1–3 `large`, Ticket 4 `medium`; medium and large lifecycles are identical | (verified) | `pickle-refine-prd.md:408/:500/:598/:700`; `ticket-tier.ts:34-35` *(refined: all c3)* |
+| A placeholder Open Decisions row (`none open`) is counted open and makes `computePipelineVerdict.unsuccessful` true | (verified) | `pipeline-runner.ts:3774`, `:6548-6551`; twin filter `:3722` *(refined: requirements c3)* |
+| A pickle exit 1 with all tickets Done logs `completed successfully` because the pickle arm skips `phaseDivergence` | (verified) | `pipeline-runner.ts:7502-7511`, `:7547-7565` *(refined: codebase c2/c3)* |
+| Six Failed writers; four record no reason (`spawn-morty.ts:2917`, `:3572`, `:3604`; `mux-runner.ts:3585`); the heal recipe writes `skipped_reason` that `reportSkippedFailedTickets` never reads | (verified) | `pipeline-runner.ts:2704-2707`; `bin/CLAUDE.md:162` *(refined: requirements c3)* |
+| `archiveDirtyTreeBeforeFlip(` has exactly 4 call sites in `mux-runner.ts`, pinned `>= 4` by AC-WMFF-2A | (verified) | `:3501`, `:3583`, `:11127`, `:15883`; `bin/CLAUDE.md:121` *(refined: risk-scope c3)* |
+| The R-ORSR-2 probe and `runner-authored-trailer.test.js:136` fail only because their small-tier fixtures lack `plan`/`code_review` | (verified) | measured: probe exit 1→0, test 20/1→21/0 with the two files |
 
 ## Open Decisions
 
 | decision | options | default | owner | status |
 |---|---|---|---|---|
-| none | | | | |
+| Mechanics: T1 mtime-set widening (+ park touches `rate_limit_wait.json` each poll); T2 marker written regardless of `active` when `pipeline.json` exists + one loop-level check, per-arm checks subtracted; T3 breaker reset at every mux-runner process start, reversing C3; T4 no HEAD-fallback Done stamp, BLOCKED clause dropped; T5 union seed; T8 all four hardening templates declare `audit`; T10 whole-cell placeholder match | accept all; review each | accept all | operator | decided: "Accept all (Recommended)" (operator, 2026-10-10) |
+| #96 landing | cherry-pick into this bundle; standalone; rebuild | cherry-pick | operator | decided: "Cherry-pick into B-FIELD-95 (Recommended)" (operator, 2026-10-10) |
 
-## Added 2026-10-10 — #97, #98
+## Requirements
 
-### T8 — #97: audit and verification tickets declare their zero-diff intent (Tier 1 — a correct no-op audit trips the breaker) — `small`
-The four hardening ticket templates in `.claude/commands/pickle-refine-prd.md` Step 7e carry `zero_diff_intent: audit`
-in frontmatter (the value already exists: `ZeroDiffIntent = 'verification' | 'audit' | 'already-satisfied'`,
-`services/ticket-completion-evidence.ts:834`). Committed evidence still wins when a hardening ticket does commit — the
-zero-diff arm is reached only after every attribution path comes up empty. Reword the Done-flip fatal so it points at
-`zero_diff_intent`, not at pasting a sha into frontmatter.
-- AC1: `grep -c "zero_diff_intent: audit" .claude/commands/pickle-refine-prd.md` ≥ 4 (measured 0).
-- AC2 (fails today): a medium audit ticket with `zero_diff_intent: audit`, its tier's artifacts and a green gate, no
-  commit → `guardCompletionCommitBeforeDone` accepts (pin in the existing zero-diff test file); the same ticket
-  without the declaration is refused (control).
-- AC3: the fatal text no longer instructs `completion_commit: <sha>` (grep, measure first).
-- Recorded: the borrowed-HEAD stamp in the field case was the manager's, after the loop; the R-OMA foreign-attribution
-  rejection already exists (since `7f2d53c6`, in v2.2.1) and would have reverted it on the next watcher pass. T8
-  removes the loop that led there.
+### T0 — B-FIELD-88 gate reds: fixtures model a small ticket WITH its tier's artifacts
+Add `plan_*.md` + `code_review_*.md` (`requiredTierArtifactPrefixes('small')`) to (1) the R-ORSR-2 probe fixture in
+`prds/MASTER_PLAN.md` and (2) `makeSession` in `extension/tests/runner-authored-trailer.test.js`. Never loosen T5a.
+AC1: `bash extension/scripts/audit-ledger-probes.sh` exits 0 (measured 1). AC1b: its output names the R-ORSR-2 probe
+OPEN. AC2: `node --test extension/tests/runner-authored-trailer.test.js` exits 0 (measured 1 fail).
 
-### T9 — #97: a phase that ended non-zero on a recorded cause is never "completed successfully" (Tier 2, reporting) — `small`
-When the pickle runner exits non-zero with a recorded `exit_reason` (e.g. `circuit_open`), "all tickets accounted
-for" may clear a stale incomplete stamp but must not produce `Phase pickle completed successfully`: the phase is
-reported with its cause and the run withholds the success verdict (`nonConvergent`/disposition). Continues, never halts.
-- AC1 (fails today): pickle runner exits 1 with `exit_reason: circuit_open` and every ticket Done → log does not
-  print `completed successfully`; `computePipelineVerdict` reports unsuccessful; the next phase still runs.
-- AC2 (control): exit 0 with all tickets Done → unchanged.
+### T1 — #94 a live rate-limit park is not a hang
+`resolveChildMuxLivenessMtime` takes the MAX mtime over `tmux_iteration_*.log`, `rate_limit_probe.log` and
+`rate_limit_wait.json`; the main-loop park touches `rate_limit_wait.json` (`fs.utimesSync`) each `RATE_LIMIT_POLL_MS`
+poll, covering warning parks. No park record is parsed; `rateLimitParkStillLive` is unchanged. A stale wait file stops
+advancing, so it cannot shield a hung child.
+ACs (one `describeEach` over the liveness files): a fresh `rate_limit_probe.log` alone → no reap (fails today); a fresh
+touched `rate_limit_wait.json` alone → no reap (fails today); every file stale including a future-dated
+`rate_limit_wait.json` → reaped; no park files + stale log → reaped (unchanged). Document in the env-var row that a
+probe interval above `child_mux_runner_stall_seconds × 1000` is covered by the poll touch.
 
-### T10 — #97: a placeholder Open Decisions row is not a decision (Tier 2) — `small`
-`readOpenDecisions` (`pipeline-runner.ts:3768`) drops placeholder rows whose first cell STARTS with `none`
-(`none`, `none open`, `None.`), not only the exact word.
-- AC1 (fails today): a refined PRD whose only row is `none open` → `open decisions: 0`.
-- Deferred, recorded: carrying a worker-raised "for you to decide" question into the end-of-run report needs a new
-  worker→report channel; revisit with a design that reuses an existing artifact rather than a new field.
+### T2 — #91 an operator cancel ends the pipeline
+Producer: `cancel.ts:cancelSession` writes `<session>/pipeline-cancel` for a session carrying `pipeline.json`, BEFORE
+its `active !== true` early return; its message must not say "No active session" when it cancelled a pipeline.
+Consumer: `runPipelinePhaseLoop` checks `cancelledOutcome(cancelMarker, log)` ONCE after every phase outcome, before
+`handlePhaseBoundaryRespawn`; the per-arm calls are subtracted. No `exit_reason` is read.
+ACs: AC1 (fails today) pickle stub calls the real `cancelSession` then exits 0 with Todo tickets → no later phase
+runner, `pipeline-status.json:status === 'cancelled'`, tickets stay Todo; AC2 control: same without cancel → citadel
+runs; AC3 control: a stale marker before `main()` does not cancel; AC4 (fails today): `cancelSession` with `active=false`
+on a pipeline session → marker written, pipeline stops at the next boundary; AC5: a microverse phase cancelled mid-run
+→ no later phase runs.
 
-### T11 — #98: a Failed status is written only with its reason (Tier 2) — `medium`
-One `markTicketFailed(ticketId, sessionDir, { reason, evidenceLog? })` writes `status`, `failed_reason` and the
-evidence path in one frontmatter update; all six Failed writers route through it, each passing the cause it already
-knows (head regression, worker outcome, worker hang, spawn error, no-progress, anatomy failure). When the worker log
-matches the EXISTING rate/usage-limit detector, the reason is that environmental class (ties to #93's environmental stops).
-- AC1: a widened case in the EXISTING completion-authority single-source test: no `status: 'Failed'` /
-  `'Failed'` status write in `src/` outside `markTicketFailed` (mutation: add a bare write → red).
-- AC2 (fails today): each of the four reason-less writers, driven to fail, leaves a non-empty `failed_reason`;
-  `reportSkippedFailedTickets` prints it instead of `no reason recorded`.
-- Rejected: a new classifier of worker-log causes beyond the existing rate-limit detector.
+### T3 — #93 a relaunch starts the breaker fresh (reverses C3)
+At mux-runner process start (the sole `initCircuitBreaker` caller) the loaded breaker is replaced by `freshState()` with
+`history` preserved plus one appended transition (`reason: 'process start'`), whatever its persisted state. Rewrite the
+`services/CLAUDE.md` C3 entry and AC-C3-1/AC-C3-2 to pin the new contract. Within one process the breaker accumulates.
+ACs: AC1 (fails today) persisted CLOSED at 4/5 → fresh start + one no-progress iteration → `canExecute === true`; AC1b
+(fails today) persisted OPEN → fresh start → `canExecute === true`; AC2 control: 5 in-process no-progress → OPEN; AC3:
+`auto-resume.sh` R-CNAR-4(a) stops repeated no-progress relaunches at retry 3 (pin in `auto-resume-stop-conditions.test.js`).
+Rejected: `resetCircuitBreaker` (no-op on CLOSED); an environmental-error enumeration.
 
-## #96 — landed by cherry-pick, not a ticket (operator decision 2026-10-10: "Cherry-pick into B-FIELD-95")
-`f60be7b8` (branch `fix/codex-companion-resolver`) is cherry-picked onto `main` BEFORE this bundle's scope base, so
-its resolver, test and command edits sit inside this bundle's reviewed diff: set `--scope-base` to the commit BEFORE
-the cherry-pick. The remote branch is deleted after the bundle ships (operator-approved with this decision).
+### T4 — #92 a Done stamp needs an attributable commit
+`persistWorkerOutcomeStatus` never stamps Done with a `completion_commit` that is merely current HEAD; with no
+attributable window commit the ticket stays In Progress and `guardCompletionCommitBeforeDone` decides. Local census 0/63
+borrowed stamps, so this refuses nothing seen on this box; re-run the census in the reporting environment before
+release. The BLOCKED clause is dropped (no token grammar). `depends_on: [T0, T8]`.
+ACs: AC1 (fails today) a successful worker outcome with no commit in its window → status not Done and no
+`completion_commit` written; AC2 control: an attributable window commit → Done with that sha; AC3:
+`bash extension/scripts/audit-ledger-probes.sh` exits 0 after T4 (if R-ORSR-2 legitimately closes, update its
+MASTER_PLAN row in the same commit). Recorded, not built: the `pickAttributionCommit` `windowShas[0]` fallback.
+
+### T5 — #89 the branch fence is the union of every ticket's files
+Drop the `currentTicket ?` branch in `resolveSeedPathsForSetup` so the seed is always the union of Todo/In Progress
+declared files. Rejected: deleting the seed (leaves pickle unfenced and falsifies the root CLAUDE.md R-WSRC row);
+widening `isPathShaped`'s extension list.
+ACs: AC1 (fails today) a multi-ticket session with `current_ticket` set at setup → seed = union (B-FIELD-88's roster
+measured 41); AC2 control: a boundary commit with an untracked non-ticket file does not stage it.
+
+### T6 — #90 workers emit no attribution trailer
+Claude worker spawns pass `--settings` with the co-author attribution disabled (research verifies the key on 2.1.295:
+`includeCoAuthoredBy` vs `attribution`), plus one worker-prompt line. Codex/hermes out of scope. Rejected: `--bare`
+(skips settings hooks, removing R-WSRC enforcement); a deny-list hook.
+ACs: AC1 the built claude invocation carries the override; AC2 a real commit made by a claude invocation built this way,
+under a HOME without the user setting, carries no `Co-Authored-By` (or, if a live claude spawn is unavailable in tests,
+a settings-file round trip proving the key is the one the CLI reads — research decides which and records why).
+
+### T7 — #95 a cleanup phase changes no observable behaviour
+`szechuan-sauce.md`: a cleanup may restructure, never change observable behaviour (new refusals, newly accepted
+inputs, changed outputs) unless an acceptance criterion names it; a change that adds or changes a test expectation is
+recorded as an open finding, not committed. ACs: `grep -c "observable behaviour" .claude/commands/szechuan-sauce.md` ≥ 1
+and `grep -c "test expectation"` ≥ 1 (both measured 0), asserted by a case in `tests/szechuan-sauce.test.js`.
+
+### T8 — #97 hardening tickets declare their zero-diff intent
+Every `**Ticket N:` block in Step 7e of `pickle-refine-prd.md` declares `zero_diff_intent: audit` in its frontmatter
+(decided: all four — a stated quality concession, PRIME DIRECTIVE). Reword the Done-flip fatal in `mux-runner.ts` so it
+points at `zero_diff_intent`, not at pasting a sha.
+ACs: AC1 per-block derived check over Step 7e (measured 0 declared); AC2 control pin parametrized over `large` and
+`medium`, each with that tier's real artifact set → `zeroDiffAccept` accepts; the undeclared twin is refused; AC3
+`grep -c "include completion_commit: <sha>" extension/src/bin/mux-runner.ts` = 0 (measured 1).
+
+### T9 — #97 a non-zero phase exit never reads "completed successfully"
+In `finalizePhaseSuccess`, remove the pickle exclusion around `phaseDivergence`: every phase with `exitCode !== 0`
+gets `nonConvergent++` and `phaseDispositions[phase] = <exit_reason ?? 'exit_<code>'>`; the next phase still runs.
+ACs: AC1 (fails today) pickle exit 1 with `exit_reason: circuit_open`, all Done → no `completed successfully`,
+`phaseDispositions.pickle === 'circuit_open'`, `computePipelineVerdict(...).unsuccessful === true`, citadel runs; AC2
+control exit 0 + all Done unchanged; AC3 exit 1 with no exit_reason → `exit_1`. Assert dispositions, never `exit_reason`.
+
+### T10 — #97 a placeholder Open Decisions row is not a decision
+One placeholder predicate used by `buildDependencyLens` and `readOpenDecisions` drops a row whose first cell matches
+`^none(\s+open)?\.?$` (case-insensitive, whole cell). ACs: AC1 (fails today) only row `none open` → `open decisions: 0`
+and `computePipelineVerdict(...).unsuccessful === false`; AC2 control `None of the backends support X` stays open;
+AC3 `grep -c "!== 'none'" extension/src/bin/pipeline-runner.ts` = 0 (measured 2).
+
+### T11 — #98 a Failed status is written only with its reason
+`markTicketFailed(ticketId, sessionDir, { reason, evidenceLog?, completionCommit? })` in `services/git-utils.ts` writes
+status, `failed_reason`, the evidence path and the completion-commit rule (null clears `completion_commit_inferred`; a
+passed verified sha is kept) in ONE update. All six writers route through it; it does NOT archive — callers keep
+`archiveDirtyTreeBeforeFlip(` first (count stays 4). When the worker log matches the existing rate/usage-limit
+detector, the reason is that environmental class. `reportSkippedFailedTickets` reads `failed_reason ?? skipped_reason`.
+Rewrite the AC-WMFF-2A shape in `bin/CLAUDE.md` to name `markTicketFailed(`; add a `services/CLAUDE.md` export row.
+ACs: AC1 a widened case in `completion-authority-single-source.test.js`: no `status: 'Failed'` or
+`updateTicketStatus(…'Failed'…)` write in `src/` outside `markTicketFailed` (mutation: a bare write → red); AC2 one
+derived parametrized case over every Failed writer → non-empty `failed_reason` printed by the report; AC3 an
+operator-Skipped ticket with `skipped_reason: X` prints `X`; AC4 `archiveDirtyTreeBeforeFlip(` count in mux-runner.ts = 4.
+
+## Rejected or recorded
+
+| Item | Why |
+|---|---|
+| Reading `state.rate_limit_park` (T1) | survives wake with `reset_at: null` (up to 240 min of false immunity) |
+| Editing `rateLimitParkStillLive` (T1) | its fail-suppress arm is a deliberate B3 contract for the watchdogs |
+| `exit_reason: 'cancelled'` as the cancel signal (T2) | never persisted |
+| `resetCircuitBreaker` (T3) | no-op on a CLOSED breaker below threshold |
+| Environmental-error enumeration (#93) | enumerated set |
+| Log-token success test (#92) | 81% of worker logs are empty |
+| BLOCKED verdict parsing (#92) | no token grammar exists |
+| Deleting the fence seed (#89) | leaves pickle unfenced; falsifies the R-WSRC row |
+| `isPathShaped` widening (#89) | enumerated set |
+| `--bare` (#90) | skips settings-defined hooks |
+| Trailer deny-list hook (#90) | enumerated set + new check |
+| Test-expectation diff guard (#95) | new mechanism |
+| Worker→report question channel (#97) | deferred: needs a design reusing an existing artifact |
+| `markTicketFailed` absorbing the archive (#98) | breaks AC-WMFF-2A's zero-slack call-site count |
+
+
+## Implementation Task Breakdown
+
+| Order | ID | Title | Priority | Entry | Exit | Files |
+|---|---|---|---|---|---|---|
+| 10 | c931be45 | Fixtures model a small ticket with its tier artifacts (B-FIELD-88 gate reds) | High (medium) | prior orders Done | Exit State in ticket | prds/MASTER_PLAN.md, extension/tests/runner-authored-trailer.test.js |
+| 20 | d5f4fc60 | The child-mux heartbeat counts a live rate-limit park as alive (#94) | High (medium) | prior orders Done | Exit State in ticket | extension/src/bin/pipeline-runner.ts, extension/src/bin/mux-runner.ts, extension/tests/pipeline-runner-wedge-iteration-log-mtime.test.js, CLAUDE.md |
+| 30 | 5be1391a | An operator cancel ends the pipeline, not just the phase (#91) | High (medium) | prior orders Done | Exit State in ticket | extension/src/bin/cancel.ts, extension/src/bin/pipeline-runner.ts, extension/tests/pipeline-runner.test.js, extension/tests/cancel.test.js |
+| 40 | 77ed75d9 | A mux-runner process start resets the circuit breaker (#93, reverses C3) | High (medium) | prior orders Done | Exit State in ticket | extension/src/services/circuit-breaker.ts, extension/src/bin/mux-runner.ts, extension/tests/circuit-breaker.test.js, extension/tests/auto-resume-stop- |
+| 50 | a4d9015f | Hardening ticket templates declare zero_diff_intent: audit (#97) | High (medium) | prior orders Done | Exit State in ticket | .claude/commands/pickle-refine-prd.md, extension/src/bin/mux-runner.ts, extension/tests/pickle-refine-prd-failure-mode-checklist.test.js, extension/te |
+| 60 | 5ba13039 | A Done stamp needs an attributable commit, never current HEAD (#92) | High (large) | prior orders Done | Exit State in ticket | extension/src/bin/spawn-morty.ts, extension/tests/spawn-morty-commit-attribution.test.js, prds/MASTER_PLAN.md |
+| 70 | 845072b7 | The branch scope seed is the union of every ticket's declared files (#89) | High (medium) | prior orders Done | Exit State in ticket | extension/src/bin/pipeline-runner.ts, extension/tests/pipeline-scope-ticket-seed.test.js |
+| 80 | 0f95a5db | Claude workers emit no attribution trailer (#90) | High (medium) | prior orders Done | Exit State in ticket | extension/src/services/backend-spawn.ts, extension/src/bin/spawn-morty.ts, extension/tests/backend-spawn.test.js |
+| 90 | 49b2d289 | szechuan-sauce changes no observable behaviour without a criterion (#95) | High (small) | prior orders Done | Exit State in ticket | .claude/commands/szechuan-sauce.md, extension/tests/szechuan-sauce.test.js |
+| 100 | 6a7a5ab0 | A non-zero pickle exit never reports "completed successfully" (#97) | High (medium) | prior orders Done | Exit State in ticket | extension/src/bin/pipeline-runner.ts, extension/tests/pipeline-finalize-honesty.test.js |
+| 110 | c362f86b | A placeholder Open Decisions row is not counted as a decision (#97) | High (medium) | prior orders Done | Exit State in ticket | extension/src/bin/pipeline-runner.ts, extension/tests/pipeline-finalize-honesty.test.js |
+| 120 | 8d1ed05c | A Failed status is written only together with its reason (#98) | High (large) | prior orders Done | Exit State in ticket | extension/src/services/git-utils.ts, extension/src/bin/spawn-morty.ts, extension/src/bin/mux-runner.ts, extension/src/bin/pipeline-runner.ts, extensio |
+| 130 | 83a7df0b | Wire: integrate B-FIELD-95 changes end to end | High (medium) | prior orders Done | Exit State in ticket | extension/src/bin/pipeline-runner.ts, extension/tests/pipeline-runner.test.js |
+| 140 | aaaf6740 | Harden: code quality review of B-FIELD-95 | High (large) | prior orders Done | Exit State in ticket | extension/src/bin/pipeline-runner.ts, extension/src/bin/mux-runner.ts, extension/src/bin/cancel.ts, extension/src/services/circuit-breaker.ts, extensi |
+| 150 | a8f3128f | Audit: data flow integrity for B-FIELD-95 | High (large) | prior orders Done | Exit State in ticket | extension/src/bin/pipeline-runner.ts, extension/src/bin/mux-runner.ts, extension/src/bin/cancel.ts, extension/src/services/circuit-breaker.ts, extensi |
+| 160 | 42338526 | Harden: test quality review of B-FIELD-95 | High (large) | prior orders Done | Exit State in ticket | extension/tests/runner-authored-trailer.test.js, extension/tests/pipeline-runner-wedge-iteration-log-mtime.test.js, extension/tests/pipeline-runner.te |
+| 170 | 49ab4ffb | Audit: cross-reference consistency for B-FIELD-95 | High (medium) | prior orders Done | Exit State in ticket | prds/MASTER_PLAN.md, CLAUDE.md, extension/src/services/CLAUDE.md, .claude/commands/pickle-refine-prd.md, .claude/commands/szechuan-sauce.md, extension |
