@@ -462,7 +462,7 @@ test('persistWorkerOutcomeStatus: a failed worker turn records its cause and the
 });
 
 test('failureReasonFromWorkerLog: a rate/usage-limited worker log overrides the cause with the environmental class', () => {
-  withSession((sessionDir, root) => {
+  withSession((_sessionDir, root) => {
     const limited = path.join(root, 'limited.log');
     const clean = path.join(root, 'clean.log');
     fs.writeFileSync(limited, JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } }) + '\n');
@@ -471,7 +471,6 @@ test('failureReasonFromWorkerLog: a rate/usage-limited worker log overrides the 
     assert.equal(failureReasonFromWorkerLog('worker_hang', clean), 'worker_hang');
     assert.equal(failureReasonFromWorkerLog('worker_hang', undefined), 'worker_hang');
     assert.equal(failureReasonFromWorkerLog('worker_hang', path.join(root, 'missing.log')), 'worker_hang');
-    void sessionDir;
   });
 });
 
