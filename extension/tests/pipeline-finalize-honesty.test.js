@@ -1147,3 +1147,33 @@ describe('a non-zero pickle exit is never reported completed successfully', () =
     assert.equal(counters.nonConvergent, 1);
   });
 });
+
+describe('a placeholder Open Decisions row is not an open decision', () => {
+  const prd = (row) => [
+    '# Refined PRD', '', '## Open Decisions', '',
+    '| decision | options | default | owner | status |',
+    '|---|---|---|---|---|',
+    row, '',
+  ].join('\n');
+
+  function verdictFor(row) {
+    const dir = tmpDir();
+    const { runtime, statePath } = makeRuntime(dir);
+    writeState(statePath, 'completed');
+    fs.writeFileSync(path.join(dir, 'prd_refined.md'), prd(row));
+    const counters = { completed: 4, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    const verdict = computePipelineVerdict(runtime, counters);
+    fs.rmSync(dir, { recursive: true });
+    return verdict;
+  }
+
+  for (const placeholder of ['none', 'none open', 'None Open.', 'NONE.']) {
+    test(`"${placeholder}" row leaves a clean run successful`, () => {
+      assert.equal(verdictFor(`| ${placeholder} | | | | |`).unsuccessful, false);
+    });
+  }
+
+  test('a real decision beginning with "None of" stays open and withholds success', () => {
+    assert.equal(verdictFor('| None of the backends support X | a, b | a | operator | open |').unsuccessful, true);
+  });
+});

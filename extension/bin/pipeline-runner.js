@@ -3272,7 +3272,7 @@ function isWithinAllowedPaths(candidate, allowedPaths) {
  */
 function buildDependencyLens(sessionDir, allowedPaths) {
     const rows = readRefinedPrdTable(sessionDir, 'Premises').rows
-        .filter((row) => row.cells[0]?.toLowerCase() !== 'none');
+        .filter((row) => !isPlaceholderRow(row.cells));
     const flagged = rows.flatMap(({ raw }) => {
         const cited = Array.from(new Set((raw.replace(/https?:\/\/\S+/g, '').match(LENS_PATH_TOKEN) ?? [])
             .map((token) => token.replace(/^\.\//, ''))));
@@ -3280,6 +3280,10 @@ function buildDependencyLens(sessionDir, allowedPaths) {
         return outsidePaths.length > 0 ? [`- ${raw.trim()} (outside: ${outsidePaths.join(', ')})`] : [];
     });
     return { parsed: rows.length, outside: flagged.length, lines: flagged };
+}
+/** A table row whose whole first cell is `none` / `none open` (optional trailing dot) is a placeholder, not an entry. */
+function isPlaceholderRow(cells) {
+    return /^none(\s+open)?\.?$/i.test(cells[0] ?? '');
 }
 /**
  * Read one named `## <heading>` table out of `<session>/prd_refined.md`: its header cells and its data
@@ -3314,7 +3318,7 @@ function readOpenDecisions(sessionDir) {
     const [statusAt, defaultAt, ownerAt] = [column('status'), column('default'), column('owner')];
     const cell = (cells, at) => (at >= 0 ? cells[at] : '') || '?';
     return rows
-        .filter(({ cells }) => cells[0]?.toLowerCase() !== 'none')
+        .filter(({ cells }) => !isPlaceholderRow(cells))
         .filter(({ cells }) => statusAt < 0 || !/^decided/i.test(cells[statusAt] ?? ''))
         .map(({ cells }) => ({ decision: cells[0] ?? '?', default: cell(cells, defaultAt), owner: cell(cells, ownerAt) }));
 }
