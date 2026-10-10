@@ -26,7 +26,7 @@ function autoSkipBlock() {
   // The block ends at the clear AFTER the terminal Failed flip. 7eb9fa20 added
   // an earlier suppress-branch clear (evidence-backed hold), so anchor the end
   // search past the flip itself rather than at the first clear.
-  const flip = SRC.indexOf("updateTicketFrontmatter(apTicketId, sessionDir, { status: 'Failed', completion_commit: null });", start);
+  const flip = SRC.indexOf('markTicketFailed(apTicketId, sessionDir, {', start);
   assert.ok(flip > start, 'terminal flip present');
   const end = SRC.indexOf('updateMuxLifecycleState(statePath, { currentTicket: null });', flip);
   assert.ok(end > flip, 'terminal flip clear present');
@@ -41,7 +41,7 @@ test('AC-R-WMNP-4: ladder is invoked BEFORE the bare Failed flip', () => {
   // reaches the ladder through the choke point, not by calling the inner
   // helper directly — see halt-or-recover-choke-point.test.js for the invariant.
   const recoveryIdx = block.indexOf('routeRecoveryBeforeTerminal(');
-  const flipIdx = block.indexOf("status: 'Failed'");
+  const flipIdx = block.indexOf('markTicketFailed(');
   assert.ok(recoveryIdx >= 0, 'wmw-auto-skip routes through routeRecoveryBeforeTerminal (shared ladder choke point)');
   assert.ok(flipIdx >= 0, 'wmw-auto-skip still has the terminal Failed flip');
   assert.ok(recoveryIdx < flipIdx, 'the ladder runs BEFORE the terminal Failed flip, not after');

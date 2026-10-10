@@ -100,11 +100,11 @@ function setFrontmatterField(frontmatterSection, key, value) {
     return frontmatterSection.replace(/\n---(\r?\n?)$/, `\n${key}: "${value}"\n---$1`);
 }
 function validateTicketFrontmatterPatch(patch) {
-    if (patch.status !== undefined && /["\n\r]/.test(patch.status)) {
-        throw new Error('Invalid status value: must not contain quotes or newlines');
-    }
-    if (patch.completion_commit !== undefined && patch.completion_commit !== null && /["\n\r]/.test(patch.completion_commit)) {
-        throw new Error('Invalid completion_commit value: must not contain quotes or newlines');
+    for (const key of ['status', 'completion_commit', 'failed_reason', 'failed_evidence_log']) {
+        const value = patch[key];
+        if (typeof value === 'string' && /["\n\r]/.test(value)) {
+            throw new Error(`Invalid ${key} value: must not contain quotes or newlines`);
+        }
     }
 }
 function applyStatusAndUpdatedFields(content, ticketId, nextStatus, today) {
@@ -167,6 +167,12 @@ function applyCompletionCommitField(content, patch) {
         return updated;
     return setFrontmatterField(updated, 'completion_commit_inferred', null);
 }
+function applyFailureFields(content, patch) {
+    const withReason = patch.failed_reason === undefined ? content : setFrontmatterField(content, 'failed_reason', patch.failed_reason);
+    if (patch.failed_evidence_log === undefined)
+        return withReason;
+    return setFrontmatterField(withReason, 'failed_evidence_log', patch.failed_evidence_log);
+}
 export function updateTicketFrontmatter(ticketId, sessionDir, patch) {
     validateTicketFrontmatterPatch(patch);
     const ticketPath = findTicketFile(sessionDir, ticketId);
@@ -184,7 +190,7 @@ export function updateTicketFrontmatter(ticketId, sessionDir, patch) {
     // for the frontmatter slice. Running it against the full document (frontmatter + body)
     // leaves the closing `---` mid-string, so an absent completion_commit is silently
     // dropped — stamping `status: Done` with no completion evidence.
-    const baseWithCompletion = applyCompletionCommitField(updatedBase, patch);
+    const baseWithCompletion = applyFailureFields(applyCompletionCommitField(updatedBase, patch), patch);
     const content = fm ? baseWithCompletion + original.slice(fm.end) : baseWithCompletion;
     if (nextStatus !== null && !statusReplaced) {
         console.warn(`Warning: no "status:" field found in ticket ${ticketId} — status not updated`);
@@ -210,6 +216,26 @@ export function updateTicketFrontmatter(ticketId, sessionDir, patch) {
 }
 export function updateTicketStatus(ticketId, newStatus, sessionDir) {
     updateTicketFrontmatter(ticketId, sessionDir, { status: newStatus });
+}
+/** A frontmatter value cannot carry quotes or line breaks; a reason that does is flattened, never refused. */
+function frontmatterSafe(value) {
+    return value.replace(/["\r\n]+/g, ' ').trim();
+}
+/**
+ * The ONE writer of a Failed status. Status, `failed_reason`, the evidence log and the
+ * completion-commit rule land in a single frontmatter write, so no reader ever sees a Failed
+ * ticket without its cause. `completionCommit`: undefined leaves the field untouched, null clears
+ * it together with `completion_commit_inferred`, a verified sha is stamped. An absent evidence log
+ * clears a stale one. Does NOT archive — callers that reset afterwards archive first.
+ */
+export function markTicketFailed(ticketId, sessionDir, opts) {
+    const evidenceLog = opts.evidenceLog ? frontmatterSafe(opts.evidenceLog) : '';
+    updateTicketFrontmatter(ticketId, sessionDir, {
+        status: 'Failed',
+        failed_reason: frontmatterSafe(opts.reason) || 'unspecified',
+        failed_evidence_log: evidenceLog || null,
+        ...(opts.completionCommit === undefined ? {} : { completion_commit: opts.completionCommit }),
+    });
 }
 export function getHeadSha(cwd) {
     return runGit(['rev-parse', 'HEAD'], cwd).trim();

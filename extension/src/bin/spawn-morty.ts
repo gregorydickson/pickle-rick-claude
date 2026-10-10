@@ -33,7 +33,7 @@ import { spawn, execFileSync } from 'child_process';
 import { PromiseTokens, Defaults, hasLifecycleArtifact, BACKENDS, WORKER_GATE_VERDICT_FIELD, reportedTestResults, type ActivityLogEntry, type Backend, type BackendResolutionSource, type CodegraphContextSkipReason, type CodegraphSettings, type LastToolErrorState, type PickleSettings, type State } from '../types/index.js';
 import { CodegraphService, type CodegraphEmitEvent } from '../services/codegraph-service.js';
 import { isRecord } from '../lib/is-record.js';
-import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
+import { ArchiveAbortError, getDiffFiles, getHeadSha, listWorkingTreeDirtyPaths, markTicketFailed, resetToSha, updateTicketFrontmatter, updateTicketStatus } from '../services/git-utils.js';
 import { assertBackendPreSpawn, buildWorkerInvocation, isBackend, backendEnvOverrides, resolveWorkerBackendFromState, resolveWorkerBackendFromStateFile, sessionStampEnv, shouldIsolateSessionGroup } from '../services/backend-spawn.js';
 import { scrubForbiddenWorkerTokens } from '../services/promise-tokens.js';
 import {
@@ -54,7 +54,7 @@ import { autoFillCompletionCommit } from './auto-fill-completion-commit.js';
 // reason string, so this module must never re-spell it. Runtime-only usage — safe
 // despite mux-runner's own import of `resolveCodexModel` from this module
 // (neither module touches the other's bindings during module evaluation).
-import { evaluateFailedFlipSuppression, emitWorkerGateNotRunResidual } from './mux-runner.js';
+import { evaluateFailedFlipSuppression, emitWorkerGateNotRunResidual, failureReasonFromWorkerLog } from './mux-runner.js';
 // AP-EXT-ITER2-01: the ONE content-line oracle (strips a single trailing newline,
 // CRLF-aware). Runtime-only usage, no cycle — spawn-refinement-team imports neither
 // this module nor mux-runner, and evaluates no top-level side effects.
@@ -2902,6 +2902,7 @@ function resolveFinalCompletionCommitSha(
  * verified window sha is stamped, otherwise the field is left UNTOUCHED.
  * A success with no attributable sha writes nothing: current HEAD is not
  * completion evidence, so the manager's Done-flip guard decides instead.
+ * The Failed path records `failedReason` and the worker log as its evidence.
  */
 export function persistWorkerOutcomeStatus(input: {
   ticketId: string;
@@ -2910,6 +2911,8 @@ export function persistWorkerOutcomeStatus(input: {
   isSuccess: boolean;
   flipSuppressed: boolean;
   completionCommitSha: string | null;
+  failedReason?: string;
+  evidenceLog?: string;
 }): void {
   try {
     if (input.isSuccess) {
@@ -2917,15 +2920,21 @@ export function persistWorkerOutcomeStatus(input: {
         updateTicketFrontmatter(input.ticketId, input.sessionRoot, { status: 'Done', completion_commit: input.completionCommitSha });
       }
     } else if (!input.flipSuppressed) {
-      updateTicketFrontmatter(
-        input.ticketId,
-        input.sessionRoot,
-        input.completionCommitSha ? { status: 'Failed', completion_commit: input.completionCommitSha } : { status: 'Failed' },
-      );
+      markTicketFailed(input.ticketId, input.sessionRoot, {
+        reason: input.failedReason ?? 'worker_outcome_failed',
+        evidenceLog: input.evidenceLog,
+        completionCommit: input.completionCommitSha ?? undefined,
+      });
     }
   } catch {
     /* best-effort */
   }
+}
+
+/** The cause a failed worker turn already knows, before the rate/usage-limit override. */
+function workerFailureCause(timedOut: boolean, producedEvidence: boolean): string {
+  if (timedOut) return 'worker_timeout';
+  return producedEvidence ? 'worker_gate_red' : 'worker_no_completion_evidence';
 }
 
 function workerValidationLabel(isSuccess: boolean, flipSuppressed: boolean): string {
@@ -3032,6 +3041,8 @@ async function finalizeWorkerTurn(params: WorkerFinalizeArgs): Promise<void> {
     isSuccess,
     flipSuppressed,
     completionCommitSha: resolveFinalCompletionCommitSha(ctx, isSuccess, completionCommitSha),
+    failedReason: failureReasonFromWorkerLog(workerFailureCause(ctx.mutableState.timedOut, producedEvidence), sessionLogPath),
+    evidenceLog: sessionLogPath,
   });
 
   if (isSuccess) autoFillWorkerCompletionCommit(ctx);
@@ -3575,7 +3586,9 @@ function armWorkerHangGuard(ctx: WorkerProcessContext): ReturnType<typeof setTim
   const hangGuard = setTimeout(async () => {
     console.error(`${Style.RED}❌ Worker hang detected — forcing exit${Style.RESET}`);
     bestEffortFdatasync(sessionLogPath);
-    try { updateTicketStatus(ticketId, 'Failed', sessionRoot); } catch { /* best-effort */ }
+    try {
+      markTicketFailed(ticketId, sessionRoot, { reason: failureReasonFromWorkerLog('worker_hang', sessionLogPath), evidenceLog: sessionLogPath });
+    } catch { /* best-effort */ }
     await flushAndExit(sessionLog, 1);
   }, ctx.effectiveTimeoutMs + HANG_GUARD_GRACE_MS);
   return hangGuard;
@@ -3592,7 +3605,7 @@ async function handleWorkerSpawnError(params: {
   crumb: (label: string) => void;
 }): Promise<void> {
   const { ctx, err, invocation, crumb } = params;
-  const { args, ticketId, sessionRoot, sessionLog } = ctx;
+  const { args, ticketId, sessionRoot, sessionLog, sessionLogPath } = ctx;
   const errorCode = (err as NodeJS.ErrnoException).code;
   const isNativeCliEnoent = NATIVE_CLI_BINARY_MISSING_BACKENDS.includes(args.backend) && errorCode === 'ENOENT';
   const exitCode = isNativeCliEnoent ? 127 : 1;
@@ -3606,9 +3619,9 @@ async function handleWorkerSpawnError(params: {
     }) + '\n');
   }
   console.error(`${Style.RED}[pickle-rick] Failed to spawn '${invocation.cmd}' (backend=${args.backend}): ${safeErrorMessage(err)}${Style.RESET}`);
-  crumb('before updateTicketStatus');
-  try { updateTicketStatus(ticketId, 'Failed', sessionRoot); } catch { /* best-effort */ }
-  crumb('after updateTicketStatus — before printMinimalPanel');
+  crumb('before markTicketFailed');
+  try { markTicketFailed(ticketId, sessionRoot, { reason: 'worker_spawn_error', evidenceLog: sessionLogPath }); } catch { /* best-effort */ }
+  crumb('after markTicketFailed — before printMinimalPanel');
   printMinimalPanel('Worker Report', { status: 'spawn-error', validation: 'failed' }, 'RED', '🥒');
   crumb('before flushAndExit');
   await flushAndExit(sessionLog, exitCode);

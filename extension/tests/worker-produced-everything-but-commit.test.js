@@ -235,9 +235,9 @@ test('AC-WMFF-2A: advanceOrExitOnLadderExhaustion archives BEFORE its Failed fro
   const body = src.slice(fnAt, end);
 
   const archiveAt = body.indexOf('archiveDirtyTreeBeforeFlip(');
-  const flipAt = body.indexOf("status: 'Failed'");
+  const flipAt = body.indexOf('markTicketFailed(');
   assert.ok(archiveAt > 0, 'the flip site calls archiveDirtyTreeBeforeFlip');
-  assert.ok(flipAt > 0, "the flip site writes status: 'Failed'");
+  assert.ok(flipAt > 0, 'the flip site writes Failed through markTicketFailed');
   assert.ok(
     archiveAt < flipAt,
     'the archive MUST precede the Failed flip — the B-DURA T10 boundary committer is terminal-guarded and skips an already-Failed ticket, so an archive that runs after the flip saves nothing',

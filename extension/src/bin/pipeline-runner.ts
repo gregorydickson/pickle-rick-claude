@@ -2701,9 +2701,8 @@ export function reportSkippedFailedTickets(runtime: PipelineRuntime): void {
     if (unfinished.length === 0) { runtime.log('skipped/failed tickets: 0'); return; }
     const described = unfinished.slice(0, UNFINISHED_TICKETS_PRINT_CAP).map((t) => {
       const ticketPath = ticketFilePath(runtime.sessionDir, t.id ?? '');
-      const reason = fs.existsSync(ticketPath)
-        ? readFrontmatterField(fs.readFileSync(ticketPath, 'utf-8'), 'failed_reason')
-        : null;
+      const raw = fs.existsSync(ticketPath) ? fs.readFileSync(ticketPath, 'utf-8') : null;
+      const reason = raw === null ? null : readFrontmatterField(raw, 'failed_reason') ?? readFrontmatterField(raw, 'skipped_reason');
       return `${t.id} ${t.status} (${reason ?? 'no reason recorded'})`;
     });
     const more = unfinished.length - UNFINISHED_TICKETS_PRINT_CAP;

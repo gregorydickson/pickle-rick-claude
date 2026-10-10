@@ -20,7 +20,7 @@ import { emitOrphanReapSummary, reapOrphanedWorkerProcs, killProcessGroup } from
 import { extractAssistantContent, detectOutputFormat, observeCodexToolCallStream, CODEX_DELIMITER_RE } from '../services/classifier-utils.js';
 import { emitCrossTicketRegressionLinearComment } from '../lib/linear-comment.js';
 import { evaluateManagerRelaunch, recordManagerRelaunch, } from '../services/manager-relaunch.js';
-import { getHeadBranch, gitReportedExitStatus, updateTicketFrontmatter, isWorkingTreeDirty, listWorkingTreeDirtyPaths, listWorkingTreeDirtyPathsExcludingCodegraph, probeTreeDirty, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES } from '../services/git-utils.js';
+import { getHeadBranch, gitReportedExitStatus, updateTicketFrontmatter, markTicketFailed, isWorkingTreeDirty, listWorkingTreeDirtyPaths, listWorkingTreeDirtyPathsExcludingCodegraph, probeTreeDirty, archiveBeforeDestructive, ArchiveAbortError, isCodegraphArtifact, gitCommitEpoch, CODEGRAPH_PATHSPEC_EXCLUDES } from '../services/git-utils.js';
 import { runRecoveryLadder, parsePlanPhases, executePhaseLoop, isConvergedPlanEligible } from '../services/recovery-controller.js';
 import { detectArtifactProgress, resolveNoProgressWindowSeconds } from '../services/artifact-progress-detector.js';
 import { persistEvidence, gateForPhantomDoneRevert, evaluateCompletionEvidence, lifecycleArtifactStatus } from '../services/ticket-completion-evidence.js';
@@ -3022,7 +3022,12 @@ function resolveUnreattachedOrphanDisposition(input) {
     }
     archiveDirtyTreeBeforeFlip({ workingDir, sessionDir, ticketId, log });
     try {
-        updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
+        const evidenceLog = path.join(sessionDir, `tmux_iteration_${iteration}.log`);
+        markTicketFailed(ticketId, sessionDir, {
+            reason: failureReasonFromWorkerLog('head_regression_orphan_unrecoverable', evidenceLog),
+            evidenceLog,
+            completionCommit: null,
+        });
         log(`[head-regression] ticket ${ticketId} marked Failed — HEAD at baseline, orphan unrecoverable`);
     }
     catch (err) {
@@ -3419,6 +3424,21 @@ export function detectRateLimitInLog(logFile) {
 /** True when the park was entered on a usage-limit WARNING (the API still serves), not a rejection. */
 export function isUsageWarning(info) {
     return info?.status === 'allowed_warning';
+}
+/** The environmental Failed reason: the worker hit a rate or usage limit, not a defect of its own. */
+export const RATE_LIMITED_FAILURE_REASON = 'rate_limited';
+/**
+ * The Failed reason for a writer that knows its own `cause`: a log the rate/usage-limit
+ * detector matches overrides it with the environmental class. Same precedence as
+ * `classifyIterationExit` — the text tail is consulted only when no structured event exists.
+ */
+export function failureReasonFromWorkerLog(cause, logFile) {
+    if (!logFile)
+        return cause;
+    const info = detectRateLimitInLog(logFile);
+    if (info.limited || (!info.sawEvents && detectRateLimitInText(logFile)))
+        return RATE_LIMITED_FAILURE_REASON;
+    return cause;
 }
 export function detectRateLimitInText(logFile) {
     try {
@@ -9383,16 +9403,11 @@ export function resolveCreditEarlyPhases(sessionDir, ticketId, priorSpawnCount, 
  * AND no archive. `workingDir` is threaded in for exactly that call.
  */
 export function advanceOrExitOnLadderExhaustion(input) {
-    const { sessionDir, statePath, workingDir, ticketId, reason, log } = input;
+    const { sessionDir, statePath, workingDir, ticketId, reason, evidenceLog, log } = input;
     archiveDirtyTreeBeforeFlip({ workingDir, sessionDir, ticketId, log });
     try {
-        updateTicketFrontmatter(ticketId, sessionDir, { status: 'Failed', completion_commit: null });
-        const tfPath = ticketFilePath(sessionDir, ticketId);
-        const tfRaw = fs.readFileSync(tfPath, 'utf-8');
         // WS-2d (R-PFNT): finer no-progress reason in place of the misleading single literal.
-        const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', classifyNoProgressFailureReason(sessionDir));
-        if (tfUpdated)
-            fs.writeFileSync(tfPath, tfUpdated);
+        markTicketFailed(ticketId, sessionDir, { reason: classifyNoProgressFailureReason(sessionDir), evidenceLog, completionCommit: null });
     }
     catch (err) {
         log(`[ticket-ladder] frontmatter flip failed (ignored): ${safeErrorMessage(err)}`);
@@ -13243,6 +13258,7 @@ function routeWmwRecoveryLadder(input) {
             workingDir: state.working_dir || process.cwd(),
             ticketId: apTicketId,
             reason: `recovery_exhausted: ${wmwRecovery.reason}`,
+            evidenceLog: path.join(sessionDir, `tmux_iteration_${iteration}.log`),
             log,
         });
         if (ladderAction === 'advance') {
@@ -13301,6 +13317,7 @@ function routeWmwFailedFlipSuppression(input) {
             workingDir: wmwWorkingDir,
             ticketId: apTicketId,
             reason: `suppression_cap_reached: ${ffDecision.cap}`,
+            evidenceLog: path.join(sessionDir, `tmux_iteration_${iteration}.log`),
             log,
         });
         if (ladderAction === 'advance') {
@@ -13326,12 +13343,11 @@ function flipWmwTicketFailed(input) {
     log(skipMsg);
     process.stderr.write(`${skipMsg}\n`);
     try {
-        updateTicketFrontmatter(apTicketId, sessionDir, { status: 'Failed', completion_commit: null });
-        const tfPath = ticketFilePath(sessionDir, apTicketId);
-        const tfRaw = fs.readFileSync(tfPath, 'utf-8');
-        const tfUpdated = upsertFrontmatterField(tfRaw, 'failed_reason', apFailureReason);
-        if (tfUpdated)
-            fs.writeFileSync(tfPath, tfUpdated);
+        markTicketFailed(apTicketId, sessionDir, {
+            reason: apFailureReason,
+            evidenceLog: path.join(sessionDir, `tmux_iteration_${input.iteration}.log`),
+            completionCommit: null,
+        });
     }
     catch (err) {
         log(`[wmw-auto-skip] frontmatter flip failed (ignored): ${safeErrorMessage(err)}`);
