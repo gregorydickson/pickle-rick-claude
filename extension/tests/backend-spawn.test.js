@@ -283,6 +283,23 @@ test('buildWorkerInvocation(claude): omits --output-format when text (the defaul
     assert.equal(inv.args.includes('--output-format'), false);
 });
 
+test('buildWorkerInvocation(claude): disables commit attribution through an additive --settings payload', () => {
+    const inv = buildWorkerInvocation('claude', { prompt: 'x', addDirs: [] });
+    const idx = inv.args.indexOf('--settings');
+    assert.ok(idx >= 0, '--settings must be present');
+    const settings = JSON.parse(inv.args[idx + 1]);
+    assert.deepEqual(settings, { attribution: { commit: '', pr: '', sessionUrl: false } });
+    // Control: --settings is a value-carrying flag, so it must not displace the prompt or bypass flag.
+    assert.ok(inv.args.includes('--dangerously-skip-permissions'));
+    assert.equal(inv.args[inv.args.length - 2], '-p');
+    assert.equal(inv.args[inv.args.length - 1], 'x');
+});
+
+test('buildWorkerInvocation(codex): carries no claude --settings payload', () => {
+    const inv = buildWorkerInvocation('codex', { prompt: 'x', addDirs: [] });
+    assert.equal(inv.args.includes('--settings'), false);
+});
+
 test('buildWorkerInvocation(claude): drops missing add-dir entries', () => {
     const inv = buildWorkerInvocation('claude', {
         prompt: 'x',

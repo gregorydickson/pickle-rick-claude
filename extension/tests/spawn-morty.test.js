@@ -2276,6 +2276,40 @@ test('buildWorkerPrompt: a task carrying $-substitution sequences reaches the wo
     assert.equal(prompt.includes('$ARGUMENTS'), false, 'placeholder must be fully substituted');
 });
 
+// The worker prompt tells every backend not to author attribution trailers; for claude
+// the `--settings` payload enforces it, for the others the prompt line is the only lever.
+for (const backend of ['claude', 'codex']) {
+    test(`buildWorkerPrompt(${backend}): forbids attribution trailers in commit messages`, async () => {
+        const { buildWorkerPrompt } = await import('../bin/spawn-morty.js');
+        const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-attr-home-'));
+        const tmpSession = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-attr-sess-'));
+        const cmdDir = path.join(tmpHome, '.claude', 'commands');
+        fs.mkdirSync(cmdDir, { recursive: true });
+        fs.writeFileSync(path.join(cmdDir, 'send-to-morty-review.md'), 'HEAD\n# TASK: $ARGUMENTS\n');
+        const ticket = {
+            task: 'do the thing',
+            ticketContent: 'N/A',
+            ticketId: 'abcd1234',
+            ticketPath: path.join(tmpSession, 'abcd1234'),
+            sessionRoot: tmpSession,
+            backend,
+            isReviewTicket: true,
+        };
+        const originalHome = process.env.HOME;
+        let prompt;
+        try {
+            process.env.HOME = tmpHome;
+            prompt = buildWorkerPrompt({ ticket, model: 'sonnet', repoRoot: tmpSession, extensionRoot: tmpSession });
+        } finally {
+            if (originalHome === undefined) delete process.env.HOME;
+            else process.env.HOME = originalHome;
+            fs.rmSync(tmpHome, { recursive: true, force: true });
+            fs.rmSync(tmpSession, { recursive: true, force: true });
+        }
+        assert.match(prompt, /Do not add attribution trailers/);
+    });
+}
+
 // AP-EXT-ITER118-01 replay: the sibling splice in applyTierLifecycleTemplate. Its
 // {{TIER_LIFECYCLE_SECTIONS}} replacement carries opts.codegraphSection, which is built
 // from repo-derived symbol names and paths -- the same dollar-grammar exposure.

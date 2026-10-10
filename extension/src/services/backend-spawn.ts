@@ -822,10 +822,20 @@ function selectManagerInvocation(backend: Backend, opts: ManagerInvocationOption
   return buildClaudeManagerInvocation(opts);
 }
 
+/**
+ * Inline `--settings` payload that blanks Claude Code's own commit/PR attribution (the
+ * co-author trailer and the session-URL trailer). `attribution` is the key CLI 2.1.295
+ * reads; `includeCoAuthoredBy` is its deprecated alias and is ignored once `attribution`
+ * is an object. `--settings` is additive, so the operator's hooks and permissions still apply.
+ */
+export const CLAUDE_WORKER_ATTRIBUTION_SETTINGS = JSON.stringify({
+  attribution: { commit: '', pr: '', sessionUrl: false },
+});
+
 function buildClaudeWorkerInvocation(opts: WorkerInvocationOptions): SpawnInvocation {
   const { path: mcpCfg, layer } = resolveSpawnMcpConfig(opts);
   emitMcpConfigResolved(mcpCfg, layer);
-  const args: string[] = ['--dangerously-skip-permissions'];
+  const args: string[] = ['--dangerously-skip-permissions', '--settings', CLAUDE_WORKER_ATTRIBUTION_SETTINGS];
   appendAddDirArgs(args, opts.addDirs);
   if (opts.outputFormat && opts.outputFormat !== 'text') {
     args.push('--output-format', opts.outputFormat);
