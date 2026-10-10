@@ -61,6 +61,22 @@ function reportStaleIndexLock(ctx: LockCleanupContext): void {
   } catch { /* best-effort */ }
 }
 
+/**
+ * A pipeline-runner owns its session across phases, and `resetStateForPhase` leaves `active=false`
+ * before every phase spawn — so `state.active` cannot say whether a pipeline is running. The marker
+ * is the one channel the runner's phase loop reads, so it is written whenever the session IS a
+ * pipeline, whatever `active` says. Returns whether a marker was written.
+ */
+function requestPipelineCancel(sessionPath: string): boolean {
+  if (!fs.existsSync(path.join(sessionPath, 'pipeline.json'))) return false;
+  try {
+    fs.writeFileSync(path.join(sessionPath, 'pipeline-cancel'), 'operator-cancel');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function cancelSession(cwd: string) {
   const SESSIONS_MAP = path.join(getDataRoot(), 'current_sessions.json');
   const sessionPath = findSessionPathForCwd(cwd);
@@ -69,6 +85,8 @@ export function cancelSession(cwd: string) {
     console.log('No active session found for this directory.');
     return;
   }
+
+  const pipelineCancelRequested = requestPipelineCancel(sessionPath);
 
   const statePath = path.join(sessionPath, 'state.json');
   const recoveredState = readRecoverableJsonObject(statePath);
@@ -81,7 +99,9 @@ export function cancelSession(cwd: string) {
   try {
     const stateSnapshot = sm.read(statePath);
     if (stateSnapshot.active !== true) {
-      console.log('No active session found for this directory.');
+      console.log(pipelineCancelRequested
+        ? `Pipeline cancel requested for ${path.basename(sessionPath)} — it stops at the next phase boundary.`
+        : 'No active session found for this directory.');
       return;
     }
     workingDir = typeof stateSnapshot.working_dir === 'string' && stateSnapshot.working_dir

@@ -265,6 +265,56 @@ test('cancelSession: already-inactive mapped session reports no active loop and 
     }
 });
 
+// --- Pipeline sessions: the runner's phase loop reads a marker, not state.active ---
+
+test('cancelSession: an inactive PIPELINE session still gets the pipeline-cancel marker and is not reported as absent', () => {
+    const tmpRoot = makeTmpRoot();
+    try {
+        const sessionDir = makeSessionDir(tmpRoot, false);
+        fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({ phases: ['pickle'] }));
+        writeSessionsMap(tmpRoot, { [tmpRoot]: sessionDir });
+
+        const output = runCancelSubprocess(tmpRoot, tmpRoot);
+
+        assert.ok(fs.existsSync(path.join(sessionDir, 'pipeline-cancel')), 'the marker is what the phase loop reads');
+        assert.ok(!output.includes('No active session found'), `a cancelled pipeline must not be reported as no session: ${output}`);
+        assert.equal(readState(sessionDir).active, false);
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('cancelSession: an ACTIVE pipeline session gets the marker and is deactivated as before', () => {
+    const tmpRoot = makeTmpRoot();
+    try {
+        const sessionDir = makeSessionDir(tmpRoot, true);
+        fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({ phases: ['pickle'] }));
+        writeSessionsMap(tmpRoot, { [tmpRoot]: sessionDir });
+
+        runCancelSubprocess(tmpRoot, tmpRoot);
+
+        assert.ok(fs.existsSync(path.join(sessionDir, 'pipeline-cancel')));
+        assert.equal(readState(sessionDir).active, false);
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
+test('cancelSession: a non-pipeline session never gets a marker', () => {
+    const tmpRoot = makeTmpRoot();
+    try {
+        const sessionDir = makeSessionDir(tmpRoot, true);
+        writeSessionsMap(tmpRoot, { [tmpRoot]: sessionDir });
+
+        runCancelSubprocess(tmpRoot, tmpRoot);
+
+        assert.ok(!fs.existsSync(path.join(sessionDir, 'pipeline-cancel')), 'only a pipeline session has a phase loop to stop');
+        assert.equal(readState(sessionDir).active, false);
+    } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+});
+
 // --- Preserves other state fields ---
 
 test('cancelSession: preserves other state fields when setting active=false', () => {

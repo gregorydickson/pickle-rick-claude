@@ -68,6 +68,7 @@ import { loadFinalizeGateSettings, finalizeGateMain } from '../bin/finalize-gate
 import { runInterfaceChangeSweep, withCleanReplayCheckout } from '../bin/microverse-runner.js';
 import { backendEnvOverrides } from '../services/backend-spawn.js';
 import { AC_PHASE_MANIFEST, runAcPhaseGate } from '../services/ac-phase-gate.js';
+import { cancelSession } from '../bin/cancel.js';
 import { LATEST_SCHEMA_VERSION, Defaults, VALID_ACTIVITY_EVENTS, EXIT_REASONS, CRASH_FLOOR_EXIT_REASONS, BACKENDS, FAILURE_REASONS, NO_PROGRESS_FAILURE_REASONS } from '../types/index.js';
 
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
@@ -7928,5 +7929,131 @@ describe('szechuan objective names its reviewed range', () => {
   test('no scope.json at all reviews HEAD (no scope base)', () => {
     const prd = szechuanPrd({ scopeJson: null });
     assert.ok(prd.includes('HEAD (no scope base)'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An operator cancel ends the pipeline, not just the phase: `/eat-pickle` writes the
+// `pipeline-cancel` marker and the phase loop consults it ONCE after every phase outcome,
+// so no arm that returns `continue` (the pickle graduation arm among them) can outrun it.
+// ---------------------------------------------------------------------------
+
+describe('operator cancel stops the whole pipeline', () => {
+  async function withCancelSession({ phases, tickets = [], microverse = false }, fn) {
+    const repo = tmpDir();
+    const dataRoot = tmpDir();
+    const sessionDir = path.join(dataRoot, 'sessions', 'cancel-session');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const prevDataRoot = process.env.PICKLE_DATA_ROOT;
+    process.env.PICKLE_DATA_ROOT = dataRoot;
+    try {
+      initRepo(repo, { 'services/a.ts': 'export const a = 1;\n' });
+      fs.writeFileSync(path.join(repo, 'services', 'a.ts'), 'export const a = 11;\n');
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-q', '-m', 'followup');
+      const startCommit = git(repo, 'rev-parse', 'HEAD~1');
+      writeStateFile(path.join(sessionDir, 'state.json'), {
+        working_dir: repo, step: 'implement', max_iterations: 100, original_prompt: 'operator cancel',
+        schema_version: 3, tmux_mode: false, chain_meeseeks: false, backend: 'claude',
+        start_commit: startCommit, exit_reason: null, activity: [],
+      });
+      fs.writeFileSync(path.join(sessionDir, 'pipeline.json'), JSON.stringify({
+        phases, target: repo, anatomy_stall_limit: 3, szechuan_stall_limit: 5,
+        anatomy_max_iterations: microverse ? 1 : 100, szechuan_max_iterations: microverse ? 1 : 50,
+        dirty_exempt_segments: ['prds', 'docs'],
+      }, null, 2));
+      for (const id of tickets) {
+        fs.mkdirSync(path.join(sessionDir, id), { recursive: true });
+        fs.writeFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`), `---\nid: ${id}\ntitle: "t"\nstatus: "Todo"\n---\n# body\n`);
+      }
+      return await fn({ repo, sessionDir });
+    } finally {
+      __setSpawnRunnerForTests(null);
+      if (prevDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT; else process.env.PICKLE_DATA_ROOT = prevDataRoot;
+      for (const dir of [repo, dataRoot]) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const ticketStatus = (sessionDir, id) => /status: "(\w+)"/.exec(
+    fs.readFileSync(path.join(sessionDir, id, `rick_ticket_${id}.md`), 'utf-8'),
+  )[1];
+
+  // Each stub spawn is one phase runner; `onFirst` runs inside the first one, as /eat-pickle would.
+  function stubRunners(sessionDir, onFirst) {
+    const spawned = [];
+    __setSpawnRunnerForTests(async () => {
+      spawned.push(spawned.length + 1);
+      if (spawned.length === 1) onFirst?.(sessionDir);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    return spawned;
+  }
+
+  const cancelViaCli = (repo) => () => cancelSession(repo);
+
+  test('a cancel during a pickle phase that leaves Todo tickets runs no later phase', async () => {
+    await withCancelSession({ phases: ['pickle', 'pickle'], tickets: ['aaaa1111'] }, async ({ repo, sessionDir }) => {
+      const spawned = stubRunners(sessionDir, cancelViaCli(repo));
+      await runMainToExit(sessionDir);
+      assert.equal(spawned.length, 1, 'the phase after a cancelled pickle must not spawn');
+      assert.equal(readJson(path.join(sessionDir, 'pipeline-status.json')).status, 'cancelled');
+      assert.equal(ticketStatus(sessionDir, 'aaaa1111'), 'Todo', 'a cancel does not touch tickets');
+    });
+  });
+
+  test('control: the same exit without a cancel runs the next phase', async () => {
+    await withCancelSession({ phases: ['pickle', 'pickle'], tickets: ['aaaa1111'] }, async ({ sessionDir }) => {
+      const spawned = stubRunners(sessionDir, null);
+      await runMainToExit(sessionDir);
+      assert.equal(spawned.length, 2);
+      assert.notEqual(readJson(path.join(sessionDir, 'pipeline-status.json')).status, 'cancelled');
+    });
+  });
+
+  test('control: a stale marker present at launch does not cancel the run', async () => {
+    await withCancelSession({ phases: ['pickle', 'pickle'], tickets: ['aaaa1111'] }, async ({ sessionDir }) => {
+      fs.writeFileSync(path.join(sessionDir, 'pipeline-cancel'), 'operator-cancel');
+      const spawned = stubRunners(sessionDir, null);
+      await runMainToExit(sessionDir);
+      assert.equal(spawned.length, 2);
+    });
+  });
+
+  test('a cancel while state.active is already false (the between-phase state) still stops at the boundary', async () => {
+    await withCancelSession({ phases: ['pickle', 'pickle'], tickets: ['aaaa1111'] }, async ({ repo, sessionDir }) => {
+      const spawned = stubRunners(sessionDir, () => {
+        const statePath = path.join(sessionDir, 'state.json');
+        fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), active: false }));
+        cancelSession(repo);
+      });
+      await runMainToExit(sessionDir);
+      assert.equal(spawned.length, 1);
+      assert.equal(readJson(path.join(sessionDir, 'pipeline-status.json')).status, 'cancelled');
+    });
+  });
+
+  // Two szechuan phases: the discovery-driven anatomy-park skips this tiny fixture (`no_subsystems`),
+  // which would leave a microverse phase that is LAST and so proves nothing about "no later phase".
+  async function driveMicroversePair(cancelOnFirst) {
+    return withCancelSession({ phases: ['szechuan-sauce', 'szechuan-sauce'], microverse: true }, async ({ repo, sessionDir }) => {
+      const spawned = stubRunners(sessionDir, (dir) => {
+        const statePath = path.join(dir, 'state.json');
+        fs.writeFileSync(statePath, JSON.stringify({ ...readJson(statePath), exit_reason: 'converged' }));
+        if (cancelOnFirst) cancelSession(repo);
+      });
+      await runMainToExit(sessionDir);
+      return { spawned: spawned.length, status: readJson(path.join(sessionDir, 'pipeline-status.json')).status };
+    });
+  }
+
+  test('a cancel during a microverse phase is followed by no later phase', async () => {
+    const run = await driveMicroversePair(true);
+    assert.equal(run.spawned, 1);
+    assert.equal(run.status, 'cancelled');
+  });
+
+  test('control: the same microverse pair without a cancel runs both phases', async () => {
+    const run = await driveMicroversePair(false);
+    assert.equal(run.spawned, 2);
   });
 });

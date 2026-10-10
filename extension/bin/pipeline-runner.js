@@ -5742,8 +5742,8 @@ function maybeRunCloserRelease(runtime, unsuccessful, handoffStop) {
  * and an emptied map must clear the key. Omitted keys are carried by `writePipelineStatus`
  * itself (AP-EXT-ITER90-01); repeating them here is no longer what keeps them alive.
  */
-function writeTerminalPipelineStatus(runtime, counters, effectiveFailed) {
-    writePipelineStatus(runtime.sessionDir, effectiveFailed ? 'failed' : 'completed', {
+function writeTerminalPipelineStatus(runtime, counters, effectiveFailed, cancelled) {
+    writePipelineStatus(runtime.sessionDir, cancelled ? 'cancelled' : effectiveFailed ? 'failed' : 'completed', {
         current_phase: null,
         completed_phases: counters.completed,
         skipped_phases: counters.skipped,
@@ -5754,6 +5754,8 @@ function writeTerminalPipelineStatus(runtime, counters, effectiveFailed) {
 }
 function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncomplete, phaseIncompleteReason) {
     const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
+    // Read BEFORE the unlink below: the marker is the only record that the operator stopped this run.
+    const cancelled = fs.existsSync(cancelMarker);
     const verdict = computePipelineVerdict(runtime, counters);
     const { unsuccessful, handoffStop, effectiveFailed } = verdict;
     stampPipelineTerminalReason(runtime, verdict, phaseIncomplete, phaseIncompleteReason);
@@ -5763,12 +5765,12 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
     printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount, runtime.workingDir), banner.color, '🧪');
     writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
     // handoff stops skip closer-release; so does a degraded run (B-ONEABORT AC-OA-1c).
-    maybeRunCloserRelease(runtime, unsuccessful, handoffStop);
+    maybeRunCloserRelease(runtime, unsuccessful || cancelled, handoffStop);
     try {
         fs.unlinkSync(cancelMarker);
     }
     catch { /* may not exist */ }
-    writeTerminalPipelineStatus(runtime, counters, effectiveFailed);
+    writeTerminalPipelineStatus(runtime, counters, effectiveFailed, cancelled);
     if (phaseIncomplete) {
         process.exit(PipelineRunnerExitCode.PhaseIncomplete);
     }
@@ -6740,8 +6742,7 @@ async function runPipelinePhaseLoop(runtime, counters, cancelMarker, startIndex)
             outcome = await runPhaseIteration(runtime, counters, cancelMarker, rawPhase, i);
         }
         catch (err) {
-            const downgraded = downgradePhaseThrow(runtime, counters, rawPhase, i, err, log);
-            outcome = cancelledOutcome(cancelMarker, log) ?? downgraded;
+            outcome = downgradePhaseThrow(runtime, counters, rawPhase, i, err, log);
         }
         if (outcome.phaseIncomplete) {
             result.phaseIncomplete = true;
@@ -6753,7 +6754,9 @@ async function runPipelinePhaseLoop(runtime, counters, cancelMarker, startIndex)
             if (capturedReason)
                 result.phaseIncompleteReason = capturedReason;
         }
-        if (outcome.action === 'break')
+        // The one loop-level cancel check: it covers every arm that returns `continue` (including the
+        // pickle graduation arm, which never consulted the marker) and the window between phases.
+        if (outcome.action === 'break' || cancelledOutcome(cancelMarker, log))
             break;
         // R-MDS-1: Rebind monitor dashboard pane at non-citadel phase boundaries.
         const nextRawPhase = runtime.config.phases[i + 1];
