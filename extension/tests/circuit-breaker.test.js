@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import ts from 'typescript';
 
 import {
     loadSettings,
@@ -1320,6 +1321,40 @@ test('AC2 control: five in-process no-progress iterations still trip OPEN after 
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+});
+
+/** Call sites of `name` in every non-test `.ts` under `src/`, read from the AST so a comment cannot count. */
+function srcCallSites(name) {
+    const srcRoot = path.join(import.meta.dirname, '..', 'src');
+    const sites = [];
+    let parsed = 0;
+    for (const entry of fs.readdirSync(srcRoot, { recursive: true })) {
+        const rel = String(entry);
+        if (!rel.endsWith('.ts') || rel.endsWith('.d.ts') || rel.includes('__tests__')) continue;
+        const source = fs.readFileSync(path.join(srcRoot, rel), 'utf-8');
+        const sourceFile = ts.createSourceFile(rel, source, ts.ScriptTarget.Latest, true);
+        parsed += 1;
+        const visit = (node) => {
+            if (ts.isCallExpression(node)) {
+                const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name : node.expression;
+                if (ts.isIdentifier(callee) && callee.text === name) sites.push(rel);
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(sourceFile);
+    }
+    assert.ok(parsed > 10, `src walk parsed only ${parsed} files`);
+    return sites;
+}
+
+test('a mux-runner process start loads the breaker fresh, never the persisted counts', () => {
+    // The service tests above call startFreshCircuitBreaker directly, so they stay green if the
+    // runner goes back to initCircuitBreaker and inherits a mid-count breaker on every relaunch.
+    assert.ok(
+        srcCallSites('startFreshCircuitBreaker').includes(path.join('bin', 'mux-runner.ts')),
+        'mux-runner must start its breaker through startFreshCircuitBreaker',
+    );
+    assert.deepEqual(srcCallSites('initCircuitBreaker'), [], 'no production code may load the persisted breaker as-is');
 });
 
 test('extractErrorSignature: assistant with only tool_use blocks (no text) returns null', () => {
