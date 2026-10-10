@@ -404,6 +404,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
     branch after ship. Reliability tier first: #94 (rate-limit park killed as a hang), #91 (cancel advances phases),
     #93 (breaker survives relaunch), #97 T8 (correct no-op audit trips the breaker). Rejected/recorded in the PRD:
     environmental-error enumeration (#93), log-token success test (#92 — 81% of worker logs are empty),
+    `pickAttributionCommit`'s `windowShas[0]` fallback (#92 — recorded, not built),
     `isPathShaped` extension widening (#89), trailer deny-list hook (#90), expectation-diff guard (#95),
     worker→report question channel (#97, deferred). Gate legs 22 → 22.
 

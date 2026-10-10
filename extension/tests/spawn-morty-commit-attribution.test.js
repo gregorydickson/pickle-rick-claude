@@ -20,6 +20,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   buildWorkerPrompt,
+  persistWorkerOutcomeStatus,
   reconcileWorkerCommitAttribution,
   stageAndCommitLintAutofix,
 } from '../bin/spawn-morty.js';
@@ -275,6 +276,47 @@ test('git failure is best-effort: non-repo workingDir returns null, never throws
   const dir = makeTmp();
 
   assert.equal(reconcileWorkerCommitAttribution(dir, TICKET_ID, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', HALLUCINATED_SHA, {}), null);
+});
+
+/**
+ * A successful worker turn persists the sha the attribution seam verified. With
+ * no commit in the worker's window there is nothing attributable, so the ticket
+ * must not be stamped Done over whatever HEAD happens to be — the manager's
+ * Done-flip guard decides instead.
+ */
+function persistSuccessfulTurn(repoDir, preWorkerHead) {
+  const sessionRoot = makeTmp();
+  const ticketFile = path.join(sessionRoot, TICKET_ID, `rick_ticket_${TICKET_ID}.md`);
+  fs.mkdirSync(path.dirname(ticketFile));
+  fs.writeFileSync(ticketFile, `---\nid: ${TICKET_ID}\nstatus: "In Progress"\norder: 1\n---\n# ${TICKET_ID}\n`);
+  const completionCommitSha = reconcileWorkerCommitAttribution(repoDir, TICKET_ID, preWorkerHead, null, {});
+  persistWorkerOutcomeStatus({
+    ticketId: TICKET_ID, sessionRoot, sessionWorkingDir: repoDir, isSuccess: true, flipSuppressed: false, completionCommitSha,
+  });
+  const body = fs.readFileSync(ticketFile, 'utf-8');
+  const field = (key) => body.match(new RegExp(`^${key}:\\s*"?([^"\\n]+)"?$`, 'm'))?.[1].trim();
+  return { status: field('status'), completionCommit: field('completion_commit') };
+}
+
+test('a successful turn with no commit in its window is not stamped Done and writes no completion_commit', () => {
+  const { repoDir, baseSha } = initRepo();
+
+  const out = persistSuccessfulTurn(repoDir, baseSha);
+
+  assert.equal(out.status, 'In Progress');
+  assert.equal(out.completionCommit, undefined, 'current HEAD is not completion evidence');
+});
+
+test('control: a successful turn with an attributable window commit is stamped Done with that sha', () => {
+  const { repoDir, baseSha } = initRepo();
+  commitFile(repoDir, 'work.txt', 'work\n', 'worker change');
+
+  const out = persistSuccessfulTurn(repoDir, baseSha);
+
+  assert.equal(out.status, 'Done');
+  assert.equal(out.completionCommit, git(repoDir, ['rev-parse', 'HEAD']));
+  assert.notEqual(out.completionCommit, baseSha);
+  assert.match(out.completionCommit, FULL_SHA_RE);
 });
 
 test('no declared-file match falls back to the newest in-window commit', () => {

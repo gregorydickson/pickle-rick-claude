@@ -2898,6 +2898,8 @@ function resolveFinalCompletionCommitSha(
  * suppressed gate-fail preserves the existing status — no Failed flip.
  * R-WDTF-TO WS-1: the Failed path never nulls `completion_commit` — a
  * verified window sha is stamped, otherwise the field is left UNTOUCHED.
+ * A success with no attributable sha writes nothing: current HEAD is not
+ * completion evidence, so the manager's Done-flip guard decides instead.
  */
 export function persistWorkerOutcomeStatus(input: {
   ticketId: string;
@@ -2909,7 +2911,9 @@ export function persistWorkerOutcomeStatus(input: {
 }): void {
   try {
     if (input.isSuccess) {
-      updateTicketFrontmatter(input.ticketId, input.sessionRoot, { status: 'Done', completion_commit: input.completionCommitSha ?? getHeadSha(input.sessionWorkingDir) });
+      if (input.completionCommitSha) {
+        updateTicketFrontmatter(input.ticketId, input.sessionRoot, { status: 'Done', completion_commit: input.completionCommitSha });
+      }
     } else if (!input.flipSuppressed) {
       updateTicketFrontmatter(
         input.ticketId,
