@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.1` on `main` (the only line). No tag pending |
-| RUNNING | **nothing; babysitter RE-ARMED 2026-10-08** (operator: "reset babysitter"; cron `11 */2 * * *` (every 2h, operator 2026-10-08), session-only, expires 2026-10-15). **#83–#88 TRIAGED 2026-10-08 → QUEUE item 11 (B-FIELD-88); R6 + R8 decided; PRD `prds/p1-b-field-88.md` authored.** No field-run session yet (newest session `2026-10-06-8bb73a5e`, this repo). Swarm research next gaps: 3, 6 (both need field data) |
+| RUNNING | **B-FIELD-88 BUILT (session `2026-10-08-59c0d821`, 4/4 phases, 21/21 tickets, 44 commits to `a0d6ccc2`), NOT SHIPPED: release gate run 3 = 20/22 `LEG_RC 0`, red `audit-ledger-probes` + `test_integration`, ONE cause (fixtures modelling a small-tier Done flip with no lifecycle artifacts, newly parked by B-FIELD-88 T5a — measured, not a regression). Folded into B-FIELD-95 as T0; both bundles ship together after ONE green gate. Local commits are unpushed until then.** Next: B-FIELD-95 (#89–#98), QUEUE item 12. Babysitter: re-armed after launch |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #77–#82.** Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
@@ -397,6 +397,15 @@ NO measured basis. Large PRDs are not constrained by the cap.
    counter-example generation — a spawn per AC ("precision that costs a spawn"). #81's citadel-after-anatomy-park reorder —
    a phase-order change against the 2026-09-16 "review phases stay simple" constraint; **operator decision** if wanted.
    #77's tarball lockfile pinning — the deploy-tree lockfile exclusion is intentional (`install.sh:417-419`); record only.
+
+12. **NEXT — B-FIELD-95: field issues #89–#98 + the B-FIELD-88 gate reds (T0). PRD `prds/p1-b-field-95.md`, 12 tickets
+    (T0–T11), ACs measured at HEAD `3bc1fbdf`.** #96 was already built on branch `fix/codex-companion-resolver`; operator
+    decision 2026-10-10: cherry-pick into this bundle (`3bc1fbdf`), scope base `a0d6ccc2` so it is reviewed; delete the
+    branch after ship. Reliability tier first: #94 (rate-limit park killed as a hang), #91 (cancel advances phases),
+    #93 (breaker survives relaunch), #97 T8 (correct no-op audit trips the breaker). Rejected/recorded in the PRD:
+    environmental-error enumeration (#93), log-token success test (#92 — 81% of worker logs are empty),
+    `isPathShaped` extension widening (#89), trailer deny-list hook (#90), expectation-diff guard (#95),
+    worker→report question channel (#97, deferred). Gate legs 22 → 22.
 
 10. **STANDING IDLE WORK — agent-swarm research (operator, 2026-10-07: "when there is nothing to do, we should keep
     doing our agent swarm research").** Whenever nothing runs and items 1–9 are drained, the babysitter (rule E) runs
