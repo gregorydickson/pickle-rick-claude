@@ -4684,6 +4684,7 @@ echo '{"name":"probe","scripts":{"test:fast":"true"}}' > "$D/package.json"
 git -C "$D" add -A
 git -C "$D" commit -q -m init
 printf -- '---\nid: abcd1234\nstatus: "In Progress"\ncomplexity_tier: small\n---\n## Acceptance Criteria\n- AC-1: grep -c FIRSTCOLONY src/gate.ts returns 0\n' > "$S/abcd1234/rick_ticket_abcd1234.md"
+printf '# plan\n' > "$S/abcd1234/plan_2026-07-16.md"; printf '# review\n' > "$S/abcd1234/code_review_2026-07-16.md"
 echo 'salvaged handoff note, no impl' > "$D/notes.md"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 env -i HOME="$HOME" PATH="$PATH" node -e "

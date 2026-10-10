@@ -99,6 +99,10 @@ function makeSession(workingDir, startCommit) {
       '',
     ].join('\n'),
   );
+  // tier artifacts a small ticket needs before the completion guard lets it flip Done
+  for (const prefix of ['plan', 'code_review']) {
+    fs.writeFileSync(path.join(ticketDir, `${prefix}_2026-10-10.md`), `# ${prefix}\n`);
+  }
   const statePath = path.join(sessionDir, 'state.json');
   fs.writeFileSync(
     statePath,
