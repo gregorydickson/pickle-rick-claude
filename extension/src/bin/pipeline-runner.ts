@@ -43,6 +43,7 @@ import {
   loadPickleSettingsBag,
   resolveScopeSettings,
   markTicketWithStatus as writeTicketStatus,
+  RATE_LIMIT_PROBE_LOG_FILENAME,
   type DiffVisualStat,
 } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
@@ -1719,7 +1720,7 @@ function resolveChildMuxLivenessMtime(
       // best-effort: a racing log rotation must not crash the heartbeat
     }
   }
-  for (const name of ['rate_limit_probe.log', 'rate_limit_wait.json']) {
+  for (const name of [RATE_LIMIT_PROBE_LOG_FILENAME, 'rate_limit_wait.json']) {
     try {
       const s = statSyncFn(path.join(sessionDir, name));
       if (s.mtimeMs <= nowMs && s.mtimeMs > maxLogMtimeMs) maxLogMtimeMs = s.mtimeMs;

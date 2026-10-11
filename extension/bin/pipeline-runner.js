@@ -20,7 +20,7 @@ import { execFileSync, spawn, spawnSync } from 'child_process';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
-import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, readFrontmatterField, upsertFrontmatterField, ticketFilePath, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, } from '../services/pickle-utils.js';
+import { getExtensionRoot, Style, formatTime, printMinimalPanel, safeErrorMessage, ensureMonitorWindow, displayMacNotification, writeStateFile, isoCompactStamp, collectTickets, readFrontmatterField, upsertFrontmatterField, ticketFilePath, respawnMonitorWindowForMode, classifyDiffVisualDominance, VISUAL_DOMINANCE_THRESHOLD, loadPickleSettingsBag, resolveScopeSettings, markTicketWithStatus as writeTicketStatus, RATE_LIMIT_PROBE_LOG_FILENAME, } from '../services/pickle-utils.js';
 import { createResolverCache, detectSignatureCallerGaps, SCOPE_AUTO_EXTEND_MAX } from '../services/signature-caller-gap.js';
 // B-NONSTOP WS-2 (AC-NS-6): reuse the T3 disposition map to classify a non-pickle
 // phase's `state.exit_reason` (no re-mapping — single source of truth in microverse-runner).
@@ -1369,7 +1369,7 @@ function resolveChildMuxLivenessMtime(sessionDir, statePath, statSyncFn, nowMs =
             // best-effort: a racing log rotation must not crash the heartbeat
         }
     }
-    for (const name of ['rate_limit_probe.log', 'rate_limit_wait.json']) {
+    for (const name of [RATE_LIMIT_PROBE_LOG_FILENAME, 'rate_limit_wait.json']) {
         try {
             const s = statSyncFn(path.join(sessionDir, name));
             if (s.mtimeMs <= nowMs && s.mtimeMs > maxLogMtimeMs)
