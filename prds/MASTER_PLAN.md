@@ -413,12 +413,19 @@ NO measured basis. Large PRDs are not constrained by the cap.
     --scope-base ee967302` (the commit before B-FIELD-88's first ticket), phases `["citadel","anatomy-park","szechuan-sauce"]`.
     Then gate, push, deploy as usual. Cut the `v2.2.2` tag only on operator approval.
 
-14. **NEXT — B-CI-HERMETIC-HOME (`prds/p1-b-ci-hermetic-home.md`).** CI `test` red on every push since `1aa65d0c`:
+14. **✅ BUILT + GATED 2026-10-11 (session `2026-10-11-d4f47d7d`, 4/4, commits `390221d3` `f2c590f4`; gate 22/22, soak 1804.7s; deployed, 0 differing; CI on `f2c590f4` pending) — B-CI-HERMETIC-HOME (`prds/p1-b-ci-hermetic-home.md`).** CI `test` red on every push since `1aa65d0c`:
     6 fast-tier tests (`spawn-morty-tier-phases`, `pipeline-runner-units` lifecycle chain) read the operator's deployed
     `~/.claude/commands/send-to-morty.md`; absent on a clean runner → fallback prompt → reds. Local gate green only
     because the box has the deployed copy. `v2.2.2` (`d3decf60`) was cut 2026-10-11 without reading CI status first —
     operational miss: **read `gh run list --workflow CI` for the gated sha before any tag**. Shipped runtime unaffected
     (install deploys the template). Tests-only, 2 tickets, `--no-refine`, scope base `d3decf60`. Gate legs 22 → 22.
+
+15. **NEXT — B-FIELD-103 (`prds/p1-b-field-103.md`): #99–#103 (+ #66 verdict half).** Refine, then pipeline; scope base
+    `f2c590f4`. WS-1 #103 qualified/unrun verdict is not a pass (widen `conformanceVerdictIsFail`, delete the
+    test-red `hasManagerHandoff` carve-out); WS-2 #100 stamp the pickle build version + source sha per session, disclose
+    and withhold success when behind (launch REFUSAL rejected: launch-block); WS-3 #101 + #102 input-domain table + domain
+    mutants, degenerate-row Open Decisions; WS-4 #99 rendered-STRUCTURE review, no images (operator 2026-10-11: "ok, 3";
+    screenshot capture deferred as a separate design item). Gate legs 22 → 22.
 
 10. **STANDING IDLE WORK — agent-swarm research (operator, 2026-10-07: "when there is nothing to do, we should keep
     doing our agent swarm research").** Whenever nothing runs and items 1–9 are drained, the babysitter (rule E) runs
