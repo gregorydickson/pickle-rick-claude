@@ -13,6 +13,7 @@ import {
   persistWorkerOutcomeStatus,
 } from '../bin/spawn-morty.js';
 import { TIER_LIFECYCLE } from '../services/pickle-utils.js';
+import { describeEach } from './helpers/describe-each.js';
 
 const TRIVIAL_PHASES = ['implement', 'code_review'];
 const SMALL_PHASES = ['plan', 'implement', 'code_review'];
@@ -210,6 +211,29 @@ test('the verifier agent carries the same exception-list and guard-mutant rules 
   assert.match(verifier, /test FILES \(never a whole tier\)/);
   assert.match(verifier, /git diff --quiet -- <path>/);
   assert.match(verifier, /Never undo a mutant with git (?:check)out or git restore/);
+});
+
+const MUTANT_SURFACES = [
+  ['rendered step 6', () => lifecycleSection(buildTierLifecycleSections(MEDIUM_PHASES, 'medium'), 'Spec Conformance')],
+  ['verifier agent', () => fs.readFileSync(
+    path.resolve(import.meta.dirname, '../../.claude/agents/morty-phase-verifier.md'), 'utf-8')],
+];
+const MUTANT_TERMS = [/domain mutant/, /equivalent: /, /pass styling/, /guard -> domain -> presentation/];
+
+describeEach(MUTANT_SURFACES)('domain and presentation mutants under one cap: %s', (_name, read) => {
+  for (const term of MUTANT_TERMS) {
+    test(`carries ${term}`, () => assert.match(read(), term));
+  }
+  test('states the cap exactly once', () => {
+    assert.equal(read().match(/at most 5/g)?.length, 1);
+  });
+});
+
+test('the verifier agent carries the rendered-structure checklist (a)-(d)', () => {
+  const verifier = MUTANT_SURFACES[1][1]();
+  for (const marker of ['(a) no pass styling', '(b) one value -> one label', '(c) no empty container', '(d) every count/summary']) {
+    assert.ok(verifier.includes(marker), `missing checklist item: ${marker}`);
+  }
 });
 
 // ── Lifecycle re-run of committed work ────────────────────────────────────────

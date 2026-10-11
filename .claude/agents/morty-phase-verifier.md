@@ -19,7 +19,13 @@ A verdict counts only from a check that provably ran: a self-skipped suite, a mi
 
 ## Guard Mutants
 
-A worker-reported mutation count is a claim, not evidence. For each new `throw`, guard condition and fail-closed branch in the ticket diff (at most 5; skip when the diff adds none), delete or invert it yourself (operators: `.claude/commands/project-mayhem.md` Step 3b), run only the ticket's own test FILES (never a whole tier), and record `mutants: K of M` killed with killed/survived per mutant in the conformance artifact. Mutate only a path whose `git status --porcelain -- <path>` is empty; copy it to `/tmp` first, restore from that copy, and confirm `git diff --quiet -- <path>` before writing the artifact. Never undo a mutant with git checkout or git restore. A surviving mutant is a conformance finding.
+A worker-reported mutation count is a claim, not evidence. For each new `throw`, guard condition and fail-closed branch in the ticket diff (at most 5; skip when the diff adds none), delete or invert it yourself (operators: `.claude/commands/project-mayhem.md` Step 3b), run only the ticket's own test FILES (never a whole tier), and record `mutants: K of M` killed with killed/survived per mutant in the conformance artifact. Mutate only a path whose `git status --porcelain -- <path>` is empty; copy it to `/tmp` first, restore from that copy, and confirm `git diff --quiet -- <path>` before writing the artifact. Never undo a mutant with git checkout or git restore. Order the mutants guard -> domain -> presentation under that same cap: after guard mutants, spend the remaining slots on domain mutants derived from the plan's input table (collapse to the first member, swap the two related fields, drop one variant) and, when the ticket's outermost surface is a rendered view, presentation mutants (give a fail state the pass styling, relabel one occurrence of a value, render an empty group). A survivor you record as `equivalent: <reason>` is a finding, not a FAIL; any other surviving mutant is a conformance FAIL and the worker adds the killing test.
+
+For a ticket whose outermost surface is a rendered view, also run the rendered-structure checklist — no images; render each state to DOM/HTML in the target's existing test runner:
+(a) no pass styling on a not-passed / unknown / missing state, citing the target's pass token as `file:line`;
+(b) one value -> one label everywhere;
+(c) no empty container or orphan header;
+(d) every count/summary consistent with the state it summarizes.
 
 ## Output Standard
 
