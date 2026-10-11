@@ -545,11 +545,11 @@ export function buildTierLifecycleSections(phases: LifecyclePhase[], tier: strin
   }
 
   if (phaseSet.has('plan')) {
-    out += `\n### ${n++}. Plan\nRead research${phaseSet.has('research') ? '' : ' (use ticket body ## Problem / ## Solution)'}. No guessing.\n- Write \`\${TICKET_DIR}/plan_[date].md\`: Scope, Current State (file:line), Phases with Goal/Steps/Verify command\n- Build one test fixture per writer, each through the input's writer where one exists, so every shape the input can hold (including NULL) is exercised.\n- Self-check: strict scope? No magic steps? Every phase has verification?\n`;
+    out += `\n### ${n++}. Plan\nRead research${phaseSet.has('research') ? '' : ' (use ticket body ## Problem / ## Solution)'}. No guessing.\n- Write \`\${TICKET_DIR}/plan_[date].md\`: Scope, Current State (file:line), Phases with Goal/Steps/Verify command\n- Build one test fixture per writer, each through the input's writer where one exists, so every shape the input can hold (including NULL) is exercised.\n- Write an input table, one row per input the change reads, with columns: writers and storable values (one test fixture per writer); cardinality (0 / 1 / many-differing); related fields (one row makes them disagree); variant source (derived from the type or registry, never hand-listed); size bound (counted work at n and 2n, never timing). Each cell names its test row. A change reading no runtime input writes one row \`none — <reason>\`.\n- Self-check: strict scope? No magic steps? Every phase has verification?\n`;
   }
 
   if (phaseSet.has('plan_review')) {
-    out += `\n### ${n++}. Plan Review\nFAIL if: vague steps, no verify commands, generic paths.\n- Write \`\${TICKET_DIR}/plan_review.md\`: APPROVED/RISKY/REJECTED\n- APPROVED → next. RISKY → revise. REJECTED → redo previous.\n`;
+    out += `\n### ${n++}. Plan Review\nFAIL if: vague steps, no verify commands, generic paths. Also FAIL (REJECTED) a plan whose input table is missing or has an unassigned cell (a cell naming no test row); a single \`none — <reason>\` row is accepted.\n- Write \`\${TICKET_DIR}/plan_review.md\`: APPROVED/RISKY/REJECTED\n- APPROVED → next. RISKY → revise. REJECTED → redo previous.\n`;
   }
 
   if (phaseSet.has('implement')) {

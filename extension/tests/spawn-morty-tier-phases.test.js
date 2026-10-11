@@ -170,6 +170,18 @@ test('plan block builds fixtures through the input writer', () => {
   assert.match(plan, /one test fixture per writer/, 'small Plan step must build a fixture for each writer, not one');
 });
 
+test('Plan renders the input table and Plan Review refuses a plan without one', () => {
+  const text = buildTierLifecycleSections(MEDIUM_PHASES, 'medium');
+  const plan = lifecycleSection(text, 'Plan');
+  for (const col of [/writers and storable values/, /cardinality/, /related fields/, /variant source/, /size bound/]) {
+    assert.match(plan, col);
+  }
+  assert.match(plan, /none — <reason>/);
+  const review = lifecycleSection(text, 'Plan Review');
+  assert.match(review, /input table is missing or has an unassigned cell/);
+  assert.match(review, /none — <reason>/);
+});
+
 test('Implement and Code Review sections warn against growing guard exception lists', () => {
   const text = buildTierLifecycleSections(MEDIUM_PHASES, 'medium');
   const implement = lifecycleSection(text, 'Implement');
