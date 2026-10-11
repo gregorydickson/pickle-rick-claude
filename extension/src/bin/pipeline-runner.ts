@@ -123,7 +123,7 @@ import { isProcessAlive } from '../lib/process-liveness.js';
 // (an already-permitted completion-evidence oracle caller). pipeline-runner MUST NOT
 // import the oracle module directly — that becomes a 3rd caller and fails
 // audit-trap-door-enforcement.sh R-AFCC-CALLER-ENUMERATION.
-import { completionDirLadder, isTicketOracleCommitted, isPerTicketVerdictReason } from './mux-runner.js';
+import { completionDirLadder, isTicketOracleCommitted, isPerTicketVerdictReason, readLatestTicketConformanceSnapshot } from './mux-runner.js';
 import { loadFinalizeGateSettings, resolveFinalizeSettingsRoot } from './finalize-gate.js';
 import type { GateResult } from '../types/index.js';
 import { runGate, getWorkspacePackages } from '../services/convergence-gate.js';
@@ -7314,17 +7314,22 @@ function ticketHasMeasuredRedTestFailure(runtime: PipelineRuntime, ticketId: str
 function collectDoneTicketsWithRedTestVerdict(runtime: PipelineRuntime): {
   measured: { id: string; title: string }[];
   unmeasured: { id: string; title: string }[];
+  deferred: { id: string; title: string }[];
 } {
   const measured: { id: string; title: string }[] = [];
   const unmeasured: { id: string; title: string }[] = [];
+  const deferred: { id: string; title: string }[] = [];
   for (const t of collectTickets(runtime.sessionDir)) {
     if (!t.id || (t.status || '').toLowerCase() !== 'done') continue;
+    if (readLatestTicketConformanceSnapshot(path.join(runtime.sessionDir, t.id)).defersChecks) {
+      deferred.push({ id: t.id, title: t.title || '' });
+    }
     if (readTicketWorkerGateTestsVerdict(runtime.sessionDir, t.id) !== 'red') continue;
     const offender = { id: t.id, title: t.title || '' };
     if (ticketHasMeasuredRedTestFailure(runtime, t.id)) measured.push(offender);
     else unmeasured.push(offender);
   }
-  return { measured, unmeasured };
+  return { measured, unmeasured, deferred };
 }
 
 /**
@@ -7435,7 +7440,7 @@ function reportDoneOverRedTestVerdict(
   counters: PhaseCounters,
   log: (msg: string) => void,
 ): boolean {
-  const { measured, unmeasured } = collectDoneTicketsWithRedTestVerdict(runtime);
+  const { measured, unmeasured, deferred } = collectDoneTicketsWithRedTestVerdict(runtime);
   const names = (list: { id: string; title: string }[]): string =>
     list.map((o) => `${o.id}${o.title ? ` (${o.title})` : ''}`).join(', ');
   const ids = (list: { id: string }[]): string => list.map((o) => o.id).join(',');
@@ -7448,7 +7453,12 @@ function reportDoneOverRedTestVerdict(
     );
   }
 
-  if (measured.length === 0) return false;
+  if (deferred.length > 0) {
+    appendPhaseDisposition(counters, 'pickle', `done_with_deferred_checks:${ids(deferred)}`);
+    log(`Finalize: ${deferred.length} Done ticket(s) defer or qualify a conformance check — withholding success verdict: ${names(deferred)}`);
+  }
+
+  if (measured.length === 0) return deferred.length > 0;
   appendPhaseDisposition(counters, 'pickle', `done_over_red_worker_gate_tests:${ids(measured)}`);
   log(`Finalize: ${measured.length} ticket(s) Done over a red worker_gate_tests_verdict — withholding success verdict: ${names(measured)}`);
   return true;

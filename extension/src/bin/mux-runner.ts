@@ -5654,6 +5654,8 @@ interface TicketConformanceSnapshot {
   hasManagerHandoff: boolean;
   /** The LAST verdict in the file reads FAIL. No verdict, or any other token, is false. */
   verdictFail: boolean;
+  /** The artifact defers or qualifies a check (see `conformanceDefersChecks`). Reports only; parks nothing. */
+  defersChecks: boolean;
 }
 
 type CloserTerminalDecision =
@@ -6523,27 +6525,28 @@ export function hasSubstantiveManagerHandoff(content: string): boolean {
   return true;
 }
 
-function readLatestTicketConformanceSnapshot(ticketDir: string): TicketConformanceSnapshot {
+export function readLatestTicketConformanceSnapshot(ticketDir: string): TicketConformanceSnapshot {
   let entries: string[];
   try {
     entries = fs.readdirSync(ticketDir);
   } catch {
-    return { file: null, hasManagerHandoff: false, verdictFail: false };
+    return { file: null, hasManagerHandoff: false, verdictFail: false, defersChecks: false };
   }
   const latest = entries
     .filter(file => /^conformance_.*\.md$/.test(file))
     .sort()
     .at(-1);
-  if (!latest) return { file: null, hasManagerHandoff: false, verdictFail: false };
+  if (!latest) return { file: null, hasManagerHandoff: false, verdictFail: false, defersChecks: false };
   try {
     const content = fs.readFileSync(path.join(ticketDir, latest), 'utf-8');
     return {
       file: latest,
       hasManagerHandoff: hasSubstantiveManagerHandoff(content),
       verdictFail: conformanceVerdictIsFail(content),
+      defersChecks: conformanceDefersChecks(content),
     };
   } catch {
-    return { file: latest, hasManagerHandoff: false, verdictFail: false };
+    return { file: latest, hasManagerHandoff: false, verdictFail: false, defersChecks: false };
   }
 }
 
@@ -6564,6 +6567,23 @@ export function conformanceVerdictIsFail(content: string): boolean {
   const next = lines.slice(verdictAt + 1).find((line) => line.trim() !== '') ?? '';
   const token = /\b(ALL_PASS|FAIL)\b/.exec(`${lines[verdictAt]}\n${next}`);
   return token?.[1] === 'FAIL';
+}
+
+/**
+ * True when a conformance artifact defers or qualifies a check: a substantive `## Manager Handoff`, OR a
+ * last verdict line whose remainder (after heading marks, step number and markdown punctuation) names
+ * `ALL_PASS` but is not exactly `ALL_PASS` — a qualified verdict or the unfilled `ALL_PASS / FAIL` template.
+ * It parks nothing: `conformanceVerdictIsFail` alone decides refusal. It only withholds the run success verdict.
+ */
+export function conformanceDefersChecks(content: string): boolean {
+  if (hasSubstantiveManagerHandoff(content)) return true;
+  const lines = content.split('\n');
+  const verdictLine = lines.findLast((line) => /^[\s#>*\-\d.]*verdict\b/i.test(line));
+  if (verdictLine === undefined) return false;
+  const remainder = verdictLine
+    .replace(/^[\s#>*\-\d.]*verdict\b/i, '')
+    .replace(/^[\s*_:-]+|[\s*_.:]+$/g, '');
+  return remainder !== 'ALL_PASS' && remainder.includes('ALL_PASS');
 }
 
 function readCloserHandoffBudget(extensionRoot: string): number {

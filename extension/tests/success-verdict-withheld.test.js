@@ -564,3 +564,25 @@ describe('V1-4: the nonConvergent raise sites are enumerated', () => {
     );
   });
 });
+
+describe('deferred conformance checks withhold the success verdict', () => {
+  function writeDoneWithConformance(dir, id, conformance) {
+    writeTicket(dir, id, { status: 'Done', testsVerdict: 'green' });
+    fs.writeFileSync(path.join(dir, id, 'conformance_2026-10-11.md'), conformance);
+    writeState(path.join(dir, 'state.json'));
+  }
+
+  test('bare verdict + substantive Manager Handoff withholds and is named; handoff none does not', () => {
+    const deferredDir = tmpDir();
+    writeDoneWithConformance(deferredDir, 'aaaa1111', '## Verdict: ALL_PASS\n\n## Manager Handoff\n- Axis X was not run; run it.\n');
+    const { verdict, counters } = finalize(deferredDir);
+    assert.equal(verdict.unsuccessful, true);
+    assert.match(counters.phaseDispositions.pickle, /done_with_deferred_checks:aaaa1111/);
+
+    const controlDir = tmpDir();
+    writeDoneWithConformance(controlDir, 'bbbb2222', '## Verdict: ALL_PASS\n\n## Manager Handoff\nnone\n');
+    const control = finalize(controlDir);
+    assert.equal(control.verdict.unsuccessful, false);
+    assert.equal(control.counters.phaseDispositions.pickle, undefined);
+  });
+});

@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
-import { conformanceVerdictIsFail, runIteration } from '../../bin/mux-runner.js';
+import { conformanceDefersChecks, conformanceVerdictIsFail, runIteration } from '../../bin/mux-runner.js';
 import { __setCitadelRemediationDepsForTests, executeCitadelPhase, installShutdownHandlers, resolveBackendWithSource } from '../../bin/pipeline-runner.js';
 import { buildWorkerInvocation } from '../../services/backend-spawn.js';
 import { StateManager } from '../../services/state-manager.js';
@@ -253,6 +253,8 @@ test('AP-BIN-ITER257-01: a verdict separated from its heading by blank lines is 
     assert.equal(conformanceVerdictIsFail('# Conformance\n\n## 6. Verdict\n\n**ALL_PASS**\n'), false);
     assert.equal(conformanceVerdictIsFail('6. **Verdict**: ALL_PASS / FAIL (failures with file:line refs)\n'), false);
     assert.equal(conformanceVerdictIsFail('## Verdict\n\nSee notes.\n\nFAIL\n'), false);
+    // The template line parks nothing but does defer: the separate predicate reads it as true.
+    assert.equal(conformanceDefersChecks('6. **Verdict**: ALL_PASS / FAIL (failures with file:line refs)\n'), true);
 });
 // F75-BACKEND-4: a phase_backends override stamps state.backend for its phase and restores it in
 // runPhaseIteration's finally, which process.exit skips. A SIGHUP/SIGTERM/SIGINT mid-phase left the

@@ -7819,3 +7819,23 @@ test('F75-RLFAR-: a rejected seven_day limit 5 days out parks the full 5 days; a
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 });
+
+import { conformanceDefersChecks } from '../bin/mux-runner.js';
+
+test('conformanceDefersChecks: shape table over every verdict/handoff combination', () => {
+  const handoff = '\n## Manager Handoff\n- Run the unrun axis and record the result.\n';
+  const noHandoff = '\n## Manager Handoff\nnone\n';
+  const rows = [
+    ['bare verdict + substantive handoff', `## Verdict: ALL_PASS\n${handoff}`, true],
+    ['qualified verdict + handoff', `## Verdict: ALL_PASS (worker-owned criteria); rest deferred\n${handoff}`, true],
+    ['qualified verdict, no handoff', `## Verdict: ALL_PASS (worker-owned criteria); rest deferred\n${noHandoff}`, true],
+    ['unfilled template line', '7. **Verdict**: ALL_PASS / FAIL (failures with file:line refs)\n', true],
+    ['handoff none + bare verdict', `## Verdict: ALL_PASS\n${noHandoff}`, false],
+    ['heading verdict then bare ALL_PASS', '## Verdict\nALL_PASS\n', false],
+    ['heading verdict then FAIL', '## Verdict\nFAIL\n', false],
+    ['no verdict line', 'prose only, no token\n', false],
+  ];
+  for (const [name, content, expected] of rows) {
+    assert.equal(conformanceDefersChecks(content), expected, name);
+  }
+});
