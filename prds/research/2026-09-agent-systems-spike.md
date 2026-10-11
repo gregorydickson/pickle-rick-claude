@@ -19,7 +19,7 @@ Date: 2026-09-24 · Informs: #43 (`--teams`, review partitioning), #5 (knowledge
 
 | System (source date) | Decomposition & assignment | Parallelism & conflicts | State & resume | Verification | Failure behaviour | Published measurement |
 |---|---|---|---|---|---|---|
-| **Claude Code agent teams** (docs, 2026-09) | Shared task list; self-claim via **file locks** | Parallel sessions; same-file edits overwrite | `~/.claude/tasks/`; **not restored on `/resume`**; **no team tools in `-p`** [M, this repo] | Task hooks | Lead "may stop early" | None. Recommends 3–5 [C] |
+| **Claude Code agent teams** (docs, 2026-09) | Shared task list; self-claim via **file locks** | Parallel sessions; same-file edits overwrite | `~/.claude/tasks/`; **teammates (not tasks) lost on `/resume`**; **no team tools in `-p`** [M, this repo] | Task hooks | Lead "may stop early" | None. Recommends 3–5 [C] |
 | **Anthropic C compiler** (2026-02-05) | `claude -p` loop per container | 16 agents, own clones; **lock-file git conflicts stop double-claims** | Git + lock files | Tests, GCC oracle; "verifier must be nearly perfect" | **Collapsed** on a monolithic task until re-split | ~2,000 sessions, ~$20k; builds Linux 6.9 [Mv] |
 | **Anthropic long-running harness** (2025-11-26) | Feature list (200+); **one feature per session** | Single writer | Git + progress file + feature JSON | Browser tests | Premature victory | Qualitative [D] |
 | **Anthropic harness design** (2026-03-24) | Planner → generator → **separate evaluator** | Single writer | Files/specs | Skeptical evaluator beats self-evaluation | Sprints **removed** later | Solo 20 min/$9 broken; harness 6 h/$200 working (n=1) [Mv] |
@@ -157,7 +157,7 @@ Every cross-CLI orchestrator found uses only processes, files, git [D].
 - **Separate reviewers work** (Anthropic, Cognition, MAST) [Mv/M]; ours review one accumulated diff serially.
 - **Supported cuts:** smaller concurrent units at small N; per-unit stop conditions (MAST); for recall, aggregated passes, not lanes (Gap 4).
 
-**Does each worker phase earn its time? Review phases are nearly free** [M, this repo, 2026-09-26]. 65 tickets, 10 sessions (09-19 → 09-25). Phase = gap between consecutive artifact *births* from the first `worker_session_*.log`; respawn-spanning intervals dropped (12 tickets). "Changed" = review artifacts read by hand, plus post-review edits.
+**Does each worker phase earn its time? Review phases are nearly free** [M, this repo, 2026-09-26]. 65 tickets, 10 sessions (09-19 → 09-25). Phase = gap between consecutive artifact *births* from the first `worker_session_*.log`; respawn-spanning intervals dropped (12 tickets); "changed" read by hand.
 
 | Phase | n | Median | Changed |
 |---|---|---|---|
@@ -170,11 +170,9 @@ Every cross-CLI orchestrator found uses only processes, files, git [D].
 | Simplify | 38 | 0 s | 11/38 changed (+4 unclear); 27 no artifact |
 | Whole worker spawn(s) | 65 | 6.7 min | 95% inside intervals (53 single-spawn) |
 
-**Limits.** Write time is not thinking time (25–33/65 reviews landed ≤2 s after their subject); change counts are lower bounds.
+**Finding** (write time ≠ thinking time: 25–33/65 reviews landed ≤2 s after their subject). "~3 min per phase" fails: review/simplify cost <1 min of 6.7; Research plus Implement ~75%. Research/Plan Review: merge candidates (HYPOTHESIS). Conformance, Code Review, Simplify change 8%, 12%, ≥29% at near-zero cost.
 
-**Finding.** "~3 min per phase" fails: review/simplify cost <1 min of 6.7; Research and Implement/Conformance ~75%. Research/Plan Review (0/65, 1/65): merge candidates (HYPOTHESIS). Conformance, Code Review, Simplify change 8%, 12%, ≥29% at near-zero cost. On `2026-09-21-7ba3aec1` 17 worker spawns sum to 262 of the pickle phase's 524 min.
-
-**Where the rest of the pickle phase goes: test gates, not managers** [M, this repo, 2026-10-04; 15 sessions, 09-26 → 10-04]. Each pickle-phase second gets one label, by priority: worker (`worker_session_*.log` birth → mtime, or → `worker_produced_nothing` if empty) > worker gate (→ `worker_lint_gate_passed`/`worker_gate_failed`) > tail gate (prior `mux-runner.log` line → `between-ticket fast gate`) > gap (`wasted_iter` → `iteration_start`) > manager (rest of a mux window) > wave. Min/ticket:
+**Where the rest of the pickle phase goes: test gates, not managers** [M, this repo, 2026-10-04; 15 sessions, 09-26 → 10-04]. Each pickle-phase second gets one label, by priority: worker (`worker_session_*.log` birth → mtime) > worker gate (→ `worker_lint_gate_passed`/`worker_gate_failed`) > tail gate (→ `between-ticket fast gate`) > gap (`wasted_iter` → `iteration_start`) > manager (rest of a mux window) > wave. Min/ticket:
 
 | Session | Tickets L/M/S | Pickle | Worker | Worker gate | Tail gate | Manager | Gaps + wave |
 |---|---|---|---|---|---|---|---|
@@ -182,9 +180,10 @@ Every cross-CLI orchestrator found uses only processes, files, git [D].
 | 2868b847, serial | 0/9/10 | 8.3 | 2.4 | 3.7 | 0.8 | 1.3 | 0.0 |
 | 03d1f8d2, serial | 7/5/1 | 16.9 | 6.5 | 6.9 | 0.6 | 2.9 | 0.0 |
 
-- **Fixed costs.** Tail gate (between-ticket `test:fast` + post-final tier): 7.1–7.7 min per runner session, all 13 serial sessions; each wave unit is one (24 runs, median 7.6). Worker gate: median 7.4–7.9 min per medium/large ticket, ~0 for small (`test:fast` tier-skipped). Gaps ≤0.2 min per session; unit create/integrate 2.1 min over 22 waves.
-- **27.7 vs 8.3.** Of the 19.3 min/ticket gap: worker +7.9 (large median 19.3 min vs 7.3 elsewhere, n=5 / 9; three empty-log spawns, 17.8 min each; non-empty logs 184.9 min), tail gate +7.0 (one per unit), manager +2.3, worker gate +2.0 (non-small 78% vs 47%), create/integrate +0.1. **Tier mix plus per-unit tail gates; not manager or worktree time.** HYPOTHESIS: serial B-MEGA ≈ 20 min/ticket (636 − 181 + 7.5), near 03d1f8d2's 16.9.
-- **Falsified by** a wave run whose per-unit tail gate is not ≈7.5 min, or a serial bundle ≥75% non-small at ≤10 min/ticket. **Limits:** manager time is a residual; one wave run.
+- **Fixed costs.** Tail gate (`test:fast` + post-final tier): 7.1–7.7 min per runner session; one per wave unit (median 7.6). Worker gate: median 7.4–7.9 min per medium/large ticket, ~0 for small. Gaps and unit create/integrate: ≤2.1 min per run.
+- **27.7 vs 8.3.** Of the 19.3 min/ticket gap: worker +7.9 (large tickets; three empty-log spawns, 17.8 min each), tail gate +7.0 (one per unit), manager +2.3, worker gate +2.0: **tier mix plus per-unit tail gates, not manager or worktree time.** HYPOTHESIS: serial B-MEGA ≈ 20 min/ticket.
+- **Falsified by** a wave run whose per-unit tail gate is not ≈7.5 min, or a serial bundle ≥75% non-small at ≤10 min/ticket. **Limit:** one wave run (0 `--unit-` dirs since).
+- **Manager time, direct** [M, this repo, 2026-10-11; manager result lines' `duration_ms`/`duration_api_ms`; `field-timing.py`]. 4 serial sessions, 54 tickets: **76.0 of 990.3 pickle min (7.7%), 1.4 min/ticket** (0.9–3.1), 70% model time; workers 36%; 56% neither (gates: HYPOTHESIS). 0 subagents in 84 manager spawns. The residual (1.3–3.6) held.
 - **Lever.** A width-1 wave pays ~7.6 min of tail gate for nothing.
 
 ## 4. Experiments (measurement only)
@@ -249,7 +248,7 @@ Figures checked against primary text.
 - **Gap 3.** **(Narrowed 2026-10-04.)** The knee is 2–4 for *coupled writers* under deferred merge (CAID, CooperBench, Cursor; STORM contra, Gap 5); review lanes: Gap 7. Open: build-wave speed (needs disjoint files).
 - **Gap 4.** **(Narrowed 2026-10-07.) Review-unit size vs defect count.** Planted mutations saturate (E3, 14–19/20); real reverted defects floor (E3b, 0/12); literature favours aggregated passes over tools (§3) [M]. Open: no study fixes real-defect count while varying diff size or lanes; an aggregated, tool-using E3b rerun (arms a/b, equal passes) is unrun.
 - **Gap 5.** **(Re-checked 2026-10-07: none independently replicated.)** *Contradicted* [M]: MetaGPT +4.2 (E2EDev, unadapted GPT-4o: ~50% HumanEval, ~30% renamed the function). *Countered, not re-run:* the small-N knee (CooperBench, none above 2; CAID 8 < 4), by STORM (§3). *Direction only:* Kim et al. (−2.1% to −14.9%, SWE-bench Verified subsets) by Tran & Kiela, Jwalapuram et al. (reasoning, not code); VibeMemBench (11/12; targets kept only where injected history helped) by SWE Context Bench (filtered retrieval helps, unfiltered little or negative; earlier). *Single:* subtask memory (+4.7); DreamBench-SWE (recall-*requiring*: Mem0 97/180 vs none 21/180); Claim Plane (own pilot); MAST (AdaMAST: same group); Destefanis & Aste (synthetic): split spec 10/10 at 2–8 agents, eight-step chain 0/10 at 8: decline tracks coupling; Sun et al. (confounded; Chowdhury: 12/13 review agents' signal ratio <60%; Cynthia: 54.8–72.9% *marked* resolved).
-- **Gap 6.** **(Narrowed 2026-10-04.)** Measured (§3): declared lists, phase cost, test gates. Open: manager time; a wave run at width >1; `-p` teams under `/resume`.
+- **Gap 6.** **(Narrowed 2026-10-11.)** Measured (§3): declared lists, phase cost, gates, manager time (7.7%). *Closed:* `-p` teams under `/resume`: `--teams` deleted (B-LANES); docs (2026-10-11): `-p` spawns no teammates, `/resume` restores none [D]; 103 runner `-p` inits (2.1.288–295) lack `TeamCreate` [M, this repo]. Open: a width >1 wave (Gap 3).
 - **Gap 7.** **(Narrowed 2026-10-07.) Cherry-pick integration cost.** 0 conflicts, 0/21 dropped (§3). Open: small n (bounds 13% / 28%; contested picks stuck at 9), one repo, N=2.
 - **Gap 8.** **(Narrowed 2026-10-07.) Harness-agnostic multi-writer coordination.** Answered by design (§3) [D]; only cost data synthetic (grite) [M]. Open: attribution accuracy and lease overhead with real LLM writers at N>2; squash.
 
@@ -260,3 +259,4 @@ Figures checked against primary text.
 - 2026-10-02 — Gap 7 first lane census; Xu et al.
 - 2026-10-04 — Gaps 3, 6, 7 refreshed; Gap 1 closed; Gap 5 re-checked.
 - 2026-10-07 — Gaps 4, 8 narrowed; Gap 7 re-censused (attribution survives cherry-pick); Gap 5 re-checked (MetaGPT contradicted; STORM counters the small-N knee; none replicated).
+- 2026-10-11 — Gap 6 narrowed: manager time measured (7.7%); `-p` teams closed.
