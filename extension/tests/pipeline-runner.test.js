@@ -57,7 +57,9 @@ import {
   discloseUnmeasuredIntegration,
   unreproducibleNodeModulesGap,
   buildRunEndBuildFields,
+  buildPipelineCompletePanel,
 } from '../bin/pipeline-runner.js';
+import { resolvePickleBuildForSetup, resolveBuildCheckForSetup } from '../bin/setup.js';
 import { createLaneWorktree, integrateLanes, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount, findNodeModulesDirs, replicateLaneNodeModules } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths, markTicketFailed } from '../services/git-utils.js';
 import { runMainLoopRateLimitPark } from '../bin/mux-runner.js';
@@ -8209,5 +8211,66 @@ describe('run-end build disclosure is record-only', () => {
     assert.equal(fields.pickle_build, 'unknown');
     assert.equal(fields.build_check, 'unmeasured (no_source_sha)');
     assert.equal(buildRunEndBuildFields(undefined, undefined, undefined).build_check, 'unmeasured (not recorded)');
+  });
+});
+
+describe('B-FIELD-103 chains end to end', () => {
+  const writeDone = (dir, id, conformance) => {
+    fs.mkdirSync(path.join(dir, id), { recursive: true });
+    fs.writeFileSync(path.join(dir, id, `rick_ticket_${id}.md`), `---\nid: ${id}\ntitle: "t ${id}"\nstatus: Done\norder: 1\n---\n\n# t\n`);
+    fs.writeFileSync(path.join(dir, id, 'conformance_2026-10-11.md'), conformance);
+  };
+  const allRan = () => ({ completed: 4, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} });
+  const verdictFor = (dir) => {
+    const logs = [];
+    const runtime = { ...makeRuntime(dir), log: (m) => logs.push(m) };
+    writeStateFile(runtime.statePath, { step: 'completed', schema_version: 5 });
+    const counters = allRan();
+    const verdict = computePipelineVerdict(runtime, counters);
+    return { verdict, counters, logs };
+  };
+
+  test('deferring conformance artifact on a Done ticket withholds success, is named in the run-end summary; a clean artifact does not', () => {
+    const dir = tmpDir();
+    const controlDir = tmpDir();
+    try {
+      writeDone(dir, 'aaaa1111', '## Verdict: ALL_PASS\n\n## Manager Handoff\n- Axis X was not run; run it.\n');
+      const { verdict, counters, logs } = verdictFor(dir);
+      assert.deepEqual([verdict.pipelineFailed, verdict.unsuccessful], [false, true]);
+      assert.match(counters.phaseDispositions.pickle, /done_with_deferred_checks:aaaa1111/);
+      assert.ok(logs.some((l) => /withholding success verdict: aaaa1111/.test(l)), logs.join('\n'));
+      const panel = buildPipelineCompletePanel(counters, '4/4', 1000);
+      assert.match(panel.Dispositions, /pickle: done_with_deferred_checks:aaaa1111/);
+
+      writeDone(controlDir, 'bbbb2222', '## Verdict: ALL_PASS\n\n## Manager Handoff\nnone\n');
+      const control = verdictFor(controlDir);
+      assert.equal(control.verdict.unsuccessful, false);
+      assert.equal(buildPipelineCompletePanel(control.counters, '4/4', 1000).Dispositions, undefined);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(controlDir, { recursive: true, force: true });
+    }
+  });
+
+  test('BUILD_INFO.json -> pickle_build -> build_check -> run-end build lines, without touching the verdict', () => {
+    const root = tmpDir();
+    const sessionDir = tmpDir();
+    try {
+      const sha = 'a'.repeat(40);
+      fs.writeFileSync(path.join(root, 'BUILD_INFO.json'), JSON.stringify({ version: '2.2.2', source_sha: sha, dirty: false }));
+      const build = resolvePickleBuildForSetup(root);
+      assert.deepEqual(build, { version: '2.2.2', source_sha: sha, dirty: false });
+      const check = resolveBuildCheckForSetup(build, { latestTagSha: () => 'b'.repeat(40), isAncestor: () => false });
+      assert.equal(check.outcome, 'behind');
+      writeStateFile(path.join(sessionDir, 'state.json'), { step: 'completed', schema_version: 5, pickle_build: build, build_check: check });
+      const state = readJson(path.join(sessionDir, 'state.json'));
+      const fields = buildRunEndBuildFields(state.pickle_build, state.build_check, build);
+      assert.equal(fields.pickle_build, `2.2.2 @ ${'a'.repeat(8)}`);
+      assert.match(fields.build_check, /^behind \(installed aaaaaaaa, latest bbbbbbbb\)$/);
+      assert.equal(verdictFor(sessionDir).verdict.unsuccessful, false, 'a stale build never withholds success');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 });
