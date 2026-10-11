@@ -203,15 +203,31 @@ test('the verifier agent carries the same exception-list and guard-mutant rules 
 // ── Lifecycle re-run of committed work ────────────────────────────────────────
 
 const RERUN_SHA = 'abc1234def5678';
-const rerunPrompt = (frontmatterExtra) => buildWorkerPrompt({
-  ticket: {
-    task: 'task body', ticketId: 'rr01', ticketPath: '/tmp/rr01', sessionRoot: '/tmp/rr-session',
-    backend: 'claude', isReviewTicket: false,
-    ticketContent: `---\nid: rr01\nstatus: "Todo"\n${frontmatterExtra}---\n# body\n`,
-  },
-  model: 'm',
-  complexityTier: 'medium',
-});
+const SOURCE_TEMPLATE = path.resolve(import.meta.dirname, '../../.claude/commands/send-to-morty.md');
+// Hermetic HOME: the prompt builder reads ~/.claude/commands/send-to-morty.md, so seed a temp HOME
+// from the SOURCE template rather than measuring whatever the real HOME deployed (or lacks).
+const rerunPrompt = (frontmatterExtra) => {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-tier-home-'));
+  const cmdDir = path.join(tmpHome, '.claude', 'commands');
+  fs.mkdirSync(cmdDir, { recursive: true });
+  fs.copyFileSync(SOURCE_TEMPLATE, path.join(cmdDir, 'send-to-morty.md'));
+  const originalHome = process.env.HOME;
+  try {
+    process.env.HOME = tmpHome;
+    return buildWorkerPrompt({
+      ticket: {
+        task: 'task body', ticketId: 'rr01', ticketPath: '/tmp/rr01', sessionRoot: '/tmp/rr-session',
+        backend: 'claude', isReviewTicket: false,
+        ticketContent: `---\nid: rr01\nstatus: "Todo"\n${frontmatterExtra}---\n# body\n`,
+      },
+      model: 'm',
+      complexityTier: 'medium',
+    });
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  }
+};
 
 test('re-run of committed ticket skips Implement and names the sha', () => {
   const table = buildTierResumeTable(MEDIUM_PHASES.filter((phase) => !['implement', 'conformance', 'code_review', 'simplify'].includes(phase)));
