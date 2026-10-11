@@ -19,7 +19,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
-import type { Backend, State } from '../types/index.js';
+import type { Backend, PickleBuild, State } from '../types/index.js';
+import type { BuildCheck } from './check-update.js';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage, type GraduationCounts, type FinalizeOpts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
@@ -53,7 +54,7 @@ import { classifyMicroverseDisposition } from './microverse-runner.js';
 // WS-B (f8559470): consume WS-A's single test-dimension reader to detect a ticket
 // Done over a red worker_gate_tests_verdict. B-RELVERD V1 derives that withholding term
 // at finalize from the CURRENT verdicts (see computePipelineVerdict).
-import { readTicketWorkerGateTestsVerdict } from './setup.js';
+import { readTicketWorkerGateTestsVerdict, resolvePickleBuildForSetup } from './setup.js';
 // The per-ANALYST -> per-TICKET collapse has ONE home (spawn-refinement-team.ts). Every
 // cardinality question over `refinement_manifest.json:tickets` routes through it; see
 // `runBundlePreflight`.
@@ -6560,6 +6561,44 @@ export function computePipelineVerdict(runtime: PipelineRuntime, counters: Phase
   return { pipelineFailed, unsuccessful, handoffStop, effectiveFailed: unsuccessful && !handoffStop };
 }
 
+const buildLabel = (b: PickleBuild): string =>
+  `${b.version}${b.source_sha ? ` @ ${b.source_sha.slice(0, 8)}` : ''}${b.dirty === true ? ' (dirty)' : ''}`;
+
+/**
+ * Run-end disclosure of the build a run executed on: the launch stamp, whether that build trailed
+ * the latest release at launch, and whether the deployed build changed underneath the run.
+ * Record-only — nothing here reaches `computePipelineVerdict`, so a stale build never withholds
+ * success and never blocks a launch.
+ */
+export function buildRunEndBuildFields(
+  launch: PickleBuild | null | undefined,
+  check: BuildCheck | null | undefined,
+  current: PickleBuild | null | undefined,
+): Record<string, string> {
+  const fields: Record<string, string> = { pickle_build: launch ? buildLabel(launch) : 'unknown' };
+  if (check) {
+    const detail = check.outcome === 'unmeasured'
+      ? ` (${check.reason ?? 'no reason recorded'})`
+      : ` (installed ${(check.installed ?? '?').slice(0, 8)}, latest ${(check.latest ?? '?').slice(0, 8)})`;
+    fields.build_check = `${check.outcome}${detail}`;
+  } else {
+    fields.build_check = 'unmeasured (not recorded)';
+  }
+  if (launch && current && buildLabel(launch) !== buildLabel(current)) {
+    fields.build_changed_mid_run = `${buildLabel(launch)} -> ${buildLabel(current)}`;
+  }
+  return fields;
+}
+
+function readRunEndBuildFields(runtime: PipelineRuntime): Record<string, string> {
+  try {
+    const s = sm.read(runtime.statePath);
+    return buildRunEndBuildFields(s.pickle_build, s.build_check as BuildCheck | null | undefined, resolvePickleBuildForSetup());
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Stamp the run's terminal `exit_reason`.
  *
@@ -6662,7 +6701,7 @@ function finalizePipeline(
 
   const banner = buildPipelineTerminalBanner(effectiveFailed);
   const parkedCount = resolveParkedTicketCount(runtime);
-  printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount, runtime.workingDir), banner.color, '🧪');
+  printMinimalPanel(banner.title, { ...buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount, runtime.workingDir), ...readRunEndBuildFields(runtime) }, banner.color, '🧪');
 
   writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
 

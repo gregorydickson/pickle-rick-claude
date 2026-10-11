@@ -28,7 +28,7 @@ import { classifyMicroverseDisposition } from './microverse-runner.js';
 // WS-B (f8559470): consume WS-A's single test-dimension reader to detect a ticket
 // Done over a red worker_gate_tests_verdict. B-RELVERD V1 derives that withholding term
 // at finalize from the CURRENT verdicts (see computePipelineVerdict).
-import { readTicketWorkerGateTestsVerdict } from './setup.js';
+import { readTicketWorkerGateTestsVerdict, resolvePickleBuildForSetup } from './setup.js';
 // The per-ANALYST -> per-TICKET collapse has ONE home (spawn-refinement-team.ts). Every
 // cardinality question over `refinement_manifest.json:tickets` routes through it; see
 // `runBundlePreflight`.
@@ -5675,6 +5675,38 @@ export function computePipelineVerdict(runtime, counters) {
     const handoffStop = !!readHandoffExitReason(runtime.statePath);
     return { pipelineFailed, unsuccessful, handoffStop, effectiveFailed: unsuccessful && !handoffStop };
 }
+const buildLabel = (b) => `${b.version}${b.source_sha ? ` @ ${b.source_sha.slice(0, 8)}` : ''}${b.dirty === true ? ' (dirty)' : ''}`;
+/**
+ * Run-end disclosure of the build a run executed on: the launch stamp, whether that build trailed
+ * the latest release at launch, and whether the deployed build changed underneath the run.
+ * Record-only — nothing here reaches `computePipelineVerdict`, so a stale build never withholds
+ * success and never blocks a launch.
+ */
+export function buildRunEndBuildFields(launch, check, current) {
+    const fields = { pickle_build: launch ? buildLabel(launch) : 'unknown' };
+    if (check) {
+        const detail = check.outcome === 'unmeasured'
+            ? ` (${check.reason ?? 'no reason recorded'})`
+            : ` (installed ${(check.installed ?? '?').slice(0, 8)}, latest ${(check.latest ?? '?').slice(0, 8)})`;
+        fields.build_check = `${check.outcome}${detail}`;
+    }
+    else {
+        fields.build_check = 'unmeasured (not recorded)';
+    }
+    if (launch && current && buildLabel(launch) !== buildLabel(current)) {
+        fields.build_changed_mid_run = `${buildLabel(launch)} -> ${buildLabel(current)}`;
+    }
+    return fields;
+}
+function readRunEndBuildFields(runtime) {
+    try {
+        const s = sm.read(runtime.statePath);
+        return buildRunEndBuildFields(s.pickle_build, s.build_check, resolvePickleBuildForSetup());
+    }
+    catch {
+        return {};
+    }
+}
 /**
  * Stamp the run's terminal `exit_reason`.
  *
@@ -5757,7 +5789,7 @@ function finalizePipeline(runtime, counters, cancelMarker, startTime, phaseIncom
     const phasesSummary = formatPhasesSummary(counters, runtime.config.phases.length);
     const banner = buildPipelineTerminalBanner(effectiveFailed);
     const parkedCount = resolveParkedTicketCount(runtime);
-    printMinimalPanel(banner.title, buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount, runtime.workingDir), banner.color, '🧪');
+    printMinimalPanel(banner.title, { ...buildPipelineCompletePanel(counters, phasesSummary, totalElapsed, parkedCount, runtime.workingDir), ...readRunEndBuildFields(runtime) }, banner.color, '🧪');
     writeFinalPipelineActivity(runtime, totalElapsed, phasesSummary, effectiveFailed);
     // handoff stops skip closer-release; so does a degraded run (B-ONEABORT AC-OA-1c).
     maybeRunCloserRelease(runtime, unsuccessful || cancelled, handoffStop);

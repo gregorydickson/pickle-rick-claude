@@ -14,6 +14,7 @@ import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProce
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { emitOrphanReapSummary, reapOrphanedWorkerProcs } from '../services/orphan-reaper.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
+import { compareInstalledBuild, getLatestReleaseTagSha, isCommitAncestorOnRelease } from './check-update.js';
 import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
 const sm = new StateManager();
 const VALID_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
@@ -572,6 +573,37 @@ export function resolvePickleBuildForSetup(extensionRoot = getExtensionRoot()) {
     catch {
         return null;
     }
+}
+/**
+ * Records whether the installed build trails the latest release. Record-only and best-effort:
+ * every failure (no gh, no network, an unknown commit) lands as `unmeasured`, it never throws and
+ * it never installs anything. A build with no recorded source sha makes no network call at all.
+ */
+export function resolveBuildCheckForSetup(build, deps = {}) {
+    const sourceSha = build?.source_sha ?? null;
+    try {
+        return compareInstalledBuild({
+            sourceSha,
+            dirty: build?.dirty ?? null,
+            latestTagSha: sourceSha === null ? null : (deps.latestTagSha ?? getLatestReleaseTagSha)(),
+            isAncestor: deps.isAncestor ?? isCommitAncestorOnRelease,
+        });
+    }
+    catch {
+        return { outcome: 'unmeasured', installed: sourceSha, latest: null, reason: 'no_latest_tag' };
+    }
+}
+/**
+ * Stamps `state.build_check` on a freshly created session, AFTER the launch summary has printed
+ * so a slow or absent network never delays the handoff. Best-effort: a failure leaves the field
+ * `null` (hydrated on read), the same "could not measure" a missing stamp already means.
+ */
+export function recordBuildCheckAtSetup(sessionRoot, build) {
+    try {
+        const check = resolveBuildCheckForSetup(build);
+        sm.update(path.join(sessionRoot, 'state.json'), s => { s.build_check = check; });
+    }
+    catch { /* record-only: never blocks launch */ }
 }
 /**
  * Apply the per-backend iteration budget AFTER CLI parsing, so we know which
@@ -1462,6 +1494,7 @@ function applyGitProvenanceToState(state) {
 function createInitialState(config, sessionPath, taskStr) {
     const codexVersionSeen = resolveCodexVersionForSetup(config.backend);
     const claudeVersionSeen = resolveClaudeVersionForSetup();
+    const pickleBuild = resolvePickleBuildForSetup();
     const state = {
         active: !config.pausedMode && !config.tmuxMode,
         working_dir: process.cwd(),
@@ -1491,7 +1524,7 @@ function createInitialState(config, sessionPath, taskStr) {
         readiness: { cycle_history: [] },
         codex_version_seen: codexVersionSeen,
         claude_version_seen: claudeVersionSeen,
-        pickle_build: resolvePickleBuildForSetup(),
+        pickle_build: pickleBuild,
         orphans_detected: [],
         invocation_source: process.env.PICKLE_PARENT_SESSION_HASH ? 'manager_subprocess' : 'operator',
         parent_session_hash: process.env.PICKLE_PARENT_SESSION_HASH || null,
@@ -1880,6 +1913,8 @@ async function main() {
         await runCodegraphIndexAtSetup(process.cwd(), cgSettings, args.resumeMode);
     }
     catch { /* index is best-effort — never block launch */ }
+    if (!args.resumeMode)
+        recordBuildCheckAtSetup(session.sessionRoot, session.state.pickle_build ?? null);
 }
 function resolvePath(p) {
     if (p.startsWith('~'))

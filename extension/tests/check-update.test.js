@@ -26,7 +26,9 @@ import {
     extractAndInstall,
     performUpgrade,
     BlockedDowngradeError,
+    compareInstalledBuild,
 } from '../bin/check-update.js';
+import { resolveBuildCheckForSetup } from '../bin/setup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STOP_HOOK = path.resolve(__dirname, '../hooks/handlers/stop-hook.js');
@@ -1506,5 +1508,73 @@ describe('edge cases', () => {
             if (origDirTest === undefined) delete process.env.EXTENSION_DIR_TEST;
             else process.env.EXTENSION_DIR_TEST = origDirTest;
         }
+    });
+});
+
+describe('compareInstalledBuild', () => {
+    const SOURCE = 'a'.repeat(40);
+    const TAG = 'b'.repeat(40);
+    const rows = [
+        { name: 'tag is an ancestor of the source -> current', input: { sourceSha: SOURCE, latestTagSha: TAG, isAncestor: () => true }, expected: { outcome: 'current', installed: SOURCE, latest: TAG, reason: null } },
+        { name: 'tag is not an ancestor -> behind', input: { sourceSha: SOURCE, latestTagSha: TAG, isAncestor: () => false }, expected: { outcome: 'behind', installed: SOURCE, latest: TAG, reason: null } },
+        { name: 'null sourceSha -> unmeasured(no_source_sha)', input: { sourceSha: null, latestTagSha: TAG, isAncestor: () => true }, expected: { outcome: 'unmeasured', installed: null, latest: TAG, reason: 'no_source_sha' } },
+        { name: 'null latest tag -> unmeasured(no_latest_tag)', input: { sourceSha: SOURCE, latestTagSha: null, isAncestor: () => true }, expected: { outcome: 'unmeasured', installed: SOURCE, latest: null, reason: 'no_latest_tag' } },
+        { name: 'ancestry unanswerable -> unmeasured(ancestry_unknown)', input: { sourceSha: SOURCE, latestTagSha: TAG, isAncestor: () => null }, expected: { outcome: 'unmeasured', installed: SOURCE, latest: TAG, reason: 'ancestry_unknown' } },
+    ];
+    for (const row of rows) {
+        test(row.name, () => {
+            assert.deepEqual(compareInstalledBuild({ dirty: false, ...row.input }), row.expected);
+        });
+    }
+
+    test('dirty never changes the outcome, and the tag is asked about the source in that order', () => {
+        const calls = [];
+        const isAncestor = (a, b) => { calls.push([a, b]); return true; };
+        const clean = compareInstalledBuild({ sourceSha: SOURCE, dirty: false, latestTagSha: TAG, isAncestor });
+        const dirty = compareInstalledBuild({ sourceSha: SOURCE, dirty: true, latestTagSha: TAG, isAncestor });
+        assert.deepEqual(dirty, clean);
+        assert.deepEqual(calls[0], [TAG, SOURCE], 'is the TAG an ancestor of the SOURCE, not the reverse');
+    });
+
+    test('ancestry is not asked when a sha is missing', () => {
+        let asked = 0;
+        const isAncestor = () => { asked++; return true; };
+        compareInstalledBuild({ sourceSha: null, dirty: null, latestTagSha: TAG, isAncestor });
+        compareInstalledBuild({ sourceSha: SOURCE, dirty: null, latestTagSha: null, isAncestor });
+        assert.equal(asked, 0);
+    });
+});
+
+describe('resolveBuildCheckForSetup (record-only launch check)', () => {
+    const SOURCE = 'a'.repeat(40);
+    const TAG = 'b'.repeat(40);
+    const build = { version: '2.2.2', source_sha: SOURCE, dirty: false };
+
+    test('a build with no recorded source sha makes no lookup at all', () => {
+        let lookups = 0;
+        const deps = { latestTagSha: () => { lookups++; return TAG; }, isAncestor: () => { lookups++; return true; } };
+        assert.equal(resolveBuildCheckForSetup(null, deps).reason, 'no_source_sha');
+        assert.equal(resolveBuildCheckForSetup({ version: '2.2.2', source_sha: null, dirty: null }, deps).reason, 'no_source_sha');
+        assert.equal(lookups, 0);
+    });
+
+    test('behind and current come from the injected lookups, in the tag-then-source direction', () => {
+        const seen = [];
+        const behind = resolveBuildCheckForSetup(build, { latestTagSha: () => TAG, isAncestor: (a, b) => { seen.push([a, b]); return false; } });
+        assert.deepEqual([behind.outcome, behind.installed, behind.latest], ['behind', SOURCE, TAG]);
+        assert.deepEqual(seen[0], [TAG, SOURCE]);
+        assert.equal(resolveBuildCheckForSetup(build, { latestTagSha: () => TAG, isAncestor: () => true }).outcome, 'current');
+    });
+
+    test('an unresolvable latest tag is unmeasured, and a throwing lookup never escapes', () => {
+        assert.equal(resolveBuildCheckForSetup(build, { latestTagSha: () => null, isAncestor: () => true }).reason, 'no_latest_tag');
+        const thrown = resolveBuildCheckForSetup(build, { latestTagSha: () => { throw new Error('boom'); } });
+        assert.equal(thrown.outcome, 'unmeasured');
+        assert.equal(thrown.installed, SOURCE);
+    });
+
+    test('launch records and never installs: setup source carries no upgrade or update call', () => {
+        const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'bin', 'setup.ts'), 'utf-8');
+        assert.equal((src.match(/applyAvailableUpdate|performUpgrade|checkForUpdate\(/g) ?? []).length, 0);
     });
 });

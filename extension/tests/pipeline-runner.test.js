@@ -56,6 +56,7 @@ import {
   reportLifecycleIncompleteTickets,
   discloseUnmeasuredIntegration,
   unreproducibleNodeModulesGap,
+  buildRunEndBuildFields,
 } from '../bin/pipeline-runner.js';
 import { createLaneWorktree, integrateLanes, recoverLaneBranches, RETAINED_BRANCH_MAX_AGE_DAYS, isLaneSessionDir, unitSessionDir, unitBranchName, laneSessionDir, unreproducibleNodeModulesCount, findNodeModulesDirs, replicateLaneNodeModules } from '../services/anatomy-lanes.js';
 import { listWorkingTreeDirtyPaths, markTicketFailed } from '../services/git-utils.js';
@@ -8165,5 +8166,48 @@ describe('failed-reason chain: markTicketFailed reaches the run report', () => {
       assert.match(logs[0], /dddd4444 Failed \(rate_limited\)/);
       assert.doesNotMatch(logs[0], /no reason recorded/);
     } finally { fs.rmSync(sessionDir, { recursive: true, force: true }); }
+  });
+});
+
+describe('run-end build disclosure is record-only', () => {
+  const launch = { version: '2.2.2', source_sha: 'a'.repeat(40), dirty: true };
+  const behind = { outcome: 'behind', installed: 'a'.repeat(40), latest: 'b'.repeat(40), reason: null };
+  const counters = () => ({ completed: 1, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} });
+
+  test('computePipelineVerdict is identical with build_check behind and with no build_check', () => {
+    const verdictFor = (buildCheck) => {
+      const dir = mkFixtureTmpDir('pickle-build-check-verdict-');
+      try {
+        const runtime = { ...makeRuntime(dir), config: { phases: ['anatomy-park'] } };
+        fs.writeFileSync(runtime.statePath, JSON.stringify({ active: false, step: 'completed', schema_version: 5, build_check: buildCheck }));
+        return computePipelineVerdict(runtime, counters());
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const control = verdictFor(null);
+    assert.deepEqual(verdictFor(behind), control, 'a stale build never changes the verdict');
+    assert.equal(control.unsuccessful, false, 'control: this run is a success');
+  });
+
+  test('the summary prints pickle_build with (dirty), the build_check, and no mid-run change when the deployed build is unchanged', () => {
+    const fields = buildRunEndBuildFields(launch, behind, { ...launch });
+    assert.equal(fields.pickle_build, `2.2.2 @ ${'a'.repeat(8)} (dirty)`);
+    assert.equal(fields.build_check, `behind (installed ${'a'.repeat(8)}, latest ${'b'.repeat(8)})`);
+    assert.equal('build_changed_mid_run' in fields, false);
+  });
+
+  test('build_changed_mid_run appears only when the re-read deployed build differs from the launch stamp', () => {
+    const redeployed = { version: '2.2.3', source_sha: 'c'.repeat(40), dirty: false };
+    const fields = buildRunEndBuildFields(launch, behind, redeployed);
+    assert.equal(fields.build_changed_mid_run, `2.2.2 @ ${'a'.repeat(8)} (dirty) -> 2.2.3 @ ${'c'.repeat(8)}`);
+    assert.equal('build_changed_mid_run' in buildRunEndBuildFields(launch, behind, null), false, 'an unreadable re-read is not a change');
+  });
+
+  test('an unrecorded build and an unmeasured check are named, never omitted', () => {
+    const fields = buildRunEndBuildFields(null, { outcome: 'unmeasured', installed: null, latest: null, reason: 'no_source_sha' }, null);
+    assert.equal(fields.pickle_build, 'unknown');
+    assert.equal(fields.build_check, 'unmeasured (no_source_sha)');
+    assert.equal(buildRunEndBuildFields(undefined, undefined, undefined).build_check, 'unmeasured (not recorded)');
   });
 });

@@ -199,6 +199,75 @@ export function getLatestRelease(): ReleaseInfo | null {
   }
 }
 
+const RELEASE_REPO = 'gregorydickson/pickle-rick-claude';
+
+/**
+ * Whether an installed build trails the latest release. Record-only: it is written beside the
+ * session and never gates a launch. `unmeasured` carries WHY nothing could be said, so an absent
+ * answer never reads as an up-to-date one.
+ */
+export type BuildCheck = {
+  outcome: 'behind' | 'current' | 'unmeasured';
+  installed: string | null;
+  latest: string | null;
+  reason: 'no_source_sha' | 'no_latest_tag' | 'ancestry_unknown' | null;
+};
+
+/**
+ * Pure. The installed build is `behind` iff the latest release tag's commit is NOT an ancestor of
+ * the commit it was built from; a version string cannot say that, because the string reads
+ * `0.0.0` when unreadable and an update-disabled install short-circuits to up-to-date. The tag is
+ * the only reference: `origin/main` is the moving development tip and trails nothing meaningful.
+ * `dirty` is carried by the caller for display; an uncommitted edit does not change ancestry.
+ */
+export function compareInstalledBuild(input: {
+  sourceSha: string | null;
+  dirty: boolean | null;
+  latestTagSha: string | null;
+  isAncestor: (ancestor: string, descendant: string) => boolean | null;
+}): BuildCheck {
+  const { sourceSha, latestTagSha, isAncestor } = input;
+  const installed = sourceSha || null;
+  const latest = latestTagSha || null;
+  if (installed === null) return { outcome: 'unmeasured', installed, latest, reason: 'no_source_sha' };
+  if (latest === null) return { outcome: 'unmeasured', installed, latest, reason: 'no_latest_tag' };
+  const ancestor = isAncestor(latest, installed);
+  if (ancestor === null) return { outcome: 'unmeasured', installed, latest, reason: 'ancestry_unknown' };
+  return { outcome: ancestor ? 'current' : 'behind', installed, latest, reason: null };
+}
+
+/** Text of one bounded `gh api` read, or `null` when gh could not answer for any reason. */
+function ghApiText(endpoint: string, jq: string): string | null {
+  try {
+    const result = spawnSync('gh', ['api', endpoint, '--jq', jq], { encoding: 'utf-8', timeout: 30_000 });
+    if (result.status !== 0) return null;
+    const text = (result.stdout || '').trim();
+    return text === '' ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+/** Commit sha the latest published release tag points at, or `null` when it cannot be resolved. */
+export function getLatestReleaseTagSha(): string | null {
+  const tag = ghApiText(`repos/${RELEASE_REPO}/releases/latest`, '.tag_name');
+  if (tag === null) return null;
+  // The commits endpoint peels an annotated tag to its commit, which a ref lookup would not.
+  return ghApiText(`repos/${RELEASE_REPO}/commits/${encodeURIComponent(tag)}`, '.sha');
+}
+
+/**
+ * Is `ancestor` an ancestor of `descendant` — answered by the release repository, so no local
+ * clone is needed. `identical`/`ahead` mean yes; `behind`/`diverged` mean no; an unknown
+ * commit (a local-only build) or any failure is `null`, never a guessed no.
+ */
+export function isCommitAncestorOnRelease(ancestor: string, descendant: string): boolean | null {
+  const status = ghApiText(`repos/${RELEASE_REPO}/compare/${ancestor}...${descendant}`, '.status');
+  if (status === 'identical' || status === 'ahead') return true;
+  if (status === 'behind' || status === 'diverged') return false;
+  return null;
+}
+
 export function getCurrentVersion(): string {
   try {
     const pkgPath = path.join(getExtensionRoot(), 'extension', 'package.json');
