@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.1` on `main` (the only line). No tag pending |
-| RUNNING | **nothing. B-FIELD-88 + B-FIELD-95 SHIPPED to `main` and DEPLOYED 2026-10-11** (HEAD `1aa65d0c`; gate 22/22 `LEG_RC 0`, soak 1804.7s; deploy verified by content, 0 differing; NOT tagged — release cadence). B-FIELD-95 session `2026-10-10-41c0acdf`: pickle 18/18 Done, citadel 0; anatomy-park + szechuan-sauce ran 1–2 iterations each before the account seven-day usage limit (`rate_limit_exhausted`), run reported `failed` (success correctly withheld). Closed with evidence: #57, #83–#98. Status comments: #56, #61, #80. Branch `fix/codex-companion-resolver` deleted. NEXT: QUEUE item 13 (re-run the skipped review phases after the usage reset 2026-10-11T09:00Z). Babysitter armed every 2h |
+| RUNNING | **nothing. B-FIELD-88 + B-FIELD-95 + their review re-run (QUEUE item 13) SHIPPED to `main` and DEPLOYED 2026-10-11** (HEAD `29ea26c6`; gate 22/22 `LEG_RC 0`, soak 1804.8s; deploy verified by content, 0 differing; NOT tagged — release cadence; `v2.2.2` awaits operator approval). Review re-run session `2026-10-11-8716c819`: 3/3 phases, 35m, `completed`; anatomy-park converged (all 6 subsystems 2 consecutive clean), szechuan converged metric 0 in 2 iterations; 3 review commits `53cc7540`..`29ea26c6`; 0 open decisions, 0 skipped tickets, base drift clean. Earlier: B-FIELD-95 session `2026-10-10-41c0acdf` (pickle 18/18) and B-FIELD-88 closed #57, #83–#98. NEXT: queue drained → rule E research ticks. Babysitter armed every 2h |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #77–#82.** Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
@@ -408,7 +408,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
     `isPathShaped` extension widening (#89), trailer deny-list hook (#90), expectation-diff guard (#95),
     worker→report question channel (#97, deferred). Gate legs 22 → 22.
 
-13. **NEXT — re-run the review phases B-FIELD-95 lost to the usage limit (after 2026-10-11T09:00Z).** Run anatomy-park +
+13. **✅ DONE 2026-10-11 (session `2026-10-11-8716c819`, HEAD `29ea26c6`, gate green, deployed) — re-run the review phases B-FIELD-95 lost to the usage limit (after 2026-10-11T09:00Z).** Run anatomy-park +
     szechuan-sauce (no pickle phase, no refinement) over the combined B-FIELD-88 + B-FIELD-95 diff: `--scope branch
     --scope-base ee967302` (the commit before B-FIELD-88's first ticket), phases `["citadel","anatomy-park","szechuan-sauce"]`.
     Then gate, push, deploy as usual. Cut the `v2.2.2` tag only on operator approval.
