@@ -19,8 +19,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process';
-import type { Backend, PickleBuild, State } from '../types/index.js';
-import type { BuildCheck } from './check-update.js';
+import type { Backend, BuildCheck, PickleBuild, State } from '../types/index.js';
 import { BACKENDS, classifyExitReason, MICROVERSE_EXIT_REASONS, MICROVERSE_FATAL_REASONS, CRASH_FLOOR_EXIT_REASONS, PipelineRunnerExitCode, UNBOUNDED_READ_MAX_BUFFER, normalizeMicroverseExitReason, type MicroverseFatalReason } from '../types/index.js';
 import { StateManager, safeDeactivate, finalizeTerminalState, finalizeIfTrulyComplete, graduationDecision, recordExitReason, clearExitReason, schemaVersionDeployDriftMessage, type GraduationCounts, type FinalizeOpts } from '../services/state-manager.js';
 import { backendEnvOverrides, isBackend, buildWorkerInvocation } from '../services/backend-spawn.js';
@@ -6593,7 +6592,7 @@ export function buildRunEndBuildFields(
 function readRunEndBuildFields(runtime: PipelineRuntime): Record<string, string> {
   try {
     const s = sm.read(runtime.statePath);
-    return buildRunEndBuildFields(s.pickle_build, s.build_check as BuildCheck | null | undefined, resolvePickleBuildForSetup());
+    return buildRunEndBuildFields(s.pickle_build, s.build_check, resolvePickleBuildForSetup());
   } catch {
     return {};
   }

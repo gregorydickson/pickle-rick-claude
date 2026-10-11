@@ -5,7 +5,7 @@ import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { getDataRoot, getExtensionRoot, safeErrorMessage } from '../services/pickle-utils.js';
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
-import type { UpdateCheckCache, UpdateResult, UpdateSettings, ReleaseInfo, UpgradeResult } from '../types/index.js';
+import type { BuildCheck, UpdateCheckCache, UpdateResult, UpdateSettings, ReleaseInfo, UpgradeResult } from '../types/index.js';
 
 const CACHE_FILE = 'update-check.json';
 const SETTINGS_FILE = 'pickle_settings.json';
@@ -200,18 +200,6 @@ export function getLatestRelease(): ReleaseInfo | null {
 }
 
 const RELEASE_REPO = 'gregorydickson/pickle-rick-claude';
-
-/**
- * Whether an installed build trails the latest release. Record-only: it is written beside the
- * session and never gates a launch. `unmeasured` carries WHY nothing could be said, so an absent
- * answer never reads as an up-to-date one.
- */
-export type BuildCheck = {
-  outcome: 'behind' | 'current' | 'unmeasured';
-  installed: string | null;
-  latest: string | null;
-  reason: 'no_source_sha' | 'no_latest_tag' | 'ancestry_unknown' | null;
-};
 
 /**
  * Pure. The installed build is `behind` iff the latest release tag's commit is NOT an ancestor of

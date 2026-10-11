@@ -9,14 +9,14 @@ import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDat
 import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGitSafe } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit, collectFrontmatterInProgress, readTicketStatusMap, resolveTicketDesyncWinner, moveCurrentTicket } from './mux-runner.js';
-import { State, LockError, type PickleBuild, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
+import { State, LockError, type BuildCheck, type PickleBuild, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
 import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, PAUSED_ORPHAN_MIN_AGE_MS } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { emitOrphanReapSummary, reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
 
 type OrphanWorkerReapResult = ReapSweepResult;
 import { readRecoverableJsonObject } from '../services/microverse-state.js';
-import { compareInstalledBuild, getLatestReleaseTagSha, isCommitAncestorOnRelease, type BuildCheck } from './check-update.js';
+import { compareInstalledBuild, getLatestReleaseTagSha, isCommitAncestorOnRelease } from './check-update.js';
 import { CodegraphService, readIndexedHeadSha, defaultGetHeadSha } from '../services/codegraph-service.js';
 import type { CodegraphDeps, CodegraphEmitEvent } from '../services/codegraph-service.js';
 

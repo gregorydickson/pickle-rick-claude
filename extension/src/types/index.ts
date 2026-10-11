@@ -19,8 +19,17 @@ export interface PickleBuild {
   dirty: boolean | null;
 }
 
-/** Result of comparing a session's `pickle_build` against the source checkout. */
-export type BuildCheck = Record<string, unknown>;
+/**
+ * Whether an installed build trails the latest release. Record-only: it is written beside the
+ * session and never gates a launch. `unmeasured` carries WHY nothing could be said, so an absent
+ * answer never reads as an up-to-date one.
+ */
+export type BuildCheck = {
+  outcome: 'behind' | 'current' | 'unmeasured';
+  installed: string | null;
+  latest: string | null;
+  reason: 'no_source_sha' | 'no_latest_tag' | 'ancestry_unknown' | null;
+};
 
 export interface State {
   active: boolean;
@@ -140,7 +149,7 @@ export interface State {
    * Invariant lives in `extension/CLAUDE.md` § state.json Field Invariants.
    */
   pickle_build?: PickleBuild | null;
-  /** Comparison of `pickle_build` against the source checkout; `null` until written. */
+  /** Whether `pickle_build` trails the latest release (`compareInstalledBuild`); `null` until written. */
   build_check?: BuildCheck | null;
   /**
    * Terminal-exit forensic marker. Set by finalize/forensic helpers in the
