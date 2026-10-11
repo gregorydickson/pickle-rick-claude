@@ -13258,7 +13258,7 @@ function routeWmwRecoveryLadder(input) {
             workingDir: state.working_dir || process.cwd(),
             ticketId: apTicketId,
             reason: `recovery_exhausted: ${wmwRecovery.reason}`,
-            evidenceLog: path.join(sessionDir, `tmux_iteration_${iteration}.log`),
+            evidenceLog: input.iterLogFile,
             log,
         });
         if (ladderAction === 'advance') {
@@ -13317,7 +13317,7 @@ function routeWmwFailedFlipSuppression(input) {
             workingDir: wmwWorkingDir,
             ticketId: apTicketId,
             reason: `suppression_cap_reached: ${ffDecision.cap}`,
-            evidenceLog: path.join(sessionDir, `tmux_iteration_${iteration}.log`),
+            evidenceLog: input.iterLogFile,
             log,
         });
         if (ladderAction === 'advance') {
@@ -13345,7 +13345,7 @@ function flipWmwTicketFailed(input) {
     try {
         markTicketFailed(apTicketId, sessionDir, {
             reason: apFailureReason,
-            evidenceLog: path.join(sessionDir, `tmux_iteration_${input.iteration}.log`),
+            evidenceLog: input.iterLogFile,
             completionCommit: null,
         });
     }
@@ -14143,10 +14143,11 @@ async function runMuxRunnerMain({ runIteration, sleep, exit }) {
         // R-WSWA-3: at PICKLE_WMW_SKIP_K (default 5) consecutive zero-progress spawns, route the
         // recovery ladder, then the Failed-flip suppression, then flip the ticket to
         // Failed/oversized_no_progress (dirty tree preserved) and advance the loop.
+        const iterLogFile = path.join(sessionDir, `tmux_iteration_${iteration}.log`);
         const skipK = resolveWmwSkipK();
         if (apTicketId && apProgressResult && apProgressResult.zeroProgressCount >= skipK) {
             const wmwStep = runWmwAutoSkip({
-                state, statePath, sessionDir, extensionRoot, iteration, apTicketId, apProgressResult, skipK, iterStartMs, preIterSha, log,
+                state, statePath, sessionDir, extensionRoot, iteration, iterLogFile, apTicketId, apProgressResult, skipK, iterStartMs, preIterSha, log,
             });
             if (wmwStep.kind === 'exit') {
                 exitReason = wmwStep.exitReason;
@@ -14170,7 +14171,6 @@ async function runMuxRunnerMain({ runIteration, sleep, exit }) {
         }
         // B-DURA T10: commit the gate-passing deliverable BEFORE the Done-detection block below.
         commitBoundaryDeliverableAfterIteration({ sessionDir, statePath, state, iterWorkingDir, extensionRoot, preIterSha, log });
-        const iterLogFile = path.join(sessionDir, `tmux_iteration_${iteration}.log`);
         // Detect ticket transitions: validate completion before marking Done
         const transition = resolveTicketTransition({
             sessionDir, statePath, state, previousTicket, previousTicketStartCommit, iteration, iterStartMs, log,
