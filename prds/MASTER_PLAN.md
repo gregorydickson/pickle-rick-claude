@@ -413,6 +413,13 @@ NO measured basis. Large PRDs are not constrained by the cap.
     --scope-base ee967302` (the commit before B-FIELD-88's first ticket), phases `["citadel","anatomy-park","szechuan-sauce"]`.
     Then gate, push, deploy as usual. Cut the `v2.2.2` tag only on operator approval.
 
+14. **NEXT — B-CI-HERMETIC-HOME (`prds/p1-b-ci-hermetic-home.md`).** CI `test` red on every push since `1aa65d0c`:
+    6 fast-tier tests (`spawn-morty-tier-phases`, `pipeline-runner-units` lifecycle chain) read the operator's deployed
+    `~/.claude/commands/send-to-morty.md`; absent on a clean runner → fallback prompt → reds. Local gate green only
+    because the box has the deployed copy. `v2.2.2` (`d3decf60`) was cut 2026-10-11 without reading CI status first —
+    operational miss: **read `gh run list --workflow CI` for the gated sha before any tag**. Shipped runtime unaffected
+    (install deploys the template). Tests-only, 2 tickets, `--no-refine`, scope base `d3decf60`. Gate legs 22 → 22.
+
 10. **STANDING IDLE WORK — agent-swarm research (operator, 2026-10-07: "when there is nothing to do, we should keep
     doing our agent swarm research").** Whenever nothing runs and items 1–9 are drained, the babysitter (rule E) runs
     ONE background research tick against `prds/research/2026-09-agent-systems-spike.md`: one open §6 gap per tick,
