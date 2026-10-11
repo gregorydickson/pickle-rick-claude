@@ -7501,13 +7501,13 @@ export function withholdForFailedAcGate(
 }
 
 /**
- * MREL-A12: the disposition a non-pickle phase must report instead of `completed`, or `null` when
- * it genuinely converged. Honesty keys on the EXIT CODE: a phase that exited non-zero is never
+ * MREL-A12: the disposition a phase must report instead of `completed`, or `null` when it
+ * genuinely converged. Honesty keys on the EXIT CODE: a phase that exited non-zero is never
  * counted completed, so a citadel that parked on missing inputs cannot fall through to
- * `completed++`. The one refinement is a microverse phase's own stated `exit_reason` — only those
- * phases stamp a disposition for this phase (AP-EXT-ITER5-01: `converged` is the sole success
- * value), so it overrides the exit code in BOTH directions. Any other phase's on-disk reason may
- * be stale from an earlier phase and is never read.
+ * `completed++`. Two refinements read the phase's own stated `exit_reason`: a microverse phase's
+ * overrides the exit code in BOTH directions (AP-EXT-ITER5-01: `converged` is the sole success
+ * value), and a pickle phase that exited non-zero reports its reason in place of `exit_<code>`.
+ * Citadel's on-disk reason may be stale from an earlier phase and is never read.
  */
 function phaseDivergence(runtime: PipelineRuntime, rawPhase: PhaseName, exitCode: number): string | null {
   if (isMicroversePhase(rawPhase) || (rawPhase === 'pickle' && exitCode !== 0)) {
@@ -7522,7 +7522,7 @@ function phaseDivergence(runtime: PipelineRuntime, rawPhase: PhaseName, exitCode
 }
 
 /**
- * B-NONSTOP WS-2 (AC-NS-6): the non-pickle honesty gate below. `maybeStampPhaseGraduation`
+ * B-NONSTOP WS-2 (AC-NS-6): the honesty gate below, run for every phase. `maybeStampPhaseGraduation`
  * is pickle-only (`:3592`), so a non-convergent anatomy-park / szechuan-sauce phase — which
  * reaches here with exitCode 1 (R-PHC-6 continue-by-default) — would otherwise fall straight
  * through to `counters.completed++` and be reported a clean success (the live fake-green:
