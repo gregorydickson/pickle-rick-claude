@@ -179,3 +179,10 @@ test('every Step 7e hardening ticket template declares zero_diff_intent: audit',
     assert.match(frontmatter[1], /^zero_diff_intent: audit$/m, `Ticket block ${i + 1} must declare zero_diff_intent: audit`);
   }
 });
+
+test('refine skill tags every criterion the worker cannot run and tiers [manager]/installer/OS/CI tickets at least medium', () => {
+  const content = fs.readFileSync(SKILL_PATH, 'utf-8');
+  assert.ok(!content.includes('closer/release/hardening tickets, prefix'));
+  assert.ok(content.includes('Worker Forbidden Ops table, whatever the ticket'));
+  assert.ok(content.includes('at least `complexity_tier: medium`'));
+});

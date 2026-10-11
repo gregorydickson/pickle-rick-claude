@@ -316,3 +316,15 @@ test('control: a ticket with no lifecycle artifact at all is still a failed work
   assert.equal(out.isSuccess, false);
   assert.equal(out.status, 'Failed');
 });
+
+test('a rendered medium-tier prompt keeps the verdict a bare token and has handoff bullets quote their [manager] criterion', () => {
+  const sections = buildTierLifecycleSections(TIER_LIFECYCLE.medium, 'medium');
+  assert.match(sections, /verdict is the bare token alone \(`ALL_PASS` or `FAIL`\) on its own line/);
+  assert.match(sections, /never on the verdict line/);
+  assert.match(sections, /ALL_PASS/);
+});
+
+test('buildWorkerPrompt source tells handoff bullets to quote the [manager] criterion they defer', () => {
+  const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'bin', 'spawn-morty.ts'), 'utf-8');
+  assert.match(src, /each bullet quotes the `\[manager\]` criterion it defers/);
+});
