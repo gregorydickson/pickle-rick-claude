@@ -26,6 +26,21 @@ after(() => {
     try { fs.rmSync(DATA_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
+// A new session's launch build check shells out to `gh api` whenever the resolved
+// extension root's BUILD_INFO.json carries a source sha — and a bare spawn resolves the
+// DEPLOYED root, which carries one once installed. This failing `gh` leads every setup
+// spawn's PATH so the suite never reaches the network; a caller that sets
+// PICKLE_TEST_GH_LOG gets the call arguments recorded there.
+const NO_NETWORK_GH_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-test-gh-'));
+fs.writeFileSync(
+    path.join(NO_NETWORK_GH_DIR, 'gh'),
+    '#!/bin/sh\n[ -n "$PICKLE_TEST_GH_LOG" ] && echo "$*" >> "$PICKLE_TEST_GH_LOG"\nexit 1\n',
+);
+fs.chmodSync(path.join(NO_NETWORK_GH_DIR, 'gh'), 0o755);
+after(() => {
+    try { fs.rmSync(NO_NETWORK_GH_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
 // `setup.js` keys its session-map by `process.cwd()`. The fast-tier suite
 // runs setup-family test files concurrently (node --test cross-file
 // concurrency), so two setup processes can transiently claim the same cwd and
@@ -70,6 +85,7 @@ function execSetup(args, extraEnv) {
     for (const key of Object.keys(env)) {
         if (env[key] === undefined) delete env[key];
     }
+    env.PATH = `${NO_NETWORK_GH_DIR}${path.delimiter}${env.PATH ?? ''}`;
 
     const deadline = Date.now() + 30_000;
     for (;;) {
@@ -2543,14 +2559,23 @@ test('runSetup sandbox: session written to tmp PICKLE_DATA_ROOT, not default dat
 });
 
 // `pickle_build`: record which pickle-rick build ran the session (observability only).
+// No PATH of its own: the `gh` calls land on execSetup's NO_NETWORK_GH_DIR stub, so these
+// cases also prove the seam's default keeps every setup spawn off the network.
 function runSetupWithBuildInfo(buildInfoText, task) {
     const extRoot = makeExtensionRootWithSettings({});
     const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-build-info-data-')));
+    const ghCalls = path.join(dataRoot, 'gh-calls.log');
     try {
         if (buildInfoText !== null) fs.writeFileSync(path.join(extRoot, 'BUILD_INFO.json'), buildInfoText);
-        const output = runSetupWithEnv(['--task', task], { EXTENSION_DIR: extRoot, PICKLE_DATA_ROOT: dataRoot });
+        const output = runSetupWithEnv(['--task', task], {
+            EXTENSION_DIR: extRoot,
+            PICKLE_DATA_ROOT: dataRoot,
+            PICKLE_TEST_GH_LOG: ghCalls,
+        });
         const sessionRoot = output.match(/SESSION_ROOT=(.+)/)[1].trim();
-        return JSON.parse(fs.readFileSync(path.join(sessionRoot, 'state.json'), 'utf-8'));
+        const state = JSON.parse(fs.readFileSync(path.join(sessionRoot, 'state.json'), 'utf-8'));
+        state.ghCalls = fs.existsSync(ghCalls) ? fs.readFileSync(ghCalls, 'utf-8') : '';
+        return state;
     } finally {
         fs.rmSync(extRoot, { recursive: true, force: true });
         fs.rmSync(dataRoot, { recursive: true, force: true });
@@ -2564,6 +2589,9 @@ test('pickle_build: setup stamps the deployed BUILD_INFO.json verbatim', () => {
         'pickle build stamped',
     );
     assert.deepEqual(state.pickle_build, { version: '9.9.9', source_sha: sha, dirty: true });
+    // The release lookup reached the stub, not the network, and its failure records as unmeasured.
+    assert.match(state.ghCalls, /releases\/latest/);
+    assert.deepEqual(state.build_check, { outcome: 'unmeasured', installed: sha, latest: null, reason: 'no_latest_tag' });
 });
 
 test('pickle_build: an absent BUILD_INFO.json records null and does NOT block setup', () => {
@@ -2571,6 +2599,7 @@ test('pickle_build: an absent BUILD_INFO.json records null and does NOT block se
     assert.equal(state.pickle_build, null);
     // The launch build check still records — as unmeasured, naming why — and never as current.
     assert.deepEqual(state.build_check, { outcome: 'unmeasured', installed: null, latest: null, reason: 'no_source_sha' });
+    assert.equal(state.ghCalls, '', 'a build with no source sha makes no release lookup');
 });
 
 test('pickle_build: unparseable and version-less BUILD_INFO.json record null, never invented values', () => {
