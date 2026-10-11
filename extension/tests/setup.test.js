@@ -69,11 +69,11 @@ function withTmuxDefault(args) {
     return hasMode ? args : ['--tmux', ...args];
 }
 
-// The collision retry and the DATA_ROOT fallback are properties of spawning setup.js,
-// not of one caller, so every helper routes through this single seam. An explicit
+// The DATA_ROOT fallback and the no-network gh stub are properties of spawning setup.js,
+// not of one caller, so every spawn site builds its env here. An explicit
 // PICKLE_DATA_ROOT in extraEnv still wins; a caller that omits it lands in the sandbox
 // rather than the operator's production data dir.
-function execSetup(args, extraEnv) {
+function setupEnv(extraEnv) {
     const env = {
         ...process.env,
         FORCE_COLOR: '0',
@@ -86,7 +86,13 @@ function execSetup(args, extraEnv) {
         if (env[key] === undefined) delete env[key];
     }
     env.PATH = `${NO_NETWORK_GH_DIR}${path.delimiter}${env.PATH ?? ''}`;
+    return env;
+}
 
+// The collision retry is a property of spawning setup.js, not of one caller, so every
+// helper that expects success routes through this single seam.
+function execSetup(args, extraEnv) {
+    const env = setupEnv(extraEnv);
     const deadline = Date.now() + 30_000;
     for (;;) {
         try {
@@ -305,7 +311,7 @@ describeEach([
         try {
             const result = spawnSync(process.execPath, [SETUP, ...argv], {
                 encoding: 'utf-8',
-                env: { ...process.env, FORCE_COLOR: '0', HOME: home, PICKLE_DATA_ROOT: dataRoot },
+                env: setupEnv({ HOME: home, PICKLE_DATA_ROOT: dataRoot }),
                 timeout: 30_000,
             });
             assert.equal(result.status, 1);
@@ -465,17 +471,43 @@ function initGitRepo(dir) {
 }
 
 // Run setup as a subprocess from an explicit cwd, capturing stdout AND stderr.
-function runSetupAt(cwd, args, dataRoot) {
+function runSetupAt(cwd, args, dataRoot, extraEnv) {
     const res = spawnSync(process.execPath, [SETUP, ...args], {
         cwd,
         encoding: 'utf-8',
-        env: { ...process.env, FORCE_COLOR: '0', PICKLE_DATA_ROOT: dataRoot },
+        env: setupEnv({ PICKLE_DATA_ROOT: dataRoot, ...extraEnv }),
     });
     if (res.status !== 0) {
         throw new Error(`setup exited ${res.status}:\n${res.stdout}\n${res.stderr}`);
     }
     return res;
 }
+
+test('runSetupAt: a bare --paused spawn whose deployed root carries a source sha stays off the network', () => {
+    // No EXTENSION_DIR: the root resolves from HOME, exactly as an installed deploy does.
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-at-gh-home-')));
+    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-at-gh-data-'));
+    const neutralCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-at-gh-cwd-')));
+    const ghCalls = path.join(dataRoot, 'gh-calls.log');
+    try {
+        const deployed = path.join(home, '.claude', 'pickle-rick');
+        fs.mkdirSync(deployed, { recursive: true });
+        const sha = 'a'.repeat(40);
+        fs.writeFileSync(path.join(deployed, 'BUILD_INFO.json'), JSON.stringify({ version: '9.9.9', source_sha: sha, dirty: false }));
+        const res = runSetupAt(neutralCwd, ['--paused', '--task', 'setup-at no network'], dataRoot, {
+            HOME: home,
+            PICKLE_TEST_GH_LOG: ghCalls,
+        });
+        const sessionRoot = res.stdout.match(/SESSION_ROOT=(.+)/)[1].trim();
+        const state = JSON.parse(fs.readFileSync(path.join(sessionRoot, 'state.json'), 'utf-8'));
+        assert.match(fs.readFileSync(ghCalls, 'utf-8'), /releases\/latest/, 'the release lookup must land on the stub');
+        assert.deepEqual(state.build_check, { outcome: 'unmeasured', installed: sha, latest: null, reason: 'no_latest_tag' });
+    } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+        fs.rmSync(neutralCwd, { recursive: true, force: true });
+    }
+});
 
 test('setup --paused in a non-git cwd: WARNs loudly that start_commit is deferred (R-PSCG AC-3)', () => {
     const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-pscg-warn-data-'));
@@ -722,7 +754,7 @@ test('setup: bare non-tmux build session is rejected (R-PNTR-4 — in-session lo
     // error with a /pickle-tmux migration hint instead of creating an in-session loop.
     const result = spawnSync(process.execPath, [SETUP, '--task', 'no-tmux-test'], {
         encoding: 'utf-8',
-        env: { ...process.env, FORCE_COLOR: '0', PICKLE_DATA_ROOT: process.env.PICKLE_DATA_ROOT ?? DATA_ROOT },
+        env: setupEnv({ PICKLE_DATA_ROOT: process.env.PICKLE_DATA_ROOT ?? DATA_ROOT }),
     });
     assert.notEqual(result.status, 0, 'bare non-tmux build session must exit non-zero');
     assert.match(result.stderr, /pickle-tmux/, 'must point operators to /pickle-tmux');
@@ -1894,6 +1926,17 @@ test('setup: the setup binary is spawned through exactly one seam', () => {
         1,
         'every setup.js spawn must route through execSetup — a second site forks the collision retry and the sandbox data-root fallback back off',
     );
+});
+
+test('setup: every setup.js spawn site, sync or not, builds its env through setupEnv', () => {
+    // A spawnSync site that hand-rolls its env drops the no-network gh stub, and a bare
+    // new session then reaches real `gh api` through the launch build check.
+    const source = fs.readFileSync(path.join(__dirname, 'setup.test.js'), 'utf-8');
+    const sites = [...source.matchAll(/(?:execFileSync|spawnSync)\(process\.execPath, \[SETUP[^\n]*\n([\s\S]*?)\n\s*\}\);?/g)];
+    assert.ok(sites.length >= 4, `expected every setup spawn site, found ${sites.length}`);
+    for (const [site, options] of sites) {
+        assert.match(options, /^\s*env(?:: setupEnv\(.*|,)$/m, `setup spawn builds its own env:\n${site}`);
+    }
 });
 
 // --- resume orphan-reattach: only a REAL orphan may flip a ticket Done ---------------
