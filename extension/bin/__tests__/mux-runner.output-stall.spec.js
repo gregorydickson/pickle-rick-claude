@@ -266,6 +266,19 @@ test('the refusal and deferral predicates agree on which verdict line is the ver
     assert.equal(conformanceVerdictIsFail(bareThenQualified), false);
     assert.equal(conformanceDefersChecks(bareThenQualified), true);
 });
+// The two predicates read the same TOKEN line too. Under a `## N. Verdict` heading the token sits on the
+// next non-blank line; the deferral reader used to read the heading alone, so a qualified token or the
+// unfilled template there kept the run success verdict while the refusal reader saw the token.
+test('a qualified or template verdict on the line after a verdict heading defers', () => {
+    assert.equal(conformanceDefersChecks('## 7. Verdict\n\nALL_PASS (test:fast deferred to the manager)\n'), true);
+    assert.equal(conformanceDefersChecks('## Verdict\n\nALL_PASS / FAIL\n'), true);
+    // Controls: a bare token under the heading defers nothing, and refusal reads the same line.
+    assert.equal(conformanceDefersChecks('## 7. Verdict\n\nALL_PASS\n'), false);
+    assert.equal(conformanceDefersChecks('## 7. Verdict\n\n**ALL_PASS**\n'), false);
+    assert.equal(conformanceDefersChecks('## Verdict: ALL_PASS\n\nALL_PASS (stray prose below)\n'), false);
+    assert.equal(conformanceVerdictIsFail('## 7. Verdict\n\nALL_PASS (test:fast deferred to the manager)\n'), false);
+    assert.equal(conformanceVerdictIsFail('## Verdict: ALL_PASS\n\nFAIL\n'), false);
+});
 // F75-BACKEND-4: a phase_backends override stamps state.backend for its phase and restores it in
 // runPhaseIteration's finally, which process.exit skips. A SIGHUP/SIGTERM/SIGINT mid-phase left the
 // override persisted, so --resume (state.backend wins resolution) ran every later phase on it.

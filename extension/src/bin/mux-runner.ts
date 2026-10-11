@@ -6550,44 +6550,44 @@ export function readLatestTicketConformanceSnapshot(ticketDir: string): TicketCo
   }
 }
 
-/**
- * T1 (B-RUNREPORT-54): true only when the LAST `Verdict` heading or line in a conformance artifact
- * names FAIL. The first `ALL_PASS`/`FAIL` token on that line or the next NON-BLANK one decides
- * (a markdown heading is followed by a blank line), so the
- * template line `ALL_PASS / FAIL` reads as ALL_PASS. No verdict line, or no token, is false: an
- * unreadable verdict refuses nothing.
- */
 const CONFORMANCE_VERDICT_LINE_RE = /^[\s#>*\-\d.]*verdict\b/i;
+const CONFORMANCE_VERDICT_TOKEN_RE = /\b(ALL_PASS|FAIL)\b/;
 
-/** Index of the LAST verdict heading or line — the one both conformance predicates read — or -1. */
-function lastConformanceVerdictIndex(lines: string[]): number {
-  return lines.findLastIndex((line) => CONFORMANCE_VERDICT_LINE_RE.test(line));
-}
-
-export function conformanceVerdictIsFail(content: string): boolean {
+/**
+ * The text that holds the verdict token — the one both conformance predicates read. It is the LAST
+ * `Verdict` heading or line with its `Verdict` prefix removed when that carries an `ALL_PASS`/`FAIL`
+ * token, otherwise the next NON-BLANK line (a markdown heading is followed by a blank line). `null`
+ * when the artifact has no verdict line.
+ */
+function lastConformanceVerdictText(content: string): string | null {
   const lines = content.split('\n');
-  const verdictAt = lastConformanceVerdictIndex(lines);
-  if (verdictAt < 0) return false;
-  const next = lines.slice(verdictAt + 1).find((line) => line.trim() !== '') ?? '';
-  const token = /\b(ALL_PASS|FAIL)\b/.exec(`${lines[verdictAt]}\n${next}`);
-  return token?.[1] === 'FAIL';
+  const verdictAt = lines.findLastIndex((line) => CONFORMANCE_VERDICT_LINE_RE.test(line));
+  if (verdictAt < 0) return null;
+  const own = lines[verdictAt].replace(CONFORMANCE_VERDICT_LINE_RE, '');
+  if (CONFORMANCE_VERDICT_TOKEN_RE.test(own)) return own;
+  return lines.slice(verdictAt + 1).find((line) => line.trim() !== '') ?? '';
 }
 
 /**
- * True when a conformance artifact defers or qualifies a check: a substantive `## Manager Handoff`, OR a
- * last verdict line whose remainder (after heading marks, step number and markdown punctuation) names
- * `ALL_PASS` but is not exactly `ALL_PASS` — a qualified verdict or the unfilled `ALL_PASS / FAIL` template.
- * It parks nothing: `conformanceVerdictIsFail` alone decides refusal. It only withholds the run success verdict.
+ * T1 (B-RUNREPORT-54): true only when the verdict text names FAIL first, so the template line
+ * `ALL_PASS / FAIL` reads as ALL_PASS. No verdict line, or no token, is false: an unreadable verdict
+ * refuses nothing.
+ */
+export function conformanceVerdictIsFail(content: string): boolean {
+  return CONFORMANCE_VERDICT_TOKEN_RE.exec(lastConformanceVerdictText(content) ?? '')?.[1] === 'FAIL';
+}
+
+/**
+ * True when a conformance artifact defers or qualifies a check: a substantive `## Manager Handoff`, OR
+ * verdict text that (after markdown punctuation) names `ALL_PASS` but is not exactly `ALL_PASS` — a
+ * qualified verdict or the unfilled `ALL_PASS / FAIL` template, on the verdict line or on the line
+ * after a verdict heading. It parks nothing: `conformanceVerdictIsFail` alone decides refusal. It only
+ * withholds the run success verdict.
  */
 export function conformanceDefersChecks(content: string): boolean {
   if (hasSubstantiveManagerHandoff(content)) return true;
-  const lines = content.split('\n');
-  const verdictAt = lastConformanceVerdictIndex(lines);
-  if (verdictAt < 0) return false;
-  const remainder = lines[verdictAt]
-    .replace(CONFORMANCE_VERDICT_LINE_RE, '')
-    .replace(/^[\s*_:-]+|[\s*_.:]+$/g, '');
-  return remainder !== 'ALL_PASS' && remainder.includes('ALL_PASS');
+  const verdict = (lastConformanceVerdictText(content) ?? '').replace(/^[\s*_:-]+|[\s*_.:]+$/g, '');
+  return verdict !== 'ALL_PASS' && verdict.includes('ALL_PASS');
 }
 
 function readCloserHandoffBudget(extensionRoot: string): number {
