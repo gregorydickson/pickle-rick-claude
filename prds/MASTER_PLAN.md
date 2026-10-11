@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.1` on `main` (the only line). No tag pending |
-| RUNNING | **B-FIELD-88 BUILT (session `2026-10-08-59c0d821`, 4/4 phases, 21/21 tickets, 44 commits to `a0d6ccc2`), NOT SHIPPED: release gate run 3 = 20/22 `LEG_RC 0`, red `audit-ledger-probes` + `test_integration`, ONE cause (fixtures modelling a small-tier Done flip with no lifecycle artifacts, newly parked by B-FIELD-88 T5a — measured, not a regression). Folded into B-FIELD-95 as T0; both bundles ship together after ONE green gate. Local commits are unpushed until then.** Next: B-FIELD-95 (#89–#98), QUEUE item 12. Babysitter: re-armed after launch |
+| RUNNING | **nothing. B-FIELD-88 + B-FIELD-95 SHIPPED to `main` and DEPLOYED 2026-10-11** (HEAD `1aa65d0c`; gate 22/22 `LEG_RC 0`, soak 1804.7s; deploy verified by content, 0 differing; NOT tagged — release cadence). B-FIELD-95 session `2026-10-10-41c0acdf`: pickle 18/18 Done, citadel 0; anatomy-park + szechuan-sauce ran 1–2 iterations each before the account seven-day usage limit (`rate_limit_exhausted`), run reported `failed` (success correctly withheld). Closed with evidence: #57, #83–#98. Status comments: #56, #61, #80. Branch `fix/codex-companion-resolver` deleted. NEXT: QUEUE item 13 (re-run the skipped review phases after the usage reset 2026-10-11T09:00Z). Babysitter armed every 2h |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #77–#82.** Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
@@ -398,7 +398,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
    a phase-order change against the 2026-09-16 "review phases stay simple" constraint; **operator decision** if wanted.
    #77's tarball lockfile pinning — the deploy-tree lockfile exclusion is intentional (`install.sh:417-419`); record only.
 
-12. **NEXT — B-FIELD-95: field issues #89–#98 + the B-FIELD-88 gate reds (T0). PRD `prds/p1-b-field-95.md`, 12 tickets
+12. **DONE 2026-10-11 — B-FIELD-95 (shipped with B-FIELD-88): field issues #89–#98 + the B-FIELD-88 gate reds (T0). PRD `prds/p1-b-field-95.md`, 12 tickets
     (T0–T11), ACs measured at HEAD `3bc1fbdf`.** #96 was already built on branch `fix/codex-companion-resolver`; operator
     decision 2026-10-10: cherry-pick into this bundle (`3bc1fbdf`), scope base `a0d6ccc2` so it is reviewed; delete the
     branch after ship. Reliability tier first: #94 (rate-limit park killed as a hang), #91 (cancel advances phases),
@@ -407,6 +407,11 @@ NO measured basis. Large PRDs are not constrained by the cap.
     `pickAttributionCommit`'s `windowShas[0]` fallback (#92 — recorded, not built),
     `isPathShaped` extension widening (#89), trailer deny-list hook (#90), expectation-diff guard (#95),
     worker→report question channel (#97, deferred). Gate legs 22 → 22.
+
+13. **NEXT — re-run the review phases B-FIELD-95 lost to the usage limit (after 2026-10-11T09:00Z).** Run anatomy-park +
+    szechuan-sauce (no pickle phase, no refinement) over the combined B-FIELD-88 + B-FIELD-95 diff: `--scope branch
+    --scope-base ee967302` (the commit before B-FIELD-88's first ticket), phases `["citadel","anatomy-park","szechuan-sauce"]`.
+    Then gate, push, deploy as usual. Cut the `v2.2.2` tag only on operator approval.
 
 10. **STANDING IDLE WORK — agent-swarm research (operator, 2026-10-07: "when there is nothing to do, we should keep
     doing our agent swarm research").** Whenever nothing runs and items 1–9 are drained, the babysitter (rule E) runs
@@ -422,7 +427,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
     harness's built-in team feature.** Research findings feed #43 and the swarm sequencing; they never launch a
     pipeline on their own.
 
-11. **NEXT — B-FIELD-88: field-run issues #83–#88 + comments on #56/#61/#80 (filed 2026-10-08), TRIAGED 2026-10-08 under
+11. **DONE 2026-10-11 — B-FIELD-88 (shipped with B-FIELD-95): field-run issues #83–#88 + comments on #56/#61/#80 (filed 2026-10-08), TRIAGED 2026-10-08 under
     rule G.** One field run: 24 tickets, 4/4 phases "success", 10 Medium+ escapes at the external review. Premises measured
     at `663a9aac` (read-only; file:line below). ONE bundle on `main`, refinement ON (prompt-contract + behaviour changes).
     Gate legs 22 → 22. PRD not yet written — author under rule D; every AC run at HEAD first (must fail today). Takes
