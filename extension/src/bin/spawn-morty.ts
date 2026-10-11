@@ -461,8 +461,9 @@ function preImplementationPhases(phases: LifecyclePhase[]): LifecyclePhase[] {
   return phases.filter((phase) => !POST_PLAN_PHASES.includes(phase));
 }
 
-export function buildTierResumeTable(phases: LifecyclePhase[], preImplementationOnly = false): string {
-  const phaseSet = new Set<LifecyclePhase>(preImplementationOnly ? preImplementationPhases(phases) : phases);
+/** Implement rows render only when `phases` carries Implement — a committed re-run passes its pre-implementation phases. */
+export function buildTierResumeTable(phases: LifecyclePhase[]): string {
+  const phaseSet = new Set<LifecyclePhase>(phases);
   const rows: string[] = [];
   let step = 1;
 
@@ -481,13 +482,13 @@ export function buildTierResumeTable(phases: LifecyclePhase[], preImplementation
     }
     if (phaseSet.has('plan_review')) {
       rows.push(`| \`plan_*.md\` exists; no \`plan_review.md\` | ${step++} (Plan Review) |`);
-      if (!preImplementationOnly) {
+      if (phaseSet.has('implement')) {
         rows.push(`| \`plan_*.md\` exists; \`plan_review.md\` says \`APPROVED\`; no implementation diff | ${step++} (Implement) |`);
       }
-    } else if (!preImplementationOnly) {
+    } else if (phaseSet.has('implement')) {
       rows.push(`| \`plan_*.md\` exists; no implementation diff | ${step++} (Implement) |`);
     }
-  } else if (!preImplementationOnly) {
+  } else if (phaseSet.has('implement')) {
     rows.push(`| (none, or no implementation diff) | ${step++} (Implement) |`);
   }
 
@@ -1128,7 +1129,7 @@ function applyTierLifecycleTemplate(workerPrompt: string, opts: BuildWorkerPromp
   // built from repo-derived symbol names and paths, so a replacement string would let a
   // `$$`/`$&`/dollar-quote symbol splice this template into itself.
   let rendered = workerPrompt
-    .replace('{{TIER_RESUME_TABLE}}', () => buildTierResumeTable(activePhases, rerunSha !== null))
+    .replace('{{TIER_RESUME_TABLE}}', () => buildTierResumeTable(activePhases))
     .replace(
       '{{TIER_LIFECYCLE_SECTIONS}}',
       () => buildTierLifecycleSections(activePhases, tier) + (opts.codegraphSection ?? ''),

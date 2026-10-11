@@ -338,8 +338,9 @@ const POST_PLAN_PHASES = ['implement', 'conformance', 'code_review', 'simplify']
 function preImplementationPhases(phases) {
     return phases.filter((phase) => !POST_PLAN_PHASES.includes(phase));
 }
-export function buildTierResumeTable(phases, preImplementationOnly = false) {
-    const phaseSet = new Set(preImplementationOnly ? preImplementationPhases(phases) : phases);
+/** Implement rows render only when `phases` carries Implement — a committed re-run passes its pre-implementation phases. */
+export function buildTierResumeTable(phases) {
+    const phaseSet = new Set(phases);
     const rows = [];
     let step = 1;
     if (phaseSet.has('research')) {
@@ -357,15 +358,15 @@ export function buildTierResumeTable(phases, preImplementationOnly = false) {
         }
         if (phaseSet.has('plan_review')) {
             rows.push(`| \`plan_*.md\` exists; no \`plan_review.md\` | ${step++} (Plan Review) |`);
-            if (!preImplementationOnly) {
+            if (phaseSet.has('implement')) {
                 rows.push(`| \`plan_*.md\` exists; \`plan_review.md\` says \`APPROVED\`; no implementation diff | ${step++} (Implement) |`);
             }
         }
-        else if (!preImplementationOnly) {
+        else if (phaseSet.has('implement')) {
             rows.push(`| \`plan_*.md\` exists; no implementation diff | ${step++} (Implement) |`);
         }
     }
-    else if (!preImplementationOnly) {
+    else if (phaseSet.has('implement')) {
         rows.push(`| (none, or no implementation diff) | ${step++} (Implement) |`);
     }
     if (phaseSet.has('conformance')) {
@@ -993,7 +994,7 @@ function applyTierLifecycleTemplate(workerPrompt, opts) {
     // built from repo-derived symbol names and paths, so a replacement string would let a
     // `$$`/`$&`/dollar-quote symbol splice this template into itself.
     let rendered = workerPrompt
-        .replace('{{TIER_RESUME_TABLE}}', () => buildTierResumeTable(activePhases, rerunSha !== null))
+        .replace('{{TIER_RESUME_TABLE}}', () => buildTierResumeTable(activePhases))
         .replace('{{TIER_LIFECYCLE_SECTIONS}}', () => buildTierLifecycleSections(activePhases, tier) + (opts.codegraphSection ?? ''));
     if (rerunSha !== null) {
         rendered += `\n\n**Lifecycle re-run of committed work:** this ticket's implementation is already committed as \`${rerunSha}\`. This run produces ONLY the missing pre-implementation artifacts (research, plan and their reviews) describing that commit, then stops. Do NOT implement, edit project files, or re-do the shipped change.`;
