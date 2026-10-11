@@ -1225,3 +1225,11 @@ test('MREL-A10-2: the recorded signal_received entry satisfies the schema defini
     assert.ok(Number.isInteger(entries[0].cycle), 'cycle is an integer');
     assert.ok(!def.required.includes('cycle'), 'cycle stays optional in the schema');
 });
+
+test('requirements analyst asks for degenerate rows of every kind', () => {
+    const prompt = buildWorkerPrompt('requirements', '# PRD', '/out.md', '/target', 1);
+    for (const kind of ['unreadable', 'empty', 'more than one', 'conflicting members', 'malformed/foreign', 'oversized', 'lookalike-but-distinct']) {
+        assert.ok(prompt.includes(kind), `requirements prompt must name degenerate kind: ${kind}`);
+    }
+    assert.ok(/degenerate-row table/.test(prompt));
+});

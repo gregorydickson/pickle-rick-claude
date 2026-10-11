@@ -186,3 +186,24 @@ test('refine skill tags every criterion the worker cannot run and tiers [manager
   assert.ok(content.includes('Worker Forbidden Ops table, whatever the ticket'));
   assert.ok(content.includes('at least `complexity_tier: medium`'));
 });
+
+test('refine-prd replaces edge-case lines with the input-table rule', () => {
+  const content = fs.readFileSync(SKILL_PATH, 'utf-8');
+  assert.ok(!content.includes('Covers empty, null, max, error states'));
+  assert.ok(content.includes('input-table cell with no test row'));
+  assert.ok(/input side is one variant set/.test(content));
+});
+
+test('refine-prd rolls degenerate inputs into one fail-closed Open Decisions row', () => {
+  const content = fs.readFileSync(SKILL_PATH, 'utf-8');
+  assert.ok(/AT MOST ONE roll-up row/.test(content));
+  assert.ok(content.includes('fail-closed option the build proceeds on'));
+});
+
+test('refine-prd outermost-surface rule covers rendered views', () => {
+  const content = fs.readFileSync(SKILL_PATH, 'utf-8');
+  const at = content.indexOf('When the outermost surface is a rendered view');
+  assert.ok(at > 0, 'rendered-view clause present');
+  assert.ok(content.slice(at, at + 500).includes('rendered-structure checklist'));
+  assert.ok(content.slice(at, at + 500).includes('`[manager]`'));
+});

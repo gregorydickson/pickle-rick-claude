@@ -185,7 +185,7 @@ Never report an outcome you did not observe; verify before declaring a verdict.
 10. Test expectations: file paths, descriptions, assertions per requirement
 11. LLM conformance-ready: requirements phrased for yes/no answer. Rewrite ambiguous ones.
 12. `## Premises` ledger: one row per premise the PRD rests on — claim, tag, evidence. Copy each analyst `(verified)`/`(hypothesis)` tag verbatim; analysts converging on a claim is not verification. No premises → write one explicit row: `none`.
-13. `## Open Decisions` table: one row per unresolved or needs-human item, columns exactly `decision, options, default, owner, status`. `default` is the option the build proceeds on; `status` is `open` until a quoted human decision is recorded, then `decided: <quote>`. A needs-human item is never written under settled decisions without a quoted human decision. No open decisions → write one explicit row: `none`. A counter-example to a recorded decision — named inputs, the decided rule's output, and the expected output — is a NEW row in this table, even when the decision is marked final: `decision`: `<id>: counter-example — <inputs>`; `options`: `keep rule or amend rule`; `default`: `keep rule`; `owner`: the decision's owner; `status`: `open`. Only `decided: <quote>` closes it; "already decided" never does.
+13. `## Open Decisions` table: one row per unresolved or needs-human item, columns exactly `decision, options, default, owner, status`. `default` is the option the build proceeds on; `status` is `open` until a quoted human decision is recorded, then `decided: <quote>`. A needs-human item is never written under settled decisions without a quoted human decision. No open decisions → write one explicit row: `none`. A rule that publishes a persisted outcome over open input gets AT MOST ONE roll-up row for its degenerate inputs (unreadable, empty, more than one, conflicting members, malformed/foreign, oversized, lookalike-but-distinct): `default` is the fail-closed option the build proceeds on, a real option such as `read unknown / refuse`, and `status` is `open` until the spec owner rules. The counter-example rule below is one case of it. A counter-example to a recorded decision — named inputs, the decided rule's output, and the expected output — is a NEW row in this table, even when the decision is marked final: `decision`: `<id>: counter-example — <inputs>`; `options`: `keep rule or amend rule`; `default`: `keep rule`; `owner`: the decision's owner; `status`: `open`. Only `decided: <quote>` closes it; "already decided" never does.
 
 ## Step 7: Task Decomposition
 
@@ -194,9 +194,9 @@ Atomic tasks from refined PRD + codebase analysis:
 - Produces code/config/test changes (no research-only tickets)
 - Sequential `order` field (10, 20, 30...) drives execution order — no separate dependency graph
 - Self-contained: worker executes without reading PRD. A ticket that applies a recorded decision or ruling (D-n, R-n, an Open Decisions row) quotes the decision's text verbatim — an id alone is not self-contained. Acceptance-criterion wording is carried into tickets unparaphrased.
-- A rule or predicate consumed by two or more tickets has ONE rule owner ticket that defines it for every input side, with a symmetry test (each input side × each outcome) in its acceptance criteria; consumer tickets order after it.
+- A rule or predicate consumed by two or more tickets has ONE rule owner ticket that defines it for every input side (an input side is one variant set), with an input table (writers, cardinality 0/1/many-differing, disagreeing related fields, derived variant source, size bound) and a symmetry test (each input side × each outcome) in its acceptance criteria; consumer tickets order after it.
 - A correction ticket (one added after refinement to change a value or rule) names the value/rule it changes, derives its consumers from the CODE (callers and readers of the changed symbol, not ticket text), and carries `each Done consumer's tests pass against the new rule` in its own acceptance criteria; it never flips a Done ticket back to Todo.
-- Each row of a PRD state/outcome table (input state → result) gets a test asserted at the outermost surface that row reaches (API response, rendered view, persisted record), owned by the ticket that owns that surface or by the final integration ticket; a row with only producer-level tests is an uncovered criterion.
+- Each row of a PRD state/outcome table (input state → result) gets a test asserted at the outermost surface that row reaches (API response, rendered view, persisted record), owned by the ticket that owns that surface or by the final integration ticket; a row with only producer-level tests is an uncovered criterion. When the outermost surface is a rendered view, its test renders that state to DOM/HTML in the target's existing test runner and asserts the rendered-structure checklist (the operator decision, quoted: "ok, 3"); with no render-capable runner the criterion is tagged `[manager]`.
 - Embed research seeds (file paths, patterns, APIs, test patterns)
 - Machine-checkable acceptance criteria with verify commands
 - Interface contracts: exact I/O/error shapes
@@ -429,7 +429,7 @@ All prior tickets are complete and individually verified. Test suite passes.
 - **Files**: [MODIFIED_FILES — full list from all prior tickets]
 - **Patterns**: KISS, YAGNI, DRY (Rule of Three), Small Functions, Guard Clauses, Cognitive Load, Self-Documenting Code, Fail-Fast, Encapsulation, Separation of Concerns
 - **APIs/types**: Public interfaces from prior tickets' Interface Contracts sections
-- **Test patterns**: Run existing test suite, add missing edge case tests
+- **Test patterns**: Run existing test suite, add a test for every input-table cell that has none
 
 ## Implementation Details
 **Files to modify/create**: [MODIFIED_FILES — full backticked list of every file path from all prior implementation + wiring tickets; this is the concrete in-scope set the worker may edit]
@@ -473,7 +473,7 @@ All prior tickets are complete and individually verified. Test suite passes.
 | Criterion | Test File | Description | Assertion | Source |
 |:---|:---|:---|:---|:---|
 | P1 violation fixes | Alongside each fix | Regression test per behavioral fix | Exercises the specific failure mode | <source of expected value> |
-| Edge cases | In existing test files | Error/boundary tests for modified code | Covers empty, null, max, error states | <source of expected value> |
+| Input table | In existing test files | One row per input-table cell of a modified rule: writers, cardinality (0 / 1 / many-differing), disagreeing related fields, derived-variant source, size bound | Each cell has a test row; an input side is one variant set, so each side × each outcome is covered | <source of expected value> |
 
 ## Conformance Check
 - [ ] Type checker passes — no new errors
@@ -637,7 +637,7 @@ All prior tickets are complete and individually verified. Test suite passes.
 2. **Assertion Strength Review**: For each assertion, rate:
    - P0: Tautological (always passes, e.g. `assert(true)`, `assert(typeof x === 'object')` on known object)
    - P1: Substring match that could false-positive (`.includes('foo')` where `foobar` also matches)
-   - P1: Happy path only — no error/boundary/edge case test for a modified code path
+   - P1: Happy path only — an input-table cell with no test row for a modified code path
    - P2: Correct but could be structural (e.g. `.includes()` where line-based or regex would be more precise)
 
 3. **Field Transformation Coverage**: For every field that changes name or shape across a boundary (e.g. camelCase→snake_case, string→number, DTO→entity), verify a test exercises the transformation end-to-end. Flag missing transformation tests as P1.
@@ -674,7 +674,7 @@ All prior tickets are complete and individually verified. Test suite passes.
 | Criterion | Test File | Description | Assertion | Source |
 |:---|:---|:---|:---|:---|
 | Strengthened assertions | Modified test files | Assertions upgraded to structural/line-based | No weak .includes() remaining for node IDs or attributes | <source of expected value> |
-| Edge case coverage | Modified test files | Error paths, boundary conditions | Invalid inputs produce expected errors | <source of expected value> |
+| Input-table coverage | Modified test files | Input-table cells: error paths, cardinality, size bound | Each cell's input produces its expected outcome | <source of expected value> |
 | Transformation coverage | Modified test files | Field name/shape conversions | Input camelCase produces output snake_case | <source of expected value> |
 
 ## Conformance Check
