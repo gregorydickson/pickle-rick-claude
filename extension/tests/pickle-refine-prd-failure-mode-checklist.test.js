@@ -190,6 +190,10 @@ test('refine skill tags every criterion the worker cannot run and tiers [manager
 test('refine-prd replaces edge-case lines with the input-table rule', () => {
   const content = fs.readFileSync(SKILL_PATH, 'utf-8');
   assert.ok(!content.includes('Covers empty, null, max, error states'));
+  // Every edge-case rubric line the input-table rule replaced stays gone, not only the first.
+  for (const replaced of ['add missing edge case tests', 'no error/boundary/edge case test', '| Edge case coverage |']) {
+    assert.ok(!content.includes(replaced), `replaced edge-case rubric line is back: ${replaced}`);
+  }
   assert.ok(content.includes('input-table cell with no test row'));
   assert.ok(/input side is one variant set/.test(content));
 });

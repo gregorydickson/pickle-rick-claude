@@ -2569,6 +2569,8 @@ test('pickle_build: setup stamps the deployed BUILD_INFO.json verbatim', () => {
 test('pickle_build: an absent BUILD_INFO.json records null and does NOT block setup', () => {
     const state = runSetupWithBuildInfo(null, 'pickle build absent');
     assert.equal(state.pickle_build, null);
+    // The launch build check still records — as unmeasured, naming why — and never as current.
+    assert.deepEqual(state.build_check, { outcome: 'unmeasured', installed: null, latest: null, reason: 'no_source_sha' });
 });
 
 test('pickle_build: unparseable and version-less BUILD_INFO.json record null, never invented values', () => {

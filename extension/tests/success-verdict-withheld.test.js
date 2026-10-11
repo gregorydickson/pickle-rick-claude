@@ -585,4 +585,23 @@ describe('deferred conformance checks withhold the success verdict', () => {
     assert.equal(control.verdict.unsuccessful, false);
     assert.equal(control.counters.phaseDispositions.pickle, undefined);
   });
+
+  // A respawn writes a fresh conformance artifact; only the LATEST one speaks for the ticket.
+  test('only the latest conformance artifact decides: a later bare verdict clears an earlier deferral, and vice versa', () => {
+    const deferring = '## Verdict: ALL_PASS\n\n## Manager Handoff\n- Axis X was not run; run it.\n';
+    const bare = '## Verdict: ALL_PASS\n\n## Manager Handoff\nnone\n';
+    const run = (id, older, newer) => {
+      const dir = tmpDir();
+      writeDoneWithConformance(dir, id, older);
+      fs.renameSync(path.join(dir, id, 'conformance_2026-10-11.md'), path.join(dir, id, 'conformance_2026-10-10.md'));
+      fs.writeFileSync(path.join(dir, id, 'conformance_2026-10-11.md'), newer);
+      return finalize(dir);
+    };
+    const cleared = run('cccc3333', deferring, bare);
+    assert.equal(cleared.verdict.unsuccessful, false);
+    assert.equal(cleared.counters.phaseDispositions.pickle, undefined);
+    const deferred = run('dddd4444', bare, deferring);
+    assert.equal(deferred.verdict.unsuccessful, true);
+    assert.match(deferred.counters.phaseDispositions.pickle, /done_with_deferred_checks:dddd4444/);
+  });
 });

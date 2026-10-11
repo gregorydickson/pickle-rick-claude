@@ -7839,3 +7839,34 @@ test('conformanceDefersChecks: shape table over every verdict/handoff combinatio
     assert.equal(conformanceDefersChecks(content), expected, name);
   }
 });
+
+// The phantom-Done reverter shares the conformance reader the deferral predicate widened. A Done
+// ticket with no completion commit but a substantive Manager Handoff is a legitimate closer handoff
+// and stays Done; the same ticket whose handoff body is `none` is still a phantom and is reverted.
+test('phantom-Done correction keeps a Done ticket with a substantive Manager Handoff; handoff none is reverted', () => {
+    const tmpDir = makeTmpRoot();
+    const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-phantom-handoff-data-')));
+    const prev = process.env.PICKLE_DATA_ROOT;
+    try {
+        process.env.PICKLE_DATA_ROOT = dataRoot;
+        initGitRepo(tmpDir);
+        const startCommit = gitHead(tmpDir);
+        const run = (ticketId, handoffBody) => {
+            const sessionDir = path.join(tmpDir, `session-${ticketId}`);
+            writeAutoMarkTicketWithStatus(sessionDir, ticketId, 'Done', true);
+            fs.writeFileSync(
+                path.join(sessionDir, ticketId, 'conformance_2026-10-11.md'),
+                `## Verdict: ALL_PASS\n\n## Manager Handoff\n${handoffBody}\n`,
+            );
+            const corrected = correctPhantomDoneTickets({ sessionDir, workingDir: tmpDir, startCommit, iteration: 1 });
+            return { corrected, status: readAutoMarkTicketStatus(sessionDir, ticketId) };
+        };
+        assert.deepEqual(run('handoff-kept', '- Run the release axis and record the result.'), { corrected: 0, status: 'Done' });
+        assert.deepEqual(run('handoff-none', 'none'), { corrected: 1, status: 'Todo' });
+    } finally {
+        if (prev === undefined) delete process.env.PICKLE_DATA_ROOT;
+        else process.env.PICKLE_DATA_ROOT = prev;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+});

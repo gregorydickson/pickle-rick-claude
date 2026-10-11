@@ -8189,6 +8189,8 @@ describe('run-end build disclosure is record-only', () => {
     };
     const control = verdictFor(null);
     assert.deepEqual(verdictFor(behind), control, 'a stale build never changes the verdict');
+    const offline = { outcome: 'unmeasured', installed: 'a'.repeat(40), latest: null, reason: 'no_latest_tag' };
+    assert.deepEqual(verdictFor(offline), control, 'an unmeasured (offline) build check never withholds success');
     assert.equal(control.unsuccessful, false, 'control: this run is a success');
   });
 
