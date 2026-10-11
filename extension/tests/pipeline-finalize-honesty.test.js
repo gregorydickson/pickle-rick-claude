@@ -1177,3 +1177,35 @@ describe('a placeholder Open Decisions row is not an open decision', () => {
     assert.equal(verdictFor('| None of the backends support X | a, b | a | operator | open |').unsuccessful, true);
   });
 });
+
+describe('a divergence reason is appended to an earlier marker, never dropped', () => {
+  function run(phase, exitCode, exitReason, priorDisposition, postFinalVerdict) {
+    const dir = tmpDir();
+    const { runtime, statePath, cancelMarker } = makeRuntime(dir);
+    writeState(statePath, exitReason, postFinalVerdict);
+    const counters = { completed: 0, skipped: 0, phaseSkips: {}, nonConvergent: 0, phaseDispositions: {} };
+    if (priorDisposition) counters.phaseDispositions[phase] = priorDisposition;
+    finalizePhaseSuccess(runtime, counters, cancelMarker, phase, exitCode);
+    const status = readStatus(dir);
+    fs.rmSync(dir, { recursive: true });
+    return { counters, status };
+  }
+
+  test('AP-BIN-ITER2-01: an anatomy-park lane fallback keeps the non-convergence reason beside it', () => {
+    const fallback = 'lanes_fell_back_to_directories:no review diff';
+    const { counters, status } = run('anatomy-park', 1, 'anatomy_non_convergent', fallback);
+    assert.equal(counters.phaseDispositions['anatomy-park'], `${fallback}; anatomy_non_convergent`);
+    assert.equal(status.phase_dispositions['anatomy-park'], `${fallback}; anatomy_non_convergent`);
+    assert.equal(counters.completed, 0);
+  });
+
+  test('a degraded post-final pickle that also exited non-zero names both', () => {
+    const { counters } = run('pickle', 1, 'circuit_open', undefined, { state: 'red', degraded: true, dimensions: ['x'] });
+    assert.equal(counters.phaseDispositions.pickle, `${POST_FINAL_DEGRADED_MARKER}:red; circuit_open`);
+  });
+
+  test('control: with no earlier marker the reason stands alone', () => {
+    const { counters } = run('anatomy-park', 1, 'anatomy_non_convergent');
+    assert.equal(counters.phaseDispositions['anatomy-park'], 'anatomy_non_convergent');
+  });
+});

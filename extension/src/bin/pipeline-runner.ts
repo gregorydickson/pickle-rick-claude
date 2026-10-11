@@ -5951,9 +5951,9 @@ const CAP_DROPPED_DISPOSITION = 'tickets_dropped_at_cap';
  * prior gate already recorded for the same phase. Two gates can legitimately fire on
  * one phase (a degraded post-final verdict AND a cap-dropped ticket), and a bare
  * assignment would silently drop whichever ran first — so the ONE append policy lives
- * here rather than being restated at each call site. The overwrite sites elsewhere in
- * this file are deliberate: they record a phase's single terminal reason, not an
- * accumulating list.
+ * here rather than being restated at each call site. Every writer goes through it: a lane
+ * fallback marker is appended before any terminal reason is known, so an overwrite or a
+ * `??=` erases one of the two.
  */
 function appendPhaseDisposition(counters: PhaseCounters, phase: PhaseName, marker: string): void {
   const prior = counters.phaseDispositions[phase];
@@ -6846,14 +6846,14 @@ export async function runJudgeTimeoutFinalizeGate(
   const gateResult = await spawnFinalizeGate(runtime, rawPhase);
   if (gateResult.exitCode === 0) {
     counters.completed++;
-    counters.phaseDispositions[rawPhase] = 'judge_timeout';
+    appendPhaseDisposition(counters, rawPhase, 'judge_timeout');
     if (reportConvergedWithUnmeasured(runtime, counters, rawPhase, log)) counters.nonConvergent++;
     writeRunningStatus(runtime, counters, null);
     log(`Phase ${rawPhase} finalize-gate passed after judge_timeout recovery`);
     return { action: 'continue' };
   }
   counters.nonConvergent++;
-  counters.phaseDispositions[rawPhase] = 'finalize_gate_failed:judge_timeout';
+  appendPhaseDisposition(counters, rawPhase, 'finalize_gate_failed:judge_timeout');
   writeRunningStatus(runtime, counters, null);
   log(`Phase ${rawPhase} finalize-gate failed after judge_timeout recovery (exit ${gateResult.exitCode}) — phase not completed, run cannot report success`);
   return isStrictPhasePolicy(runtime) ? { action: 'break' } : { action: 'continue' };
@@ -6890,13 +6890,13 @@ export async function runAllBackendsExhaustedFinalizeGate(
   counters.nonConvergent++;
   if (gateResult.exitCode === 0) {
     counters.completed++;
-    counters.phaseDispositions[rawPhase] = reason;
+    appendPhaseDisposition(counters, rawPhase, reason);
     reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
     writeRunningStatus(runtime, counters, null);
     log(`Phase ${rawPhase} finalize-gate passed after ${reason} — phase degraded, run cannot report success`);
     return { action: 'continue' };
   }
-  counters.phaseDispositions[rawPhase] = `finalize_gate_failed:${reason}`;
+  appendPhaseDisposition(counters, rawPhase, `finalize_gate_failed:${reason}`);
   writeRunningStatus(runtime, counters, null);
   log(`Phase ${rawPhase} finalize-gate failed after ${reason} (exit ${gateResult.exitCode}) — phase not completed, run cannot report success`);
   return isStrictPhasePolicy(runtime) ? { action: 'break' } : { action: 'continue' };
@@ -7078,7 +7078,7 @@ function withholdForCloserHandoff(
     return null;
   }
   counters.nonConvergent++;
-  counters.phaseDispositions[rawPhase] = handoffReason;
+  appendPhaseDisposition(counters, rawPhase, handoffReason);
   // Errors are non-blocking: a failed status write still reports the phase and continues.
   try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
   log(`Phase ${rawPhase} handed off (exit_reason=${handoffReason}) — withholding success verdict, advancing`);
@@ -7493,7 +7493,7 @@ export function withholdForFailedAcGate(
   if (acGate.status === 'pass') return null;
   const ids = acGate.failures.map((f) => f.id).join(',');
   counters.nonConvergent++;
-  counters.phaseDispositions[rawPhase] = ids ? `ac_phase_gate_failed:${ids}` : 'ac_phase_gate_failed';
+  appendPhaseDisposition(counters, rawPhase, ids ? `ac_phase_gate_failed:${ids}` : 'ac_phase_gate_failed');
   // Errors are non-blocking: a failed status write still reports the phase and continues.
   try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
   log(`Phase ${rawPhase} AC gate failed (${ids || 'no criterion named'}) — withholding success verdict, advancing`);
@@ -7561,7 +7561,7 @@ export function finalizePhaseSuccess(
     && reportConvergedWithUnmeasured(runtime, counters, rawPhase, log);
   if (disposition !== null || unmeasured) counters.nonConvergent++;
   if (disposition !== null) {
-    counters.phaseDispositions[rawPhase] ??= disposition;
+    appendPhaseDisposition(counters, rawPhase, disposition);
     // Errors are non-blocking: a failed status write still reports the phase and continues.
     try { writeRunningStatus(runtime, counters, null); } catch { /* non-blocking */ }
     log(`Phase ${rawPhase} did NOT converge (${disposition}) — reported non-convergent, not counted as completed`);
