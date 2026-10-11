@@ -83,6 +83,43 @@ premise below was re-measured at HEAD `f2c590f4`; scope base `f2c590f4`.
 - pickle-rick adds **no browser or screenshot dependency** (portability). Known limit, recorded: purely
   visual defects (layout, contrast) are out of reach of this approach.
 
+## Interface Contracts
+
+- **WS-1** `conformanceVerdictIsFail(content: string): boolean` (`extension/src/bin/mux-runner.ts`) — signature
+  unchanged. Returns `true` when the verdict token is `FAIL`, when an `ALL_PASS` token is followed on the verdict
+  line by qualifying text, or when the artifact records a lane/check as not run. Returns `false` only for an
+  unqualified `ALL_PASS` with no not-run record. Parked-ticket reason strings: `qualified_verdict`,
+  `not_run:<lane>`.
+- **WS-2** `state.json` gains `pickle_build: { version: string; source_sha: string | null }` (stamped by
+  `setup.ts`; `source_sha` null when the deploy carries none) and, when behind,
+  `build_behind: { installed: string; latest: string }`. Schema version unchanged (additive optional fields;
+  confirm at breakdown whether `LATEST_SCHEMA_VERSION` policy requires a bump — if it does, record it as an
+  Open Decision, never a worker bump).
+- **WS-3 / WS-4** prompt contracts (`spawn-morty.ts` Plan section, `.claude/agents/morty-phase-verifier.md`,
+  `.claude/commands/pickle-refine-prd.md`, `REQUIREMENTS_ROLE_INSTRUCTIONS` in
+  `extension/src/bin/spawn-refinement-team.ts`).
+
+## Acceptance Criteria (each measured at HEAD `f2c590f4`: all FAIL today)
+
+| AC | Check | Today | Expected |
+|---|---|---|---|
+| WS-1a | `conformanceVerdictIsFail("## Verdict: ALL_PASS for the ticket's own criteria\n")` | `false` | `true` |
+| WS-1b | control: `conformanceVerdictIsFail("## Verdict\nALL_PASS\n")` | `false` | `false` (unchanged) |
+| WS-1c | an artifact with an unqualified `ALL_PASS` verdict plus a "could not run" lane line → `true` | `false` | `true` |
+| WS-1d | `grep -c "if (conformance.hasManagerHandoff) continue;" extension/src/bin/mux-runner.ts` | 1 | 0 (test reds no longer carved out) |
+| WS-2a | `grep -c "pickle_build" extension/src/bin/setup.ts` | 0 | ≥1, with a `setup.test.js` row asserting the stamp |
+| WS-3a | `grep -c "Covers empty, null, max, error states" .claude/commands/pickle-refine-prd.md` | 1 | 0 |
+| WS-3b | `grep -ci "cardinality" extension/src/bin/spawn-morty.ts` | 0 | ≥1 (Plan input table) |
+| WS-3c | `grep -ci "domain mutant" .claude/agents/morty-phase-verifier.md` | 0 | ≥1 |
+| WS-3d | `grep -ci "degenerate" extension/src/bin/spawn-refinement-team.ts` | 0 | ≥1 (requirements analyst) |
+| WS-4a | `grep -ci "pass styling" .claude/agents/morty-phase-verifier.md` | 0 | ≥1 |
+
+Executable WS-1 checks run against the compiled module:
+`cd extension && ./node_modules/.bin/tsc && node --input-type=module -e "const m=await import('./bin/mux-runner.js'); ..."`.
+Tests for WS-1 go in an existing mux-runner test file; WS-2 in `extension/tests/setup.test.js` (and
+`check-update.test.js` for the launch-time comparison). Prompt-contract greps are necessary, not sufficient —
+each prompt ticket also adds a pin in an existing prompt-contract test file.
+
 ## Open Decisions
 
 | decision | options | default | owner | status |
