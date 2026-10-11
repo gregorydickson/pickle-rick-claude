@@ -584,7 +584,6 @@ export function resolveBuildCheckForSetup(build, deps = {}) {
     try {
         return compareInstalledBuild({
             sourceSha,
-            dirty: build?.dirty ?? null,
             latestTagSha: sourceSha === null ? null : (deps.latestTagSha ?? getLatestReleaseTagSha)(),
             isAncestor: deps.isAncestor ?? isCommitAncestorOnRelease,
         });

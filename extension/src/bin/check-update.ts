@@ -218,11 +218,10 @@ export type BuildCheck = {
  * the commit it was built from; a version string cannot say that, because the string reads
  * `0.0.0` when unreadable and an update-disabled install short-circuits to up-to-date. The tag is
  * the only reference: `origin/main` is the moving development tip and trails nothing meaningful.
- * `dirty` is carried by the caller for display; an uncommitted edit does not change ancestry.
+ * A dirty build is not an input: an uncommitted edit does not change ancestry.
  */
 export function compareInstalledBuild(input: {
   sourceSha: string | null;
-  dirty: boolean | null;
   latestTagSha: string | null;
   isAncestor: (ancestor: string, descendant: string) => boolean | null;
 }): BuildCheck {
