@@ -9,7 +9,7 @@ import { printMinimalPanel, Style, TICKET_TIER_BUDGETS, getExtensionRoot, getDat
 import { resolveMcpConfigPath, buildWorkerMcpConfig, hasMcpServersRecord } from '../services/backend-spawn.js';
 import { getHeadSha, getHeadBranch, probeConcurrentGitAccess, updateTicketFrontmatter, runGitSafe } from '../services/git-utils.js';
 import { detectAndRecoverHeadRegression, resolveWorkerGateVerdict, emitWorkerGateNotRunResidual, isAdvisoryWorkerGateVerdict, advisoryWorkerGateResidualDetail, isHeadAtOrBelowCommit, collectFrontmatterInProgress, readTicketStatusMap, resolveTicketDesyncWinner, moveCurrentTicket } from './mux-runner.js';
-import { State, LockError, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
+import { State, LockError, type PickleBuild, SessionMapEntry, Backend, BACKENDS, STATE_MANAGER_DEFAULTS, type CodegraphSettings } from '../types/index.js';
 import { StateManager, clearExitReason, schemaVersionDeployDriftMessage, isProcessAlive, readMappedPid, PAUSED_ORPHAN_MIN_AGE_MS } from '../services/state-manager.js';
 import { logActivity, pruneActivity } from '../services/activity-logger.js';
 import { emitOrphanReapSummary, reapOrphanedWorkerProcs, type ReapOrphanedWorkerProcsOpts, type ReapSweepResult } from '../services/orphan-reaper.js';
@@ -660,6 +660,28 @@ export function resolveClaudeVersionForSetup(): string | null {
     // Collapse empty output onto the same `null` that a throw yields, so
     // "unresolvable" has exactly ONE representation on disk instead of two.
     return versionOutput === '' ? null : versionOutput;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the pickle-rick build the installer recorded at the deployed install root
+ * (`BUILD_INFO.json`), so a session record names the build it ran on. Observability
+ * only, never a gate: an absent, unreadable, malformed or version-less file records
+ * `null` — "could not measure" — and values are copied through, never invented.
+ */
+export function resolvePickleBuildForSetup(extensionRoot = getExtensionRoot()): PickleBuild | null {
+  try {
+    const info: unknown = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'BUILD_INFO.json'), 'utf-8'));
+    if (typeof info !== 'object' || info === null) return null;
+    const { version, source_sha, dirty } = info as Record<string, unknown>;
+    if (typeof version !== 'string') return null;
+    return {
+      version,
+      source_sha: typeof source_sha === 'string' ? source_sha : null,
+      dirty: typeof dirty === 'boolean' ? dirty : null,
+    };
   } catch {
     return null;
   }
@@ -1597,6 +1619,7 @@ function createInitialState(config: SetupArgs, sessionPath: string, taskStr: str
     readiness: { cycle_history: [] },
     codex_version_seen: codexVersionSeen,
     claude_version_seen: claudeVersionSeen,
+    pickle_build: resolvePickleBuildForSetup(),
     orphans_detected: [],
     invocation_source: process.env.PICKLE_PARENT_SESSION_HASH ? 'manager_subprocess' : 'operator',
     parent_session_hash: process.env.PICKLE_PARENT_SESSION_HASH || null,

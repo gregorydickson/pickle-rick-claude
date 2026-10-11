@@ -550,6 +550,30 @@ export function resolveClaudeVersionForSetup() {
     }
 }
 /**
+ * Reads the pickle-rick build the installer recorded at the deployed install root
+ * (`BUILD_INFO.json`), so a session record names the build it ran on. Observability
+ * only, never a gate: an absent, unreadable, malformed or version-less file records
+ * `null` — "could not measure" — and values are copied through, never invented.
+ */
+export function resolvePickleBuildForSetup(extensionRoot = getExtensionRoot()) {
+    try {
+        const info = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'BUILD_INFO.json'), 'utf-8'));
+        if (typeof info !== 'object' || info === null)
+            return null;
+        const { version, source_sha, dirty } = info;
+        if (typeof version !== 'string')
+            return null;
+        return {
+            version,
+            source_sha: typeof source_sha === 'string' ? source_sha : null,
+            dirty: typeof dirty === 'boolean' ? dirty : null,
+        };
+    }
+    catch {
+        return null;
+    }
+}
+/**
  * Apply the per-backend iteration budget AFTER CLI parsing, so we know which
  * backend was selected. Resolution order:
  *   1. Explicit --max-iterations CLI flag wins (already in config.loopLimit).
@@ -1467,6 +1491,7 @@ function createInitialState(config, sessionPath, taskStr) {
         readiness: { cycle_history: [] },
         codex_version_seen: codexVersionSeen,
         claude_version_seen: claudeVersionSeen,
+        pickle_build: resolvePickleBuildForSetup(),
         orphans_detected: [],
         invocation_source: process.env.PICKLE_PARENT_SESSION_HASH ? 'manager_subprocess' : 'operator',
         parent_session_hash: process.env.PICKLE_PARENT_SESSION_HASH || null,

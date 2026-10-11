@@ -167,10 +167,11 @@ test('setup initializeNewSession: state field set matches schema fixture', () =>
         // check: this stays an EXACT ordered comparison, so any OTHER key added, removed
         // or reordered still reds. Deriving the expected keys from the subject would make
         // the assertion vacuous, and a subset check would let real drift through.
+        // `pickle_build` follows the same route (written right after `claude_version_seen`).
         // Residual: fold `claude_version_seen` into fixtures/setup/state-schema.json once
         // that file is in fence, and drop this splice.
         const expectedFields = schema.fields_in_order.flatMap(
-            field => (field === 'codex_version_seen' ? [field, 'claude_version_seen'] : [field]),
+            field => (field === 'codex_version_seen' ? [field, 'claude_version_seen', 'pickle_build'] : [field]),
         );
 
         assert.deepEqual(Object.keys(persisted), expectedFields);
@@ -2539,4 +2540,46 @@ test('runSetup sandbox: session written to tmp PICKLE_DATA_ROOT, not default dat
     } finally {
         cleanup(sessionPath);
     }
+});
+
+// `pickle_build`: record which pickle-rick build ran the session (observability only).
+function runSetupWithBuildInfo(buildInfoText, task) {
+    const extRoot = makeExtensionRootWithSettings({});
+    const dataRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-build-info-data-')));
+    try {
+        if (buildInfoText !== null) fs.writeFileSync(path.join(extRoot, 'BUILD_INFO.json'), buildInfoText);
+        const output = runSetupWithEnv(['--task', task], { EXTENSION_DIR: extRoot, PICKLE_DATA_ROOT: dataRoot });
+        const sessionRoot = output.match(/SESSION_ROOT=(.+)/)[1].trim();
+        return JSON.parse(fs.readFileSync(path.join(sessionRoot, 'state.json'), 'utf-8'));
+    } finally {
+        fs.rmSync(extRoot, { recursive: true, force: true });
+        fs.rmSync(dataRoot, { recursive: true, force: true });
+    }
+}
+
+test('pickle_build: setup stamps the deployed BUILD_INFO.json verbatim', () => {
+    const sha = 'a'.repeat(40);
+    const state = runSetupWithBuildInfo(
+        JSON.stringify({ version: '9.9.9', source_sha: sha, dirty: true, tag: null }),
+        'pickle build stamped',
+    );
+    assert.deepEqual(state.pickle_build, { version: '9.9.9', source_sha: sha, dirty: true });
+});
+
+test('pickle_build: an absent BUILD_INFO.json records null and does NOT block setup', () => {
+    const state = runSetupWithBuildInfo(null, 'pickle build absent');
+    assert.equal(state.pickle_build, null);
+});
+
+test('pickle_build: unparseable and version-less BUILD_INFO.json record null, never invented values', () => {
+    assert.equal(runSetupWithBuildInfo('{not json', 'pickle build garbage').pickle_build, null);
+    assert.equal(runSetupWithBuildInfo(JSON.stringify({ source_sha: 'a'.repeat(40) }), 'pickle build versionless').pickle_build, null);
+});
+
+test('pickle_build: a tarball record keeps null sha and dirty', () => {
+    const state = runSetupWithBuildInfo(
+        JSON.stringify({ version: '2.2.2', source_sha: null, dirty: null, tag: '2.2.2' }),
+        'pickle build tarball',
+    );
+    assert.deepEqual(state.pickle_build, { version: '2.2.2', source_sha: null, dirty: null });
 });

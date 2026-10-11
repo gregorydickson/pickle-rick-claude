@@ -707,6 +707,10 @@ function normalizeV5StateDefaults(state) {
     // OLD state file load unchanged, which is why no schema bump is required.
     if (typeof state.claude_version_seen !== 'string')
         state.claude_version_seen = null;
+    if (!isRecord(state.pickle_build))
+        state.pickle_build = null;
+    if (!isRecord(state.build_check))
+        state.build_check = null;
     if (!isRecord(state.worker_artifact_progress))
         state.worker_artifact_progress = {};
     if (typeof state.codex_manager_consecutive_no_progress !== 'number')

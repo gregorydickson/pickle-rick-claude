@@ -2229,3 +2229,48 @@ describe('install.sh deploy content drift audit (TIER-2.7)', () => {
     });
   });
 });
+
+describe('installer records the build it deploys (BUILD_INFO.json)', () => {
+  const START = '# Record the build this deploy carries';
+  const END = 'Recorded build info';
+
+  // Runs the REAL block out of the installer (no hand-copied fixture) against a temp install root.
+  function runBuildInfoBlock({ mode, scriptDir, version }) {
+    const src = readFileSync(INSTALL_SH, 'utf8');
+    const start = src.indexOf(START);
+    const end = src.indexOf('\n', src.indexOf(END, start));
+    assert.ok(start !== -1 && end !== -1, 'build-info block not found in install script');
+    const root = mkdtempSync(path.join(tmpdir(), 'install-build-info-'));
+    const script = `set -e\nINSTALL_MODE="${mode}"\nSCRIPT_DIR="${scriptDir}"\nSRC_V="${version}"\nEXTENSION_ROOT="${root}"\n${src.slice(start, end)}\n`;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 30_000 });
+    assert.strictEqual(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}`);
+    try {
+      return JSON.parse(readFileSync(path.join(root, 'BUILD_INFO.json'), 'utf8'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  test('git mode records a 40-hex source_sha, a boolean dirty bit and the version', () => {
+    const info = runBuildInfoBlock({ mode: 'git', scriptDir: REPO_ROOT, version: '9.9.9' });
+    assert.match(info.source_sha, /^[0-9a-f]{40}$/);
+    assert.strictEqual(typeof info.dirty, 'boolean');
+    assert.strictEqual(info.version, '9.9.9');
+    assert.strictEqual(info.tag, null);
+  });
+
+  test('tarball mode records null sha and dirty, with the release version as tag', () => {
+    const scriptDir = mkdtempSync(path.join(tmpdir(), 'install-build-info-src-'));
+    try {
+      const info = runBuildInfoBlock({ mode: 'tarball', scriptDir, version: '9.9.9' });
+      assert.deepStrictEqual(info, { version: '9.9.9', source_sha: null, dirty: null, tag: '9.9.9' });
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
+  });
+
+  test('the block runs after the extension rsync, so --delete cannot remove it', () => {
+    const src = readFileSync(INSTALL_SH, 'utf8');
+    assert.ok(src.indexOf(START) > src.indexOf('rsync -a --delete --delete-excluded'));
+  });
+});

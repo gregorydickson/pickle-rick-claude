@@ -1,6 +1,7 @@
 // @tier: fast
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -343,5 +344,29 @@ test('R-WSWA-1: existing worker_artifact_progress entries are preserved (not clo
     );
   } finally {
     fs.rmSync(tmpD, { recursive: true, force: true });
+  }
+});
+
+test('pickle_build and build_check: documented, typed nullable, and hydrated to null on old state files', async () => {
+  const stateSource = fs.readFileSync(stateTypesPath, 'utf8');
+  assert.match(stateSource, /pickle_build\?: PickleBuild \| null;/);
+  assert.match(stateSource, /build_check\?: BuildCheck \| null;/);
+
+  const { StateManager } = await import('../services/state-manager.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-build-hydrate-'));
+  try {
+    const statePath = path.join(dir, 'state.json');
+    const sm = new StateManager();
+    fs.writeFileSync(statePath, JSON.stringify({
+      active: false, working_dir: dir, step: 'prd', iteration: 0, max_iterations: 1,
+      worker_timeout_seconds: 60, start_time_epoch: 1, completion_promise: null, original_prompt: 'x',
+      current_ticket: null, history: [], started_at: new Date().toISOString(), session_dir: dir,
+      schema_version: 5,
+    }));
+    const state = sm.read(statePath);
+    assert.equal(state.pickle_build, null);
+    assert.equal(state.build_check, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

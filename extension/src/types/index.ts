@@ -12,6 +12,16 @@ export type PostFinalVerdictState =
 /** M1: one script-failure diagnostic tail carried beside `post_final_verdict.dimensions`. */
 export type PostFinalVerdictDiagnostic = { name: string; message: string };
 
+/** The pickle-rick build a session ran on, as recorded in the deployed `BUILD_INFO.json`. */
+export interface PickleBuild {
+  version: string;
+  source_sha: string | null;
+  dirty: boolean | null;
+}
+
+/** Result of comparing a session's `pickle_build` against the source checkout. */
+export type BuildCheck = Record<string, unknown>;
+
 export interface State {
   active: boolean;
   working_dir: string;
@@ -124,6 +134,14 @@ export interface State {
    * `state.json Field Invariants` section of `extension/CLAUDE.md`.
    */
   claude_version_seen?: string | null;
+  /**
+   * The pickle-rick build this session ran on, stamped at setup from the deployed
+   * `BUILD_INFO.json`; `null` when that file is absent or unreadable. Observability only.
+   * Invariant lives in `extension/CLAUDE.md` § state.json Field Invariants.
+   */
+  pickle_build?: PickleBuild | null;
+  /** Comparison of `pickle_build` against the source checkout; `null` until written. */
+  build_check?: BuildCheck | null;
   /**
    * Terminal-exit forensic marker. Set by finalize/forensic helpers in the
    * runners (mux/microverse/pipeline/jar). Values: 'success', 'limit',

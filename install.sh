@@ -393,6 +393,27 @@ if [ -f "$_schema_src" ]; then
   cp "$_schema_src" "$EXTENSION_ROOT/extension/activity-events.schema.json"
 fi
 
+# Record the build this deploy carries, at the install root (outside the rsync'd extension/ tree, so
+# --delete never touches it and the source tree never holds it). setup.ts stamps it into state.json.
+if [ "$INSTALL_MODE" = "git" ]; then
+  _build_sha="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$_build_sha" ]; then
+    _build_dirty=false
+    [ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ] && _build_dirty=true
+  else
+    _build_dirty=null
+  fi
+  _build_tag=""
+else
+  _build_sha=""
+  _build_dirty=null
+  _build_tag="$SRC_V"
+fi
+jq -n --arg version "$SRC_V" --arg sha "$_build_sha" --argjson dirty "$_build_dirty" --arg tag "$_build_tag" \
+  '{version: $version, source_sha: (if $sha == "" then null else $sha end), dirty: $dirty, tag: (if $tag == "" then null else $tag end)}' \
+  > "$EXTENSION_ROOT/BUILD_INFO.json"
+echo "🏷️  Recorded build info (BUILD_INFO.json)"
+
 # --- CODEGRAPH RUNTIME DEP (per-mode; recreated each run — rsync deletes node_modules) ---
 # Compiled JS imports runtime packages at module-load (typescript from
 # citadel/frontend-prop-drift-audit.js, the scoped @colbymchenry/codegraph and its
