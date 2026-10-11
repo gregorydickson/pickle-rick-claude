@@ -154,6 +154,24 @@ describe('createTicketUnitSession', () => {
 // d9181756: the pickle phase as waves of unit sessions, integrated with write-back
 // ---------------------------------------------------------------------------
 
+const SOURCE_SEND_TO_MORTY = path.resolve(import.meta.dirname, '../../.claude/commands/send-to-morty.md');
+
+/** Run `fn` with HOME pointed at a temp dir seeded from the SOURCE send-to-morty.md (the prompt builder reads it from HOME). */
+async function withSeededHome(fn) {
+  const tmpHome = fs.realpathSync(mkFixtureTmpDir('pickle-units-home-'));
+  const cmdDir = path.join(tmpHome, '.claude', 'commands');
+  fs.mkdirSync(cmdDir, { recursive: true });
+  fs.copyFileSync(SOURCE_SEND_TO_MORTY, path.join(cmdDir, 'send-to-morty.md'));
+  const originalHome = process.env.HOME;
+  process.env.HOME = tmpHome;
+  try {
+    return await fn();
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  }
+}
+
 describe('runPickleWaves via main()', () => {
   const WAVE_TICKETS = ['aaaa1111', 'bbbb2222'];
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -386,7 +404,7 @@ describe('runPickleWaves via main()', () => {
     try {
       tierTickets(fx, ['aaaa1111']);
       __setSpawnRunnerForTests(lifecycleRunner(observed));
-      await runMain(fx.sessionDir, fx.dataRoot);
+      await withSeededHome(() => runMain(fx.sessionDir, fx.dataRoot));
       assertLifecycleChain(fx, observed, 'aaaa1111');
       assert.match(pipelineLog(fx.sessionDir), /lifecycle-incomplete Done tickets: 1 — aaaa1111/);
     } finally {
@@ -402,7 +420,7 @@ describe('runPickleWaves via main()', () => {
     try {
       tierTickets(fx, WAVE_TICKETS);
       __setSpawnRunnerForTests(lifecycleRunner(observed, { complete: [full] }));
-      await runMain(fx.sessionDir, fx.dataRoot);
+      await withSeededHome(() => runMain(fx.sessionDir, fx.dataRoot));
       assertLifecycleChain(fx, observed, short);
       assert.equal(observed[full].first.ok, true, 'control: the complete ticket is accepted on the first evaluation');
       assert.equal(field(readTicket(fx.sessionDir, full), 'status'), 'Done');
