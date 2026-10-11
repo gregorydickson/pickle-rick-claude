@@ -7348,6 +7348,9 @@ function ticketHasMeasuredRedTestFailure(runtime: PipelineRuntime, ticketId: str
  * list is `measured` and still withholds; a red verdict with no such corroboration (the
  * activity entry is missing — e.g. ring eviction, AP-EXT-ITER211-02 — or its failure list is
  * empty) is `unmeasured` and is reported as a DISTINCT disposition rather than withheld.
+ *
+ * `deferred` is independent of the test verdict: every Done ticket whose latest conformance
+ * artifact defers or qualifies a check (`readLatestTicketConformanceSnapshot(...).defersChecks`).
  */
 function collectDoneTicketsWithRedTestVerdict(runtime: PipelineRuntime): {
   measured: { id: string; title: string }[];
@@ -7465,8 +7468,9 @@ function reportConvergedWithUnmeasured(
  */
 /**
  * WS-B (f8559470) + B-RELVERD V1 (f04ff132): name the Done tickets whose CURRENT
- * worker_gate_tests_verdict is red, and return whether any is a MEASURED red. Done is never
- * blocked on a red verdict. This only feeds `computePipelineVerdict`'s withholding term (AC-B1)
+ * worker_gate_tests_verdict is red, plus the Done tickets that defer or qualify a conformance
+ * check, and return whether any is a MEASURED red or a deferral. Done is never blocked on either.
+ * This only feeds `computePipelineVerdict`'s withholding term (AC-B1)
  * and names the offenders in the pickle disposition. It adds no gate, field, halt, or counter.
  *
  * Called at FINALIZE, never at the pickle boundary. A disposition written mid-run is persisted by
