@@ -6557,12 +6557,16 @@ export function readLatestTicketConformanceSnapshot(ticketDir: string): TicketCo
  * template line `ALL_PASS / FAIL` reads as ALL_PASS. No verdict line, or no token, is false: an
  * unreadable verdict refuses nothing.
  */
+const CONFORMANCE_VERDICT_LINE_RE = /^[\s#>*\-\d.]*verdict\b/i;
+
+/** Index of the LAST verdict heading or line — the one both conformance predicates read — or -1. */
+function lastConformanceVerdictIndex(lines: string[]): number {
+  return lines.findLastIndex((line) => CONFORMANCE_VERDICT_LINE_RE.test(line));
+}
+
 export function conformanceVerdictIsFail(content: string): boolean {
   const lines = content.split('\n');
-  let verdictAt = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^[\s#>*\-\d.]*verdict\b/i.test(lines[i])) verdictAt = i;
-  }
+  const verdictAt = lastConformanceVerdictIndex(lines);
   if (verdictAt < 0) return false;
   const next = lines.slice(verdictAt + 1).find((line) => line.trim() !== '') ?? '';
   const token = /\b(ALL_PASS|FAIL)\b/.exec(`${lines[verdictAt]}\n${next}`);
@@ -6578,10 +6582,10 @@ export function conformanceVerdictIsFail(content: string): boolean {
 export function conformanceDefersChecks(content: string): boolean {
   if (hasSubstantiveManagerHandoff(content)) return true;
   const lines = content.split('\n');
-  const verdictLine = lines.findLast((line) => /^[\s#>*\-\d.]*verdict\b/i.test(line));
-  if (verdictLine === undefined) return false;
-  const remainder = verdictLine
-    .replace(/^[\s#>*\-\d.]*verdict\b/i, '')
+  const verdictAt = lastConformanceVerdictIndex(lines);
+  if (verdictAt < 0) return false;
+  const remainder = lines[verdictAt]
+    .replace(CONFORMANCE_VERDICT_LINE_RE, '')
     .replace(/^[\s*_:-]+|[\s*_.:]+$/g, '');
   return remainder !== 'ALL_PASS' && remainder.includes('ALL_PASS');
 }

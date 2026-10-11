@@ -256,6 +256,16 @@ test('AP-BIN-ITER257-01: a verdict separated from its heading by blank lines is 
     // The template line parks nothing but does defer: the separate predicate reads it as true.
     assert.equal(conformanceDefersChecks('6. **Verdict**: ALL_PASS / FAIL (failures with file:line refs)\n'), true);
 });
+// Both conformance predicates read the SAME verdict line — the last one. A qualified verdict above a
+// bare final one neither refuses nor defers; a bare verdict above a qualified final one defers.
+test('the refusal and deferral predicates agree on which verdict line is the verdict', () => {
+    const qualifiedThenBare = 'Verdict: ALL_PASS (one check deferred)\n\n## 7. Verdict\n\nALL_PASS\n';
+    assert.equal(conformanceVerdictIsFail(qualifiedThenBare), false);
+    assert.equal(conformanceDefersChecks(qualifiedThenBare), false);
+    const bareThenQualified = '## 6. Verdict\n\nFAIL\n\n## 7. Verdict: ALL_PASS (one check deferred)\n';
+    assert.equal(conformanceVerdictIsFail(bareThenQualified), false);
+    assert.equal(conformanceDefersChecks(bareThenQualified), true);
+});
 // F75-BACKEND-4: a phase_backends override stamps state.backend for its phase and restores it in
 // runPhaseIteration's finally, which process.exit skips. A SIGHUP/SIGTERM/SIGINT mid-phase left the
 // override persisted, so --resume (state.backend wins resolution) ran every later phase on it.
