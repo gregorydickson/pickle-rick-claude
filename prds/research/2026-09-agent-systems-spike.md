@@ -83,7 +83,7 @@ Recall median 1.00 / pooled 0.85, 19 complete; precision 0.80 / 0.73, 16 over-de
 - **Read-out.** Coupled, deferred-merge curves decline past 2–4; STORM's did not (HYPOTHESIS: merge timing); none covers cherry-picked lanes. **Start at 2; go to 3 only on the soak's own conflict and dropped-lane rate**.
 
 **Cherry-pick integration: 0 conflicts, 0 dropped, small n** [M, this repo, 2026-10-07; `lanes.json`, logs]: 16 sessions, cap 2.
-- **67 lanes**, all integrated; 21 committed (63 commits, 63/63 `git patch-id` matches). Dropped **0/21** (one-sided 95% exact bound 1 − 0.05^(1/n): 13%).
+- **67 lanes**, all integrated; 21 committed (63 commits, 63/63 `git patch-id` matches). Dropped **0/21** (95% bound 13%).
 - **Contested picks** (onto a tree an earlier pick moved): 0/9 conflicts (bound 28%); 36/128 touches outside the lane.
 - **`integration_check`** (36 lanes from `face240c`): green 13 (every committing lane), null 23; 31 earlier lack it.
 - **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s, ≤1.5% of the lanes span. **Negligible at N=2; bounds 13% / 28% do not license N=3.**
@@ -107,7 +107,7 @@ Recall median 1.00 / pooled 0.85, 19 complete; precision 0.80 / 0.73, 16 over-de
 - **Ceiling:** shipped reviewers find 18–33% of real defects [M].
 - **Read-out.** Buy recall with **more independent passes plus one aggregator**, not lanes or wider context; lanes buy wall-clock (and E3's tests signal). Passes are readers feeding one writer: attribution-safe. **Falsified by** a study holding real-defect count fixed where lanes beat equal-pass whole-diff review ≥1.5×.
 
-**Strength.** Moderate-to-strong for "partition first, keep N small" (STORM contra); moderate for passes over lanes (no study fixes defect count).
+**Strength.** Moderate-to-strong for "partition first, keep N small" (STORM contra); moderate for passes over lanes.
 
 ### #5 Move 4: worktree-as-proposal
 
@@ -133,11 +133,11 @@ Cross-CLI orchestrators use processes, files, git [D]:
 
 ### #5 Moves 1–2: persistent knowledge
 
-- **Evidence.** Self-built memory 11/12 fail to beat none; verified experience +1.1 to +4.5; subtask memory +4.7 [M]; none replicated (Gap 5). Vendors load **small curated files every session** [D]. Move 2 (committed trap-door file, 20–40 lines per directory) is supported; judge Move 1 on orientation time.
+- **Evidence.** §1 item 6; subtask memory +4.7 [M]; none replicated (Gap 5). Vendors load **small curated files every session** [D]. Move 2 (committed trap-door file, 20–40 lines per directory) is supported; judge Move 1 on orientation time.
 
 ### The ~300-minute review toll
 
-- **Separate reviewers work** (Anthropic, Cognition, MAST) [Mv/M]. **Supported cuts:** smaller concurrent units at small N; per-unit stop conditions (MAST); for recall, aggregated passes, not lanes (Gap 4).
+- **Separate reviewers work** (Anthropic, Cognition, MAST) [Mv/M]. **Supported cuts:** smaller concurrent units at small N; per-unit stop conditions (MAST); recall: Gap 4.
 
 **Does each worker phase earn its time? Review phases are nearly free** [M, this repo, 2026-09-26]. 65 tickets, 10 sessions (09-19 → 09-25). Phase = gap between consecutive artifact *births* from the first `worker_session_*.log`; respawn-spanning intervals dropped (12 tickets); "changed" read by hand.
 
@@ -152,7 +152,7 @@ Cross-CLI orchestrators use processes, files, git [D]:
 | Simplify | 38 | 0 s | 11/38 changed (+4 unclear); 27 no artifact |
 | Whole worker spawn(s) | 65 | 6.7 min | 95% inside intervals (53 single-spawn) |
 
-**Finding** (write time ≠ thinking time: 25–33/65 reviews landed ≤2 s after their subject). Review/simplify cost <1 min of 6.7; Research plus Implement ~75%. Research/Plan Review: merge candidates (HYPOTHESIS). Conformance, Code Review, Simplify change 8%, 12%, ≥29% at near-zero cost.
+**Finding** (write time ≠ thinking time: 25–33/65 reviews landed ≤2 s after their subject). Review/simplify cost <1 min of 6.7; Research plus Implement ~75%. Research/Plan Review: merge candidates (HYPOTHESIS).
 
 **Where the rest of the pickle phase goes: test gates, not managers** [M, this repo, 2026-10-04; 15 sessions, 09-26 → 10-04]. Each pickle-phase second gets one label, by priority: worker (`worker_session_*.log` birth → mtime) > worker gate (→ `worker_lint_gate_passed`/`worker_gate_failed`) > tail gate (→ `between-ticket fast gate`) > gap > manager (rest of a mux window) > wave. Min/ticket:
 
@@ -221,6 +221,7 @@ Cross-CLI orchestrators use processes, files, git [D]:
 - Accessed 2026-10-12 (Gap 8): CoAgent https://arxiv.org/abs/2606.15376 (2026-06-13); AgentRoom https://arxiv.org/abs/2608.23740 (2026-08-24); AgenTag https://arxiv.org/abs/2608.00966 (2026-08-02); Nesbitt https://nesbitt.io/2026/08/06/a-year-of-ai-disclosure-in-critical-packages.html; GitHub https://github.blog/changelog/2019-12-19-improved-attribution-when-squashing-commits/; git notes https://git-scm.com/docs/git-notes
 - Accessed 2026-10-12 (Gap 4): defect-focused review https://arxiv.org/abs/2505.17928 (v2 2025-05-28; ICML 2025); Kumar, SWE-PRBench https://arxiv.org/abs/2603.26130 (2026-03-27)
 - Accessed 2026-10-12 (Gap 7): Brun et al. https://homes.cs.washington.edu/~mernst/pubs/vc-conflicts-fse2011.pdf (FSE 2011); Shen et al. https://people.cs.vt.edu/~gulzar/assets/pdf/tosem22_merge.pdf (TOSEM 2022); SubmitQueue https://blog.acolyer.org/2019/04/18/keeping-master-green-at-scale/
+- Accessed 2026-10-12 (Gap 5): Muku, NP-Bench https://arxiv.org/abs/2610.07261 (2026-10-05); Hsu et al., OpenCollab https://arxiv.org/abs/2609.38345 (v2 2026-10-09); Liu et al., MAScope https://arxiv.org/abs/2610.10126 (2026-10-07)
 - Accessed 2026-10-11 (Gap 3): Yang et al., Co-Coder https://arxiv.org/abs/2606.00953 (2026-05-31); Mao et al., DeLM https://arxiv.org/abs/2606.10662 (v3 2026-10-04)
 - Accessed 2026-10-07 (Gap 5): Liu et al., STORM https://arxiv.org/abs/2605.20563 (2026-05-19); Liu et al., E2EDev https://arxiv.org/abs/2510.14509 (v4 2026-04-16); Tran & Kiela https://arxiv.org/abs/2604.02460 (2026-04-02); Jwalapuram et al. https://arxiv.org/abs/2606.13003 (v2 2026-06-13); Zhu et al., SWE Context Bench https://arxiv.org/abs/2602.08316 (v3 2026-05-06); Cemri et al., AdaMAST https://arxiv.org/abs/2607.16387 (2026-07-17)
 - Magentic-One https://www.microsoft.com/en-us/research/articles/magentic-one-a-generalist-multi-agent-system-for-solving-complex-tasks/ (2024-11-04)
@@ -230,11 +231,11 @@ Figures checked against primary text.
 
 ## 6. Open research gaps
 
-- **Gap 1.** **(Closed 2026-10-04.)** SWE-agent measured (§2); CrewAI, AutoGen, Agent Framework unmeasured; Sweep discontinued.
-- **Gap 3.** **(Narrowed 2026-10-11.)** Knee 2–4 for *coupled writers* under deferred merge (STORM contra); lanes: Gap 7. *Build speed:* CAID's wall-clock did not fall, Co-Coder ≤2.10× [M]; our model breaks even at width 1.6–2.6 (§3). Open: a width >1 wave run.
+- **Gap 1.** **(Closed 2026-10-04.)** SWE-agent measured (§2); the rest unmeasured; Sweep discontinued.
+- **Gap 3.** **(Narrowed 2026-10-11.)** Knee 2–4 for *coupled writers* under deferred merge (STORM contra); lanes: Gap 7. *Build speed:* ≤2.10× [M]; our break-even width 1.6–2.6 (§3). Open: a width >1 wave run.
 - **Gap 4.** **(Narrowed 2026-10-12.) Review-unit size vs defect count.** Planted mutations saturate (E3, 14–19/20); real reverted defects floor (E3b, 0/12); aggregated passes beat tools and whole-file context [M]; our fixes per bundle stay ~5 from 625 to 6,142 build lines [M, this repo] (§3). Open: no study fixes real-defect count while varying size or lanes; the aggregated, tool-using E3b rerun (arms a/b, equal passes) is unrun.
-- **Gap 5.** **(Re-checked 2026-10-07: none independently replicated.)** *Contradicted* [M]: MetaGPT +4.2 (E2EDev, unadapted GPT-4o: ~50% HumanEval, ~30% renamed the function). *Countered:* the small-N knee (CooperBench; CAID 8 < 4) by STORM (§3). *Direction only:* Kim et al. (−2.1% to −14.9%, SWE-bench Verified) by Tran & Kiela, Jwalapuram et al. (reasoning); VibeMemBench (11/12) by SWE Context Bench (filtered retrieval helps). *Single:* subtask memory (+4.7); DreamBench-SWE (Mem0 97/180 vs none 21/180); Claim Plane; MAST (AdaMAST: same group); Destefanis & Aste (synthetic; split spec 10/10 at 2–8 agents, eight-step chain 0/10 at 8); Sun et al. (confounded; Chowdhury: 12/13 review agents' signal ratio <60%; Cynthia: 54.8–72.9% *marked* resolved).
-- **Gap 6.** **(Narrowed 2026-10-11.)** Measured (§3): declared lists, phase cost, gates, manager time (7.7%). *Closed:* `-p` teams (`--teams` deleted, B-LANES; 103 runner `-p` inits lack `TeamCreate` [M, this repo]). Open: a width >1 wave (Gap 3).
+- **Gap 5.** **(Re-checked 2026-10-12: none independently replicated; no cited paper revised.)** *Contradicted* [M]: MetaGPT +4.2 (E2EDev, unadapted GPT-4o: ~50% HumanEval, ~30% renamed the function). *Countered:* the small-N knee (CooperBench; CAID 8 < 4) by STORM (§3). NP-Bench [M, Single, author's planner] tests no knee: one hot file, n−1 conflicts by construction; disjoint scopes 0 at N=2–8. *Direction only:* Kim et al. (−2.1% to −14.9%, SWE-bench Verified) by Tran & Kiela, Jwalapuram et al. (reasoning); OpenCollab [M, Single] does neither: teams +5.6 to −16.7 vs single (SWE-bench Pro, ~36 tasks); Duo (best-of-2, 1.2–5.1× tokens) +3.4 to +9.7. VibeMemBench (11/12) by SWE Context Bench (filtered retrieval helps). *Single:* subtask memory (+4.7); DreamBench-SWE (Mem0 97/180 vs none 21/180); Claim Plane; MAST (AdaMAST same group; MAScope reuses its labels); Destefanis & Aste (synthetic; split spec 10/10 at 2–8 agents, eight-step chain 0/10 at 8); Sun et al. (confounded; Chowdhury: 12/13 review agents' signal ratio <60%; Cynthia: 54.8–72.9% *marked* resolved).
+- **Gap 6.** **(Narrowed 2026-10-11.)** Measured (§3): lists, phase cost, gates, manager time. *Closed:* `-p` teams (`--teams` deleted, B-LANES; 103 runner `-p` inits lack `TeamCreate` [M, this repo]). Open: Gap 3.
 - **Gap 7.** **(Narrowed 2026-10-12.) Cherry-pick integration cost.** Lanes 0/9 contested, 0/21 dropped (N=2); N=3 replay 53% order-dependent, no divergent clean tree [M, this repo]; clean merges break build/tests 0.1–9.3% [M] (§3). Open: lanes at N≥3 (bounds 13% / 28%); no agent study past N=2; one repo.
 - **Gap 8.** **(Narrowed 2026-10-12.) Harness-agnostic multi-writer coordination.** Design answered [D]; blame 40/40 one commit per writer, 0/40 squash; lease ≤139 ms at N=8 [M, this repo] (§3). Open: real LLM writers at N>2; lanes lack ticket trailers.
 
@@ -246,4 +247,4 @@ Figures checked against primary text.
 - 2026-10-04 — Gaps 3, 6, 7 refreshed; Gap 1 closed; Gap 5 re-checked.
 - 2026-10-07 — Gaps 4, 8 narrowed; Gap 7 re-censused; Gap 5 re-checked.
 - 2026-10-11 — Gaps 3, 6 narrowed.
-- 2026-10-12 — Gaps 4, 7, 8 narrowed (review fixes flat; N=3 replay 48/91; squash 0/40 blame).
+- 2026-10-12 — Gaps 4, 7, 8 narrowed (review fixes flat; N=3 replay 48/91; squash 0/40 blame); Gap 5 re-checked, unchanged.
