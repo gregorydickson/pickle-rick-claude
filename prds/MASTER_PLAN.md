@@ -231,7 +231,7 @@ NO measured basis. Large PRDs are not constrained by the cap.
 | `exp/b-lanes` | **RETIRED 2026-10-04** (was `fcec8f1d`; 0 commits not in main; local + remote deleted) |
 | `exp/b-parallel-build` | **RETIRED 2026-10-04** (was `d9767fcb`; 0 commits not in main; local + remote deleted) |
 | version | `2.2.1` on `main` (the only line). No tag pending |
-| RUNNING | **nothing. B-FIELD-88 + B-FIELD-95 + their review re-run (QUEUE item 13) SHIPPED to `main` and DEPLOYED 2026-10-11** (HEAD `29ea26c6`; gate 22/22 `LEG_RC 0`, soak 1804.8s; deploy verified by content, 0 differing; NOT tagged — release cadence; `v2.2.2` awaits operator approval). Review re-run session `2026-10-11-8716c819`: 3/3 phases, 35m, `completed`; anatomy-park converged (all 6 subsystems 2 consecutive clean), szechuan converged metric 0 in 2 iterations; 3 review commits `53cc7540`..`29ea26c6`; 0 open decisions, 0 skipped tickets, base drift clean. Earlier: B-FIELD-95 session `2026-10-10-41c0acdf` (pickle 18/18) and B-FIELD-88 closed #57, #83–#98. NEXT: queue drained → rule E research ticks. Babysitter armed every 2h |
+| RUNNING | **nothing. B-FIELD-103 (#99–#103) + B-SETUP-TEST-TIMEOUTS SHIPPED to `main` and DEPLOYED 2026-10-12** (HEAD `e32100ac`; gate 22/22 `LEG_RC 0`, soak 1804.7s; deploy verified by content, 0 differing; `BUILD_INFO.json` source_sha `e32100ac`; NOT tagged — release cadence). B-FIELD-103 session `2026-10-11-5afbb431`: 4/4 phases, 12/12 tickets Done, 0 skipped, non_convergent 0, citadel advisory 36; success WITHHELD by 3 open decisions (WS-1 deferral disposition, WS-2 withhold policy, CI-lane derivation follow-up — defaults built, operator to decide). First gate on `ee8a1a23` red 3/22 (audit-subprocess-heavy-tests, test_fast_budget, test_integration) — one cause: anatomy-park `7c107055` rewrote two `setup.test.js` spawns without `timeout`; fixed by pipeline session `2026-10-11-20daec89` (`e32100ac`), baseline untouched. Operator still owes: `v2.2.2` disposition (CI was red at its cut). NEXT: queue drained → rule E research ticks. Babysitter armed every 2h |
 | open issues | Closed with evidence 2026-10-04: #52, #53, #54, #55, #5, #63 (#52/#53 bodies + the 09-30 #53 comment sanitized first). Status comments on #56, #58–#62, #64–#67 (what shipped / what was deliberately not built). #68–#76 closed 2026-10-04/05 (B-FIELD-75, B-STALE-SENTINEL). **New 2026-10-06: #77–#82** (queue item 9). **Closed 2026-10-06 (B-FIELD-82): #77–#82.** Still open: #43, #56–#62, #64–#67 |
 | client data | Sanitized at operator request: #52–#67 bodies/comments (2026-10-03/04). Edit history keeps originals (deletion declined). **Still exposed:** older closed issues (#9, #14, #15, #31, #48) and 145 files at `main` (the #31 leak) |
 | gate | `prds/gate-runner.sh <log>`, 22 legs, ~70 min. Green iff every `=== LEG_RC <leg> 0` (the runner exit code alone is not enough) |
@@ -413,14 +413,14 @@ NO measured basis. Large PRDs are not constrained by the cap.
     --scope-base ee967302` (the commit before B-FIELD-88's first ticket), phases `["citadel","anatomy-park","szechuan-sauce"]`.
     Then gate, push, deploy as usual. Cut the `v2.2.2` tag only on operator approval.
 
-14. **✅ BUILT + GATED 2026-10-11 (session `2026-10-11-d4f47d7d`, 4/4, commits `390221d3` `f2c590f4`; gate 22/22, soak 1804.7s; deployed, 0 differing; CI on `f2c590f4` pending) — B-CI-HERMETIC-HOME (`prds/p1-b-ci-hermetic-home.md`).** CI `test` red on every push since `1aa65d0c`:
+14. **✅ BUILT + GATED 2026-10-11 (session `2026-10-11-d4f47d7d`, 4/4, commits `390221d3` `f2c590f4`; gate 22/22, soak 1804.7s; deployed, 0 differing; CI on `f2c590f4` GREEN, run 38166418342) — ✅ CLOSED — B-CI-HERMETIC-HOME (`prds/p1-b-ci-hermetic-home.md`).** CI `test` red on every push since `1aa65d0c`:
     6 fast-tier tests (`spawn-morty-tier-phases`, `pipeline-runner-units` lifecycle chain) read the operator's deployed
     `~/.claude/commands/send-to-morty.md`; absent on a clean runner → fallback prompt → reds. Local gate green only
     because the box has the deployed copy. `v2.2.2` (`d3decf60`) was cut 2026-10-11 without reading CI status first —
     operational miss: **read `gh run list --workflow CI` for the gated sha before any tag**. Shipped runtime unaffected
     (install deploys the template). Tests-only, 2 tickets, `--no-refine`, scope base `d3decf60`. Gate legs 22 → 22.
 
-15. **NEXT — B-FIELD-103 (`prds/p1-b-field-103.md`): #99–#103 (+ #66 verdict half).** Refine, then pipeline; scope base
+15. **✅ SHIPPED 2026-10-12 (session `2026-10-11-5afbb431` 4/4, 12/12 Done; red-gate fix `e32100ac` via B-SETUP-TEST-TIMEOUTS; gate 22/22, soak 1804.7s; deployed, 0 differing; closed #99–#103; success withheld by 3 open decisions) — B-FIELD-103 (`prds/p1-b-field-103.md`): #99–#103 (+ #66 verdict half).** Refine, then pipeline; scope base
     `f2c590f4`. WS-1 #103 qualified/unrun verdict is not a pass (widen `conformanceVerdictIsFail`, delete the
     test-red `hasManagerHandoff` carve-out); WS-2 #100 stamp the pickle build version + source sha per session, disclose
     and withhold success when behind (launch REFUSAL rejected: launch-block); WS-3 #101 + #102 input-domain table + domain
