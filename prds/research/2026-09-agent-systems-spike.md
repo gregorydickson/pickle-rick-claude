@@ -90,7 +90,7 @@ Recall (actual files declared) median 1.00 / pooled 0.85, 19 complete; precision
 - **Contested picks** (onto a tree an earlier pick moved): 0/9 conflicts (bound 28%). Not disjoint: 36/128 touches outside the lane.
 - **`integration_check`** (36 lanes from `face240c`): green 13 (every committing lane), null 23; 31 earlier lack it: **a gap**.
 - **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s (new sessions 5.1–5.7 s), ≤1.5% of the lanes span (span now first lane start → `verdict`; the 10-04 figure, ≤0.81%, used a different span, so the rise is method, not cost). **Negligible at N=2; bounds 13% / 28% do not license N=3.**
-- **Attribution survives** [24 `lanes.json` commits, patch-id matched, `git show -s`]: message byte-identical 24/24 (3/3 trailers); author, author date, committer 24/24; committer date rewritten. Limits: one human identity (author proves nothing about agents); no ticket trailers; no squash.
+- **Attribution survives** [24 `lanes.json` commits, patch-id matched, `git show -s`]: message byte-identical 24/24 (3/3 trailers); author, author date, committer 24/24; committer date rewritten. Limits: one human identity; no ticket trailers; squash: Gap 8.
 
 **The anatomy-park stall is the C-compiler stall:** `discoverSubsystems` (`pipeline-runner.ts:471`) makes `extension/` one lane.
 
@@ -115,19 +115,19 @@ Recall (actual files declared) median 1.00 / pooled 0.85, 19 complete; precision
 - **Unclaimed.** No source measures isolation reducing defects vs trunk plus fences. Costs: CAID slower, dearer; Claim Plane serialized ~all [M].
 - **Strength.** Consensus plus cost data; "deletes our five enforcement mechanisms" is HYPOTHESIS.
 
-### Gap 8: harness-agnostic coordination (2026-10-07)
+### Gap 8: harness-agnostic coordination (2026-10-07; 2026-10-12)
 
-Every cross-CLI orchestrator found uses only processes, files, git [D].
+Cross-CLI orchestrators use only processes, files, git [D]:
+- **Spawn lock → lock the claim** (git-ref lease or lock file): grite [M, synthetic]; C compiler [Mv]. **`state.json` keeps one writer**; workers append actor-stamped events (grite: a last-writer-wins file drops concurrent writes [M, synthetic]; OpenHands [D]).
+- **Ledgers → actor id in the commit** (trailer, author suffix): Aider, Agent Trace [D]. **Scope fence → worktree + branch per writer**: claude-squad, Vibe Kanban, Conductor, Codex, Claude Code, Copilot [D].
 
-| Our single-writer assumption | Harness-neutral pattern | Source |
-|---|---|---|
-| Spawn lock | Lock the **claim**, not the spawn: TTL lease under a git ref, or a lock file whose push conflict is the lock | grite [M, synthetic]; C compiler [Mv]; agent teams [D] |
-| `state.json` single writer | Keep it; workers **append** actor-stamped events, one projector | grite: last-writer-wins file drops concurrent writes, git-ref log none [M, synthetic]; OpenHands [D] |
-| Sequential attribution ledgers | Actor id **in the artifact**: commit trailer, author suffix, or revision-keyed trace record | Aider `(aider)`; Agent Trace 0.1.0 [D] |
-| Per-ticket scope fence | **Worktree + branch per writer**: diff the branch, not the iteration window | claude-squad, Vibe Kanban, Conductor, Codex, Claude Code `isolation: worktree`, Copilot [D] |
+**Lease cost.** grite (op-generators), N=32: duplicate work 78% → 64% (locks) → **0% (+ shared log)** [M, Single]. CoAgent: 2PL/OCC "surrender nearly all concurrency gains" [M, Single, abstract]. Ours [M, this repo, 2026-10-12; scratch `lease.py` (uncommitted): 50 zero-hold cycles/process]: `mkdir` ≤0.04 ms median at N=1–8; `git update-ref` create-only lease **11.9 / 26.4 / 41.5 / 57.5 / 139 ms at N=1/2/3/4/8** (p95 466 ms); one claim per 6.7-min spawn: <0.05%.
 
-- **Measured cost: one study.** grite (seeded op-generators, not LLMs): at N=32 duplicate work 78% (none) → 64% (locks only) → **0% (locks + shared log)**; goodput 2.33 → 3.84 → 8.00 tasks/round; cross-actor overwrites 410 → 138 → 48 [M]. Locks alone barely help.
-- **Read-out.** The babysitter false record (MASTER_PLAN "🐝 AGENT SWARMS") was two writers in one checkout and window. Worktree per writer plus a commit trailer makes attribution a property of the commit, not timing; `state.json` stays single-writer.
+**Attribution through integration** [M, this repo, 2026-10-12; scratch `attrib.sh`: N=3, 4 worktrees, 2 commits each, author + trailer + note]. Lines blamed correctly: merge, cherry-pick, rebase **30/30, 40/40**; `merge --squash` **0/30, 0/40** (integrator authors). Adding every author as `Co-authored-by` (GitHub's default [D]) still resolves 0/40 lines; per-writer squash plus trailer, 40/40. Notes: cherry-pick copies none (git rewrites notes on amend/rebase only [D]); a 590k-commit census missed `refs/notes/ai`, unfetched by default [M, Nesbitt].
+
+**Real LLM writers at N>2: unmeasured.** AgentRoom reports N=2; AgenTag identifies the *product* (F1 0.96, 5 agents) [M, Single], not the instance.
+
+**Read-out.** Attribution is a commit property: one commit per writer (our cherry-pick) keeps it, squash destroys it; leases are free at ticket grain.
 
 ### #5 Move 5: state from git
 
@@ -222,6 +222,7 @@ Every cross-CLI orchestrator found uses only processes, files, git [D].
 - Accessed 2026-10-04 (Gap 5): Singh, "DreamBench-SWE" https://arxiv.org/abs/2608.20664 (2026-08-21); Nikolaev, Claim Plane pilot https://arxiv.org/abs/2607.21909 (2026-07-24); Chowdhury et al. https://arxiv.org/abs/2604.03196 (MSR 2026); Cynthia et al. https://arxiv.org/abs/2607.21997 (2026-07-24); Kim et al., Destefanis & Aste full text; CooperBench, Sun et al. version listings
 - Accessed 2026-10-07 (Gap 4): SWR-Bench v2 https://arxiv.org/abs/2509.01494 (2026-06-05); Zhang et al., c-CRAB https://arxiv.org/abs/2603.23448 (v2 2026-03-30); Pereira et al., CR-Bench https://arxiv.org/abs/2603.11078 (2026-03-10); Cursor, Bugbot https://cursor.com/blog/building-bugbot (2026-01-15); Anthropic, Code Review https://claude.com/blog/code-review (2026-03-09)
 - Accessed 2026-10-07 (Gap 8): Sarkar, grite https://arxiv.org/abs/2606.19616 (2026-06-17); Agent Trace 0.1.0 https://agent-trace.dev/ (2026-01); Aider https://aider.chat/docs/git.html; claude-squad https://github.com/smtg-ai/claude-squad; Vibe Kanban https://github.com/BloopAI/vibe-kanban; Conductor https://www.conductor.build/docs/concepts/git-worktrees; Codex https://learn.chatgpt.com/docs/environments/git-worktrees; Claude Code https://code.claude.com/docs/en/sub-agents; MCP Agent Mail https://github.com/Dicklesworthstone/mcp_agent_mail; beads https://github.com/steveyegge/beads
+- Accessed 2026-10-12 (Gap 8): CoAgent https://arxiv.org/abs/2606.15376 (2026-06-13); AgentRoom https://arxiv.org/abs/2608.23740 (2026-08-24); AgenTag https://arxiv.org/abs/2608.00966 (2026-08-02); Nesbitt https://nesbitt.io/2026/08/06/a-year-of-ai-disclosure-in-critical-packages.html; GitHub https://github.blog/changelog/2019-12-19-improved-attribution-when-squashing-commits/; git notes https://git-scm.com/docs/git-notes
 - Accessed 2026-10-11 (Gap 3): Yang et al., Co-Coder https://arxiv.org/abs/2606.00953 (2026-05-31); Mao et al., DeLM https://arxiv.org/abs/2606.10662 (v3 2026-10-04); CAID HTML v2 §6
 - Accessed 2026-10-07 (Gap 5): Liu et al., STORM https://arxiv.org/abs/2605.20563 (2026-05-19); Liu et al., E2EDev https://arxiv.org/abs/2510.14509 (v4 2026-04-16); Tran & Kiela https://arxiv.org/abs/2604.02460 (2026-04-02); Jwalapuram et al. https://arxiv.org/abs/2606.13003 (v2 2026-06-13); Zhu et al., SWE Context Bench https://arxiv.org/abs/2602.08316 (v3 2026-05-06); Cemri et al., AdaMAST https://arxiv.org/abs/2607.16387 (2026-07-17); no new versions: CooperBench, Kim et al., Claim Plane, Destefanis & Aste, VibeMemBench
 - Magentic-One https://www.microsoft.com/en-us/research/articles/magentic-one-a-generalist-multi-agent-system-for-solving-complex-tasks/ (2024-11-04)
@@ -237,7 +238,7 @@ Figures checked against primary text.
 - **Gap 5.** **(Re-checked 2026-10-07: none independently replicated.)** *Contradicted* [M]: MetaGPT +4.2 (E2EDev, unadapted GPT-4o: ~50% HumanEval, ~30% renamed the function). *Countered, not re-run:* the small-N knee (CooperBench, none above 2; CAID 8 < 4), by STORM (§3). *Direction only:* Kim et al. (−2.1% to −14.9%, SWE-bench Verified subsets) by Tran & Kiela, Jwalapuram et al. (reasoning, not code); VibeMemBench (11/12; targets kept only where injected history helped) by SWE Context Bench (filtered retrieval helps, unfiltered little or negative; earlier). *Single:* subtask memory (+4.7); DreamBench-SWE (recall-*requiring*: Mem0 97/180 vs none 21/180); Claim Plane (own pilot); MAST (AdaMAST: same group); Destefanis & Aste (synthetic): split spec 10/10 at 2–8 agents, eight-step chain 0/10 at 8: decline tracks coupling; Sun et al. (confounded; Chowdhury: 12/13 review agents' signal ratio <60%; Cynthia: 54.8–72.9% *marked* resolved).
 - **Gap 6.** **(Narrowed 2026-10-11.)** Measured (§3): declared lists, phase cost, gates, manager time (7.7%). *Closed:* `-p` teams under `/resume`: `--teams` deleted (B-LANES); docs (2026-10-11): `-p` spawns no teammates, `/resume` restores none [D]; 103 runner `-p` inits (2.1.288–295) lack `TeamCreate` [M, this repo]. Open: a width >1 wave (Gap 3).
 - **Gap 7.** **(Narrowed 2026-10-07.) Cherry-pick integration cost.** 0 conflicts, 0/21 dropped (§3). Open: small n (bounds 13% / 28%; contested picks stuck at 9), one repo, N=2.
-- **Gap 8.** **(Narrowed 2026-10-07.) Harness-agnostic multi-writer coordination.** Answered by design (§3) [D]; only cost data synthetic (grite) [M]. Open: attribution accuracy and lease overhead with real LLM writers at N>2; squash.
+- **Gap 8.** **(Narrowed 2026-10-12.) Harness-agnostic multi-writer coordination.** Design answered [D]; synthetic N=4: blame 40/40 one commit per writer, 0/40 squash; lease ≤139 ms at N=8 [M, this repo] (§3). Open: real LLM writers at N>2 (no source); lanes lack ticket trailers.
 
 ## Changelog
 
@@ -247,3 +248,4 @@ Figures checked against primary text.
 - 2026-10-04 — Gaps 3, 6, 7 refreshed; Gap 1 closed; Gap 5 re-checked.
 - 2026-10-07 — Gaps 4, 8 narrowed; Gap 7 re-censused (attribution survives cherry-pick); Gap 5 re-checked (MetaGPT contradicted; STORM counters the small-N knee; none replicated).
 - 2026-10-11 — Gap 6 narrowed (manager time 7.7%; `-p` teams closed); Gap 3 narrowed (build wall-clock literature; break-even-width model).
+- 2026-10-12 — Gap 8 narrowed (squash 0/40 blame, cherry-pick 40/40; leases ≤139 ms at N=8).
