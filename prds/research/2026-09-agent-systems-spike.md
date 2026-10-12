@@ -82,8 +82,8 @@ Recall median 1.00 / pooled 0.85, 19 complete; precision 0.80 / 0.73, 16 over-de
 - **67 lanes**, all integrated; 21 committed (63 commits, 63/63 `git patch-id` matches). Dropped **0/21** (95% bound 13%).
 - **Contested picks** (onto a tree an earlier pick moved): 0/9 conflicts (bound 28%); 36/128 touches outside the lane.
 - **`integration_check`** (36 lanes from `face240c`): green 13 (every committing lane), null 23; 31 earlier lack it.
-- **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s, ≤1.5% of the lanes span. **Negligible at N=2; bounds do not license N=3.**
-- **N=3 replay** [M, this repo, 2026-10-12; scratch `replay.py`: 91 disjoint file-sharing consecutive-ticket triples, each cherry-picked onto its base in all 6 orders]: original order clean 91/91; **48/91 (53%) conflict in some order** (158/455 orders); all 297 clean orders rebuild the same tree. Sequential tickets: a coupling bound, not a lane rate.
+- **Wall-clock** (last lane end → `verdict`): 3.4–11.3 s, ≤1.5% of the lanes span: **negligible at N=2.**
+- **N=3/4 replay** [M, this repo, 2026-10-12; scratch `replay.py`: 91 triples, 67 quads of disjoint file-sharing consecutive tickets, cherry-picked onto their base in every order]: original order clean; **48/91 (53%), 42/67 (63%) conflict in another**; 35%/39% per reorder; every clean order rebuilds the original tree. Sequential tickets: a coupling bound, not a lane rate.
 - **Clean ≠ correct** [M]. Brun et al. (1,694 merges, 3 projects): 16% textual; **133/1,428 clean merges (9.3%) broke build or tests** (its "33%" counts conflicts). Shen et al. (117,218 Java merges): 13.6% textual, 0.1% build/test (lower bound). Uber SubmitQueue: ~40% problem odds at 16 concurrent changes [Mv; secondary].
 - **Attribution survives** [24 `lanes.json` commits, patch-id matched, `git show -s`]: message (3/3 trailers), author, author date, committer 24/24; committer date rewritten. Limits: one human identity, no ticket trailers (Gap 8).
 
@@ -232,7 +232,7 @@ Figures checked against primary text.
 - **Gap 4.** **(Narrowed 2026-10-12.) Review-unit size vs defect count.** E3 saturates, E3b floors; aggregated passes beat tools and whole-file context [M]; planted-set dilution ~3× [M, Single]; fixes per bundle ~5 at 625–6,142 build lines [M, this repo]. Open: no study fixes real-defect count while varying size or lanes; the aggregated, tool-using E3b rerun is unrun.
 - **Gap 5.** **(Re-checked 2026-10-12: unreplicated, unrevised.)** *Contradicted* [M]: MetaGPT +4.2 (E2EDev, unadapted GPT-4o: ~50% HumanEval, ~30% renamed the function). *Countered:* small-N knee (STORM). NP-Bench [M, Single, author's planner] tests no knee: one hot file, n−1 conflicts by construction; disjoint scopes 0 at N=2–8. *Direction only:* Kim et al. (−2.1% to −14.9%, SWE-bench Verified) by Tran & Kiela, Jwalapuram et al. (reasoning); OpenCollab [M, Single] does neither: teams +5.6 to −16.7 vs single (SWE-bench Pro, ~36 tasks); Duo (best-of-2, 1.2–5.1× tokens) +3.4 to +9.7. VibeMemBench (11/12) by SWE Context Bench (filtered retrieval helps). *Single:* subtask memory (+4.7); DreamBench-SWE (Mem0 97/180 vs none 21/180); Claim Plane; MAST (AdaMAST same group; MAScope reuses its labels); Destefanis & Aste (synthetic; split spec 10/10 at 2–8 agents, eight-step chain 0/10 at 8); Sun et al. (confounded; Chowdhury: 12/13 review agents' signal ratio <60%; Cynthia: 54.8–72.9% *marked* resolved).
 - **Gap 6.** **(Narrowed 2026-10-11.)** Measured (§3): lists, phases, gates, managers. *Closed:* `-p` teams (`--teams` deleted, B-LANES; 103 runner `-p` inits lack `TeamCreate` [M, this repo]). Open: Gap 3.
-- **Gap 7.** **(Narrowed 2026-10-12.) Cherry-pick integration cost.** Lanes 0/9 contested, 0/21 dropped (N=2); N=3 replay 53% order-dependent [M, this repo]; clean merges break build/tests 0.1–9.3% [M]. Open: lanes at N≥3 (bounds 13% / 28%); no agent study past N=2; one repo.
+- **Gap 7.** **(Narrowed 2026-10-12.) Cherry-pick integration cost.** Lanes 0/9 contested, 0/21 dropped (N=2); replay order-dependent 53%/63% at N=3/4 [M, this repo]; clean merges break build/tests 0.1–9.3% [M]. Open: lanes at N≥3 (bounds 13%/28%); agent studies past N=2 constructed (NP-Bench); one repo.
 - **Gap 8.** **(Narrowed 2026-10-12.) Harness-agnostic multi-writer coordination.** Design answered [D]; per-writer commits keep blame 40/40, trailers 6/6; squash 0; lease ≤139 ms at N=8 [M, this repo]. Open: real LLM writers at N>2; lanes stamp no ticket trailer.
 
 ## Changelog
@@ -243,4 +243,4 @@ Figures checked against primary text.
 - 2026-10-04 — Gaps 3, 6, 7 refreshed; Gap 1 closed; Gap 5 re-checked.
 - 2026-10-07 — Gaps 4, 8 narrowed; Gap 7 re-censused; Gap 5 re-checked.
 - 2026-10-11 — Gaps 3, 6 narrowed.
-- 2026-10-12 — Gaps 3, 4, 7, 8 narrowed (Gap 3: SquidAgent, 0 wave runs; Gap 4: PRWeaver, ReviewBench; Gap 8: ticket carriers); Gap 5 unchanged.
+- 2026-10-12 — Gaps 3, 4, 7, 8 narrowed (Gap 3: SquidAgent, 0 wave runs; Gap 4: PRWeaver, ReviewBench; Gap 7: N=4 replay; Gap 8: ticket carriers); Gap 5 unchanged.
