@@ -162,11 +162,7 @@ test('setup parseArguments: --paused sets pausedMode', () => {
 });
 
 test('setup initializeNewSession: state field set matches schema fixture', () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-schema-data-'));
-    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-
-    try {
+    withSandboxDataRoot('pickle-setup-schema-data-', (dataRoot) => {
         const args = parseArguments([
             '--tmux',
             '--command-template',
@@ -197,36 +193,18 @@ test('setup initializeNewSession: state field set matches schema fixture', () =>
         );
 
         assert.deepEqual(Object.keys(persisted), expectedFields);
-    } finally {
-        if (previousDataRoot === undefined) {
-            delete process.env.PICKLE_DATA_ROOT;
-        } else {
-            process.env.PICKLE_DATA_ROOT = previousDataRoot;
-        }
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+    });
 });
 
 test('backend.hermes-accepted: setup persists --backend hermes to state', () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-hermes-data-'));
-    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-
-    try {
+    withSandboxDataRoot('pickle-setup-hermes-data-', (dataRoot) => {
         const args = parseArguments(['--tmux', '--backend', 'hermes', '--task', 'hermes backend identity']);
         const session = initializeNewSession(args);
         const persisted = JSON.parse(fs.readFileSync(path.join(session.sessionRoot, 'state.json'), 'utf-8'));
 
         assert.equal(session.state.backend, 'hermes');
         assert.equal(persisted.backend, 'hermes');
-    } finally {
-        if (previousDataRoot === undefined) {
-            delete process.env.PICKLE_DATA_ROOT;
-        } else {
-            process.env.PICKLE_DATA_ROOT = previousDataRoot;
-        }
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+    });
 });
 
 test('backend.invalid: setup rejects unknown --backend with exit 1', () => {
@@ -241,11 +219,7 @@ test('backend.invalid: setup rejects unknown --backend with exit 1', () => {
 });
 
 test('worker-backend: setup persists --worker-backend codex to state', () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-worker-backend-data-'));
-    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-
-    try {
+    withSandboxDataRoot('pickle-setup-worker-backend-data-', (dataRoot) => {
         const args = parseArguments(['--tmux', '--backend', 'claude', '--worker-backend', 'codex', '--task', 'worker backend identity']);
         const session = initializeNewSession(args);
         const persisted = JSON.parse(fs.readFileSync(path.join(session.sessionRoot, 'state.json'), 'utf-8'));
@@ -254,14 +228,7 @@ test('worker-backend: setup persists --worker-backend codex to state', () => {
         assert.equal(session.state.worker_backend, 'codex');
         assert.equal(persisted.backend, 'claude');
         assert.equal(persisted.worker_backend, 'codex');
-    } finally {
-        if (previousDataRoot === undefined) {
-            delete process.env.PICKLE_DATA_ROOT;
-        } else {
-            process.env.PICKLE_DATA_ROOT = previousDataRoot;
-        }
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+    });
 });
 
 test('worker-backend.invalid: setup rejects unknown --worker-backend with exit 1', () => {
@@ -328,11 +295,7 @@ describeEach([
 });
 
 test('worker-backend: --resume with explicit --worker-backend overrides stored worker_backend', () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-resume-worker-backend-data-'));
-    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-
-    try {
+    withSandboxDataRoot('pickle-setup-resume-worker-backend-data-', (dataRoot) => {
         const sessionPath = runSetupWithEnv([
             '--tmux',
             '--backend', 'claude',
@@ -346,24 +309,13 @@ test('worker-backend: --resume with explicit --worker-backend overrides stored w
         const state = JSON.parse(fs.readFileSync(path.join(sessionPath, 'state.json'), 'utf-8'));
         assert.equal(state.backend, 'claude');
         assert.equal(state.worker_backend, 'hermes', 'explicit --worker-backend on resume must override stored worker_backend');
-    } finally {
-        if (previousDataRoot === undefined) {
-            delete process.env.PICKLE_DATA_ROOT;
-        } else {
-            process.env.PICKLE_DATA_ROOT = previousDataRoot;
-        }
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+    });
 });
 
 test('setup initializeNewSession: fresh PRD-backed state records prd_path and start_commit', () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-citadel-data-'));
-    const prdPath = path.join(dataRoot, 'citadel-prd.md');
-    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-    fs.writeFileSync(prdPath, '# Citadel PRD\n');
-
-    try {
+    withSandboxDataRoot('pickle-setup-citadel-data-', (dataRoot) => {
+        const prdPath = path.join(dataRoot, 'citadel-prd.md');
+        fs.writeFileSync(prdPath, '# Citadel PRD\n');
         const args = parseArguments(['--tmux', '--task', prdPath]);
         const session = initializeNewSession(args);
         const persisted = JSON.parse(fs.readFileSync(path.join(session.sessionRoot, 'state.json'), 'utf-8'));
@@ -374,14 +326,7 @@ test('setup initializeNewSession: fresh PRD-backed state records prd_path and st
         assert.equal(persisted.start_commit, head);
         assert.equal(session.state.prd_path, prdPath);
         assert.equal(session.state.start_commit, head);
-    } finally {
-        if (previousDataRoot === undefined) {
-            delete process.env.PICKLE_DATA_ROOT;
-        } else {
-            process.env.PICKLE_DATA_ROOT = previousDataRoot;
-        }
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+    });
 });
 
 test('setup CLI: fresh tmux PRD session persists prd_path and start_commit in state.json', () => {
@@ -710,11 +655,7 @@ test('setup --resume: start_commit heal ADOPTS pinned_sha, never the merge-base 
 });
 
 test('setup initializeNewSession: session id uses local day, not UTC day', () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-setup-local-day-data-'));
-    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-
-    try {
+    withSandboxDataRoot('pickle-setup-local-day-data-', (dataRoot) => {
         const args = parseArguments(['--tmux', '--task', 'local day setup regression']);
         let session;
         withTimezone('America/Chicago', () => {
@@ -730,14 +671,7 @@ test('setup initializeNewSession: session id uses local day, not UTC day', () =>
         assert.match(sessionId, /^2026-04-28-[0-9a-f]{8}$/);
         assert.doesNotMatch(sessionId, /^2026-04-29-/);
         assert.equal(session.state.session_dir, session.sessionRoot);
-    } finally {
-        if (previousDataRoot === undefined) {
-            delete process.env.PICKLE_DATA_ROOT;
-        } else {
-            process.env.PICKLE_DATA_ROOT = previousDataRoot;
-        }
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+    });
 });
 
 test('setup: --tmux sets tmux_mode: true in state.json', () => {
@@ -779,10 +713,7 @@ test('setup: --tmux does not affect other state fields', () => {
 });
 
 test('setup: fresh session without --max-time omits max_time_minutes and emits time_cap_disabled_default', () => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-no-cap-default-'));
-    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-    try {
+    withSandboxDataRoot('pickle-no-cap-default-', (dataRoot) => {
         const sessionPath = runSetup(['--task', 'no-cap-default-test']);
         const state = JSON.parse(fs.readFileSync(path.join(sessionPath, 'state.json'), 'utf-8'));
         assert.equal('max_time_minutes' in state, false, 'fresh setup should omit max_time_minutes when --max-time is not passed');
@@ -794,11 +725,7 @@ test('setup: fresh session without --max-time omits max_time_minutes and emits t
             .map((line) => JSON.parse(line));
         const disabled = events.find((event) => event.event === 'time_cap_disabled_default');
         assert.ok(disabled, 'fresh no-cap setup must emit time_cap_disabled_default');
-    } finally {
-        if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
-        else process.env.PICKLE_DATA_ROOT = previousDataRoot;
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+    });
 });
 
 test('setup: fresh session defaults worker_timeout_seconds to medium-tier 2400 seconds', () => {
@@ -1827,10 +1754,7 @@ test('AP-EXT-ITER268-01: a phantom decomposition_manifest.json is not a ticket r
 
 test('AC-LPB-05: --resume resets start_time_epoch to current time and emits activity event', () => {
     // Fresh session at a known epoch
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pickle-epoch-reset-'));
-    const previousDataRoot = process.env.PICKLE_DATA_ROOT;
-    process.env.PICKLE_DATA_ROOT = dataRoot;
-    try {
+    withSandboxDataRoot('pickle-epoch-reset-', (dataRoot) => {
         const sessionPath = runSetup(['--task', 'epoch-reset-test']);
         const statePath = path.join(sessionPath, 'state.json');
         // Forcibly back-date start_time_epoch (simulating a long-running pre-crash session)
@@ -1860,11 +1784,7 @@ test('AC-LPB-05: --resume resets start_time_epoch to current time and emits acti
         assert.ok(reset, 'session_reconstructed_epoch_reset event must be emitted');
         assert.equal(reset.original_epoch, staleEpoch);
         assert.equal(reset.new_epoch, resumed.start_time_epoch);
-    } finally {
-        if (previousDataRoot === undefined) delete process.env.PICKLE_DATA_ROOT;
-        else process.env.PICKLE_DATA_ROOT = previousDataRoot;
-        fs.rmSync(dataRoot, { recursive: true, force: true });
-    }
+    });
 });
 
 // Regression: the fast tier runs setup-family files concurrently, so a sibling can hold
