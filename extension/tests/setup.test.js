@@ -497,6 +497,7 @@ test('runSetupAt: a bare --paused spawn whose deployed root carries a source sha
         fs.writeFileSync(path.join(deployed, 'BUILD_INFO.json'), JSON.stringify({ version: '9.9.9', source_sha: sha, dirty: false }));
         const res = runSetupAt(neutralCwd, ['--paused', '--task', 'setup-at no network'], dataRoot, {
             HOME: home,
+            EXTENSION_DIR: undefined,
             PICKLE_TEST_GH_LOG: ghCalls,
         });
         const sessionRoot = res.stdout.match(/SESSION_ROOT=(.+)/)[1].trim();
