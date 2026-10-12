@@ -476,6 +476,7 @@ function runSetupAt(cwd, args, dataRoot, extraEnv) {
         cwd,
         encoding: 'utf-8',
         env: setupEnv({ PICKLE_DATA_ROOT: dataRoot, ...extraEnv }),
+        timeout: 30_000,
     });
     if (res.status !== 0) {
         throw new Error(`setup exited ${res.status}:\n${res.stdout}\n${res.stderr}`);
@@ -755,6 +756,7 @@ test('setup: bare non-tmux build session is rejected (R-PNTR-4 — in-session lo
     const result = spawnSync(process.execPath, [SETUP, '--task', 'no-tmux-test'], {
         encoding: 'utf-8',
         env: setupEnv({ PICKLE_DATA_ROOT: process.env.PICKLE_DATA_ROOT ?? DATA_ROOT }),
+        timeout: 30_000,
     });
     assert.notEqual(result.status, 0, 'bare non-tmux build session must exit non-zero');
     assert.match(result.stderr, /pickle-tmux/, 'must point operators to /pickle-tmux');
