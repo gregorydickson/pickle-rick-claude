@@ -10,7 +10,7 @@ Date: 2026-09-24 · Informs: #43 (`--teams`, review partitioning), #5 (knowledge
 
 1. **Parallel writers pay off only on cleanly split work, strongly verified, at small N.** CAID +6 to +15 points, peaking at **4 / 2 workers by benchmark** [M]. CooperBench: **68.6% → 46.5% → 30.0% from 2 to 4 agents** (unreplicated) [M]; Cursor's 20 locked agents ≈ "two or three" [Mv]. Contra: STORM's incremental merge **rose from 2 to 8 engineers** (one benchmark; §3) [M].
 2. **Our bundles cap build parallelism at ~2×** [M, this repo]. Best-case median 2.0×; one wave run, width 2 once (§3).
-3. **Review recall falls as defects per unit grow; aggregated passes, not lanes, recover it.** SWR-Bench: **38% → 9% from 1 to ≥5 real issues, precision flat** [M]; 10 aggregated passes double it, an agentic reviewer adds ~0 [M]; E3 saturated, E3b floored (§3).
+3. **Review recall falls as defects per unit grow; aggregated passes, not lanes, recover it.** SWR-Bench: **38% → 9% from 1 to ≥5 real issues, precision flat** [M]; 10 aggregated passes double it, an agentic reviewer adds ~0 [M] (§3).
 4. **Worktree-as-proposal is the industry convergence, unproven against alternatives.** Six systems give each writer a checkout and rejectable merge [D]. CAID's test-gated merge **raised** cost and runtime [M]; disjoint work rarely interferes (1 in 834) [M]; our 67 review lanes: 0 conflicts, 0/21 dropped [M, this repo].
 5. **Nobody derives state from git alone; the pattern is git plus an append-only log** (Anthropic, OpenHands, LangGraph) [D].
 6. **Persistent memory evidence is weak.** VibeMemBench: **11 of 12 self-built memory pairings failed to beat memory-off**; *verified* history +1.1 to +4.5 points [M], favouring Move 2; unreplicated (Gap 5).
@@ -90,7 +90,6 @@ Recall median 1.00 / pooled 0.85, 19 complete; precision 0.80 / 0.73, 16 over-de
 **Anatomy-park's stall is the C compiler's:** `discoverSubsystems` (`pipeline-runner.ts:471`) makes `extension/` one lane.
 
 **Review-size literature:**
-- **Kumar et al.: confounded** (synthetic small bins, real large); not used.
 - **SWR-Bench.** Recall 38.35% (N=1 issue, 266 PRs) → **8.88% (N≥5, 22 PRs)**, precision flat [M]: ~0.4–0.5 finds per PR at every N; our diffs are the many-issue case.
 
 **Gap 4: passes, tools or lanes on real defects?** (2026-10-07; 2026-10-12)
@@ -102,8 +101,6 @@ Recall median 1.00 / pooled 0.85, 19 complete; precision 0.80 / 0.73, 16 over-de
 - **Our review fixes are flat in size** [M, this repo, 2026-10-12; scratch `census.py`: `git log --first-parent --numstat` over `extension/{src,tests,templates}`, `.claude/commands`; bundle = ≥3 build commits, then `anatomy-park:`/`szechuan-sauce:` commits; n=100]. Fix commits: median 5 / 5 / 4.5 per tercile (625 / 1,296 / 6,142 build lines), Spearman 0.09; per kLOC 10.1 → 3.2 → 0.8. Fixes ≠ defects (no recall denominator); fits a fixed per-pass find budget (HYPOTHESIS).
 - **Ceiling:** shipped reviewers find 18–33% of real defects [M].
 - **Read-out.** Buy recall with **more independent passes plus one aggregator**, not lanes or wider context; lanes buy wall-clock (and E3's tests signal). Passes are readers feeding one writer: attribution-safe. **Falsified by** a study holding real-defect count fixed where lanes beat equal-pass whole-diff review ≥1.5×; PRWeaver's planted ~3×: untouched.
-
-**Strength.** Moderate-to-strong for "partition first, keep N small" (STORM contra); moderate for passes over lanes.
 
 ### #5 Move 4: worktree-as-proposal
 
@@ -117,7 +114,7 @@ Cross-CLI orchestrators use processes, files, git [D]:
 
 **Lease cost.** grite (op-generators), N=32: duplicate work 78% → 64% (locks) → **0% (+ shared log)** [M, Single]. CoAgent: 2PL/OCC "surrender nearly all concurrency gains" [M, Single, abstract]. Ours [M, this repo, 2026-10-12; scratch `lease.py` (uncommitted): 50 zero-hold cycles/process]: `mkdir` ≤0.04 ms median at N=1–8; `git update-ref` create-only lease **11.9 / 26.4 / 41.5 / 57.5 / 139 ms at N=1/2/3/4/8** (p95 466 ms); one claim per 6.7-min spawn: <0.05%.
 
-**Attribution through integration** [M, this repo, 2026-10-12; scratch `attrib.sh`: N=3, 4 worktrees, 2 commits each, author + trailer + note]. Lines blamed correctly: merge, cherry-pick, rebase **30/30, 40/40**; `merge --squash` **0/30, 0/40**. Every author as `Co-authored-by` (GitHub's default [D]): still 0/40; per-writer squash plus trailer, 40/40. **Carriers** [M, this repo; `prov.sh`, git 2.39.5, N=3 × 2 commits]: cherry-pick (±`-x`), rebase keep trailer, author 6/6, notes 0/6 (rebase with `notes.rewriteRef` 6/6; cherry-pick ignores it [D]); default-message `merge --squash`: none. A 590k-commit census missed `refs/notes/ai`, unfetched by default [M, Nesbitt].
+**Attribution through integration** [M, this repo, 2026-10-12; scratch `attrib.sh`: N=3, 4 worktrees, 2 commits each]. Blame: merge, cherry-pick, rebase **30/30, 40/40**; `merge --squash` **0/30, 0/40**, even with every author as GitHub's `Co-authored-by` [D]; per-writer squash plus trailer 40/40. **Carriers** [`prov.sh`, git 2.39.5, N=3 × 2]: cherry-pick (±`-x`), rebase keep trailer, author 6/6; notes 0/6 (rebase with `notes.rewriteRef` 6/6; cherry-pick ignores it [D]). **Squash messages** [M, this repo, 2026-10-13; `t.sh`, N=2/3/8 writers, one `Ticket:` each, `%(trailers)`]: default `merge --squash` parses **0** (indented); concatenated bodies (GitHub's ≥2-commit default, `rebase -i` squash) parse **1**, the final block only [D, `interpret-trailers`]; hoisted into one final block, **N/N**. Rebase-squash keeps the first author only; GitLab's default is `%{title}` [D]. A 590k-commit census missed `refs/notes/ai`, unfetched by default [M, Nesbitt].
 
 **N>2 LLM writers: none.** AgentRoom N=2; AgenTag identifies *product* (F1 0.96, 5 agents) [M, Single], not the instance.
 
@@ -195,7 +192,6 @@ Cross-CLI orchestrators use processes, files, git [D]:
 - Ogenrwot & Businge, AgenticFlict https://arxiv.org/abs/2604.03551 (2026-04-04; v2 2026-05-12)
 - Xu, Subramonian & Karthik https://arxiv.org/abs/2607.04697 (v2 2026-07-07; abstract)
 - Cemri et al., MAST https://arxiv.org/abs/2503.13657 (v3 2025-10; NeurIPS 2025)
-- Kumar, Bararia & Raj https://arxiv.org/abs/2606.15689 (2026-04-09)
 - Zeng et al., SWR-Bench https://arxiv.org/abs/2509.01494 (2025-09-01; v2 2026-06-05; FSE 2026)
 - Sun et al. https://arxiv.org/abs/2508.18771 (2025-08)
 - VibeMemBench https://arxiv.org/abs/2609.23570 (2026-09-20)
@@ -212,7 +208,7 @@ Cross-CLI orchestrators use processes, files, git [D]:
 - Accessed 2026-10-04 (Gap 5): Singh, "DreamBench-SWE" https://arxiv.org/abs/2608.20664 (2026-08-21); Nikolaev, Claim Plane pilot https://arxiv.org/abs/2607.21909 (2026-07-24); Chowdhury et al. https://arxiv.org/abs/2604.03196 (MSR 2026); Cynthia et al. https://arxiv.org/abs/2607.21997 (2026-07-24)
 - Accessed 2026-10-07 (Gap 4): Zhang et al., c-CRAB https://arxiv.org/abs/2603.23448 (v2 2026-03-30); Pereira et al., CR-Bench https://arxiv.org/abs/2603.11078 (2026-03-10); Cursor, Bugbot https://cursor.com/blog/building-bugbot (2026-01-15); Anthropic, Code Review https://claude.com/blog/code-review (2026-03-09)
 - Accessed 2026-10-07 (Gap 8): Sarkar, grite https://arxiv.org/abs/2606.19616 (2026-06-17); Agent Trace 0.1.0 https://agent-trace.dev/ (2026-01); Aider https://aider.chat/docs/git.html; claude-squad https://github.com/smtg-ai/claude-squad; Vibe Kanban https://github.com/BloopAI/vibe-kanban; Conductor https://www.conductor.build/docs/concepts/git-worktrees; Codex https://learn.chatgpt.com/docs/environments/git-worktrees; Claude Code https://code.claude.com/docs/en/sub-agents; MCP Agent Mail https://github.com/Dicklesworthstone/mcp_agent_mail; beads https://github.com/steveyegge/beads
-- Accessed 2026-10-12 (Gap 8): CoAgent https://arxiv.org/abs/2606.15376 (2026-06-13); AgentRoom https://arxiv.org/abs/2608.23740 (2026-08-24); AgenTag https://arxiv.org/abs/2608.00966 (2026-08-02); Nesbitt https://nesbitt.io/2026/08/06/a-year-of-ai-disclosure-in-critical-packages.html; GitHub https://github.blog/changelog/2019-12-19-improved-attribution-when-squashing-commits/; git notes https://git-scm.com/docs/git-notes; Linux kernel https://docs.kernel.org/process/coding-assistants.html
+- Accessed 2026-10-12/13 (Gap 8): https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/configuring-commit-squashing-for-pull-requests; https://docs.gitlab.com/user/project/merge_requests/commit_templates/; https://git-scm.com/docs/git-interpret-trailers; CoAgent https://arxiv.org/abs/2606.15376 (2026-06-13); AgentRoom https://arxiv.org/abs/2608.23740 (2026-08-24); AgenTag https://arxiv.org/abs/2608.00966 (2026-08-02); Nesbitt https://nesbitt.io/2026/08/06/a-year-of-ai-disclosure-in-critical-packages.html; GitHub https://github.blog/changelog/2019-12-19-improved-attribution-when-squashing-commits/; git notes https://git-scm.com/docs/git-notes; Linux kernel https://docs.kernel.org/process/coding-assistants.html
 - Accessed 2026-10-12 (Gap 4): defect-focused review https://arxiv.org/abs/2505.17928 (v2 2025-05-28; ICML 2025); Kumar, SWE-PRBench https://arxiv.org/abs/2603.26130 (2026-03-27)
 - Accessed 2026-10-12 (Gap 4, 2nd): Wang et al., PRWeaver https://arxiv.org/abs/2608.02693 (2026-08-03); GitHub, ReviewBench https://github.blog/ai-and-ml/github-copilot/reviewbench-an-open-benchmark-for-ai-code-review/ (2026-10-05)
 - Accessed 2026-10-12 (Gap 7): Brun et al. https://homes.cs.washington.edu/~mernst/pubs/vc-conflicts-fse2011.pdf (FSE 2011); Shen et al. https://people.cs.vt.edu/~gulzar/assets/pdf/tosem22_merge.pdf (TOSEM 2022); SubmitQueue https://blog.acolyer.org/2019/04/18/keeping-master-green-at-scale/; Menezes et al. https://journals-sol.sbc.org.br/index.php/jserd/article/view/1911 (JSERD 2021)
@@ -233,7 +229,7 @@ Figures checked against primary text.
 - **Gap 5.** **(Re-checked 2026-10-12: unreplicated, unrevised.)** *Contradicted* [M]: MetaGPT +4.2 (E2EDev, unadapted GPT-4o: ~50% HumanEval, ~30% renamed the function). *Countered:* small-N knee (STORM). NP-Bench [M, Single, author's planner] tests no knee: one hot file, n−1 conflicts by construction; disjoint scopes 0 at N=2–8. *Direction only:* Kim et al. (−2.1% to −14.9%, SWE-bench Verified) by Tran & Kiela, Jwalapuram et al. (reasoning); OpenCollab [M, Single] does neither: teams +5.6 to −16.7 vs single (SWE-bench Pro, ~36 tasks); Duo (best-of-2, 1.2–5.1× tokens) +3.4 to +9.7. VibeMemBench (11/12) by SWE Context Bench (filtered retrieval helps). *Single* [M]: subtask memory (+4.7; DreamBench's non-fidelity stand-in at floor); DreamBench-SWE (Mem0 97/180 vs none 21/180; same config 20/180 in fold 1, unexplained); Claim Plane; MAST (AdaMAST same group; MAScope reuses its labels); Destefanis & Aste (synthetic; split spec 10/10 at 2–8 agents, eight-step chain 0/10 at 8); Sun et al. (confounded; Chowdhury: 12/13 review agents' signal ratio <60%; Cynthia: 54.8–72.9% *marked* resolved).
 - **Gap 6.** **(Closed 2026-10-12.)** Measured: §3; `-p` teams deleted (B-LANES; 103 runner inits lack `TeamCreate` [M, this repo]); width: Gap 3.
 - **Gap 7.** **(Narrowed 2026-10-12.) Cherry-pick integration cost.** Lanes 0/9 contested, 0/21 dropped (N=2); replay order-dependent 53%/63% at N=3/4 [M, this repo]; clean merges break build/tests 0.1–9.3% [M]; human conflicts 9.8% of 182,273 merges, 6.6/29.5/43.0/59.1% at 1–3/4–10/11–30/>30 merged-in committers (Menezes; size-confounded) [M]. Open: lanes at N≥3 (bounds 13%/28%); agent studies past N=2 constructed (NP-Bench); one repo.
-- **Gap 8.** **(Narrowed 2026-10-12.) Harness-agnostic multi-writer coordination.** Design answered [D]; per-writer commits keep blame 40/40, trailers 6/6; squash 0; lease ≤139 ms at N=8 [M, this repo]. Open: real LLM writers at N>2; lanes stamp no ticket trailer.
+- **Gap 8.** **(Narrowed 2026-10-13.) Harness-agnostic multi-writer coordination.** Design answered [D]; per-writer commits keep blame 40/40, trailers 6/6; squash: blame 0, ≤1 of N trailers parsed unless hoisted into one block; lease ≤139 ms at N=8 [M, this repo]. Open: real LLM writers at N>2; lanes stamp no ticket trailer.
 
 ## Changelog
 
@@ -243,4 +239,4 @@ Figures checked against primary text.
 - 2026-10-04 — Gaps 3, 6, 7 refreshed; Gap 1 closed; Gap 5 re-checked.
 - 2026-10-07 — Gaps 4, 8 narrowed; Gap 7 re-censused; Gap 5 re-checked.
 - 2026-10-11 — Gaps 3, 6 narrowed.
-- 2026-10-12 — Gaps 3, 4, 7, 8 narrowed; Gap 6 closed; Gap 5 re-checked twice; DreamBench Mem0 unstable across folds.
+- 2026-10-12/13 — Gaps 3, 4, 7, 8 narrowed (8: squash trailer parsing); Gap 6 closed; Gap 5 re-checked twice.
